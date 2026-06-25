@@ -91,6 +91,18 @@ layers, a generalization view, roadmap suggestions, and a run manifest. It does
 not run an LLM judge and should not be treated as proof of mature digital-twin
 capability.
 
+## Examples
+
+Run the quickstart after installing dependencies:
+
+```bash
+npm run examples:quickstart
+```
+
+The example creates a temporary plaintext SQLite store, observes a user
+preference, prepares memory context, exercises low-level `add/search`, prints a
+content-free diagnostics summary, and removes the temporary database.
+
 ## Low-Level Compatibility APIs
 
 The primary gmOS integration path is still `observe()` plus `prepareTurn()`.

@@ -14,7 +14,7 @@ function run(command, args, options = {}) {
     cwd: options.cwd ?? root,
     encoding: "utf8",
     stdio: options.stdio ?? "pipe",
-    env: { ...process.env, ...options.env },
+    env: { ...process.env, npm_config_cache: path.join(tmp, "npm-cache"), ...options.env },
   });
 }
 
@@ -281,6 +281,26 @@ try {
   const hostGym = JSON.parse(hostGymBin.stdout);
   assert.equal(hostGym.pass, true);
   assert.equal(hostGym.hostCount, 2);
+  const installedQuickstart = path.join(
+    consumerDir,
+    "node_modules",
+    "@ghast",
+    "memory",
+    "examples",
+    "quickstart.mjs",
+  );
+  assert.equal(existsSync(installedQuickstart), true);
+  const quickstart = spawnSync(process.execPath, [installedQuickstart], {
+    cwd: consumerDir,
+    encoding: "utf8",
+  });
+  assert.equal(quickstart.status, 0, quickstart.stderr);
+  const quickstartOutput = JSON.parse(quickstart.stdout);
+  assert.equal(quickstartOutput.ok, true);
+  assert.equal(quickstartOutput.contextHasPreference, true);
+  assert.equal(quickstartOutput.importedSearchHit, true);
+  assert.equal(quickstartOutput.schemaVersion, 1);
+  assert.equal(quickstartOutput.hostLevel, "L4");
   console.log("[gmos-consumer] install smoke passed");
 } finally {
   rmSync(tmp, { recursive: true, force: true });
