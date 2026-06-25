@@ -123,6 +123,23 @@ try {
       const installedPackage = JSON.parse(
         readFileSync(path.join(process.cwd(), "node_modules", "@ghast", "memory", "package.json"), "utf8"),
       );
+      assert.equal(installedPackage.types, "./dist/index.d.ts");
+      const expectedExportTypes = {
+        ".": "./dist/index.d.ts",
+        "./store/sqlite": "./dist/store/sqlite/index.d.ts",
+        "./gym": "./dist/gym/index.d.ts",
+        "./mcp": "./dist/mcp/index.d.ts",
+        "./http": "./dist/http/index.d.ts",
+        "./diagnostics": "./dist/diagnostics/index.d.ts",
+        "./evolution": "./dist/evolution/index.d.ts",
+        "./host": "./dist/host/index.d.ts",
+      };
+      for (const [subpath, typePath] of Object.entries(expectedExportTypes)) {
+        const exportEntry = installedPackage.exports[subpath];
+        assert.equal(exportEntry.types, typePath);
+        assert.equal(exportEntry.import.endsWith(".js"), true);
+        assert.equal(exportEntry.default, exportEntry.import);
+      }
       const memoryGym = await runMemoryGym({ generatedSeeds: 1 });
       assert.equal(memoryGym.pass, true);
       assert.equal(memoryGym.runManifest.package.name, installedPackage.name);
@@ -201,7 +218,23 @@ try {
         type MemoryStatusReport,
       } from "@ghast/memory/diagnostics";
       import { createEvolutionControlPlane } from "@ghast/memory/evolution";
+      import {
+        runHostCompatibilityGym,
+        runMemoryGym,
+        type HostCompatibilityGymResult,
+        type MemoryGymResult,
+      } from "@ghast/memory/gym";
+      import {
+        createPresetHostAdapter,
+        type HostAdapter,
+        type HostCompatibilityReport,
+      } from "@ghast/memory/host";
       import { createMemoryHttpServer } from "@ghast/memory/http";
+      import {
+        createMemoryMcpServer,
+        type MemoryMcpServer,
+        type MemoryMcpToolName,
+      } from "@ghast/memory/mcp";
       import {
         createSqliteMemoryStore,
         type SqliteMemoryStore,
@@ -224,6 +257,20 @@ try {
       const evolution = createEvolutionControlPlane({ store: sqliteStore, profileId: "consumer-types" });
       const evolutionMode: "report_only" = evolution.mode;
       if (evolutionMode !== "report_only") throw new Error("unexpected evolution mode");
+      const gymResult: MemoryGymResult = await runMemoryGym({ generatedSeeds: 1 });
+      if (!gymResult.pass) throw new Error("typed gym result failed");
+      const hostAdapter: HostAdapter = createPresetHostAdapter("ghast");
+      const hostCompatibility: HostCompatibilityReport = hostAdapter.compatibility;
+      if (hostCompatibility.level !== "L4") throw new Error("unexpected typed host compatibility");
+      const hostGymResult: HostCompatibilityGymResult = await runHostCompatibilityGym({
+        hosts: ["ghast"],
+      });
+      if (!hostGymResult.pass) throw new Error("typed host gym failed");
+      const mcpServer: MemoryMcpServer = createMemoryMcpServer(memory);
+      const prepareToolName: MemoryMcpToolName = "memory.prepare_context";
+      if (!mcpServer.listTools().some((tool) => tool.name === prepareToolName)) {
+        throw new Error("typed mcp tool missing");
+      }
       const status: MemoryStatusReport = await createMemoryStatusReport({
         store: sqliteStore,
         profileId: "consumer-types",

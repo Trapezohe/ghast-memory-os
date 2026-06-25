@@ -1,6 +1,6 @@
 {
   "name": "@ghast/memory",
-  "version": "0.1.0-alpha.14",
+  "version": "0.1.0-alpha.15",
   "description": "Ghast Memory OS: a local-first actionable user-world memory runtime for AI agents.",
   "type": "module",
   "license": "Apache-2.0",
@@ -23,6 +23,7 @@
     "memory-benchmark"
   ],
   "sideEffects": false,
+  "types": "./dist/index.d.ts",
   "bin": {
     "gmos": "dist/cli/gmos.js",
     "ghast-memory": "dist/cli/gmos.js"
@@ -36,14 +37,46 @@
     "access": "public"
   },
   "exports": {
-    ".": "./dist/index.js",
-    "./store/sqlite": "./dist/store/sqlite/index.js",
-    "./gym": "./dist/gym/index.js",
-    "./mcp": "./dist/mcp/index.js",
-    "./http": "./dist/http/index.js",
-    "./diagnostics": "./dist/diagnostics/index.js",
-    "./evolution": "./dist/evolution/index.js",
-    "./host": "./dist/host/index.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./store/sqlite": {
+      "types": "./dist/store/sqlite/index.d.ts",
+      "import": "./dist/store/sqlite/index.js",
+      "default": "./dist/store/sqlite/index.js"
+    },
+    "./gym": {
+      "types": "./dist/gym/index.d.ts",
+      "import": "./dist/gym/index.js",
+      "default": "./dist/gym/index.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp/index.d.ts",
+      "import": "./dist/mcp/index.js",
+      "default": "./dist/mcp/index.js"
+    },
+    "./http": {
+      "types": "./dist/http/index.d.ts",
+      "import": "./dist/http/index.js",
+      "default": "./dist/http/index.js"
+    },
+    "./diagnostics": {
+      "types": "./dist/diagnostics/index.d.ts",
+      "import": "./dist/diagnostics/index.js",
+      "default": "./dist/diagnostics/index.js"
+    },
+    "./evolution": {
+      "types": "./dist/evolution/index.d.ts",
+      "import": "./dist/evolution/index.js",
+      "default": "./dist/evolution/index.js"
+    },
+    "./host": {
+      "types": "./dist/host/index.d.ts",
+      "import": "./dist/host/index.js",
+      "default": "./dist/host/index.js"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
