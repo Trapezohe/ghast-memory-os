@@ -13,6 +13,7 @@ import {
   createPresetHostAdapter,
   type HostPreset,
 } from "../host/index.js";
+import { createMemoryMcpServer, listMemoryMcpTools } from "../mcp/index.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 
 function value(name: string, fallback?: string): string | undefined {
@@ -34,6 +35,8 @@ Usage:
   gmos prepare --db ./gmos.db --profile local --text "你知道我什么偏好吗？"
   gmos forget --db ./gmos.db --profile local --query "Moonbase"
   gmos explain --db ./gmos.db --profile local --id memory_xxx
+  gmos mcp tools
+  gmos mcp call --db ./gmos.db --tool memory.prepare_context --input '{"text":"你知道我什么偏好吗？"}'
   gmos gym run --db :memory: --format markdown --report-file ./memory-gym.md
   gmos gym scale --sizes 100,1000
 `);
@@ -86,6 +89,17 @@ function hostReport(preset: HostPreset | undefined) {
   return createPresetHostAdapter(preset).compatibility;
 }
 
+function parseJsonInput(raw: string | undefined): unknown {
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw new Error(
+      `--input must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 async function createRuntime() {
   const dbPath = value("--db", "./gmos.db")!;
   const profileId = value("--profile", "default")!;
@@ -108,6 +122,11 @@ async function main(): Promise<void> {
     const sizes = parsePositiveIntegerList(value("--sizes", "100,1000") ?? "100,1000", "--sizes");
     const report = await runMemoryScaleBenchmark({ sizes });
     printReport(report, renderMemoryScaleMarkdown(report));
+    return;
+  }
+
+  if (command === "mcp" && subcommand === "tools") {
+    console.log(JSON.stringify({ tools: listMemoryMcpTools() }, null, 2));
     return;
   }
 
@@ -177,6 +196,16 @@ async function main(): Promise<void> {
       const id = value("--id");
       if (!id) usage();
       console.log(JSON.stringify(await memory.explain(id, profileId), null, 2));
+      return;
+    }
+
+    if (command === "mcp" && subcommand === "call") {
+      const tool = value("--tool");
+      if (!tool) usage();
+      const server = createMemoryMcpServer(memory);
+      const result = await server.callTool(tool, parseJsonInput(value("--input")));
+      console.log(JSON.stringify(result, null, 2));
+      if (result.isError) process.exitCode = 1;
       return;
     }
 

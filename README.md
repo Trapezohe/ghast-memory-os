@@ -38,6 +38,7 @@ const prepared = await memory.prepareTurn({
   forgetting, and do-not-push action policies.
 - Built-in deterministic Memory Gym smoke benchmark.
 - Host compatibility reports for Ghast, MCP, search-only, and mock L3 adapters.
+- In-process MCP-style tool router for host/agent runtime adapters.
 - CLI: `gmos`.
 
 ## CLI
@@ -50,10 +51,33 @@ node dist/cli/gmos.js init --db ./gmos.db
 node dist/cli/gmos.js doctor --db ./gmos.db --host ghast
 node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "我喜欢简洁的中文回答。"
 node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
+node dist/cli/gmos.js mcp tools
+node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.prepare_context --input '{"text":"你之后怎么回答我？"}'
 node dist/cli/gmos.js gym run --db :memory:
 node dist/cli/gmos.js gym run --format markdown --report-file ./memory-gym.md
 node dist/cli/gmos.js gym scale --sizes 100,1000
 ```
+
+## MCP-Style Tools
+
+The alpha SDK exposes a protocol-neutral tool router through
+`@ghast/memory/mcp`. It is intentionally in-process first: hosts can mount the
+same tools behind MCP stdio, HTTP, Electron IPC, or another agent runtime
+without changing the memory core.
+
+```ts
+import { createMemoryMcpServer } from "@ghast/memory/mcp";
+
+const server = createMemoryMcpServer(memory);
+const result = await server.callTool("memory.prepare_context", {
+  text: "你知道我什么偏好吗？",
+  includeEvidence: true,
+});
+```
+
+Current tools are `memory.observe`, `memory.prepare_context`,
+`memory.commit_outcome`, `memory.record_feedback`, `memory.forget`, and
+`memory.explain_belief`.
 
 ## Trust Contract
 

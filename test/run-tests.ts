@@ -16,6 +16,7 @@ import {
   classifyHostCompatibility,
   createPresetHostAdapter,
 } from "../src/host/index.js";
+import { createMemoryMcpServer, listMemoryMcpTools } from "../src/mcp/index.js";
 import { createEvolutionControlPlane } from "../src/evolution/index.js";
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-sdk-test-"));
@@ -121,6 +122,103 @@ assert.deepEqual(createEvolutionControlPlane(), {
   autoRollout: false,
 });
 
+const mcpServer = createMemoryMcpServer(memory);
+assert.equal(mcpServer.status, "ready");
+assert.deepEqual(
+  mcpServer.listTools().map((tool) => tool.name),
+  listMemoryMcpTools().map((tool) => tool.name),
+);
+assert.ok(mcpServer.listTools().every((tool) => tool.inputSchema.type === "object"));
+const mcpInvalidBefore = await store.rowCounts();
+const invalidMcpObserve = await mcpServer.callTool("memory.observe", { content: 42 });
+assert.equal(invalidMcpObserve.isError, true);
+assert.deepEqual(await store.rowCounts(), mcpInvalidBefore);
+const mcpObserve = await mcpServer.callTool("memory.observe", {
+  profileId: "mcp",
+  conversationId: "conv_mcp",
+  messageId: "msg_mcp_1",
+  role: "user",
+  content: "我的代码方案沟通偏好是先讲风险。",
+  createdAt: "2026-06-25T00:03:00.000Z",
+});
+assert.equal((mcpObserve.structuredContent as { ok?: boolean }).ok, true);
+const mcpPrepared = await mcpServer.callTool("memory.prepare_context", {
+  profileId: "mcp",
+  text: "代码方案沟通偏好",
+  includeEvidence: true,
+});
+const mcpPreparedPayload = mcpPrepared.structuredContent as {
+  ok?: boolean;
+  prepared?: {
+    contextBlock: string;
+    evidence: unknown[];
+    memories: Array<{ id: string }>;
+  };
+};
+assert.equal(mcpPreparedPayload.ok, true);
+assert.match(mcpPreparedPayload.prepared?.contextBlock ?? "", /先讲风险/);
+assert.equal(mcpPreparedPayload.prepared?.evidence.length, 1);
+const mcpMemoryId = mcpPreparedPayload.prepared?.memories[0]?.id;
+assert.equal(typeof mcpMemoryId, "string");
+const mcpExplanation = await mcpServer.callTool("memory.explain_belief", {
+  profileId: "mcp",
+  id: mcpMemoryId,
+});
+assert.match(JSON.stringify(mcpExplanation.structuredContent), /先讲风险/);
+await mcpServer.callTool("memory.observe", {
+  profileId: "mcp",
+  role: "user",
+  content: "secret key: sk-mcp-secret-1234567890 不要泄漏",
+});
+const mcpSecretPrepared = await mcpServer.callTool("memory.prepare_context", {
+  profileId: "mcp",
+  text: "secret key 是什么？",
+  includeEvidence: true,
+});
+assert.equal(JSON.stringify(mcpSecretPrepared.structuredContent).includes("sk-mcp-secret"), false);
+await mcpServer.callTool("memory.observe", {
+  profileId: "mcp",
+  role: "user",
+  content: "我的 SSN 是 123-45-6789，不要再提醒。",
+});
+const mcpSensitivePrepared = await mcpServer.callTool("memory.prepare_context", {
+  profileId: "mcp",
+  text: "SSN 提醒",
+  includeEvidence: true,
+});
+assert.equal(JSON.stringify(mcpSensitivePrepared.structuredContent).includes("123-45-6789"), false);
+const mcpSensitiveOverride = await mcpServer.callTool("memory.prepare_context", {
+  profileId: "mcp",
+  text: "SSN 提醒",
+  includeSensitive: true,
+});
+assert.equal(mcpSensitiveOverride.isError, true);
+assert.equal(JSON.stringify(mcpSensitiveOverride.structuredContent).includes("123-45-6789"), false);
+const mcpForget = await mcpServer.callTool("memory.forget", {
+  profileId: "mcp",
+  query: "先讲风险",
+  reason: "test cleanup",
+});
+assert.match(JSON.stringify(mcpForget.structuredContent), /archivedMemoryIds/);
+const mcpAfterForget = await mcpServer.callTool("memory.prepare_context", {
+  profileId: "mcp",
+  text: "代码方案沟通偏好",
+});
+assert.equal(JSON.stringify(mcpAfterForget.structuredContent).includes("先讲风险"), false);
+await mcpServer.callTool("memory.record_feedback", {
+  profileId: "mcp",
+  content: "刚才错误召回了已删除偏好",
+  failureKind: "wrong_recall",
+});
+await mcpServer.callTool("memory.commit_outcome", {
+  profileId: "mcp",
+  objective: "verify mcp server",
+  status: "failed",
+  summary: "mcp fixture failure",
+});
+const mcpCounts = await store.rowCounts();
+assert.ok(mcpCounts.gmos_failure_events >= 3);
+
 await memory.close();
 const gym = await runMemoryGym();
 assert.equal(gym.pass, true, gym.details.join("\n"));
@@ -165,6 +263,101 @@ for (const [host, expectedLevel] of [
   assert.equal(doctorJson.hostCompatibility?.level, expectedLevel);
   if (host === "ghast") assert.deepEqual(doctorJson.hostCompatibility?.gaps, []);
 }
+const cliMcpTools = spawnSync(
+  process.execPath,
+  ["--import", "tsx", "src/cli/gmos.ts", "mcp", "tools"],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliMcpTools.status, 0, cliMcpTools.stderr);
+assert.ok(
+  (JSON.parse(cliMcpTools.stdout) as { tools: Array<{ name: string }> }).tools.some(
+    (tool) => tool.name === "memory.prepare_context",
+  ),
+);
+const mcpCliDb = path.join(tmp, "mcp-cli.db");
+const cliMcpObserve = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "mcp",
+    "call",
+    "--db",
+    mcpCliDb,
+    "--profile",
+    "cli_mcp",
+    "--tool",
+    "memory.observe",
+    "--input",
+    JSON.stringify({ content: "我偏好提交前先跑完整测试。", role: "user" }),
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliMcpObserve.status, 0, cliMcpObserve.stderr);
+const cliMcpPrepare = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "mcp",
+    "call",
+    "--db",
+    mcpCliDb,
+    "--profile",
+    "cli_mcp",
+    "--tool",
+    "memory.prepare_context",
+    "--input",
+    JSON.stringify({ text: "提交前应该注意什么？" }),
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliMcpPrepare.status, 0, cliMcpPrepare.stderr);
+assert.match(cliMcpPrepare.stdout, /完整测试/);
+const cliMcpInvalid = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "mcp",
+    "call",
+    "--db",
+    mcpCliDb,
+    "--profile",
+    "cli_mcp",
+    "--tool",
+    "memory.observe",
+    "--input",
+    "{bad-json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliMcpInvalid.status, 0);
+assert.match(cliMcpInvalid.stderr, /--input must be valid JSON/);
+const cliMcpUnknownTool = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "mcp",
+    "call",
+    "--db",
+    mcpCliDb,
+    "--profile",
+    "cli_mcp",
+    "--tool",
+    "memory.unknown",
+    "--input",
+    "{}",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliMcpUnknownTool.status, 0);
+assert.match(cliMcpUnknownTool.stdout, /Unknown gmOS MCP tool/);
 const invalidHostDb = path.join(tmp, "doctor-invalid.db");
 const invalidHost = spawnSync(
   process.execPath,
