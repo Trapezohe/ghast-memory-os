@@ -8,6 +8,12 @@ const root = path.resolve(import.meta.dirname, "..");
 const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-consumer-smoke-"));
 const packDir = path.join(tmp, "pack");
 const consumerDir = path.join(tmp, "consumer");
+const isWindows = process.platform === "win32";
+const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
+
+function needsWindowsCommandShell(command) {
+  return isWindows && /\.cmd$/iu.test(command);
+}
 
 function run(command, args, options = {}) {
   return execFileSync(command, args, {
@@ -15,13 +21,21 @@ function run(command, args, options = {}) {
     encoding: "utf8",
     stdio: options.stdio ?? "pipe",
     env: { ...process.env, npm_config_cache: path.join(tmp, "npm-cache"), ...options.env },
+    shell: options.shell ?? needsWindowsCommandShell(command),
+  });
+}
+
+function spawnCommand(command, args, options = {}) {
+  return spawnSync(command, args, {
+    ...options,
+    shell: options.shell ?? needsWindowsCommandShell(command),
   });
 }
 
 try {
   mkdirSync(packDir, { recursive: true });
   mkdirSync(consumerDir, { recursive: true });
-  const packOutput = run("npm", ["pack", "--pack-destination", packDir]);
+  const packOutput = run(npmBin, ["pack", "--pack-destination", packDir]);
   const tarball = packOutput.trim().split(/\s+/u).at(-1);
   assert.ok(tarball?.endsWith(".tgz"));
   const tarballPath = path.join(packDir, tarball);
@@ -31,7 +45,7 @@ try {
     path.join(consumerDir, "package.json"),
     JSON.stringify({ name: "host-app-should-not-leak", type: "module", private: true }, null, 2),
   );
-  run("npm", ["install", tarballPath], { cwd: consumerDir, stdio: "pipe" });
+  run(npmBin, ["install", tarballPath], { cwd: consumerDir, stdio: "pipe" });
 
   const consumerScript = path.join(consumerDir, "consumer-smoke.mjs");
   writeFileSync(
@@ -246,7 +260,7 @@ try {
     process.platform === "win32" ? "gmos.cmd" : "gmos",
   );
   assert.equal(existsSync(gmosBin), true);
-  const bin = spawnSync(
+  const bin = spawnCommand(
     gmosBin,
     ["doctor", "--db", path.join(consumerDir, "doctor.db"), "--host", "ghast"],
     { cwd: consumerDir, encoding: "utf8" },
@@ -257,7 +271,7 @@ try {
   assert.equal(doctor.schema.dialect, "sqlite");
   assert.equal(doctor.schema.version, 1);
   assert.equal(doctor.hostCompatibility.level, "L4");
-  const addBin = spawnSync(
+  const addBin = spawnCommand(
     gmosBin,
     [
       "add",
@@ -273,7 +287,7 @@ try {
     { cwd: consumerDir, encoding: "utf8" },
   );
   assert.equal(addBin.status, 0, addBin.stderr);
-  const searchBin = spawnSync(
+  const searchBin = spawnCommand(
     gmosBin,
     [
       "search",
@@ -288,7 +302,7 @@ try {
   );
   assert.equal(searchBin.status, 0, searchBin.stderr);
   assert.match(searchBin.stdout, /Installed bin low-level add prefers stable manifests/);
-  const statusBin = spawnSync(
+  const statusBin = spawnCommand(
     gmosBin,
     [
       "status",
@@ -307,10 +321,10 @@ try {
   const status = JSON.parse(statusBin.stdout);
   assert.equal(status.storage.schemaVersion, 1);
   assert.equal(status.hostCompatibility.level, "L4");
-  const helpBin = spawnSync(gmosBin, ["--help"], { cwd: consumerDir, encoding: "utf8" });
+  const helpBin = spawnCommand(gmosBin, ["--help"], { cwd: consumerDir, encoding: "utf8" });
   assert.equal(helpBin.status, 1);
   assert.match(helpBin.stdout, /gmos http serve/);
-  const hostGymBin = spawnSync(
+  const hostGymBin = spawnCommand(
     gmosBin,
     ["gym", "host", "--hosts", "ghast,mcp", "--format", "json"],
     { cwd: consumerDir, encoding: "utf8" },

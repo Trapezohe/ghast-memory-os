@@ -83,11 +83,19 @@ node dist/cli/gmos.js gym host --hosts ghast,mcp,mock_l3,search_only --format ma
 ```bash
 npm run check
 npm run test:consumer
+node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3 --format json
+node dist/cli/gmos.js gym scale --sizes 100,1000 --threshold-p95-ms 250 --format json
+npm pack --dry-run
 ```
 
 `test:consumer` packs the SDK, installs it into a temporary external project,
 then verifies package exports, plaintext SQLite use, the MCP-style router, MCP
-stdio server wiring, and the `gmos` CLI from the installed package.
+stdio server wiring, the HTTP adapter export, and the `gmos` CLI from the
+installed package.
+
+The GitHub Actions CI runs these gates on Linux, macOS, and Windows with Node
+20.19 and Node 24. The benchmark jobs are deterministic SDK gates; they do not
+call an external LLM.
 
 `gym run` is the deterministic SDK benchmark. It reports hard gates, coverage
 layers, a generalization view, roadmap suggestions, and a run manifest. It does

@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Node ${{ matrix.node-version }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+        node-version:
+          - "20.19"
+          - "24"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Check
+        run: npm run check
+
+      - name: Consumer install smoke
+        run: npm run test:consumer
+
+      - name: Memory Gym
+        run: "node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3 --format json"
+
+      - name: Scale smoke
+        run: "node dist/cli/gmos.js gym scale --sizes 100,1000 --threshold-p95-ms 250 --format json"
+
+      - name: Pack dry run
+        run: npm pack --dry-run
