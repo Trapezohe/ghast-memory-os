@@ -20,6 +20,7 @@ import {
   loadHostMemorySnapshotsIntoStore,
   normalizeHostMemoryKind,
   normalizeHostMemorySensitivity,
+  syncHostMemorySnapshotsIntoStore,
 } from "../src/host/index.js";
 import { createMemoryMcpServer, listMemoryMcpTools } from "../src/mcp/index.js";
 import { createEvolutionControlPlane } from "../src/evolution/index.js";
@@ -243,6 +244,154 @@ const crossProfilePrepared = await memory.prepareTurn({
 });
 assert.match(crossProfilePrepared.contextBlock, /isolated profile evidence/);
 assert.ok(crossProfilePrepared.evidence.every((entry) => entry.profileId === "host_import_other"));
+
+const firstHostSync = await syncHostMemorySnapshotsIntoStore({
+  store,
+  profileId: "host_sync",
+  sourceType: "ghast.memory",
+  sourceUriPrefix: "ghast://memory",
+  nowIso: "2026-06-25T00:04:00.000Z",
+  memories: [
+    {
+      id: "sync_pref",
+      content: "我喜欢先讲风险。",
+      kind: "preference",
+      updatedAt: "2026-06-25T00:04:00.000Z",
+    },
+    {
+      id: "sync_boundary",
+      content: "以后不要提醒我 Moonbase 项目延期。",
+      kind: "boundary",
+      updatedAt: "2026-06-25T00:04:00.000Z",
+    },
+  ],
+});
+assert.equal(firstHostSync.loadedCount, 2);
+assert.equal(firstHostSync.reusedCount, 0);
+assert.equal(firstHostSync.archivedCount, 0);
+const firstHostSyncCounts = await store.rowCounts();
+const changedHostSync = await syncHostMemorySnapshotsIntoStore({
+  store,
+  profileId: "host_sync",
+  sourceType: "ghast.memory",
+  sourceUriPrefix: "ghast://memory",
+  nowIso: "2026-06-25T00:05:00.000Z",
+  memories: [
+    {
+      id: "sync_pref",
+      content: "我现在喜欢先讲结论。",
+      kind: "preference",
+      updatedAt: "2026-06-25T00:05:00.000Z",
+    },
+    {
+      id: "sync_secret",
+      content: "api key: sk-syncsecret1234567890",
+      kind: "fact",
+      updatedAt: "2026-06-25T00:05:00.000Z",
+    },
+  ],
+});
+assert.equal(changedHostSync.loadedCount, 1);
+assert.equal(changedHostSync.reusedCount, 0);
+assert.equal(changedHostSync.skippedCount, 1);
+assert.equal(changedHostSync.archivedCount, 2);
+assert.equal(changedHostSync.archivedMemoryIds.length, 2);
+const afterChangedHostSync = await memory.prepareTurn({
+  profileId: "host_sync",
+  messages: [{ role: "user", content: "风险 结论 Moonbase" }],
+  includeEvidence: true,
+});
+assert.match(afterChangedHostSync.contextBlock, /先讲结论/);
+assert.equal(afterChangedHostSync.contextBlock.includes("先讲风险"), false);
+assert.equal(afterChangedHostSync.contextBlock.includes("Moonbase"), false);
+assert.equal(afterChangedHostSync.contextBlock.includes("sk-syncsecret"), false);
+const repeatedHostSync = await syncHostMemorySnapshotsIntoStore({
+  store,
+  profileId: "host_sync",
+  sourceType: "ghast.memory",
+  sourceUriPrefix: "ghast://memory",
+  nowIso: "2026-06-25T00:05:00.000Z",
+  memories: [
+    {
+      id: "sync_pref",
+      content: "我现在喜欢先讲结论。",
+      kind: "preference",
+      updatedAt: "2026-06-25T00:05:00.000Z",
+    },
+  ],
+});
+assert.equal(repeatedHostSync.loadedCount, 1);
+assert.equal(repeatedHostSync.reusedCount, 1);
+assert.equal(repeatedHostSync.archivedCount, 0);
+assert.equal((await store.rowCounts()).gmos_memories, firstHostSyncCounts.gmos_memories + 1);
+const hashFallbackSyncA = await syncHostMemorySnapshotsIntoStore({
+  store,
+  profileId: "host_sync_hash",
+  sourceType: "ghast.memory",
+  sourceUriPrefix: "ghast://memory",
+  nowIso: "2026-06-25T00:06:00.000Z",
+  memories: [
+    {
+      id: "sync_without_updated_at",
+      content: "old host snapshot content",
+      kind: "preference",
+    },
+  ],
+});
+assert.equal(hashFallbackSyncA.loadedCount, 1);
+assert.equal(hashFallbackSyncA.archivedCount, 0);
+const hashFallbackSyncB = await syncHostMemorySnapshotsIntoStore({
+  store,
+  profileId: "host_sync_hash",
+  sourceType: "ghast.memory",
+  sourceUriPrefix: "ghast://memory",
+  nowIso: "2026-06-25T00:07:00.000Z",
+  memories: [
+    {
+      id: "sync_without_updated_at",
+      content: "new host snapshot content",
+      kind: "preference",
+    },
+  ],
+});
+assert.equal(hashFallbackSyncB.loadedCount, 1);
+assert.equal(hashFallbackSyncB.reusedCount, 0);
+assert.equal(hashFallbackSyncB.archivedCount, 1);
+const hashFallbackPrepared = await memory.prepareTurn({
+  profileId: "host_sync_hash",
+  messages: [{ role: "user", content: "host snapshot content" }],
+});
+assert.match(hashFallbackPrepared.contextBlock, /new host snapshot content/);
+assert.equal(hashFallbackPrepared.contextBlock.includes("old host snapshot content"), false);
+const wildcardSourceA = await syncHostMemorySnapshotsIntoStore({
+  store,
+  profileId: "host_sync_source_type",
+  sourceType: "fooXbar",
+  sourceUriPrefix: "host://fooXbar",
+  nowIso: "2026-06-25T00:08:00.000Z",
+  memories: [
+    {
+      id: "source_type_guard",
+      content: "wildcard source should remain active",
+      kind: "preference",
+    },
+  ],
+});
+assert.equal(wildcardSourceA.loadedCount, 1);
+const wildcardSourceB = await syncHostMemorySnapshotsIntoStore({
+  store,
+  profileId: "host_sync_source_type",
+  sourceType: "foo_bar",
+  sourceUriPrefix: "host://foo_bar",
+  nowIso: "2026-06-25T00:09:00.000Z",
+  memories: [],
+});
+assert.equal(wildcardSourceB.archivedCount, 0);
+const wildcardPrepared = await memory.prepareTurn({
+  profileId: "host_sync_source_type",
+  messages: [{ role: "user", content: "wildcard source active" }],
+});
+assert.match(wildcardPrepared.contextBlock, /wildcard source should remain active/);
 
 const mcpServer = createMemoryMcpServer(memory);
 assert.equal(mcpServer.status, "ready");

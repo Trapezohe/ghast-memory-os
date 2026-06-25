@@ -5,6 +5,7 @@ import type {
   ActionPolicy,
   AddMemoryInput,
   AddWorldBeliefInput,
+  ArchiveStaleHostImportsInput,
   EvidenceEvent,
   ForgetInput,
   ForgetResult,
@@ -265,6 +266,36 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Memo
     return row ? normalizeMemory(row) : null;
   }
 
+  function archiveStaleHostImports(input: ArchiveStaleHostImportsInput): string[] {
+    initialize();
+    const archivedAt = input.archivedAt ?? nowIso();
+    const activeKeys = [...new Set(input.activeImportKeys)];
+    const activeKeyClause =
+      activeKeys.length > 0
+        ? `AND json_extract(metadata_json, '$.hostImportKey') NOT IN (${activeKeys.map(() => "?").join(", ")})`
+        : "";
+    const candidates = db
+      .prepare(
+        `SELECT id FROM gmos_memories
+         WHERE profile_id = ?
+           AND status = 'active'
+           AND json_extract(metadata_json, '$.hostSnapshotImport') = 1
+           AND json_extract(metadata_json, '$.hostImportSourceType') = ?
+           ${activeKeyClause}`,
+      )
+      .all(input.profileId, input.sourceType, ...activeKeys) as Array<{ id: string }>;
+    const ids = candidates.map((row) => row.id);
+    if (ids.length === 0) return [];
+    const stmt = db.prepare(
+      "UPDATE gmos_memories SET status = 'archived', updated_at = ? WHERE id = ?",
+    );
+    const tx = db.transaction((memoryIds: string[]) => {
+      for (const memoryId of memoryIds) stmt.run(archivedAt, memoryId);
+    });
+    tx(ids);
+    return ids;
+  }
+
   function listActionPolicies(
     profileId: string,
     options: { includeSensitive?: boolean | undefined } = {},
@@ -402,6 +433,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Memo
     searchMemories,
     getMemoryById,
     findActiveMemoryByMetadata,
+    archiveStaleHostImports,
     listActionPolicies,
     listEvidenceForMemory,
     forget,

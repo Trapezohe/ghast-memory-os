@@ -40,6 +40,8 @@ const prepared = await memory.prepareTurn({
 - Host compatibility reports for Ghast, MCP, search-only, and mock L3 adapters.
 - Host memory snapshot import for adapters that need to project an existing
   memory store into gmOS.
+- Host memory snapshot sync for adapters that need stale imported memories
+  archived when the host source changes.
 - In-process MCP-style tool router for host/agent runtime adapters.
 - CLI: `gmos`.
 
@@ -135,6 +137,33 @@ Host adapters can also import existing memory snapshots through
 defaults to skipping `person` and `secret_like` snapshots before they enter the
 gmOS store. It requires a store that implements
 `findActiveMemoryByMetadata()` so repeated snapshot imports are idempotent.
+
+Use `syncHostMemorySnapshotsIntoStore()` when the host is sending a full
+current snapshot and stale mirror entries should be archived:
+
+```ts
+import { syncHostMemorySnapshotsIntoStore } from "@ghast/memory/host";
+
+await syncHostMemorySnapshotsIntoStore({
+  store,
+  profileId: "local-user",
+  sourceType: "ghast.memory",
+  sourceUriPrefix: "ghast://memory",
+  memories: [
+    {
+      id: "host-memory-1",
+      content: "我喜欢先讲风险。",
+      kind: "preference",
+      updatedAt: new Date().toISOString(),
+    },
+  ],
+});
+```
+
+`loadHostMemorySnapshotsIntoStore()` is append/reuse import.
+`syncHostMemorySnapshotsIntoStore()` is import plus stale host-import archive.
+Use sync only when the snapshot list represents the host's complete active
+memory set for that `profileId` and `sourceType`.
 
 ## Status
 

@@ -240,6 +240,13 @@ export interface TaskTrajectoryInput {
   createdAt?: string | undefined;
 }
 
+export interface ArchiveStaleHostImportsInput {
+  profileId: string;
+  sourceType: string;
+  activeImportKeys: string[];
+  archivedAt?: string | undefined;
+}
+
 export interface MemoryStore {
   initialize(): Promise<void> | void;
   close(): Promise<void> | void;
@@ -260,6 +267,9 @@ export interface MemoryStore {
     key: string,
     value: string,
   ): Promise<MemoryRecord | null> | MemoryRecord | null;
+  archiveStaleHostImports?(
+    input: ArchiveStaleHostImportsInput,
+  ): Promise<string[]> | string[];
   listActionPolicies(
     profileId: string,
     options?: { includeSensitive?: boolean | undefined },

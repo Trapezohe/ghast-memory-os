@@ -4,12 +4,14 @@ export {
   loadHostMemorySnapshotsIntoStore,
   normalizeHostMemoryKind,
   normalizeHostMemorySensitivity,
+  syncHostMemorySnapshotsIntoStore,
 } from "./snapshot-import.js";
 export type {
   HostMemorySnapshot,
   HostMemorySnapshotImportInput,
   HostMemorySnapshotImportReport,
   HostMemorySnapshotSkip,
+  HostMemorySnapshotSyncReport,
 } from "./snapshot-import.js";
 
 export interface HostCapabilities {
