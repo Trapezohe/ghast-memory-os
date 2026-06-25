@@ -50,7 +50,8 @@
     "test": "node --import tsx test/run-tests.ts",
     "test:consumer": "node test/consumer-install-smoke.mjs",
     "examples:quickstart": "node examples/quickstart.mjs",
-    "check": "npm run build && npm test && npm run examples:quickstart",
+    "examples:host-adapter": "node examples/host-adapter.mjs",
+    "check": "npm run build && npm test && npm run examples:quickstart && npm run examples:host-adapter",
     "prepare": "npm run build",
     "prepack": "npm run build",
     "gym": "node --import tsx src/cli/gmos.ts gym run --db :memory:"

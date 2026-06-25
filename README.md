@@ -106,15 +106,22 @@ capability.
 
 ## Examples
 
-Run the quickstart after installing dependencies:
+Run the examples after installing dependencies:
 
 ```bash
 npm run examples:quickstart
+npm run examples:host-adapter
 ```
 
-The example creates a temporary plaintext SQLite store, observes a user
+`examples/quickstart.mjs` creates a temporary plaintext SQLite store, observes a user
 preference, prepares memory context, exercises low-level `add/search`, prints a
 content-free diagnostics summary, and removes the temporary database.
+
+`examples/host-adapter.mjs` shows the host migration path: project an existing
+host memory snapshot into gmOS, skip secret-like and person-routed memories,
+prepare evidence-aware context, and archive stale imported memories on the next
+sync. Use this path when the host already has a memory table and needs gmOS as
+the context/action runtime without replacing storage in one step.
 
 ## Low-Level Compatibility APIs
 

@@ -359,6 +359,27 @@ try {
   assert.equal(quickstartOutput.importedSearchHit, true);
   assert.equal(quickstartOutput.schemaVersion, 1);
   assert.equal(quickstartOutput.hostLevel, "L4");
+  const installedHostAdapterExample = path.join(
+    consumerDir,
+    "node_modules",
+    "@ghast",
+    "memory",
+    "examples",
+    "host-adapter.mjs",
+  );
+  assert.equal(existsSync(installedHostAdapterExample), true);
+  const hostAdapterExample = spawnSync(process.execPath, [installedHostAdapterExample], {
+    cwd: consumerDir,
+    encoding: "utf8",
+  });
+  assert.equal(hostAdapterExample.status, 0, hostAdapterExample.stderr);
+  const hostAdapterOutput = JSON.parse(hostAdapterExample.stdout);
+  assert.equal(hostAdapterOutput.ok, true);
+  assert.equal(hostAdapterOutput.compatibilityLevel, "L3");
+  assert.equal(hostAdapterOutput.firstSync.loadedCount, 2);
+  assert.equal(hostAdapterOutput.firstSync.skippedCount, 2);
+  assert.equal(hostAdapterOutput.prepared.contextHasBoundary, true);
+  assert.equal(hostAdapterOutput.secondSync.archivedCount, 1);
   console.log("[gmos-consumer] install smoke passed");
 } finally {
   rmSync(tmp, { recursive: true, force: true });
