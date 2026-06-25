@@ -1,5 +1,16 @@
 export type HostCompatibilityLevel = "L0" | "L1" | "L2" | "L3" | "L4";
 export type HostPreset = "ghast" | "mcp" | "search_only" | "mock_l3";
+export {
+  loadHostMemorySnapshotsIntoStore,
+  normalizeHostMemoryKind,
+  normalizeHostMemorySensitivity,
+} from "./snapshot-import.js";
+export type {
+  HostMemorySnapshot,
+  HostMemorySnapshotImportInput,
+  HostMemorySnapshotImportReport,
+  HostMemorySnapshotSkip,
+} from "./snapshot-import.js";
 
 export interface HostCapabilities {
   canObserveConversation: boolean;

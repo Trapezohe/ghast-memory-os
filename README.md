@@ -38,6 +38,8 @@ const prepared = await memory.prepareTurn({
   forgetting, and do-not-push action policies.
 - Built-in deterministic Memory Gym smoke benchmark.
 - Host compatibility reports for Ghast, MCP, search-only, and mock L3 adapters.
+- Host memory snapshot import for adapters that need to project an existing
+  memory store into gmOS.
 - In-process MCP-style tool router for host/agent runtime adapters.
 - CLI: `gmos`.
 
@@ -119,6 +121,12 @@ host must expose the right hooks to preserve full behavior:
 
 Run `gmos doctor --host ghast` to inspect capability gaps and hard-gate
 coverage.
+
+Host adapters can also import existing memory snapshots through
+`loadHostMemorySnapshotsIntoStore()` from `@ghast/memory/host`. The importer
+defaults to skipping `person` and `secret_like` snapshots before they enter the
+gmOS store. It requires a store that implements
+`findActiveMemoryByMetadata()` so repeated snapshot imports are idempotent.
 
 ## Status
 

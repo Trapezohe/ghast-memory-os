@@ -255,6 +255,11 @@ export interface MemoryStore {
       includePerson?: boolean | undefined;
     },
   ): Promise<MemoryRecord | null> | MemoryRecord | null;
+  findActiveMemoryByMetadata?(
+    profileId: string,
+    key: string,
+    value: string,
+  ): Promise<MemoryRecord | null> | MemoryRecord | null;
   listActionPolicies(
     profileId: string,
     options?: { includeSensitive?: boolean | undefined },

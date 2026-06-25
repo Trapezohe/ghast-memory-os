@@ -247,6 +247,24 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Memo
     return memory;
   }
 
+  function findActiveMemoryByMetadata(
+    profileId: string,
+    key: string,
+    value: string,
+  ): MemoryRecord | null {
+    initialize();
+    const row = db
+      .prepare(
+        `SELECT * FROM gmos_memories
+         WHERE profile_id = ? AND status = 'active'
+           AND json_extract(metadata_json, ?) = ?
+         ORDER BY updated_at DESC
+         LIMIT 1`,
+      )
+      .get(profileId, `$.${key}`, value) as Record<string, unknown> | undefined;
+    return row ? normalizeMemory(row) : null;
+  }
+
   function listActionPolicies(
     profileId: string,
     options: { includeSensitive?: boolean | undefined } = {},
@@ -383,6 +401,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Memo
     addWorldBelief,
     searchMemories,
     getMemoryById,
+    findActiveMemoryByMetadata,
     listActionPolicies,
     listEvidenceForMemory,
     forget,

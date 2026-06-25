@@ -15,6 +15,9 @@ import { createSqliteMemoryStore } from "../src/store/sqlite/index.js";
 import {
   classifyHostCompatibility,
   createPresetHostAdapter,
+  loadHostMemorySnapshotsIntoStore,
+  normalizeHostMemoryKind,
+  normalizeHostMemorySensitivity,
 } from "../src/host/index.js";
 import { createMemoryMcpServer, listMemoryMcpTools } from "../src/mcp/index.js";
 import { createEvolutionControlPlane } from "../src/evolution/index.js";
@@ -121,6 +124,123 @@ assert.deepEqual(createEvolutionControlPlane(), {
   autoApply: false,
   autoRollout: false,
 });
+assert.equal(normalizeHostMemoryKind({ content: "PERSON: Alice: likes pizza" }), "person");
+assert.equal(
+  normalizeHostMemoryKind({ content: "PERSON: Alice: likes pizza", kind: "fact" }),
+  "person",
+);
+assert.equal(
+  normalizeHostMemorySensitivity({ content: "api key: sk-hostimportsecret1234567890" }),
+  "secret_like",
+);
+assert.equal(
+  normalizeHostMemorySensitivity({
+    content: "api key: sk-mislabeledsecret1234567890",
+    sensitivity: "normal",
+  }),
+  "secret_like",
+);
+const hostImportReport = await loadHostMemorySnapshotsIntoStore({
+  store,
+  profileId: "host_import",
+  sourceType: "ghast.memory",
+  sourceUriPrefix: "ghast://memory",
+  nowIso: "2026-06-25T00:03:00.000Z",
+  memories: [
+    {
+      id: "host_pref",
+      content: "我喜欢先讲风险的方案。",
+      kind: "preference",
+      confidence: 0.9,
+      metadata: { origin: "fixture", secret: "sk-metadata-shouldnotleak123456" },
+    },
+    {
+      id: "host_boundary",
+      content: "以后不要再提醒我 Beta 项目延期。",
+      kind: "boundary",
+    },
+    {
+      id: "host_secret",
+      content: "api key: sk-hostimportsecret1234567890",
+      kind: "fact",
+    },
+    {
+      id: "host_mislabeled_secret",
+      content: "api key: sk-mislabeledsecret1234567890",
+      kind: "fact",
+      sensitivity: "normal",
+    },
+    {
+      id: "host_person",
+      content: "PERSON: Alice: Alice 喜欢披萨。",
+      kind: "fact",
+    },
+  ],
+});
+assert.equal(hostImportReport.inputCount, 5);
+assert.equal(hostImportReport.loadedCount, 2);
+assert.equal(hostImportReport.reusedCount, 0);
+assert.equal(hostImportReport.skippedCount, 3);
+assert.equal(
+  hostImportReport.skipped.filter((entry) => entry.reason === "secret_like").length,
+  2,
+);
+assert.ok(hostImportReport.skipped.some((entry) => entry.reason === "person_memory"));
+assert.equal(JSON.stringify(hostImportReport).includes("sk-hostimportsecret"), false);
+assert.equal(JSON.stringify(hostImportReport).includes("sk-mislabeledsecret"), false);
+const afterFirstHostImportCounts = await store.rowCounts();
+const repeatedHostImportReport = await loadHostMemorySnapshotsIntoStore({
+  store,
+  profileId: "host_import",
+  sourceType: "ghast.memory",
+  sourceUriPrefix: "ghast://memory",
+  nowIso: "2026-06-25T00:03:00.000Z",
+  memories: [
+    {
+      id: "host_pref",
+      content: "我喜欢先讲风险的方案。",
+      kind: "preference",
+      confidence: 0.9,
+      metadata: { secret: "sk-metadata-shouldnotleak123456" },
+    },
+  ],
+});
+assert.equal(repeatedHostImportReport.loadedCount, 1);
+assert.equal(repeatedHostImportReport.reusedCount, 1);
+assert.deepEqual(await store.rowCounts(), afterFirstHostImportCounts);
+const crossProfileReport = await loadHostMemorySnapshotsIntoStore({
+  store,
+  profileId: "host_import_other",
+  sourceType: "ghast.memory",
+  sourceUriPrefix: "ghast://memory",
+  memories: [
+    {
+      id: "host_pref",
+      content: "I prefer isolated profile evidence.",
+      kind: "preference",
+    },
+  ],
+});
+assert.equal(crossProfileReport.loadedCount, 1);
+assert.equal(crossProfileReport.reusedCount, 0);
+const hostPrepared = await memory.prepareTurn({
+  profileId: "host_import",
+  messages: [{ role: "user", content: "先讲风险 Beta" }],
+  includeEvidence: true,
+});
+assert.match(hostPrepared.contextBlock, /先讲风险/);
+assert.equal(hostPrepared.contextBlock.includes("sk-hostimportsecret"), false);
+assert.equal(hostPrepared.contextBlock.includes("sk-mislabeledsecret"), false);
+assert.equal(hostPrepared.contextBlock.includes("披萨"), false);
+assert.ok(hostPrepared.evidence.some((entry) => entry.sourceType === "ghast.memory"));
+assert.equal(JSON.stringify(hostPrepared.evidence).includes("sk-metadata-shouldnotleak"), false);
+const crossProfilePrepared = await memory.prepareTurn({
+  profileId: "host_import_other",
+  messages: [{ role: "user", content: "isolated profile evidence" }],
+  includeEvidence: true,
+});
+assert.match(crossProfilePrepared.contextBlock, /isolated profile evidence/);
+assert.ok(crossProfilePrepared.evidence.every((entry) => entry.profileId === "host_import_other"));
 
 const mcpServer = createMemoryMcpServer(memory);
 assert.equal(mcpServer.status, "ready");
