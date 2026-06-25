@@ -27,6 +27,7 @@
     "build": "tsc -p tsconfig.json",
     "test": "node --import tsx test/run-tests.ts",
     "check": "npm run build && npm test",
+    "prepare": "npm run build",
     "prepack": "npm run build",
     "gym": "node --import tsx src/cli/gmos.ts gym run --db :memory:"
   },
