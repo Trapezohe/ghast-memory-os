@@ -37,8 +37,8 @@ Usage:
   gmos explain --db ./gmos.db --profile local --id memory_xxx
   gmos mcp tools
   gmos mcp call --db ./gmos.db --tool memory.prepare_context --input '{"text":"你知道我什么偏好吗？"}'
-  gmos gym run --db :memory: --format markdown --report-file ./memory-gym.md
-  gmos gym scale --sizes 100,1000
+  gmos gym run --db :memory: --generated-seeds 3 --format markdown --report-file ./memory-gym.md
+  gmos gym scale --sizes 100,1000 --threshold-p95-ms 250
 `);
   process.exit(1);
 }
@@ -68,6 +68,26 @@ function parsePositiveIntegerList(raw: string, label: string): number[] {
     throw new Error(`${label} requires comma-separated positive integers`);
   }
   return values;
+}
+
+function positiveIntegerOption(name: string, fallback: number): number {
+  const raw = value(name);
+  if (raw === undefined) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return parsed;
+}
+
+function nonNegativeNumberOption(name: string, fallback: number): number {
+  const raw = value(name);
+  if (raw === undefined) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`${name} must be a non-negative number`);
+  }
+  return parsed;
 }
 
 function hostPreset(): HostPreset | undefined {
@@ -113,15 +133,23 @@ async function main(): Promise<void> {
   if (!command || has("--help") || has("-h")) usage();
 
   if (command === "gym" && subcommand === "run") {
-    const report = await runMemoryGym({ dbPath: value("--db", ":memory:") });
+    const report = await runMemoryGym({
+      dbPath: value("--db", ":memory:"),
+      generatedSeeds: positiveIntegerOption("--generated-seeds", 3),
+    });
     printReport(report, renderMemoryGymMarkdown(report));
+    if (!report.pass) process.exitCode = 1;
     return;
   }
 
   if (command === "gym" && subcommand === "scale") {
     const sizes = parsePositiveIntegerList(value("--sizes", "100,1000") ?? "100,1000", "--sizes");
-    const report = await runMemoryScaleBenchmark({ sizes });
+    const report = await runMemoryScaleBenchmark({
+      sizes,
+      thresholdP95Ms: nonNegativeNumberOption("--threshold-p95-ms", 250),
+    });
     printReport(report, renderMemoryScaleMarkdown(report));
+    if (!report.pass) process.exitCode = 1;
     return;
   }
 

@@ -222,7 +222,33 @@ assert.ok(mcpCounts.gmos_failure_events >= 3);
 await memory.close();
 const gym = await runMemoryGym();
 assert.equal(gym.pass, true, gym.details.join("\n"));
-assert.match(renderMemoryGymMarkdown(gym), /gmOS Memory Gym Report/);
+assert.equal(gym.framework, "complete memory system benchmark framework");
+assert.equal(gym.deterministicArchitectureResult.status, "pass");
+assert.equal(gym.agentMemoryUseResult.status, "not_run");
+assert.equal(gym.generalizationResult.status, "pass");
+assert.equal(gym.generalizationResult.generatedSeedCount, 3);
+assert.equal(gym.roadmapResult.status, "clear");
+assert.equal(gym.runManifest.dbPathMode, "memory");
+assert.equal(gym.hardGates.mcp_public_sensitive_rejection, true);
+assert.equal(gym.hardGates.host_adapter_contract, true);
+assert.ok(gym.coverageMatrix.some((row) => row.layer === "Layer 2: MCP / Host Boundary"));
+assert.ok(gym.memoryStackCoverage.some((row) => row.layer === "Safety / Privacy"));
+const renderedGym = renderMemoryGymMarkdown(gym);
+assert.match(renderedGym, /gmOS Memory Gym Report/);
+assert.match(renderedGym, /Coverage Matrix/);
+assert.match(renderedGym, /Run Manifest/);
+const generatedGym = await runMemoryGym({ generatedSeeds: 2 });
+assert.equal(generatedGym.pass, true, generatedGym.details.join("\n"));
+assert.equal(generatedGym.generalizationResult.generatedSeedCount, 2);
+assert.equal(generatedGym.runManifest.generatedSeeds.length, 2);
+await assert.rejects(
+  () => runMemoryGym({ generatedSeeds: 0 }),
+  /generatedSeeds must be a positive integer/,
+);
+await assert.rejects(
+  () => runMemoryGym({ generatedSeeds: [] }),
+  /generatedSeeds must be a positive integer/,
+);
 const scale = await runMemoryScaleBenchmark({ sizes: [10, 50], iterations: 3 });
 assert.equal(scale.pass, true);
 assert.match(renderMemoryScaleMarkdown(scale), /gmOS Memory Scale Benchmark/);
@@ -263,6 +289,42 @@ for (const [host, expectedLevel] of [
   assert.equal(doctorJson.hostCompatibility?.level, expectedLevel);
   if (host === "ghast") assert.deepEqual(doctorJson.hostCompatibility?.gaps, []);
 }
+const cliGymInvalidSeeds = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "run",
+    "--db",
+    ":memory:",
+    "--generated-seeds",
+    "0",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliGymInvalidSeeds.status, 0);
+assert.match(cliGymInvalidSeeds.stderr, /--generated-seeds must be a positive integer/);
+const cliScaleFail = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "scale",
+    "--sizes",
+    "1",
+    "--threshold-p95-ms",
+    "0",
+    "--format",
+    "markdown",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliScaleFail.status, 0);
+assert.match(cliScaleFail.stdout, /Status: FAIL/);
 const cliMcpTools = spawnSync(
   process.execPath,
   ["--import", "tsx", "src/cli/gmos.ts", "mcp", "tools"],
