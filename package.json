@@ -1,9 +1,28 @@
 {
   "name": "@ghast/memory",
-  "version": "0.1.0-alpha.6",
+  "version": "0.1.0-alpha.7",
   "description": "Ghast Memory OS: a local-first actionable user-world memory runtime for AI agents.",
   "type": "module",
   "license": "Apache-2.0",
+  "author": "Trapezohe",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Trapezohe/ghast-memory-os.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Trapezohe/ghast-memory-os/issues"
+  },
+  "homepage": "https://github.com/Trapezohe/ghast-memory-os#readme",
+  "keywords": [
+    "agent-memory",
+    "memory-runtime",
+    "personal-agent",
+    "user-world-memory",
+    "sqlite",
+    "mcp",
+    "memory-benchmark"
+  ],
+  "sideEffects": false,
   "bin": {
     "gmos": "dist/cli/gmos.js",
     "ghast-memory": "dist/cli/gmos.js"
