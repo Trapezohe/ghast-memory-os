@@ -64,6 +64,9 @@ node dist/cli/gmos.js init --db ./gmos.db
 node dist/cli/gmos.js doctor --db ./gmos.db --host ghast
 node dist/cli/gmos.js status --db ./gmos.db --profile local --host ghast --format markdown
 node dist/cli/gmos.js add --db ./gmos.db --profile local --kind preference --text "我喜欢简洁回答"
+node dist/cli/gmos.js update --db ./gmos.db --profile local --id memory_xxx --text "我喜欢先讲风险"
+node dist/cli/gmos.js delete --db ./gmos.db --profile local --id memory_xxx
+node dist/cli/gmos.js clear --db ./gmos.db --profile local --scope global
 node dist/cli/gmos.js search --db ./gmos.db --profile local --query "简洁"
 node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "我喜欢简洁的中文回答。"
 node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
@@ -114,8 +117,9 @@ npm run examples:host-adapter
 ```
 
 `examples/quickstart.mjs` creates a temporary plaintext SQLite store, observes a user
-preference, prepares memory context, exercises low-level `add/search`, prints a
-content-free diagnostics summary, and removes the temporary database.
+preference, prepares memory context, exercises low-level
+`add/update/search/archive`, prints a content-free diagnostics summary, and removes
+the temporary database.
 
 `examples/host-adapter.mjs` shows the host migration path: project an existing
 host memory snapshot into gmOS, skip secret-like and person-routed memories,
@@ -129,14 +133,17 @@ The primary gmOS integration path is still `observe()` plus `prepareTurn()`.
 That path gives the runtime conversation events, privacy mode, task state, and
 feedback signals.
 
-`add()` and `search()` exist for lower-level compatibility cases: importing a
-known memory from another host, admin/debug tools, migration scripts, or simple
-agent runtimes that do not yet expose full event hooks. They are intentionally
-not raw database access:
+`add()`, `update()`, `archive()`, `clear()`, and `search()` exist for lower-level
+compatibility cases: importing a known memory from another host, admin/debug
+tools, migration scripts, or simple agent runtimes that do not yet expose full
+event hooks. They are intentionally not raw database access:
 
 - `add()` records a `sdk.low_level_add` evidence event before creating memory;
+- `update()` records a `sdk.low_level_update` evidence event before changing memory;
+- `archive()` and `clear()` archive active memories instead of physically deleting rows;
 - secret-like content is rejected before it reaches long-term memory;
-- `person` memory and `PERSON:`-routed content require `allowPerson: true`;
+- `person` memory and `PERSON:`-routed content require `allowPerson: true` on add/update;
+- `clear()` requires an explicit filter: `all`, `scope`, or `metadataEquals`;
 - `search()` defaults to `purpose: "context"`, which hides sensitive memory
   unless `includeSensitive` is explicitly set and hides person memory unless
   `includePerson` is explicitly set.
@@ -151,6 +158,17 @@ const saved = await memory.add({
 const matches = await memory.search({
   profileId: "local-user",
   query: "风险 方案",
+});
+
+await memory.update({
+  profileId: "local-user",
+  id: saved.id,
+  content: "我喜欢先讲风险，再给方案。",
+});
+
+await memory.archive({
+  profileId: "local-user",
+  id: saved.id,
 });
 ```
 

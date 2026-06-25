@@ -18,7 +18,10 @@ import type {
   ForgetResult,
   HostEvent,
   LowLevelAddMemoryInput,
+  LowLevelArchiveMemoryInput,
+  LowLevelClearMemoriesInput,
   LowLevelSearchInput,
+  LowLevelUpdateMemoryInput,
   MemoryKind,
   MemoryRecord,
   MemoryOS,
@@ -56,20 +59,50 @@ function lowLevelKind(input: LowLevelAddMemoryInput): MemoryKind {
   return isPersonRoutedMemory(input.content) ? "person" : input.kind;
 }
 
-function lowLevelSensitivity(input: LowLevelAddMemoryInput): Sensitivity {
+function lowLevelSensitivity(input: {
+  content: string;
+  sensitivity?: Sensitivity | undefined;
+}): Sensitivity {
   const detected = classifySensitivity(input.content);
   if (detected === "secret_like" || input.sensitivity === "secret_like") {
-    throw new Error("gmOS low-level add rejects secret-like content");
+    throw new Error("gmOS low-level mutation rejects secret-like content");
   }
   if (detected === "sensitive") return "sensitive";
   return input.sensitivity ?? detected;
 }
 
-function assertLowLevelPersonAllowed(input: LowLevelAddMemoryInput): void {
+function assertLowLevelPersonAllowed(input: {
+  kind?: MemoryKind | undefined;
+  content: string;
+  allowPerson?: boolean | undefined;
+}): void {
   const routesToPerson = input.kind === "person" || isPersonRoutedMemory(input.content);
   if (routesToPerson && !input.allowPerson) {
     throw new Error("gmOS low-level add rejects person memory unless allowPerson is true");
   }
+}
+
+function requireUpdateMemory(
+  store: MemoryOSOptions["store"],
+): NonNullable<MemoryOSOptions["store"]["updateMemory"]> {
+  if (!store.updateMemory) throw new Error("gmOS store does not support low-level update");
+  return store.updateMemory.bind(store);
+}
+
+function requireArchiveMemoryById(
+  store: MemoryOSOptions["store"],
+): NonNullable<MemoryOSOptions["store"]["archiveMemoryById"]> {
+  if (!store.archiveMemoryById) {
+    throw new Error("gmOS store does not support low-level archive");
+  }
+  return store.archiveMemoryById.bind(store);
+}
+
+function requireArchiveMemories(
+  store: MemoryOSOptions["store"],
+): NonNullable<MemoryOSOptions["store"]["archiveMemories"]> {
+  if (!store.archiveMemories) throw new Error("gmOS store does not support low-level clear");
+  return store.archiveMemories.bind(store);
 }
 
 export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
@@ -121,6 +154,97 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       ...(input.scope !== undefined ? { scope: input.scope } : {}),
       ...(input.confidence !== undefined ? { confidence: input.confidence } : {}),
     });
+  }
+
+  async function update(input: LowLevelUpdateMemoryInput): Promise<MemoryRecord | null> {
+    await initialize();
+    const updateMemory = requireUpdateMemory(store);
+    const profileId = profileIdFor(defaultProfileId, input.profileId);
+    const existing = await store.getMemoryById(profileId, input.id, {
+      includeSensitive: true,
+      includePerson: true,
+    });
+    if (!existing) return null;
+    const content = (input.content ?? existing.content).trim();
+    if (!content) throw new Error("gmOS low-level update requires non-empty content");
+    const kind = isPersonRoutedMemory(content) ? "person" : input.kind ?? existing.kind;
+    assertLowLevelPersonAllowed({
+      kind,
+      content,
+      allowPerson: input.allowPerson,
+    });
+    const sensitivity = lowLevelSensitivity({
+      content,
+      sensitivity: input.sensitivity ?? existing.sensitivity,
+    });
+    const updatedAt = input.updatedAt ?? nowIso();
+    const metadata = input.replaceMetadata
+      ? sanitizePublicPayloadRecord(input.metadata ?? {})
+      : {
+          ...existing.metadata,
+          ...sanitizePublicPayloadRecord(input.metadata ?? {}),
+        };
+    const evidence = await store.recordEvidence({
+      profileId,
+      eventKey: ["sdk.low_level_update", profileId, input.id, updatedAt, randomUUID()].join(":"),
+      sourceType: "sdk.low_level_update",
+      sourceUri: null,
+      content,
+      sensitivity,
+      eligibleForLongTermMemory: true,
+      payload: {
+        memoryId: input.id,
+        previousKind: existing.kind,
+        kind,
+        scope: input.scope ?? existing.scope,
+        metadata,
+      },
+      createdAt: updatedAt,
+    });
+    return updateMemory({
+      profileId,
+      id: input.id,
+      kind,
+      scope: input.scope ?? existing.scope,
+      content,
+      sensitivity,
+      confidence: input.confidence ?? existing.confidence,
+      sourceEventId: evidence.id,
+      metadata: {
+        ...metadata,
+        lowLevelApi: true,
+        lowLevelUpdatedAt: updatedAt,
+      },
+      updatedAt,
+    });
+  }
+
+  async function archive(input: LowLevelArchiveMemoryInput): Promise<ForgetResult> {
+    await initialize();
+    const profileId = profileIdFor(defaultProfileId, input.profileId);
+    const archived = await requireArchiveMemoryById(store)({
+      profileId,
+      id: input.id,
+      reason: input.reason,
+      archivedAt: input.archivedAt,
+    });
+    return { archivedMemoryIds: archived ? [input.id] : [] };
+  }
+
+  async function clear(input: LowLevelClearMemoriesInput): Promise<ForgetResult> {
+    await initialize();
+    if (!input.all && !input.scope && !input.metadataEquals) {
+      throw new Error("gmOS low-level clear requires all, scope, or metadataEquals");
+    }
+    const archivedMemoryIds = await requireArchiveMemories(store)({
+      profileId: profileIdFor(defaultProfileId, input.profileId),
+      all: input.all,
+      scope: input.scope,
+      metadataEquals: input.metadataEquals,
+      reason: input.reason,
+      archivedAt: input.archivedAt,
+    });
+    return { archivedMemoryIds };
   }
 
   async function search(input: LowLevelSearchInput = {}): Promise<MemoryRecord[]> {
@@ -338,6 +462,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
 
   return {
     add,
+    update,
+    archive,
+    clear,
     search,
     observe,
     prepareTurn,

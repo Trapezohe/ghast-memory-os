@@ -51,6 +51,9 @@ Usage:
   gmos doctor --db ./gmos.db --host ghast
   gmos status --db ./gmos.db --profile local --host ghast --format markdown
   gmos add --db ./gmos.db --profile local --kind preference --text "我喜欢简洁回答"
+  gmos update --db ./gmos.db --profile local --id memory_xxx --text "我喜欢先讲风险"
+  gmos delete --db ./gmos.db --profile local --id memory_xxx --reason "manual cleanup"
+  gmos clear --db ./gmos.db --profile local --scope global --reason "manual cleanup"
   gmos search --db ./gmos.db --profile local --query "简洁"
   gmos observe --db ./gmos.db --profile local --text "我喜欢简洁回答"
   gmos prepare --db ./gmos.db --profile local --text "你知道我什么偏好吗？"
@@ -181,6 +184,12 @@ function memoryKindOption(): MemoryKind {
     );
   }
   return raw;
+}
+
+function optionalMemoryKindOption(): MemoryKind | undefined {
+  const raw = value("--kind");
+  if (!raw) return undefined;
+  return memoryKindOption();
 }
 
 function searchPurposeOption(): LowLevelSearchInput["purpose"] {
@@ -397,6 +406,65 @@ async function main(): Promise<void> {
         allowPerson: has("--allow-person"),
       });
       console.log(JSON.stringify(memoryRecord, null, 2));
+      return;
+    }
+
+    if (command === "update") {
+      const id = value("--id");
+      if (!id) usage();
+      const updated = await memory.update({
+        profileId,
+        id,
+        content: value("--text"),
+        kind: optionalMemoryKindOption(),
+        allowPerson: has("--allow-person"),
+      });
+      if (!updated) {
+        console.error(`Memory not found: ${id}`);
+        process.exitCode = 1;
+        return;
+      }
+      console.log(JSON.stringify(updated, null, 2));
+      return;
+    }
+
+    if (command === "delete") {
+      const id = value("--id");
+      if (!id) usage();
+      console.log(
+        JSON.stringify(
+          await memory.archive({
+            profileId,
+            id,
+            reason: value("--reason"),
+          }),
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+
+    if (command === "clear") {
+      const metadataKey = value("--metadata-key");
+      const metadataValue = value("--metadata-value");
+      const metadataEquals =
+        metadataKey && metadataValue
+          ? { key: metadataKey, value: metadataValue }
+          : undefined;
+      console.log(
+        JSON.stringify(
+          await memory.clear({
+            profileId,
+            all: has("--all"),
+            scope: value("--scope"),
+            metadataEquals,
+            reason: value("--reason"),
+          }),
+          null,
+          2,
+        ),
+      );
       return;
     }
 

@@ -195,6 +195,39 @@ export interface LowLevelAddMemoryInput {
   allowPerson?: boolean | undefined;
 }
 
+export interface LowLevelUpdateMemoryInput {
+  profileId?: string | undefined;
+  id: string;
+  kind?: MemoryKind | undefined;
+  scope?: string | undefined;
+  content?: string | undefined;
+  sensitivity?: Sensitivity | undefined;
+  confidence?: number | undefined;
+  metadata?: Record<string, unknown> | undefined;
+  replaceMetadata?: boolean | undefined;
+  updatedAt?: string | undefined;
+  allowPerson?: boolean | undefined;
+}
+
+export interface LowLevelArchiveMemoryInput {
+  profileId?: string | undefined;
+  id: string;
+  reason?: string | undefined;
+  archivedAt?: string | undefined;
+}
+
+export interface LowLevelClearMemoriesInput {
+  profileId?: string | undefined;
+  all?: boolean | undefined;
+  scope?: string | undefined;
+  metadataEquals?: {
+    key: string;
+    value: string;
+  } | undefined;
+  reason?: string | undefined;
+  archivedAt?: string | undefined;
+}
+
 export interface LowLevelSearchInput {
   profileId?: string | undefined;
   query?: string | undefined;
@@ -235,6 +268,38 @@ export interface AddMemoryInput {
   sourceEventId?: string | null | undefined;
   metadata?: Record<string, unknown> | undefined;
   createdAt?: string | undefined;
+}
+
+export interface UpdateMemoryInput {
+  profileId: string;
+  id: string;
+  kind?: MemoryKind | undefined;
+  scope?: string | undefined;
+  content?: string | undefined;
+  sensitivity?: Sensitivity | undefined;
+  confidence?: number | undefined;
+  sourceEventId?: string | null | undefined;
+  metadata?: Record<string, unknown> | undefined;
+  updatedAt?: string | undefined;
+}
+
+export interface ArchiveMemoryInput {
+  profileId: string;
+  id: string;
+  reason?: string | undefined;
+  archivedAt?: string | undefined;
+}
+
+export interface ArchiveMemoriesInput {
+  profileId: string;
+  all?: boolean | undefined;
+  scope?: string | undefined;
+  metadataEquals?: {
+    key: string;
+    value: string;
+  } | undefined;
+  reason?: string | undefined;
+  archivedAt?: string | undefined;
 }
 
 export interface AddWorldBeliefInput {
@@ -290,6 +355,9 @@ export interface MemoryStore {
   close(): Promise<void> | void;
   recordEvidence(input: RecordEvidenceInput): Promise<EvidenceEvent> | EvidenceEvent;
   addMemory(input: AddMemoryInput): Promise<MemoryRecord> | MemoryRecord;
+  updateMemory?(input: UpdateMemoryInput): Promise<MemoryRecord | null> | MemoryRecord | null;
+  archiveMemoryById?(input: ArchiveMemoryInput): Promise<boolean> | boolean;
+  archiveMemories?(input: ArchiveMemoriesInput): Promise<string[]> | string[];
   addWorldBelief(input: AddWorldBeliefInput): Promise<WorldBeliefRecord> | WorldBeliefRecord;
   searchMemories(input: MemorySearchInput): Promise<MemoryRecord[]> | MemoryRecord[];
   getMemoryById(
@@ -332,6 +400,9 @@ export interface MemoryOSOptions {
 
 export interface MemoryOS {
   add(input: LowLevelAddMemoryInput): Promise<MemoryRecord>;
+  update(input: LowLevelUpdateMemoryInput): Promise<MemoryRecord | null>;
+  archive(input: LowLevelArchiveMemoryInput): Promise<ForgetResult>;
+  clear(input: LowLevelClearMemoriesInput): Promise<ForgetResult>;
   search(input?: LowLevelSearchInput): Promise<MemoryRecord[]>;
   observe(event: HostEvent): Promise<void>;
   prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn>;

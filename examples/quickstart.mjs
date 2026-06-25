@@ -31,10 +31,19 @@ try {
     kind: "project",
     content: "Quickstart project is validating gmOS SDK integration.",
   });
+  const updated = await memory.update({
+    profileId: "quickstart",
+    id: imported.id,
+    content: "Quickstart project validates gmOS SDK mutation integration.",
+  });
 
   const importedMatches = await memory.search({
     profileId: "quickstart",
-    query: "Quickstart project",
+    query: "mutation integration",
+  });
+  const archived = await memory.archive({
+    profileId: "quickstart",
+    id: imported.id,
   });
 
   const status = await createMemoryStatusReport({
@@ -48,7 +57,9 @@ try {
     contextHasPreference: prepared.contextBlock.includes("先讲风险"),
     evidenceCount: prepared.evidence.length,
     importedMemoryId: imported.id,
+    updatedMemoryId: updated?.id,
     importedSearchHit: importedMatches.some((memoryRecord) => memoryRecord.id === imported.id),
+    archivedMemoryCount: archived.archivedMemoryIds.length,
     schemaVersion: status.storage.schemaVersion,
     memoryRows: status.storage.rowCounts.gmos_memories,
     hostLevel: status.hostCompatibility?.level,

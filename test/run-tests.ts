@@ -9,7 +9,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import Database from "better-sqlite3";
 
-import { createMemoryOS } from "../src/index.js";
+import { createMemoryOS, type MemoryStore } from "../src/index.js";
 import {
   renderHostCompatibilityGymMarkdown,
   renderMemoryGymMarkdown,
@@ -207,6 +207,139 @@ assert.ok(lowLevelMatches.some((entry) => entry.id === lowLevelMemory.id));
 const lowLevelExplanation = await memory.explain(lowLevelMemory.id, "test");
 assert.equal(lowLevelExplanation?.evidence[0]?.sourceType, "sdk.low_level_add");
 assert.equal(JSON.stringify(lowLevelExplanation).includes("sk-lowlevel-metadata-secret"), false);
+const updatedLowLevelMemory = await memory.update({
+  profileId: "test",
+  id: lowLevelMemory.id,
+  content: "Low-level compatibility now prefers risk-first SDK docs.",
+  metadata: {
+    source: "test-update",
+    token: "sk-lowlevel-update-metadata-secret123456",
+  },
+});
+assert.equal(updatedLowLevelMemory?.id, lowLevelMemory.id);
+assert.match(updatedLowLevelMemory?.content ?? "", /risk-first SDK docs/);
+const updatedLowLevelExplanation = await memory.explain(lowLevelMemory.id, "test");
+assert.equal(updatedLowLevelExplanation?.evidence[0]?.sourceType, "sdk.low_level_update");
+assert.equal(
+  JSON.stringify(updatedLowLevelExplanation).includes("sk-lowlevel-update-metadata-secret"),
+  false,
+);
+const lowLevelBeforeSecretUpdate = await store.rowCounts();
+await assert.rejects(
+  () =>
+    memory.update({
+      profileId: "test",
+      id: lowLevelMemory.id,
+      content: "api key: sk-lowlevelupdatesecret1234567890",
+    }),
+  /secret-like/,
+);
+assert.deepEqual(await store.rowCounts(), lowLevelBeforeSecretUpdate);
+await assert.rejects(
+  () =>
+    memory.update({
+      profileId: "test",
+      id: lowLevelMemory.id,
+      content: "PERSON: Alice: Alice prefers tea.",
+    }),
+  /person memory/,
+);
+const unsupportedUpdateDbPath = path.join(tmp, "unsupported-update-store.db");
+const unsupportedUpdateBase = createSqliteMemoryStore({ path: unsupportedUpdateDbPath });
+await unsupportedUpdateBase.initialize();
+const unsupportedExisting = await unsupportedUpdateBase.addMemory({
+  profileId: "unsupported_update",
+  kind: "fact",
+  content: "Unsupported update fixture should not gain evidence.",
+});
+const { updateMemory: _droppedUpdateMemory, ...unsupportedUpdateStore } =
+  unsupportedUpdateBase as SqliteMemoryStore & {
+    updateMemory?: unknown;
+  };
+const unsupportedUpdateMemory = createMemoryOS({
+  profileId: "unsupported_update",
+  store: unsupportedUpdateStore as MemoryStore,
+});
+const unsupportedBeforeCounts = await unsupportedUpdateBase.rowCounts();
+await assert.rejects(
+  () =>
+    unsupportedUpdateMemory.update({
+      profileId: "unsupported_update",
+      id: unsupportedExisting.id,
+      content: "This should not write evidence first.",
+    }),
+  /does not support low-level update/,
+);
+assert.deepEqual(await unsupportedUpdateBase.rowCounts(), unsupportedBeforeCounts);
+await unsupportedUpdateMemory.close();
+const archiveResult = await memory.archive({
+  profileId: "test",
+  id: lowLevelMemory.id,
+  reason: "low-level archive test",
+});
+assert.deepEqual(archiveResult.archivedMemoryIds, [lowLevelMemory.id]);
+const archivedLowLevelMatches = await memory.search({
+  profileId: "test",
+  query: "risk-first SDK docs",
+  purpose: "manage",
+});
+assert.equal(archivedLowLevelMatches.some((entry) => entry.id === lowLevelMemory.id), false);
+assert.equal(await memory.explain(lowLevelMemory.id, "test"), null);
+const archiveInspectionDb = new Database(dbPath, { readonly: true });
+try {
+  const archivedRow = archiveInspectionDb
+    .prepare("SELECT metadata_json FROM gmos_memories WHERE id = ?")
+    .get(lowLevelMemory.id) as { metadata_json: string };
+  assert.equal(JSON.parse(archivedRow.metadata_json).archive.reason, "low-level archive test");
+} finally {
+  archiveInspectionDb.close();
+}
+const clearMemoryA = await memory.add({
+  profileId: "test",
+  kind: "fact",
+  content: "Clear fixture A belongs to conversation conv_clear_sdk.",
+  scope: "clear-fixture",
+  metadata: { conversationId: "conv_clear_sdk" },
+});
+const clearMemoryB = await memory.add({
+  profileId: "test",
+  kind: "fact",
+  content: "Clear fixture B belongs to conversation conv_clear_sdk.",
+  scope: "clear-fixture",
+  metadata: { conversationId: "conv_clear_sdk" },
+});
+const clearByMetadata = await memory.clear({
+  profileId: "test",
+  metadataEquals: { key: "conversationId", value: "conv_clear_sdk" },
+  reason: "low-level clear metadata test",
+});
+assert.deepEqual(
+  new Set(clearByMetadata.archivedMemoryIds),
+  new Set([clearMemoryA.id, clearMemoryB.id]),
+);
+const clearInspectionDb = new Database(dbPath, { readonly: true });
+try {
+  const clearRows = clearInspectionDb
+    .prepare(
+      "SELECT metadata_json FROM gmos_memories WHERE id IN (?, ?) ORDER BY id",
+    )
+    .all(clearMemoryA.id, clearMemoryB.id) as Array<{ metadata_json: string }>;
+  assert.equal(clearRows.length, 2);
+  assert.ok(
+    clearRows.every(
+      (row) => JSON.parse(row.metadata_json).archive.reason === "low-level clear metadata test",
+    ),
+  );
+} finally {
+  clearInspectionDb.close();
+}
+await assert.rejects(
+  () =>
+    memory.clear({
+      profileId: "test",
+    }),
+  /requires all, scope, or metadataEquals/,
+);
 const lowLevelBeforeSecret = await store.rowCounts();
 await assert.rejects(
   () =>
@@ -1130,6 +1263,99 @@ const cliSearch = spawnSync(
 );
 assert.equal(cliSearch.status, 0, cliSearch.stderr);
 assert.match(cliSearch.stdout, /CLI low-level add prefers concise answers/);
+const cliUpdate = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "update",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--id",
+    cliAddMemory.id!,
+    "--text",
+    "CLI low-level update prefers risk-first answers.",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliUpdate.status, 0, cliUpdate.stderr);
+assert.match(cliUpdate.stdout, /risk-first answers/);
+const cliDelete = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "delete",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--id",
+    cliAddMemory.id!,
+    "--reason",
+    "cli delete test",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliDelete.status, 0, cliDelete.stderr);
+assert.match(cliDelete.stdout, /archivedMemoryIds/);
+const cliClearAdd = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "add",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--kind",
+    "fact",
+    "--text",
+    "CLI low-level clear scope fixture.",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliClearAdd.status, 0, cliClearAdd.stderr);
+const cliClearMemory = JSON.parse(cliClearAdd.stdout) as { id?: string };
+const cliClear = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "clear",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--scope",
+    "global",
+    "--reason",
+    "cli clear test",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliClear.status, 0, cliClear.stderr);
+assert.match(cliClear.stdout, /archivedMemoryIds/);
+const cliMutationInspectDb = new Database(cliLowLevelDb, { readonly: true });
+try {
+  const cliDeleted = cliMutationInspectDb
+    .prepare("SELECT metadata_json FROM gmos_memories WHERE id = ?")
+    .get(cliAddMemory.id) as { metadata_json: string };
+  assert.equal(JSON.parse(cliDeleted.metadata_json).archive.reason, "cli delete test");
+  const cliCleared = cliMutationInspectDb
+    .prepare("SELECT metadata_json FROM gmos_memories WHERE id = ?")
+    .get(cliClearMemory.id) as { metadata_json: string };
+  assert.equal(JSON.parse(cliCleared.metadata_json).archive.reason, "cli clear test");
+} finally {
+  cliMutationInspectDb.close();
+}
 const cliSecretAdd = spawnSync(
   process.execPath,
   [

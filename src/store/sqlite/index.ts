@@ -5,6 +5,8 @@ import type {
   ActionPolicy,
   AddMemoryInput,
   AddWorldBeliefInput,
+  ArchiveMemoriesInput,
+  ArchiveMemoryInput,
   ArchiveStaleHostImportsInput,
   EvidenceEvent,
   FailureEventRecord,
@@ -19,6 +21,7 @@ import type {
   RecordFailureInput,
   Sensitivity,
   TaskTrajectoryInput,
+  UpdateMemoryInput,
   WorldBeliefRecord,
 } from "../../kernel/types.js";
 import { shouldHideFromOrdinaryContext } from "../../kernel/safety.js";
@@ -52,6 +55,25 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function metadataWithArchiveMarker(input: {
+  metadata: Record<string, unknown>;
+  archivedAt: string;
+  reason?: string | undefined;
+}): Record<string, unknown> {
+  return {
+    ...input.metadata,
+    archive: {
+      ...(typeof input.metadata.archive === "object" &&
+      input.metadata.archive !== null &&
+      !Array.isArray(input.metadata.archive)
+        ? input.metadata.archive
+        : {}),
+      archivedAt: input.archivedAt,
+      ...(input.reason ? { reason: input.reason } : {}),
+    },
+  };
 }
 
 function normalizeMemory(row: Record<string, unknown>): MemoryRecord {
@@ -195,6 +217,117 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     );
   }
 
+  function updateMemory(input: UpdateMemoryInput): MemoryRecord | null {
+    initialize();
+    const existing = db
+      .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ? AND status = 'active'")
+      .get(input.profileId, input.id) as Record<string, unknown> | undefined;
+    if (!existing) return null;
+    const previous = normalizeMemory(existing);
+    const updatedAt = input.updatedAt ?? nowIso();
+    const next = {
+      kind: input.kind ?? previous.kind,
+      scope: input.scope ?? previous.scope,
+      content: input.content ?? previous.content,
+      sensitivity: input.sensitivity ?? previous.sensitivity,
+      confidence: input.confidence ?? previous.confidence,
+      sourceEventId:
+        input.sourceEventId === undefined ? previous.sourceEventId : input.sourceEventId,
+      metadata: input.metadata ?? previous.metadata,
+    };
+    db.prepare(
+      `UPDATE gmos_memories
+       SET kind = ?,
+           scope = ?,
+           content = ?,
+           sensitivity = ?,
+           confidence = ?,
+           source_event_id = ?,
+           metadata_json = ?,
+           updated_at = ?
+       WHERE profile_id = ? AND id = ? AND status = 'active'`,
+    ).run(
+      next.kind,
+      next.scope,
+      next.content,
+      next.sensitivity,
+      next.confidence,
+      next.sourceEventId ?? null,
+      JSON.stringify(next.metadata),
+      updatedAt,
+      input.profileId,
+      input.id,
+    );
+    return normalizeMemory(
+      db
+        .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ?")
+        .get(input.profileId, input.id) as Record<string, unknown>,
+    );
+  }
+
+  function archiveMemoryById(input: ArchiveMemoryInput): boolean {
+    initialize();
+    const archivedAt = input.archivedAt ?? nowIso();
+    const existing = db
+      .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ? AND status = 'active'")
+      .get(input.profileId, input.id) as Record<string, unknown> | undefined;
+    if (!existing) return false;
+    const metadata = metadataWithArchiveMarker({
+      metadata: parseJsonObject(existing.metadata_json),
+      archivedAt,
+      reason: input.reason,
+    });
+    const result = db
+      .prepare(
+        `UPDATE gmos_memories
+         SET status = 'archived', updated_at = ?, metadata_json = ?
+         WHERE profile_id = ? AND id = ? AND status = 'active'`,
+      )
+      .run(archivedAt, JSON.stringify(metadata), input.profileId, input.id);
+    return result.changes > 0;
+  }
+
+  function archiveMemories(input: ArchiveMemoriesInput): string[] {
+    initialize();
+    if (!input.all && !input.scope && !input.metadataEquals) {
+      throw new Error("archiveMemories requires all, scope, or metadataEquals");
+    }
+    const clauses = ["profile_id = ?", "status = 'active'"];
+    const params: unknown[] = [input.profileId];
+    if (!input.all && input.scope) {
+      clauses.push("scope = ?");
+      params.push(input.scope);
+    }
+    if (!input.all && input.metadataEquals) {
+      clauses.push("json_extract(metadata_json, ?) = ?");
+      params.push(`$.${input.metadataEquals.key}`, input.metadataEquals.value);
+    }
+    const where = clauses.join(" AND ");
+    const rows = db
+      .prepare(`SELECT id, metadata_json FROM gmos_memories WHERE ${where}`)
+      .all(...params) as Array<{ id: string; metadata_json: string }>;
+    const ids = rows.map((row) => row.id);
+    if (ids.length === 0) return [];
+    const stmt = db.prepare(
+      `UPDATE gmos_memories
+       SET status = 'archived', updated_at = ?, metadata_json = ?
+       WHERE profile_id = ? AND id = ?`,
+    );
+    const archivedAt = input.archivedAt ?? nowIso();
+    const tx = db.transaction((memoryRows: Array<{ id: string; metadata_json: string }>) => {
+      for (const row of memoryRows) {
+        const metadata = metadataWithArchiveMarker({
+          metadata: parseJsonObject(row.metadata_json),
+          archivedAt,
+          reason: input.reason,
+        });
+        stmt.run(archivedAt, JSON.stringify(metadata), input.profileId, row.id);
+      }
+    });
+    tx(rows);
+    return ids;
+  }
+
   function addWorldBelief(input: AddWorldBeliefInput): WorldBeliefRecord {
     initialize();
     const createdAt = nowIso();
@@ -268,7 +401,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   ): MemoryRecord | null {
     initialize();
     const row = db
-      .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ?")
+      .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ? AND status = 'active'")
       .get(profileId, memoryId) as Record<string, unknown> | undefined;
     if (!row) return null;
     const memory = normalizeMemory(row);
@@ -491,6 +624,9 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     },
     recordEvidence,
     addMemory,
+    updateMemory,
+    archiveMemoryById,
+    archiveMemories,
     addWorldBelief,
     searchMemories,
     getMemoryById,
