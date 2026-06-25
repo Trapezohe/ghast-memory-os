@@ -1,3 +1,8 @@
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
 import { createHostAdapter } from "../host/index.js";
 import { createMemoryMcpServer } from "../mcp/index.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
@@ -32,6 +37,57 @@ interface MutableGymResult extends MemoryGymResult {
 interface NormalizedRunMemoryGymOptions {
   dbPath: string;
   generatedSeeds: string[];
+}
+
+const SDK_PACKAGE_NAME = "@ghast/memory";
+
+function packageJsonInTree(startDir: string): MemoryGymResult["runManifest"]["package"] | null {
+  let current = startDir;
+  for (;;) {
+    const candidate = path.join(current, "package.json");
+    if (existsSync(candidate)) {
+      try {
+        const parsed = JSON.parse(readFileSync(candidate, "utf8")) as {
+          name?: unknown;
+          version?: unknown;
+        };
+        if (parsed.name !== SDK_PACKAGE_NAME) return null;
+        return {
+          name: parsed.name,
+          version: typeof parsed.version === "string" ? parsed.version : null,
+        };
+      } catch {
+        return { name: null, version: null };
+      }
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+function packageInfo(): MemoryGymResult["runManifest"]["package"] {
+  return packageJsonInTree(path.dirname(fileURLToPath(import.meta.url))) ?? {
+    name: null,
+    version: null,
+  };
+}
+
+function gitText(args: string[]): string | null {
+  const result = spawnSync("git", args, {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+  return result.status === 0 ? result.stdout.trim() : null;
+}
+
+function gitInfo(): MemoryGymResult["runManifest"]["git"] {
+  const status = gitText(["status", "--porcelain"]);
+  return {
+    branch: gitText(["rev-parse", "--abbrev-ref", "HEAD"]),
+    sha: gitText(["rev-parse", "HEAD"]),
+    dirty: status === null ? null : status.length > 0,
+  };
 }
 
 function createEmptyResult(options: NormalizedRunMemoryGymOptions): MutableGymResult {
@@ -76,6 +132,9 @@ function createEmptyResult(options: NormalizedRunMemoryGymOptions): MutableGymRe
       startedAt: new Date().toISOString(),
       node: process.version,
       platform: `${process.platform}/${process.arch}`,
+      package: packageInfo(),
+      git: gitInfo(),
+      sqliteSchemaVersion: null,
       dbPathMode: options.dbPath === ":memory:" ? "memory" : "file",
       generatedSeeds: options.generatedSeeds,
       deterministicOnly: true,
@@ -157,6 +216,7 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   const result = createEmptyResult(normalized);
 
   try {
+  result.runManifest.sqliteSchemaVersion = await store.schemaVersion();
   await memory.observe({
     type: "conversation.message",
     profileId: "gym",

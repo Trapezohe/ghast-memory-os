@@ -47,6 +47,16 @@ export interface MemoryGymRunManifest {
   startedAt: string;
   node: string;
   platform: string;
+  package: {
+    name: string | null;
+    version: string | null;
+  };
+  git: {
+    branch: string | null;
+    sha: string | null;
+    dirty: boolean | null;
+  };
+  sqliteSchemaVersion: number | null;
   dbPathMode: "memory" | "file";
   generatedSeeds: string[];
   deterministicOnly: boolean;

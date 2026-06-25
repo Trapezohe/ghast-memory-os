@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -38,6 +38,20 @@ import { createEvolutionControlPlane } from "../src/evolution/index.js";
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-sdk-test-"));
 const dbPath = path.join(tmp, "test.db");
+const packageJson = JSON.parse(readFileSync(path.join(process.cwd(), "package.json"), "utf8")) as {
+  name: string;
+  version: string;
+};
+function gitOutput(args: string[]): string {
+  const result = spawnSync("git", args, { cwd: process.cwd(), encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+}
+const expectedGit = {
+  branch: gitOutput(["rev-parse", "--abbrev-ref", "HEAD"]),
+  sha: gitOutput(["rev-parse", "HEAD"]),
+  dirty: gitOutput(["status", "--porcelain"]).length > 0,
+};
 const store: SqliteMemoryStore = createSqliteMemoryStore({ path: dbPath });
 const memory = createMemoryOS({ profileId: "test", store });
 assert.equal(await store.schemaVersion(), 1);
@@ -682,6 +696,12 @@ assert.equal(gym.generalizationResult.status, "pass");
 assert.equal(gym.generalizationResult.generatedSeedCount, 3);
 assert.equal(gym.roadmapResult.status, "clear");
 assert.equal(gym.runManifest.dbPathMode, "memory");
+assert.equal(gym.runManifest.package.name, packageJson.name);
+assert.equal(gym.runManifest.package.version, packageJson.version);
+assert.equal(gym.runManifest.sqliteSchemaVersion, 1);
+assert.equal(gym.runManifest.git.branch, expectedGit.branch);
+assert.equal(gym.runManifest.git.sha, expectedGit.sha);
+assert.equal(gym.runManifest.git.dirty, expectedGit.dirty);
 assert.equal(gym.hardGates.mcp_public_sensitive_rejection, true);
 assert.equal(gym.hardGates.host_adapter_contract, true);
 assert.ok(gym.coverageMatrix.some((row) => row.layer === "Layer 2: MCP / Host Boundary"));
@@ -690,6 +710,8 @@ const renderedGym = renderMemoryGymMarkdown(gym);
 assert.match(renderedGym, /gmOS Memory Gym Report/);
 assert.match(renderedGym, /Coverage Matrix/);
 assert.match(renderedGym, /Run Manifest/);
+assert.match(renderedGym, /Package: @ghast\/memory@/);
+assert.match(renderedGym, /SQLite schema: 1/);
 const generatedGym = await runMemoryGym({ generatedSeeds: 2 });
 assert.equal(generatedGym.pass, true, generatedGym.details.join("\n"));
 assert.equal(generatedGym.generalizationResult.generatedSeedCount, 2);

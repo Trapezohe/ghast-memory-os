@@ -29,7 +29,7 @@ try {
 
   writeFileSync(
     path.join(consumerDir, "package.json"),
-    JSON.stringify({ type: "module", private: true }, null, 2),
+    JSON.stringify({ name: "host-app-should-not-leak", type: "module", private: true }, null, 2),
   );
   run("npm", ["install", tarballPath], { cwd: consumerDir, stdio: "pipe" });
 
@@ -38,12 +38,14 @@ try {
     consumerScript,
     `
       import { strict as assert } from "node:assert";
+      import { readFileSync } from "node:fs";
       import path from "node:path";
       import { createMemoryOS } from "@ghast/memory";
       import { createPresetHostAdapter } from "@ghast/memory/host";
       import {
         renderHostCompatibilityGymMarkdown,
         runHostCompatibilityGym,
+        runMemoryGym,
       } from "@ghast/memory/gym";
       import { createMemoryMcpServer, createMemoryMcpStdioServer } from "@ghast/memory/mcp";
       import { createSqliteMemoryStore } from "@ghast/memory/store/sqlite";
@@ -80,6 +82,15 @@ try {
       assert.equal(hostGym.pass, true);
       assert.equal(hostGym.hostCount, 2);
       assert.match(renderHostCompatibilityGymMarkdown(hostGym), /gmOS Host Compatibility Gym/);
+      const installedPackage = JSON.parse(
+        readFileSync(path.join(process.cwd(), "node_modules", "@ghast", "memory", "package.json"), "utf8"),
+      );
+      const memoryGym = await runMemoryGym({ generatedSeeds: 1 });
+      assert.equal(memoryGym.pass, true);
+      assert.equal(memoryGym.runManifest.package.name, installedPackage.name);
+      assert.equal(memoryGym.runManifest.package.version, installedPackage.version);
+      assert.notEqual(memoryGym.runManifest.package.name, "host-app-should-not-leak");
+      assert.equal(memoryGym.runManifest.sqliteSchemaVersion, 1);
       await memory.close();
       console.log("[gmos-consumer] import smoke passed");
     `,
