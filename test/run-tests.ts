@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { connect } from "node:net";
 import os from "node:os";
 import path from "node:path";
 
@@ -42,6 +43,7 @@ import {
   createMemoryStatusReport,
   renderMemoryStatusMarkdown,
 } from "../src/diagnostics/index.js";
+import { createMemoryHttpServer } from "../src/http/index.js";
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-sdk-test-"));
 const dbPath = path.join(tmp, "test.db");
@@ -59,6 +61,50 @@ const expectedGit = {
   sha: gitOutput(["rev-parse", "HEAD"]),
   dirty: gitOutput(["status", "--porcelain"]).length > 0,
 };
+
+async function httpJson(
+  url: string,
+  init?: RequestInit,
+): Promise<{ status: number; body: Record<string, unknown>; text: string }> {
+  const response = await fetch(url, init);
+  const text = await response.text();
+  return {
+    status: response.status,
+    body: JSON.parse(text) as Record<string, unknown>,
+    text,
+  };
+}
+
+function postJson(url: string, body: unknown): Promise<{
+  status: number;
+  body: Record<string, unknown>;
+  text: string;
+}> {
+  return httpJson(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+function rawHttpRequest(port: number, payload: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, "127.0.0.1");
+    let response = "";
+    socket.setEncoding("utf8");
+    socket.on("connect", () => socket.write(payload));
+    socket.on("data", (chunk) => {
+      response += chunk;
+    });
+    socket.on("error", reject);
+    socket.on("end", () => resolve(response));
+    socket.setTimeout(5000, () => {
+      socket.destroy();
+      reject(new Error("raw HTTP request timed out"));
+    });
+  });
+}
+
 const store: SqliteMemoryStore = createSqliteMemoryStore({ path: dbPath });
 const memory = createMemoryOS({ profileId: "test", store });
 await store.initialize();
@@ -856,6 +902,192 @@ await mcpServer.callTool("memory.commit_outcome", {
 });
 const mcpCounts = await store.rowCounts();
 assert.ok(mcpCounts.gmos_failure_events >= 3);
+
+const httpServer = createMemoryHttpServer({
+  memory,
+  store,
+  profileId: "http",
+  host: "ghast",
+});
+const httpAddress = await httpServer.listen();
+try {
+  const health = await httpJson(`${httpAddress.url}/health`);
+  assert.equal(health.status, 200);
+  assert.equal(health.body.ok, true);
+  assert.equal(health.body.framework, "ghast-memory-os");
+  const tools = await httpJson(`${httpAddress.url}/tools`);
+  assert.equal(tools.status, 200);
+  assert.match(tools.text, /memory.prepare_context/);
+  const status = await httpJson(`${httpAddress.url}/status?profileId=http`);
+  assert.equal(status.status, 200);
+  assert.equal(
+    ((status.body.report as { storage?: { schemaVersion?: number } }).storage ?? {}).schemaVersion,
+    1,
+  );
+  assert.equal(status.text.includes("mcp fixture failure"), false);
+  const observe = await postJson(`${httpAddress.url}/observe`, {
+    profileId: "http",
+    role: "user",
+    content: "我喜欢 HTTP adapter 先讲风险再给方案。",
+  });
+  assert.equal(observe.status, 200);
+  assert.equal(observe.body.ok, true);
+  const preparedHttp = await postJson(`${httpAddress.url}/prepare`, {
+    profileId: "http",
+    text: "HTTP adapter 应该怎么回答？",
+    includeEvidence: true,
+  });
+  assert.equal(preparedHttp.status, 200);
+  assert.match(preparedHttp.text, /先讲风险/);
+  const preparedPayload = preparedHttp.body as {
+    prepared?: { memories?: Array<{ id?: string }>; contextBlock?: string };
+  };
+  const httpMemoryId = preparedPayload.prepared?.memories?.[0]?.id;
+  assert.equal(typeof httpMemoryId, "string");
+  const explanation = await postJson(`${httpAddress.url}/explain`, {
+    profileId: "http",
+    id: httpMemoryId,
+  });
+  assert.equal(explanation.status, 200);
+  assert.match(explanation.text, /先讲风险/);
+  await postJson(`${httpAddress.url}/observe`, {
+    profileId: "http",
+    role: "user",
+    content: "我的 SSN 是 123-45-6789，不要暴露。",
+  });
+  const sensitiveOverride = await postJson(`${httpAddress.url}/prepare`, {
+    profileId: "http",
+    text: "SSN 是什么？",
+    includeSensitive: true,
+  });
+  assert.equal(sensitiveOverride.status, 400);
+  assert.equal(sensitiveOverride.text.includes("123-45-6789"), false);
+  const mcpCall = await postJson(`${httpAddress.url}/mcp/call`, {
+    tool: "memory.prepare_context",
+    args: {
+      profileId: "http",
+      text: "风险 方案",
+    },
+  });
+  assert.equal(mcpCall.status, 200);
+  assert.match(mcpCall.text, /先讲风险/);
+  const forget = await postJson(`${httpAddress.url}/forget`, {
+    profileId: "http",
+    query: "HTTP adapter",
+    reason: "test cleanup",
+  });
+  assert.equal(forget.status, 200);
+  assert.match(forget.text, /archivedMemoryIds/);
+  const afterForget = await postJson(`${httpAddress.url}/prepare`, {
+    profileId: "http",
+    text: "HTTP adapter 应该怎么回答？",
+  });
+  assert.equal(afterForget.status, 200);
+  assert.equal(afterForget.text.includes("先讲风险"), false);
+  const invalidJson = await fetch(`${httpAddress.url}/observe`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{bad-json",
+  });
+  assert.equal(invalidJson.status, 400);
+  assert.match(await invalidJson.text(), /invalid_json/);
+  const missingRoute = await httpJson(`${httpAddress.url}/missing`);
+  assert.equal(missingRoute.status, 404);
+  const malformedResponse = await rawHttpRequest(
+    httpAddress.port,
+    "GET http://[::1 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+  );
+  assert.match(malformedResponse, /400 Bad Request/);
+  assert.match(malformedResponse, /invalid_url/);
+  const stillHealthy = await httpJson(`${httpAddress.url}/health`);
+  assert.equal(stillHealthy.status, 200);
+} finally {
+  await httpServer.close();
+}
+
+const tinyHttpServer = createMemoryHttpServer({
+  memory,
+  maxBodyBytes: 16,
+});
+const tinyHttpAddress = await tinyHttpServer.listen();
+try {
+  const tooLarge = await postJson(`${tinyHttpAddress.url}/observe`, {
+    content: "this body is intentionally larger than the tiny test limit",
+  });
+  assert.equal(tooLarge.status, 413);
+  assert.equal((tooLarge.body.error as { code?: string }).code, "request_body_too_large");
+} finally {
+  await tinyHttpServer.close();
+}
+
+const cliHttp = spawn(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "http",
+    "serve",
+    "--db",
+    path.join(tmp, "cli-http.db"),
+    "--profile",
+    "cli_http",
+    "--port",
+    "0",
+    "--host",
+    "ghast",
+  ],
+  { cwd: process.cwd(), stdio: ["pipe", "pipe", "pipe"] },
+);
+let cliHttpStdout = "";
+let cliHttpStderr = "";
+cliHttp.stdout.setEncoding("utf8");
+cliHttp.stderr.setEncoding("utf8");
+cliHttp.stdout.on("data", (chunk: string) => {
+  cliHttpStdout += chunk;
+});
+cliHttp.stderr.on("data", (chunk: string) => {
+  cliHttpStderr += chunk;
+});
+const cliHttpUrl = await Promise.race([
+  new Promise<string>((resolve) => {
+    cliHttp.stdout.on("data", () => {
+      const match = cliHttpStdout.match(/"url": "(http:\/\/127\.0\.0\.1:\d+)"/u);
+      if (match?.[1]) resolve(match[1]);
+    });
+  }),
+  new Promise<never>((_, reject) => {
+    cliHttp.once("exit", (code, signal) => {
+      reject(new Error(`gmos http serve exited early: code=${code} signal=${signal} stderr=${cliHttpStderr}`));
+    });
+  }),
+  new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error(`gmos http serve did not print url: ${cliHttpStderr}`)), 5000),
+  ),
+]);
+try {
+  const cliHealth = await httpJson(`${cliHttpUrl}/health`);
+  assert.equal(cliHealth.status, 200);
+  assert.equal(cliHealth.body.framework, "ghast-memory-os");
+  const cliObserve = await postJson(`${cliHttpUrl}/observe`, {
+    profileId: "cli_http",
+    role: "user",
+    content: "我喜欢 CLI HTTP adapter 先讲测试结果。",
+  });
+  assert.equal(cliObserve.status, 200);
+  const cliPrepare = await postJson(`${cliHttpUrl}/prepare`, {
+    profileId: "cli_http",
+    text: "CLI HTTP adapter 应该先讲什么？",
+  });
+  assert.equal(cliPrepare.status, 200);
+  assert.match(cliPrepare.text, /先讲测试结果/);
+} finally {
+  cliHttp.kill("SIGTERM");
+  await Promise.race([
+    new Promise((resolve) => cliHttp.once("exit", resolve)),
+    new Promise((resolve) => setTimeout(resolve, 5000)),
+  ]);
+}
 
 const cliLowLevelDb = path.join(tmp, "cli-low-level.db");
 const cliAdd = spawnSync(

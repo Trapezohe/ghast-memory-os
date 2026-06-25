@@ -44,6 +44,7 @@ try {
       import { createMemoryStatusReport } from "@ghast/memory/diagnostics";
       import { createEvolutionControlPlane } from "@ghast/memory/evolution";
       import { createPresetHostAdapter } from "@ghast/memory/host";
+      import { createMemoryHttpServer } from "@ghast/memory/http";
       import {
         renderHostCompatibilityGymMarkdown,
         runHostCompatibilityGym,
@@ -136,6 +137,40 @@ try {
       assert.equal(status.storage.schemaVersion, 1);
       assert.equal(status.hostCompatibility.level, "L4");
       assert.equal(JSON.stringify(status).includes("consumer package wrong recall"), false);
+      const httpServer = createMemoryHttpServer({
+        memory,
+        store,
+        profileId: "consumer_http",
+        host: "ghast",
+      });
+      const httpAddress = await httpServer.listen();
+      try {
+        const health = await fetch(httpAddress.url + "/health");
+        assert.equal(health.status, 200);
+        assert.equal((await health.json()).framework, "ghast-memory-os");
+        const httpObserve = await fetch(httpAddress.url + "/observe", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            profileId: "consumer_http",
+            role: "user",
+            content: "I prefer HTTP consumer stable SDK boundaries.",
+          }),
+        });
+        assert.equal(httpObserve.status, 200);
+        const httpPrepare = await fetch(httpAddress.url + "/prepare", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            profileId: "consumer_http",
+            text: "stable SDK boundaries",
+          }),
+        });
+        assert.equal(httpPrepare.status, 200);
+        assert.match(JSON.stringify(await httpPrepare.json()), /stable SDK boundaries/);
+      } finally {
+        await httpServer.close();
+      }
       await memory.close();
       console.log("[gmos-consumer] import smoke passed");
     `,
@@ -152,6 +187,7 @@ try {
         type MemoryStatusReport,
       } from "@ghast/memory/diagnostics";
       import { createEvolutionControlPlane } from "@ghast/memory/evolution";
+      import { createMemoryHttpServer } from "@ghast/memory/http";
       import {
         createSqliteMemoryStore,
         type SqliteMemoryStore,
@@ -179,6 +215,8 @@ try {
         profileId: "consumer-types",
       });
       if (status.framework !== "ghast-memory-os") throw new Error("unexpected diagnostics framework");
+      const httpServer = createMemoryHttpServer({ memory, store: sqliteStore });
+      await httpServer.close();
       if (schemaVersion < 1) throw new Error("schema version must be initialized");
       await sqliteStore.close();
     `,
@@ -271,7 +309,7 @@ try {
   assert.equal(status.hostCompatibility.level, "L4");
   const helpBin = spawnSync(gmosBin, ["--help"], { cwd: consumerDir, encoding: "utf8" });
   assert.equal(helpBin.status, 1);
-  assert.match(helpBin.stdout, /gmos mcp serve/);
+  assert.match(helpBin.stdout, /gmos http serve/);
   const hostGymBin = spawnSync(
     gmosBin,
     ["gym", "host", "--hosts", "ghast,mcp", "--format", "json"],

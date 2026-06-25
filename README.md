@@ -46,6 +46,8 @@ const prepared = await memory.prepareTurn({
   archived when the host source changes.
 - In-process MCP-style tool router and real MCP stdio server for host/agent
   runtime adapters.
+- Local HTTP adapter for hosts that need a small service boundary instead of
+  in-process imports or MCP stdio.
 - Read-only diagnostics/status report for schema, row counts, failure summary,
   package version, and host compatibility.
 - Report-only evolution failure review for clustering failure logs into
@@ -68,6 +70,7 @@ node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后�
 node dist/cli/gmos.js mcp tools
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.prepare_context --input '{"text":"你之后怎么回答我？"}'
 node dist/cli/gmos.js mcp serve --db ./gmos.db --profile local
+node dist/cli/gmos.js http serve --db ./gmos.db --profile local --port 4787 --host ghast
 node dist/cli/gmos.js evolution report --db ./gmos.db --profile local --format markdown
 node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3
 node dist/cli/gmos.js gym run --generated-seeds 10 --format markdown --report-file ./memory-gym.md
@@ -169,6 +172,43 @@ await server.close();
 Current tools are `memory.observe`, `memory.prepare_context`,
 `memory.commit_outcome`, `memory.record_feedback`, `memory.forget`, and
 `memory.explain_belief`.
+
+## HTTP Adapter
+
+Hosts that cannot embed the Node SDK directly can run gmOS as a local HTTP
+service. This adapter reuses the MCP tool router for memory operations, so it
+does not bypass the public safety boundary. It defaults to `127.0.0.1` and
+does not add auth, TLS, cloud sync, or database encryption.
+
+```ts
+import { createMemoryHttpServer } from "@ghast/memory/http";
+
+const server = createMemoryHttpServer({ memory, store, profileId: "local-user" });
+const { url } = await server.listen({ port: 4787 });
+```
+
+CLI:
+
+```bash
+gmos http serve --db ./gmos.db --profile local --port 4787 --host ghast
+```
+
+Endpoints:
+
+- `GET /health`
+- `GET /status?profileId=local`
+- `GET /tools`
+- `POST /observe`
+- `POST /prepare`
+- `POST /commit-outcome`
+- `POST /feedback`
+- `POST /forget`
+- `POST /explain`
+- `POST /mcp/call` with `{ "tool": "memory.prepare_context", "args": {} }`
+
+The HTTP adapter intentionally rejects `includeSensitive` on `/prepare` through
+the same public-tool contract as MCP. Hosts that need sensitive/admin memory
+access should use the in-process SDK with an explicit internal trust boundary.
 
 ## Evolution Review
 

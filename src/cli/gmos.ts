@@ -25,6 +25,7 @@ import {
   createPresetHostAdapter,
   type HostPreset,
 } from "../host/index.js";
+import { serveMemoryHttp } from "../http/index.js";
 import {
   createMemoryMcpServer,
   listMemoryMcpTools,
@@ -58,6 +59,7 @@ Usage:
   gmos mcp tools
   gmos mcp call --db ./gmos.db --tool memory.prepare_context --input '{"text":"你知道我什么偏好吗？"}'
   gmos mcp serve --db ./gmos.db --profile local
+  gmos http serve --db ./gmos.db --profile local --port 4787 --host ghast
   gmos evolution report --db ./gmos.db --profile local --format markdown
   gmos gym run --db :memory: --generated-seeds 3 --format markdown --report-file ./memory-gym.md
   gmos gym scale --sizes 100,1000 --threshold-p95-ms 250
@@ -109,6 +111,16 @@ function nonNegativeNumberOption(name: string, fallback: number): number {
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed < 0) {
     throw new Error(`${name} must be a non-negative number`);
+  }
+  return parsed;
+}
+
+function nonNegativeIntegerOption(name: string, fallback: number): number {
+  const raw = value(name);
+  if (raw === undefined) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`${name} must be a non-negative integer`);
   }
   return parsed;
 }
@@ -457,6 +469,34 @@ async function main(): Promise<void> {
 
     if (command === "mcp" && subcommand === "serve") {
       const server = await serveMemoryMcpStdio(memory);
+      try {
+        await waitForServerShutdown();
+      } finally {
+        await server.close();
+      }
+      return;
+    }
+
+    if (command === "http" && subcommand === "serve") {
+      const server = await serveMemoryHttp({
+        memory,
+        store,
+        profileId,
+        host: hostPreset(),
+        port: nonNegativeIntegerOption("--port", 4787),
+        hostname: value("--listen-host", "127.0.0.1"),
+      });
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            url: server.address.url,
+            encrypted: false,
+          },
+          null,
+          2,
+        ),
+      );
       try {
         await waitForServerShutdown();
       } finally {
