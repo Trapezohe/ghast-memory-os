@@ -83,6 +83,7 @@ node dist/cli/gmos.js gym run --generated-seeds 10 --format markdown --report-fi
 node dist/cli/gmos.js gym scale --sizes 100,1000
 node dist/cli/gmos.js gym gate --generated-seeds 3 --scale-sizes 100,1000 --format json
 node dist/cli/gmos.js gym host --hosts ghast,mcp,mock_l3,search_only --format markdown
+node dist/cli/gmos.js gym host --hosts ghast --actual-report ./ghast-memory-status.json --format markdown
 ```
 
 ## QA Gates
@@ -122,6 +123,14 @@ temporary SQLite files under the OS temp directory; it does not read a user's
 memory DB. Passing this gate means the SDK's local runtime contract is healthy;
 it is still not an external long-term agent benchmark or a proof of mature
 digital-twin capability.
+
+The host compatibility gym distinguishes target presets from actual host
+adoption. `--hosts ghast` without an actual report tests the SDK's target Ghast
+capability contract. To gate a real app migration, pass a host status JSON with
+`--actual-report`; the CLI accepts either a direct host report or a Ghast
+Desktop status object containing `gmosSdkAdapter`. If the actual report says
+the app is still L3, the gym fails instead of treating the target L4 preset as
+proof of completed adoption.
 
 ## Examples
 

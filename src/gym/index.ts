@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { createMemoryStatusReport } from "../diagnostics/index.js";
 import { createHostAdapter } from "../host/index.js";
-import type { HostPreset } from "../host/index.js";
+import type { HostActualCompatibilityReport, HostPreset } from "../host/index.js";
 import { createMemoryMcpServer } from "../mcp/index.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
@@ -562,6 +562,7 @@ export interface RunMemoryReleaseGateOptions {
   scaleSizes?: number[] | undefined;
   scaleThresholdP95Ms?: number | undefined;
   hosts?: HostPreset[] | undefined;
+  actualReports?: HostActualCompatibilityReport[] | undefined;
 }
 
 function failedHardGates(hardGates: Record<string, boolean>): string[] {
@@ -598,7 +599,7 @@ export async function runMemoryReleaseGate(
         dbPath: ":memory:",
         generatedSeeds,
       }),
-      runHostCompatibilityGym({ hosts }),
+      runHostCompatibilityGym({ hosts, actualReports: options.actualReports }),
       runMemoryScaleBenchmark({
         sizes: scaleSizes,
         thresholdP95Ms: scaleThresholdP95Ms,
@@ -635,6 +636,7 @@ export async function runMemoryReleaseGate(
         scaleSizes,
         scaleThresholdP95Ms,
         hosts,
+        actualHostReports: options.actualReports?.length ?? 0,
       },
       components: {
         memoryGym: {

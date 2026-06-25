@@ -43,6 +43,18 @@ export interface HostCompatibilityReport {
   hardGateCoverage: Record<string, boolean>;
 }
 
+export interface HostActualCompatibilityReport {
+  hostId: string;
+  level: HostCompatibilityLevel;
+  targetLevel?: HostCompatibilityLevel | undefined;
+  canClaimTargetLevel?: boolean | undefined;
+  blockingGaps?: string[] | undefined;
+  contextOwnership?: string | undefined;
+  candidateRetrievalOwnership?: string | undefined;
+  storageOwnership?: string | undefined;
+  mutationOwnership?: string | undefined;
+}
+
 export function classifyHostCompatibility(input: {
   hostId: string;
   capabilities?: Partial<HostCapabilities> | undefined;

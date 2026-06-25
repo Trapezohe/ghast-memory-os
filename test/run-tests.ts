@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -1556,6 +1556,7 @@ assert.deepEqual(releaseGate.components.scale.failedSizes, []);
 assert.equal(releaseGate.components.diagnostics.pass, true);
 assert.equal(releaseGate.components.diagnostics.encrypted, false);
 assert.equal(releaseGate.reports.diagnostics.trustContract.encrypted, false);
+assert.equal(releaseGate.inputs.actualHostReports, 0);
 assert.match(renderMemoryReleaseGateMarkdown(releaseGate), /gmOS Release Gate Report/);
 const failedReleaseGate = await runMemoryReleaseGate({
   generatedSeeds: 1,
@@ -1783,6 +1784,10 @@ const hostGym = await runHostCompatibilityGym();
 assert.equal(hostGym.pass, true, hostGym.failures.join("\n"));
 assert.equal(hostGym.hostCount, 4);
 assert.equal(hostGym.hosts.find((host) => host.hostId === "ghast")?.level, "L4");
+assert.equal(
+  hostGym.hosts.find((host) => host.hostId === "ghast")?.verificationMode,
+  "preset_contract",
+);
 assert.equal(hostGym.hosts.find((host) => host.hostId === "ghast")?.memoryToAction, "pass");
 assert.equal(hostGym.hosts.find((host) => host.hostId === "mcp")?.level, "L2");
 assert.equal(
@@ -1794,6 +1799,70 @@ assert.equal(
   "not_run",
 );
 assert.match(renderHostCompatibilityGymMarkdown(hostGym), /gmOS Host Compatibility Gym/);
+const actualGhastL3Report = {
+  hostId: "ghast_desktop",
+  level: "L3",
+  targetLevel: "L4",
+  canClaimTargetLevel: false,
+  blockingGaps: [
+    "primary memory storage is still legacy memoryService",
+    "non-SDK-owned consolidation and cleanup primary storage still execute through legacy memoryService",
+  ],
+};
+const actualHostGym = await runHostCompatibilityGym({
+  hosts: ["ghast"],
+  actualReports: [actualGhastL3Report],
+});
+assert.equal(actualHostGym.pass, false);
+assert.deepEqual(actualHostGym.unmatchedActualReportHostIds, []);
+assert.equal(actualHostGym.hosts[0]?.verificationMode, "actual_host_report");
+assert.equal(actualHostGym.hosts[0]?.level, "L3");
+assert.equal(actualHostGym.hosts[0]?.presetLevel, "L4");
+assert.match(actualHostGym.failures.join("\n"), /actual_host_report_level/);
+const actualClaimFalseWithoutTarget = await runHostCompatibilityGym({
+  hosts: ["ghast"],
+  actualReports: [
+    {
+      hostId: "ghast_desktop",
+      level: "L4",
+      canClaimTargetLevel: false,
+      blockingGaps: ["actual report explicitly refuses target claim"],
+    },
+  ],
+});
+assert.equal(actualClaimFalseWithoutTarget.pass, false);
+assert.match(
+  actualClaimFalseWithoutTarget.failures.join("\n"),
+  /actual report explicitly refuses target claim/,
+);
+const unmatchedActualHostGym = await runHostCompatibilityGym({
+  hosts: ["ghast"],
+  actualReports: [
+    {
+      hostId: "unknown_host",
+      level: "L3",
+      targetLevel: "L4",
+      canClaimTargetLevel: false,
+    },
+  ],
+});
+assert.equal(unmatchedActualHostGym.pass, false);
+assert.deepEqual(unmatchedActualHostGym.unmatchedActualReportHostIds, ["unknown_host"]);
+assert.match(unmatchedActualHostGym.failures.join("\n"), /actual_report_unmatched:unknown_host/);
+const unconsumedActualHostGym = await runHostCompatibilityGym({
+  hosts: ["ghast"],
+  actualReports: [
+    {
+      hostId: "mcp",
+      level: "L2",
+      targetLevel: "L2",
+      canClaimTargetLevel: true,
+    },
+  ],
+});
+assert.equal(unconsumedActualHostGym.pass, false);
+assert.deepEqual(unconsumedActualHostGym.unmatchedActualReportHostIds, ["mcp"]);
+assert.match(unconsumedActualHostGym.failures.join("\n"), /actual_report_unmatched:mcp/);
 const cliHostGym = spawnSync(
   process.execPath,
   [
@@ -1813,6 +1882,31 @@ assert.equal(cliHostGym.status, 0, cliHostGym.stderr);
 assert.match(cliHostGym.stdout, /gmOS Host Compatibility Gym/);
 assert.match(cliHostGym.stdout, /ghast/);
 assert.match(cliHostGym.stdout, /mcp/);
+const actualReportFile = path.join(tmp, "actual-ghast-report.json");
+writeFileSync(
+  actualReportFile,
+  JSON.stringify({ gmosSdkAdapter: actualGhastL3Report }),
+);
+const cliHostGymActual = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "host",
+    "--hosts",
+    "ghast",
+    "--actual-report",
+    actualReportFile,
+    "--format",
+    "markdown",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliHostGymActual.status, 0);
+assert.match(cliHostGymActual.stdout, /actual_host_report/);
+assert.match(cliHostGymActual.stdout, /primary memory storage is still legacy memoryService/);
 const cliHostGymInvalid = spawnSync(
   process.execPath,
   [

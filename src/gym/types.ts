@@ -97,6 +97,7 @@ export interface MemoryReleaseGateResult {
     scaleSizes: number[];
     scaleThresholdP95Ms: number;
     hosts: HostPreset[];
+    actualHostReports: number;
   };
   components: {
     memoryGym: {

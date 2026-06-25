@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { createMemoryOS } from "../runtime/create-memory-os.js";
@@ -25,6 +25,7 @@ import {
 } from "../gym/index.js";
 import {
   createPresetHostAdapter,
+  type HostActualCompatibilityReport,
   type HostPreset,
 } from "../host/index.js";
 import { serveMemoryHttp } from "../http/index.js";
@@ -70,7 +71,7 @@ Usage:
   gmos gym run --db :memory: --generated-seeds 3 --format markdown --report-file ./memory-gym.md
   gmos gym scale --sizes 100,1000 --threshold-p95-ms 250
   gmos gym gate --generated-seeds 3 --scale-sizes 100,1000 --format json
-  gmos gym host --hosts ghast,mcp,mock_l3,search_only --format markdown
+  gmos gym host --hosts ghast,mcp,mock_l3,search_only --actual-report ./host-status.json --format markdown
 `);
   process.exit(1);
 }
@@ -170,6 +171,67 @@ function hostPresetList(raw: string | undefined): HostPreset[] {
 function hostReport(preset: HostPreset | undefined) {
   if (!preset) return undefined;
   return createPresetHostAdapter(preset).compatibility;
+}
+
+function hostActualReportFromUnknown(value: unknown): HostActualCompatibilityReport[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => hostActualReportFromUnknown(entry));
+  }
+  if (!value || typeof value !== "object") return [];
+  const record = value as Record<string, unknown>;
+  if (record.gmosSdkAdapter) {
+    return hostActualReportFromUnknown(record.gmosSdkAdapter);
+  }
+  const hostId = typeof record.hostId === "string" ? record.hostId : null;
+  const level = typeof record.level === "string" ? record.level : null;
+  if (!hostId || !level) return [];
+  if (level !== "L0" && level !== "L1" && level !== "L2" && level !== "L3" && level !== "L4") {
+    return [];
+  }
+  const targetLevel =
+    record.targetLevel === "L0" ||
+    record.targetLevel === "L1" ||
+    record.targetLevel === "L2" ||
+    record.targetLevel === "L3" ||
+    record.targetLevel === "L4"
+      ? record.targetLevel
+      : undefined;
+  return [
+    {
+      hostId,
+      level,
+      targetLevel,
+      canClaimTargetLevel:
+        typeof record.canClaimTargetLevel === "boolean"
+          ? record.canClaimTargetLevel
+          : undefined,
+      blockingGaps: Array.isArray(record.blockingGaps)
+        ? record.blockingGaps.filter((entry): entry is string => typeof entry === "string")
+        : undefined,
+      contextOwnership:
+        typeof record.contextOwnership === "string" ? record.contextOwnership : undefined,
+      candidateRetrievalOwnership:
+        typeof record.candidateRetrievalOwnership === "string"
+          ? record.candidateRetrievalOwnership
+          : undefined,
+      storageOwnership:
+        typeof record.storageOwnership === "string" ? record.storageOwnership : undefined,
+      mutationOwnership:
+        typeof record.mutationOwnership === "string" ? record.mutationOwnership : undefined,
+    },
+  ];
+}
+
+function actualHostReportsFromOption(): HostActualCompatibilityReport[] | undefined {
+  const reportFile = value("--actual-report");
+  if (!reportFile) return undefined;
+  const resolved = path.resolve(process.cwd(), reportFile);
+  const parsed = JSON.parse(readFileSync(resolved, "utf8")) as unknown;
+  const reports = hostActualReportFromUnknown(parsed);
+  if (reports.length === 0) {
+    throw new Error("--actual-report did not contain a host compatibility report");
+  }
+  return reports;
 }
 
 function memoryKindOption(): MemoryKind {
@@ -333,6 +395,7 @@ async function main(): Promise<void> {
       ),
       scaleThresholdP95Ms: nonNegativeNumberOption("--threshold-p95-ms", 250),
       hosts: hostPresetList(value("--hosts")),
+      actualReports: actualHostReportsFromOption(),
     });
     printReport(report, renderMemoryReleaseGateMarkdown(report));
     if (!report.pass) process.exitCode = 1;
@@ -363,6 +426,7 @@ async function main(): Promise<void> {
   if (command === "gym" && subcommand === "host") {
     const report = await runHostCompatibilityGym({
       hosts: hostPresetList(value("--hosts")),
+      actualReports: actualHostReportsFromOption(),
     });
     printReport(report, renderHostCompatibilityGymMarkdown(report));
     if (!report.pass) process.exitCode = 1;

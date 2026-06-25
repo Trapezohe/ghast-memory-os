@@ -1,5 +1,6 @@
 import {
   createPresetHostAdapter,
+  type HostActualCompatibilityReport,
   type HostAdapter,
   type HostCompatibilityLevel,
   type HostCompatibilityReport,
@@ -35,8 +36,11 @@ export interface HostCompatibilityGymHostResult {
   hostId: HostPreset;
   displayName: string;
   pass: boolean;
+  verificationMode: "preset_contract" | "actual_host_report";
   expectedLevel: HostCompatibilityLevel;
   level: HostCompatibilityLevel;
+  presetLevel: HostCompatibilityLevel;
+  actualReport?: HostActualCompatibilityReport | undefined;
   score: number;
   capabilityRetention: string;
   gaps: string[];
@@ -55,12 +59,14 @@ export interface HostCompatibilityGymResult {
   node: string;
   platform: string;
   hostCount: number;
+  unmatchedActualReportHostIds: string[];
   hosts: HostCompatibilityGymHostResult[];
   failures: string[];
 }
 
 export interface RunHostCompatibilityGymOptions {
   hosts?: HostPreset[] | undefined;
+  actualReports?: HostActualCompatibilityReport[] | undefined;
 }
 
 const DEFAULT_HOSTS: HostPreset[] = ["ghast", "mock_l3", "mcp", "search_only"];
@@ -70,6 +76,14 @@ const EXPECTED_LEVELS: Record<HostPreset, HostCompatibilityLevel> = {
   mock_l3: "L3",
   mcp: "L2",
   search_only: "L1",
+};
+
+const LEVEL_RANK: Record<HostCompatibilityLevel, number> = {
+  L0: 0,
+  L1: 1,
+  L2: 2,
+  L3: 3,
+  L4: 4,
 };
 
 function profileId(host: HostPreset): string {
@@ -96,7 +110,45 @@ function areaStatus(
   return applicable.every((probe) => probe.status === "pass") ? "pass" : "fail";
 }
 
-async function runHost(adapter: HostAdapter): Promise<HostCompatibilityGymHostResult> {
+function normalizeActualHostId(hostId: string): HostPreset | null {
+  if (hostId === "ghast" || hostId === "ghast_desktop") return "ghast";
+  if (hostId === "mcp") return "mcp";
+  if (hostId === "mock_l3") return "mock_l3";
+  if (hostId === "search_only") return "search_only";
+  return null;
+}
+
+function actualReportMap(reports: HostActualCompatibilityReport[] | undefined): {
+  reportsByHost: Map<HostPreset, HostActualCompatibilityReport>;
+  unmatchedHostIds: string[];
+} {
+  const map = new Map<HostPreset, HostActualCompatibilityReport>();
+  const unmatchedHostIds: string[] = [];
+  for (const report of reports ?? []) {
+    const host = normalizeActualHostId(report.hostId);
+    if (host) {
+      map.set(host, report);
+    } else {
+      unmatchedHostIds.push(report.hostId);
+    }
+  }
+  return { reportsByHost: map, unmatchedHostIds };
+}
+
+function actualReportMeetsExpectedLevel(input: {
+  report: HostActualCompatibilityReport;
+  expectedLevel: HostCompatibilityLevel;
+}): boolean {
+  const levelPass =
+    LEVEL_RANK[input.report.level] >= LEVEL_RANK[input.expectedLevel];
+  const targetClaimPass = input.report.canClaimTargetLevel !== false;
+  return levelPass && targetClaimPass;
+}
+
+async function runHost(
+  adapter: HostAdapter,
+  actualReport?: HostActualCompatibilityReport | undefined,
+): Promise<HostCompatibilityGymHostResult> {
   const host = adapter.hostId as HostPreset;
   const expectedLevel = EXPECTED_LEVELS[host];
   const probes: HostCompatibilityProbeResult[] = [];
@@ -104,6 +156,8 @@ async function runHost(adapter: HostAdapter): Promise<HostCompatibilityGymHostRe
   const id = profileId(host);
   const store = createSqliteMemoryStore({ path: ":memory:" });
   const memory = createMemoryOS({ profileId: id, store });
+  const verificationMode = actualReport ? "actual_host_report" : "preset_contract";
+  const effectiveLevel = actualReport?.level ?? adapter.compatibility.level;
 
   addProbe(
     probes,
@@ -112,6 +166,21 @@ async function runHost(adapter: HostAdapter): Promise<HostCompatibilityGymHostRe
     adapter.compatibility.level === expectedLevel ? "pass" : "fail",
     `expected ${expectedLevel}, got ${adapter.compatibility.level}`,
   );
+  if (actualReport) {
+    const actualPass = actualReportMeetsExpectedLevel({
+      report: actualReport,
+      expectedLevel,
+    });
+    addProbe(
+      probes,
+      "actual_host_report_level",
+      "static_contract",
+      actualPass ? "pass" : "fail",
+      actualPass
+        ? `actual ${actualReport.level} can claim ${expectedLevel}`
+        : `actual ${actualReport.level} cannot claim ${expectedLevel}: ${(actualReport.blockingGaps ?? []).join("; ") || "no blocking gaps provided"}`,
+    );
+  }
 
   try {
     if (
@@ -350,11 +419,14 @@ async function runHost(adapter: HostAdapter): Promise<HostCompatibilityGymHostRe
     hostId: host,
     displayName: adapter.displayName ?? adapter.hostId,
     pass: failures.length === 0,
+    verificationMode,
     expectedLevel,
-    level: adapter.compatibility.level,
+    level: effectiveLevel,
+    presetLevel: adapter.compatibility.level,
+    actualReport,
     score: adapter.compatibility.score,
     capabilityRetention: adapter.compatibility.capabilityRetention,
-    gaps: adapter.compatibility.gaps,
+    gaps: actualReport?.blockingGaps ?? adapter.compatibility.gaps,
     hardGateCoverage: adapter.compatibility.hardGateCoverage,
     memoryToAction: areaStatus(probes, "memory_to_action"),
     forgetResidue: areaStatus(probes, "forget_residue"),
@@ -368,22 +440,38 @@ export async function runHostCompatibilityGym(
   options: RunHostCompatibilityGymOptions = {},
 ): Promise<HostCompatibilityGymResult> {
   const hosts = options.hosts?.length ? options.hosts : DEFAULT_HOSTS;
+  const selectedHosts = new Set(hosts);
+  const actualReports = actualReportMap(options.actualReports);
+  const unconsumedActualReportHostIds = Array.from(actualReports.reportsByHost.keys())
+    .filter((host) => !selectedHosts.has(host));
+  const unmatchedActualReportHostIds = [
+    ...actualReports.unmatchedHostIds,
+    ...unconsumedActualReportHostIds,
+  ];
   const results: HostCompatibilityGymHostResult[] = [];
   for (const host of hosts) {
-    results.push(await runHost(createPresetHostAdapter(host)));
+    results.push(
+      await runHost(createPresetHostAdapter(host), actualReports.reportsByHost.get(host)),
+    );
   }
-  const failures = results.flatMap((host) =>
-    host.probes
-      .filter((probe) => probe.status === "fail")
-      .map((probe) => `${host.hostId}:${probe.name}:${probe.detail}`),
-  );
+  const failures = [
+    ...unmatchedActualReportHostIds.map(
+      (hostId) => `actual_report_unmatched:${hostId}`,
+    ),
+    ...results.flatMap((host) =>
+      host.probes
+        .filter((probe) => probe.status === "fail")
+        .map((probe) => `${host.hostId}:${probe.name}:${probe.detail}`),
+    ),
+  ];
   return {
     framework: "gmos-host-compatibility-gym",
-    pass: results.every((host) => host.pass),
+    pass: results.every((host) => host.pass) && unmatchedActualReportHostIds.length === 0,
     startedAt: new Date().toISOString(),
     node: process.version,
     platform: `${process.platform}/${process.arch}`,
     hostCount: results.length,
+    unmatchedActualReportHostIds,
     hosts: results,
     failures,
   };

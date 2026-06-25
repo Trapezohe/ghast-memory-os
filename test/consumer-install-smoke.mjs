@@ -156,6 +156,7 @@ try {
       assert.equal(releaseGate.pass, true);
       assert.equal(releaseGate.schema, "gmos.memory_release_gate.v1");
       assert.equal(releaseGate.inputs.dbPathMode, "memory");
+      assert.equal(releaseGate.inputs.actualHostReports, 0);
       assert.equal(releaseGate.components.diagnostics.encrypted, false);
       assert.match(renderMemoryReleaseGateMarkdown(releaseGate), /gmOS Release Gate Report/);
       await memory.recordFeedback({
