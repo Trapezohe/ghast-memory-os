@@ -29,6 +29,7 @@ Usage:
   gmos observe --db ./gmos.db --profile local --text "我喜欢简洁回答"
   gmos prepare --db ./gmos.db --profile local --text "你知道我什么偏好吗？"
   gmos forget --db ./gmos.db --profile local --query "Moonbase"
+  gmos explain --db ./gmos.db --profile local --id memory_xxx
   gmos gym run --db :memory: --format markdown --report-file ./memory-gym.md
   gmos gym scale --sizes 100,1000
 `);
@@ -144,6 +145,13 @@ async function main(): Promise<void> {
       const query = value("--query");
       if (!query) usage();
       console.log(JSON.stringify(await memory.forget({ profileId, query }), null, 2));
+      return;
+    }
+
+    if (command === "explain") {
+      const id = value("--id");
+      if (!id) usage();
+      console.log(JSON.stringify(await memory.explain(id, profileId), null, 2));
       return;
     }
 

@@ -236,17 +236,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     });
   }
 
-  async function explain(id: string): Promise<ExplainResult | null> {
+  async function explain(id: string, profileIdInput?: string): Promise<ExplainResult | null> {
     await initialize();
-    const memories = await store.searchMemories({
-      profileId: defaultProfileId,
-      query: id,
-      purpose: "manage",
+    const profileId = profileIdFor(defaultProfileId, profileIdInput);
+    const memory = await store.getMemoryById(profileId, id, {
       includeSensitive: true,
       includePerson: true,
-      limit: 100,
     });
-    const memory = memories.find((item) => item.id === id) ?? null;
     if (!memory) return null;
     const evidence = await store.listEvidenceForMemory(memory.id);
     return {

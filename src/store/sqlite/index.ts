@@ -221,6 +221,32 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Memo
       .map((item) => item.memory);
   }
 
+  function getMemoryById(
+    profileId: string,
+    memoryId: string,
+    options: {
+      includeSensitive?: boolean | undefined;
+      includePerson?: boolean | undefined;
+    } = {},
+  ): MemoryRecord | null {
+    initialize();
+    const row = db
+      .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ?")
+      .get(profileId, memoryId) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    const memory = normalizeMemory(row);
+    if (!options.includePerson && memory.kind === "person") return null;
+    if (
+      shouldHideFromOrdinaryContext({
+        sensitivity: memory.sensitivity,
+        includeSensitive: options.includeSensitive,
+      })
+    ) {
+      return null;
+    }
+    return memory;
+  }
+
   function listActionPolicies(
     profileId: string,
     options: { includeSensitive?: boolean | undefined } = {},
@@ -356,6 +382,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Memo
     addMemory,
     addWorldBelief,
     searchMemories,
+    getMemoryById,
     listActionPolicies,
     listEvidenceForMemory,
     forget,

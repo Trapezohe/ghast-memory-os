@@ -247,6 +247,14 @@ export interface MemoryStore {
   addMemory(input: AddMemoryInput): Promise<MemoryRecord> | MemoryRecord;
   addWorldBelief(input: AddWorldBeliefInput): Promise<WorldBeliefRecord> | WorldBeliefRecord;
   searchMemories(input: MemorySearchInput): Promise<MemoryRecord[]> | MemoryRecord[];
+  getMemoryById(
+    profileId: string,
+    id: string,
+    options?: {
+      includeSensitive?: boolean | undefined;
+      includePerson?: boolean | undefined;
+    },
+  ): Promise<MemoryRecord | null> | MemoryRecord | null;
   listActionPolicies(
     profileId: string,
     options?: { includeSensitive?: boolean | undefined },
@@ -273,6 +281,6 @@ export interface MemoryOS {
   commitOutcome(input: CommitOutcomeInput): Promise<void>;
   recordFeedback(input: FeedbackInput): Promise<void>;
   forget(input: ForgetInput): Promise<ForgetResult>;
-  explain(id: string): Promise<ExplainResult | null>;
+  explain(id: string, profileId?: string): Promise<ExplainResult | null>;
   close(): Promise<void>;
 }

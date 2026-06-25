@@ -34,6 +34,12 @@ const prepared = await memory.prepareTurn({
 });
 assert.match(prepared.contextBlock, /简洁的中文回答/);
 assert.equal(prepared.evidence.length, 1);
+const sourceMemoryId = prepared.actionPolicies[0]?.sourceMemoryId;
+assert.equal(typeof sourceMemoryId, "string");
+const explanation = await memory.explain(sourceMemoryId!, "test");
+assert.equal(explanation?.kind, "memory");
+assert.match(explanation?.text ?? "", /简洁的中文回答/);
+assert.equal(explanation?.evidence.length, 1);
 
 await memory.observe({
   type: "conversation.message",
