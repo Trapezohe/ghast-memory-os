@@ -281,6 +281,7 @@ export interface MemoryStore {
   recordFailure(input: RecordFailureInput): Promise<void> | void;
   recordTaskTrajectory(input: TaskTrajectoryInput): Promise<void> | void;
   rowCounts(): Promise<Record<string, number>> | Record<string, number>;
+  schemaVersion?(): Promise<number> | number;
 }
 
 export interface MemoryOSOptions {

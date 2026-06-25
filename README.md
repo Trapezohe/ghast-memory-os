@@ -128,6 +128,10 @@ and host boundaries, not database encryption:
 - forget operations archive matching memory and remove it from future context;
 - read paths must not write.
 
+SQLite stores include a `gmos_schema_migrations` ledger. `gmos doctor` reports
+the current schema version so host applications can verify upgrade state before
+running long-lived agents.
+
 ## Host Compatibility
 
 gmOS reports host capability as L0-L4. The SDK can maintain memory state, but a

@@ -1,9 +1,17 @@
 import type Database from "better-sqlite3";
 
+export const GMOS_SQLITE_SCHEMA_VERSION = 1;
+
 export function ensureSqliteSchema(db: Database.Database): void {
   db.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA foreign_keys = ON;
+
+    CREATE TABLE IF NOT EXISTS gmos_schema_migrations (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at TEXT NOT NULL
+    );
 
     CREATE TABLE IF NOT EXISTS gmos_evidence_events (
       id TEXT PRIMARY KEY,
@@ -74,6 +82,19 @@ export function ensureSqliteSchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_gmos_task_trajectories_profile
       ON gmos_task_trajectories(profile_id, status, created_at);
+
+    INSERT OR IGNORE INTO gmos_schema_migrations(version, name, applied_at)
+      VALUES (
+        ${GMOS_SQLITE_SCHEMA_VERSION},
+        'baseline',
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      );
   `);
 }
 
+export function sqliteSchemaVersion(db: Database.Database): number {
+  const row = db
+    .prepare("SELECT MAX(version) AS version FROM gmos_schema_migrations")
+    .get() as { version?: number | null } | undefined;
+  return Number(row?.version ?? 0);
+}

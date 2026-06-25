@@ -20,7 +20,7 @@ import type {
   WorldBeliefRecord,
 } from "../../kernel/types.js";
 import { shouldHideFromOrdinaryContext } from "../../kernel/safety.js";
-import { ensureSqliteSchema } from "./schema.js";
+import { ensureSqliteSchema, sqliteSchemaVersion } from "./schema.js";
 
 export interface SqliteMemoryStoreOptions {
   path: string;
@@ -422,6 +422,11 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Memo
     );
   }
 
+  function schemaVersion(): number {
+    initialize();
+    return sqliteSchemaVersion(db);
+  }
+
   return {
     initialize,
     close() {
@@ -440,5 +445,6 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Memo
     recordFailure,
     recordTaskTrajectory,
     rowCounts,
+    schemaVersion,
   };
 }

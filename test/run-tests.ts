@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import Database from "better-sqlite3";
 
 import { createMemoryOS } from "../src/index.js";
 import {
@@ -36,6 +37,62 @@ const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-sdk-test-"));
 const dbPath = path.join(tmp, "test.db");
 const store = createSqliteMemoryStore({ path: dbPath });
 const memory = createMemoryOS({ profileId: "test", store });
+assert.equal(await store.schemaVersion(), 1);
+
+const legacyDbPath = path.join(tmp, "legacy-no-ledger.db");
+const legacyHandle = new Database(legacyDbPath);
+legacyHandle.exec(`
+  CREATE TABLE legacy_marker(id TEXT PRIMARY KEY);
+  INSERT INTO legacy_marker(id) VALUES ('preserved');
+  CREATE TABLE gmos_memories (
+    id TEXT PRIMARY KEY,
+    profile_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT 'global',
+    content TEXT NOT NULL,
+    sensitivity TEXT NOT NULL DEFAULT 'normal',
+    status TEXT NOT NULL DEFAULT 'active',
+    confidence REAL NOT NULL DEFAULT 0.5,
+    source_event_id TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  INSERT INTO gmos_memories (
+    id, profile_id, kind, scope, content, sensitivity, status, confidence,
+    source_event_id, metadata_json, created_at, updated_at
+  ) VALUES (
+    'legacy_memory_1', 'legacy_profile', 'preference', 'global',
+    'legacy preference row', 'normal', 'active', 0.8,
+    NULL, '{}', '2026-06-25T00:00:00.000Z', '2026-06-25T00:00:00.000Z'
+  );
+`);
+const legacyStore = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
+await legacyStore.initialize();
+assert.equal(await legacyStore.schemaVersion(), 1);
+assert.equal(
+  (
+    legacyHandle
+      .prepare("SELECT COUNT(*) AS count FROM gmos_schema_migrations WHERE version = 1")
+      .get() as { count: number }
+  ).count,
+  1,
+);
+assert.equal(
+  (
+    legacyHandle.prepare("SELECT id FROM legacy_marker").get() as { id: string }
+  ).id,
+  "preserved",
+);
+assert.equal(
+  (
+    legacyHandle
+      .prepare("SELECT content FROM gmos_memories WHERE id = 'legacy_memory_1'")
+      .get() as { content: string }
+  ).content,
+  "legacy preference row",
+);
+legacyHandle.close();
 
 await memory.observe({
   type: "conversation.message",
@@ -676,9 +733,12 @@ for (const [host, expectedLevel] of [
   assert.equal(doctor.status, 0, doctor.stderr);
   const doctorJson = JSON.parse(doctor.stdout) as {
     encrypted: boolean;
+    schema?: { dialect?: string; version?: number };
     hostCompatibility?: { level?: string; gaps?: string[] };
   };
   assert.equal(doctorJson.encrypted, false);
+  assert.equal(doctorJson.schema?.dialect, "sqlite");
+  assert.equal(doctorJson.schema?.version, 1);
   assert.equal(doctorJson.hostCompatibility?.level, expectedLevel);
   if (host === "ghast") assert.deepEqual(doctorJson.hostCompatibility?.gaps, []);
 }

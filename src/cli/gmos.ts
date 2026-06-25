@@ -227,6 +227,10 @@ async function main(): Promise<void> {
             ok: true,
             dbPath,
             encrypted: false,
+            schema: {
+              dialect: "sqlite",
+              version: store.schemaVersion ? await store.schemaVersion() : null,
+            },
             rowCounts: await store.rowCounts(),
             hostCompatibility: hostReport(requestedHost),
           },

@@ -101,6 +101,8 @@ try {
   assert.equal(bin.status, 0, bin.stderr);
   const doctor = JSON.parse(bin.stdout);
   assert.equal(doctor.encrypted, false);
+  assert.equal(doctor.schema.dialect, "sqlite");
+  assert.equal(doctor.schema.version, 1);
   assert.equal(doctor.hostCompatibility.level, "L4");
   const helpBin = spawnSync(gmosBin, ["--help"], { cwd: consumerDir, encoding: "utf8" });
   assert.equal(helpBin.status, 1);
