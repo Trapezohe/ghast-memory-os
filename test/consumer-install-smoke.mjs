@@ -45,7 +45,7 @@ try {
         renderHostCompatibilityGymMarkdown,
         runHostCompatibilityGym,
       } from "@ghast/memory/gym";
-      import { createMemoryMcpServer } from "@ghast/memory/mcp";
+      import { createMemoryMcpServer, createMemoryMcpStdioServer } from "@ghast/memory/mcp";
       import { createSqliteMemoryStore } from "@ghast/memory/store/sqlite";
 
       const store = createSqliteMemoryStore({ path: path.join(process.cwd(), "consumer.db") });
@@ -75,6 +75,7 @@ try {
       });
       assert.equal(mcpResult.isError, undefined);
       assert.match(JSON.stringify(mcpResult.structuredContent), /先讲风险/);
+      assert.equal(createMemoryMcpStdioServer(memory).isConnected(), false);
       const hostGym = await runHostCompatibilityGym({ hosts: ["ghast", "mcp"] });
       assert.equal(hostGym.pass, true);
       assert.equal(hostGym.hostCount, 2);
@@ -101,6 +102,9 @@ try {
   const doctor = JSON.parse(bin.stdout);
   assert.equal(doctor.encrypted, false);
   assert.equal(doctor.hostCompatibility.level, "L4");
+  const helpBin = spawnSync(gmosBin, ["--help"], { cwd: consumerDir, encoding: "utf8" });
+  assert.equal(helpBin.status, 1);
+  assert.match(helpBin.stdout, /gmos mcp serve/);
   const hostGymBin = spawnSync(
     gmosBin,
     ["gym", "host", "--hosts", "ghast,mcp", "--format", "json"],

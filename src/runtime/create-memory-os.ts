@@ -6,6 +6,8 @@ import {
   classifySensitivity,
   eligibleForLongTermMemory,
   isPersonRoutedMemory,
+  sanitizeEvidenceForPublicOutput,
+  sanitizePublicPayloadRecord,
 } from "../kernel/safety.js";
 import type {
   CommitOutcomeInput,
@@ -115,7 +117,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         role: event.role,
         messageId: event.messageId,
         privacyMode: event.privacyMode ?? "normal",
-        metadata: event.metadata ?? {},
+        metadata: sanitizePublicPayloadRecord(event.metadata ?? {}),
       },
       createdAt: event.createdAt,
     });
@@ -170,7 +172,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       for (const event of await store.listEvidenceForMemory(memoryId)) {
         if (seenEvidenceIds.has(event.id)) continue;
         seenEvidenceIds.add(event.id);
-        evidence.push(event);
+        evidence.push(sanitizeEvidenceForPublicOutput(event));
       }
     }
     if (input.includeEvidence) {
@@ -244,10 +246,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       includePerson: true,
     });
     if (!memory) return null;
-    const evidence = await store.listEvidenceForMemory(memory.id);
+    const evidence = (await store.listEvidenceForMemory(memory.id)).map(
+      sanitizeEvidenceForPublicOutput,
+    );
     return {
       id: memory.id,
       kind: "memory",
+      memoryKind: memory.kind,
+      sensitivity: memory.sensitivity,
       text: memory.content,
       evidence,
     };

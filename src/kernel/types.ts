@@ -177,6 +177,8 @@ export interface ForgetResult {
 export interface ExplainResult {
   id: string;
   kind: "memory" | "belief";
+  memoryKind?: MemoryKind | undefined;
+  sensitivity?: Sensitivity | undefined;
   text: string;
   evidence: EvidenceEvent[];
 }

@@ -1,4 +1,5 @@
 import type { ActionPolicy, EvidenceEvent, MemoryRecord, PreparedTurn } from "./types.js";
+import { sanitizeEvidenceForPublicOutput } from "./safety.js";
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
@@ -12,6 +13,9 @@ export function composeTurnContext(input: {
   includeEvidence?: boolean | undefined;
   contextBudgetTokens?: number | undefined;
 }): PreparedTurn {
+  const publicEvidence = input.includeEvidence
+    ? input.evidence.map(sanitizeEvidenceForPublicOutput)
+    : [];
   const directives = input.actionPolicies
     .filter((policy) => policy.kind === "do_not_push")
     .map((policy) => `Respect user boundary: ${policy.text}`);
@@ -32,7 +36,7 @@ export function composeTurnContext(input: {
   if (input.includeEvidence) {
     lines.push("Evidence:");
     lines.push(
-      ...input.evidence.map(
+      ...publicEvidence.map(
         (event) =>
           `- [${event.sourceType}; ${event.sensitivity}; eligible=${event.eligibleForLongTermMemory}] ${event.content}`,
       ),
@@ -65,7 +69,7 @@ export function composeTurnContext(input: {
     memories: input.memories,
     actionPolicies: input.actionPolicies,
     directives,
-    evidence: input.includeEvidence ? input.evidence : [],
+    evidence: publicEvidence,
     stats: {
       retrievedMemoryCount: input.memories.length,
       actionPolicyCount: input.actionPolicies.length,

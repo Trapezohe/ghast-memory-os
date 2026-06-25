@@ -49,7 +49,18 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
         properties: {
           profileId: { type: "string" },
           text: { type: "string" },
-          messages: { type: "array" },
+          messages: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["content"],
+              properties: {
+                role: { type: "string", enum: ["system", "user", "assistant", "tool"] },
+                content: { type: "string" },
+              },
+            },
+          },
           includeEvidence: { type: "boolean" },
           contextBudgetTokens: { type: "number" },
         },

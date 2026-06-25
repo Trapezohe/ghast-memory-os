@@ -42,7 +42,8 @@ const prepared = await memory.prepareTurn({
   memory store into gmOS.
 - Host memory snapshot sync for adapters that need stale imported memories
   archived when the host source changes.
-- In-process MCP-style tool router for host/agent runtime adapters.
+- In-process MCP-style tool router and real MCP stdio server for host/agent
+  runtime adapters.
 - CLI: `gmos`.
 
 ## CLI
@@ -57,6 +58,7 @@ node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "我喜欢�
 node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
 node dist/cli/gmos.js mcp tools
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.prepare_context --input '{"text":"你之后怎么回答我？"}'
+node dist/cli/gmos.js mcp serve --db ./gmos.db --profile local
 node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3
 node dist/cli/gmos.js gym run --generated-seeds 10 --format markdown --report-file ./memory-gym.md
 node dist/cli/gmos.js gym scale --sizes 100,1000
@@ -71,20 +73,20 @@ npm run test:consumer
 ```
 
 `test:consumer` packs the SDK, installs it into a temporary external project,
-then verifies package exports, plaintext SQLite use, the MCP-style router, and
-the `gmos` CLI from the installed package.
+then verifies package exports, plaintext SQLite use, the MCP-style router, MCP
+stdio server wiring, and the `gmos` CLI from the installed package.
 
 `gym run` is the deterministic SDK benchmark. It reports hard gates, coverage
 layers, a generalization view, roadmap suggestions, and a run manifest. It does
 not run an LLM judge and should not be treated as proof of mature digital-twin
 capability.
 
-## MCP-Style Tools
+## MCP Tools
 
-The alpha SDK exposes a protocol-neutral tool router through
-`@ghast/memory/mcp`. It is intentionally in-process first: hosts can mount the
-same tools behind MCP stdio, HTTP, Electron IPC, or another agent runtime
-without changing the memory core.
+The alpha SDK exposes both a protocol-neutral in-process router and a real MCP
+stdio server through `@ghast/memory/mcp`. Hosts can mount the same tools behind
+MCP stdio, HTTP, Electron IPC, or another agent runtime without changing the
+memory core.
 
 ```ts
 import { createMemoryMcpServer } from "@ghast/memory/mcp";
@@ -94,6 +96,21 @@ const result = await server.callTool("memory.prepare_context", {
   text: "你知道我什么偏好吗？",
   includeEvidence: true,
 });
+```
+
+For agent clients that can launch MCP stdio servers:
+
+```bash
+gmos mcp serve --db ./gmos.db --profile local
+```
+
+Programmatic stdio server:
+
+```ts
+import { serveMemoryMcpStdio } from "@ghast/memory/mcp";
+
+const server = await serveMemoryMcpStdio(memory);
+await server.close();
 ```
 
 Current tools are `memory.observe`, `memory.prepare_context`,

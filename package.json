@@ -1,6 +1,6 @@
 {
   "name": "@ghast/memory",
-  "version": "0.1.0-alpha.5",
+  "version": "0.1.0-alpha.6",
   "description": "Ghast Memory OS: a local-first actionable user-world memory runtime for AI agents.",
   "type": "module",
   "license": "Apache-2.0",
@@ -33,7 +33,9 @@
     "gym": "node --import tsx src/cli/gmos.ts gym run --db :memory:"
   },
   "dependencies": {
-    "better-sqlite3": "^12.11.1"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "better-sqlite3": "^12.11.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

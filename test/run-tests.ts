@@ -1,8 +1,11 @@
 import { strict as assert } from "node:assert";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 import { createMemoryOS } from "../src/index.js";
 import {
@@ -22,7 +25,11 @@ import {
   normalizeHostMemorySensitivity,
   syncHostMemorySnapshotsIntoStore,
 } from "../src/host/index.js";
-import { createMemoryMcpServer, listMemoryMcpTools } from "../src/mcp/index.js";
+import {
+  createMemoryMcpServer,
+  createMemoryMcpStdioServer,
+  listMemoryMcpTools,
+} from "../src/mcp/index.js";
 import { createEvolutionControlPlane } from "../src/evolution/index.js";
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-sdk-test-"));
@@ -436,6 +443,73 @@ const mcpExplanation = await mcpServer.callTool("memory.explain_belief", {
   id: mcpMemoryId,
 });
 assert.match(JSON.stringify(mcpExplanation.structuredContent), /先讲风险/);
+const mcpNestedOverride = await mcpServer.callTool("memory.prepare_context", {
+  profileId: "mcp",
+  messages: [
+    {
+      role: "user",
+      content: "嵌套参数也不能携带隐藏 override",
+      includeSensitive: true,
+    },
+  ],
+});
+assert.equal(mcpNestedOverride.isError, true);
+const mcpTextAndNestedOverride = await mcpServer.callTool("memory.prepare_context", {
+  profileId: "mcp",
+  text: "即使 text 存在也不能忽略坏 messages",
+  messages: [
+    {
+      role: "user",
+      content: "嵌套参数也不能被静默忽略",
+      includeSensitive: true,
+    },
+  ],
+});
+assert.equal(mcpTextAndNestedOverride.isError, true);
+const metadataSecret = "sk-metadata1234567890abcdef";
+const metadataAuthSecret = "Bearer ghast-auth-secret-value";
+await mcpServer.callTool("memory.observe", {
+  profileId: "mcp",
+  role: "user",
+  content: "我的 metadata 偏好是先写测试。",
+  metadata: {
+    token: metadataSecret,
+    auth: metadataAuthSecret,
+    nested: {
+      apiKey: metadataSecret,
+      debug: metadataAuthSecret,
+      note: "safe metadata note",
+    },
+  },
+});
+const mcpMetadataPrepared = await mcpServer.callTool("memory.prepare_context", {
+  profileId: "mcp",
+  text: "metadata 偏好",
+  includeEvidence: true,
+});
+assert.equal(mcpMetadataPrepared.isError, undefined);
+assert.equal(JSON.stringify(mcpMetadataPrepared.structuredContent).includes(metadataSecret), false);
+assert.equal(
+  JSON.stringify(mcpMetadataPrepared.structuredContent).includes(metadataAuthSecret),
+  false,
+);
+const mcpMetadataPreparedPayload = mcpMetadataPrepared.structuredContent as {
+  prepared?: { memories: Array<{ id: string; content: string }> };
+};
+const metadataMemoryId = mcpMetadataPreparedPayload.prepared?.memories.find((entry) =>
+  entry.content.includes("metadata 偏好"),
+)?.id;
+assert.equal(typeof metadataMemoryId, "string");
+const mcpMetadataExplanation = await mcpServer.callTool("memory.explain_belief", {
+  profileId: "mcp",
+  id: metadataMemoryId,
+});
+assert.equal(mcpMetadataExplanation.isError, undefined);
+assert.equal(JSON.stringify(mcpMetadataExplanation.structuredContent).includes(metadataSecret), false);
+assert.equal(
+  JSON.stringify(mcpMetadataExplanation.structuredContent).includes(metadataAuthSecret),
+  false,
+);
 await mcpServer.callTool("memory.observe", {
   profileId: "mcp",
   role: "user",
@@ -465,6 +539,54 @@ const mcpSensitiveOverride = await mcpServer.callTool("memory.prepare_context", 
 });
 assert.equal(mcpSensitiveOverride.isError, true);
 assert.equal(JSON.stringify(mcpSensitiveOverride.structuredContent).includes("123-45-6789"), false);
+const sensitiveMcpMemories = await store.searchMemories({
+  profileId: "mcp",
+  query: "123-45-6789",
+  purpose: "manage",
+  includeSensitive: true,
+});
+const sensitiveMcpMemoryId = sensitiveMcpMemories[0]?.id;
+assert.equal(typeof sensitiveMcpMemoryId, "string");
+const mcpSensitiveExplanation = await mcpServer.callTool("memory.explain_belief", {
+  profileId: "mcp",
+  id: sensitiveMcpMemoryId,
+});
+assert.equal(mcpSensitiveExplanation.isError, true);
+assert.equal(
+  JSON.stringify(mcpSensitiveExplanation.structuredContent).includes("123-45-6789"),
+  false,
+);
+const metadataSensitiveMemory = await store.addMemory({
+  profileId: "mcp",
+  kind: "fact",
+  content: "metadata-only sensitive payload",
+  sensitivity: "sensitive",
+  confidence: 0.9,
+});
+const mcpMetadataSensitiveExplanation = await mcpServer.callTool("memory.explain_belief", {
+  profileId: "mcp",
+  id: metadataSensitiveMemory.id,
+});
+assert.equal(mcpMetadataSensitiveExplanation.isError, true);
+assert.equal(
+  JSON.stringify(mcpMetadataSensitiveExplanation.structuredContent).includes(
+    "metadata-only sensitive payload",
+  ),
+  false,
+);
+const metadataPersonMemory = await store.addMemory({
+  profileId: "mcp",
+  kind: "person",
+  content: "Alice prefers tea",
+  sensitivity: "normal",
+  confidence: 0.9,
+});
+const mcpPersonExplanation = await mcpServer.callTool("memory.explain_belief", {
+  profileId: "mcp",
+  id: metadataPersonMemory.id,
+});
+assert.equal(mcpPersonExplanation.isError, true);
+assert.equal(JSON.stringify(mcpPersonExplanation.structuredContent).includes("Alice prefers tea"), false);
 const mcpForget = await mcpServer.callTool("memory.forget", {
   profileId: "mcp",
   query: "先讲风险",
@@ -740,6 +862,138 @@ const cliMcpUnknownTool = spawnSync(
 );
 assert.notEqual(cliMcpUnknownTool.status, 0);
 assert.match(cliMcpUnknownTool.stdout, /Unknown gmOS MCP tool/);
+
+const directStdioServer = createMemoryMcpStdioServer(memory);
+assert.equal(directStdioServer.isConnected(), false);
+const stdioMcpDb = path.join(tmp, "stdio-mcp.db");
+const stdioTransport = new StdioClientTransport({
+  command: process.execPath,
+  args: [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "mcp",
+    "serve",
+    "--db",
+    stdioMcpDb,
+    "--profile",
+    "stdio_mcp",
+  ],
+  cwd: process.cwd(),
+  stderr: "pipe",
+});
+const stdioClient = new Client({
+  name: "gmos-sdk-test-client",
+  version: "0.0.0",
+});
+try {
+  await stdioClient.connect(stdioTransport);
+  const stdioTools = await stdioClient.listTools();
+  assert.ok(stdioTools.tools.some((tool) => tool.name === "memory.prepare_context"));
+  await stdioClient.callTool({
+    name: "memory.observe",
+    arguments: {
+      content: "我在 MCP stdio 模式下也偏好先讲风险。",
+      role: "user",
+      profileId: "stdio_mcp",
+    },
+  });
+  const stdioPrepared = await stdioClient.callTool({
+    name: "memory.prepare_context",
+    arguments: {
+      profileId: "stdio_mcp",
+      text: "stdio 模式下应该怎么回答？",
+      includeEvidence: true,
+    },
+  });
+  assert.equal(stdioPrepared.isError, undefined);
+  assert.match(JSON.stringify(stdioPrepared.structuredContent), /先讲风险/);
+  const stdioNestedSensitive = await stdioClient.callTool({
+    name: "memory.prepare_context",
+    arguments: {
+      profileId: "stdio_mcp",
+      messages: [
+        {
+          role: "user",
+          content: "嵌套参数不应携带隐藏 override",
+          includeSensitive: true,
+        },
+      ],
+    },
+  });
+  assert.equal(stdioNestedSensitive.isError, true);
+  assert.equal(JSON.stringify(stdioNestedSensitive).includes("123-45-6789"), false);
+  const stdioSensitive = await stdioClient.callTool({
+    name: "memory.prepare_context",
+    arguments: {
+      profileId: "stdio_mcp",
+      text: "stdio 敏感 override",
+      includeSensitive: true,
+    },
+  });
+  assert.equal(stdioSensitive.isError, true);
+} finally {
+  await stdioClient.close();
+}
+
+const termMcp = spawn(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "mcp",
+    "serve",
+    "--db",
+    path.join(tmp, "term-mcp.db"),
+    "--profile",
+    "term_mcp",
+  ],
+  { cwd: process.cwd(), stdio: ["pipe", "pipe", "pipe"] },
+);
+await new Promise((resolve) => setTimeout(resolve, 500));
+termMcp.kill("SIGTERM");
+const termExit = await Promise.race([
+  new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+    termMcp.once("exit", (code, signal) => resolve({ code, signal }));
+  }),
+  new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
+]);
+if (!termExit) {
+  termMcp.kill("SIGKILL");
+  assert.fail("gmos mcp serve did not exit after SIGTERM");
+}
+assert.ok(termExit.code === 0 || termExit.signal === "SIGTERM");
+
+const stdinEndMcp = spawn(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "mcp",
+    "serve",
+    "--db",
+    path.join(tmp, "stdin-end-mcp.db"),
+    "--profile",
+    "stdin_end_mcp",
+  ],
+  { cwd: process.cwd(), stdio: ["pipe", "pipe", "pipe"] },
+);
+await new Promise((resolve) => setTimeout(resolve, 500));
+stdinEndMcp.stdin.end();
+const stdinEndExit = await Promise.race([
+  new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+    stdinEndMcp.once("exit", (code, signal) => resolve({ code, signal }));
+  }),
+  new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
+]);
+if (!stdinEndExit) {
+  stdinEndMcp.kill("SIGKILL");
+  assert.fail("gmos mcp serve did not exit after stdin end");
+}
+assert.equal(stdinEndExit.code, 0);
+
 const invalidHostDb = path.join(tmp, "doctor-invalid.db");
 const invalidHost = spawnSync(
   process.execPath,

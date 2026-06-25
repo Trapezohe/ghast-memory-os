@@ -15,7 +15,11 @@ import {
   createPresetHostAdapter,
   type HostPreset,
 } from "../host/index.js";
-import { createMemoryMcpServer, listMemoryMcpTools } from "../mcp/index.js";
+import {
+  createMemoryMcpServer,
+  listMemoryMcpTools,
+  serveMemoryMcpStdio,
+} from "../mcp/index.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 
 function value(name: string, fallback?: string): string | undefined {
@@ -39,6 +43,7 @@ Usage:
   gmos explain --db ./gmos.db --profile local --id memory_xxx
   gmos mcp tools
   gmos mcp call --db ./gmos.db --tool memory.prepare_context --input '{"text":"你知道我什么偏好吗？"}'
+  gmos mcp serve --db ./gmos.db --profile local
   gmos gym run --db :memory: --generated-seeds 3 --format markdown --report-file ./memory-gym.md
   gmos gym scale --sizes 100,1000 --threshold-p95-ms 250
   gmos gym host --hosts ghast,mcp,mock_l3,search_only --format markdown
@@ -150,6 +155,20 @@ async function createRuntime() {
   const store = createSqliteMemoryStore({ path: dbPath });
   const memory = createMemoryOS({ profileId, store });
   return { memory, store, profileId, dbPath };
+}
+
+function waitForServerShutdown(): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      process.off("SIGINT", done);
+      process.off("SIGTERM", done);
+      process.stdin.off("end", done);
+      resolve();
+    };
+    process.once("SIGINT", done);
+    process.once("SIGTERM", done);
+    process.stdin.once("end", done);
+  });
 }
 
 async function main(): Promise<void> {
@@ -267,6 +286,16 @@ async function main(): Promise<void> {
       const result = await server.callTool(tool, parseJsonInput(value("--input")));
       console.log(JSON.stringify(result, null, 2));
       if (result.isError) process.exitCode = 1;
+      return;
+    }
+
+    if (command === "mcp" && subcommand === "serve") {
+      const server = await serveMemoryMcpStdio(memory);
+      try {
+        await waitForServerShutdown();
+      } finally {
+        await server.close();
+      }
       return;
     }
 
