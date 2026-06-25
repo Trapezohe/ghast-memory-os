@@ -1,0 +1,69 @@
+# Ghast Memory OS
+
+Ghast Memory OS, or gmOS, is a local-first actionable user-world memory runtime
+for personal agents.
+
+This repository is the SDK/runtime extraction target for Ghast's memory system.
+It is not a vector-memory CRUD wrapper. The public path is:
+
+```ts
+import { createMemoryOS } from "@ghast/memory";
+import { createSqliteMemoryStore } from "@ghast/memory/store/sqlite";
+
+const memory = createMemoryOS({
+  profileId: "local-user",
+  store: createSqliteMemoryStore({ path: "./gmos.db" }),
+});
+
+await memory.observe({
+  type: "conversation.message",
+  profileId: "local-user",
+  role: "user",
+  content: "以后不要再提醒我这个项目延期了。",
+  createdAt: new Date().toISOString(),
+});
+
+const prepared = await memory.prepareTurn({
+  profileId: "local-user",
+  messages: [{ role: "user", content: "这个项目现在怎么办？" }],
+});
+```
+
+## Current Scope
+
+- Plaintext local SQLite store. No database encryption and no vault integration.
+- Runtime facade: `observe`, `prepareTurn`, `commitOutcome`, `recordFeedback`,
+  `forget`, `explain`.
+- Safety gates for secret-like content, incognito events, PERSON isolation,
+  forgetting, and do-not-push action policies.
+- Built-in deterministic Memory Gym smoke benchmark.
+- CLI: `gmos`.
+
+## CLI
+
+```bash
+npm install
+npm run build
+
+node dist/cli/gmos.js init --db ./gmos.db
+node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "我喜欢简洁的中文回答。"
+node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
+node dist/cli/gmos.js gym run --db :memory:
+```
+
+## Trust Contract
+
+gmOS defaults to a plaintext SQLite database. Security comes from memory policy
+and host boundaries, not database encryption:
+
+- secret-like content is not persisted as long-term memory;
+- incognito/private events are not promoted to long-term memory;
+- ordinary context does not include sensitive memory unless explicitly allowed;
+- forget operations archive matching memory and remove it from future context;
+- read paths must not write.
+
+## Status
+
+This is an alpha SDK extraction repository. The first target is a stable local
+TypeScript/Node runtime that Ghast Desktop can consume through a host adapter.
+

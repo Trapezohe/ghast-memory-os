@@ -1,0 +1,45 @@
+{
+  "name": "@ghast/memory",
+  "version": "0.1.0-alpha.0",
+  "description": "Ghast Memory OS: a local-first actionable user-world memory runtime for AI agents.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "bin": {
+    "gmos": "dist/cli/gmos.js",
+    "ghast-memory": "dist/cli/gmos.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./store/sqlite": "./dist/store/sqlite/index.js",
+    "./gym": "./dist/gym/index.js",
+    "./mcp": "./dist/mcp/index.js",
+    "./evolution": "./dist/evolution/index.js",
+    "./host": "./dist/host/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --import tsx test/run-tests.ts",
+    "check": "npm run build && npm test",
+    "prepack": "npm run build",
+    "gym": "node --import tsx src/cli/gmos.ts gym run --db :memory:"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.11.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.0.3",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=20.19"
+  }
+}
