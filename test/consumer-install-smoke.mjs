@@ -86,6 +86,42 @@ try {
   );
   run(process.execPath, [consumerScript], { cwd: consumerDir, stdio: "pipe" });
 
+  const consumerTypes = path.join(consumerDir, "consumer-types.ts");
+  writeFileSync(
+    consumerTypes,
+    `
+      import { createMemoryOS, type MemoryStore } from "@ghast/memory";
+      import {
+        createSqliteMemoryStore,
+        type SqliteMemoryStore,
+      } from "@ghast/memory/store/sqlite";
+
+      const sqliteStore: SqliteMemoryStore = createSqliteMemoryStore({ path: ":memory:" });
+      const genericStore: MemoryStore = sqliteStore;
+      const schemaVersion: number = sqliteStore.schemaVersion();
+      createMemoryOS({ profileId: "consumer-types", store: genericStore });
+      if (schemaVersion < 1) throw new Error("schema version must be initialized");
+      await sqliteStore.close();
+    `,
+  );
+  run(
+    process.execPath,
+    [
+      path.join(root, "node_modules", "typescript", "bin", "tsc"),
+      "--module",
+      "NodeNext",
+      "--moduleResolution",
+      "NodeNext",
+      "--target",
+      "ES2022",
+      "--strict",
+      "--noEmit",
+      "--skipLibCheck",
+      consumerTypes,
+    ],
+    { cwd: consumerDir, stdio: "pipe" },
+  );
+
   const gmosBin = path.join(
     consumerDir,
     "node_modules",

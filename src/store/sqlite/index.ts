@@ -27,6 +27,10 @@ export interface SqliteMemoryStoreOptions {
   handle?: Database.Database;
 }
 
+export interface SqliteMemoryStore extends MemoryStore {
+  schemaVersion(): number;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -88,7 +92,7 @@ function scoreMemory(memory: MemoryRecord, query: string): number {
   return hits + memory.confidence;
 }
 
-export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): MemoryStore {
+export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): SqliteMemoryStore {
   const db = options.handle ?? new Database(options.path);
   let initialized = false;
 

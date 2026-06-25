@@ -17,7 +17,10 @@ import {
   runMemoryGym,
   runMemoryScaleBenchmark,
 } from "../src/gym/index.js";
-import { createSqliteMemoryStore } from "../src/store/sqlite/index.js";
+import {
+  createSqliteMemoryStore,
+  type SqliteMemoryStore,
+} from "../src/store/sqlite/index.js";
 import {
   classifyHostCompatibility,
   createPresetHostAdapter,
@@ -35,7 +38,7 @@ import { createEvolutionControlPlane } from "../src/evolution/index.js";
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-sdk-test-"));
 const dbPath = path.join(tmp, "test.db");
-const store = createSqliteMemoryStore({ path: dbPath });
+const store: SqliteMemoryStore = createSqliteMemoryStore({ path: dbPath });
 const memory = createMemoryOS({ profileId: "test", store });
 assert.equal(await store.schemaVersion(), 1);
 

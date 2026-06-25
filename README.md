@@ -130,7 +130,8 @@ and host boundaries, not database encryption:
 
 SQLite stores include a `gmos_schema_migrations` ledger. `gmos doctor` reports
 the current schema version so host applications can verify upgrade state before
-running long-lived agents.
+running long-lived agents. TypeScript consumers can use the exported
+`SqliteMemoryStore` type when they need SQLite-specific diagnostics.
 
 ## Host Compatibility
 
