@@ -1,5 +1,6 @@
 import type { MemoryGymResult } from "./types.js";
 import type { MemoryScaleBenchmarkResult } from "./scale.js";
+import type { HostCompatibilityGymResult } from "./host-compatibility.js";
 
 export function renderMemoryGymMarkdown(report: MemoryGymResult): string {
   return [
@@ -74,6 +75,47 @@ export function renderMemoryScaleMarkdown(report: MemoryScaleBenchmarkResult): s
       (row) =>
         `| ${row.size} | ${row.seedMs.toFixed(3)} | ${row.prepareTurn.p50Ms.toFixed(3)}/${row.prepareTurn.p95Ms.toFixed(3)}/${row.prepareTurn.maxMs.toFixed(3)} | ${row.promptTokenEstimate.p95} |`,
     ),
+    "",
+  ].join("\n");
+}
+
+export function renderHostCompatibilityGymMarkdown(
+  report: HostCompatibilityGymResult,
+): string {
+  return [
+    "# gmOS Host Compatibility Gym",
+    "",
+    `Status: ${report.pass ? "PASS" : "FAIL"}`,
+    `Framework: ${report.framework}`,
+    `Started: ${report.startedAt}`,
+    `Node: ${report.node} ${report.platform}`,
+    `Hosts: ${report.hostCount}`,
+    "",
+    "## Host Summary",
+    "",
+    "| Host | Level | Expected | Score | Memory-to-Action | Forget Residue | Agent Memory Use | Gaps |",
+    "| --- | --- | --- | ---: | --- | --- | --- | --- |",
+    ...report.hosts.map(
+      (host) =>
+        `| ${host.hostId} | ${host.level} | ${host.expectedLevel} | ${host.score.toFixed(2)} | ${host.memoryToAction} | ${host.forgetResidue} | ${host.agentMemoryUse} | ${host.gaps.length ? host.gaps.join(", ") : "none"} |`,
+    ),
+    "",
+    "## Probe Results",
+    "",
+    "| Host | Area | Probe | Status | Detail |",
+    "| --- | --- | --- | --- | --- |",
+    ...report.hosts.flatMap((host) =>
+      host.probes.map(
+        (probe) =>
+          `| ${host.hostId} | ${probe.area} | ${probe.name} | ${probe.status} | ${probe.detail} |`,
+      ),
+    ),
+    "",
+    "## Failures",
+    "",
+    ...(report.failures.length === 0
+      ? ["None"]
+      : report.failures.map((failure) => `- ${failure}`)),
     "",
   ].join("\n");
 }

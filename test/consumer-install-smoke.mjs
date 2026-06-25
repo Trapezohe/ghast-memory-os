@@ -41,6 +41,10 @@ try {
       import path from "node:path";
       import { createMemoryOS } from "@ghast/memory";
       import { createPresetHostAdapter } from "@ghast/memory/host";
+      import {
+        renderHostCompatibilityGymMarkdown,
+        runHostCompatibilityGym,
+      } from "@ghast/memory/gym";
       import { createMemoryMcpServer } from "@ghast/memory/mcp";
       import { createSqliteMemoryStore } from "@ghast/memory/store/sqlite";
 
@@ -71,6 +75,10 @@ try {
       });
       assert.equal(mcpResult.isError, undefined);
       assert.match(JSON.stringify(mcpResult.structuredContent), /先讲风险/);
+      const hostGym = await runHostCompatibilityGym({ hosts: ["ghast", "mcp"] });
+      assert.equal(hostGym.pass, true);
+      assert.equal(hostGym.hostCount, 2);
+      assert.match(renderHostCompatibilityGymMarkdown(hostGym), /gmOS Host Compatibility Gym/);
       await memory.close();
       console.log("[gmos-consumer] import smoke passed");
     `,
@@ -93,6 +101,15 @@ try {
   const doctor = JSON.parse(bin.stdout);
   assert.equal(doctor.encrypted, false);
   assert.equal(doctor.hostCompatibility.level, "L4");
+  const hostGymBin = spawnSync(
+    gmosBin,
+    ["gym", "host", "--hosts", "ghast,mcp", "--format", "json"],
+    { cwd: consumerDir, encoding: "utf8" },
+  );
+  assert.equal(hostGymBin.status, 0, hostGymBin.stderr);
+  const hostGym = JSON.parse(hostGymBin.stdout);
+  assert.equal(hostGym.pass, true);
+  assert.equal(hostGym.hostCount, 2);
   console.log("[gmos-consumer] install smoke passed");
 } finally {
   rmSync(tmp, { recursive: true, force: true });

@@ -4,8 +4,10 @@ import path from "node:path";
 
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import {
+  renderHostCompatibilityGymMarkdown,
   renderMemoryGymMarkdown,
   renderMemoryScaleMarkdown,
+  runHostCompatibilityGym,
   runMemoryGym,
   runMemoryScaleBenchmark,
 } from "../gym/index.js";
@@ -39,6 +41,7 @@ Usage:
   gmos mcp call --db ./gmos.db --tool memory.prepare_context --input '{"text":"你知道我什么偏好吗？"}'
   gmos gym run --db :memory: --generated-seeds 3 --format markdown --report-file ./memory-gym.md
   gmos gym scale --sizes 100,1000 --threshold-p95-ms 250
+  gmos gym host --hosts ghast,mcp,mock_l3,search_only --format markdown
 `);
   process.exit(1);
 }
@@ -104,6 +107,27 @@ function hostPreset(): HostPreset | undefined {
   return host;
 }
 
+function hostPresetList(raw: string | undefined): HostPreset[] {
+  const value = raw ?? "ghast,mock_l3,mcp,search_only";
+  const tokens = value.split(",").map((token) => token.trim());
+  if (tokens.length === 0 || tokens.some((token) => token.length === 0)) {
+    throw new Error("--hosts requires comma-separated host presets");
+  }
+  return tokens.map((token) => {
+    if (
+      token !== "ghast" &&
+      token !== "mcp" &&
+      token !== "search_only" &&
+      token !== "mock_l3"
+    ) {
+      throw new Error(
+        "--hosts must contain only: ghast, mcp, search_only, mock_l3",
+      );
+    }
+    return token;
+  });
+}
+
 function hostReport(preset: HostPreset | undefined) {
   if (!preset) return undefined;
   return createPresetHostAdapter(preset).compatibility;
@@ -149,6 +173,15 @@ async function main(): Promise<void> {
       thresholdP95Ms: nonNegativeNumberOption("--threshold-p95-ms", 250),
     });
     printReport(report, renderMemoryScaleMarkdown(report));
+    if (!report.pass) process.exitCode = 1;
+    return;
+  }
+
+  if (command === "gym" && subcommand === "host") {
+    const report = await runHostCompatibilityGym({
+      hosts: hostPresetList(value("--hosts")),
+    });
+    printReport(report, renderHostCompatibilityGymMarkdown(report));
     if (!report.pass) process.exitCode = 1;
     return;
   }

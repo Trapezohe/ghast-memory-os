@@ -3,7 +3,20 @@ import { createMemoryMcpServer } from "../mcp/index.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 import { coverageMatrix, memoryStackCoverage, roadmap } from "./coverage.js";
-export { renderMemoryGymMarkdown, renderMemoryScaleMarkdown } from "./report.js";
+export {
+  renderHostCompatibilityGymMarkdown,
+  renderMemoryGymMarkdown,
+  renderMemoryScaleMarkdown,
+} from "./report.js";
+export {
+  runHostCompatibilityGym,
+  type HostCompatibilityGymHostResult,
+  type HostCompatibilityGymResult,
+  type HostCompatibilityProbeArea,
+  type HostCompatibilityProbeResult,
+  type HostCompatibilityProbeStatus,
+  type RunHostCompatibilityGymOptions,
+} from "./host-compatibility.js";
 export { runMemoryScaleBenchmark } from "./scale.js";
 export type { MemoryScaleBenchmarkResult } from "./scale.js";
 export type * from "./types.js";

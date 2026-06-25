@@ -58,6 +58,7 @@ node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.prep
 node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3
 node dist/cli/gmos.js gym run --generated-seeds 10 --format markdown --report-file ./memory-gym.md
 node dist/cli/gmos.js gym scale --sizes 100,1000
+node dist/cli/gmos.js gym host --hosts ghast,mcp,mock_l3,search_only --format markdown
 ```
 
 ## QA Gates
@@ -121,6 +122,13 @@ host must expose the right hooks to preserve full behavior:
 
 Run `gmos doctor --host ghast` to inspect capability gaps and hard-gate
 coverage.
+
+Run `gmos gym host` to execute the host compatibility gym. Unlike `doctor`,
+which is a static capability report, the host gym exercises behavior expected
+from each advertised capability: preference memory use, action-policy
+directives, forget residue, private-mode exclusion, evidence-aware context, and
+MCP sensitive-boundary enforcement. Unsupported capabilities are reported as
+`not_applicable` instead of being hidden.
 
 Host adapters can also import existing memory snapshots through
 `loadHostMemorySnapshotsIntoStore()` from `@ghast/memory/host`. The importer

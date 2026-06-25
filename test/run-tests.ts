@@ -6,8 +6,10 @@ import path from "node:path";
 
 import { createMemoryOS } from "../src/index.js";
 import {
+  renderHostCompatibilityGymMarkdown,
   renderMemoryGymMarkdown,
   renderMemoryScaleMarkdown,
+  runHostCompatibilityGym,
   runMemoryGym,
   runMemoryScaleBenchmark,
 } from "../src/gym/index.js";
@@ -445,6 +447,55 @@ const cliScaleFail = spawnSync(
 );
 assert.notEqual(cliScaleFail.status, 0);
 assert.match(cliScaleFail.stdout, /Status: FAIL/);
+const hostGym = await runHostCompatibilityGym();
+assert.equal(hostGym.pass, true, hostGym.failures.join("\n"));
+assert.equal(hostGym.hostCount, 4);
+assert.equal(hostGym.hosts.find((host) => host.hostId === "ghast")?.level, "L4");
+assert.equal(hostGym.hosts.find((host) => host.hostId === "ghast")?.memoryToAction, "pass");
+assert.equal(hostGym.hosts.find((host) => host.hostId === "mcp")?.level, "L2");
+assert.equal(
+  hostGym.hosts.find((host) => host.hostId === "mcp")?.memoryToAction,
+  "not_run",
+);
+assert.equal(
+  hostGym.hosts.find((host) => host.hostId === "search_only")?.agentMemoryUse,
+  "not_run",
+);
+assert.match(renderHostCompatibilityGymMarkdown(hostGym), /gmOS Host Compatibility Gym/);
+const cliHostGym = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "host",
+    "--hosts",
+    "ghast,mcp",
+    "--format",
+    "markdown",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliHostGym.status, 0, cliHostGym.stderr);
+assert.match(cliHostGym.stdout, /gmOS Host Compatibility Gym/);
+assert.match(cliHostGym.stdout, /ghast/);
+assert.match(cliHostGym.stdout, /mcp/);
+const cliHostGymInvalid = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "host",
+    "--hosts",
+    "unknown",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliHostGymInvalid.status, 0);
+assert.match(cliHostGymInvalid.stderr, /--hosts must contain only/);
 const cliMcpTools = spawnSync(
   process.execPath,
   ["--import", "tsx", "src/cli/gmos.ts", "mcp", "tools"],
