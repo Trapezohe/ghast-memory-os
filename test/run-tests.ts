@@ -136,6 +136,81 @@ assert.equal(explanation?.kind, "memory");
 assert.match(explanation?.text ?? "", /简洁的中文回答/);
 assert.equal(explanation?.evidence.length, 1);
 
+const lowLevelMemory = await memory.add({
+  profileId: "test",
+  kind: "preference",
+  content: "Low-level compatibility prefers concise SDK docs.",
+  confidence: 0.8,
+  metadata: {
+    source: "test",
+    token: "sk-lowlevel-metadata-secret123456",
+  },
+});
+assert.equal(lowLevelMemory.kind, "preference");
+assert.equal(lowLevelMemory.sensitivity, "normal");
+const lowLevelMatches = await memory.search({
+  profileId: "test",
+  query: "compatibility concise SDK docs",
+});
+assert.ok(lowLevelMatches.some((entry) => entry.id === lowLevelMemory.id));
+const lowLevelExplanation = await memory.explain(lowLevelMemory.id, "test");
+assert.equal(lowLevelExplanation?.evidence[0]?.sourceType, "sdk.low_level_add");
+assert.equal(JSON.stringify(lowLevelExplanation).includes("sk-lowlevel-metadata-secret"), false);
+const lowLevelBeforeSecret = await store.rowCounts();
+await assert.rejects(
+  () =>
+    memory.add({
+      profileId: "test",
+      kind: "fact",
+      content: "api key: sk-lowlevelsecret1234567890",
+    }),
+  /secret-like/,
+);
+assert.deepEqual(await store.rowCounts(), lowLevelBeforeSecret);
+const lowLevelSensitive = await memory.add({
+  profileId: "test",
+  kind: "fact",
+  content: "My SSN is 123-45-6789.",
+});
+const lowLevelSensitiveDefault = await memory.search({
+  profileId: "test",
+  query: "123-45-6789",
+});
+assert.equal(lowLevelSensitiveDefault.some((entry) => entry.id === lowLevelSensitive.id), false);
+const lowLevelSensitiveIncluded = await memory.search({
+  profileId: "test",
+  query: "123-45-6789",
+  includeSensitive: true,
+});
+assert.ok(lowLevelSensitiveIncluded.some((entry) => entry.id === lowLevelSensitive.id));
+await assert.rejects(
+  () =>
+    memory.add({
+      profileId: "test",
+      kind: "person",
+      content: "Alice prefers tea.",
+    }),
+  /person memory/,
+);
+const lowLevelPerson = await memory.add({
+  profileId: "test",
+  kind: "fact",
+  content: "PERSON: Alice: Alice prefers tea.",
+  allowPerson: true,
+});
+assert.equal(lowLevelPerson.kind, "person");
+const lowLevelPersonDefault = await memory.search({
+  profileId: "test",
+  query: "Alice tea",
+});
+assert.equal(lowLevelPersonDefault.some((entry) => entry.id === lowLevelPerson.id), false);
+const lowLevelPersonIncluded = await memory.search({
+  profileId: "test",
+  query: "Alice tea",
+  includePerson: true,
+});
+assert.ok(lowLevelPersonIncluded.some((entry) => entry.id === lowLevelPerson.id));
+
 await memory.observe({
   type: "conversation.message",
   profileId: "test",
@@ -733,6 +808,68 @@ await mcpServer.callTool("memory.commit_outcome", {
 });
 const mcpCounts = await store.rowCounts();
 assert.ok(mcpCounts.gmos_failure_events >= 3);
+
+const cliLowLevelDb = path.join(tmp, "cli-low-level.db");
+const cliAdd = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "add",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--kind",
+    "preference",
+    "--text",
+    "CLI low-level add prefers concise answers.",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliAdd.status, 0, cliAdd.stderr);
+const cliAddMemory = JSON.parse(cliAdd.stdout) as { id?: string; sourceEventId?: string };
+assert.equal(typeof cliAddMemory.id, "string");
+assert.equal(typeof cliAddMemory.sourceEventId, "string");
+const cliSearch = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "search",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--query",
+    "concise answers",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliSearch.status, 0, cliSearch.stderr);
+assert.match(cliSearch.stdout, /CLI low-level add prefers concise answers/);
+const cliSecretAdd = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "add",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--kind",
+    "fact",
+    "--text",
+    "api key: sk-clilowlevelsecret1234567890",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliSecretAdd.status, 0);
+assert.match(cliSecretAdd.stderr, /secret-like/);
 
 await memory.close();
 const gym = await runMemoryGym();

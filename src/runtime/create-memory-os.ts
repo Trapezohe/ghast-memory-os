@@ -17,9 +17,14 @@ import type {
   ForgetInput,
   ForgetResult,
   HostEvent,
+  LowLevelAddMemoryInput,
+  LowLevelSearchInput,
+  MemoryKind,
+  MemoryRecord,
   MemoryOS,
   MemoryOSOptions,
   PrepareTurnInput,
+  Sensitivity,
 } from "../kernel/types.js";
 
 function nowIso(): string {
@@ -47,6 +52,26 @@ function latestUserText(input: PrepareTurnInput): string {
   return [...input.messages].reverse().find((message) => message.role === "user")?.content ?? "";
 }
 
+function lowLevelKind(input: LowLevelAddMemoryInput): MemoryKind {
+  return isPersonRoutedMemory(input.content) ? "person" : input.kind;
+}
+
+function lowLevelSensitivity(input: LowLevelAddMemoryInput): Sensitivity {
+  const detected = classifySensitivity(input.content);
+  if (detected === "secret_like" || input.sensitivity === "secret_like") {
+    throw new Error("gmOS low-level add rejects secret-like content");
+  }
+  if (detected === "sensitive") return "sensitive";
+  return input.sensitivity ?? detected;
+}
+
+function assertLowLevelPersonAllowed(input: LowLevelAddMemoryInput): void {
+  const routesToPerson = input.kind === "person" || isPersonRoutedMemory(input.content);
+  if (routesToPerson && !input.allowPerson) {
+    throw new Error("gmOS low-level add rejects person memory unless allowPerson is true");
+  }
+}
+
 export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   const defaultProfileId = options.profileId ?? "default";
   const store = options.store;
@@ -56,6 +81,58 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     if (initialized) return;
     await store.initialize();
     initialized = true;
+  }
+
+  async function add(input: LowLevelAddMemoryInput): Promise<MemoryRecord> {
+    await initialize();
+    const content = input.content.trim();
+    if (!content) throw new Error("gmOS low-level add requires non-empty content");
+    assertLowLevelPersonAllowed(input);
+    const profileId = profileIdFor(defaultProfileId, input.profileId);
+    const kind = lowLevelKind(input);
+    const sensitivity = lowLevelSensitivity(input);
+    const createdAt = input.createdAt ?? nowIso();
+    const evidence = await store.recordEvidence({
+      profileId,
+      eventKey: ["sdk.low_level_add", profileId, createdAt, randomUUID()].join(":"),
+      sourceType: "sdk.low_level_add",
+      sourceUri: null,
+      content,
+      sensitivity,
+      eligibleForLongTermMemory: true,
+      payload: {
+        kind,
+        scope: input.scope ?? "global",
+        metadata: sanitizePublicPayloadRecord(input.metadata ?? {}),
+      },
+      createdAt,
+    });
+    return store.addMemory({
+      profileId,
+      kind,
+      content,
+      sensitivity,
+      sourceEventId: evidence.id,
+      metadata: {
+        ...sanitizePublicPayloadRecord(input.metadata ?? {}),
+        lowLevelApi: true,
+      },
+      createdAt,
+      ...(input.scope !== undefined ? { scope: input.scope } : {}),
+      ...(input.confidence !== undefined ? { confidence: input.confidence } : {}),
+    });
+  }
+
+  async function search(input: LowLevelSearchInput = {}): Promise<MemoryRecord[]> {
+    await initialize();
+    return store.searchMemories({
+      profileId: profileIdFor(defaultProfileId, input.profileId),
+      purpose: input.purpose ?? "context",
+      ...(input.query !== undefined ? { query: input.query } : {}),
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      ...(input.includeSensitive !== undefined ? { includeSensitive: input.includeSensitive } : {}),
+      ...(input.includePerson !== undefined ? { includePerson: input.includePerson } : {}),
+    });
   }
 
   async function observe(event: HostEvent): Promise<void> {
@@ -260,6 +337,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   }
 
   return {
+    add,
+    search,
     observe,
     prepareTurn,
     commitOutcome,

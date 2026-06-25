@@ -183,6 +183,27 @@ export interface ExplainResult {
   evidence: EvidenceEvent[];
 }
 
+export interface LowLevelAddMemoryInput {
+  profileId?: string | undefined;
+  kind: MemoryKind;
+  scope?: string | undefined;
+  content: string;
+  sensitivity?: Sensitivity | undefined;
+  confidence?: number | undefined;
+  metadata?: Record<string, unknown> | undefined;
+  createdAt?: string | undefined;
+  allowPerson?: boolean | undefined;
+}
+
+export interface LowLevelSearchInput {
+  profileId?: string | undefined;
+  query?: string | undefined;
+  limit?: number | undefined;
+  purpose?: "context" | "delete" | "manage" | undefined;
+  includeSensitive?: boolean | undefined;
+  includePerson?: boolean | undefined;
+}
+
 export interface MemorySearchInput {
   profileId: string;
   query?: string;
@@ -310,6 +331,8 @@ export interface MemoryOSOptions {
 }
 
 export interface MemoryOS {
+  add(input: LowLevelAddMemoryInput): Promise<MemoryRecord>;
+  search(input?: LowLevelSearchInput): Promise<MemoryRecord[]>;
   observe(event: HostEvent): Promise<void>;
   prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn>;
   commitOutcome(input: CommitOutcomeInput): Promise<void>;

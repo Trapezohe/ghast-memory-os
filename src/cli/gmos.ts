@@ -26,7 +26,7 @@ import {
   serveMemoryMcpStdio,
 } from "../mcp/index.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
-import type { FailureKind } from "../kernel/types.js";
+import type { FailureKind, LowLevelSearchInput, MemoryKind } from "../kernel/types.js";
 
 function value(name: string, fallback?: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -43,6 +43,8 @@ function usage(): never {
 Usage:
   gmos init --db ./gmos.db
   gmos doctor --db ./gmos.db --host ghast
+  gmos add --db ./gmos.db --profile local --kind preference --text "我喜欢简洁回答"
+  gmos search --db ./gmos.db --profile local --query "简洁"
   gmos observe --db ./gmos.db --profile local --text "我喜欢简洁回答"
   gmos prepare --db ./gmos.db --profile local --text "你知道我什么偏好吗？"
   gmos forget --db ./gmos.db --profile local --query "Moonbase"
@@ -143,6 +145,32 @@ function hostPresetList(raw: string | undefined): HostPreset[] {
 function hostReport(preset: HostPreset | undefined) {
   if (!preset) return undefined;
   return createPresetHostAdapter(preset).compatibility;
+}
+
+function memoryKindOption(): MemoryKind {
+  const raw = value("--kind");
+  if (
+    raw !== "fact" &&
+    raw !== "preference" &&
+    raw !== "boundary" &&
+    raw !== "procedure" &&
+    raw !== "project" &&
+    raw !== "person" &&
+    raw !== "task_trajectory"
+  ) {
+    throw new Error(
+      "--kind must be one of: fact, preference, boundary, procedure, project, person, task_trajectory",
+    );
+  }
+  return raw;
+}
+
+function searchPurposeOption(): LowLevelSearchInput["purpose"] {
+  const raw = value("--purpose", "context");
+  if (raw !== "context" && raw !== "delete" && raw !== "manage") {
+    throw new Error("--purpose must be one of: context, delete, manage");
+  }
+  return raw;
 }
 
 function failureKindOption(): FailureKind | undefined {
@@ -300,6 +328,34 @@ async function main(): Promise<void> {
           2,
         ),
       );
+      return;
+    }
+
+    if (command === "add") {
+      const text = value("--text");
+      if (!text) usage();
+      const memoryRecord = await memory.add({
+        profileId,
+        kind: memoryKindOption(),
+        content: text,
+        allowPerson: has("--allow-person"),
+      });
+      console.log(JSON.stringify(memoryRecord, null, 2));
+      return;
+    }
+
+    if (command === "search") {
+      const query = value("--query");
+      if (!query) usage();
+      const memories = await memory.search({
+        profileId,
+        query,
+        purpose: searchPurposeOption(),
+        limit: positiveIntegerOption("--limit", 12),
+        includeSensitive: has("--include-sensitive"),
+        includePerson: has("--include-person"),
+      });
+      console.log(JSON.stringify({ memories }, null, 2));
       return;
     }
 

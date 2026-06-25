@@ -34,6 +34,8 @@ const prepared = await memory.prepareTurn({
 - Plaintext local SQLite store. No database encryption and no vault integration.
 - Runtime facade: `observe`, `prepareTurn`, `commitOutcome`, `recordFeedback`,
   `forget`, `explain`.
+- Low-level compatibility APIs: `add` and `search` for import, admin, and
+  compatibility use cases that cannot emit full host events.
 - Safety gates for secret-like content, incognito events, PERSON isolation,
   forgetting, and do-not-push action policies.
 - Built-in deterministic Memory Gym smoke benchmark.
@@ -56,6 +58,8 @@ npm run build
 
 node dist/cli/gmos.js init --db ./gmos.db
 node dist/cli/gmos.js doctor --db ./gmos.db --host ghast
+node dist/cli/gmos.js add --db ./gmos.db --profile local --kind preference --text "我喜欢简洁回答"
+node dist/cli/gmos.js search --db ./gmos.db --profile local --query "简洁"
 node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "我喜欢简洁的中文回答。"
 node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
 node dist/cli/gmos.js mcp tools
@@ -83,6 +87,37 @@ stdio server wiring, and the `gmos` CLI from the installed package.
 layers, a generalization view, roadmap suggestions, and a run manifest. It does
 not run an LLM judge and should not be treated as proof of mature digital-twin
 capability.
+
+## Low-Level Compatibility APIs
+
+The primary gmOS integration path is still `observe()` plus `prepareTurn()`.
+That path gives the runtime conversation events, privacy mode, task state, and
+feedback signals.
+
+`add()` and `search()` exist for lower-level compatibility cases: importing a
+known memory from another host, admin/debug tools, migration scripts, or simple
+agent runtimes that do not yet expose full event hooks. They are intentionally
+not raw database access:
+
+- `add()` records a `sdk.low_level_add` evidence event before creating memory;
+- secret-like content is rejected before it reaches long-term memory;
+- `person` memory and `PERSON:`-routed content require `allowPerson: true`;
+- `search()` defaults to `purpose: "context"`, which hides sensitive memory
+  unless `includeSensitive` is explicitly set and hides person memory unless
+  `includePerson` is explicitly set.
+
+```ts
+const saved = await memory.add({
+  profileId: "local-user",
+  kind: "preference",
+  content: "我喜欢先讲风险，再给方案。",
+});
+
+const matches = await memory.search({
+  profileId: "local-user",
+  query: "风险 方案",
+});
+```
 
 ## MCP Tools
 

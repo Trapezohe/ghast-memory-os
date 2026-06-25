@@ -66,6 +66,27 @@ try {
       });
       assert.match(prepared.contextBlock, /先讲风险/);
       assert.equal(prepared.evidence.length, 1);
+      const lowLevel = await memory.add({
+        profileId: "consumer",
+        kind: "preference",
+        content: "Consumer low-level compatibility prefers stable manifests.",
+      });
+      const lowLevelMatches = await memory.search({
+        profileId: "consumer",
+        query: "stable manifests",
+      });
+      assert.ok(lowLevelMatches.some((entry) => entry.id === lowLevel.id));
+      const lowLevelExplanation = await memory.explain(lowLevel.id, "consumer");
+      assert.equal(lowLevelExplanation.evidence[0].sourceType, "sdk.low_level_add");
+      await assert.rejects(
+        () =>
+          memory.add({
+            profileId: "consumer",
+            kind: "fact",
+            content: "api key: sk-consumerlowlevelsecret1234567890",
+          }),
+        /secret-like/,
+      );
       assert.equal(createPresetHostAdapter("ghast").compatibility.level, "L4");
 
       const mcp = createMemoryMcpServer(memory);
@@ -124,7 +145,17 @@ try {
       const sqliteStore: SqliteMemoryStore = createSqliteMemoryStore({ path: ":memory:" });
       const genericStore: MemoryStore = sqliteStore;
       const schemaVersion: number = sqliteStore.schemaVersion();
-      createMemoryOS({ profileId: "consumer-types", store: genericStore });
+      const memory = createMemoryOS({ profileId: "consumer-types", store: genericStore });
+      await memory.add({
+        profileId: "consumer-types",
+        kind: "preference",
+        content: "Typed consumer low-level API fixture.",
+      });
+      const typedResults = await memory.search({
+        profileId: "consumer-types",
+        query: "fixture",
+      });
+      if (typedResults.length < 1) throw new Error("low-level typed search failed");
       const evolution = createEvolutionControlPlane({ store: sqliteStore, profileId: "consumer-types" });
       const evolutionMode: "report_only" = evolution.mode;
       if (evolutionMode !== "report_only") throw new Error("unexpected evolution mode");
@@ -168,6 +199,37 @@ try {
   assert.equal(doctor.schema.dialect, "sqlite");
   assert.equal(doctor.schema.version, 1);
   assert.equal(doctor.hostCompatibility.level, "L4");
+  const addBin = spawnSync(
+    gmosBin,
+    [
+      "add",
+      "--db",
+      path.join(consumerDir, "bin-low-level.db"),
+      "--profile",
+      "bin",
+      "--kind",
+      "preference",
+      "--text",
+      "Installed bin low-level add prefers stable manifests.",
+    ],
+    { cwd: consumerDir, encoding: "utf8" },
+  );
+  assert.equal(addBin.status, 0, addBin.stderr);
+  const searchBin = spawnSync(
+    gmosBin,
+    [
+      "search",
+      "--db",
+      path.join(consumerDir, "bin-low-level.db"),
+      "--profile",
+      "bin",
+      "--query",
+      "stable manifests",
+    ],
+    { cwd: consumerDir, encoding: "utf8" },
+  );
+  assert.equal(searchBin.status, 0, searchBin.stderr);
+  assert.match(searchBin.stdout, /Installed bin low-level add prefers stable manifests/);
   const helpBin = spawnSync(gmosBin, ["--help"], { cwd: consumerDir, encoding: "utf8" });
   assert.equal(helpBin.status, 1);
   assert.match(helpBin.stdout, /gmos mcp serve/);
