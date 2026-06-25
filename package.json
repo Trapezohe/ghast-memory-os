@@ -1,6 +1,6 @@
 {
   "name": "@ghast/memory",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "description": "Ghast Memory OS: a local-first actionable user-world memory runtime for AI agents.",
   "type": "module",
   "license": "Apache-2.0",
