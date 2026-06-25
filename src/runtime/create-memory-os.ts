@@ -20,6 +20,7 @@ import type {
   LowLevelAddMemoryInput,
   LowLevelArchiveMemoryInput,
   LowLevelClearMemoriesInput,
+  LowLevelRestoreArchivedMemoryInput,
   LowLevelSearchInput,
   LowLevelUpdateMemoryInput,
   MemoryKind,
@@ -27,6 +28,7 @@ import type {
   MemoryOS,
   MemoryOSOptions,
   PrepareTurnInput,
+  RestoreArchivedResult,
   Sensitivity,
 } from "../kernel/types.js";
 
@@ -96,6 +98,15 @@ function requireArchiveMemoryById(
     throw new Error("gmOS store does not support low-level archive");
   }
   return store.archiveMemoryById.bind(store);
+}
+
+function requireRestoreArchivedMemory(
+  store: MemoryOSOptions["store"],
+): NonNullable<MemoryOSOptions["store"]["restoreArchivedMemory"]> {
+  if (!store.restoreArchivedMemory) {
+    throw new Error("gmOS store does not support low-level restore archived memory");
+  }
+  return store.restoreArchivedMemory.bind(store);
 }
 
 function requireArchiveMemories(
@@ -229,6 +240,20 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       archivedAt: input.archivedAt,
     });
     return { archivedMemoryIds: archived ? [input.id] : [] };
+  }
+
+  async function restoreArchived(
+    input: LowLevelRestoreArchivedMemoryInput,
+  ): Promise<RestoreArchivedResult> {
+    await initialize();
+    const profileId = profileIdFor(defaultProfileId, input.profileId);
+    const restored = await requireRestoreArchivedMemory(store)({
+      profileId,
+      id: input.id,
+      reason: input.reason,
+      restoredAt: input.restoredAt,
+    });
+    return { restoredMemoryIds: restored ? [input.id] : [] };
   }
 
   async function clear(input: LowLevelClearMemoriesInput): Promise<ForgetResult> {
@@ -464,6 +489,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     add,
     update,
     archive,
+    restoreArchived,
     clear,
     search,
     observe,

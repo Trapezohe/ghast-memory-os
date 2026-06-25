@@ -174,6 +174,10 @@ export interface ForgetResult {
   archivedMemoryIds: string[];
 }
 
+export interface RestoreArchivedResult {
+  restoredMemoryIds: string[];
+}
+
 export interface ExplainResult {
   id: string;
   kind: "memory" | "belief";
@@ -214,6 +218,13 @@ export interface LowLevelArchiveMemoryInput {
   id: string;
   reason?: string | undefined;
   archivedAt?: string | undefined;
+}
+
+export interface LowLevelRestoreArchivedMemoryInput {
+  profileId?: string | undefined;
+  id: string;
+  reason?: string | undefined;
+  restoredAt?: string | undefined;
 }
 
 export interface LowLevelClearMemoriesInput {
@@ -290,6 +301,13 @@ export interface ArchiveMemoryInput {
   archivedAt?: string | undefined;
 }
 
+export interface RestoreArchivedMemoryInput {
+  profileId: string;
+  id: string;
+  reason?: string | undefined;
+  restoredAt?: string | undefined;
+}
+
 export interface ArchiveMemoriesInput {
   profileId: string;
   all?: boolean | undefined;
@@ -357,6 +375,7 @@ export interface MemoryStore {
   addMemory(input: AddMemoryInput): Promise<MemoryRecord> | MemoryRecord;
   updateMemory?(input: UpdateMemoryInput): Promise<MemoryRecord | null> | MemoryRecord | null;
   archiveMemoryById?(input: ArchiveMemoryInput): Promise<boolean> | boolean;
+  restoreArchivedMemory?(input: RestoreArchivedMemoryInput): Promise<boolean> | boolean;
   archiveMemories?(input: ArchiveMemoriesInput): Promise<string[]> | string[];
   addWorldBelief(input: AddWorldBeliefInput): Promise<WorldBeliefRecord> | WorldBeliefRecord;
   searchMemories(input: MemorySearchInput): Promise<MemoryRecord[]> | MemoryRecord[];
@@ -402,6 +421,7 @@ export interface MemoryOS {
   add(input: LowLevelAddMemoryInput): Promise<MemoryRecord>;
   update(input: LowLevelUpdateMemoryInput): Promise<MemoryRecord | null>;
   archive(input: LowLevelArchiveMemoryInput): Promise<ForgetResult>;
+  restoreArchived(input: LowLevelRestoreArchivedMemoryInput): Promise<RestoreArchivedResult>;
   clear(input: LowLevelClearMemoriesInput): Promise<ForgetResult>;
   search(input?: LowLevelSearchInput): Promise<MemoryRecord[]>;
   observe(event: HostEvent): Promise<void>;

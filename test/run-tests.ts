@@ -252,9 +252,14 @@ const unsupportedExisting = await unsupportedUpdateBase.addMemory({
   kind: "fact",
   content: "Unsupported update fixture should not gain evidence.",
 });
-const { updateMemory: _droppedUpdateMemory, ...unsupportedUpdateStore } =
+const {
+  updateMemory: _droppedUpdateMemory,
+  restoreArchivedMemory: _droppedRestoreArchivedMemory,
+  ...unsupportedUpdateStore
+} =
   unsupportedUpdateBase as SqliteMemoryStore & {
     updateMemory?: unknown;
+    restoreArchivedMemory?: unknown;
   };
 const unsupportedUpdateMemory = createMemoryOS({
   profileId: "unsupported_update",
@@ -271,6 +276,22 @@ await assert.rejects(
   /does not support low-level update/,
 );
 assert.deepEqual(await unsupportedUpdateBase.rowCounts(), unsupportedBeforeCounts);
+await unsupportedUpdateBase.archiveMemoryById({
+  profileId: "unsupported_update",
+  id: unsupportedExisting.id,
+  reason: "unsupported restore fixture",
+});
+const unsupportedBeforeRestoreCounts = await unsupportedUpdateBase.rowCounts();
+await assert.rejects(
+  () =>
+    unsupportedUpdateMemory.restoreArchived({
+      profileId: "unsupported_update",
+      id: unsupportedExisting.id,
+      reason: "This should not mutate without store support.",
+    }),
+  /does not support low-level restore archived memory/,
+);
+assert.deepEqual(await unsupportedUpdateBase.rowCounts(), unsupportedBeforeRestoreCounts);
 await unsupportedUpdateMemory.close();
 const archiveResult = await memory.archive({
   profileId: "test",
@@ -294,6 +315,38 @@ try {
 } finally {
   archiveInspectionDb.close();
 }
+const restoreResult = await memory.restoreArchived({
+  profileId: "test",
+  id: lowLevelMemory.id,
+  reason: "legacy compatibility delete rollback",
+  restoredAt: "2026-06-25T00:00:01.000Z",
+});
+assert.deepEqual(restoreResult.restoredMemoryIds, [lowLevelMemory.id]);
+const restoredLowLevelMatches = await memory.search({
+  profileId: "test",
+  query: "risk-first SDK docs",
+  purpose: "manage",
+});
+assert.equal(restoredLowLevelMatches.some((entry) => entry.id === lowLevelMemory.id), true);
+assert.notEqual(await memory.explain(lowLevelMemory.id, "test"), null);
+const restoreInspectionDb = new Database(dbPath, { readonly: true });
+try {
+  const restoredRow = restoreInspectionDb
+    .prepare("SELECT metadata_json, status FROM gmos_memories WHERE id = ?")
+    .get(lowLevelMemory.id) as { metadata_json: string; status: string };
+  const restoredMetadata = JSON.parse(restoredRow.metadata_json);
+  assert.equal(restoredRow.status, "active");
+  assert.equal(restoredMetadata.archive, undefined);
+  assert.equal(restoredMetadata.restore.reason, "legacy compatibility delete rollback");
+} finally {
+  restoreInspectionDb.close();
+}
+const rearchiveResult = await memory.archive({
+  profileId: "test",
+  id: lowLevelMemory.id,
+  reason: "low-level archive after restore test",
+});
+assert.deepEqual(rearchiveResult.archivedMemoryIds, [lowLevelMemory.id]);
 const clearMemoryA = await memory.add({
   profileId: "test",
   kind: "fact",

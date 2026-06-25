@@ -19,6 +19,7 @@ import type {
   MemoryStore,
   RecordEvidenceInput,
   RecordFailureInput,
+  RestoreArchivedMemoryInput,
   Sensitivity,
   TaskTrajectoryInput,
   UpdateMemoryInput,
@@ -71,6 +72,26 @@ function metadataWithArchiveMarker(input: {
         ? input.metadata.archive
         : {}),
       archivedAt: input.archivedAt,
+      ...(input.reason ? { reason: input.reason } : {}),
+    },
+  };
+}
+
+function metadataWithRestoreMarker(input: {
+  metadata: Record<string, unknown>;
+  restoredAt: string;
+  reason?: string | undefined;
+}): Record<string, unknown> {
+  const { archive: _archive, ...metadata } = input.metadata;
+  return {
+    ...metadata,
+    restore: {
+      ...(typeof metadata.restore === "object" &&
+      metadata.restore !== null &&
+      !Array.isArray(metadata.restore)
+        ? metadata.restore
+        : {}),
+      restoredAt: input.restoredAt,
       ...(input.reason ? { reason: input.reason } : {}),
     },
   };
@@ -284,6 +305,28 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
          WHERE profile_id = ? AND id = ? AND status = 'active'`,
       )
       .run(archivedAt, JSON.stringify(metadata), input.profileId, input.id);
+    return result.changes > 0;
+  }
+
+  function restoreArchivedMemory(input: RestoreArchivedMemoryInput): boolean {
+    initialize();
+    const restoredAt = input.restoredAt ?? nowIso();
+    const existing = db
+      .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ? AND status = 'archived'")
+      .get(input.profileId, input.id) as Record<string, unknown> | undefined;
+    if (!existing) return false;
+    const metadata = metadataWithRestoreMarker({
+      metadata: parseJsonObject(existing.metadata_json),
+      restoredAt,
+      reason: input.reason,
+    });
+    const result = db
+      .prepare(
+        `UPDATE gmos_memories
+         SET status = 'active', updated_at = ?, metadata_json = ?
+         WHERE profile_id = ? AND id = ? AND status = 'archived'`,
+      )
+      .run(restoredAt, JSON.stringify(metadata), input.profileId, input.id);
     return result.changes > 0;
   }
 
@@ -626,6 +669,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     addMemory,
     updateMemory,
     archiveMemoryById,
+    restoreArchivedMemory,
     archiveMemories,
     addWorldBelief,
     searchMemories,
