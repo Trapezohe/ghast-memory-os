@@ -233,6 +233,21 @@ export interface RecordFailureInput {
   metadata?: Record<string, unknown> | undefined;
 }
 
+export interface FailureEventRecord {
+  id: string;
+  profileId: string;
+  failureKind: FailureKind;
+  content: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ListFailuresInput {
+  profileId: string;
+  failureKind?: FailureKind | undefined;
+  limit?: number | undefined;
+}
+
 export interface TaskTrajectoryInput {
   profileId: string;
   taskId?: string | undefined;
@@ -279,6 +294,7 @@ export interface MemoryStore {
   listEvidenceForMemory(memoryId: string): Promise<EvidenceEvent[]> | EvidenceEvent[];
   forget(input: ForgetInput & { profileId: string }): Promise<ForgetResult> | ForgetResult;
   recordFailure(input: RecordFailureInput): Promise<void> | void;
+  listFailures?(input: ListFailuresInput): Promise<FailureEventRecord[]> | FailureEventRecord[];
   recordTaskTrajectory(input: TaskTrajectoryInput): Promise<void> | void;
   rowCounts(): Promise<Record<string, number>> | Record<string, number>;
   schemaVersion?(): Promise<number> | number;

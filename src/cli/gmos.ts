@@ -1,8 +1,13 @@
 #!/usr/bin/env node
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { createMemoryOS } from "../runtime/create-memory-os.js";
+import {
+  createEvolutionControlPlane,
+  renderEvolutionFailureReviewMarkdown,
+  type FailureReviewStore,
+} from "../evolution/index.js";
 import {
   renderHostCompatibilityGymMarkdown,
   renderMemoryGymMarkdown,
@@ -21,6 +26,7 @@ import {
   serveMemoryMcpStdio,
 } from "../mcp/index.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
+import type { FailureKind } from "../kernel/types.js";
 
 function value(name: string, fallback?: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -44,6 +50,7 @@ Usage:
   gmos mcp tools
   gmos mcp call --db ./gmos.db --tool memory.prepare_context --input '{"text":"你知道我什么偏好吗？"}'
   gmos mcp serve --db ./gmos.db --profile local
+  gmos evolution report --db ./gmos.db --profile local --format markdown
   gmos gym run --db :memory: --generated-seeds 3 --format markdown --report-file ./memory-gym.md
   gmos gym scale --sizes 100,1000 --threshold-p95-ms 250
   gmos gym host --hosts ghast,mcp,mock_l3,search_only --format markdown
@@ -138,6 +145,25 @@ function hostReport(preset: HostPreset | undefined) {
   return createPresetHostAdapter(preset).compatibility;
 }
 
+function failureKindOption(): FailureKind | undefined {
+  const raw = value("--failure-kind");
+  if (!raw) return undefined;
+  if (
+    raw !== "missed_recall" &&
+    raw !== "wrong_recall" &&
+    raw !== "privacy_leak" &&
+    raw !== "forget_failure" &&
+    raw !== "controller_route_error" &&
+    raw !== "action_policy_missing" &&
+    raw !== "task_failure"
+  ) {
+    throw new Error(
+      "--failure-kind must be one of: missed_recall, wrong_recall, privacy_leak, forget_failure, controller_route_error, action_policy_missing, task_failure",
+    );
+  }
+  return raw;
+}
+
 function parseJsonInput(raw: string | undefined): unknown {
   if (!raw) return {};
   try {
@@ -155,6 +181,37 @@ async function createRuntime() {
   const store = createSqliteMemoryStore({ path: dbPath });
   const memory = createMemoryOS({ profileId, store });
   return { memory, store, profileId, dbPath };
+}
+
+async function runEvolutionReport(): Promise<void> {
+  const dbPath = value("--db", "./gmos.db")!;
+  const profileId = value("--profile", "default")!;
+  const resolvedDbPath = dbPath === ":memory:" ? null : path.resolve(process.cwd(), dbPath);
+  let close: (() => Promise<void> | void) | undefined;
+  const store: FailureReviewStore =
+    resolvedDbPath && existsSync(resolvedDbPath)
+      ? (() => {
+          const sqlite = createSqliteMemoryStore({
+            path: resolvedDbPath,
+            readonly: true,
+            fileMustExist: true,
+          });
+          close = () => sqlite.close();
+          return sqlite;
+        })()
+      : {
+          listFailures: () => [],
+        };
+  try {
+    const controlPlane = createEvolutionControlPlane({ store, profileId });
+    const report = await controlPlane.reviewFailures({
+      failureKind: failureKindOption(),
+      limit: positiveIntegerOption("--limit", 100),
+    });
+    printReport(report, renderEvolutionFailureReviewMarkdown(report));
+  } finally {
+    await close?.();
+  }
 }
 
 function waitForServerShutdown(): Promise<void> {
@@ -207,6 +264,11 @@ async function main(): Promise<void> {
 
   if (command === "mcp" && subcommand === "tools") {
     console.log(JSON.stringify({ tools: listMemoryMcpTools() }, null, 2));
+    return;
+  }
+
+  if (command === "evolution" && subcommand === "report") {
+    await runEvolutionReport();
     return;
   }
 

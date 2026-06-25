@@ -34,7 +34,10 @@ import {
   createMemoryMcpStdioServer,
   listMemoryMcpTools,
 } from "../src/mcp/index.js";
-import { createEvolutionControlPlane } from "../src/evolution/index.js";
+import {
+  createEvolutionControlPlane,
+  renderEvolutionFailureReviewMarkdown,
+} from "../src/evolution/index.js";
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-sdk-test-"));
 const dbPath = path.join(tmp, "test.db");
@@ -184,7 +187,22 @@ await memory.commitOutcome({
   status: "failed",
   summary: "fixture failure",
 });
-assert.equal((await store.rowCounts()).gmos_failure_events, 1);
+await memory.recordFeedback({
+  profileId: "test",
+  content: "wrong recall used stale preference",
+  failureKind: "wrong_recall",
+});
+await memory.recordFeedback({
+  profileId: "test",
+  content: "privacy leak exposed 身份证 110101199001011234",
+  failureKind: "privacy_leak",
+});
+await memory.recordFeedback({
+  profileId: "other_profile",
+  content: "other profile wrong recall must not leak",
+  failureKind: "wrong_recall",
+});
+assert.equal((await store.rowCounts()).gmos_failure_events, 4);
 
 const compat = classifyHostCompatibility({
   hostId: "ghast",
@@ -203,11 +221,41 @@ assert.equal(mcp.hardGateCoverage.doNotPushPriority, false);
 const searchOnly = createPresetHostAdapter("search_only").compatibility;
 assert.equal(searchOnly.level, "L1");
 assert.ok(searchOnly.gaps.includes("forget/delete"));
-assert.deepEqual(createEvolutionControlPlane(), {
-  mode: "report_only",
-  autoApply: false,
-  autoRollout: false,
-});
+const reportOnlyControl = createEvolutionControlPlane();
+assert.equal(reportOnlyControl.mode, "report_only");
+assert.equal(reportOnlyControl.autoApply, false);
+assert.equal(reportOnlyControl.autoRollout, false);
+await assert.rejects(
+  () => reportOnlyControl.reviewFailures(),
+  /requires a store with listFailures/,
+);
+const evolutionBeforeCounts = await store.rowCounts();
+const evolution = createEvolutionControlPlane({ store, profileId: "test" });
+const evolutionReport = await evolution.reviewFailures({ limit: 10 });
+assert.equal(evolutionReport.mode, "report_only");
+assert.equal(evolutionReport.autoApply, false);
+assert.equal(evolutionReport.autoRollout, false);
+assert.equal(evolutionReport.decision, "report_only_review");
+assert.equal(evolutionReport.inspectedFailureCount, 3);
+assert.equal(evolutionReport.clusters.length, 3);
+assert.ok(evolutionReport.clusters.some((cluster) => cluster.failureKind === "task_failure"));
+assert.ok(evolutionReport.clusters.some((cluster) => cluster.failureKind === "wrong_recall"));
+assert.ok(evolutionReport.clusters.some((cluster) => cluster.failureKind === "privacy_leak"));
+assert.ok(evolutionReport.patchProposals.every((proposal) => proposal.autoApply === false));
+assert.ok(evolutionReport.patchProposals.every((proposal) => proposal.autoRollout === false));
+const evolutionReportJson = JSON.stringify(evolutionReport);
+assert.equal(evolutionReportJson.includes("身份证"), false);
+assert.equal(evolutionReportJson.includes("110101199001011234"), false);
+assert.equal(evolutionReportJson.includes("other profile wrong recall"), false);
+assert.ok(
+  evolutionReport.clusters.some((cluster) =>
+    cluster.sampleContents.includes("[redacted_sensitive_failure]"),
+  ),
+);
+assert.deepEqual(await store.rowCounts(), evolutionBeforeCounts);
+const wrongRecallOnly = await evolution.reviewFailures({ failureKind: "wrong_recall" });
+assert.equal(wrongRecallOnly.inspectedFailureCount, 1);
+assert.match(renderEvolutionFailureReviewMarkdown(evolutionReport), /gmOS Evolution Failure Review/);
 assert.equal(normalizeHostMemoryKind({ content: "PERSON: Alice: likes pizza" }), "person");
 assert.equal(
   normalizeHostMemoryKind({ content: "PERSON: Alice: likes pizza", kind: "fact" }),
@@ -766,6 +814,76 @@ for (const [host, expectedLevel] of [
   assert.equal(doctorJson.schema?.version, 1);
   assert.equal(doctorJson.hostCompatibility?.level, expectedLevel);
   if (host === "ghast") assert.deepEqual(doctorJson.hostCompatibility?.gaps, []);
+}
+const missingEvolutionDb = path.join(tmp, "evolution-missing.db");
+assert.equal(existsSync(missingEvolutionDb), false);
+const cliEvolutionReport = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "evolution",
+    "report",
+    "--db",
+    missingEvolutionDb,
+    "--profile",
+    "empty",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliEvolutionReport.status, 0, cliEvolutionReport.stderr);
+assert.equal(existsSync(missingEvolutionDb), false);
+const cliEvolutionJson = JSON.parse(cliEvolutionReport.stdout) as {
+  mode?: string;
+  autoApply?: boolean;
+  autoRollout?: boolean;
+  decision?: string;
+  inspectedFailureCount?: number;
+};
+assert.equal(cliEvolutionJson.mode, "report_only");
+assert.equal(cliEvolutionJson.autoApply, false);
+assert.equal(cliEvolutionJson.autoRollout, false);
+assert.equal(cliEvolutionJson.decision, "no_failures");
+assert.equal(cliEvolutionJson.inspectedFailureCount, 0);
+const emptyExistingEvolutionDb = path.join(tmp, "evolution-existing-empty.db");
+const emptyExistingHandle = new Database(emptyExistingEvolutionDb);
+emptyExistingHandle.close();
+const readonlyEmptyEvolutionStore = createSqliteMemoryStore({
+  path: emptyExistingEvolutionDb,
+  readonly: true,
+  fileMustExist: true,
+});
+assert.equal(await readonlyEmptyEvolutionStore.schemaVersion(), 0);
+await readonlyEmptyEvolutionStore.close();
+const existingEmptyEvolutionReport = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "evolution",
+    "report",
+    "--db",
+    emptyExistingEvolutionDb,
+    "--profile",
+    "empty",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(existingEmptyEvolutionReport.status, 0, existingEmptyEvolutionReport.stderr);
+const emptySchemaHandle = new Database(emptyExistingEvolutionDb, { readonly: true });
+try {
+  const tables = emptySchemaHandle
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+    .all() as Array<{ name: string }>;
+  assert.deepEqual(tables, []);
+} finally {
+  emptySchemaHandle.close();
 }
 const cliGymInvalidSeeds = spawnSync(
   process.execPath,

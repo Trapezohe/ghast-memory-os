@@ -44,6 +44,8 @@ const prepared = await memory.prepareTurn({
   archived when the host source changes.
 - In-process MCP-style tool router and real MCP stdio server for host/agent
   runtime adapters.
+- Report-only evolution failure review for clustering failure logs into
+  hypotheses and patch candidates without auto-apply or auto-rollout.
 - CLI: `gmos`.
 
 ## CLI
@@ -59,6 +61,7 @@ node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后�
 node dist/cli/gmos.js mcp tools
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.prepare_context --input '{"text":"你之后怎么回答我？"}'
 node dist/cli/gmos.js mcp serve --db ./gmos.db --profile local
+node dist/cli/gmos.js evolution report --db ./gmos.db --profile local --format markdown
 node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3
 node dist/cli/gmos.js gym run --generated-seeds 10 --format markdown --report-file ./memory-gym.md
 node dist/cli/gmos.js gym scale --sizes 100,1000
@@ -116,6 +119,29 @@ await server.close();
 Current tools are `memory.observe`, `memory.prepare_context`,
 `memory.commit_outcome`, `memory.record_feedback`, `memory.forget`, and
 `memory.explain_belief`.
+
+## Evolution Review
+
+The alpha SDK includes a report-only self-evolution control plane. It reads the
+failure log, clusters failures by kind, proposes repair hypotheses, and emits
+policy patch candidates. It does not apply patches, roll out changes, or weaken
+hard gates.
+
+```ts
+import { createEvolutionControlPlane } from "@ghast/memory/evolution";
+
+const evolution = createEvolutionControlPlane({ store, profileId: "local-user" });
+const report = await evolution.reviewFailures();
+```
+
+CLI:
+
+```bash
+gmos evolution report --db ./gmos.db --profile local --format markdown
+```
+
+Every proposal in this alpha path is explicitly marked `autoApply=false` and
+`autoRollout=false`.
 
 ## Trust Contract
 

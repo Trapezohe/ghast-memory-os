@@ -7,8 +7,10 @@ import type {
   AddWorldBeliefInput,
   ArchiveStaleHostImportsInput,
   EvidenceEvent,
+  FailureEventRecord,
   ForgetInput,
   ForgetResult,
+  ListFailuresInput,
   MemoryKind,
   MemoryRecord,
   MemorySearchInput,
@@ -25,9 +27,12 @@ import { ensureSqliteSchema, sqliteSchemaVersion } from "./schema.js";
 export interface SqliteMemoryStoreOptions {
   path: string;
   handle?: Database.Database;
+  readonly?: boolean | undefined;
+  fileMustExist?: boolean | undefined;
 }
 
 export interface SqliteMemoryStore extends MemoryStore {
+  listFailures(input: ListFailuresInput): FailureEventRecord[];
   schemaVersion(): number;
 }
 
@@ -81,6 +86,17 @@ function normalizeEvidence(row: Record<string, unknown>): EvidenceEvent {
   };
 }
 
+function normalizeFailure(row: Record<string, unknown>): FailureEventRecord {
+  return {
+    id: String(row.id),
+    profileId: String(row.profile_id),
+    failureKind: String(row.failure_kind) as FailureEventRecord["failureKind"],
+    content: String(row.content),
+    metadata: parseJsonObject(row.metadata_json),
+    createdAt: String(row.created_at),
+  };
+}
+
 function scoreMemory(memory: MemoryRecord, query: string): number {
   const terms = query
     .toLowerCase()
@@ -93,13 +109,29 @@ function scoreMemory(memory: MemoryRecord, query: string): number {
 }
 
 export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): SqliteMemoryStore {
-  const db = options.handle ?? new Database(options.path);
+  const sqliteOptions: Database.Options = {};
+  if (options.readonly !== undefined) sqliteOptions.readonly = options.readonly;
+  if (options.fileMustExist !== undefined) sqliteOptions.fileMustExist = options.fileMustExist;
+  const db =
+    options.handle ??
+    new Database(options.path, sqliteOptions);
   let initialized = false;
 
   function initialize(): void {
     if (initialized) return;
+    if (db.readonly) {
+      initialized = true;
+      return;
+    }
     ensureSqliteSchema(db);
     initialized = true;
+  }
+
+  function tableExists(table: string): boolean {
+    const row = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(table) as { name?: string } | undefined;
+    return row?.name === table;
   }
 
   function recordEvidence(input: RecordEvidenceInput): EvidenceEvent {
@@ -392,6 +424,27 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     );
   }
 
+  function listFailures(input: ListFailuresInput): FailureEventRecord[] {
+    if (!tableExists("gmos_failure_events")) return [];
+    const limit = Math.max(1, Math.min(input.limit ?? 100, 500));
+    const where = input.failureKind
+      ? "WHERE profile_id = ? AND failure_kind = ?"
+      : "WHERE profile_id = ?";
+    const params = input.failureKind
+      ? [input.profileId, input.failureKind, limit]
+      : [input.profileId, limit];
+    return (
+      db
+        .prepare(
+          `SELECT * FROM gmos_failure_events
+           ${where}
+           ORDER BY created_at DESC
+           LIMIT ?`,
+        )
+        .all(...params) as Record<string, unknown>[]
+    ).map(normalizeFailure);
+  }
+
   function recordTaskTrajectory(input: TaskTrajectoryInput): void {
     initialize();
     db.prepare(
@@ -447,6 +500,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     listEvidenceForMemory,
     forget,
     recordFailure,
+    listFailures,
     recordTaskTrajectory,
     rowCounts,
     schemaVersion,

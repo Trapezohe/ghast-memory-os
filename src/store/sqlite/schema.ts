@@ -93,6 +93,10 @@ export function ensureSqliteSchema(db: Database.Database): void {
 }
 
 export function sqliteSchemaVersion(db: Database.Database): number {
+  const table = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'gmos_schema_migrations'")
+    .get() as { name?: string } | undefined;
+  if (!table) return 0;
   const row = db
     .prepare("SELECT MAX(version) AS version FROM gmos_schema_migrations")
     .get() as { version?: number | null } | undefined;

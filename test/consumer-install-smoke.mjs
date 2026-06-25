@@ -41,6 +41,7 @@ try {
       import { readFileSync } from "node:fs";
       import path from "node:path";
       import { createMemoryOS } from "@ghast/memory";
+      import { createEvolutionControlPlane } from "@ghast/memory/evolution";
       import { createPresetHostAdapter } from "@ghast/memory/host";
       import {
         renderHostCompatibilityGymMarkdown,
@@ -91,6 +92,18 @@ try {
       assert.equal(memoryGym.runManifest.package.version, installedPackage.version);
       assert.notEqual(memoryGym.runManifest.package.name, "host-app-should-not-leak");
       assert.equal(memoryGym.runManifest.sqliteSchemaVersion, 1);
+      await memory.recordFeedback({
+        profileId: "consumer",
+        content: "consumer package wrong recall",
+        failureKind: "wrong_recall",
+      });
+      const evolution = createEvolutionControlPlane({ store, profileId: "consumer" });
+      const failureReview = await evolution.reviewFailures();
+      assert.equal(failureReview.mode, "report_only");
+      assert.equal(failureReview.autoApply, false);
+      assert.equal(failureReview.autoRollout, false);
+      assert.equal(failureReview.decision, "report_only_review");
+      assert.equal(failureReview.inspectedFailureCount, 1);
       await memory.close();
       console.log("[gmos-consumer] import smoke passed");
     `,
@@ -102,6 +115,7 @@ try {
     consumerTypes,
     `
       import { createMemoryOS, type MemoryStore } from "@ghast/memory";
+      import { createEvolutionControlPlane } from "@ghast/memory/evolution";
       import {
         createSqliteMemoryStore,
         type SqliteMemoryStore,
@@ -111,6 +125,9 @@ try {
       const genericStore: MemoryStore = sqliteStore;
       const schemaVersion: number = sqliteStore.schemaVersion();
       createMemoryOS({ profileId: "consumer-types", store: genericStore });
+      const evolution = createEvolutionControlPlane({ store: sqliteStore, profileId: "consumer-types" });
+      const evolutionMode: "report_only" = evolution.mode;
+      if (evolutionMode !== "report_only") throw new Error("unexpected evolution mode");
       if (schemaVersion < 1) throw new Error("schema version must be initialized");
       await sqliteStore.close();
     `,
