@@ -61,8 +61,10 @@ try {
       import { createMemoryHttpServer } from "@ghast/memory/http";
       import {
         renderHostCompatibilityGymMarkdown,
+        renderMemoryReleaseGateMarkdown,
         runHostCompatibilityGym,
         runMemoryGym,
+        runMemoryReleaseGate,
       } from "@ghast/memory/gym";
       import { createMemoryMcpServer, createMemoryMcpStdioServer } from "@ghast/memory/mcp";
       import { createSqliteMemoryStore } from "@ghast/memory/store/sqlite";
@@ -146,6 +148,16 @@ try {
       assert.equal(memoryGym.runManifest.package.version, installedPackage.version);
       assert.notEqual(memoryGym.runManifest.package.name, "host-app-should-not-leak");
       assert.equal(memoryGym.runManifest.sqliteSchemaVersion, 1);
+      const releaseGate = await runMemoryReleaseGate({
+        generatedSeeds: 1,
+        scaleSizes: [10],
+        hosts: ["ghast", "mcp"],
+      });
+      assert.equal(releaseGate.pass, true);
+      assert.equal(releaseGate.schema, "gmos.memory_release_gate.v1");
+      assert.equal(releaseGate.inputs.dbPathMode, "memory");
+      assert.equal(releaseGate.components.diagnostics.encrypted, false);
+      assert.match(renderMemoryReleaseGateMarkdown(releaseGate), /gmOS Release Gate Report/);
       await memory.recordFeedback({
         profileId: "consumer",
         content: "consumer package wrong recall",
@@ -221,8 +233,10 @@ try {
       import {
         runHostCompatibilityGym,
         runMemoryGym,
+        runMemoryReleaseGate,
         type HostCompatibilityGymResult,
         type MemoryGymResult,
+        type MemoryReleaseGateResult,
       } from "@ghast/memory/gym";
       import {
         createPresetHostAdapter,
@@ -259,6 +273,12 @@ try {
       if (evolutionMode !== "report_only") throw new Error("unexpected evolution mode");
       const gymResult: MemoryGymResult = await runMemoryGym({ generatedSeeds: 1 });
       if (!gymResult.pass) throw new Error("typed gym result failed");
+      const releaseGateResult: MemoryReleaseGateResult = await runMemoryReleaseGate({
+        generatedSeeds: 1,
+        scaleSizes: [10],
+        hosts: ["ghast"],
+      });
+      if (!releaseGateResult.pass) throw new Error("typed release gate failed");
       const hostAdapter: HostAdapter = createPresetHostAdapter("ghast");
       const hostCompatibility: HostCompatibilityReport = hostAdapter.compatibility;
       if (hostCompatibility.level !== "L4") throw new Error("unexpected typed host compatibility");
@@ -386,6 +406,23 @@ try {
   const hostGym = JSON.parse(hostGymBin.stdout);
   assert.equal(hostGym.pass, true);
   assert.equal(hostGym.hostCount, 2);
+  const gateBin = runInstalledCli([
+    "gate",
+    "--generated-seeds",
+    "1",
+    "--scale-sizes",
+    "10",
+    "--hosts",
+    "ghast,mcp",
+    "--format",
+    "json",
+  ]);
+  assert.equal(gateBin.status, 0, gateBin.stderr);
+  const gateReport = JSON.parse(gateBin.stdout);
+  assert.equal(gateReport.schema, "gmos.memory_release_gate.v1");
+  assert.equal(gateReport.pass, true);
+  assert.equal(gateReport.inputs.dbPathMode, "memory");
+  assert.equal(gateReport.components.diagnostics.encrypted, false);
   const installedQuickstart = path.join(
     consumerDir,
     "node_modules",

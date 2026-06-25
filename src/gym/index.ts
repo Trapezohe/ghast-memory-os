@@ -3,29 +3,52 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+import { createMemoryStatusReport } from "../diagnostics/index.js";
 import { createHostAdapter } from "../host/index.js";
+import type { HostPreset } from "../host/index.js";
 import { createMemoryMcpServer } from "../mcp/index.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 import { coverageMatrix, memoryStackCoverage, roadmap } from "./coverage.js";
-export {
-  renderHostCompatibilityGymMarkdown,
-  renderMemoryGymMarkdown,
-  renderMemoryScaleMarkdown,
-} from "./report.js";
-export {
+import {
   runHostCompatibilityGym,
-  type HostCompatibilityGymHostResult,
   type HostCompatibilityGymResult,
+  type HostCompatibilityGymHostResult,
   type HostCompatibilityProbeArea,
   type HostCompatibilityProbeResult,
   type HostCompatibilityProbeStatus,
   type RunHostCompatibilityGymOptions,
 } from "./host-compatibility.js";
-export { runMemoryScaleBenchmark } from "./scale.js";
-export type { MemoryScaleBenchmarkResult } from "./scale.js";
+import {
+  runMemoryScaleBenchmark,
+  type MemoryScaleBenchmarkResult,
+} from "./scale.js";
+export {
+  renderHostCompatibilityGymMarkdown,
+  renderMemoryGymMarkdown,
+  renderMemoryReleaseGateMarkdown,
+  renderMemoryScaleMarkdown,
+} from "./report.js";
+export {
+  runHostCompatibilityGym,
+};
+export type {
+  HostCompatibilityGymHostResult,
+  HostCompatibilityGymResult,
+  HostCompatibilityProbeArea,
+  HostCompatibilityProbeResult,
+  HostCompatibilityProbeStatus,
+  RunHostCompatibilityGymOptions,
+};
+export { runMemoryScaleBenchmark };
+export type { MemoryScaleBenchmarkResult };
 export type * from "./types.js";
-import type { MemoryGymGateResult, MemoryGymResult, MemoryGymScenarioResult } from "./types.js";
+import type {
+  MemoryGymGateResult,
+  MemoryGymResult,
+  MemoryGymScenarioResult,
+  MemoryReleaseGateResult,
+} from "./types.js";
 
 interface MutableGymResult extends MemoryGymResult {
   hardGates: Record<string, boolean>;
@@ -531,5 +554,125 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   return result;
   } finally {
     await memory.close();
+  }
+}
+
+export interface RunMemoryReleaseGateOptions {
+  generatedSeeds?: number | undefined;
+  scaleSizes?: number[] | undefined;
+  scaleThresholdP95Ms?: number | undefined;
+  hosts?: HostPreset[] | undefined;
+}
+
+function failedHardGates(hardGates: Record<string, boolean>): string[] {
+  return Object.entries(hardGates)
+    .filter(([, passed]) => !passed)
+    .map(([name]) => name);
+}
+
+function failedHostIds(report: HostCompatibilityGymResult): string[] {
+  return report.hosts.filter((host) => !host.pass).map((host) => host.hostId);
+}
+
+function failedScaleSizes(report: MemoryScaleBenchmarkResult): number[] {
+  return report.results
+    .filter((row) => row.prepareTurn.p95Ms > report.thresholds.prepareTurnP95Ms)
+    .map((row) => row.size);
+}
+
+export async function runMemoryReleaseGate(
+  options: RunMemoryReleaseGateOptions = {},
+): Promise<MemoryReleaseGateResult> {
+  const startedAt = new Date().toISOString();
+  const generatedSeeds = options.generatedSeeds ?? 3;
+  const scaleSizes = options.scaleSizes ?? [100, 1000];
+  const scaleThresholdP95Ms = options.scaleThresholdP95Ms ?? 250;
+  const hosts: HostPreset[] =
+    options.hosts ?? ["ghast", "mock_l3", "mcp", "search_only"];
+
+  const diagnosticsStore = createSqliteMemoryStore({ path: ":memory:" });
+  await diagnosticsStore.initialize();
+  try {
+    const [memoryGym, hostCompatibility, scale, diagnostics] = await Promise.all([
+      runMemoryGym({
+        dbPath: ":memory:",
+        generatedSeeds,
+      }),
+      runHostCompatibilityGym({ hosts }),
+      runMemoryScaleBenchmark({
+        sizes: scaleSizes,
+        thresholdP95Ms: scaleThresholdP95Ms,
+      }),
+      createMemoryStatusReport({
+        store: diagnosticsStore,
+        profileId: "release_gate",
+        host: "ghast",
+      }),
+    ]);
+
+    const failedGates = failedHardGates(memoryGym.hardGates);
+    const failedHosts = failedHostIds(hostCompatibility);
+    const failedSizes = failedScaleSizes(scale);
+    const diagnosticsPass =
+      diagnostics.storage.status === "ok" &&
+      diagnostics.storage.schemaVersion !== null &&
+      diagnostics.trustContract.encrypted === false;
+    const pass =
+      memoryGym.pass &&
+      hostCompatibility.pass &&
+      scale.pass &&
+      diagnosticsPass;
+
+    return {
+      schema: "gmos.memory_release_gate.v1",
+      pass,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      releaseConfidence: pass ? "release_candidate" : "action_required",
+      inputs: {
+        dbPathMode: "memory",
+        generatedSeeds,
+        scaleSizes,
+        scaleThresholdP95Ms,
+        hosts,
+      },
+      components: {
+        memoryGym: {
+          pass: memoryGym.pass,
+          score: memoryGym.score,
+          deterministicArchitectureStatus:
+            memoryGym.deterministicArchitectureResult.status,
+          generalizationStatus: memoryGym.generalizationResult.status,
+          roadmapStatus: memoryGym.roadmapResult.status,
+          hardGateCount: Object.keys(memoryGym.hardGates).length,
+          failedHardGates: failedGates,
+        },
+        hostCompatibility: {
+          pass: hostCompatibility.pass,
+          hostCount: hostCompatibility.hostCount,
+          failedHosts,
+        },
+        scale: {
+          pass: scale.pass,
+          sizes: scale.results.map((row) => row.size),
+          thresholdP95Ms: scale.thresholds.prepareTurnP95Ms,
+          failedSizes,
+        },
+        diagnostics: {
+          pass: diagnosticsPass,
+          schemaVersion: diagnostics.storage.schemaVersion,
+          storageStatus: diagnostics.storage.status,
+          encrypted: diagnostics.trustContract.encrypted,
+        },
+      },
+      reports: {
+        memoryGym,
+        hostCompatibility,
+        scale,
+        diagnostics,
+      },
+    };
+  } finally {
+    await diagnosticsStore.close();
   }
 }

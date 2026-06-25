@@ -13,9 +13,11 @@ import { createMemoryOS, type MemoryStore } from "../src/index.js";
 import {
   renderHostCompatibilityGymMarkdown,
   renderMemoryGymMarkdown,
+  renderMemoryReleaseGateMarkdown,
   renderMemoryScaleMarkdown,
   runHostCompatibilityGym,
   runMemoryGym,
+  runMemoryReleaseGate,
   runMemoryScaleBenchmark,
 } from "../src/gym/index.js";
 import {
@@ -1536,6 +1538,34 @@ await assert.rejects(
   () => runMemoryScaleBenchmark({ sizes: [10], iterations: 0 }),
   /positive integer/,
 );
+const releaseGate = await runMemoryReleaseGate({
+  generatedSeeds: 1,
+  scaleSizes: [10],
+  scaleThresholdP95Ms: 250,
+  hosts: ["ghast", "mcp"],
+});
+assert.equal(releaseGate.schema, "gmos.memory_release_gate.v1");
+assert.equal(releaseGate.pass, true);
+assert.equal(releaseGate.releaseConfidence, "release_candidate");
+assert.equal(releaseGate.components.memoryGym.pass, true);
+assert.equal(releaseGate.components.memoryGym.failedHardGates.length, 0);
+assert.equal(releaseGate.components.hostCompatibility.pass, true);
+assert.equal(releaseGate.components.hostCompatibility.hostCount, 2);
+assert.equal(releaseGate.components.scale.pass, true);
+assert.deepEqual(releaseGate.components.scale.failedSizes, []);
+assert.equal(releaseGate.components.diagnostics.pass, true);
+assert.equal(releaseGate.components.diagnostics.encrypted, false);
+assert.equal(releaseGate.reports.diagnostics.trustContract.encrypted, false);
+assert.match(renderMemoryReleaseGateMarkdown(releaseGate), /gmOS Release Gate Report/);
+const failedReleaseGate = await runMemoryReleaseGate({
+  generatedSeeds: 1,
+  scaleSizes: [10],
+  scaleThresholdP95Ms: 0,
+  hosts: ["ghast"],
+});
+assert.equal(failedReleaseGate.pass, false);
+assert.equal(failedReleaseGate.releaseConfidence, "action_required");
+assert.deepEqual(failedReleaseGate.components.scale.failedSizes, [10]);
 for (const [host, expectedLevel] of [
   ["ghast", "L4"],
   ["mock_l3", "L3"],
@@ -1674,6 +1704,81 @@ const cliScaleFail = spawnSync(
 );
 assert.notEqual(cliScaleFail.status, 0);
 assert.match(cliScaleFail.stdout, /Status: FAIL/);
+const cliGate = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gate",
+    "--generated-seeds",
+    "1",
+    "--scale-sizes",
+    "10",
+    "--hosts",
+    "ghast,mcp",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliGate.status, 0, cliGate.stderr);
+const cliGateJson = JSON.parse(cliGate.stdout) as {
+  schema?: string;
+  pass?: boolean;
+  inputs?: { dbPathMode?: string };
+  components?: { diagnostics?: { encrypted?: boolean } };
+};
+assert.equal(cliGateJson.schema, "gmos.memory_release_gate.v1");
+assert.equal(cliGateJson.pass, true);
+assert.equal(cliGateJson.inputs?.dbPathMode, "memory");
+assert.equal(cliGateJson.components?.diagnostics?.encrypted, false);
+const ignoredGateDb = path.join(tmp, "gate-must-ignore-db.db");
+assert.equal(existsSync(ignoredGateDb), false);
+const cliGateIgnoresDb = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gate",
+    "--db",
+    ignoredGateDb,
+    "--generated-seeds",
+    "1",
+    "--scale-sizes",
+    "10",
+    "--hosts",
+    "ghast",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliGateIgnoresDb.status, 0, cliGateIgnoresDb.stderr);
+assert.equal(JSON.parse(cliGateIgnoresDb.stdout).inputs.dbPathMode, "memory");
+assert.equal(existsSync(ignoredGateDb), false);
+const cliGymGate = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "gate",
+    "--generated-seeds",
+    "1",
+    "--scale-sizes",
+    "10",
+    "--hosts",
+    "ghast",
+    "--format",
+    "markdown",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliGymGate.status, 0, cliGymGate.stderr);
+assert.match(cliGymGate.stdout, /gmOS Release Gate Report/);
 const hostGym = await runHostCompatibilityGym();
 assert.equal(hostGym.pass, true, hostGym.failures.join("\n"));
 assert.equal(hostGym.hostCount, 4);

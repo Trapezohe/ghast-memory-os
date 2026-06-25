@@ -1,3 +1,5 @@
+import type { HostPreset } from "../host/index.js";
+
 export type MemoryGymStatus = "pass" | "fail" | "partial" | "not_run";
 
 export interface MemoryGymGateResult {
@@ -79,4 +81,55 @@ export interface MemoryGymResult {
   coverageMatrix: MemoryGymCoverageRow[];
   memoryStackCoverage: MemoryGymCoverageRow[];
   runManifest: MemoryGymRunManifest;
+}
+
+export interface MemoryReleaseGateResult {
+  schema: "gmos.memory_release_gate.v1";
+  pass: boolean;
+  startedAt: string;
+  finishedAt: string;
+  releaseConfidence:
+    | "release_candidate"
+    | "action_required";
+  inputs: {
+    dbPathMode: "memory";
+    generatedSeeds: number;
+    scaleSizes: number[];
+    scaleThresholdP95Ms: number;
+    hosts: HostPreset[];
+  };
+  components: {
+    memoryGym: {
+      pass: boolean;
+      score: number;
+      deterministicArchitectureStatus: MemoryGymStatus;
+      generalizationStatus: MemoryGymStatus;
+      roadmapStatus: MemoryGymRoadmapResult["status"];
+      hardGateCount: number;
+      failedHardGates: string[];
+    };
+    hostCompatibility: {
+      pass: boolean;
+      hostCount: number;
+      failedHosts: string[];
+    };
+    scale: {
+      pass: boolean;
+      sizes: number[];
+      thresholdP95Ms: number;
+      failedSizes: number[];
+    };
+    diagnostics: {
+      pass: boolean;
+      schemaVersion: number | null;
+      storageStatus: "ok" | "unavailable";
+      encrypted: false;
+    };
+  };
+  reports: {
+    memoryGym: MemoryGymResult;
+    hostCompatibility: import("./host-compatibility.js").HostCompatibilityGymResult;
+    scale: import("./scale.js").MemoryScaleBenchmarkResult;
+    diagnostics: import("../diagnostics/index.js").MemoryStatusReport;
+  };
 }

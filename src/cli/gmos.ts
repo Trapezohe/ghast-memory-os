@@ -16,9 +16,11 @@ import {
 import {
   renderHostCompatibilityGymMarkdown,
   renderMemoryGymMarkdown,
+  renderMemoryReleaseGateMarkdown,
   renderMemoryScaleMarkdown,
   runHostCompatibilityGym,
   runMemoryGym,
+  runMemoryReleaseGate,
   runMemoryScaleBenchmark,
 } from "../gym/index.js";
 import {
@@ -64,8 +66,10 @@ Usage:
   gmos mcp serve --db ./gmos.db --profile local
   gmos http serve --db ./gmos.db --profile local --port 4787 --host ghast
   gmos evolution report --db ./gmos.db --profile local --format markdown
+  gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
   gmos gym run --db :memory: --generated-seeds 3 --format markdown --report-file ./memory-gym.md
   gmos gym scale --sizes 100,1000 --threshold-p95-ms 250
+  gmos gym gate --generated-seeds 3 --scale-sizes 100,1000 --format json
   gmos gym host --hosts ghast,mcp,mock_l3,search_only --format markdown
 `);
   process.exit(1);
@@ -319,6 +323,21 @@ function waitForServerShutdown(): Promise<void> {
 async function main(): Promise<void> {
   const [command, subcommand] = process.argv.slice(2);
   if (!command || has("--help") || has("-h")) usage();
+
+  if (command === "gate" || (command === "gym" && subcommand === "gate")) {
+    const report = await runMemoryReleaseGate({
+      generatedSeeds: positiveIntegerOption("--generated-seeds", 3),
+      scaleSizes: parsePositiveIntegerList(
+        value("--scale-sizes", "100,1000") ?? "100,1000",
+        "--scale-sizes",
+      ),
+      scaleThresholdP95Ms: nonNegativeNumberOption("--threshold-p95-ms", 250),
+      hosts: hostPresetList(value("--hosts")),
+    });
+    printReport(report, renderMemoryReleaseGateMarkdown(report));
+    if (!report.pass) process.exitCode = 1;
+    return;
+  }
 
   if (command === "gym" && subcommand === "run") {
     const report = await runMemoryGym({

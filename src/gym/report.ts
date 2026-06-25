@@ -1,6 +1,7 @@
 import type { MemoryGymResult } from "./types.js";
 import type { MemoryScaleBenchmarkResult } from "./scale.js";
 import type { HostCompatibilityGymResult } from "./host-compatibility.js";
+import type { MemoryReleaseGateResult } from "./types.js";
 
 export function renderMemoryGymMarkdown(report: MemoryGymResult): string {
   return [
@@ -119,6 +120,61 @@ export function renderHostCompatibilityGymMarkdown(
     ...(report.failures.length === 0
       ? ["None"]
       : report.failures.map((failure) => `- ${failure}`)),
+    "",
+  ].join("\n");
+}
+
+export function renderMemoryReleaseGateMarkdown(
+  report: MemoryReleaseGateResult,
+): string {
+  return [
+    "# gmOS Release Gate Report",
+    "",
+    `Status: ${report.pass ? "PASS" : "FAIL"}`,
+    `ReleaseConfidence: ${report.releaseConfidence}`,
+    `Started: ${report.startedAt}`,
+    `Finished: ${report.finishedAt}`,
+    "",
+    "## Inputs",
+    "",
+    `DB mode: ${report.inputs.dbPathMode}`,
+    `Generated seeds: ${report.inputs.generatedSeeds}`,
+    `Scale sizes: ${report.inputs.scaleSizes.join(", ")}`,
+    `Scale threshold p95 ms: ${report.inputs.scaleThresholdP95Ms}`,
+    `Hosts: ${report.inputs.hosts.join(", ")}`,
+    "",
+    "## Components",
+    "",
+    "| Component | Status | Evidence |",
+    "| --- | --- | --- |",
+    `| Memory Gym | ${report.components.memoryGym.pass ? "PASS" : "FAIL"} | score=${report.components.memoryGym.score.toFixed(4)} hardGates=${report.components.memoryGym.hardGateCount} |`,
+    `| Host Compatibility | ${report.components.hostCompatibility.pass ? "PASS" : "FAIL"} | hosts=${report.components.hostCompatibility.hostCount} |`,
+    `| Scale | ${report.components.scale.pass ? "PASS" : "FAIL"} | sizes=${report.components.scale.sizes.join(", ")} threshold=${report.components.scale.thresholdP95Ms}ms |`,
+    `| Diagnostics | ${report.components.diagnostics.pass ? "PASS" : "FAIL"} | schema=${report.components.diagnostics.schemaVersion ?? "unknown"} plaintext SQLite encrypted=${report.components.diagnostics.encrypted ? "true" : "false"} |`,
+    "",
+    "## Failures",
+    "",
+    ...(report.pass
+      ? ["None"]
+      : [
+          ...report.components.memoryGym.failedHardGates.map(
+            (gate) => `- memory_gym:${gate}`,
+          ),
+          ...report.components.hostCompatibility.failedHosts.map(
+            (host) => `- host_compatibility:${host}`,
+          ),
+          ...report.components.scale.failedSizes.map(
+            (size) => `- scale:${size}`,
+          ),
+          ...(!report.components.diagnostics.pass ? ["- diagnostics"] : []),
+        ]),
+    "",
+    "## Run Manifest",
+    "",
+    `Node: ${report.reports.memoryGym.runManifest.node} ${report.reports.memoryGym.runManifest.platform}`,
+    `Package: ${report.reports.memoryGym.runManifest.package.name ?? "unknown"}@${report.reports.memoryGym.runManifest.package.version ?? "unknown"}`,
+    `Git: ${report.reports.memoryGym.runManifest.git.branch ?? "unknown"} ${report.reports.memoryGym.runManifest.git.sha ?? "unknown"} dirty=${report.reports.memoryGym.runManifest.git.dirty ?? "unknown"}`,
+    `SQLite schema: ${report.components.diagnostics.schemaVersion ?? "unknown"}`,
     "",
   ].join("\n");
 }

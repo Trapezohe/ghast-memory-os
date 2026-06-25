@@ -39,6 +39,8 @@ const prepared = await memory.prepareTurn({
 - Safety gates for secret-like content, incognito events, PERSON isolation,
   forgetting, and do-not-push action policies.
 - Built-in deterministic Memory Gym smoke benchmark.
+- Built-in release gate runner that combines Memory Gym, host compatibility,
+  scale, and diagnostics checks for CI/release candidates.
 - Host compatibility reports for Ghast, MCP, search-only, and mock L3 adapters.
 - Host memory snapshot import for adapters that need to project an existing
   memory store into gmOS.
@@ -75,9 +77,11 @@ node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.prep
 node dist/cli/gmos.js mcp serve --db ./gmos.db --profile local
 node dist/cli/gmos.js http serve --db ./gmos.db --profile local --port 4787 --host ghast
 node dist/cli/gmos.js evolution report --db ./gmos.db --profile local --format markdown
+node dist/cli/gmos.js gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
 node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3
 node dist/cli/gmos.js gym run --generated-seeds 10 --format markdown --report-file ./memory-gym.md
 node dist/cli/gmos.js gym scale --sizes 100,1000
+node dist/cli/gmos.js gym gate --generated-seeds 3 --scale-sizes 100,1000 --format json
 node dist/cli/gmos.js gym host --hosts ghast,mcp,mock_l3,search_only --format markdown
 ```
 
@@ -86,6 +90,7 @@ node dist/cli/gmos.js gym host --hosts ghast,mcp,mock_l3,search_only --format ma
 ```bash
 npm run check
 npm run test:consumer
+node dist/cli/gmos.js gate --generated-seeds 3 --scale-sizes 100,1000 --hosts ghast,mcp,mock_l3,search_only --format json
 node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3 --format json
 node dist/cli/gmos.js gym scale --sizes 100,1000 --threshold-p95-ms 250 --format json
 npm pack --dry-run
@@ -106,6 +111,17 @@ jobs are deterministic SDK gates; they do not call an external LLM.
 layers, a generalization view, roadmap suggestions, and a run manifest. It does
 not run an LLM judge and should not be treated as proof of mature digital-twin
 capability.
+
+`gmos gate` is the SDK release-candidate gate. It runs deterministic Memory Gym,
+the host compatibility gym, the local SQLite scale benchmark, and diagnostics
+in one command. By default it uses an in-memory database and does not inspect or
+mutate a user's production memory database. The gate intentionally does not
+accept a production DB input; use `gym run --db` or `status --db` when you need
+to inspect a specific file. The scale sub-check creates and deletes its own
+temporary SQLite files under the OS temp directory; it does not read a user's
+memory DB. Passing this gate means the SDK's local runtime contract is healthy;
+it is still not an external long-term agent benchmark or a proof of mature
+digital-twin capability.
 
 ## Examples
 
