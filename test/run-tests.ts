@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -11,7 +12,10 @@ import {
   runMemoryScaleBenchmark,
 } from "../src/gym/index.js";
 import { createSqliteMemoryStore } from "../src/store/sqlite/index.js";
-import { classifyHostCompatibility } from "../src/host/index.js";
+import {
+  classifyHostCompatibility,
+  createPresetHostAdapter,
+} from "../src/host/index.js";
 import { createEvolutionControlPlane } from "../src/evolution/index.js";
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-sdk-test-"));
@@ -96,13 +100,21 @@ assert.equal((await store.rowCounts()).gmos_failure_events, 1);
 
 const compat = classifyHostCompatibility({
   hostId: "ghast",
-  canObserve: true,
-  canInjectContext: true,
-  canCommitOutcome: true,
-  canRecordFeedback: true,
-  canEnforceDirectives: true,
+  capabilities: createPresetHostAdapter("ghast").capabilities,
 });
 assert.equal(compat.level, "L4");
+assert.equal(compat.hardGateCoverage.forgetCompliance, true);
+assert.equal(compat.hardGateCoverage.doNotPushPriority, true);
+assert.deepEqual(compat.gaps, []);
+const mockL3 = createPresetHostAdapter("mock_l3").compatibility;
+assert.equal(mockL3.level, "L3");
+assert.ok(mockL3.gaps.includes("tool observation"));
+const mcp = createPresetHostAdapter("mcp").compatibility;
+assert.equal(mcp.level, "L2");
+assert.equal(mcp.hardGateCoverage.doNotPushPriority, false);
+const searchOnly = createPresetHostAdapter("search_only").compatibility;
+assert.equal(searchOnly.level, "L1");
+assert.ok(searchOnly.gaps.includes("forget/delete"));
 assert.deepEqual(createEvolutionControlPlane(), {
   mode: "report_only",
   autoApply: false,
@@ -124,5 +136,52 @@ await assert.rejects(
   () => runMemoryScaleBenchmark({ sizes: [10], iterations: 0 }),
   /positive integer/,
 );
+for (const [host, expectedLevel] of [
+  ["ghast", "L4"],
+  ["mock_l3", "L3"],
+  ["mcp", "L2"],
+  ["search_only", "L1"],
+] as const) {
+  const doctor = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "src/cli/gmos.ts",
+      "doctor",
+      "--db",
+      path.join(tmp, `doctor-${host}.db`),
+      "--host",
+      host,
+    ],
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  assert.equal(doctor.status, 0, doctor.stderr);
+  const doctorJson = JSON.parse(doctor.stdout) as {
+    encrypted: boolean;
+    hostCompatibility?: { level?: string; gaps?: string[] };
+  };
+  assert.equal(doctorJson.encrypted, false);
+  assert.equal(doctorJson.hostCompatibility?.level, expectedLevel);
+  if (host === "ghast") assert.deepEqual(doctorJson.hostCompatibility?.gaps, []);
+}
+const invalidHostDb = path.join(tmp, "doctor-invalid.db");
+const invalidHost = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "doctor",
+    "--db",
+    invalidHostDb,
+    "--host",
+    "unknown",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(invalidHost.status, 0);
+assert.match(invalidHost.stderr, /--host must be one of/);
+assert.equal(existsSync(invalidHostDb), false);
 rmSync(tmp, { recursive: true, force: true });
 console.log("[gmos-sdk] tests passed");

@@ -9,6 +9,10 @@ import {
   runMemoryGym,
   runMemoryScaleBenchmark,
 } from "../gym/index.js";
+import {
+  createPresetHostAdapter,
+  type HostPreset,
+} from "../host/index.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 
 function value(name: string, fallback?: string): string | undefined {
@@ -25,7 +29,7 @@ function usage(): never {
 
 Usage:
   gmos init --db ./gmos.db
-  gmos doctor --db ./gmos.db
+  gmos doctor --db ./gmos.db --host ghast
   gmos observe --db ./gmos.db --profile local --text "我喜欢简洁回答"
   gmos prepare --db ./gmos.db --profile local --text "你知道我什么偏好吗？"
   gmos forget --db ./gmos.db --profile local --query "Moonbase"
@@ -63,6 +67,25 @@ function parsePositiveIntegerList(raw: string, label: string): number[] {
   return values;
 }
 
+function hostPreset(): HostPreset | undefined {
+  const host = value("--host");
+  if (!host) return undefined;
+  if (
+    host !== "ghast" &&
+    host !== "mcp" &&
+    host !== "search_only" &&
+    host !== "mock_l3"
+  ) {
+    throw new Error("--host must be one of: ghast, mcp, search_only, mock_l3");
+  }
+  return host;
+}
+
+function hostReport(preset: HostPreset | undefined) {
+  if (!preset) return undefined;
+  return createPresetHostAdapter(preset).compatibility;
+}
+
 async function createRuntime() {
   const dbPath = value("--db", "./gmos.db")!;
   const profileId = value("--profile", "default")!;
@@ -88,6 +111,7 @@ async function main(): Promise<void> {
     return;
   }
 
+  const requestedHost = command === "doctor" ? hostPreset() : undefined;
   const { memory, store, profileId, dbPath } = await createRuntime();
   try {
     if (command === "init") {
@@ -105,6 +129,7 @@ async function main(): Promise<void> {
             dbPath,
             encrypted: false,
             rowCounts: await store.rowCounts(),
+            hostCompatibility: hostReport(requestedHost),
           },
           null,
           2,

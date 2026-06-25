@@ -37,6 +37,7 @@ const prepared = await memory.prepareTurn({
 - Safety gates for secret-like content, incognito events, PERSON isolation,
   forgetting, and do-not-push action policies.
 - Built-in deterministic Memory Gym smoke benchmark.
+- Host compatibility reports for Ghast, MCP, search-only, and mock L3 adapters.
 - CLI: `gmos`.
 
 ## CLI
@@ -46,6 +47,7 @@ npm install
 npm run build
 
 node dist/cli/gmos.js init --db ./gmos.db
+node dist/cli/gmos.js doctor --db ./gmos.db --host ghast
 node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "我喜欢简洁的中文回答。"
 node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
 node dist/cli/gmos.js gym run --db :memory:
@@ -63,6 +65,20 @@ and host boundaries, not database encryption:
 - ordinary context does not include sensitive memory unless explicitly allowed;
 - forget operations archive matching memory and remove it from future context;
 - read paths must not write.
+
+## Host Compatibility
+
+gmOS reports host capability as L0-L4. The SDK can maintain memory state, but a
+host must expose the right hooks to preserve full behavior:
+
+- `ghast`: L4, managed memory runtime.
+- `mock_l3`: L3, useful for adapter smoke tests.
+- `mcp`: L2, useful for tool-based integrations but cannot guarantee full
+  directive enforcement.
+- `search_only`: L1, recall-only and not a full Memory OS integration.
+
+Run `gmos doctor --host ghast` to inspect capability gaps and hard-gate
+coverage.
 
 ## Status
 

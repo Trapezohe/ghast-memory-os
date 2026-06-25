@@ -1,26 +1,47 @@
+export type HostCompatibilityLevel = "L0" | "L1" | "L2" | "L3" | "L4";
+export type HostPreset = "ghast" | "mcp" | "search_only" | "mock_l3";
+
+export interface HostCapabilities {
+  canObserveConversation: boolean;
+  canObserveToolCalls: boolean;
+  canInjectSystemContext: boolean;
+  canEnforceHardDirectives: boolean;
+  canCommitTaskOutcomes: boolean;
+  canRecordUserFeedback: boolean;
+  canForget: boolean;
+  supportsPrivateMode: boolean;
+  supportsActionPolicies: boolean;
+  supportsEvidenceInContext: boolean;
+}
+
+export interface HostAdapter {
+  hostId: string;
+  displayName?: string | undefined;
+  capabilities: HostCapabilities;
+  compatibility: HostCompatibilityReport;
+}
+
 export interface HostCompatibilityReport {
   hostId: string;
-  level: "L0" | "L1" | "L2" | "L3" | "L4";
+  level: HostCompatibilityLevel;
   capabilityRetention: string;
+  score: number;
   gaps: string[];
+  hardGateCoverage: Record<string, boolean>;
 }
 
 export function classifyHostCompatibility(input: {
   hostId: string;
+  capabilities?: Partial<HostCapabilities> | undefined;
   canObserve?: boolean;
   canInjectContext?: boolean;
   canCommitOutcome?: boolean;
   canRecordFeedback?: boolean;
   canEnforceDirectives?: boolean;
 }): HostCompatibilityReport {
-  const score = [
-    input.canObserve,
-    input.canInjectContext,
-    input.canCommitOutcome,
-    input.canRecordFeedback,
-    input.canEnforceDirectives,
-  ].filter(Boolean).length;
-  const level = score >= 5 ? "L4" : score >= 4 ? "L3" : score >= 3 ? "L2" : score >= 1 ? "L1" : "L0";
+  const capabilities = normalizeCapabilities(input);
+  const score = capabilityScore(capabilities);
+  const level = compatibilityLevel(capabilities, score);
   const capabilityRetention =
     level === "L4"
       ? "95%+"
@@ -31,13 +52,192 @@ export function classifyHostCompatibility(input: {
           : level === "L1"
             ? "20%-55%"
             : "0%-20%";
-  const gaps = [
-    !input.canObserve && "observe",
-    !input.canInjectContext && "context injection",
-    !input.canCommitOutcome && "outcome commit",
-    !input.canRecordFeedback && "feedback",
-    !input.canEnforceDirectives && "directive enforcement",
-  ].filter((gap): gap is string => Boolean(gap));
-  return { hostId: input.hostId, level, capabilityRetention, gaps };
+  return {
+    hostId: input.hostId,
+    level,
+    capabilityRetention,
+    score,
+    gaps: capabilityGaps(capabilities),
+    hardGateCoverage: hardGateCoverage(capabilities),
+  };
 }
 
+export function createHostAdapter(input: {
+  hostId: string;
+  displayName?: string | undefined;
+  capabilities: Partial<HostCapabilities>;
+}): HostAdapter {
+  const capabilities = normalizeCapabilities({
+    capabilities: input.capabilities,
+  });
+  return {
+    hostId: input.hostId,
+    displayName: input.displayName,
+    capabilities,
+    compatibility: classifyHostCompatibility({
+      hostId: input.hostId,
+      capabilities,
+    }),
+  };
+}
+
+export function createPresetHostAdapter(
+  preset: HostPreset,
+): HostAdapter {
+  if (preset === "ghast") {
+    return createHostAdapter({
+      hostId: "ghast",
+      displayName: "Ghast Desktop",
+      capabilities: {
+        canObserveConversation: true,
+        canObserveToolCalls: true,
+        canInjectSystemContext: true,
+        canEnforceHardDirectives: true,
+        canCommitTaskOutcomes: true,
+        canRecordUserFeedback: true,
+        canForget: true,
+        supportsPrivateMode: true,
+        supportsActionPolicies: true,
+        supportsEvidenceInContext: true,
+      },
+    });
+  }
+  if (preset === "mock_l3") {
+    return createHostAdapter({
+      hostId: "mock_l3",
+      displayName: "Mock L3 Host",
+      capabilities: {
+        canObserveConversation: true,
+        canInjectSystemContext: true,
+        canEnforceHardDirectives: true,
+        canCommitTaskOutcomes: true,
+        canRecordUserFeedback: true,
+        canForget: true,
+        supportsPrivateMode: true,
+      },
+    });
+  }
+  if (preset === "mcp") {
+    return createHostAdapter({
+      hostId: "mcp",
+      displayName: "MCP Host",
+      capabilities: {
+        canObserveConversation: true,
+        canInjectSystemContext: true,
+        canRecordUserFeedback: true,
+        canForget: true,
+      },
+    });
+  }
+  return createHostAdapter({
+    hostId: "search_only",
+    displayName: "Search-only Host",
+    capabilities: {
+      canInjectSystemContext: true,
+    },
+  });
+}
+
+function normalizeCapabilities(input: {
+  capabilities?: Partial<HostCapabilities> | undefined;
+  canObserve?: boolean | undefined;
+  canInjectContext?: boolean | undefined;
+  canCommitOutcome?: boolean | undefined;
+  canRecordFeedback?: boolean | undefined;
+  canEnforceDirectives?: boolean | undefined;
+}): HostCapabilities {
+  const capabilities = input.capabilities ?? {};
+  return {
+    canObserveConversation:
+      capabilities.canObserveConversation ?? Boolean(input.canObserve),
+    canObserveToolCalls: capabilities.canObserveToolCalls ?? false,
+    canInjectSystemContext:
+      capabilities.canInjectSystemContext ?? Boolean(input.canInjectContext),
+    canEnforceHardDirectives:
+      capabilities.canEnforceHardDirectives ??
+      Boolean(input.canEnforceDirectives),
+    canCommitTaskOutcomes:
+      capabilities.canCommitTaskOutcomes ?? Boolean(input.canCommitOutcome),
+    canRecordUserFeedback:
+      capabilities.canRecordUserFeedback ?? Boolean(input.canRecordFeedback),
+    canForget: capabilities.canForget ?? false,
+    supportsPrivateMode: capabilities.supportsPrivateMode ?? false,
+    supportsActionPolicies: capabilities.supportsActionPolicies ?? false,
+    supportsEvidenceInContext: capabilities.supportsEvidenceInContext ?? false,
+  };
+}
+
+function capabilityScore(capabilities: HostCapabilities): number {
+  const values = Object.values(capabilities);
+  return values.filter(Boolean).length / values.length;
+}
+
+function compatibilityLevel(
+  capabilities: HostCapabilities,
+  score: number,
+): HostCompatibilityLevel {
+  if (
+    score === 1 &&
+    capabilities.canInjectSystemContext &&
+    capabilities.canEnforceHardDirectives &&
+    capabilities.supportsPrivateMode &&
+    capabilities.canForget
+  ) {
+    return "L4";
+  }
+  if (
+    capabilities.canObserveConversation &&
+    capabilities.canInjectSystemContext &&
+    capabilities.canEnforceHardDirectives &&
+    score >= 0.7
+  ) {
+    return "L3";
+  }
+  if (
+    capabilities.canObserveConversation &&
+    capabilities.canInjectSystemContext &&
+    score >= 0.4
+  ) {
+    return "L2";
+  }
+  if (score > 0) return "L1";
+  return "L0";
+}
+
+function capabilityGaps(capabilities: HostCapabilities): string[] {
+  const labels: Array<[keyof HostCapabilities, string]> = [
+    ["canObserveConversation", "conversation observation"],
+    ["canObserveToolCalls", "tool observation"],
+    ["canInjectSystemContext", "system context injection"],
+    ["canEnforceHardDirectives", "hard directive enforcement"],
+    ["canCommitTaskOutcomes", "task outcome commit"],
+    ["canRecordUserFeedback", "user feedback"],
+    ["canForget", "forget/delete"],
+    ["supportsPrivateMode", "private/incognito mode"],
+    ["supportsActionPolicies", "action policies"],
+    ["supportsEvidenceInContext", "evidence-aware context"],
+  ];
+  return labels
+    .filter(([key]) => !capabilities[key])
+    .map(([, label]) => label);
+}
+
+function hardGateCoverage(
+  capabilities: HostCapabilities,
+): Record<string, boolean> {
+  return {
+    personIsolation: capabilities.canObserveConversation,
+    secretLikePersistence: capabilities.canObserveConversation,
+    incognitoLeakage: capabilities.supportsPrivateMode,
+    forgetCompliance: capabilities.canForget,
+    doNotPushPriority:
+      capabilities.supportsActionPolicies &&
+      capabilities.canEnforceHardDirectives,
+    sensitiveEvidenceExposure:
+      capabilities.supportsEvidenceInContext &&
+      capabilities.canInjectSystemContext,
+    readPathSideEffects: true,
+    taskOutcomeFeedback:
+      capabilities.canCommitTaskOutcomes && capabilities.canRecordUserFeedback,
+  };
+}
