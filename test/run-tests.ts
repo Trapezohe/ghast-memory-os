@@ -257,11 +257,13 @@ const unsupportedExisting = await unsupportedUpdateBase.addMemory({
 const {
   updateMemory: _droppedUpdateMemory,
   restoreArchivedMemory: _droppedRestoreArchivedMemory,
+  listMemories: _droppedListMemories,
   ...unsupportedUpdateStore
 } =
   unsupportedUpdateBase as SqliteMemoryStore & {
     updateMemory?: unknown;
     restoreArchivedMemory?: unknown;
+    listMemories?: unknown;
   };
 const unsupportedUpdateMemory = createMemoryOS({
   profileId: "unsupported_update",
@@ -294,6 +296,35 @@ await assert.rejects(
   /does not support low-level restore archived memory/,
 );
 assert.deepEqual(await unsupportedUpdateBase.rowCounts(), unsupportedBeforeRestoreCounts);
+const unsupportedActiveListingFixture = await unsupportedUpdateBase.addMemory({
+  profileId: "unsupported_update",
+  kind: "fact",
+  content: "Unsupported fallback active listing fixture.",
+});
+const unsupportedListDefault = await unsupportedUpdateMemory.list({
+  profileId: "unsupported_update",
+  query: "active listing fixture",
+});
+assert.equal(
+  unsupportedListDefault.some((entry) => entry.id === unsupportedActiveListingFixture.id),
+  true,
+);
+await assert.rejects(
+  () =>
+    unsupportedUpdateMemory.list({
+      profileId: "unsupported_update",
+      status: "archived",
+    }),
+  /does not support archived memory listing/,
+);
+await assert.rejects(
+  () =>
+    unsupportedUpdateMemory.list({
+      profileId: "unsupported_update",
+      scope: "missing",
+    }),
+  /does not support filtered memory listing/,
+);
 await unsupportedUpdateMemory.close();
 const archiveResult = await memory.archive({
   profileId: "test",
@@ -349,6 +380,27 @@ const rearchiveResult = await memory.archive({
   reason: "low-level archive after restore test",
 });
 assert.deepEqual(rearchiveResult.archivedMemoryIds, [lowLevelMemory.id]);
+const defaultManagedList = await memory.list({
+  profileId: "test",
+  query: "risk-first SDK docs",
+});
+assert.equal(defaultManagedList.some((entry) => entry.id === lowLevelMemory.id), false);
+const archivedManagedList = await memory.list({
+  profileId: "test",
+  query: "risk-first SDK docs",
+  status: "archived",
+});
+assert.equal(archivedManagedList.length, 1);
+assert.equal(archivedManagedList[0]?.id, lowLevelMemory.id);
+assert.equal(archivedManagedList[0]?.status, "archived");
+assert.equal(await memory.get({ profileId: "test", id: lowLevelMemory.id }), null);
+const archivedManagedGet = await memory.get({
+  profileId: "test",
+  id: lowLevelMemory.id,
+  includeArchived: true,
+});
+assert.equal(archivedManagedGet?.id, lowLevelMemory.id);
+assert.equal(archivedManagedGet?.status, "archived");
 const clearMemoryA = await memory.add({
   profileId: "test",
   kind: "fact",
@@ -422,6 +474,31 @@ const lowLevelSensitiveIncluded = await memory.search({
   includeSensitive: true,
 });
 assert.ok(lowLevelSensitiveIncluded.some((entry) => entry.id === lowLevelSensitive.id));
+const lowLevelSensitiveManagedDefault = await memory.list({
+  profileId: "test",
+  query: "123-45-6789",
+});
+assert.equal(
+  lowLevelSensitiveManagedDefault.some((entry) => entry.id === lowLevelSensitive.id),
+  false,
+);
+const lowLevelSensitiveManagedIncluded = await memory.list({
+  profileId: "test",
+  query: "123-45-6789",
+  includeSensitive: true,
+});
+assert.ok(
+  lowLevelSensitiveManagedIncluded.some((entry) => entry.id === lowLevelSensitive.id),
+);
+assert.equal(await memory.get({ profileId: "test", id: lowLevelSensitive.id }), null);
+assert.equal(
+  (await memory.get({
+    profileId: "test",
+    id: lowLevelSensitive.id,
+    includeSensitive: true,
+  }))?.id,
+  lowLevelSensitive.id,
+);
 await assert.rejects(
   () =>
     memory.add({
@@ -449,6 +526,29 @@ const lowLevelPersonIncluded = await memory.search({
   includePerson: true,
 });
 assert.ok(lowLevelPersonIncluded.some((entry) => entry.id === lowLevelPerson.id));
+const lowLevelPersonManagedDefault = await memory.list({
+  profileId: "test",
+  query: "Alice tea",
+});
+assert.equal(
+  lowLevelPersonManagedDefault.some((entry) => entry.id === lowLevelPerson.id),
+  false,
+);
+const lowLevelPersonManagedIncluded = await memory.list({
+  profileId: "test",
+  query: "Alice tea",
+  includePerson: true,
+});
+assert.ok(lowLevelPersonManagedIncluded.some((entry) => entry.id === lowLevelPerson.id));
+assert.equal(await memory.get({ profileId: "test", id: lowLevelPerson.id }), null);
+assert.equal(
+  (await memory.get({
+    profileId: "test",
+    id: lowLevelPerson.id,
+    includePerson: true,
+  }))?.id,
+  lowLevelPerson.id,
+);
 
 await memory.observe({
   type: "conversation.message",

@@ -158,10 +158,10 @@ The primary gmOS integration path is still `observe()` plus `prepareTurn()`.
 That path gives the runtime conversation events, privacy mode, task state, and
 feedback signals.
 
-`add()`, `update()`, `archive()`, `clear()`, and `search()` exist for lower-level
-compatibility cases: importing a known memory from another host, admin/debug
-tools, migration scripts, or simple agent runtimes that do not yet expose full
-event hooks. They are intentionally not raw database access:
+`add()`, `update()`, `archive()`, `clear()`, `search()`, `list()`, and `get()`
+exist for lower-level compatibility cases: importing a known memory from another
+host, admin/debug tools, migration scripts, or simple agent runtimes that do not
+yet expose full event hooks. They are intentionally not raw database access:
 
 - `add()` records a `sdk.low_level_add` evidence event before creating memory;
 - `update()` records a `sdk.low_level_update` evidence event before changing memory;
@@ -172,6 +172,10 @@ event hooks. They are intentionally not raw database access:
 - `search()` defaults to `purpose: "context"`, which hides sensitive memory
   unless `includeSensitive` is explicitly set and hides person memory unless
   `includePerson` is explicitly set.
+- `list()` and `get()` provide host management/migration reads without forcing a
+  host to import the store directly. They still hide archived, sensitive, and
+  person-scoped memory unless the caller explicitly asks for those management
+  views.
 
 ```ts
 const saved = await memory.add({
@@ -194,6 +198,17 @@ await memory.update({
 await memory.archive({
   profileId: "local-user",
   id: saved.id,
+});
+
+const archived = await memory.list({
+  profileId: "local-user",
+  status: "archived",
+});
+
+const managedRead = await memory.get({
+  profileId: "local-user",
+  id: saved.id,
+  includeArchived: true,
 });
 ```
 

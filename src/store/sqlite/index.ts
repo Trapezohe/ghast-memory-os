@@ -13,6 +13,7 @@ import type {
   ForgetInput,
   ForgetResult,
   ListFailuresInput,
+  MemoryListInput,
   MemoryKind,
   MemoryRecord,
   MemorySearchInput,
@@ -149,6 +150,23 @@ function scoreMemory(memory: MemoryRecord, query: string): number {
   const lower = memory.content.toLowerCase();
   const hits = terms.filter((term) => lower.includes(term)).length;
   return hits + memory.confidence;
+}
+
+function limit(input: number | undefined, fallback: number, maximum: number): number {
+  if (input === undefined) return fallback;
+  return Math.max(1, Math.min(Math.trunc(input), maximum));
+}
+
+function visibleMemory(input: {
+  memory: MemoryRecord;
+  includeSensitive?: boolean | undefined;
+  includePerson?: boolean | undefined;
+}): boolean {
+  if (!input.includePerson && input.memory.kind === "person") return false;
+  return !shouldHideFromOrdinaryContext({
+    sensitivity: input.memory.sensitivity,
+    includeSensitive: input.includeSensitive,
+  });
 }
 
 export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): SqliteMemoryStore {
@@ -434,30 +452,75 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .map((item) => item.memory);
   }
 
+  function listMemories(input: MemoryListInput): MemoryRecord[] {
+    initialize();
+    const clauses = ["profile_id = ?"];
+    const params: unknown[] = [input.profileId];
+    if (input.status && input.status !== "any") {
+      clauses.push("status = ?");
+      params.push(input.status);
+    } else if (!input.status) {
+      clauses.push("status = 'active'");
+    }
+    if (input.kind) {
+      clauses.push("kind = ?");
+      params.push(input.kind);
+    }
+    if (input.scope) {
+      clauses.push("scope = ?");
+      params.push(input.scope);
+    }
+    const query = input.query?.trim() ?? "";
+    const rows = db
+      .prepare(
+        `SELECT * FROM gmos_memories
+         WHERE ${clauses.join(" AND ")}
+         ORDER BY updated_at DESC
+         LIMIT ?`,
+      )
+      .all(...params, query ? 500 : limit(input.limit, 100, 500)) as Record<string, unknown>[];
+    return rows
+      .map(normalizeMemory)
+      .filter((memory) =>
+        visibleMemory({
+          memory,
+          includeSensitive: input.includeSensitive,
+          includePerson: input.includePerson,
+        }),
+      )
+      .map((memory) => ({ memory, score: query ? scoreMemory(memory, query) : memory.confidence }))
+      .filter((item) => !query || item.score > item.memory.confidence)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit(input.limit, 100, 500))
+      .map((item) => item.memory);
+  }
+
   function getMemoryById(
     profileId: string,
     memoryId: string,
     options: {
       includeSensitive?: boolean | undefined;
       includePerson?: boolean | undefined;
+      includeArchived?: boolean | undefined;
     } = {},
   ): MemoryRecord | null {
     initialize();
     const row = db
-      .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ? AND status = 'active'")
+      .prepare(
+        `SELECT * FROM gmos_memories
+         WHERE profile_id = ? AND id = ?
+           ${options.includeArchived ? "" : "AND status = 'active'"}`,
+      )
       .get(profileId, memoryId) as Record<string, unknown> | undefined;
     if (!row) return null;
     const memory = normalizeMemory(row);
-    if (!options.includePerson && memory.kind === "person") return null;
-    if (
-      shouldHideFromOrdinaryContext({
-        sensitivity: memory.sensitivity,
-        includeSensitive: options.includeSensitive,
-      })
-    ) {
-      return null;
-    }
-    return memory;
+    return visibleMemory({
+      memory,
+      includeSensitive: options.includeSensitive,
+      includePerson: options.includePerson,
+    })
+      ? memory
+      : null;
   }
 
   function findActiveMemoryByMetadata(
@@ -673,6 +736,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     archiveMemories,
     addWorldBelief,
     searchMemories,
+    listMemories,
     getMemoryById,
     findActiveMemoryByMetadata,
     archiveStaleHostImports,

@@ -225,7 +225,7 @@ try {
   writeFileSync(
     consumerTypes,
     `
-      import { createMemoryOS, type MemoryStore } from "@ghast/memory";
+      import { createMemoryOS, type MemoryRecord, type MemoryStore } from "@ghast/memory";
       import {
         createMemoryStatusReport,
         type MemoryStatusReport,
@@ -269,6 +269,17 @@ try {
         query: "fixture",
       });
       if (typedResults.length < 1) throw new Error("low-level typed search failed");
+      const listed: MemoryRecord[] = await memory.list({
+        profileId: "consumer-types",
+        query: "fixture",
+        status: "any",
+      });
+      if (listed.length < 1) throw new Error("low-level typed list failed");
+      const fetched: MemoryRecord | null = await memory.get({
+        profileId: "consumer-types",
+        id: listed[0].id,
+      });
+      if (!fetched) throw new Error("low-level typed get failed");
       const evolution = createEvolutionControlPlane({ store: sqliteStore, profileId: "consumer-types" });
       const evolutionMode: "report_only" = evolution.mode;
       if (evolutionMode !== "report_only") throw new Error("unexpected evolution mode");

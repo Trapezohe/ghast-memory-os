@@ -248,11 +248,41 @@ export interface LowLevelSearchInput {
   includePerson?: boolean | undefined;
 }
 
+export interface LowLevelListMemoriesInput {
+  profileId?: string | undefined;
+  query?: string | undefined;
+  limit?: number | undefined;
+  status?: MemoryStatus | "any" | undefined;
+  kind?: MemoryKind | undefined;
+  scope?: string | undefined;
+  includeSensitive?: boolean | undefined;
+  includePerson?: boolean | undefined;
+}
+
+export interface LowLevelGetMemoryInput {
+  profileId?: string | undefined;
+  id: string;
+  includeSensitive?: boolean | undefined;
+  includePerson?: boolean | undefined;
+  includeArchived?: boolean | undefined;
+}
+
 export interface MemorySearchInput {
   profileId: string;
   query?: string;
   limit?: number;
   purpose?: "context" | "delete" | "manage";
+  includeSensitive?: boolean | undefined;
+  includePerson?: boolean | undefined;
+}
+
+export interface MemoryListInput {
+  profileId: string;
+  query?: string | undefined;
+  limit?: number | undefined;
+  status?: MemoryStatus | "any" | undefined;
+  kind?: MemoryKind | undefined;
+  scope?: string | undefined;
   includeSensitive?: boolean | undefined;
   includePerson?: boolean | undefined;
 }
@@ -379,12 +409,14 @@ export interface MemoryStore {
   archiveMemories?(input: ArchiveMemoriesInput): Promise<string[]> | string[];
   addWorldBelief(input: AddWorldBeliefInput): Promise<WorldBeliefRecord> | WorldBeliefRecord;
   searchMemories(input: MemorySearchInput): Promise<MemoryRecord[]> | MemoryRecord[];
+  listMemories?(input: MemoryListInput): Promise<MemoryRecord[]> | MemoryRecord[];
   getMemoryById(
     profileId: string,
     id: string,
     options?: {
       includeSensitive?: boolean | undefined;
       includePerson?: boolean | undefined;
+      includeArchived?: boolean | undefined;
     },
   ): Promise<MemoryRecord | null> | MemoryRecord | null;
   findActiveMemoryByMetadata?(
@@ -424,6 +456,8 @@ export interface MemoryOS {
   restoreArchived(input: LowLevelRestoreArchivedMemoryInput): Promise<RestoreArchivedResult>;
   clear(input: LowLevelClearMemoriesInput): Promise<ForgetResult>;
   search(input?: LowLevelSearchInput): Promise<MemoryRecord[]>;
+  list(input?: LowLevelListMemoriesInput): Promise<MemoryRecord[]>;
+  get(input: LowLevelGetMemoryInput): Promise<MemoryRecord | null>;
   observe(event: HostEvent): Promise<void>;
   prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn>;
   commitOutcome(input: CommitOutcomeInput): Promise<void>;

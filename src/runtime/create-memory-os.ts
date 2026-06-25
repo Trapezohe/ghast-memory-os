@@ -20,6 +20,8 @@ import type {
   LowLevelAddMemoryInput,
   LowLevelArchiveMemoryInput,
   LowLevelClearMemoriesInput,
+  LowLevelGetMemoryInput,
+  LowLevelListMemoriesInput,
   LowLevelRestoreArchivedMemoryInput,
   LowLevelSearchInput,
   LowLevelUpdateMemoryInput,
@@ -284,6 +286,48 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     });
   }
 
+  async function list(input: LowLevelListMemoriesInput = {}): Promise<MemoryRecord[]> {
+    await initialize();
+    const profileId = profileIdFor(defaultProfileId, input.profileId);
+    if (store.listMemories) {
+      return store.listMemories({
+        profileId,
+        ...(input.query !== undefined ? { query: input.query } : {}),
+        ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        ...(input.status !== undefined ? { status: input.status } : {}),
+        ...(input.kind !== undefined ? { kind: input.kind } : {}),
+        ...(input.scope !== undefined ? { scope: input.scope } : {}),
+        ...(input.includeSensitive !== undefined
+          ? { includeSensitive: input.includeSensitive }
+          : {}),
+        ...(input.includePerson !== undefined ? { includePerson: input.includePerson } : {}),
+      });
+    }
+    if (input.status && input.status !== "active") {
+      throw new Error("gmOS store does not support archived memory listing");
+    }
+    if (input.kind || input.scope) {
+      throw new Error("gmOS store does not support filtered memory listing");
+    }
+    return store.searchMemories({
+      profileId,
+      purpose: "context",
+      ...(input.query !== undefined ? { query: input.query } : {}),
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      ...(input.includeSensitive !== undefined ? { includeSensitive: input.includeSensitive } : {}),
+      ...(input.includePerson !== undefined ? { includePerson: input.includePerson } : {}),
+    });
+  }
+
+  async function get(input: LowLevelGetMemoryInput): Promise<MemoryRecord | null> {
+    await initialize();
+    return store.getMemoryById(profileIdFor(defaultProfileId, input.profileId), input.id, {
+      includeSensitive: input.includeSensitive,
+      includePerson: input.includePerson,
+      includeArchived: input.includeArchived,
+    });
+  }
+
   async function observe(event: HostEvent): Promise<void> {
     await initialize();
     const profileId = profileIdFor(defaultProfileId, event.profileId);
@@ -492,6 +536,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     restoreArchived,
     clear,
     search,
+    list,
+    get,
     observe,
     prepareTurn,
     commitOutcome,
