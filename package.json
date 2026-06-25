@@ -39,6 +39,7 @@
     "./store/sqlite": "./dist/store/sqlite/index.js",
     "./gym": "./dist/gym/index.js",
     "./mcp": "./dist/mcp/index.js",
+    "./diagnostics": "./dist/diagnostics/index.js",
     "./evolution": "./dist/evolution/index.js",
     "./host": "./dist/host/index.js"
   },

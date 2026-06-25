@@ -46,6 +46,8 @@ const prepared = await memory.prepareTurn({
   archived when the host source changes.
 - In-process MCP-style tool router and real MCP stdio server for host/agent
   runtime adapters.
+- Read-only diagnostics/status report for schema, row counts, failure summary,
+  package version, and host compatibility.
 - Report-only evolution failure review for clustering failure logs into
   hypotheses and patch candidates without auto-apply or auto-rollout.
 - CLI: `gmos`.
@@ -58,6 +60,7 @@ npm run build
 
 node dist/cli/gmos.js init --db ./gmos.db
 node dist/cli/gmos.js doctor --db ./gmos.db --host ghast
+node dist/cli/gmos.js status --db ./gmos.db --profile local --host ghast --format markdown
 node dist/cli/gmos.js add --db ./gmos.db --profile local --kind preference --text "我喜欢简洁回答"
 node dist/cli/gmos.js search --db ./gmos.db --profile local --query "简洁"
 node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "我喜欢简洁的中文回答。"
@@ -177,6 +180,29 @@ gmos evolution report --db ./gmos.db --profile local --format markdown
 
 Every proposal in this alpha path is explicitly marked `autoApply=false` and
 `autoRollout=false`.
+
+## Diagnostics
+
+Hosts can generate a read-only status report for integration checks and support
+bundles. The report includes package version, SQLite schema version, row counts,
+failure counts by kind, and optional host compatibility. It does not include
+memory content or failure samples.
+
+```ts
+import { createMemoryStatusReport } from "@ghast/memory/diagnostics";
+
+const report = await createMemoryStatusReport({
+  store,
+  profileId: "local-user",
+  host: "ghast",
+});
+```
+
+CLI:
+
+```bash
+gmos status --db ./gmos.db --profile local --host ghast --format markdown
+```
 
 ## Trust Contract
 

@@ -9,6 +9,11 @@ import {
   type FailureReviewStore,
 } from "../evolution/index.js";
 import {
+  createMemoryStatusReport,
+  renderMemoryStatusMarkdown,
+  type DiagnosticsStore,
+} from "../diagnostics/index.js";
+import {
   renderHostCompatibilityGymMarkdown,
   renderMemoryGymMarkdown,
   renderMemoryScaleMarkdown,
@@ -43,6 +48,7 @@ function usage(): never {
 Usage:
   gmos init --db ./gmos.db
   gmos doctor --db ./gmos.db --host ghast
+  gmos status --db ./gmos.db --profile local --host ghast --format markdown
   gmos add --db ./gmos.db --profile local --kind preference --text "我喜欢简洁回答"
   gmos search --db ./gmos.db --profile local --query "简洁"
   gmos observe --db ./gmos.db --profile local --text "我喜欢简洁回答"
@@ -242,6 +248,39 @@ async function runEvolutionReport(): Promise<void> {
   }
 }
 
+async function runStatusReport(): Promise<void> {
+  const dbPath = value("--db", "./gmos.db")!;
+  const profileId = value("--profile", "default")!;
+  const resolvedDbPath = dbPath === ":memory:" ? null : path.resolve(process.cwd(), dbPath);
+  let close: (() => Promise<void> | void) | undefined;
+  const store: DiagnosticsStore =
+    resolvedDbPath && existsSync(resolvedDbPath)
+      ? (() => {
+          const sqlite = createSqliteMemoryStore({
+            path: resolvedDbPath,
+            readonly: true,
+            fileMustExist: true,
+          });
+          close = () => sqlite.close();
+          return sqlite;
+        })()
+      : {
+          rowCounts: () => {
+            throw new Error("diagnostics store unavailable");
+          },
+        };
+  try {
+    const report = await createMemoryStatusReport({
+      store,
+      profileId,
+      host: hostPreset(),
+    });
+    printReport(report, renderMemoryStatusMarkdown(report));
+  } finally {
+    await close?.();
+  }
+}
+
 function waitForServerShutdown(): Promise<void> {
   return new Promise((resolve) => {
     const done = () => {
@@ -297,6 +336,11 @@ async function main(): Promise<void> {
 
   if (command === "evolution" && subcommand === "report") {
     await runEvolutionReport();
+    return;
+  }
+
+  if (command === "status") {
+    await runStatusReport();
     return;
   }
 

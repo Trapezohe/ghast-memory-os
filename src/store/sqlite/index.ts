@@ -463,7 +463,6 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   }
 
   function rowCounts(): Record<string, number> {
-    initialize();
     const tables = [
       "gmos_evidence_events",
       "gmos_memories",
@@ -474,13 +473,14 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     return Object.fromEntries(
       tables.map((table) => [
         table,
-        Number((db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count),
+        tableExists(table)
+          ? Number((db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count)
+          : 0,
       ]),
     );
   }
 
   function schemaVersion(): number {
-    initialize();
     return sqliteSchemaVersion(db);
   }
 

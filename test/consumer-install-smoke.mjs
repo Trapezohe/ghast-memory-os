@@ -41,6 +41,7 @@ try {
       import { readFileSync } from "node:fs";
       import path from "node:path";
       import { createMemoryOS } from "@ghast/memory";
+      import { createMemoryStatusReport } from "@ghast/memory/diagnostics";
       import { createEvolutionControlPlane } from "@ghast/memory/evolution";
       import { createPresetHostAdapter } from "@ghast/memory/host";
       import {
@@ -125,6 +126,16 @@ try {
       assert.equal(failureReview.autoRollout, false);
       assert.equal(failureReview.decision, "report_only_review");
       assert.equal(failureReview.inspectedFailureCount, 1);
+      const status = await createMemoryStatusReport({
+        store,
+        profileId: "consumer",
+        host: "ghast",
+      });
+      assert.equal(status.package.name, installedPackage.name);
+      assert.equal(status.package.version, installedPackage.version);
+      assert.equal(status.storage.schemaVersion, 1);
+      assert.equal(status.hostCompatibility.level, "L4");
+      assert.equal(JSON.stringify(status).includes("consumer package wrong recall"), false);
       await memory.close();
       console.log("[gmos-consumer] import smoke passed");
     `,
@@ -136,6 +147,10 @@ try {
     consumerTypes,
     `
       import { createMemoryOS, type MemoryStore } from "@ghast/memory";
+      import {
+        createMemoryStatusReport,
+        type MemoryStatusReport,
+      } from "@ghast/memory/diagnostics";
       import { createEvolutionControlPlane } from "@ghast/memory/evolution";
       import {
         createSqliteMemoryStore,
@@ -159,6 +174,11 @@ try {
       const evolution = createEvolutionControlPlane({ store: sqliteStore, profileId: "consumer-types" });
       const evolutionMode: "report_only" = evolution.mode;
       if (evolutionMode !== "report_only") throw new Error("unexpected evolution mode");
+      const status: MemoryStatusReport = await createMemoryStatusReport({
+        store: sqliteStore,
+        profileId: "consumer-types",
+      });
+      if (status.framework !== "ghast-memory-os") throw new Error("unexpected diagnostics framework");
       if (schemaVersion < 1) throw new Error("schema version must be initialized");
       await sqliteStore.close();
     `,
@@ -230,6 +250,25 @@ try {
   );
   assert.equal(searchBin.status, 0, searchBin.stderr);
   assert.match(searchBin.stdout, /Installed bin low-level add prefers stable manifests/);
+  const statusBin = spawnSync(
+    gmosBin,
+    [
+      "status",
+      "--db",
+      path.join(consumerDir, "bin-low-level.db"),
+      "--profile",
+      "bin",
+      "--host",
+      "ghast",
+      "--format",
+      "json",
+    ],
+    { cwd: consumerDir, encoding: "utf8" },
+  );
+  assert.equal(statusBin.status, 0, statusBin.stderr);
+  const status = JSON.parse(statusBin.stdout);
+  assert.equal(status.storage.schemaVersion, 1);
+  assert.equal(status.hostCompatibility.level, "L4");
   const helpBin = spawnSync(gmosBin, ["--help"], { cwd: consumerDir, encoding: "utf8" });
   assert.equal(helpBin.status, 1);
   assert.match(helpBin.stdout, /gmos mcp serve/);

@@ -216,6 +216,7 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   const result = createEmptyResult(normalized);
 
   try {
+  await store.initialize();
   result.runManifest.sqliteSchemaVersion = await store.schemaVersion();
   await memory.observe({
     type: "conversation.message",

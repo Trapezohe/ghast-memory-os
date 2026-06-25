@@ -38,6 +38,10 @@ import {
   createEvolutionControlPlane,
   renderEvolutionFailureReviewMarkdown,
 } from "../src/evolution/index.js";
+import {
+  createMemoryStatusReport,
+  renderMemoryStatusMarkdown,
+} from "../src/diagnostics/index.js";
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-sdk-test-"));
 const dbPath = path.join(tmp, "test.db");
@@ -57,6 +61,7 @@ const expectedGit = {
 };
 const store: SqliteMemoryStore = createSqliteMemoryStore({ path: dbPath });
 const memory = createMemoryOS({ profileId: "test", store });
+await store.initialize();
 assert.equal(await store.schemaVersion(), 1);
 
 const legacyDbPath = path.join(tmp, "legacy-no-ledger.db");
@@ -331,6 +336,49 @@ assert.deepEqual(await store.rowCounts(), evolutionBeforeCounts);
 const wrongRecallOnly = await evolution.reviewFailures({ failureKind: "wrong_recall" });
 assert.equal(wrongRecallOnly.inspectedFailureCount, 1);
 assert.match(renderEvolutionFailureReviewMarkdown(evolutionReport), /gmOS Evolution Failure Review/);
+const statusReport = await createMemoryStatusReport({
+  store,
+  profileId: "test",
+  host: "ghast",
+  now: () => "2026-06-25T00:02:45.000Z",
+});
+assert.equal(statusReport.framework, "ghast-memory-os");
+assert.equal(statusReport.package.name, packageJson.name);
+assert.equal(statusReport.package.version, packageJson.version);
+assert.equal(statusReport.storage.status, "ok");
+assert.equal(statusReport.storage.schemaVersion, 1);
+assert.equal(statusReport.storage.rowCounts.gmos_failure_events, 4);
+assert.equal(statusReport.failureSummary.status, "ok");
+assert.equal(statusReport.failureSummary.inspectedFailureCount, 3);
+assert.equal(statusReport.failureSummary.byKind.wrong_recall, 1);
+assert.equal(statusReport.failureSummary.byKind.privacy_leak, 1);
+assert.equal(statusReport.failureSummary.byKind.task_failure, 1);
+assert.equal(statusReport.hostCompatibility?.level, "L4");
+assert.equal(JSON.stringify(statusReport).includes("身份证"), false);
+assert.equal(JSON.stringify(statusReport).includes("110101199001011234"), false);
+const renderedStatus = renderMemoryStatusMarkdown(statusReport);
+assert.match(renderedStatus, /gmOS Status Report/);
+assert.match(renderedStatus, /gmos_failure_events/);
+assert.equal(renderedStatus.includes("身份证"), false);
+const badStatus = await createMemoryStatusReport({
+  store: {
+    rowCounts: () => {
+      const error = new Error("raw secret sk-diagnosticssecret1234567890 and memory text");
+      error.name = "sk-diagnosticsname1234567890 memory name";
+      throw error;
+    },
+  },
+  profileId: "test",
+});
+const badStatusJson = JSON.stringify(badStatus);
+assert.equal(badStatus.storage.status, "unavailable");
+assert.equal(badStatus.storage.error?.code, "diagnostics_store_unavailable");
+assert.equal(badStatus.storage.error?.name, "DiagnosticsStoreUnavailable");
+assert.equal(badStatusJson.includes("sk-diagnosticssecret"), false);
+assert.equal(badStatusJson.includes("sk-diagnosticsname"), false);
+assert.equal(badStatusJson.includes("memory text"), false);
+assert.equal(renderMemoryStatusMarkdown(badStatus).includes("sk-diagnosticssecret"), false);
+assert.equal(renderMemoryStatusMarkdown(badStatus).includes("sk-diagnosticsname"), false);
 assert.equal(normalizeHostMemoryKind({ content: "PERSON: Alice: likes pizza" }), "person");
 assert.equal(
   normalizeHostMemoryKind({ content: "PERSON: Alice: likes pizza", kind: "fact" }),
@@ -870,6 +918,63 @@ const cliSecretAdd = spawnSync(
 );
 assert.notEqual(cliSecretAdd.status, 0);
 assert.match(cliSecretAdd.stderr, /secret-like/);
+const cliStatus = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "status",
+    "--db",
+    dbPath,
+    "--profile",
+    "test",
+    "--host",
+    "ghast",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliStatus.status, 0, cliStatus.stderr);
+const cliStatusPayload = JSON.parse(cliStatus.stdout) as {
+  storage?: { schemaVersion?: number; rowCounts?: Record<string, number> };
+  failureSummary?: { inspectedFailureCount?: number };
+  hostCompatibility?: { level?: string };
+};
+assert.equal(cliStatusPayload.storage?.schemaVersion, 1);
+assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_memories ?? 0) > 0);
+assert.equal(cliStatusPayload.failureSummary?.inspectedFailureCount, 3);
+assert.equal(cliStatusPayload.hostCompatibility?.level, "L4");
+assert.equal(cliStatus.stdout.includes("身份证"), false);
+const missingStatusDb = path.join(tmp, "missing-status.db");
+assert.equal(existsSync(missingStatusDb), false);
+const cliMissingStatus = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "status",
+    "--db",
+    missingStatusDb,
+    "--profile",
+    "missing",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliMissingStatus.status, 0, cliMissingStatus.stderr);
+const cliMissingStatusPayload = JSON.parse(cliMissingStatus.stdout) as {
+  storage?: { status?: string; error?: { code?: string } };
+};
+assert.equal(cliMissingStatusPayload.storage?.status, "unavailable");
+assert.equal(
+  cliMissingStatusPayload.storage?.error?.code,
+  "diagnostics_store_unavailable",
+);
+assert.equal(existsSync(missingStatusDb), false);
 
 await memory.close();
 const gym = await runMemoryGym();
