@@ -259,20 +259,33 @@ try {
     ".bin",
     process.platform === "win32" ? "gmos.cmd" : "gmos",
   );
-  assert.equal(existsSync(gmosBin), true);
-  const bin = spawnCommand(
-    gmosBin,
-    ["doctor", "--db", path.join(consumerDir, "doctor.db"), "--host", "ghast"],
-    { cwd: consumerDir, encoding: "utf8" },
+  const installedCli = path.join(
+    consumerDir,
+    "node_modules",
+    "@ghast",
+    "memory",
+    "dist",
+    "cli",
+    "gmos.js",
   );
+  assert.equal(existsSync(gmosBin), true);
+  assert.equal(existsSync(installedCli), true);
+
+  function runInstalledCli(args) {
+    return spawnSync(process.execPath, [installedCli, ...args], {
+      cwd: consumerDir,
+      encoding: "utf8",
+    });
+  }
+
+  const bin = runInstalledCli(["doctor", "--db", path.join(consumerDir, "doctor.db"), "--host", "ghast"]);
   assert.equal(bin.status, 0, bin.stderr);
   const doctor = JSON.parse(bin.stdout);
   assert.equal(doctor.encrypted, false);
   assert.equal(doctor.schema.dialect, "sqlite");
   assert.equal(doctor.schema.version, 1);
   assert.equal(doctor.hostCompatibility.level, "L4");
-  const addBin = spawnCommand(
-    gmosBin,
+  const addBin = runInstalledCli(
     [
       "add",
       "--db",
@@ -284,11 +297,9 @@ try {
       "--text",
       "Installed bin low-level add prefers stable manifests.",
     ],
-    { cwd: consumerDir, encoding: "utf8" },
   );
   assert.equal(addBin.status, 0, addBin.stderr);
-  const searchBin = spawnCommand(
-    gmosBin,
+  const searchBin = runInstalledCli(
     [
       "search",
       "--db",
@@ -298,12 +309,10 @@ try {
       "--query",
       "stable manifests",
     ],
-    { cwd: consumerDir, encoding: "utf8" },
   );
   assert.equal(searchBin.status, 0, searchBin.stderr);
   assert.match(searchBin.stdout, /Installed bin low-level add prefers stable manifests/);
-  const statusBin = spawnCommand(
-    gmosBin,
+  const statusBin = runInstalledCli(
     [
       "status",
       "--db",
@@ -315,7 +324,6 @@ try {
       "--format",
       "json",
     ],
-    { cwd: consumerDir, encoding: "utf8" },
   );
   assert.equal(statusBin.status, 0, statusBin.stderr);
   const status = JSON.parse(statusBin.stdout);
@@ -324,10 +332,8 @@ try {
   const helpBin = spawnCommand(gmosBin, ["--help"], { cwd: consumerDir, encoding: "utf8" });
   assert.equal(helpBin.status, 1);
   assert.match(helpBin.stdout, /gmos http serve/);
-  const hostGymBin = spawnCommand(
-    gmosBin,
+  const hostGymBin = runInstalledCli(
     ["gym", "host", "--hosts", "ghast,mcp", "--format", "json"],
-    { cwd: consumerDir, encoding: "utf8" },
   );
   assert.equal(hostGymBin.status, 0, hostGymBin.stderr);
   const hostGym = JSON.parse(hostGymBin.stdout);

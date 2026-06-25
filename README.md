@@ -93,9 +93,11 @@ then verifies package exports, plaintext SQLite use, the MCP-style router, MCP
 stdio server wiring, the HTTP adapter export, and the `gmos` CLI from the
 installed package.
 
-The GitHub Actions CI runs these gates on Linux, macOS, and Windows with Node
-20.19 and Node 24. The benchmark jobs are deterministic SDK gates; they do not
-call an external LLM.
+The GitHub Actions CI runs these gates on Linux and macOS with Node 20.19 and
+Node 24, and on Windows with Node 24. Windows Node 20.19 is not part of the
+official CI matrix because the current `better-sqlite3` prebuild coverage can
+fall back to native compilation on GitHub-hosted Windows runners. The benchmark
+jobs are deterministic SDK gates; they do not call an external LLM.
 
 `gym run` is the deterministic SDK benchmark. It reports hard gates, coverage
 layers, a generalization view, roadmap suggestions, and a run manifest. It does

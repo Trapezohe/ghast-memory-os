@@ -24,6 +24,11 @@ jobs:
         node-version:
           - "20.19"
           - "24"
+        exclude:
+          # better-sqlite3 currently lacks a stable Windows Node 20.19 prebuild on
+          # GitHub-hosted runners, so the job falls back to node-gyp/VS detection.
+          - os: windows-latest
+            node-version: "20.19"
 
     steps:
       - name: Checkout
