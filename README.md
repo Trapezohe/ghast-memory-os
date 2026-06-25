@@ -58,6 +58,17 @@ node dist/cli/gmos.js gym run --format markdown --report-file ./memory-gym.md
 node dist/cli/gmos.js gym scale --sizes 100,1000
 ```
 
+## QA Gates
+
+```bash
+npm run check
+npm run test:consumer
+```
+
+`test:consumer` packs the SDK, installs it into a temporary external project,
+then verifies package exports, plaintext SQLite use, the MCP-style router, and
+the `gmos` CLI from the installed package.
+
 ## MCP-Style Tools
 
 The alpha SDK exposes a protocol-neutral tool router through

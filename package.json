@@ -26,6 +26,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "node --import tsx test/run-tests.ts",
+    "test:consumer": "node test/consumer-install-smoke.mjs",
     "check": "npm run build && npm test",
     "prepare": "npm run build",
     "prepack": "npm run build",
