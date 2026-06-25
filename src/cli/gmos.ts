@@ -1,6 +1,14 @@
 #!/usr/bin/env node
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
+
 import { createMemoryOS } from "../runtime/create-memory-os.js";
-import { runMemoryGym } from "../gym/index.js";
+import {
+  renderMemoryGymMarkdown,
+  renderMemoryScaleMarkdown,
+  runMemoryGym,
+  runMemoryScaleBenchmark,
+} from "../gym/index.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 
 function value(name: string, fallback?: string): string | undefined {
@@ -21,9 +29,37 @@ Usage:
   gmos observe --db ./gmos.db --profile local --text "我喜欢简洁回答"
   gmos prepare --db ./gmos.db --profile local --text "你知道我什么偏好吗？"
   gmos forget --db ./gmos.db --profile local --query "Moonbase"
-  gmos gym run --db :memory:
+  gmos gym run --db :memory: --format markdown --report-file ./memory-gym.md
+  gmos gym scale --sizes 100,1000
 `);
   process.exit(1);
+}
+
+function writeReportIfRequested(content: string): void {
+  const reportFile = value("--report-file");
+  if (!reportFile) return;
+  const resolved = path.resolve(process.cwd(), reportFile);
+  mkdirSync(path.dirname(resolved), { recursive: true });
+  writeFileSync(resolved, content);
+}
+
+function printReport(json: unknown, markdown: string): void {
+  const format = value("--format", "json");
+  const output = format === "markdown" ? markdown : JSON.stringify(json, null, 2);
+  writeReportIfRequested(output);
+  console.log(output);
+}
+
+function parsePositiveIntegerList(raw: string, label: string): number[] {
+  const tokens = raw.split(",").map((token) => token.trim());
+  if (tokens.length === 0 || tokens.some((token) => token.length === 0)) {
+    throw new Error(`${label} requires comma-separated positive integers`);
+  }
+  const values = tokens.map((token) => Number(token));
+  if (values.some((entry) => !Number.isInteger(entry) || entry <= 0)) {
+    throw new Error(`${label} requires comma-separated positive integers`);
+  }
+  return values;
 }
 
 async function createRuntime() {
@@ -40,7 +76,14 @@ async function main(): Promise<void> {
 
   if (command === "gym" && subcommand === "run") {
     const report = await runMemoryGym({ dbPath: value("--db", ":memory:") });
-    console.log(JSON.stringify(report, null, 2));
+    printReport(report, renderMemoryGymMarkdown(report));
+    return;
+  }
+
+  if (command === "gym" && subcommand === "scale") {
+    const sizes = parsePositiveIntegerList(value("--sizes", "100,1000") ?? "100,1000", "--sizes");
+    const report = await runMemoryScaleBenchmark({ sizes });
+    printReport(report, renderMemoryScaleMarkdown(report));
     return;
   }
 
@@ -114,4 +157,3 @@ main().catch((error: unknown) => {
   console.error(error instanceof Error ? error.stack ?? error.message : String(error));
   process.exit(1);
 });
-

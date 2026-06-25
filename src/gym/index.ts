@@ -2,6 +2,9 @@ import { strict as assert } from "node:assert";
 
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
+export { renderMemoryGymMarkdown, renderMemoryScaleMarkdown } from "./report.js";
+export { runMemoryScaleBenchmark } from "./scale.js";
+export type { MemoryScaleBenchmarkResult } from "./scale.js";
 
 export interface MemoryGymResult {
   pass: boolean;

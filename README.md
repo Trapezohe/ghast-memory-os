@@ -49,6 +49,8 @@ node dist/cli/gmos.js init --db ./gmos.db
 node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "我喜欢简洁的中文回答。"
 node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
 node dist/cli/gmos.js gym run --db :memory:
+node dist/cli/gmos.js gym run --format markdown --report-file ./memory-gym.md
+node dist/cli/gmos.js gym scale --sizes 100,1000
 ```
 
 ## Trust Contract
@@ -66,4 +68,3 @@ and host boundaries, not database encryption:
 
 This is an alpha SDK extraction repository. The first target is a stable local
 TypeScript/Node runtime that Ghast Desktop can consume through a host adapter.
-

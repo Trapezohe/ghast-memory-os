@@ -4,7 +4,12 @@ import os from "node:os";
 import path from "node:path";
 
 import { createMemoryOS } from "../src/index.js";
-import { runMemoryGym } from "../src/gym/index.js";
+import {
+  renderMemoryGymMarkdown,
+  renderMemoryScaleMarkdown,
+  runMemoryGym,
+  runMemoryScaleBenchmark,
+} from "../src/gym/index.js";
 import { createSqliteMemoryStore } from "../src/store/sqlite/index.js";
 import { classifyHostCompatibility } from "../src/host/index.js";
 import { createEvolutionControlPlane } from "../src/evolution/index.js";
@@ -101,5 +106,17 @@ assert.deepEqual(createEvolutionControlPlane(), {
 await memory.close();
 const gym = await runMemoryGym();
 assert.equal(gym.pass, true, gym.details.join("\n"));
+assert.match(renderMemoryGymMarkdown(gym), /gmOS Memory Gym Report/);
+const scale = await runMemoryScaleBenchmark({ sizes: [10, 50], iterations: 3 });
+assert.equal(scale.pass, true);
+assert.match(renderMemoryScaleMarkdown(scale), /gmOS Memory Scale Benchmark/);
+await assert.rejects(
+  () => runMemoryScaleBenchmark({ sizes: [], iterations: 3 }),
+  /positive integer size/,
+);
+await assert.rejects(
+  () => runMemoryScaleBenchmark({ sizes: [10], iterations: 0 }),
+  /positive integer/,
+);
 rmSync(tmp, { recursive: true, force: true });
 console.log("[gmos-sdk] tests passed");
