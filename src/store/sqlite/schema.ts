@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-export const GMOS_SQLITE_SCHEMA_VERSION = 2;
+export const GMOS_SQLITE_SCHEMA_VERSION = 3;
 
 export function ensureSqliteSchema(db: Database.Database): void {
   const previousSchemaVersion = sqliteSchemaVersion(db);
@@ -107,6 +107,50 @@ export function ensureSqliteSchema(db: Database.Database): void {
       VALUES (
         2,
         'memory_fts_search',
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      );
+
+    CREATE TABLE IF NOT EXISTS gmos_associations (
+      id TEXT PRIMARY KEY,
+      profile_id TEXT NOT NULL,
+      cue TEXT NOT NULL,
+      cue_kind TEXT NOT NULL,
+      tag TEXT NOT NULL,
+      target_type TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      target_kind TEXT NOT NULL,
+      target_summary TEXT NOT NULL,
+      sensitivity TEXT NOT NULL DEFAULT 'normal',
+      status TEXT NOT NULL DEFAULT 'active',
+      confidence REAL NOT NULL DEFAULT 0.5,
+      source_memory_id TEXT,
+      source_belief_id TEXT,
+      source_task_trajectory_id TEXT,
+      source_evidence_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(profile_id, cue, tag, target_type, target_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_gmos_associations_profile_cue
+      ON gmos_associations(profile_id, cue, status, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_gmos_associations_profile_target
+      ON gmos_associations(profile_id, target_type, target_id, status);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS gmos_associations_fts USING fts5(
+      id UNINDEXED,
+      profile_id UNINDEXED,
+      status UNINDEXED,
+      target_type UNINDEXED,
+      cue,
+      tag,
+      target_summary,
+      tokenize = 'unicode61'
+    );
+
+    INSERT OR IGNORE INTO gmos_schema_migrations(version, name, applied_at)
+      VALUES (
+        3,
+        'associative_reconstruction_index',
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       );
   `);

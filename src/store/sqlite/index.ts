@@ -13,6 +13,8 @@ import type {
   ForgetInput,
   ForgetResult,
   ListFailuresInput,
+  MemoryAssociationRecord,
+  MemoryAssociationSearchInput,
   MemoryListInput,
   MemoryKind,
   MemoryRecord,
@@ -21,6 +23,8 @@ import type {
   RecordEvidenceInput,
   RecordFailureInput,
   RepairSearchIndexResult,
+  RebuildAssociationsInput,
+  RebuildAssociationsResult,
   RestoreArchivedMemoryInput,
   SearchIndexStatus,
   Sensitivity,
@@ -28,7 +32,17 @@ import type {
   UpdateMemoryInput,
   WorldBeliefRecord,
 } from "../../kernel/types.js";
-import { shouldHideFromOrdinaryContext } from "../../kernel/safety.js";
+import {
+  associationCuesForBelief,
+  associationCuesForMemory,
+  associationCuesForTaskTrajectory,
+  associationTagsForBelief,
+  associationTagsForMemory,
+  associationTagsForTaskTrajectory,
+  memoryTargetKind,
+  type TaskTrajectoryAssociationSource,
+} from "../../kernel/associations.js";
+import { classifySensitivity, shouldHideFromOrdinaryContext } from "../../kernel/safety.js";
 import {
   exportSqliteProfileBackup,
   restoreSqliteProfileBackup,
@@ -62,6 +76,8 @@ export interface SqliteMemoryStore extends MemoryStore {
   schemaVersion(): number;
   searchIndexStatus(): SearchIndexStatus;
   repairSearchIndex(): RepairSearchIndexResult;
+  searchAssociations(input: MemoryAssociationSearchInput): MemoryAssociationRecord[];
+  rebuildAssociations(input?: RebuildAssociationsInput): RebuildAssociationsResult;
   exportProfileBackup(input: ExportSqliteProfileBackupInput): SqliteProfileBackupDocument;
   restoreProfileBackup(input: RestoreSqliteProfileBackupInput): SqliteProfileBackupRestoreResult;
 }
@@ -166,6 +182,57 @@ function normalizeFailure(row: Record<string, unknown>): FailureEventRecord {
   };
 }
 
+function normalizeAssociation(row: Record<string, unknown>): MemoryAssociationRecord {
+  return {
+    id: String(row.id),
+    profileId: String(row.profile_id),
+    cue: String(row.cue),
+    cueKind: String(row.cue_kind) as MemoryAssociationRecord["cueKind"],
+    tag: String(row.tag),
+    targetType: String(row.target_type) as MemoryAssociationRecord["targetType"],
+    targetId: String(row.target_id),
+    targetKind: String(row.target_kind),
+    targetSummary: String(row.target_summary),
+    sensitivity: String(row.sensitivity) as Sensitivity,
+    status: String(row.status) as MemoryAssociationRecord["status"],
+    confidence: Number(row.confidence),
+    sourceMemoryId: row.source_memory_id == null ? null : String(row.source_memory_id),
+    sourceBeliefId: row.source_belief_id == null ? null : String(row.source_belief_id),
+    sourceTaskTrajectoryId:
+      row.source_task_trajectory_id == null ? null : String(row.source_task_trajectory_id),
+    sourceEvidenceId: row.source_evidence_id == null ? null : String(row.source_evidence_id),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function normalizeWorldBelief(row: Record<string, unknown>): WorldBeliefRecord {
+  return {
+    id: String(row.id),
+    profileId: String(row.profile_id),
+    subject: String(row.subject),
+    predicate: String(row.predicate),
+    object: String(row.object),
+    confidence: Number(row.confidence),
+    status: String(row.status) as WorldBeliefRecord["status"],
+    sourceMemoryId: row.source_memory_id == null ? null : String(row.source_memory_id),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function normalizeTaskTrajectory(row: Record<string, unknown>): TaskTrajectoryAssociationSource {
+  return {
+    id: String(row.id),
+    profileId: String(row.profile_id),
+    taskId: row.task_id == null ? null : String(row.task_id),
+    objective: String(row.objective),
+    status: String(row.status) as TaskTrajectoryAssociationSource["status"],
+    summary: row.summary == null ? null : String(row.summary),
+    createdAt: String(row.created_at),
+  };
+}
+
 function scoreMemory(memory: MemoryRecord, query: string): number {
   const terms = query
     .toLowerCase()
@@ -175,6 +242,19 @@ function scoreMemory(memory: MemoryRecord, query: string): number {
   const lower = memory.content.toLowerCase();
   const hits = terms.filter((term) => lower.includes(term)).length;
   return hits + memory.confidence;
+}
+
+function scoreAssociation(association: MemoryAssociationRecord, query: string): number {
+  const terms = queryTerms(query);
+  if (terms.length === 0) return association.confidence;
+  const haystack = [
+    association.cue,
+    association.tag,
+    association.targetKind,
+    association.targetSummary,
+  ].join(" ").toLowerCase();
+  const hits = terms.filter((term) => haystack.includes(term)).length;
+  return hits + association.confidence;
 }
 
 function limit(input: number | undefined, fallback: number, maximum: number): number {
@@ -190,6 +270,18 @@ function visibleMemory(input: {
   if (!input.includePerson && input.memory.kind === "person") return false;
   return !shouldHideFromOrdinaryContext({
     sensitivity: input.memory.sensitivity,
+    includeSensitive: input.includeSensitive,
+  });
+}
+
+function visibleAssociation(input: {
+  association: MemoryAssociationRecord;
+  includeSensitive?: boolean | undefined;
+  includePerson?: boolean | undefined;
+}): boolean {
+  if (!input.includePerson && input.association.targetKind === "person") return false;
+  return !shouldHideFromOrdinaryContext({
+    sensitivity: input.association.sensitivity,
     includeSensitive: input.includeSensitive,
   });
 }
@@ -230,9 +322,13 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       initialized = true;
       return;
     }
+    const previousSchemaVersion = sqliteSchemaVersion(db);
     ensureSqliteSchema(db);
     ftsAvailableCache = tableExists("gmos_memories_fts");
     initialized = true;
+    if (previousSchemaVersion < 3) {
+      rebuildAssociations();
+    }
   }
 
   function tableExists(table: string): boolean {
@@ -270,6 +366,294 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       `INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
        VALUES (?, ?, ?, ?, ?, ?)`,
     ).run(row.id, row.profile_id, row.kind, row.scope, row.status, row.content);
+  }
+
+  function associationsFtsAvailable(): boolean {
+    return tableExists("gmos_associations_fts");
+  }
+
+  function syncAssociationFts(associationId: string): void {
+    if (!associationsFtsAvailable()) return;
+    db.prepare("DELETE FROM gmos_associations_fts WHERE id = ?").run(associationId);
+    const row = db
+      .prepare(
+        `SELECT id, profile_id, status, target_type, cue, tag, target_summary
+         FROM gmos_associations
+         WHERE id = ?`,
+      )
+      .get(associationId) as
+      | {
+          id: string;
+          profile_id: string;
+          status: string;
+          target_type: string;
+          cue: string;
+          tag: string;
+          target_summary: string;
+        }
+      | undefined;
+    if (!row) return;
+    db.prepare(
+      `INSERT INTO gmos_associations_fts(
+        id, profile_id, status, target_type, cue, tag, target_summary
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      row.id,
+      row.profile_id,
+      row.status,
+      row.target_type,
+      row.cue,
+      row.tag,
+      row.target_summary,
+    );
+  }
+
+  function deleteAssociationsForMemory(memoryId: string): void {
+    if (!tableExists("gmos_associations")) return;
+    const ids = db
+      .prepare("SELECT id FROM gmos_associations WHERE source_memory_id = ? OR target_id = ?")
+      .all(memoryId, memoryId) as Array<{ id: string }>;
+    if (ids.length === 0) return;
+    if (associationsFtsAvailable()) {
+      for (const row of ids) {
+        db.prepare("DELETE FROM gmos_associations_fts WHERE id = ?").run(row.id);
+      }
+    }
+    db.prepare("DELETE FROM gmos_associations WHERE source_memory_id = ? OR target_id = ?").run(
+      memoryId,
+      memoryId,
+    );
+  }
+
+  function deleteAssociationsForBelief(beliefId: string): void {
+    if (!tableExists("gmos_associations")) return;
+    const ids = db
+      .prepare("SELECT id FROM gmos_associations WHERE source_belief_id = ?")
+      .all(beliefId) as Array<{ id: string }>;
+    if (associationsFtsAvailable()) {
+      for (const row of ids) {
+        db.prepare("DELETE FROM gmos_associations_fts WHERE id = ?").run(row.id);
+      }
+    }
+    db.prepare("DELETE FROM gmos_associations WHERE source_belief_id = ?").run(beliefId);
+  }
+
+  function upsertAssociation(input: {
+    profileId: string;
+    cue: string;
+    cueKind: MemoryAssociationRecord["cueKind"];
+    tag: string;
+    targetType: MemoryAssociationRecord["targetType"];
+    targetId: string;
+    targetKind: string;
+    targetSummary: string;
+    sensitivity: Sensitivity;
+    status: MemoryAssociationRecord["status"];
+    confidence: number;
+    sourceMemoryId?: string | null | undefined;
+    sourceBeliefId?: string | null | undefined;
+    sourceTaskTrajectoryId?: string | null | undefined;
+    sourceEvidenceId?: string | null | undefined;
+    createdAt?: string | undefined;
+    updatedAt?: string | undefined;
+  }): void {
+    const createdAt = input.createdAt ?? nowIso();
+    const updatedAt = input.updatedAt ?? createdAt;
+    const associationId = id("assoc");
+    db.prepare(
+      `INSERT INTO gmos_associations (
+        id, profile_id, cue, cue_kind, tag, target_type, target_id, target_kind,
+        target_summary, sensitivity, status, confidence, source_memory_id,
+        source_belief_id, source_task_trajectory_id, source_evidence_id,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(profile_id, cue, tag, target_type, target_id) DO UPDATE SET
+        target_kind = excluded.target_kind,
+        target_summary = excluded.target_summary,
+        sensitivity = excluded.sensitivity,
+        status = excluded.status,
+        confidence = excluded.confidence,
+        source_memory_id = excluded.source_memory_id,
+        source_belief_id = excluded.source_belief_id,
+        source_task_trajectory_id = excluded.source_task_trajectory_id,
+        source_evidence_id = excluded.source_evidence_id,
+        updated_at = excluded.updated_at`,
+    ).run(
+      associationId,
+      input.profileId,
+      input.cue,
+      input.cueKind,
+      input.tag,
+      input.targetType,
+      input.targetId,
+      input.targetKind,
+      input.targetSummary,
+      input.sensitivity,
+      input.status,
+      input.confidence,
+      input.sourceMemoryId ?? null,
+      input.sourceBeliefId ?? null,
+      input.sourceTaskTrajectoryId ?? null,
+      input.sourceEvidenceId ?? null,
+      createdAt,
+      updatedAt,
+    );
+    const row = db
+      .prepare(
+        `SELECT id FROM gmos_associations
+         WHERE profile_id = ? AND cue = ? AND tag = ? AND target_type = ? AND target_id = ?`,
+      )
+      .get(input.profileId, input.cue, input.tag, input.targetType, input.targetId) as
+      | { id: string }
+      | undefined;
+    if (row) syncAssociationFts(row.id);
+  }
+
+  function projectMemoryAssociations(memory: MemoryRecord): void {
+    deleteAssociationsForMemory(memory.id);
+    if (memory.status !== "active") return;
+    const contentSensitivity = classifySensitivity(memory.content);
+    if (memory.sensitivity === "secret_like" || contentSensitivity === "secret_like") return;
+    const sensitivity = memory.sensitivity === "sensitive" ? "sensitive" : contentSensitivity;
+    for (const cue of associationCuesForMemory(memory)) {
+      for (const tag of associationTagsForMemory(memory)) {
+        upsertAssociation({
+          profileId: memory.profileId,
+          cue: cue.cue,
+          cueKind: cue.cueKind,
+          tag,
+          targetType: "memory",
+          targetId: memory.id,
+          targetKind: memoryTargetKind(memory.kind),
+          targetSummary: memory.content,
+          sensitivity,
+          status: memory.status,
+          confidence: memory.confidence,
+          sourceMemoryId: memory.id,
+          sourceEvidenceId: memory.sourceEventId,
+          createdAt: memory.createdAt,
+          updatedAt: memory.updatedAt,
+        });
+      }
+    }
+  }
+
+  function rejectBeliefsForMemory(memoryId: string, updatedAt: string): void {
+    if (!tableExists("gmos_world_beliefs")) return;
+    const beliefRows = db
+      .prepare(
+        `SELECT id FROM gmos_world_beliefs
+         WHERE source_memory_id = ? AND status = 'active'`,
+      )
+      .all(memoryId) as Array<{ id: string }>;
+    for (const row of beliefRows) {
+      deleteAssociationsForBelief(row.id);
+    }
+    db.prepare(
+      `UPDATE gmos_world_beliefs
+       SET status = 'rejected', updated_at = ?
+       WHERE source_memory_id = ? AND status = 'active'`,
+    ).run(updatedAt, memoryId);
+  }
+
+  function syncBeliefsForMemory(memory: MemoryRecord): void {
+    if (!tableExists("gmos_world_beliefs")) return;
+    const rows = db
+      .prepare(
+        `SELECT * FROM gmos_world_beliefs
+         WHERE source_memory_id = ? AND status = 'active'`,
+      )
+      .all(memory.id) as Record<string, unknown>[];
+    if (rows.length === 0) return;
+    for (const row of rows) {
+      db.prepare(
+        `UPDATE gmos_world_beliefs
+         SET object = ?, confidence = ?, updated_at = ?
+         WHERE id = ?`,
+      ).run(memory.content, memory.confidence, memory.updatedAt, String(row.id));
+      deleteAssociationsForBelief(String(row.id));
+      const updatedBelief = db
+        .prepare("SELECT * FROM gmos_world_beliefs WHERE id = ?")
+        .get(String(row.id)) as Record<string, unknown>;
+      projectBeliefAssociations(normalizeWorldBelief(updatedBelief));
+    }
+  }
+
+  function projectBeliefAssociations(belief: WorldBeliefRecord): void {
+    if (belief.status !== "active") return;
+    let sourceMemory:
+      | { status?: string; kind?: string; sensitivity?: string; content?: string }
+      | undefined;
+    if (belief.sourceMemoryId) {
+      sourceMemory = db
+        .prepare("SELECT status, kind, sensitivity, content FROM gmos_memories WHERE id = ? AND profile_id = ?")
+        .get(belief.sourceMemoryId, belief.profileId) as
+        | { status?: string; kind?: string; sensitivity?: string; content?: string }
+        | undefined;
+      if (sourceMemory?.status !== "active") return;
+      const sourceContentSensitivity = classifySensitivity(sourceMemory.content ?? "");
+      if (
+        sourceMemory.kind === "person" ||
+        sourceMemory.sensitivity === "secret_like" ||
+        sourceContentSensitivity === "secret_like"
+      ) {
+        return;
+      }
+    }
+    const targetSummary = `${belief.subject} ${belief.predicate} ${belief.object}`;
+    const detectedSensitivity = classifySensitivity(targetSummary);
+    if (detectedSensitivity === "secret_like") return;
+    const sensitivity =
+      sourceMemory?.sensitivity === "sensitive" || detectedSensitivity === "sensitive"
+        ? "sensitive"
+        : detectedSensitivity;
+    for (const cue of associationCuesForBelief(belief)) {
+      for (const tag of associationTagsForBelief(belief)) {
+        upsertAssociation({
+          profileId: belief.profileId,
+          cue: cue.cue,
+          cueKind: cue.cueKind,
+          tag,
+          targetType: "world_belief",
+          targetId: belief.id,
+          targetKind: "world_belief",
+          targetSummary,
+          sensitivity,
+          status: "active",
+          confidence: belief.confidence,
+          sourceMemoryId: belief.sourceMemoryId,
+          sourceBeliefId: belief.id,
+          createdAt: belief.createdAt,
+          updatedAt: belief.updatedAt,
+        });
+      }
+    }
+  }
+
+  function projectTaskTrajectoryAssociations(trajectory: TaskTrajectoryAssociationSource): void {
+    const targetSummary = [trajectory.objective, trajectory.summary ?? ""].join(" ").trim();
+    const sensitivity = classifySensitivity(targetSummary);
+    if (sensitivity === "secret_like") return;
+    for (const cue of associationCuesForTaskTrajectory(trajectory)) {
+      for (const tag of associationTagsForTaskTrajectory(trajectory)) {
+        upsertAssociation({
+          profileId: trajectory.profileId,
+          cue: cue.cue,
+          cueKind: cue.cueKind,
+          tag,
+          targetType: "task_trajectory",
+          targetId: trajectory.id,
+          targetKind: "task_trajectory",
+          targetSummary,
+          sensitivity,
+          status: "active",
+          confidence: trajectory.status === "completed" ? 0.75 : 0.6,
+          sourceTaskTrajectoryId: trajectory.id,
+          createdAt: trajectory.createdAt,
+          updatedAt: trajectory.createdAt,
+        });
+      }
+    }
   }
 
   function searchIndexStatus(): SearchIndexStatus {
@@ -537,6 +921,61 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       ) as Record<string, unknown>[];
   }
 
+  function associationRowsForSearch(input: MemoryAssociationSearchInput): Record<string, unknown>[] {
+    if (!tableExists("gmos_associations")) return [];
+    const query = input.query.trim();
+    const candidateLimit = Math.max(input.limit ?? 12, 100);
+    if (!query) {
+      return db
+        .prepare(
+          `SELECT * FROM gmos_associations
+           WHERE profile_id = ? AND status = 'active'
+           ORDER BY updated_at DESC
+           LIMIT ?`,
+        )
+        .all(input.profileId, candidateLimit) as Record<string, unknown>[];
+    }
+
+    const match = ftsQuery(query);
+    if (match && associationsFtsAvailable()) {
+      try {
+        const rows = db
+          .prepare(
+            `SELECT a.*
+             FROM gmos_associations_fts
+             JOIN gmos_associations a ON a.id = gmos_associations_fts.id
+             WHERE gmos_associations_fts MATCH ?
+               AND a.profile_id = ?
+               AND a.status = 'active'
+             ORDER BY bm25(gmos_associations_fts), a.updated_at DESC
+             LIMIT ?`,
+          )
+          .all(match, input.profileId, candidateLimit) as Record<string, unknown>[];
+        if (rows.length > 0) return rows;
+      } catch {
+        // Fall back to LIKE search for tokenizer or parser edge cases.
+      }
+    }
+
+    const terms = queryTerms(query);
+    if (terms.length === 0) return [];
+    const clauses = terms.map(() => "(cue LIKE ? ESCAPE '\\' OR tag LIKE ? ESCAPE '\\' OR target_summary LIKE ? ESCAPE '\\')");
+    const params = terms.flatMap((term) => {
+      const pattern = likePattern(term);
+      return [pattern, pattern, pattern];
+    });
+    return db
+      .prepare(
+        `SELECT * FROM gmos_associations
+         WHERE profile_id = ?
+           AND status = 'active'
+           AND (${clauses.join(" OR ")})
+         ORDER BY updated_at DESC
+         LIMIT ?`,
+      )
+      .all(input.profileId, ...params, candidateLimit) as Record<string, unknown>[];
+  }
+
   function recordEvidence(input: RecordEvidenceInput): EvidenceEvent {
     initialize();
     const createdAt = input.createdAt ?? nowIso();
@@ -592,11 +1031,13 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       createdAt,
     );
     syncMemoryFts(memoryId);
-    return normalizeMemory(
+    const memory = normalizeMemory(
       db
         .prepare("SELECT * FROM gmos_memories WHERE id = ?")
         .get(memoryId) as Record<string, unknown>,
     );
+    projectMemoryAssociations(memory);
+    return memory;
   }
 
   function updateMemory(input: UpdateMemoryInput): MemoryRecord | null {
@@ -641,11 +1082,14 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       input.id,
     );
     syncMemoryFts(input.id);
-    return normalizeMemory(
+    const memory = normalizeMemory(
       db
         .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ?")
         .get(input.profileId, input.id) as Record<string, unknown>,
     );
+    projectMemoryAssociations(memory);
+    syncBeliefsForMemory(memory);
+    return memory;
   }
 
   function archiveMemoryById(input: ArchiveMemoryInput): boolean {
@@ -668,6 +1112,8 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       )
       .run(archivedAt, JSON.stringify(metadata), input.profileId, input.id);
     syncMemoryFts(input.id);
+    deleteAssociationsForMemory(input.id);
+    rejectBeliefsForMemory(input.id, archivedAt);
     return result.changes > 0;
   }
 
@@ -691,6 +1137,10 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       )
       .run(restoredAt, JSON.stringify(metadata), input.profileId, input.id);
     syncMemoryFts(input.id);
+    const restored = db
+      .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ?")
+      .get(input.profileId, input.id) as Record<string, unknown> | undefined;
+    if (restored) projectMemoryAssociations(normalizeMemory(restored));
     return result.changes > 0;
   }
 
@@ -730,6 +1180,8 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         });
         stmt.run(archivedAt, JSON.stringify(metadata), input.profileId, row.id);
         syncMemoryFts(row.id);
+        deleteAssociationsForMemory(row.id);
+        rejectBeliefsForMemory(row.id, archivedAt);
       }
     });
     tx(rows);
@@ -756,7 +1208,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       createdAt,
       createdAt,
     );
-    return {
+    const belief: WorldBeliefRecord = {
       id: beliefId,
       profileId: input.profileId,
       subject: input.subject,
@@ -768,6 +1220,8 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       createdAt,
       updatedAt: createdAt,
     };
+    projectBeliefAssociations(belief);
+    return belief;
   }
 
   function searchMemories(input: MemorySearchInput): MemoryRecord[] {
@@ -883,6 +1337,8 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       for (const memoryId of memoryIds) {
         stmt.run(archivedAt, memoryId);
         syncMemoryFts(memoryId);
+        deleteAssociationsForMemory(memoryId);
+        rejectBeliefsForMemory(memoryId, archivedAt);
       }
     });
     tx(ids);
@@ -961,6 +1417,8 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         for (const memoryId of ids) {
           stmt.run(archivedAt, memoryId);
           syncMemoryFts(memoryId);
+          deleteAssociationsForMemory(memoryId);
+          rejectBeliefsForMemory(memoryId, archivedAt);
         }
       });
       tx(archivedMemoryIds);
@@ -1007,19 +1465,121 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
 
   function recordTaskTrajectory(input: TaskTrajectoryInput): void {
     initialize();
+    const trajectoryId = id("trajectory");
+    const createdAt = input.createdAt ?? nowIso();
     db.prepare(
       `INSERT INTO gmos_task_trajectories (
         id, profile_id, task_id, objective, status, summary, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).run(
-      id("trajectory"),
+      trajectoryId,
       input.profileId,
       input.taskId ?? null,
       input.objective,
       input.status,
       input.summary ?? null,
-      input.createdAt ?? nowIso(),
+      createdAt,
     );
+    projectTaskTrajectoryAssociations({
+      id: trajectoryId,
+      profileId: input.profileId,
+      taskId: input.taskId ?? null,
+      objective: input.objective,
+      status: input.status,
+      summary: input.summary ?? null,
+      createdAt,
+    });
+  }
+
+  function searchAssociations(input: MemoryAssociationSearchInput): MemoryAssociationRecord[] {
+    initialize();
+    const query = input.query.trim();
+    const ranked = associationRowsForSearch(input)
+      .map(normalizeAssociation)
+      .filter((association) =>
+        visibleAssociation({
+          association,
+          includeSensitive: input.includeSensitive,
+          includePerson: input.includePerson,
+        }),
+      )
+      .map((association) => ({
+        association,
+        score: query ? scoreAssociation(association, query) : association.confidence,
+      }))
+      .filter((item) => !query || item.score > item.association.confidence)
+      .sort((a, b) => b.score - a.score)
+      .map((item) => item.association);
+    const diversified: MemoryAssociationRecord[] = [];
+    const seenTargets = new Set<string>();
+    for (const association of ranked) {
+      const targetKey = `${association.targetType}:${association.targetId}`;
+      if (seenTargets.has(targetKey)) continue;
+      seenTargets.add(targetKey);
+      diversified.push(association);
+      if (diversified.length >= limit(input.limit, 12, 100)) break;
+    }
+    return diversified;
+  }
+
+  function rebuildAssociations(input: RebuildAssociationsInput = {}): RebuildAssociationsResult {
+    initialize();
+    if (db.readonly) throw new Error("gmOS SQLite store is readonly");
+    const profileParams = input.profileId ? [input.profileId] : [];
+    if (associationsFtsAvailable()) {
+      db.prepare(
+        input.profileId
+          ? "DELETE FROM gmos_associations_fts WHERE profile_id = ?"
+          : "DELETE FROM gmos_associations_fts",
+      ).run(...profileParams);
+    }
+    db.prepare(
+      input.profileId
+        ? "DELETE FROM gmos_associations WHERE profile_id = ?"
+        : "DELETE FROM gmos_associations",
+    ).run(...profileParams);
+
+    const memoryRows = db
+      .prepare(
+        `SELECT * FROM gmos_memories
+         ${input.profileId ? "WHERE profile_id = ? AND status = 'active'" : "WHERE status = 'active'"}`,
+      )
+      .all(...profileParams) as Record<string, unknown>[];
+    for (const memory of memoryRows.map(normalizeMemory)) {
+      projectMemoryAssociations(memory);
+    }
+
+    const beliefRows = db
+      .prepare(
+        `SELECT * FROM gmos_world_beliefs
+         ${input.profileId ? "WHERE profile_id = ? AND status = 'active'" : "WHERE status = 'active'"}`,
+      )
+      .all(...profileParams) as Record<string, unknown>[];
+    for (const belief of beliefRows.map(normalizeWorldBelief)) {
+      projectBeliefAssociations(belief);
+    }
+
+    const trajectoryRows = db
+      .prepare(
+        `SELECT * FROM gmos_task_trajectories
+         ${input.profileId ? "WHERE profile_id = ?" : ""}`,
+      )
+      .all(...profileParams) as Record<string, unknown>[];
+    for (const trajectory of trajectoryRows.map(normalizeTaskTrajectory)) {
+      projectTaskTrajectoryAssociations(trajectory);
+    }
+
+    const count = Number(
+      (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM gmos_associations
+             ${input.profileId ? "WHERE profile_id = ?" : ""}`,
+          )
+          .get(...profileParams) as { count: number }
+      ).count,
+    );
+    return { rebuiltAssociationCount: count };
   }
 
   function rowCounts(): Record<string, number> {
@@ -1029,6 +1589,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       "gmos_world_beliefs",
       "gmos_failure_events",
       "gmos_task_trajectories",
+      "gmos_associations",
     ];
     return Object.fromEntries(
       tables.map((table) => [
@@ -1063,6 +1624,8 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     archiveStaleHostImports,
     listActionPolicies,
     listEvidenceForMemory,
+    searchAssociations,
+    rebuildAssociations,
     forget,
     recordFailure,
     listFailures,
@@ -1077,7 +1640,9 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     },
     restoreProfileBackup(input) {
       initialize();
-      return restoreSqliteProfileBackup(db, input);
+      const report = restoreSqliteProfileBackup(db, input);
+      rebuildAssociations({ profileId: report.targetProfileId });
+      return report;
     },
   };
 }

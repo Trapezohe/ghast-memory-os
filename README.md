@@ -35,8 +35,11 @@ const prepared = await memory.prepareTurn({
 - SQLite FTS-backed recall for query search, with LIKE fallback for tokenizer
   edge cases.
 - Search index health reporting and explicit repair for SQLite FTS drift.
+- SQLite association projection for active reconstruction. It derives
+  cue-tag-content edges from existing memory, world belief, and task trajectory
+  rows; those associations are an index, not a second source of truth.
 - Runtime facade: `observe`, `prepareTurn`, `commitOutcome`, `recordFeedback`,
-  `forget`, `explain`.
+  `reconstructContext`, `forget`, `explain`.
 - Low-level compatibility APIs: `add` and `search` for import, admin, and
   compatibility use cases that cannot emit full host events.
 - Safety gates for secret-like content, incognito events, PERSON isolation,
@@ -71,6 +74,7 @@ npm run build
 node dist/cli/gmos.js init --db ./gmos.db
 node dist/cli/gmos.js doctor --db ./gmos.db --host ghast
 node dist/cli/gmos.js repair --db ./gmos.db --search-index
+node dist/cli/gmos.js repair --db ./gmos.db --associations
 node dist/cli/gmos.js status --db ./gmos.db --profile local --host ghast --format markdown
 node dist/cli/gmos.js add --db ./gmos.db --profile local --kind preference --text "我喜欢简洁回答"
 node dist/cli/gmos.js update --db ./gmos.db --profile local --id memory_xxx --text "我喜欢先讲风险"
@@ -85,10 +89,12 @@ node dist/cli/gmos.js backup --db ./gmos.db --profile local --mode safe --output
 node dist/cli/gmos.js restore --db ./new-gmos.db --profile local-restored --input-file ./gmos-profile-backup.json
 node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "我喜欢简洁的中文回答。"
 node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
+node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？"
 node dist/cli/gmos.js mcp tools
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.add --input '{"kind":"preference","content":"我喜欢先讲风险"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.search --input '{"query":"先讲风险"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.prepare_context --input '{"text":"你之后怎么回答我？"}'
+node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.reconstruct_context --input '{"text":"我之前说的项目下一步是什么？"}'
 node dist/cli/gmos.js mcp serve --db ./gmos.db --profile local
 node dist/cli/gmos.js http serve --db ./gmos.db --profile local --port 4787 --host ghast --auth-token local-dev-token
 node dist/cli/gmos.js evolution report --db ./gmos.db --profile local --format markdown
@@ -110,6 +116,7 @@ node dist/cli/gmos.js gate --generated-seeds 3 --scale-sizes 100,1000 --hosts gh
 node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3 --format json
 node dist/cli/gmos.js gym scale --sizes 100,1000 --threshold-p95-ms 250 --format json
 node dist/cli/gmos.js repair --db ./gmos.db --search-index
+node dist/cli/gmos.js repair --db ./gmos.db --associations
 npm pack --dry-run
 ```
 
@@ -146,6 +153,18 @@ duplicates. If the index drifts from the canonical `gmos_memories` table, run
 `gmos repair --db ./gmos.db --search-index` to rebuild the FTS table from the
 stored memories. Repair does not create or delete memories; it only rebuilds
 the derived search index.
+
+`reconstructContext()` is the active reconstruction API. It starts from the
+current turn's cue terms, explores bounded cue-tag-content associations, fetches
+matching memory content, generates new cues from intermediate evidence, and
+stops when the evidence budget is sufficient or exhausted. The first production
+mode is shadow-safe: `prepareTurn({ reconstruction: { mode: "shadow" } })`
+returns a separate `reconstruction` field without replacing the ordinary
+`contextBlock`. Public MCP/HTTP reconstruction does not allow
+`includeSensitive`; sensitive and person-scoped memory remains hidden by
+default. If a migrated SQLite file has no association rows, run
+`gmos repair --db ./gmos.db --associations` to rebuild the derived index from
+canonical memory, world, and task tables.
 
 The host compatibility gym distinguishes target presets from actual host
 adoption. `--hosts ghast` without an actual report tests the SDK's target Ghast

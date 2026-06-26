@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { composeTurnContext } from "../kernel/context-composer.js";
 import { extractMemoryCandidate } from "../kernel/extraction.js";
+import { reconstructMemoryContext } from "../kernel/reconstruction.js";
 import {
   classifySensitivity,
   eligibleForLongTermMemory,
@@ -30,6 +31,8 @@ import type {
   MemoryOS,
   MemoryOSOptions,
   PrepareTurnInput,
+  ReconstructContextInput,
+  ReconstructedContext,
   RestoreArchivedResult,
   Sensitivity,
 } from "../kernel/types.js";
@@ -461,11 +464,43 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       includeEvidence: input.includeEvidence,
       contextBudgetTokens: input.contextBudgetTokens,
     });
+    const reconstruction =
+      input.reconstruction?.mode === "shadow"
+        ? await reconstructMemoryContext({
+            store,
+            defaultProfileId,
+            request: {
+              profileId,
+              query,
+              includeEvidence: input.includeEvidence,
+              includeSensitive: input.includeSensitive,
+              contextBudgetTokens: input.contextBudgetTokens,
+              maxSteps: input.reconstruction.maxSteps,
+              maxBranch: input.reconstruction.maxBranch,
+              maxMemories: input.reconstruction.maxMemories,
+            },
+          })
+        : undefined;
     const after = await store.rowCounts();
     if (JSON.stringify(before) !== JSON.stringify(after)) {
       throw new Error("gmOS invariant failed: prepareTurn produced write side effects");
     }
-    return prepared;
+    return reconstruction ? { ...prepared, reconstruction } : prepared;
+  }
+
+  async function reconstructContext(input: ReconstructContextInput): Promise<ReconstructedContext> {
+    await initialize();
+    const before = await store.rowCounts();
+    const reconstructed = await reconstructMemoryContext({
+      store,
+      defaultProfileId,
+      request: input,
+    });
+    const after = await store.rowCounts();
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      throw new Error("gmOS invariant failed: reconstructContext produced write side effects");
+    }
+    return reconstructed;
   }
 
   async function commitOutcome(input: CommitOutcomeInput): Promise<void> {
@@ -540,6 +575,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     get,
     observe,
     prepareTurn,
+    reconstructContext,
     commitOutcome,
     recordFeedback,
     forget,

@@ -83,6 +83,12 @@ export interface PrepareTurnInput {
   includeEvidence?: boolean | undefined;
   includeSensitive?: boolean | undefined;
   contextBudgetTokens?: number | undefined;
+  reconstruction?: {
+    mode: "shadow";
+    maxSteps?: number | undefined;
+    maxBranch?: number | undefined;
+    maxMemories?: number | undefined;
+  } | undefined;
 }
 
 export interface EvidenceEvent {
@@ -141,10 +147,53 @@ export interface PreparedTurn {
   actionPolicies: ActionPolicy[];
   directives: string[];
   evidence: EvidenceEvent[];
+  reconstruction?: ReconstructedContext | undefined;
   stats: {
     retrievedMemoryCount: number;
     actionPolicyCount: number;
     promptTokenEstimate: number;
+  };
+}
+
+export interface ReconstructContextInput {
+  profileId?: string | undefined;
+  query?: string | undefined;
+  messages?: TurnMessage[] | undefined;
+  includeEvidence?: boolean | undefined;
+  includeSensitive?: boolean | undefined;
+  contextBudgetTokens?: number | undefined;
+  maxSteps?: number | undefined;
+  maxBranch?: number | undefined;
+  maxMemories?: number | undefined;
+}
+
+export interface ReconstructedEvidencePath {
+  id: string;
+  step: number;
+  cue: string;
+  tag: string;
+  targetType: MemoryAssociationTargetType;
+  targetId: string;
+  targetSummary: string;
+  confidence: number;
+  sourceMemoryId?: string | null | undefined;
+  sourceEvidenceId?: string | null | undefined;
+}
+
+export interface ReconstructedContext {
+  profileId: string;
+  query: string;
+  contextBlock: string;
+  memories: MemoryRecord[];
+  evidence: EvidenceEvent[];
+  paths: ReconstructedEvidencePath[];
+  stats: {
+    stepCount: number;
+    exploredCueCount: number;
+    associationCount: number;
+    retrievedMemoryCount: number;
+    promptTokenEstimate: number;
+    stopReason: "budget_exhausted" | "evidence_sufficient" | "no_frontier";
   };
 }
 
@@ -274,6 +323,45 @@ export interface MemorySearchInput {
   purpose?: "context" | "delete" | "manage";
   includeSensitive?: boolean | undefined;
   includePerson?: boolean | undefined;
+}
+
+export type MemoryAssociationTargetType = "memory" | "world_belief" | "task_trajectory";
+
+export interface MemoryAssociationRecord {
+  id: string;
+  profileId: string;
+  cue: string;
+  cueKind: "lexical" | "kind" | "scope" | "predicate" | "task" | "entity";
+  tag: string;
+  targetType: MemoryAssociationTargetType;
+  targetId: string;
+  targetKind: string;
+  targetSummary: string;
+  sensitivity: Sensitivity;
+  status: "active" | "archived";
+  confidence: number;
+  sourceMemoryId?: string | null | undefined;
+  sourceBeliefId?: string | null | undefined;
+  sourceTaskTrajectoryId?: string | null | undefined;
+  sourceEvidenceId?: string | null | undefined;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MemoryAssociationSearchInput {
+  profileId: string;
+  query: string;
+  limit?: number | undefined;
+  includeSensitive?: boolean | undefined;
+  includePerson?: boolean | undefined;
+}
+
+export interface RebuildAssociationsInput {
+  profileId?: string | undefined;
+}
+
+export interface RebuildAssociationsResult {
+  rebuiltAssociationCount: number;
 }
 
 export interface MemoryListInput {
@@ -450,6 +538,12 @@ export interface MemoryStore {
     options?: { includeSensitive?: boolean | undefined },
   ): Promise<ActionPolicy[]> | ActionPolicy[];
   listEvidenceForMemory(memoryId: string): Promise<EvidenceEvent[]> | EvidenceEvent[];
+  searchAssociations?(
+    input: MemoryAssociationSearchInput,
+  ): Promise<MemoryAssociationRecord[]> | MemoryAssociationRecord[];
+  rebuildAssociations?(
+    input?: RebuildAssociationsInput,
+  ): Promise<RebuildAssociationsResult> | RebuildAssociationsResult;
   forget(input: ForgetInput & { profileId: string }): Promise<ForgetResult> | ForgetResult;
   recordFailure(input: RecordFailureInput): Promise<void> | void;
   listFailures?(input: ListFailuresInput): Promise<FailureEventRecord[]> | FailureEventRecord[];
@@ -480,6 +574,7 @@ export interface MemoryOS {
   get(input: LowLevelGetMemoryInput): Promise<MemoryRecord | null>;
   observe(event: HostEvent): Promise<void>;
   prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn>;
+  reconstructContext(input: ReconstructContextInput): Promise<ReconstructedContext>;
   commitOutcome(input: CommitOutcomeInput): Promise<void>;
   recordFeedback(input: FeedbackInput): Promise<void>;
   forget(input: ForgetInput): Promise<ForgetResult>;

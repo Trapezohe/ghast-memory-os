@@ -57,6 +57,11 @@ export function coverageMatrix(result: MemoryGymResult): MemoryGymCoverageRow[] 
       evidence: "do_not_push boundary becomes action directive",
     },
     {
+      layer: "Layer 4R: Active Reconstruction",
+      status: statusFor(layerPass(result, "reconstruction")),
+      evidence: "bounded cue-tag-content reconstruction is exercised in shadow mode",
+    },
+    {
       layer: "Layer 5: Generalization",
       status: result.generalizationResult.status,
       evidence: `holdout=${result.generalizationResult.holdoutScore.toFixed(2)}; generatedMean=${result.generalizationResult.generatedMean.toFixed(2)}; gap=${result.generalizationResult.generalizationGap.toFixed(2)}`,
@@ -94,6 +99,17 @@ export function memoryStackCoverage(result: MemoryGymResult): MemoryGymCoverageR
       layer: "Controller / Context",
       status: statusFor(Boolean(result.hardGates.do_not_push_policy)),
       evidence: "prepareTurn materializes action directives from boundary memory",
+    },
+    {
+      layer: "Reconstructive Recall",
+      status: statusFor(
+        Boolean(
+          result.hardGates.active_reconstruction_multihop &&
+            result.hardGates.reconstruction_read_path_side_effects &&
+            result.hardGates.prepare_turn_reconstruction_shadow,
+        ),
+      ),
+      evidence: "reconstructContext follows association paths without replacing main context",
     },
     {
       layer: "MCP / Host",

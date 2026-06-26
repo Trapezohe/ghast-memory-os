@@ -76,6 +76,17 @@ const prepareContextSchema = z.object({
   contextBudgetTokens: z.number().positive().optional(),
 }).strict();
 
+const reconstructContextSchema = z.object({
+  profileId: z.string().optional(),
+  text: z.string().optional(),
+  messages: z.array(messageSchema).optional(),
+  includeEvidence: z.boolean().optional(),
+  contextBudgetTokens: z.number().positive().optional(),
+  maxSteps: z.number().int().positive().optional(),
+  maxBranch: z.number().int().positive().optional(),
+  maxMemories: z.number().int().positive().optional(),
+}).strict();
+
 const commitOutcomeSchema = z.object({
   profileId: z.string().optional(),
   taskId: z.string().optional(),
@@ -108,6 +119,7 @@ const STDIO_TOOL_SCHEMAS: Record<MemoryMcpToolName, z.ZodObject> = {
   "memory.search": searchSchema,
   "memory.observe": observeSchema,
   "memory.prepare_context": prepareContextSchema,
+  "memory.reconstruct_context": reconstructContextSchema,
   "memory.commit_outcome": commitOutcomeSchema,
   "memory.record_feedback": recordFeedbackSchema,
   "memory.forget": forgetSchema,

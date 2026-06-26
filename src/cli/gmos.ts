@@ -77,6 +77,7 @@ Usage:
   gmos init --db ./gmos.db
   gmos doctor --db ./gmos.db --host ghast
   gmos repair --db ./gmos.db --search-index
+  gmos repair --db ./gmos.db --associations
   gmos status --db ./gmos.db --profile local --host ghast --format markdown
   gmos add --db ./gmos.db --profile local --kind preference --text "我喜欢简洁回答"
   gmos update --db ./gmos.db --profile local --id memory_xxx --text "我喜欢先讲风险"
@@ -91,6 +92,7 @@ Usage:
   gmos restore --db ./gmos.db --input-file ./gmos-profile-backup.json --on-conflict skip
   gmos observe --db ./gmos.db --profile local --text "我喜欢简洁回答"
   gmos prepare --db ./gmos.db --profile local --text "你知道我什么偏好吗？"
+  gmos reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？"
   gmos forget --db ./gmos.db --profile local --query "Moonbase"
   gmos explain --db ./gmos.db --profile local --id memory_xxx
   gmos mcp tools
@@ -507,21 +509,41 @@ async function main(): Promise<void> {
     }
 
     if (command === "repair") {
-      if (!has("--search-index")) usage();
-      if (!store.repairSearchIndex) {
-        throw new Error("gmOS store does not support search index repair");
+      if (has("--associations")) {
+        if (!store.rebuildAssociations) {
+          throw new Error("gmOS store does not support association repair");
+        }
+        console.log(
+          JSON.stringify(
+            {
+              ok: true,
+              associations: await store.rebuildAssociations({
+                profileId: value("--profile"),
+              }),
+            },
+            null,
+            2,
+          ),
+        );
+        return;
       }
-      console.log(
-        JSON.stringify(
-          {
-            ok: true,
-            searchIndex: await store.repairSearchIndex(),
-          },
-          null,
-          2,
-        ),
-      );
-      return;
+      if (has("--search-index")) {
+        if (!store.repairSearchIndex) {
+          throw new Error("gmOS store does not support search index repair");
+        }
+        console.log(
+          JSON.stringify(
+            {
+              ok: true,
+              searchIndex: await store.repairSearchIndex(),
+            },
+            null,
+            2,
+          ),
+        );
+        return;
+      }
+      usage();
     }
 
     if (command === "add") {
@@ -736,8 +758,35 @@ async function main(): Promise<void> {
         messages: [{ role: "user", content: text }],
         includeEvidence: has("--evidence"),
         includeSensitive: has("--include-sensitive"),
+        ...(has("--reconstruct-shadow")
+          ? {
+              reconstruction: {
+                mode: "shadow",
+                maxSteps: positiveIntegerOption("--max-steps", 3),
+                maxBranch: positiveIntegerOption("--max-branch", 4),
+                maxMemories: positiveIntegerOption("--max-memories", 8),
+              },
+            }
+          : {}),
       });
       console.log(JSON.stringify(prepared, null, 2));
+      return;
+    }
+
+    if (command === "reconstruct") {
+      const text = value("--text");
+      if (!text) usage();
+      const reconstructed = await memory.reconstructContext({
+        profileId,
+        query: text,
+        includeEvidence: has("--evidence"),
+        includeSensitive: has("--include-sensitive"),
+        contextBudgetTokens: positiveIntegerOption("--context-budget-tokens", 1800),
+        maxSteps: positiveIntegerOption("--max-steps", 3),
+        maxBranch: positiveIntegerOption("--max-branch", 4),
+        maxMemories: positiveIntegerOption("--max-memories", 8),
+      });
+      console.log(JSON.stringify(reconstructed, null, 2));
       return;
     }
 

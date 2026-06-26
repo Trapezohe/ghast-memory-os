@@ -14,6 +14,7 @@ import type {
   MemoryRole,
   PrepareTurnInput,
   PrivacyMode,
+  ReconstructContextInput,
   TurnMessage,
 } from "../kernel/types.js";
 import {
@@ -284,6 +285,43 @@ function prepareInput(args: Record<string, unknown>): PrepareTurnInput {
   return input;
 }
 
+function reconstructInput(args: Record<string, unknown>): ReconstructContextInput {
+  assertAllowedKeys(
+    args,
+    new Set([
+      "profileId",
+      "text",
+      "messages",
+      "includeEvidence",
+      "includeSensitive",
+      "contextBudgetTokens",
+      "maxSteps",
+      "maxBranch",
+      "maxMemories",
+    ]),
+    "memory.reconstruct_context",
+  );
+  if (args.includeSensitive !== undefined) {
+    throw new Error("memory.reconstruct_context does not allow includeSensitive over MCP");
+  }
+  const input: ReconstructContextInput = {
+    messages: messagesArg(args),
+  };
+  const profileId = optionalString(args, "profileId");
+  const includeEvidence = optionalBoolean(args, "includeEvidence");
+  const contextBudgetTokens = optionalPositiveNumber(args, "contextBudgetTokens");
+  const maxSteps = optionalPositiveInteger(args, "maxSteps");
+  const maxBranch = optionalPositiveInteger(args, "maxBranch");
+  const maxMemories = optionalPositiveInteger(args, "maxMemories");
+  if (profileId !== undefined) input.profileId = profileId;
+  if (includeEvidence !== undefined) input.includeEvidence = includeEvidence;
+  if (contextBudgetTokens !== undefined) input.contextBudgetTokens = contextBudgetTokens;
+  if (maxSteps !== undefined) input.maxSteps = maxSteps;
+  if (maxBranch !== undefined) input.maxBranch = maxBranch;
+  if (maxMemories !== undefined) input.maxMemories = maxMemories;
+  return input;
+}
+
 function outcomeInput(args: Record<string, unknown>): CommitOutcomeInput {
   const input: CommitOutcomeInput = {
     objective: requiredString(args, "objective"),
@@ -398,6 +436,8 @@ export function createMemoryMcpServer(memory: MemoryOS): MemoryMcpServer {
     },
     "memory.prepare_context": async (object) =>
       ok({ ok: true, prepared: await memory.prepareTurn(prepareInput(object)) }),
+    "memory.reconstruct_context": async (object) =>
+      ok({ ok: true, reconstructed: await memory.reconstructContext(reconstructInput(object)) }),
     "memory.commit_outcome": async (object) => {
       await memory.commitOutcome(outcomeInput(object));
       return ok({ ok: true });

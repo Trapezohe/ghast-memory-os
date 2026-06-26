@@ -142,7 +142,7 @@ function rawHttpRequest(port: number, payload: string): Promise<string> {
 const store: SqliteMemoryStore = createSqliteMemoryStore({ path: dbPath });
 const memory = createMemoryOS({ profileId: "test", store });
 await store.initialize();
-assert.equal(await store.schemaVersion(), 2);
+assert.equal(await store.schemaVersion(), 3);
 
 const legacyDbPath = path.join(tmp, "legacy-no-ledger.db");
 const legacyHandle = new Database(legacyDbPath);
@@ -174,7 +174,7 @@ legacyHandle.exec(`
 `);
 const legacyStore = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
 await legacyStore.initialize();
-assert.equal(await legacyStore.schemaVersion(), 2);
+assert.equal(await legacyStore.schemaVersion(), 3);
 assert.equal(
   (
     legacyHandle
@@ -213,9 +213,16 @@ assert.equal(
   ).count,
   1,
 );
+assert.ok(
+  (
+    legacyHandle
+      .prepare("SELECT COUNT(*) AS count FROM gmos_associations WHERE target_id = 'legacy_memory_1'")
+      .get() as { count: number }
+  ).count > 0,
+);
 const legacyStoreReopen = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
 await legacyStoreReopen.initialize();
-assert.equal(await legacyStoreReopen.schemaVersion(), 2);
+assert.equal(await legacyStoreReopen.schemaVersion(), 3);
 assert.equal(
   (
     legacyHandle
@@ -225,6 +232,60 @@ assert.equal(
   1,
 );
 legacyHandle.close();
+
+const legacyV2DbPath = path.join(tmp, "legacy-v2-association-backfill.db");
+const legacyV2Handle = new Database(legacyV2DbPath);
+legacyV2Handle.exec(`
+  CREATE TABLE gmos_schema_migrations (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    applied_at TEXT NOT NULL
+  );
+  INSERT INTO gmos_schema_migrations(version, name, applied_at)
+    VALUES (1, 'baseline', '2026-06-25T00:00:00.000Z');
+  INSERT INTO gmos_schema_migrations(version, name, applied_at)
+    VALUES (2, 'memory_fts_search', '2026-06-25T00:00:00.000Z');
+  CREATE TABLE gmos_memories (
+    id TEXT PRIMARY KEY,
+    profile_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT 'global',
+    content TEXT NOT NULL,
+    sensitivity TEXT NOT NULL DEFAULT 'normal',
+    status TEXT NOT NULL DEFAULT 'active',
+    confidence REAL NOT NULL DEFAULT 0.5,
+    source_event_id TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  INSERT INTO gmos_memories (
+    id, profile_id, kind, scope, content, sensitivity, status, confidence,
+    source_event_id, metadata_json, created_at, updated_at
+  ) VALUES (
+    'legacy_v2_memory_1', 'legacy_v2', 'procedure', 'global',
+    'Orchid project next step is to write the migration probe.', 'normal', 'active', 0.8,
+    NULL, '{}', '2026-06-25T00:00:00.000Z', '2026-06-25T00:00:00.000Z'
+  );
+`);
+const legacyV2Store = createSqliteMemoryStore({ path: legacyV2DbPath, handle: legacyV2Handle });
+await legacyV2Store.initialize();
+assert.equal(await legacyV2Store.schemaVersion(), 3);
+assert.ok(
+  (
+    legacyV2Handle
+      .prepare("SELECT COUNT(*) AS count FROM gmos_associations WHERE target_id = 'legacy_v2_memory_1'")
+      .get() as { count: number }
+  ).count > 0,
+);
+const legacyV2Memory = createMemoryOS({ profileId: "legacy_v2", store: legacyV2Store });
+const legacyV2Reconstructed = await legacyV2Memory.reconstructContext({
+  profileId: "legacy_v2",
+  query: "Orchid next step",
+});
+assert.match(legacyV2Reconstructed.contextBlock, /migration probe/);
+await legacyV2Memory.close();
+legacyV2Handle.close();
 
 await memory.observe({
   type: "conversation.message",
@@ -1864,6 +1925,13 @@ const restoredBackupMatches = await restoredMemory.search({
 });
 assert.equal(restoredBackupMatches.some((entry) => entry.content.includes("portable restores")), true);
 assert.equal(restoredBackupMatches.some((entry) => entry.id === backupMemory.id), false);
+const restoredReconstruction = await restoredMemory.reconstructContext({
+  profileId: "backup_profile_restored",
+  query: "portable restores",
+  maxSteps: 3,
+});
+assert.match(restoredReconstruction.contextBlock, /portable restores/);
+assert.ok((await restoreStore.rowCounts()).gmos_associations > 0);
 const restoredSensitiveDefault = await restoredMemory.search({
   profileId: "backup_profile_restored",
   query: "123-45-6789",
@@ -2067,7 +2135,7 @@ assert.equal(statusReport.framework, "ghast-memory-os");
 assert.equal(statusReport.package.name, packageJson.name);
 assert.equal(statusReport.package.version, packageJson.version);
 assert.equal(statusReport.storage.status, "ok");
-assert.equal(statusReport.storage.schemaVersion, 2);
+assert.equal(statusReport.storage.schemaVersion, 3);
 assert.equal(statusReport.storage.searchIndex?.status, "ok");
 assert.equal(statusReport.storage.searchIndex?.missingEntryCount, 0);
 assert.equal(statusReport.storage.rowCounts.gmos_failure_events >= testProfileFailures.length, true);
@@ -2744,6 +2812,7 @@ try {
     "POST /search",
     "POST /observe",
     "POST /prepare",
+    "POST /reconstruct",
     "POST /commit-outcome",
     "POST /feedback",
     "POST /forget",
@@ -2756,7 +2825,7 @@ try {
   assert.equal(status.status, 200);
   assert.equal(
     ((status.body.report as { storage?: { schemaVersion?: number } }).storage ?? {}).schemaVersion,
-    2,
+    3,
   );
   assert.equal(status.text.includes("mcp fixture failure"), false);
   const observe = await postJson(`${httpAddress.url}/observe`, {
@@ -2839,6 +2908,13 @@ try {
   });
   assert.equal(sensitiveOverride.status, 400);
   assert.equal(sensitiveOverride.text.includes("123-45-6789"), false);
+  const reconstructSensitiveOverride = await postJson(`${httpAddress.url}/reconstruct`, {
+    profileId: "http",
+    text: "SSN 是什么？",
+    includeSensitive: true,
+  });
+  assert.equal(reconstructSensitiveOverride.status, 400);
+  assert.equal(reconstructSensitiveOverride.text.includes("123-45-6789"), false);
   const mcpCall = await postJson(`${httpAddress.url}/mcp/call`, {
     tool: "memory.prepare_context",
     args: {
@@ -4106,6 +4182,309 @@ const cliRepairSearch = spawnSync(
 );
 assert.equal(cliRepairSearch.status, 0, cliRepairSearch.stderr);
 assert.match(cliRepairSearch.stdout, /resilient recall/);
+const reconstructionDb = path.join(tmp, "reconstruction.db");
+const reconstructionStore = createSqliteMemoryStore({ path: reconstructionDb });
+const reconstructionMemory = createMemoryOS({
+  profileId: "recon",
+  store: reconstructionStore,
+});
+await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "project",
+  content: "代号 Helio 的项目是用户之前说的那个计划。",
+});
+await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "procedure",
+  content: "Helio 项目推进时先写复现报告，再做实现。",
+});
+await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "boundary",
+  content: "Helio 项目不要主动催促用户。",
+});
+await reconstructionMemory.commitOutcome({
+  profileId: "recon",
+  taskId: "helio-report",
+  objective: "Helio 项目复现报告",
+  status: "completed",
+  summary: "先核证据链，再写实现计划。",
+});
+const reconstructed = await reconstructionMemory.reconstructContext({
+  profileId: "recon",
+  query: "我之前说的那个计划，先做什么？",
+  includeEvidence: true,
+  maxSteps: 4,
+  maxBranch: 6,
+  maxMemories: 6,
+});
+assert.match(reconstructed.contextBlock, /Helio 项目推进时先写复现报告/);
+assert.ok(reconstructed.paths.length >= 2);
+assert.ok(reconstructed.paths.some((path) => path.cue.toLowerCase() === "helio"));
+assert.ok(reconstructed.evidence.length >= 2);
+const reconstructedRowsBefore = await reconstructionStore.rowCounts();
+const preparedWithShadow = await reconstructionMemory.prepareTurn({
+  profileId: "recon",
+  messages: [{ role: "user", content: "我之前说的那个计划，先做什么？" }],
+  reconstruction: { mode: "shadow", maxSteps: 4, maxBranch: 6, maxMemories: 6 },
+});
+assert.match(preparedWithShadow.reconstruction?.contextBlock ?? "", /Helio 项目推进时先写复现报告/);
+assert.equal(
+  JSON.stringify(reconstructedRowsBefore),
+  JSON.stringify(await reconstructionStore.rowCounts()),
+);
+const mcpReconstruct = await createMemoryMcpServer(reconstructionMemory).callTool(
+  "memory.reconstruct_context",
+  {
+    profileId: "recon",
+    text: "我之前说的那个计划，先做什么？",
+    includeEvidence: true,
+    maxSteps: 4,
+  },
+);
+assert.equal(mcpReconstruct.isError, undefined);
+assert.match(JSON.stringify(mcpReconstruct.structuredContent), /Helio 项目推进时先写复现报告/);
+const mcpReconstructSensitive = await createMemoryMcpServer(reconstructionMemory).callTool(
+  "memory.reconstruct_context",
+  {
+    profileId: "recon",
+    text: "Helio",
+    includeSensitive: true,
+  },
+);
+assert.equal(mcpReconstructSensitive.isError, true);
+const associationInspectDb = new Database(reconstructionDb, { readonly: true });
+try {
+  const associationCount = (
+    associationInspectDb
+      .prepare("SELECT COUNT(*) AS count FROM gmos_associations WHERE profile_id = 'recon'")
+      .get() as { count: number }
+  ).count;
+  assert.ok(associationCount > 0);
+} finally {
+  associationInspectDb.close();
+}
+const cliReconstruct = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "reconstruct",
+    "--db",
+    reconstructionDb,
+    "--profile",
+    "recon",
+    "--text",
+    "我之前说的那个计划，先做什么？",
+    "--max-steps",
+    "4",
+    "--max-branch",
+    "6",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliReconstruct.status, 0, cliReconstruct.stderr);
+assert.match(cliReconstruct.stdout, /Helio 项目推进时先写复现报告/);
+const corruptAssociationsDb = new Database(reconstructionDb);
+try {
+  corruptAssociationsDb.prepare("DELETE FROM gmos_associations WHERE profile_id = 'recon'").run();
+  corruptAssociationsDb.prepare("DELETE FROM gmos_associations_fts WHERE profile_id = 'recon'").run();
+} finally {
+  corruptAssociationsDb.close();
+}
+const cliRepairAssociations = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "repair",
+    "--db",
+    reconstructionDb,
+    "--profile",
+    "recon",
+    "--associations",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliRepairAssociations.status, 0, cliRepairAssociations.stderr);
+assert.ok(
+  (JSON.parse(cliRepairAssociations.stdout) as {
+    associations?: { rebuiltAssociationCount?: number };
+  }).associations?.rebuiltAssociationCount ?? 0,
+);
+await reconstructionMemory.commitOutcome({
+  profileId: "recon",
+  taskId: "helio-secret-outcome",
+  objective: "Helio secret outcome",
+  status: "completed",
+  summary: "Do not expose API key sk-reconstructiontrajectorysecret1234567890.",
+});
+const secretTrajectoryReconstruction = await reconstructionMemory.reconstructContext({
+  profileId: "recon",
+  query: "Helio secret outcome API key",
+  includeSensitive: true,
+  maxSteps: 4,
+});
+assert.equal(
+  secretTrajectoryReconstruction.contextBlock.includes("sk-reconstructiontrajectorysecret"),
+  false,
+);
+await reconstructionMemory.observe({
+  type: "conversation.message",
+  profileId: "recon",
+  role: "user",
+  content: "Orchid project v1 owner is AlphaTeam.",
+});
+const orchidMatch = (await reconstructionMemory.search({
+  profileId: "recon",
+  query: "Orchid AlphaTeam",
+  limit: 1,
+}))[0];
+assert.ok(orchidMatch);
+await reconstructionMemory.update({
+  profileId: "recon",
+  id: orchidMatch.id,
+  content: "Orchid project v2 owner is BetaTeam.",
+  kind: "project",
+});
+await reconstructionStore.rebuildAssociations({ profileId: "recon" });
+const orchidAfterUpdate = await reconstructionMemory.reconstructContext({
+  profileId: "recon",
+  query: "Orchid owner",
+  maxSteps: 4,
+  maxBranch: 6,
+});
+assert.match(orchidAfterUpdate.contextBlock, /BetaTeam/);
+assert.equal(orchidAfterUpdate.contextBlock.includes("AlphaTeam"), false);
+await reconstructionMemory.observe({
+  type: "conversation.message",
+  profileId: "recon",
+  role: "user",
+  content: "Moonbase 项目发布管理由 SongSuOwnerAlpha 负责。",
+});
+const moonbaseBeforeForget = await reconstructionMemory.reconstructContext({
+  profileId: "recon",
+  query: "Moonbase 发布管理",
+  maxSteps: 4,
+  maxBranch: 6,
+});
+assert.match(moonbaseBeforeForget.contextBlock, /SongSuOwnerAlpha/);
+const moonbaseForgotten = await reconstructionMemory.forget({
+  profileId: "recon",
+  query: "SongSuOwnerAlpha",
+});
+assert.ok(moonbaseForgotten.archivedMemoryIds.length > 0);
+await reconstructionStore.rebuildAssociations({ profileId: "recon" });
+const moonbaseAfterRepair = await reconstructionMemory.reconstructContext({
+  profileId: "recon",
+  query: "Moonbase 发布管理",
+  maxSteps: 4,
+  maxBranch: 6,
+});
+assert.equal(moonbaseAfterRepair.contextBlock.includes("SongSuOwnerAlpha"), false);
+const personSourceMemory = await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "person",
+  content: "PERSON: Alice: Alice prefers chamomile tea.",
+  allowPerson: true,
+});
+await reconstructionStore.addWorldBelief({
+  profileId: "recon",
+  subject: "Alice",
+  predicate: "prefers",
+  object: "ChamomileLeakTea",
+  sourceMemoryId: personSourceMemory.id,
+});
+const sensitiveSourceMemory = await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "fact",
+  content: "Sensitive billing note says invoice code ZebraBlue.",
+  sensitivity: "sensitive",
+});
+await reconstructionStore.addWorldBelief({
+  profileId: "recon",
+  subject: "billing",
+  predicate: "code",
+  object: "ZebraBlueLeakCode",
+  sourceMemoryId: sensitiveSourceMemory.id,
+});
+await reconstructionStore.addWorldBelief({
+  profileId: "recon",
+  subject: "billing",
+  predicate: "api_key",
+  object: "api key sk-worldbeliefsecret1234567890",
+  sourceMemoryId: sensitiveSourceMemory.id,
+});
+await reconstructionStore.rebuildAssociations({ profileId: "recon" });
+const unsafeBeliefReconstruction = await reconstructionMemory.reconstructContext({
+  profileId: "recon",
+  query: "Alice billing privacy",
+  maxSteps: 4,
+  maxBranch: 8,
+});
+assert.equal(unsafeBeliefReconstruction.contextBlock.includes("ChamomileLeakTea"), false);
+assert.equal(unsafeBeliefReconstruction.contextBlock.includes("ZebraBlueLeakCode"), false);
+const unsafeBeliefMcp = await createMemoryMcpServer(reconstructionMemory).callTool(
+  "memory.reconstruct_context",
+  {
+    profileId: "recon",
+    text: "Alice billing privacy",
+    maxSteps: 4,
+    maxBranch: 8,
+  },
+);
+assert.equal(unsafeBeliefMcp.isError, undefined);
+assert.equal(JSON.stringify(unsafeBeliefMcp.structuredContent).includes("ChamomileLeakTea"), false);
+assert.equal(JSON.stringify(unsafeBeliefMcp.structuredContent).includes("ZebraBlueLeakCode"), false);
+const secretBeliefReconstruction = await reconstructionMemory.reconstructContext({
+  profileId: "recon",
+  query: "billing api_key",
+  includeSensitive: true,
+  maxSteps: 4,
+  maxBranch: 8,
+});
+assert.equal(secretBeliefReconstruction.contextBlock.includes("sk-worldbeliefsecret"), false);
+const staleHostSource = await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "project",
+  content: "Host import stale project owner is StaleHostOwner.",
+  metadata: {
+    hostSnapshotImport: true,
+    hostImportSourceType: "host.stale",
+    hostImportKey: "stale-key",
+  },
+});
+await reconstructionStore.addWorldBelief({
+  profileId: "recon",
+  subject: "host-import",
+  predicate: "owner",
+  object: "StaleHostOwner",
+  sourceMemoryId: staleHostSource.id,
+});
+const archivedHostImports = reconstructionStore.archiveStaleHostImports?.({
+  profileId: "recon",
+  sourceType: "host.stale",
+  activeImportKeys: [],
+});
+assert.ok((archivedHostImports?.length ?? 0) > 0);
+await reconstructionStore.rebuildAssociations({ profileId: "recon" });
+const staleHostAfterRepair = await reconstructionMemory.reconstructContext({
+  profileId: "recon",
+  query: "host import stale project",
+  maxSteps: 4,
+});
+assert.equal(staleHostAfterRepair.contextBlock.includes("StaleHostOwner"), false);
+await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "fact",
+  content: "Helio backup token is sk-reconstructionsecret1234567890",
+}).then(
+  () => assert.fail("secret-like reconstruction fixture should be rejected"),
+  (error: unknown) => assert.match(String(error), /secret-like/),
+);
+await reconstructionMemory.close();
 const cliStatus = spawnSync(
   process.execPath,
   [
@@ -4134,8 +4513,9 @@ const cliStatusPayload = JSON.parse(cliStatus.stdout) as {
   failureSummary?: { inspectedFailureCount?: number };
   hostCompatibility?: { level?: string };
 };
-assert.equal(cliStatusPayload.storage?.schemaVersion, 2);
+assert.equal(cliStatusPayload.storage?.schemaVersion, 3);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_memories ?? 0) > 0);
+assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_associations ?? 0) > 0);
 assert.equal(cliStatusPayload.storage?.searchIndex?.status, "ok");
 assert.equal(cliStatusPayload.storage?.searchIndex?.missingEntryCount, 0);
 assert.equal(cliStatusPayload.failureSummary?.inspectedFailureCount, 3);
@@ -4182,7 +4562,7 @@ assert.equal(gym.roadmapResult.status, "clear");
 assert.equal(gym.runManifest.dbPathMode, "memory");
 assert.equal(gym.runManifest.package.name, packageJson.name);
 assert.equal(gym.runManifest.package.version, packageJson.version);
-assert.equal(gym.runManifest.sqliteSchemaVersion, 2);
+assert.equal(gym.runManifest.sqliteSchemaVersion, 3);
 assert.equal(gym.runManifest.git.branch, expectedGit.branch);
 assert.equal(gym.runManifest.git.sha, expectedGit.sha);
 assert.equal(gym.runManifest.git.dirty, expectedGit.dirty);
@@ -4195,7 +4575,7 @@ assert.match(renderedGym, /gmOS Memory Gym Report/);
 assert.match(renderedGym, /Coverage Matrix/);
 assert.match(renderedGym, /Run Manifest/);
 assert.match(renderedGym, /Package: @ghast\/memory@/);
-assert.match(renderedGym, /SQLite schema: 2/);
+assert.match(renderedGym, /SQLite schema: 3/);
 const generatedGym = await runMemoryGym({ generatedSeeds: 2 });
 assert.equal(generatedGym.pass, true, generatedGym.details.join("\n"));
 assert.equal(generatedGym.generalizationResult.generatedSeedCount, 2);
@@ -4277,7 +4657,7 @@ for (const [host, expectedLevel] of [
   };
   assert.equal(doctorJson.encrypted, false);
   assert.equal(doctorJson.schema?.dialect, "sqlite");
-  assert.equal(doctorJson.schema?.version, 2);
+  assert.equal(doctorJson.schema?.version, 3);
   assert.equal(doctorJson.hostCompatibility?.level, expectedLevel);
   assert.equal(doctorJson.searchIndex?.status, "ok");
   assert.equal(doctorJson.searchIndex?.missingEntryCount, 0);

@@ -429,6 +429,241 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "read_path_side_effects",
   ]);
 
+  await memory.add({
+    profileId: "gym_reconstruct",
+    kind: "project",
+    content: "代号 Helio 的项目是用户之前说的那个计划。",
+  });
+  await memory.add({
+    profileId: "gym_reconstruct",
+    kind: "procedure",
+    content: "Helio 项目推进时先写复现报告，再做实现。",
+  });
+  await memory.add({
+    profileId: "gym_reconstruct",
+    kind: "boundary",
+    content: "Helio 项目不要主动催促用户。",
+  });
+  const beforeReconstruction = await store.rowCounts();
+  const reconstructed = await memory.reconstructContext({
+    profileId: "gym_reconstruct",
+    query: "我之前说的那个计划，先做什么？",
+    includeEvidence: true,
+    maxSteps: 4,
+    maxBranch: 6,
+    maxMemories: 6,
+  });
+  const afterReconstruction = await store.rowCounts();
+  gate(
+    result,
+    "active_reconstruction_multihop",
+    reconstructed.contextBlock.includes("Helio 项目推进时先写复现报告") &&
+      reconstructed.paths.length >= 2 &&
+      reconstructed.paths.some((path) => path.cue.toLowerCase() === "helio"),
+    "reconstructContext should follow cue-tag-content associations instead of one-shot top-k recall",
+    "reconstruction",
+  );
+  gate(
+    result,
+    "reconstruction_read_path_side_effects",
+    JSON.stringify(beforeReconstruction) === JSON.stringify(afterReconstruction),
+    "reconstructContext must not write while exploring associations",
+    "architecture",
+  );
+  const plainPreparedBeforeShadow = await memory.prepareTurn({
+    profileId: "gym_reconstruct",
+    messages: [{ role: "user", content: "我之前说的那个计划，先做什么？" }],
+  });
+  const reconstructedPrepared = await memory.prepareTurn({
+    profileId: "gym_reconstruct",
+    messages: [{ role: "user", content: "我之前说的那个计划，先做什么？" }],
+    reconstruction: { mode: "shadow", maxSteps: 4, maxBranch: 6, maxMemories: 6 },
+  });
+  gate(
+    result,
+    "prepare_turn_reconstruction_shadow",
+    reconstructedPrepared.contextBlock === plainPreparedBeforeShadow.contextBlock &&
+      (reconstructedPrepared.reconstruction?.contextBlock.includes(
+        "Helio 项目推进时先写复现报告",
+      ) ??
+        false),
+    "prepareTurn should expose reconstructed context only as shadow output",
+    "reconstruction",
+  );
+  const mcpReconstructSensitive = await mcp.callTool("memory.reconstruct_context", {
+    profileId: "gym_reconstruct",
+    text: "Helio",
+    includeSensitive: true,
+  });
+  gate(
+    result,
+    "mcp_reconstruct_sensitive_rejection",
+    mcpReconstructSensitive.isError === true &&
+      !JSON.stringify(mcpReconstructSensitive.structuredContent).includes("123-45-6789"),
+    "public MCP reconstruct_context must not expose includeSensitive override",
+    "mcp_host",
+  );
+  await memory.commitOutcome({
+    profileId: "gym_reconstruct",
+    taskId: "helio-secret-outcome",
+    objective: "Helio secret outcome",
+    status: "completed",
+    summary: "Do not expose API key sk-reconstructiongymsecret1234567890.",
+  });
+  const secretTrajectoryReconstruction = await memory.reconstructContext({
+    profileId: "gym_reconstruct",
+    query: "Helio secret outcome API key",
+    includeSensitive: true,
+    maxSteps: 4,
+    maxBranch: 6,
+  });
+  gate(
+    result,
+    "reconstruction_secret_like_trajectory_exclusion",
+    !secretTrajectoryReconstruction.contextBlock.includes("sk-reconstructiongymsecret"),
+    "secret-like task trajectory summaries must not enter association reconstruction",
+    "safety",
+  );
+  await memory.observe({
+    type: "conversation.message",
+    profileId: "gym_reconstruct",
+    role: "user",
+    content: "Orchid project v1 owner is AlphaTeam.",
+  });
+  const orchidMemory = (await memory.search({
+    profileId: "gym_reconstruct",
+    query: "Orchid AlphaTeam",
+    limit: 1,
+  }))[0];
+  if (orchidMemory) {
+    await memory.update({
+      profileId: "gym_reconstruct",
+      id: orchidMemory.id,
+      content: "Orchid project v2 owner is BetaTeam.",
+      kind: "project",
+    });
+  }
+  if (store.rebuildAssociations) {
+    await store.rebuildAssociations({ profileId: "gym_reconstruct" });
+  }
+  const orchidAfterRepair = await memory.reconstructContext({
+    profileId: "gym_reconstruct",
+    query: "Orchid owner",
+    maxSteps: 4,
+    maxBranch: 6,
+  });
+  gate(
+    result,
+    "reconstruction_update_repair_no_stale_belief",
+    orchidMemory !== undefined &&
+      orchidAfterRepair.contextBlock.includes("BetaTeam") &&
+      !orchidAfterRepair.contextBlock.includes("AlphaTeam"),
+    "updated memory-backed beliefs must not resurrect stale association summaries after repair",
+    "reconstruction",
+  );
+  await memory.observe({
+    type: "conversation.message",
+    profileId: "gym_reconstruct",
+    role: "user",
+    content: "Moonbase 项目发布管理由 SongSuOwnerAlpha 负责。",
+  });
+  const moonbaseForgotten = await memory.forget({
+    profileId: "gym_reconstruct",
+    query: "SongSuOwnerAlpha",
+  });
+  if (store.rebuildAssociations) {
+    await store.rebuildAssociations({ profileId: "gym_reconstruct" });
+  }
+  const moonbaseAfterRepair = await memory.reconstructContext({
+    profileId: "gym_reconstruct",
+    query: "Moonbase 发布管理",
+    maxSteps: 4,
+    maxBranch: 6,
+  });
+  gate(
+    result,
+    "reconstruction_forget_repair_no_belief_residue",
+    moonbaseForgotten.archivedMemoryIds.length > 0 &&
+      !moonbaseAfterRepair.contextBlock.includes("SongSuOwnerAlpha"),
+    "forgotten memory-backed beliefs must not reappear after association repair",
+    "safety",
+  );
+  const personSourceMemory = await memory.add({
+    profileId: "gym_reconstruct",
+    kind: "person",
+    content: "PERSON: Alice: Alice prefers chamomile tea.",
+    allowPerson: true,
+  });
+  await store.addWorldBelief({
+    profileId: "gym_reconstruct",
+    subject: "Alice",
+    predicate: "prefers",
+    object: "ChamomileLeakTea",
+    sourceMemoryId: personSourceMemory.id,
+  });
+  const sensitiveSourceMemory = await memory.add({
+    profileId: "gym_reconstruct",
+    kind: "fact",
+    content: "Sensitive billing note says invoice code ZebraBlue.",
+    sensitivity: "sensitive",
+  });
+  await store.addWorldBelief({
+    profileId: "gym_reconstruct",
+    subject: "billing",
+    predicate: "code",
+    object: "ZebraBlueLeakCode",
+    sourceMemoryId: sensitiveSourceMemory.id,
+  });
+  await store.addWorldBelief({
+    profileId: "gym_reconstruct",
+    subject: "billing",
+    predicate: "api_key",
+    object: "api key sk-worldbeliefgymsecret1234567890",
+    sourceMemoryId: sensitiveSourceMemory.id,
+  });
+  if (store.rebuildAssociations) {
+    await store.rebuildAssociations({ profileId: "gym_reconstruct" });
+  }
+  const sourcePrivacyReconstruction = await memory.reconstructContext({
+    profileId: "gym_reconstruct",
+    query: "Alice billing privacy",
+    maxSteps: 4,
+    maxBranch: 8,
+  });
+  gate(
+    result,
+    "reconstruction_belief_source_privacy_inheritance",
+    !sourcePrivacyReconstruction.contextBlock.includes("ChamomileLeakTea") &&
+      !sourcePrivacyReconstruction.contextBlock.includes("ZebraBlueLeakCode"),
+    "world belief associations must inherit person/sensitive restrictions from source memory",
+    "safety",
+  );
+  const secretBeliefReconstruction = await memory.reconstructContext({
+    profileId: "gym_reconstruct",
+    query: "billing api_key",
+    includeSensitive: true,
+    maxSteps: 4,
+    maxBranch: 8,
+  });
+  gate(
+    result,
+    "reconstruction_secret_like_belief_exclusion",
+    !secretBeliefReconstruction.contextBlock.includes("sk-worldbeliefgymsecret"),
+    "secret-like world belief associations must not be downgraded by sensitive source memory",
+    "safety",
+  );
+  scenario(result, "active_reconstruction", "dev", [
+    "active_reconstruction_multihop",
+    "reconstruction_read_path_side_effects",
+    "prepare_turn_reconstruction_shadow",
+    "mcp_reconstruct_sensitive_rejection",
+    "reconstruction_secret_like_trajectory_exclusion",
+    "reconstruction_update_repair_no_stale_belief",
+    "reconstruction_forget_repair_no_belief_residue",
+    "reconstruction_belief_source_privacy_inheritance",
+    "reconstruction_secret_like_belief_exclusion",
+  ]);
+
   await memory.recordFeedback({
     profileId: "gym",
     content: "刚才召回了错误记忆。",

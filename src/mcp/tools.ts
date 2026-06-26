@@ -97,6 +97,35 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
         },
       },
     },
+    "memory.reconstruct_context": {
+      name: "memory.reconstruct_context",
+      description: "Actively reconstruct context through bounded cue-tag-content associations.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          profileId: { type: "string" },
+          text: { type: "string" },
+          messages: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["content"],
+              properties: {
+                role: { type: "string", enum: ["system", "user", "assistant", "tool"] },
+                content: { type: "string" },
+              },
+            },
+          },
+          includeEvidence: { type: "boolean" },
+          contextBudgetTokens: { type: "number" },
+          maxSteps: { type: "integer", minimum: 1 },
+          maxBranch: { type: "integer", minimum: 1 },
+          maxMemories: { type: "integer", minimum: 1 },
+        },
+      },
+    },
     "memory.commit_outcome": {
       name: "memory.commit_outcome",
       description: "Commit task outcome feedback.",
