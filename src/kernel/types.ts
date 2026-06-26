@@ -209,8 +209,11 @@ export interface ReconstructedEvidencePath {
   tag: string;
   targetType: MemoryAssociationTargetType;
   targetId: string;
+  targetKind?: string | undefined;
   targetSummary: string;
   confidence: number;
+  routeScore?: number | undefined;
+  routeReason?: string | undefined;
   sourceMemoryId?: string | null | undefined;
   sourceEvidenceId?: string | null | undefined;
 }

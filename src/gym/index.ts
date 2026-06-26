@@ -463,6 +463,50 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "reconstructContext should follow cue-tag-content associations instead of one-shot top-k recall",
     "reconstruction",
   );
+  await memory.add({
+    profileId: "gym_reconstruct",
+    kind: "project",
+    content: "代号 Vega 的发布计划叫做 Lantern Run。",
+    confidence: 0.9,
+  });
+  await memory.add({
+    profileId: "gym_reconstruct",
+    kind: "procedure",
+    content: "Lantern Run 下一步先更新 rollback matrix，再做发布实现。",
+    confidence: 0.4,
+  });
+  for (const content of [
+    "Lantern Run 的预算备注是蓝色表格。",
+    "Lantern Run 的会议室记录在七楼。",
+    "Lantern Run 的历史口号是 keep it small。",
+    "Lantern Run 的归档标签是 release-notes。",
+  ]) {
+    await memory.add({
+      profileId: "gym_reconstruct",
+      kind: "fact",
+      content,
+      confidence: 0.99,
+    });
+  }
+  const intentReranked = await memory.reconstructContext({
+    profileId: "gym_reconstruct",
+    query: "Vega 这个发布计划下一步先做什么？",
+    maxSteps: 4,
+    maxBranch: 2,
+    maxMemories: 3,
+  });
+  const intentProcedurePath = intentReranked.paths.find(
+    (path) => path.targetKind === "procedure" && path.targetSummary.includes("rollback matrix"),
+  );
+  gate(
+    result,
+    "active_reconstruction_intent_rerank",
+    intentReranked.contextBlock.includes("rollback matrix") &&
+      Boolean(intentProcedurePath) &&
+      /intent/.test(intentProcedurePath?.routeReason ?? ""),
+    "reconstructContext should rerank noisy association branches by query intent, not raw confidence",
+    "reconstruction",
+  );
   gate(
     result,
     "reconstruction_read_path_side_effects",
@@ -725,6 +769,7 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   );
   scenario(result, "active_reconstruction", "dev", [
     "active_reconstruction_multihop",
+    "active_reconstruction_intent_rerank",
     "reconstruction_read_path_side_effects",
     "prepare_turn_reconstruction_shadow",
     "mcp_reconstruct_sensitive_rejection",

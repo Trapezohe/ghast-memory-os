@@ -27,6 +27,8 @@ function boundedInteger(input: number | undefined, fallback: number, min: number
 function pathFromAssociation(
   association: MemoryAssociationRecord,
   step: number,
+  routeScore?: number | undefined,
+  routeReason?: string | undefined,
 ): ReconstructedEvidencePath {
   return {
     id: association.id,
@@ -35,10 +37,188 @@ function pathFromAssociation(
     tag: association.tag,
     targetType: association.targetType,
     targetId: association.targetId,
+    targetKind: association.targetKind,
     targetSummary: association.targetSummary,
     confidence: association.confidence,
+    routeScore,
+    routeReason,
     sourceMemoryId: association.sourceMemoryId,
     sourceEvidenceId: association.sourceEvidenceId,
+  };
+}
+
+function formatPathLine(path: ReconstructedEvidencePath): string {
+  const routeScore = path.routeScore !== undefined ? `; routeScore=${path.routeScore.toFixed(2)}` : "";
+  const routeReason = path.routeReason ? `; reason=${path.routeReason}` : "";
+  return `- [step=${path.step}; cue=${path.cue}; tag=${path.tag}; kind=${path.targetKind ?? path.targetType}; confidence=${path.confidence.toFixed(2)}${routeScore}${routeReason}] ${path.targetSummary}`;
+}
+
+interface ReconstructionIntent {
+  expectedTags: Set<string>;
+  queryCues: Set<string>;
+  reason: string;
+}
+
+interface FrontierCue {
+  cue: string;
+  priority: number;
+  reason: string;
+}
+
+interface RankedAssociation {
+  association: MemoryAssociationRecord;
+  routeScore: number;
+  routeReason: string;
+}
+
+function normalizedText(value: string): string {
+  return value.toLowerCase();
+}
+
+function queryCueSet(query: string): Set<string> {
+  return new Set(extractAssociationCues(query, 48).map((cue) => cue.cue));
+}
+
+function includesAny(text: string, needles: string[]): boolean {
+  const normalized = normalizedText(text);
+  return needles.some((needle) => normalized.includes(normalizedText(needle)));
+}
+
+function inferReconstructionIntent(query: string): ReconstructionIntent {
+  const expectedTags = new Set<string>();
+  const reasons: string[] = [];
+  if (
+    includesAny(query, [
+      "下一步",
+      "先做",
+      "怎么做",
+      "步骤",
+      "流程",
+      "procedure",
+      "next",
+      "step",
+      "should",
+    ])
+  ) {
+    for (const tag of ["procedure", "task_trajectory", "project.state", "world_belief"]) {
+      expectedTags.add(tag);
+    }
+    reasons.push("procedure_or_next_step");
+  }
+  if (includesAny(query, ["当前", "现在", "状态", "current", "state", "status"])) {
+    for (const tag of ["project.state", "world_belief", "project", "task_trajectory"]) {
+      expectedTags.add(tag);
+    }
+    reasons.push("current_state");
+  }
+  if (includesAny(query, ["不要", "不能", "边界", "boundary", "avoid", "do not", "don't"])) {
+    for (const tag of ["boundary", "do_not_push"]) {
+      expectedTags.add(tag);
+    }
+    reasons.push("boundary");
+  }
+  if (includesAny(query, ["偏好", "喜欢", "习惯", "preference", "prefer"])) {
+    expectedTags.add("preference");
+    reasons.push("preference");
+  }
+  return {
+    expectedTags,
+    queryCues: queryCueSet(query),
+    reason: reasons.length > 0 ? reasons.join("+") : "associative",
+  };
+}
+
+function seedFrontier(query: string, intent: ReconstructionIntent): FrontierCue[] {
+  const cues = extractAssociationCues(query, 12);
+  if (cues.length === 0) return [{ cue: query, priority: 1, reason: "raw_query" }];
+  return cues.map((cue, index) => {
+    let priority = 10 - index * 0.1;
+    if (cue.cueKind === "entity") priority += 4;
+    if (intent.expectedTags.has(cue.cue)) priority += 2;
+    return {
+      cue: cue.cue,
+      priority,
+      reason: cue.cueKind === "entity" ? "initial_entity_cue" : "initial_query_cue",
+    };
+  });
+}
+
+function enqueueFrontierCue(frontier: FrontierCue[], next: FrontierCue): void {
+  const existing = frontier.find((item) => item.cue === next.cue);
+  if (!existing) {
+    frontier.push(next);
+    if (frontier.length > 64) {
+      frontier.sort((a, b) => b.priority - a.priority);
+      frontier.length = 64;
+    }
+    return;
+  }
+  if (next.priority > existing.priority) {
+    existing.priority = next.priority;
+    existing.reason = next.reason;
+  }
+}
+
+function associationMatchesIntent(
+  association: MemoryAssociationRecord,
+  intent: ReconstructionIntent,
+): boolean {
+  return (
+    intent.expectedTags.has(association.tag) ||
+    intent.expectedTags.has(association.targetKind) ||
+    intent.expectedTags.has(`${association.targetKind}.${association.tag}`)
+  );
+}
+
+function pathMatchesIntent(path: ReconstructedEvidencePath, intent: ReconstructionIntent): boolean {
+  return (
+    intent.expectedTags.has(path.tag) ||
+    (path.targetKind !== undefined && intent.expectedTags.has(path.targetKind)) ||
+    (path.targetKind !== undefined && intent.expectedTags.has(`${path.targetKind}.${path.tag}`))
+  );
+}
+
+function rankAssociation(
+  association: MemoryAssociationRecord,
+  cue: FrontierCue,
+  intent: ReconstructionIntent,
+): RankedAssociation {
+  const reasons: string[] = [];
+  let routeScore = cue.priority + association.confidence;
+  if (associationMatchesIntent(association, intent)) {
+    routeScore += 8;
+    reasons.push(`intent:${intent.reason}`);
+  }
+  const searchable = normalizedText(
+    `${association.cue} ${association.tag} ${association.targetKind} ${association.targetSummary}`,
+  );
+  let overlapCount = 0;
+  for (const queryCue of intent.queryCues) {
+    if (searchable.includes(normalizedText(queryCue))) overlapCount += 1;
+  }
+  if (overlapCount > 0) {
+    routeScore += overlapCount * 0.75;
+    reasons.push(`query_overlap:${overlapCount}`);
+  }
+  if (association.cue === cue.cue) {
+    routeScore += 1.25;
+    reasons.push("cue_exact");
+  }
+  if (association.targetType === "world_belief") {
+    routeScore += 0.5;
+    reasons.push("world_belief");
+  }
+  if (association.targetType === "task_trajectory") {
+    routeScore += 0.5;
+    reasons.push("task_trajectory");
+  }
+  if (association.targetKind === "fact" && intent.expectedTags.size > 0) {
+    routeScore -= 0.25;
+  }
+  return {
+    association,
+    routeScore,
+    routeReason: reasons.length > 0 ? reasons.join(",") : cue.reason,
   };
 }
 
@@ -62,10 +242,7 @@ function composeReconstructedContext(input: {
     "<gmos-reconstructed-context>",
     `Query: ${input.query}`,
     "Reconstructed evidence paths:",
-    ...input.paths.map(
-      (path) =>
-        `- [step=${path.step}; cue=${path.cue}; tag=${path.tag}; confidence=${path.confidence.toFixed(2)}] ${path.targetSummary}`,
-    ),
+    ...input.paths.map(formatPathLine),
     "Memory content:",
     ...input.memories.map(
       (memory) =>
@@ -95,10 +272,7 @@ function composeReconstructedContext(input: {
       "<gmos-reconstructed-context>",
       `Query: ${input.query}`,
       "Reconstructed evidence paths:",
-      ...paths.map(
-        (path) =>
-          `- [step=${path.step}; cue=${path.cue}; tag=${path.tag}; confidence=${path.confidence.toFixed(2)}] ${path.targetSummary}`,
-      ),
+      ...paths.map(formatPathLine),
       "Memory content:",
       ...memories.map(
         (memory) =>
@@ -167,6 +341,7 @@ async function fallbackReconstruction(input: {
     tag: memory.kind,
     targetType: "memory" as const,
     targetId: memory.id,
+    targetKind: memory.kind,
     targetSummary: memory.content,
     confidence: memory.confidence,
     sourceMemoryId: memory.id,
@@ -211,8 +386,8 @@ export async function reconstructMemoryContext(input: {
     });
   }
 
-  const frontier = extractAssociationCues(query, 12).map((cue) => cue.cue);
-  if (frontier.length === 0) frontier.push(query);
+  const intent = inferReconstructionIntent(query);
+  const frontier = seedFrontier(query, intent);
   const explored = new Set<string>();
   const seenAssociationIds = new Set<string>();
   const seenMemoryIds = new Set<string>();
@@ -222,34 +397,42 @@ export async function reconstructMemoryContext(input: {
   let stopReason: ReconstructedContext["stats"]["stopReason"] = "no_frontier";
 
   for (let step = 1; step <= maxSteps; step += 1) {
+    frontier.sort((a, b) => b.priority - a.priority);
     const cue = frontier.shift();
     if (!cue) break;
-    if (explored.has(cue)) {
+    if (explored.has(cue.cue)) {
       step -= 1;
       continue;
     }
-    explored.add(cue);
+    explored.add(cue.cue);
     const associations = await input.store.searchAssociations({
       profileId,
-      query: cue,
+      query: cue.cue,
       includeSensitive: input.request.includeSensitive,
-      limit: maxBranch,
+      limit: Math.min(maxBranch * 4, 48),
     });
     associationCount += associations.length;
-    for (const association of associations) {
+    const rankedAssociations = associations
+      .filter((association) => !seenAssociationIds.has(association.id))
+      .map((association) => rankAssociation(association, cue, intent))
+      .sort((a, b) => b.routeScore - a.routeScore)
+      .slice(0, maxBranch);
+    for (const ranked of rankedAssociations) {
+      const { association } = ranked;
       if (seenAssociationIds.has(association.id)) continue;
       seenAssociationIds.add(association.id);
-      paths.push(pathFromAssociation(association, step));
+      paths.push(pathFromAssociation(association, step, ranked.routeScore, ranked.routeReason));
       const nextCues = extractAssociationCues(
         `${association.tag} ${association.targetSummary}`,
         8,
       );
       for (const nextCue of nextCues) {
         if (explored.has(nextCue.cue)) continue;
-        const existingIndex = frontier.indexOf(nextCue.cue);
-        if (existingIndex >= 0) frontier.splice(existingIndex, 1);
-        if (nextCue.cueKind === "entity") frontier.unshift(nextCue.cue);
-        else frontier.push(nextCue.cue);
+        enqueueFrontierCue(frontier, {
+          cue: nextCue.cue,
+          priority: ranked.routeScore * 0.7 + (nextCue.cueKind === "entity" ? 4 : 0),
+          reason: `from:${association.tag}`,
+        });
       }
       if (association.targetType !== "memory" || seenMemoryIds.has(association.targetId)) continue;
       const memory = await input.store.getMemoryById(profileId, association.targetId, {
@@ -264,7 +447,13 @@ export async function reconstructMemoryContext(input: {
       }
     }
     if (stopReason === "evidence_sufficient") break;
-    if (memories.length >= Math.min(3, maxMemories) && paths.length >= memories.length) {
+    const hasIntentEvidence =
+      intent.expectedTags.size === 0 || paths.some((path) => pathMatchesIntent(path, intent));
+    if (
+      memories.length >= Math.min(3, maxMemories) &&
+      paths.length >= memories.length &&
+      hasIntentEvidence
+    ) {
       stopReason = "evidence_sufficient";
       break;
     }
