@@ -91,9 +91,14 @@ export function memoryStackCoverage(result: MemoryGymResult): MemoryGymCoverageR
     {
       layer: "Extraction / Update",
       status: statusFor(
-        Boolean(result.hardGates.preference_recall && result.hardGates.holdout_preference_recall),
+        Boolean(
+          result.hardGates.preference_recall &&
+            result.hardGates.holdout_preference_recall &&
+            result.hardGates.world_belief_single_cardinality_supersession,
+        ),
       ),
-      evidence: "preference extraction and generated preference recall are exercised",
+      evidence:
+        "preference extraction, generated preference recall, and single-cardinality world belief supersession are exercised",
     },
     {
       layer: "Controller / Context",
@@ -106,10 +111,12 @@ export function memoryStackCoverage(result: MemoryGymResult): MemoryGymCoverageR
         Boolean(
           result.hardGates.active_reconstruction_multihop &&
             result.hardGates.reconstruction_read_path_side_effects &&
-            result.hardGates.prepare_turn_reconstruction_shadow,
+            result.hardGates.prepare_turn_reconstruction_shadow &&
+            result.hardGates.world_belief_single_cardinality_supersession,
         ),
       ),
-      evidence: "reconstructContext follows association paths without replacing main context",
+      evidence:
+        "reconstructContext follows association paths, respects current world belief state, and does not replace main context",
     },
     {
       layer: "MCP / Host",

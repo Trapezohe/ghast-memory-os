@@ -103,6 +103,7 @@ const WORLD_BELIEF_STATUSES = new Set<WorldBeliefRecord["status"]>([
   "active",
   "candidate",
   "rejected",
+  "superseded",
 ]);
 const FAILURE_KINDS = new Set<FailureEventRecord["failureKind"]>([
   "missed_recall",

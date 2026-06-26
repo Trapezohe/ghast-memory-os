@@ -652,6 +652,77 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "secret-like world belief associations must not be downgraded by sensitive source memory",
     "safety",
   );
+  await store.addWorldBelief({
+    profileId: "gym_reconstruct",
+    subject: "project:atlas",
+    predicate: "project.state",
+    object: "AtlasOwnerAlpha",
+    confidence: 0.8,
+    cardinality: "single",
+  });
+  await store.addWorldBelief({
+    profileId: "gym_reconstruct",
+    subject: "project:atlas",
+    predicate: "project.state",
+    object: "AtlasOwnerBeta",
+    confidence: 0.9,
+    cardinality: "single",
+  });
+  await store.addWorldBelief({
+    profileId: "gym_reconstruct",
+    subject: "project:atlas",
+    predicate: "project.state",
+    object: "AtlasOwnerBeta",
+    confidence: 0.95,
+    cardinality: "single",
+  });
+  await store.addWorldBelief({
+    profileId: "gym_reconstruct",
+    subject: "project:atlas_legacy",
+    predicate: "project.state",
+    object: "AtlasLegacyAlpha",
+    confidence: 0.81,
+  });
+  await store.addWorldBelief({
+    profileId: "gym_reconstruct",
+    subject: "project:atlas_legacy",
+    predicate: "project.state",
+    object: "AtlasLegacyBeta",
+    confidence: 0.82,
+  });
+  await store.addWorldBelief({
+    profileId: "gym_reconstruct",
+    subject: "project:atlas_legacy",
+    predicate: "project.state",
+    object: "AtlasLegacyBeta",
+    confidence: 0.94,
+    cardinality: "single",
+  });
+  if (store.rebuildAssociations) {
+    await store.rebuildAssociations({ profileId: "gym_reconstruct" });
+  }
+  const currentStateReconstruction = await memory.reconstructContext({
+    profileId: "gym_reconstruct",
+    query: "atlas project current state",
+    maxSteps: 4,
+    maxBranch: 8,
+  });
+  const legacyCurrentStateReconstruction = await memory.reconstructContext({
+    profileId: "gym_reconstruct",
+    query: "atlas legacy project current state",
+    maxSteps: 4,
+    maxBranch: 8,
+  });
+  gate(
+    result,
+    "world_belief_single_cardinality_supersession",
+    currentStateReconstruction.contextBlock.includes("AtlasOwnerBeta") &&
+      !currentStateReconstruction.contextBlock.includes("AtlasOwnerAlpha") &&
+      legacyCurrentStateReconstruction.contextBlock.includes("AtlasLegacyBeta") &&
+      !legacyCurrentStateReconstruction.contextBlock.includes("AtlasLegacyAlpha"),
+    "single-cardinality world beliefs should supersede stale active beliefs and repair associations",
+    "world",
+  );
   scenario(result, "active_reconstruction", "dev", [
     "active_reconstruction_multihop",
     "reconstruction_read_path_side_effects",
@@ -662,6 +733,7 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "reconstruction_forget_repair_no_belief_residue",
     "reconstruction_belief_source_privacy_inheritance",
     "reconstruction_secret_like_belief_exclusion",
+    "world_belief_single_cardinality_supersession",
   ]);
 
   await memory.recordFeedback({

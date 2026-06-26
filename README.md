@@ -190,6 +190,14 @@ const memory = createMemoryOS({
           predicate: "user.preference",
           actionPolicyKind: "prefer",
         },
+        {
+          kind: "project",
+          subject: "project:helio",
+          predicate: "project.state",
+          content: "Helio is blocked on the migration probe.",
+          confidence: 0.86,
+          cardinality: "single",
+        },
       ];
     },
   },
@@ -203,6 +211,14 @@ beliefs from accepted candidates. Returning `[]` means "extract nothing";
 returning `null` or throwing falls back to the built-in rules by default. Use
 `createMemoryOS({ extraction: { fallbackToRules: false } })` when a host wants
 custom extraction failure to produce no memory instead of rule fallback.
+
+Use `cardinality: "single"` only for current-state beliefs where one active
+value should replace the previous one, such as a project's current owner,
+status, or next step. gmOS then marks the previous active world belief for the
+same `profileId + subject + predicate` as `superseded` and removes its
+association projection from active reconstruction. Omit `cardinality`, or set
+`"multi"`, for preferences, boundaries, facts, and procedures that can validly
+coexist.
 
 The host compatibility gym distinguishes target presets from actual host
 adoption. `--hosts ghast` without an actual report tests the SDK's target Ghast

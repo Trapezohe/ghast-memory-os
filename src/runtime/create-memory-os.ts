@@ -441,6 +441,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           object: candidate.content,
           confidence: candidate.confidence,
           sourceMemoryId: memory.id,
+          cardinality: candidate.cardinality,
         });
       }
     }

@@ -1191,37 +1191,100 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   function addWorldBelief(input: AddWorldBeliefInput): WorldBeliefRecord {
     initialize();
     const createdAt = nowIso();
-    const beliefId = id("belief");
-    db.prepare(
-      `INSERT INTO gmos_world_beliefs (
-        id, profile_id, subject, predicate, object, confidence, status,
-        source_memory_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
-    ).run(
-      beliefId,
-      input.profileId,
-      input.subject,
-      input.predicate,
-      input.object,
-      input.confidence ?? 0.5,
-      input.sourceMemoryId ?? null,
-      createdAt,
-      createdAt,
-    );
-    const belief: WorldBeliefRecord = {
-      id: beliefId,
-      profileId: input.profileId,
-      subject: input.subject,
-      predicate: input.predicate,
-      object: input.object,
-      confidence: input.confidence ?? 0.5,
-      status: "active",
-      sourceMemoryId: input.sourceMemoryId ?? null,
-      createdAt,
-      updatedAt: createdAt,
-    };
-    projectBeliefAssociations(belief);
-    return belief;
+    const tx = db.transaction((): WorldBeliefRecord => {
+      const cardinality = input.cardinality ?? "multi";
+      if (cardinality === "single") {
+        const activeRows = db
+          .prepare(
+            `SELECT * FROM gmos_world_beliefs
+             WHERE profile_id = ?
+               AND subject = ?
+               AND predicate = ?
+               AND status = 'active'
+             ORDER BY updated_at DESC`,
+          )
+          .all(input.profileId, input.subject, input.predicate) as Record<string, unknown>[];
+        const activeBeliefs = activeRows.map(normalizeWorldBelief);
+        const sameObjectRows = activeBeliefs.filter((belief) => belief.object === input.object);
+        const sameObject = sameObjectRows[0];
+        if (sameObject) {
+          for (const belief of activeBeliefs) {
+            if (belief.id === sameObject.id) continue;
+            deleteAssociationsForBelief(belief.id);
+            db.prepare(
+              `UPDATE gmos_world_beliefs
+               SET status = 'superseded', updated_at = ?
+               WHERE id = ? AND status = 'active'`,
+            ).run(createdAt, belief.id);
+          }
+          const confidence = Math.max(
+            sameObject.confidence,
+            input.confidence ?? sameObject.confidence,
+            ...sameObjectRows.map((belief) => belief.confidence),
+          );
+          const sourceMemoryId =
+            sameObject.sourceMemoryId ??
+            input.sourceMemoryId ??
+            sameObjectRows.find((belief) => belief.sourceMemoryId)?.sourceMemoryId ??
+            null;
+          db.prepare(
+            `UPDATE gmos_world_beliefs
+             SET confidence = ?,
+                 source_memory_id = ?,
+                 updated_at = ?
+             WHERE id = ?`,
+          ).run(confidence, sourceMemoryId, createdAt, sameObject.id);
+          deleteAssociationsForBelief(sameObject.id);
+          const updated = normalizeWorldBelief(
+            db
+              .prepare("SELECT * FROM gmos_world_beliefs WHERE id = ?")
+              .get(sameObject.id) as Record<string, unknown>,
+          );
+          projectBeliefAssociations(updated);
+          return updated;
+        }
+        for (const belief of activeBeliefs) {
+          deleteAssociationsForBelief(belief.id);
+          db.prepare(
+            `UPDATE gmos_world_beliefs
+             SET status = 'superseded', updated_at = ?
+             WHERE id = ? AND status = 'active'`,
+          ).run(createdAt, belief.id);
+        }
+      }
+      const beliefId = id("belief");
+      db.prepare(
+        `INSERT INTO gmos_world_beliefs (
+          id, profile_id, subject, predicate, object, confidence, status,
+          source_memory_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+      ).run(
+        beliefId,
+        input.profileId,
+        input.subject,
+        input.predicate,
+        input.object,
+        input.confidence ?? 0.5,
+        input.sourceMemoryId ?? null,
+        createdAt,
+        createdAt,
+      );
+      const belief: WorldBeliefRecord = {
+        id: beliefId,
+        profileId: input.profileId,
+        subject: input.subject,
+        predicate: input.predicate,
+        object: input.object,
+        confidence: input.confidence ?? 0.5,
+        status: "active",
+        sourceMemoryId: input.sourceMemoryId ?? null,
+        createdAt,
+        updatedAt: createdAt,
+      };
+      projectBeliefAssociations(belief);
+      return belief;
+    });
+    return tx();
   }
 
   function searchMemories(input: MemorySearchInput): MemoryRecord[] {

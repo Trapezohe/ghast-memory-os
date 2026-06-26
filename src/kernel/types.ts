@@ -110,6 +110,7 @@ export interface MemoryExtractionCandidate {
   confidence: number;
   predicate?: string | undefined;
   subject?: string | undefined;
+  cardinality?: "single" | "multi" | undefined;
   actionPolicyKind?: "do_not_push" | "prefer" | "procedure" | undefined;
   metadata?: Record<string, unknown> | undefined;
 }
@@ -160,7 +161,7 @@ export interface WorldBeliefRecord {
   predicate: string;
   object: string;
   confidence: number;
-  status: "active" | "candidate" | "rejected";
+  status: "active" | "candidate" | "rejected" | "superseded";
   sourceMemoryId?: string | null | undefined;
   createdAt: string;
   updatedAt: string;
@@ -479,6 +480,7 @@ export interface AddWorldBeliefInput {
   object: string;
   confidence?: number | undefined;
   sourceMemoryId?: string | null | undefined;
+  cardinality?: "single" | "multi" | undefined;
 }
 
 export interface RecordFailureInput {

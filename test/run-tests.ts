@@ -334,6 +334,7 @@ const extractorMemory = createMemoryOS({
           confidence: 0.88,
           predicate: "project.state",
           subject: "project:helio",
+          cardinality: "single",
           metadata: { extractorFixture: "project" },
         },
       ];
@@ -366,6 +367,143 @@ assert.equal(
   ),
   true,
 );
+await extractorMemory.observe({
+  type: "conversation.message",
+  profileId: "extractor",
+  role: "user",
+  content: "Helio 项目已经改为 blocked on rollout review.",
+});
+await extractorStore.addWorldBelief({
+  profileId: "extractor",
+  subject: "project:helio",
+  predicate: "project.state",
+  object: "Custom extractor says the Helio project is blocked on rollout review.",
+  confidence: 0.93,
+  cardinality: "single",
+});
+await extractorStore.addWorldBelief({
+  profileId: "extractor",
+  subject: "project:helio",
+  predicate: "project.state",
+  object: "Custom extractor says the Helio project is blocked on rollout review.",
+  confidence: 0.94,
+  cardinality: "single",
+});
+await extractorStore.addWorldBelief({
+  profileId: "extractor",
+  subject: "project:legacy",
+  predicate: "project.state",
+  object: "Legacy project state alpha from historical multi belief.",
+  confidence: 0.81,
+});
+await extractorStore.addWorldBelief({
+  profileId: "extractor",
+  subject: "project:legacy",
+  predicate: "project.state",
+  object: "Legacy project state beta from historical multi belief.",
+  confidence: 0.82,
+});
+await extractorStore.addWorldBelief({
+  profileId: "extractor",
+  subject: "project:legacy",
+  predicate: "project.state",
+  object: "Legacy project state beta from historical multi belief.",
+  confidence: 0.91,
+  cardinality: "single",
+});
+const extractorInspectDb = new Database(path.join(tmp, "custom-extractor.db"), { readonly: true });
+try {
+  const activeProjectBeliefCount = (
+    extractorInspectDb
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM gmos_world_beliefs
+         WHERE profile_id = 'extractor'
+           AND subject = 'project:helio'
+           AND predicate = 'project.state'
+           AND status = 'active'`,
+      )
+      .get() as { count: number }
+  ).count;
+  assert.equal(activeProjectBeliefCount, 1);
+  const supersededProjectBeliefCount = (
+    extractorInspectDb
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM gmos_world_beliefs
+         WHERE profile_id = 'extractor'
+           AND subject = 'project:helio'
+           AND predicate = 'project.state'
+           AND status = 'superseded'`,
+      )
+      .get() as { count: number }
+  ).count;
+  assert.equal(supersededProjectBeliefCount, 1);
+  const staleWorldBeliefAssociationCount = (
+    extractorInspectDb
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM gmos_associations
+         WHERE profile_id = 'extractor'
+           AND target_type = 'world_belief'
+           AND target_summary LIKE '%migration probe%'`,
+      )
+      .get() as { count: number }
+  ).count;
+  assert.equal(staleWorldBeliefAssociationCount, 0);
+  const activeLegacyProjectBeliefCount = (
+    extractorInspectDb
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM gmos_world_beliefs
+         WHERE profile_id = 'extractor'
+           AND subject = 'project:legacy'
+           AND predicate = 'project.state'
+           AND status = 'active'`,
+      )
+      .get() as { count: number }
+  ).count;
+  assert.equal(activeLegacyProjectBeliefCount, 1);
+  const supersededLegacyProjectBeliefCount = (
+    extractorInspectDb
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM gmos_world_beliefs
+         WHERE profile_id = 'extractor'
+           AND subject = 'project:legacy'
+           AND predicate = 'project.state'
+           AND status = 'superseded'`,
+      )
+      .get() as { count: number }
+  ).count;
+  assert.equal(supersededLegacyProjectBeliefCount, 1);
+  const staleLegacyWorldBeliefAssociationCount = (
+    extractorInspectDb
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM gmos_associations
+         WHERE profile_id = 'extractor'
+           AND target_type = 'world_belief'
+           AND target_summary LIKE '%Legacy project state alpha%'`,
+      )
+      .get() as { count: number }
+  ).count;
+  assert.equal(staleLegacyWorldBeliefAssociationCount, 0);
+} finally {
+  extractorInspectDb.close();
+}
+await extractorStore.rebuildAssociations({ profileId: "extractor" });
+const currentProjectState = await extractorMemory.reconstructContext({
+  profileId: "extractor",
+  query: "Helio current state",
+});
+assert.match(currentProjectState.contextBlock, /rollout review/);
+const legacyProjectState = await extractorMemory.reconstructContext({
+  profileId: "extractor",
+  query: "Legacy project current state",
+});
+assert.match(legacyProjectState.contextBlock, /beta from historical multi belief/);
+assert.doesNotMatch(legacyProjectState.contextBlock, /alpha from historical multi belief/);
 
 const suppressRulesStore = createSqliteMemoryStore({ path: path.join(tmp, "suppress-rules.db") });
 const suppressRulesMemory = createMemoryOS({

@@ -433,6 +433,7 @@ try {
           confidence: 0.83,
           predicate: "user.preference",
           actionPolicyKind: "prefer",
+          cardinality: "multi",
         };
         return [candidate];
       };
