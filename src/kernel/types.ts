@@ -224,6 +224,42 @@ export interface ReconstructedEvidencePath {
   sourceEvidenceId?: string | null | undefined;
 }
 
+export interface ReconstructedPlannerBranch {
+  pathId: string;
+  targetType: MemoryAssociationTargetType;
+  targetId: string;
+  targetKind?: string | undefined;
+  tag: string;
+  routeScore?: number | undefined;
+  informationGain?: number | undefined;
+  decision: "selected" | "selected_new_path" | "reinforced" | "pruned";
+  reason: string;
+  generatedCues: string[];
+}
+
+export interface ReconstructedPlannerStep {
+  step: number;
+  selectedCue: string;
+  cueReason: string;
+  exploredAssociationCount: number;
+  hybridCandidateCount?: number | undefined;
+  selectedBranchCount: number;
+  prunedBranchCount: number;
+  generatedCues: string[];
+  branches: ReconstructedPlannerBranch[];
+}
+
+export interface ReconstructedPlannerTrace {
+  mode: "associative" | "fallback";
+  intentReason: string;
+  initialCues: string[];
+  maxSteps: number;
+  maxBranch: number;
+  maxMemories: number;
+  steps: ReconstructedPlannerStep[];
+  stopReason: ReconstructedContext["stats"]["stopReason"];
+}
+
 export interface ReconstructedContext {
   profileId: string;
   query: string;
@@ -231,6 +267,7 @@ export interface ReconstructedContext {
   memories: MemoryRecord[];
   evidence: EvidenceEvent[];
   paths: ReconstructedEvidencePath[];
+  plannerTrace?: ReconstructedPlannerTrace | undefined;
   stats: {
     stepCount: number;
     exploredCueCount: number;

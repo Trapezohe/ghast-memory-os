@@ -204,6 +204,11 @@ a host can explain why a branch was selected. Returned paths also expose
 `informationGain`, and returned stats include evidence convergence, coverage,
 and reconstruction uncertainty. This lets hosts distinguish "we found enough
 supporting evidence" from "we only retrieved plausible nearby memories".
+Returned results also include `plannerTrace`, a structured cue-exploration trace
+with selected cues, branch decisions, pruned branches, and evidence-driven new
+cue activation. This trace is for host diagnostics, benchmark verification, and
+offline regression reports; it is not injected into the default prompt context
+and should not be forwarded directly to an LLM or end user.
 When a query carries multiple intents, such as "what is the next step and what
 should I avoid?", convergence requires every detected intent group to be covered
 by evidence; a procedure path alone is not enough if the query also asks for a

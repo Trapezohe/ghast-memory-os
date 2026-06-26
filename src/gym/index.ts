@@ -507,6 +507,58 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "reconstructContext should expose evidence convergence and path information gain, not only top-k recall",
     "reconstruction",
   );
+  const plannerTrace = reconstructed.plannerTrace;
+  gate(
+    result,
+    "active_reconstruction_planner_trace",
+    plannerTrace?.mode === "associative" &&
+      plannerTrace.intentReason === "procedure_or_next_step" &&
+      plannerTrace.stopReason === reconstructed.stats.stopReason &&
+      plannerTrace.initialCues.length > 0 &&
+      plannerTrace.steps.length >= 2 &&
+      plannerTrace.steps.some((step) => step.generatedCues.includes("helio")) &&
+      plannerTrace.steps.some((step) => step.selectedCue === "helio") &&
+      plannerTrace.steps.some((step) =>
+        step.branches.some(
+          (branch) => branch.decision === "selected" && branch.generatedCues.length > 0,
+        ),
+      ),
+    "reconstructContext should expose a structured cue exploration trace, including evidence-driven new cue activation",
+    "reconstruction",
+  );
+  await memory.add({
+    profileId: "gym_reconstruct_reinforced",
+    kind: "procedure",
+    content: "Mira rollback checklist says verify audit trail before deploy.",
+    confidence: 0.9,
+  });
+  const reinforcedHybrid = await memory.reconstructContext({
+    profileId: "gym_reconstruct_reinforced",
+    query: "What should the Mira rollback checklist verify before deploy?",
+    maxSteps: 4,
+    maxBranch: 4,
+    maxMemories: 3,
+  });
+  const reinforcedHybridStep = reinforcedHybrid.plannerTrace?.steps.find((step) =>
+    step.branches.some((branch) => branch.decision === "reinforced"),
+  );
+  gate(
+    result,
+    "active_reconstruction_hybrid_reinforcement_trace",
+    reinforcedHybrid.contextBlock.includes("verify audit trail") &&
+      !reinforcedHybrid.contextBlock.includes("plannerTrace") &&
+      !reinforcedHybrid.contextBlock.includes("selectedBranchCount") &&
+      reinforcedHybridStep?.cueReason === "hybrid_direct_memory_search_reinforced" &&
+      (reinforcedHybridStep.hybridCandidateCount ?? 0) > 0 &&
+      reinforcedHybridStep.branches.some(
+        (branch) =>
+          branch.decision === "reinforced" &&
+          /hybrid_direct_memory_rrf/.test(branch.reason) &&
+          branch.targetKind === "procedure",
+      ),
+    "plannerTrace should record hybrid direct-search reinforcement even when no new path is selected, without injecting trace metadata into prompt context",
+    "reconstruction",
+  );
   const multiIntentReconstructed = await memory.reconstructContext({
     profileId: "gym_reconstruct",
     query: "我之前说的那个计划，先做什么，哪些不要主动做？",
@@ -996,6 +1048,8 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "active_reconstruction_multihop",
     "active_reconstruction_coverage_signal",
     "active_reconstruction_evidence_convergence",
+    "active_reconstruction_planner_trace",
+    "active_reconstruction_hybrid_reinforcement_trace",
     "active_reconstruction_multi_intent_convergence",
     "active_reconstruction_intent_rerank",
     "active_reconstruction_hybrid_rrf",

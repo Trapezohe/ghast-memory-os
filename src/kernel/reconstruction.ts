@@ -7,6 +7,9 @@ import type {
   MemoryStore,
   ReconstructedContext,
   ReconstructedEvidencePath,
+  ReconstructedPlannerBranch,
+  ReconstructedPlannerStep,
+  ReconstructedPlannerTrace,
   ReconstructContextInput,
   TurnMessage,
 } from "./types.js";
@@ -123,6 +126,31 @@ function uniqueStrings(values: string[]): string[] {
   return result;
 }
 
+function traceBranchFromPath(
+  path: ReconstructedEvidencePath,
+  decision: ReconstructedPlannerBranch["decision"],
+  reason: string,
+  generatedCues: string[] = [],
+): ReconstructedPlannerBranch {
+  return {
+    pathId: path.id,
+    targetType: path.targetType,
+    targetId: path.targetId,
+    targetKind: path.targetKind,
+    tag: path.tag,
+    routeScore: path.routeScore,
+    informationGain: path.informationGain,
+    decision,
+    reason,
+    generatedCues,
+  };
+}
+
+function stepCountForTrace(paths: ReconstructedEvidencePath[]): number {
+  if (paths.length === 0) return 1;
+  return Math.max(...paths.map((path) => path.step)) + 1;
+}
+
 function coverageCues(query: string): string[] {
   return uniqueStrings(extractAssociationCues(query, 16).map((cue) => cue.cue)).slice(0, 8);
 }
@@ -226,6 +254,12 @@ function evidenceConvergenceForPaths(input: {
     input.memories.length > 0 ? Math.min(1, input.memories.length / targetMemoryCount) : 0;
   const pathSupportScore = input.paths.length > 0 ? Math.min(1, input.paths.length / 4) : 0;
   const intentScore = intentMatched ? 1 : 0;
+  const memorySupportEnough =
+    input.memories.length >= targetMemoryCount &&
+    (input.intent.expectedTags.size === 0 ||
+      input.memories.some((memory) => memoryMatchesIntent(memory, input.intent)));
+  const pathOnlySupportEnough =
+    input.memories.length === 0 && input.paths.length >= targetMemoryCount && intentMatched;
   const score = Math.min(
     1,
     input.coverage.coverageRate * 0.45 +
@@ -237,7 +271,7 @@ function evidenceConvergenceForPaths(input: {
     score,
     reached:
       score >= input.threshold &&
-      input.memories.length >= targetMemoryCount &&
+      (memorySupportEnough || pathOnlySupportEnough) &&
       intentMatched &&
       coverageIsSufficient(input.coverage),
     threshold: input.threshold,
@@ -530,7 +564,11 @@ async function fuseDirectMemorySearch(input: {
   memories: MemoryRecord[];
   paths: ReconstructedEvidencePath[];
   seenMemoryIds: Set<string>;
-}): Promise<void> {
+}): Promise<{
+  candidateCount: number;
+  reinforcedPaths: ReconstructedEvidencePath[];
+  selectedNewPaths: ReconstructedEvidencePath[];
+}> {
   const directMemoryCandidates = await input.store.searchMemories({
     profileId: input.profileId,
     query: input.query,
@@ -541,6 +579,8 @@ async function fuseDirectMemorySearch(input: {
   const rankedCandidates = directMemoryCandidates
     .map((memory, index) => rankDirectMemory(memory, index + 1, input.query, input.intent))
     .sort((a, b) => b.routeScore - a.routeScore);
+  const reinforcedPaths: ReconstructedEvidencePath[] = [];
+  const selectedNewPaths: ReconstructedEvidencePath[] = [];
   for (const candidate of rankedCandidates) {
     const existingPath = input.paths.find(
       (path) => path.targetType === "memory" && path.targetId === candidate.memory.id,
@@ -548,6 +588,7 @@ async function fuseDirectMemorySearch(input: {
     if (!existingPath) continue;
     if (!existingPath.routeReason?.includes("hybrid_direct_memory_rrf")) {
       addRouteSignal(existingPath, candidate.routeScore, candidate.routeReason);
+      reinforcedPaths.push({ ...existingPath });
     }
   }
   const directStep = Math.max(
@@ -559,8 +600,11 @@ async function fuseDirectMemorySearch(input: {
     if (input.seenMemoryIds.has(candidate.memory.id)) continue;
     input.seenMemoryIds.add(candidate.memory.id);
     input.memories.push(candidate.memory);
-    input.paths.push(pathFromDirectMemory(candidate, directStep, input.query));
+    const path = pathFromDirectMemory(candidate, directStep, input.query);
+    input.paths.push(path);
+    selectedNewPaths.push({ ...path });
   }
+  return { candidateCount: rankedCandidates.length, reinforcedPaths, selectedNewPaths };
 }
 
 function composeReconstructedContext(input: {
@@ -581,6 +625,7 @@ function composeReconstructedContext(input: {
   evidenceConvergenceThreshold: number;
   targetMemoryCount: number;
   stopReason: ReconstructedContext["stats"]["stopReason"];
+  plannerTrace?: ReconstructedPlannerTrace | undefined;
 }): ReconstructedContext {
   const publicEvidence = input.includeEvidence
     ? input.evidence.map(sanitizeEvidenceForPublicOutput)
@@ -667,6 +712,9 @@ function composeReconstructedContext(input: {
     memories,
     evidence,
     paths,
+    plannerTrace: input.plannerTrace
+      ? { ...input.plannerTrace, stopReason: input.stopReason }
+      : undefined,
     stats: {
       stepCount: input.stepCount,
       exploredCueCount: input.exploredCueCount,
@@ -731,6 +779,32 @@ async function fallbackReconstruction(input: {
     sourceMemoryId: memory.id,
     sourceEvidenceId: memory.sourceEventId,
   }));
+  const plannerTrace: ReconstructedPlannerTrace = {
+    mode: "fallback",
+    intentReason: input.intent.reason,
+    initialCues: [input.query],
+    maxSteps: 1,
+    maxBranch: input.maxMemories,
+    maxMemories: input.maxMemories,
+    steps:
+      paths.length === 0
+        ? []
+        : [
+            {
+              step: 1,
+              selectedCue: input.query,
+              cueReason: "fallback_memory_search",
+              exploredAssociationCount: 0,
+              selectedBranchCount: paths.length,
+              prunedBranchCount: 0,
+              generatedCues: [],
+              branches: paths.map((path) =>
+                traceBranchFromPath(path, "selected", "fallback_memory_search"),
+              ),
+            },
+          ],
+    stopReason: memories.length > 0 ? "evidence_sufficient" : "no_frontier",
+  };
   return composeReconstructedContext({
     profileId: input.profileId,
     query: input.query,
@@ -749,6 +823,7 @@ async function fallbackReconstruction(input: {
     evidenceConvergenceThreshold: input.evidenceConvergenceThreshold,
     targetMemoryCount: input.targetMemoryCount,
     stopReason: memories.length > 0 ? "evidence_sufficient" : "no_frontier",
+    plannerTrace,
   });
 }
 
@@ -771,7 +846,7 @@ export async function reconstructMemoryContext(input: {
     0.35,
     0.95,
   );
-  const targetMemoryCount = Math.min(3, maxMemories);
+  const targetMemoryCount = Math.min(2, maxMemories);
   const intent = inferReconstructionIntent(query);
   if (!input.store.searchAssociations) {
     return fallbackReconstruction({
@@ -790,11 +865,13 @@ export async function reconstructMemoryContext(input: {
   }
 
   const frontier = seedFrontier(query, intent);
+  const initialCues = frontier.map((cue) => cue.cue);
   const explored = new Set<string>();
   const seenAssociationIds = new Set<string>();
   const seenMemoryIds = new Set<string>();
   const memories: MemoryRecord[] = [];
   const paths: ReconstructedEvidencePath[] = [];
+  const plannerSteps: ReconstructedPlannerStep[] = [];
   let associationCount = 0;
   let prunedBranchCount = 0;
   let stopReason: ReconstructedContext["stats"]["stopReason"] = "no_frontier";
@@ -815,6 +892,17 @@ export async function reconstructMemoryContext(input: {
       limit: Math.min(maxBranch * 4, 48),
     });
     associationCount += associations.length;
+    const stepGeneratedCues = new Set<string>();
+    const stepTrace: ReconstructedPlannerStep = {
+      step,
+      selectedCue: cue.cue,
+      cueReason: cue.reason,
+      exploredAssociationCount: associations.length,
+      selectedBranchCount: 0,
+      prunedBranchCount: 0,
+      generatedCues: [],
+      branches: [],
+    };
     const rankedAssociations = associations
       .filter((association) => !seenAssociationIds.has(association.id))
       .map((association) => rankAssociation(association, cue, intent))
@@ -832,6 +920,10 @@ export async function reconstructMemoryContext(input: {
         : `gain:${gain.reasons.join("+")}`;
       if (gain.gain < 0.35 && paths.length >= 2 && !pathMatchesIntent(path, intent)) {
         prunedBranchCount += 1;
+        stepTrace.prunedBranchCount += 1;
+        stepTrace.branches.push(
+          traceBranchFromPath(path, "pruned", `low_information_gain:${gain.reasons.join("+")}`),
+        );
         continue;
       }
       paths.push(path);
@@ -839,6 +931,7 @@ export async function reconstructMemoryContext(input: {
         `${association.tag} ${association.targetSummary}`,
         8,
       );
+      const generatedCues: string[] = [];
       for (const nextCue of nextCues) {
         if (explored.has(nextCue.cue)) continue;
         enqueueFrontierCue(frontier, {
@@ -846,7 +939,13 @@ export async function reconstructMemoryContext(input: {
           priority: ranked.routeScore * 0.7 + (nextCue.cueKind === "entity" ? 4 : 0),
           reason: `from:${association.tag}`,
         });
+        stepGeneratedCues.add(nextCue.cue);
+        generatedCues.push(nextCue.cue);
       }
+      stepTrace.selectedBranchCount += 1;
+      stepTrace.branches.push(
+        traceBranchFromPath(path, "selected", path.routeReason ?? ranked.routeReason, generatedCues),
+      );
       if (association.targetType !== "memory" || seenMemoryIds.has(association.targetId)) continue;
       const memory = await input.store.getMemoryById(profileId, association.targetId, {
         includeSensitive: input.request.includeSensitive,
@@ -859,6 +958,8 @@ export async function reconstructMemoryContext(input: {
         break;
       }
     }
+    stepTrace.generatedCues = [...stepGeneratedCues];
+    plannerSteps.push(stepTrace);
     if (stopReason === "evidence_sufficient") break;
     const convergence = evidenceConvergenceForPaths({
       coverage: evidenceCoverageForPaths(query, paths),
@@ -890,7 +991,7 @@ export async function reconstructMemoryContext(input: {
       !hasIntentEvidence(paths, intent) ||
       !coverageIsSufficient(finalCoverageBeforeHybrid))
   ) {
-    await fuseDirectMemorySearch({
+    const hybridTrace = await fuseDirectMemorySearch({
       store: input.store,
       profileId,
       query,
@@ -901,6 +1002,45 @@ export async function reconstructMemoryContext(input: {
       paths,
       seenMemoryIds,
     });
+    if (hybridTrace.candidateCount > 0) {
+      const hybridPaths = [
+        ...hybridTrace.reinforcedPaths,
+        ...hybridTrace.selectedNewPaths,
+      ];
+      const hybridStep =
+        hybridPaths.length > 0 ? Math.max(...hybridPaths.map((path) => path.step)) : stepCountForTrace(paths);
+      plannerSteps.push({
+        step: hybridStep,
+        selectedCue: query,
+        cueReason:
+          hybridTrace.selectedNewPaths.length > 0
+            ? "hybrid_direct_memory_search"
+            : hybridTrace.reinforcedPaths.length > 0
+              ? "hybrid_direct_memory_search_reinforced"
+              : "hybrid_direct_memory_search_no_new_path",
+        exploredAssociationCount: 0,
+        hybridCandidateCount: hybridTrace.candidateCount,
+        selectedBranchCount: hybridPaths.length,
+        prunedBranchCount: 0,
+        generatedCues: [],
+        branches: [
+          ...hybridTrace.reinforcedPaths.map((path) =>
+            traceBranchFromPath(
+              path,
+              "reinforced",
+              path.routeReason ?? "hybrid_direct_memory_search_reinforced",
+            ),
+          ),
+          ...hybridTrace.selectedNewPaths.map((path) =>
+            traceBranchFromPath(
+              path,
+              "selected_new_path",
+              path.routeReason ?? "hybrid_direct_memory_search",
+            ),
+          ),
+        ],
+      });
+    }
     const convergence = evidenceConvergenceForPaths({
       coverage: evidenceCoverageForPaths(query, paths),
       memories,
@@ -935,5 +1075,15 @@ export async function reconstructMemoryContext(input: {
     evidenceConvergenceThreshold,
     targetMemoryCount,
     stopReason,
+    plannerTrace: {
+      mode: "associative",
+      intentReason: intent.reason,
+      initialCues,
+      maxSteps,
+      maxBranch,
+      maxMemories,
+      steps: plannerSteps,
+      stopReason,
+    },
   });
 }

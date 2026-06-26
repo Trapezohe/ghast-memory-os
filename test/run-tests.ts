@@ -5260,6 +5260,27 @@ const externalBenchmarkWithManifest = await runExternalMemoryBenchmark({
 });
 assert.equal(externalBenchmarkWithManifest.runManifest.dataset.hash, externalHash);
 assert.equal(externalBenchmarkWithManifest.runManifest.dataset.id, "unit-fixture");
+const sparseExternalConvergence = await runExternalMemoryBenchmark({
+  requireConvergence: true,
+  cases: [
+    {
+      id: "sparse-project-next-step",
+      events: [
+        { type: "memory", kind: "project", content: "代号 Vega 的发布计划叫做 Lantern Run。" },
+        {
+          type: "memory",
+          kind: "procedure",
+          content: "Lantern Run 下一步先更新 rollback matrix，再做发布实现。",
+        },
+      ],
+      question: "Vega 这个发布计划下一步先做什么？",
+      expectedAll: ["rollback matrix"],
+      forbiddenAny: ["会议室"],
+    },
+  ],
+});
+assert.equal(sparseExternalConvergence.pass, true);
+assert.equal(sparseExternalConvergence.cases[0]?.diagnostics.evidenceConvergenceReached, true);
 const externalMarkdown = renderExternalMemoryBenchmarkMarkdown(externalBenchmarkWithManifest);
 assert.match(externalMarkdown, /External Long-Memory QA/);
 assert.match(externalMarkdown, /Run Manifest/);
