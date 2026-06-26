@@ -350,6 +350,22 @@ Current tools are `memory.add`, `memory.search`, `memory.observe`,
 `memory.prepare_context`, `memory.commit_outcome`, `memory.record_feedback`,
 `memory.forget`, and `memory.explain_belief`.
 
+Hosts can gate this public tool surface explicitly:
+
+```ts
+import {
+  PUBLIC_MEMORY_MCP_TOOL_NAMES,
+  listMemoryMcpTools,
+} from "@ghast/memory/mcp";
+
+if (
+  JSON.stringify(listMemoryMcpTools().map((tool) => tool.name)) !==
+  JSON.stringify(PUBLIC_MEMORY_MCP_TOOL_NAMES)
+) {
+  throw new Error("gmOS MCP public surface changed");
+}
+```
+
 `memory.add` and `memory.search` are public-safe tools for simple agent
 integrations. They do not expose `allowPerson`, `includeSensitive`,
 `includePerson`, or raw metadata fields. Secret-like content is rejected before
@@ -404,10 +420,20 @@ When `authToken` is configured, every endpoint except `/health` returns `401`
 unless the request includes `Authorization: Bearer <token>`. The token is never
 printed in status or health responses.
 
+The route list is also exported for host package-contract tests:
+
+```ts
+import { PUBLIC_MEMORY_HTTP_ROUTES } from "@ghast/memory/http";
+```
+
 The HTTP adapter intentionally rejects `includeSensitive` on `/prepare` and
 `/search` through the same public-tool contract as MCP. Hosts that need
 sensitive/admin memory access should use the in-process SDK with an explicit
 internal trust boundary.
+
+Profile backup/restore is intentionally not exposed as an MCP tool or HTTP
+route. It remains an in-process SQLite store API and CLI operation for trusted
+engineering workflows.
 
 ## Evolution Review
 

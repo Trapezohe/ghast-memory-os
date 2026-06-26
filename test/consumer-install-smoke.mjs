@@ -66,7 +66,10 @@ try {
         parseMemorySnapshotExport,
         requireHostActualCompatibilityReports,
       } from "@ghast/memory/host";
-      import { createMemoryHttpServer } from "@ghast/memory/http";
+      import {
+        createMemoryHttpServer,
+        PUBLIC_MEMORY_HTTP_ROUTES as HTTP_PUBLIC_MEMORY_HTTP_ROUTES,
+      } from "@ghast/memory/http";
       import {
         renderHostCompatibilityGymMarkdown,
         renderMemoryReleaseGateMarkdown,
@@ -74,7 +77,12 @@ try {
         runMemoryGym,
         runMemoryReleaseGate,
       } from "@ghast/memory/gym";
-      import { createMemoryMcpServer, createMemoryMcpStdioServer } from "@ghast/memory/mcp";
+      import {
+        createMemoryMcpServer,
+        createMemoryMcpStdioServer,
+        PUBLIC_MEMORY_HTTP_ROUTES,
+        PUBLIC_MEMORY_MCP_TOOL_NAMES,
+      } from "@ghast/memory/mcp";
       import {
         createSqliteMemoryStore,
         parseSqliteProfileBackup,
@@ -154,8 +162,13 @@ try {
       const mcp = createMemoryMcpServer(memory);
       const prepareTool = mcp.listTools().find((tool) => tool.name === "memory.prepare_context");
       assert.ok(prepareTool);
-      assert.ok(mcp.listTools().some((tool) => tool.name === "memory.add"));
-      assert.ok(mcp.listTools().some((tool) => tool.name === "memory.search"));
+      assert.deepEqual(
+        mcp.listTools().map((tool) => tool.name),
+        [...PUBLIC_MEMORY_MCP_TOOL_NAMES],
+      );
+      assert.deepEqual(HTTP_PUBLIC_MEMORY_HTTP_ROUTES, PUBLIC_MEMORY_HTTP_ROUTES);
+      assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /backup"), false);
+      assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /restore"), false);
       assert.equal(Object.hasOwn(prepareTool.inputSchema.properties, "includeSensitive"), false);
       const mcpAddResult = await mcp.callTool("memory.add", {
         profileId: "consumer",
@@ -386,9 +399,16 @@ try {
         type HostCompatibilityReport,
         type MemorySnapshotExport,
       } from "@ghast/memory/host";
-      import { createMemoryHttpServer } from "@ghast/memory/http";
+      import {
+        createMemoryHttpServer,
+        PUBLIC_MEMORY_HTTP_ROUTES as HTTP_PUBLIC_MEMORY_HTTP_ROUTES,
+      } from "@ghast/memory/http";
       import {
         createMemoryMcpServer,
+        PUBLIC_MEMORY_HTTP_ROUTES,
+        PUBLIC_MEMORY_MCP_TOOL_NAMES,
+        type PublicMemoryHttpRoute,
+        type PublicMemoryMcpToolName,
         type MemoryMcpServer,
         type MemoryMcpToolName,
       } from "@ghast/memory/mcp";
@@ -484,6 +504,14 @@ try {
       });
       if (!hostGymResult.pass) throw new Error("typed host gym failed");
       const mcpServer: MemoryMcpServer = createMemoryMcpServer(memory);
+      const publicToolName: PublicMemoryMcpToolName = PUBLIC_MEMORY_MCP_TOOL_NAMES[0];
+      const publicRoute: PublicMemoryHttpRoute = PUBLIC_MEMORY_HTTP_ROUTES[0];
+      if (publicToolName !== "memory.add" || publicRoute !== "GET /health") {
+        throw new Error("typed public surface constants failed");
+      }
+      if (HTTP_PUBLIC_MEMORY_HTTP_ROUTES[0] !== "GET /health") {
+        throw new Error("typed http public surface export failed");
+      }
       const prepareToolName: MemoryMcpToolName = "memory.prepare_context";
       const addToolName: MemoryMcpToolName = "memory.add";
       const searchToolName: MemoryMcpToolName = "memory.search";

@@ -375,41 +375,40 @@ function errorResult(error: unknown): MemoryMcpToolResult {
   };
 }
 
+type MemoryMcpToolHandler = (args: Record<string, unknown>) => Promise<MemoryMcpToolResult>;
+
+function assertNeverTool(name: never): never {
+  throw new Error(`Unhandled gmOS MCP tool: ${name}`);
+}
+
 export function createMemoryMcpServer(memory: MemoryOS): MemoryMcpServer {
-  async function callTool(name: string, args: unknown = {}): Promise<MemoryMcpToolResult> {
-    try {
-      if (!TOOL_NAMES.has(name as MemoryMcpToolName)) {
-        throw new Error(`Unknown gmOS MCP tool: ${name}`);
-      }
-      const object = objectArgs(args);
-      if (name === "memory.add") {
-        return ok({ ok: true, memory: publicMemoryRecord(await memory.add(addInput(object))) });
-      }
-      if (name === "memory.search") {
-        const memories = await memory.search(searchInput(object));
-        return ok({
-          ok: true,
-          memories: memories.map(publicMemoryRecord),
-        });
-      }
-      if (name === "memory.observe") {
-        await memory.observe(observeEvent(object));
-        return ok({ ok: true });
-      }
-      if (name === "memory.prepare_context") {
-        return ok({ ok: true, prepared: await memory.prepareTurn(prepareInput(object)) });
-      }
-      if (name === "memory.commit_outcome") {
-        await memory.commitOutcome(outcomeInput(object));
-        return ok({ ok: true });
-      }
-      if (name === "memory.record_feedback") {
-        await memory.recordFeedback(feedbackInput(object));
-        return ok({ ok: true });
-      }
-      if (name === "memory.forget") {
-        return ok({ ok: true, result: await memory.forget(forgetInput(object)) });
-      }
+  const handlers: Record<MemoryMcpToolName, MemoryMcpToolHandler> = {
+    "memory.add": async (object) =>
+      ok({ ok: true, memory: publicMemoryRecord(await memory.add(addInput(object))) }),
+    "memory.search": async (object) => {
+      const memories = await memory.search(searchInput(object));
+      return ok({
+        ok: true,
+        memories: memories.map(publicMemoryRecord),
+      });
+    },
+    "memory.observe": async (object) => {
+      await memory.observe(observeEvent(object));
+      return ok({ ok: true });
+    },
+    "memory.prepare_context": async (object) =>
+      ok({ ok: true, prepared: await memory.prepareTurn(prepareInput(object)) }),
+    "memory.commit_outcome": async (object) => {
+      await memory.commitOutcome(outcomeInput(object));
+      return ok({ ok: true });
+    },
+    "memory.record_feedback": async (object) => {
+      await memory.recordFeedback(feedbackInput(object));
+      return ok({ ok: true });
+    },
+    "memory.forget": async (object) =>
+      ok({ ok: true, result: await memory.forget(forgetInput(object)) }),
+    "memory.explain_belief": async (object) => {
       const id = requiredString(object, "id");
       const explanation = await memory.explain(id, optionalString(object, "profileId"));
       if (!explanationIsMcpSafe(explanation)) {
@@ -421,6 +420,18 @@ export function createMemoryMcpServer(memory: MemoryOS): MemoryMcpServer {
         ok: true,
         explanation,
       });
+    },
+  };
+
+  async function callTool(name: string, args: unknown = {}): Promise<MemoryMcpToolResult> {
+    try {
+      if (!TOOL_NAMES.has(name as MemoryMcpToolName)) {
+        throw new Error(`Unknown gmOS MCP tool: ${name}`);
+      }
+      const object = objectArgs(args);
+      const toolName = name as MemoryMcpToolName;
+      const handler = handlers[toolName] ?? assertNeverTool(toolName as never);
+      return await handler(object);
     } catch (error) {
       return errorResult(error);
     }

@@ -1,12 +1,9 @@
-export type MemoryMcpToolName =
-  | "memory.add"
-  | "memory.search"
-  | "memory.observe"
-  | "memory.prepare_context"
-  | "memory.commit_outcome"
-  | "memory.record_feedback"
-  | "memory.forget"
-  | "memory.explain_belief";
+import {
+  PUBLIC_MEMORY_MCP_TOOL_NAMES,
+  type PublicMemoryMcpToolName,
+} from "./public-surface.js";
+
+export type MemoryMcpToolName = PublicMemoryMcpToolName;
 
 export interface MemoryMcpJsonSchema {
   type: "object";
@@ -22,8 +19,8 @@ export interface MemoryMcpTool {
 }
 
 export function listMemoryMcpTools(): MemoryMcpTool[] {
-  return [
-    {
+  const tools: Record<MemoryMcpToolName, MemoryMcpTool> = {
+    "memory.add": {
       name: "memory.add",
       description: "Remember a non-secret, non-person memory.",
       inputSchema: {
@@ -42,7 +39,7 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
         },
       },
     },
-    {
+    "memory.search": {
       name: "memory.search",
       description: "Search public context-safe memories.",
       inputSchema: {
@@ -55,7 +52,7 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
         },
       },
     },
-    {
+    "memory.observe": {
       name: "memory.observe",
       description: "Ingest a host event into gmOS.",
       inputSchema: {
@@ -74,7 +71,7 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
         },
       },
     },
-    {
+    "memory.prepare_context": {
       name: "memory.prepare_context",
       description: "Prepare memory context for a turn.",
       inputSchema: {
@@ -100,7 +97,7 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
         },
       },
     },
-    {
+    "memory.commit_outcome": {
       name: "memory.commit_outcome",
       description: "Commit task outcome feedback.",
       inputSchema: {
@@ -117,7 +114,7 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
         },
       },
     },
-    {
+    "memory.record_feedback": {
       name: "memory.record_feedback",
       description: "Record memory feedback or correction.",
       inputSchema: {
@@ -132,7 +129,7 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
         },
       },
     },
-    {
+    "memory.forget": {
       name: "memory.forget",
       description: "Forget matching memories.",
       inputSchema: {
@@ -146,7 +143,7 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
         },
       },
     },
-    {
+    "memory.explain_belief": {
       name: "memory.explain_belief",
       description: "Explain a memory or belief with evidence.",
       inputSchema: {
@@ -159,5 +156,6 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
         },
       },
     },
-  ];
+  };
+  return PUBLIC_MEMORY_MCP_TOOL_NAMES.map((name) => tools[name]);
 }

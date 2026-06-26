@@ -41,6 +41,8 @@ import {
   createMemoryMcpServer,
   createMemoryMcpStdioServer,
   listMemoryMcpTools,
+  PUBLIC_MEMORY_HTTP_ROUTES,
+  PUBLIC_MEMORY_MCP_TOOL_NAMES,
 } from "../src/mcp/index.js";
 import {
   createEvolutionControlPlane,
@@ -1494,6 +1496,11 @@ assert.deepEqual(
   mcpServer.listTools().map((tool) => tool.name),
   listMemoryMcpTools().map((tool) => tool.name),
 );
+assert.deepEqual(
+  mcpServer.listTools().map((tool) => tool.name),
+  [...PUBLIC_MEMORY_MCP_TOOL_NAMES],
+);
+assert.equal(PUBLIC_MEMORY_MCP_TOOL_NAMES.includes("memory.backup" as never), false);
 assert.ok(mcpServer.listTools().every((tool) => tool.inputSchema.type === "object"));
 const mcpInvalidBefore = await store.rowCounts();
 const invalidMcpObserve = await mcpServer.callTool("memory.observe", { content: 42 });
@@ -1781,6 +1788,26 @@ try {
   const tools = await httpJson(`${httpAddress.url}/tools`);
   assert.equal(tools.status, 200);
   assert.match(tools.text, /memory.prepare_context/);
+  assert.deepEqual(
+    (tools.body.tools as Array<{ name: string }>).map((tool) => tool.name),
+    [...PUBLIC_MEMORY_MCP_TOOL_NAMES],
+  );
+  assert.deepEqual(PUBLIC_MEMORY_HTTP_ROUTES, [
+    "GET /health",
+    "GET /tools",
+    "GET /status",
+    "POST /add",
+    "POST /search",
+    "POST /observe",
+    "POST /prepare",
+    "POST /commit-outcome",
+    "POST /feedback",
+    "POST /forget",
+    "POST /explain",
+    "POST /mcp/call",
+  ]);
+  assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /backup" as never), false);
+  assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /restore" as never), false);
   const status = await httpJson(`${httpAddress.url}/status?profileId=http`);
   assert.equal(status.status, 200);
   assert.equal(
@@ -1830,6 +1857,14 @@ try {
   });
   assert.equal(httpPersonAdd.status, 400);
   assert.equal(httpPersonAdd.text.includes("black tea"), false);
+  const httpBackupRoute = await postJson(`${httpAddress.url}/backup`, {
+    profileId: "http",
+  });
+  assert.equal(httpBackupRoute.status, 404);
+  const httpRestoreRoute = await postJson(`${httpAddress.url}/restore`, {
+    profileId: "http",
+  });
+  assert.equal(httpRestoreRoute.status, 404);
   const preparedHttp = await postJson(`${httpAddress.url}/prepare`, {
     profileId: "http",
     text: "HTTP adapter 应该怎么回答？",
@@ -3823,9 +3858,10 @@ try {
   assert.equal(stdioClient.getServerVersion()?.name, "gmos-memory");
   assert.equal(stdioClient.getServerVersion()?.version, packageJson.version);
   const stdioTools = await stdioClient.listTools();
-  assert.ok(stdioTools.tools.some((tool) => tool.name === "memory.prepare_context"));
-  assert.ok(stdioTools.tools.some((tool) => tool.name === "memory.add"));
-  assert.ok(stdioTools.tools.some((tool) => tool.name === "memory.search"));
+  assert.deepEqual(
+    stdioTools.tools.map((tool) => tool.name),
+    [...PUBLIC_MEMORY_MCP_TOOL_NAMES],
+  );
   const stdioAdd = await stdioClient.callTool({
     name: "memory.add",
     arguments: {

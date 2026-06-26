@@ -8,7 +8,13 @@ import {
   type MemoryStatusReportInput,
 } from "../diagnostics/index.js";
 import type { MemoryOS } from "../kernel/types.js";
-import { createMemoryMcpServer } from "../mcp/index.js";
+import {
+  createMemoryMcpServer,
+  PUBLIC_MEMORY_HTTP_ROUTE_REGISTRY,
+  PUBLIC_MEMORY_HTTP_ROUTES,
+} from "../mcp/index.js";
+
+export { PUBLIC_MEMORY_HTTP_ROUTE_REGISTRY, PUBLIC_MEMORY_HTTP_ROUTES };
 
 export interface MemoryHttpServerOptions {
   memory: MemoryOS;
@@ -165,16 +171,19 @@ function errorPayload(error: unknown): { ok: false; error: { code: string; messa
   };
 }
 
-function routeToTool(pathname: string): string | null {
-  if (pathname === "/add") return "memory.add";
-  if (pathname === "/search") return "memory.search";
-  if (pathname === "/observe") return "memory.observe";
-  if (pathname === "/prepare") return "memory.prepare_context";
-  if (pathname === "/commit-outcome") return "memory.commit_outcome";
-  if (pathname === "/feedback") return "memory.record_feedback";
-  if (pathname === "/forget") return "memory.forget";
-  if (pathname === "/explain") return "memory.explain_belief";
-  return null;
+function routeFor(
+  method: string | undefined,
+  pathname: string,
+): (typeof PUBLIC_MEMORY_HTTP_ROUTE_REGISTRY)[number] | null {
+  return (
+    PUBLIC_MEMORY_HTTP_ROUTE_REGISTRY.find(
+      (route) => route.method === method && route.pathname === pathname,
+    ) ?? null
+  );
+}
+
+function pathExists(pathname: string): boolean {
+  return PUBLIC_MEMORY_HTTP_ROUTE_REGISTRY.some((route) => route.pathname === pathname);
 }
 
 export function createMemoryHttpServer(
@@ -192,7 +201,9 @@ export function createMemoryHttpServer(
       } catch {
         throw new HttpError(400, "invalid_url", "request url is invalid");
       }
-      if (request.method === "GET" && url.pathname === "/health") {
+      const route = routeFor(request.method, url.pathname);
+
+      if (route?.route === "GET /health") {
         writeJson(response, 200, {
           ok: true,
           framework: "ghast-memory-os",
@@ -204,12 +215,18 @@ export function createMemoryHttpServer(
 
       assertAuthorized(request, authToken);
 
-      if (request.method === "GET" && url.pathname === "/tools") {
+      if (!route) {
+        throw pathExists(url.pathname)
+          ? new HttpError(405, "method_not_allowed", "method is not allowed")
+          : new HttpError(404, "not_found", "route not found");
+      }
+
+      if (route.route === "GET /tools") {
         writeJson(response, 200, ok({ ok: true, tools: mcp.listTools() }));
         return;
       }
 
-      if (request.method === "GET" && url.pathname === "/status") {
+      if (route.route === "GET /status") {
         if (!options.store) {
           throw new HttpError(503, "diagnostics_store_unavailable", "status requires a store");
         }
@@ -222,15 +239,7 @@ export function createMemoryHttpServer(
         return;
       }
 
-      const tool = routeToTool(url.pathname);
-      const isKnownPostRoute = url.pathname === "/mcp/call" || tool !== null;
-      if (request.method !== "POST") {
-        throw isKnownPostRoute
-          ? new HttpError(405, "method_not_allowed", "method is not allowed")
-          : new HttpError(404, "not_found", "route not found");
-      }
-
-      if (url.pathname === "/mcp/call") {
+      if (route.route === "POST /mcp/call") {
         const body = assertObjectBody(await readJsonBody(request, maxBodyBytes));
         const tool = body.tool;
         if (typeof tool !== "string" || tool.trim().length === 0) {
@@ -241,10 +250,13 @@ export function createMemoryHttpServer(
         return;
       }
 
-      if (!tool) {
-        throw new HttpError(404, "not_found", "route not found");
+      if (!("toolName" in route)) {
+        throw new HttpError(500, "route_not_implemented", "route has no implementation");
       }
-      const result = await mcp.callTool(tool, assertObjectBody(await readJsonBody(request, maxBodyBytes)));
+      const result = await mcp.callTool(
+        route.toolName,
+        assertObjectBody(await readJsonBody(request, maxBodyBytes)),
+      );
       writeJson(response, result.isError ? 400 : 200, result.structuredContent);
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500;

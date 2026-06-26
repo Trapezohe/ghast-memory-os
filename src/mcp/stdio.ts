@@ -5,6 +5,7 @@ import { z } from "zod";
 import { readGmosPackageInfo } from "../kernel/package-info.js";
 import type { MemoryOS } from "../kernel/types.js";
 import { createMemoryMcpServer, type MemoryMcpToolResult } from "./router.js";
+import { listMemoryMcpTools, type MemoryMcpToolName } from "./tools.js";
 
 export interface MemoryMcpStdioServerOptions {
   name?: string;
@@ -102,6 +103,17 @@ const explainBeliefSchema = z.object({
   id: z.string().min(1),
 }).strict();
 
+const STDIO_TOOL_SCHEMAS: Record<MemoryMcpToolName, z.ZodObject> = {
+  "memory.add": addSchema,
+  "memory.search": searchSchema,
+  "memory.observe": observeSchema,
+  "memory.prepare_context": prepareContextSchema,
+  "memory.commit_outcome": commitOutcomeSchema,
+  "memory.record_feedback": recordFeedbackSchema,
+  "memory.forget": forgetSchema,
+  "memory.explain_belief": explainBeliefSchema,
+};
+
 export function createMemoryMcpStdioServer(
   memory: MemoryOS,
   options: MemoryMcpStdioServerOptions = {},
@@ -112,77 +124,16 @@ export function createMemoryMcpStdioServer(
     version: options.version ?? readGmosPackageInfo().version,
   });
 
-  server.registerTool(
-    "memory.add",
-    {
-      description: "Remember a non-secret, non-person memory.",
-      inputSchema: addSchema,
-    },
-    async (args) => resultToMcp(await router.callTool("memory.add", args)),
-  );
-
-  server.registerTool(
-    "memory.search",
-    {
-      description: "Search public context-safe memories.",
-      inputSchema: searchSchema,
-    },
-    async (args) => resultToMcp(await router.callTool("memory.search", args)),
-  );
-
-  server.registerTool(
-    "memory.observe",
-    {
-      description: "Ingest a host event into gmOS.",
-      inputSchema: observeSchema,
-    },
-    async (args) => resultToMcp(await router.callTool("memory.observe", args)),
-  );
-
-  server.registerTool(
-    "memory.prepare_context",
-    {
-      description: "Prepare memory context for a turn.",
-      inputSchema: prepareContextSchema,
-    },
-    async (args) => resultToMcp(await router.callTool("memory.prepare_context", args)),
-  );
-
-  server.registerTool(
-    "memory.commit_outcome",
-    {
-      description: "Commit task outcome feedback.",
-      inputSchema: commitOutcomeSchema,
-    },
-    async (args) => resultToMcp(await router.callTool("memory.commit_outcome", args)),
-  );
-
-  server.registerTool(
-    "memory.record_feedback",
-    {
-      description: "Record memory feedback or correction.",
-      inputSchema: recordFeedbackSchema,
-    },
-    async (args) => resultToMcp(await router.callTool("memory.record_feedback", args)),
-  );
-
-  server.registerTool(
-    "memory.forget",
-    {
-      description: "Forget matching memories.",
-      inputSchema: forgetSchema,
-    },
-    async (args) => resultToMcp(await router.callTool("memory.forget", args)),
-  );
-
-  server.registerTool(
-    "memory.explain_belief",
-    {
-      description: "Explain a memory or belief with evidence.",
-      inputSchema: explainBeliefSchema,
-    },
-    async (args) => resultToMcp(await router.callTool("memory.explain_belief", args)),
-  );
+  for (const tool of listMemoryMcpTools()) {
+    server.registerTool(
+      tool.name,
+      {
+        description: tool.description,
+        inputSchema: STDIO_TOOL_SCHEMAS[tool.name],
+      },
+      async (args) => resultToMcp(await router.callTool(tool.name, args)),
+    );
+  }
 
   return server;
 }
