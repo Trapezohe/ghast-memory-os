@@ -802,6 +802,38 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     confidence: 0.94,
     cardinality: "single",
   });
+  const staleCurrentStateSourceMemory = await memory.add({
+    profileId: "gym_reconstruct",
+    kind: "project",
+    content: "Atlas source current state says AlphaSourceOwner is active.",
+    confidence: 0.87,
+    metadata: { predicate: "project.state" },
+  });
+  await store.addWorldBelief({
+    profileId: "gym_reconstruct",
+    subject: "project:atlas_source",
+    predicate: "project.state",
+    object: "AlphaSourceOwner",
+    confidence: 0.87,
+    sourceMemoryId: staleCurrentStateSourceMemory.id,
+    cardinality: "single",
+  });
+  const activeCurrentStateSourceMemory = await memory.add({
+    profileId: "gym_reconstruct",
+    kind: "project",
+    content: "Atlas source current state says BetaSourceOwner is active.",
+    confidence: 0.91,
+    metadata: { predicate: "project.state" },
+  });
+  await store.addWorldBelief({
+    profileId: "gym_reconstruct",
+    subject: "project:atlas_source",
+    predicate: "project.state",
+    object: "BetaSourceOwner",
+    confidence: 0.91,
+    sourceMemoryId: activeCurrentStateSourceMemory.id,
+    cardinality: "single",
+  });
   if (store.rebuildAssociations) {
     await store.rebuildAssociations({ profileId: "gym_reconstruct" });
   }
@@ -817,6 +849,13 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     maxSteps: 4,
     maxBranch: 8,
   });
+  const sourceCurrentStateReconstruction = await memory.reconstructContext({
+    profileId: "gym_reconstruct",
+    query: "atlas source current state",
+    maxSteps: 4,
+    maxBranch: 8,
+    maxMemories: 8,
+  });
   gate(
     result,
     "world_belief_single_cardinality_supersession",
@@ -826,6 +865,14 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
       !legacyCurrentStateReconstruction.contextBlock.includes("AtlasLegacyAlpha"),
     "single-cardinality world beliefs should supersede stale active beliefs and repair associations",
     "world",
+  );
+  gate(
+    result,
+    "current_state_suppresses_superseded_source_memory",
+    sourceCurrentStateReconstruction.contextBlock.includes("BetaSourceOwner") &&
+      !sourceCurrentStateReconstruction.contextBlock.includes("AlphaSourceOwner"),
+    "context reconstruction should suppress source memories behind superseded single-cardinality beliefs",
+    "reconstruction",
   );
   scenario(result, "active_reconstruction", "dev", [
     "active_reconstruction_multihop",
@@ -841,6 +888,7 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "reconstruction_belief_source_privacy_inheritance",
     "reconstruction_secret_like_belief_exclusion",
     "world_belief_single_cardinality_supersession",
+    "current_state_suppresses_superseded_source_memory",
   ]);
 
   await memory.recordFeedback({

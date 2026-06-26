@@ -501,12 +501,88 @@ const currentProjectState = await extractorMemory.reconstructContext({
   query: "Helio current state",
 });
 assert.match(currentProjectState.contextBlock, /rollout review/);
+assert.doesNotMatch(currentProjectState.contextBlock, /migration probe/);
+const contextStaleCurrentStateSearch = await extractorMemory.search({
+  profileId: "extractor",
+  query: "Helio migration probe",
+  purpose: "context",
+  limit: 10,
+});
+assert.equal(
+  contextStaleCurrentStateSearch.some((entry) => entry.content.includes("migration probe")),
+  false,
+);
+const manageStaleCurrentStateSearch = await extractorMemory.search({
+  profileId: "extractor",
+  query: "Helio migration probe",
+  purpose: "manage",
+  limit: 10,
+});
+assert.equal(
+  manageStaleCurrentStateSearch.some((entry) => entry.content.includes("migration probe")),
+  true,
+);
 const legacyProjectState = await extractorMemory.reconstructContext({
   profileId: "extractor",
   query: "Legacy project current state",
 });
 assert.match(legacyProjectState.contextBlock, /beta from historical multi belief/);
 assert.doesNotMatch(legacyProjectState.contextBlock, /alpha from historical multi belief/);
+
+const sharedSourceStore = createSqliteMemoryStore({ path: path.join(tmp, "shared-source.db") });
+const sharedSourceMemory = createMemoryOS({
+  profileId: "shared-source",
+  store: sharedSourceStore,
+  extractor: () => [],
+});
+const sharedActiveSource = await sharedSourceMemory.add({
+  profileId: "shared-source",
+  kind: "project",
+  content: "SharedOwner",
+  confidence: 0.9,
+  metadata: { predicate: "project.state" },
+});
+await sharedSourceStore.addWorldBelief({
+  profileId: "shared-source",
+  subject: "project:active",
+  predicate: "project.state",
+  object: "SharedOwner",
+  confidence: 0.9,
+  sourceMemoryId: sharedActiveSource.id,
+  cardinality: "single",
+});
+await sharedSourceStore.addWorldBelief({
+  profileId: "shared-source",
+  subject: "project:stale",
+  predicate: "project.state",
+  object: "SharedOwner",
+  confidence: 0.8,
+  cardinality: "single",
+});
+await sharedSourceStore.addWorldBelief({
+  profileId: "shared-source",
+  subject: "project:stale",
+  predicate: "project.state",
+  object: "NewOwner",
+  confidence: 0.9,
+  cardinality: "single",
+});
+await sharedSourceStore.rebuildAssociations({ profileId: "shared-source" });
+const sharedSourceContextSearch = await sharedSourceMemory.search({
+  profileId: "shared-source",
+  query: "SharedOwner",
+  purpose: "context",
+  limit: 5,
+});
+assert.equal(
+  sharedSourceContextSearch.some((entry) => entry.id === sharedActiveSource.id),
+  true,
+);
+const sharedSourceReconstruction = await sharedSourceMemory.reconstructContext({
+  profileId: "shared-source",
+  query: "SharedOwner current state",
+});
+assert.match(sharedSourceReconstruction.contextBlock, /SharedOwner/);
 
 const suppressRulesStore = createSqliteMemoryStore({ path: path.join(tmp, "suppress-rules.db") });
 const suppressRulesMemory = createMemoryOS({

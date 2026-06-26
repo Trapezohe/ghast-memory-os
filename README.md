@@ -244,9 +244,12 @@ Use `cardinality: "single"` only for current-state beliefs where one active
 value should replace the previous one, such as a project's current owner,
 status, or next step. gmOS then marks the previous active world belief for the
 same `profileId + subject + predicate` as `superseded` and removes its
-association projection from active reconstruction. Omit `cardinality`, or set
-`"multi"`, for preferences, boundaries, facts, and procedures that can validly
-coexist.
+association projection from active reconstruction. Ordinary context search and
+active reconstruction also suppress source memories that only support the
+superseded current-state value, while `purpose: "manage"` and
+`purpose: "delete"` can still find those source memories for audit, cleanup,
+or explicit forgetting. Omit `cardinality`, or set `"multi"`, for preferences,
+boundaries, facts, and procedures that can validly coexist.
 
 The host compatibility gym distinguishes target presets from actual host
 adoption. `--hosts ghast` without an actual report tests the SDK's target Ghast

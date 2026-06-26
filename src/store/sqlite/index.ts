@@ -1287,15 +1287,69 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     return tx();
   }
 
+  function supersededSourceMemoryIds(profileId: string): Set<string> {
+    if (!tableExists("gmos_world_beliefs")) return new Set();
+    const rows = db
+      .prepare(
+        `SELECT DISTINCT superseded.source_memory_id AS memoryId
+         FROM gmos_world_beliefs superseded
+         WHERE superseded.profile_id = ?
+           AND superseded.status = 'superseded'
+           AND superseded.source_memory_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1
+             FROM gmos_world_beliefs active
+             WHERE active.profile_id = superseded.profile_id
+               AND active.status = 'active'
+               AND active.source_memory_id = superseded.source_memory_id
+           )
+         UNION
+         SELECT DISTINCT memory.id AS memoryId
+         FROM gmos_world_beliefs superseded
+         JOIN gmos_memories memory ON memory.profile_id = superseded.profile_id
+         WHERE superseded.profile_id = ?
+           AND superseded.status = 'superseded'
+           AND memory.status = 'active'
+           AND memory.content = superseded.object
+           AND json_extract(memory.metadata_json, '$.predicate') = superseded.predicate
+           AND NOT EXISTS (
+             SELECT 1
+             FROM gmos_world_beliefs active_source
+             WHERE active_source.profile_id = memory.profile_id
+               AND active_source.status = 'active'
+               AND active_source.source_memory_id = memory.id
+           )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM gmos_world_beliefs active
+             WHERE active.profile_id = superseded.profile_id
+               AND active.status = 'active'
+               AND active.subject = superseded.subject
+               AND active.predicate = superseded.predicate
+               AND active.object = superseded.object
+           )`,
+      )
+      .all(profileId, profileId) as Array<{ memoryId?: string | null }>;
+    return new Set(
+      rows
+        .map((row) => row.memoryId)
+        .filter((memoryId): memoryId is string => Boolean(memoryId)),
+    );
+  }
+
   function searchMemories(input: MemorySearchInput): MemoryRecord[] {
     initialize();
     const query = input.query?.trim() ?? "";
+    const purpose = input.purpose ?? "context";
+    const staleCurrentStateSourceIds =
+      purpose === "context" ? supersededSourceMemoryIds(input.profileId) : new Set<string>();
     return memoryRowsForSearch(input)
       .map(normalizeMemory)
       .filter((memory) => input.includePerson || memory.kind !== "person")
+      .filter((memory) => !staleCurrentStateSourceIds.has(memory.id))
       .filter(
         (memory) =>
-          input.purpose !== "context" ||
+          purpose !== "context" ||
           !shouldHideFromOrdinaryContext({
             sensitivity: memory.sensitivity,
             includeSensitive: input.includeSensitive,
@@ -1557,8 +1611,15 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   function searchAssociations(input: MemoryAssociationSearchInput): MemoryAssociationRecord[] {
     initialize();
     const query = input.query.trim();
+    const staleCurrentStateSourceIds = supersededSourceMemoryIds(input.profileId);
     const ranked = associationRowsForSearch(input)
       .map(normalizeAssociation)
+      .filter(
+        (association) =>
+          !staleCurrentStateSourceIds.has(association.targetId) &&
+          (association.sourceMemoryId == null ||
+            !staleCurrentStateSourceIds.has(association.sourceMemoryId)),
+      )
       .filter((association) =>
         visibleAssociation({
           association,
