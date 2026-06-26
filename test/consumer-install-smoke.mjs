@@ -364,11 +364,12 @@ try {
   assert.equal(doctor.schema.dialect, "sqlite");
   assert.equal(doctor.schema.version, 1);
   assert.equal(doctor.hostCompatibility.level, "L4");
+  const binLowLevelDb = path.join(consumerDir, "bin-low-level.db");
   const addBin = runInstalledCli(
     [
       "add",
       "--db",
-      path.join(consumerDir, "bin-low-level.db"),
+      binLowLevelDb,
       "--profile",
       "bin",
       "--kind",
@@ -378,11 +379,12 @@ try {
     ],
   );
   assert.equal(addBin.status, 0, addBin.stderr);
+  const addBinMemory = JSON.parse(addBin.stdout);
   const searchBin = runInstalledCli(
     [
       "search",
       "--db",
-      path.join(consumerDir, "bin-low-level.db"),
+      binLowLevelDb,
       "--profile",
       "bin",
       "--query",
@@ -391,11 +393,73 @@ try {
   );
   assert.equal(searchBin.status, 0, searchBin.stderr);
   assert.match(searchBin.stdout, /Installed bin low-level add prefers stable manifests/);
+  const listBin = runInstalledCli(
+    [
+      "list",
+      "--db",
+      binLowLevelDb,
+      "--profile",
+      "bin",
+      "--query",
+      "stable manifests",
+    ],
+  );
+  assert.equal(listBin.status, 0, listBin.stderr);
+  assert.equal(
+    JSON.parse(listBin.stdout).memories.some((entry) => entry.id === addBinMemory.id),
+    true,
+  );
+  const getBin = runInstalledCli(
+    [
+      "get",
+      "--db",
+      binLowLevelDb,
+      "--profile",
+      "bin",
+      "--id",
+      addBinMemory.id,
+    ],
+  );
+  assert.equal(getBin.status, 0, getBin.stderr);
+  assert.match(getBin.stdout, /Installed bin low-level add prefers stable manifests/);
+  const listShim = spawnCommand(
+    gmosBin,
+    [
+      "list",
+      "--db",
+      binLowLevelDb,
+      "--profile",
+      "bin",
+      "--query",
+      "stable manifests",
+    ],
+    { cwd: consumerDir, encoding: "utf8" },
+  );
+  assert.equal(listShim.status, 0, listShim.stderr);
+  assert.equal(
+    JSON.parse(listShim.stdout).memories.some((entry) => entry.id === addBinMemory.id),
+    true,
+  );
+  const getShim = spawnCommand(
+    gmosBin,
+    [
+      "get",
+      "--db",
+      binLowLevelDb,
+      "--profile",
+      "bin",
+      "--id",
+      addBinMemory.id,
+    ],
+    { cwd: consumerDir, encoding: "utf8" },
+  );
+  assert.equal(getShim.status, 0, getShim.stderr);
+  assert.match(getShim.stdout, /Installed bin low-level add prefers stable manifests/);
   const statusBin = runInstalledCli(
     [
       "status",
       "--db",
-      path.join(consumerDir, "bin-low-level.db"),
+      binLowLevelDb,
       "--profile",
       "bin",
       "--host",

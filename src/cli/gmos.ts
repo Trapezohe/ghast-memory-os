@@ -35,7 +35,12 @@ import {
   serveMemoryMcpStdio,
 } from "../mcp/index.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
-import type { FailureKind, LowLevelSearchInput, MemoryKind } from "../kernel/types.js";
+import type {
+  FailureKind,
+  LowLevelListMemoriesInput,
+  LowLevelSearchInput,
+  MemoryKind,
+} from "../kernel/types.js";
 
 function value(name: string, fallback?: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -58,6 +63,8 @@ Usage:
   gmos delete --db ./gmos.db --profile local --id memory_xxx --reason "manual cleanup"
   gmos clear --db ./gmos.db --profile local --scope global --reason "manual cleanup"
   gmos search --db ./gmos.db --profile local --query "简洁"
+  gmos list --db ./gmos.db --profile local --query "简洁" --status active
+  gmos get --db ./gmos.db --profile local --id memory_xxx
   gmos observe --db ./gmos.db --profile local --text "我喜欢简洁回答"
   gmos prepare --db ./gmos.db --profile local --text "你知道我什么偏好吗？"
   gmos forget --db ./gmos.db --profile local --query "Moonbase"
@@ -262,6 +269,15 @@ function searchPurposeOption(): LowLevelSearchInput["purpose"] {
   const raw = value("--purpose", "context");
   if (raw !== "context" && raw !== "delete" && raw !== "manage") {
     throw new Error("--purpose must be one of: context, delete, manage");
+  }
+  return raw;
+}
+
+function listStatusOption(): LowLevelListMemoriesInput["status"] {
+  const raw = value("--status");
+  if (!raw) return undefined;
+  if (raw !== "active" && raw !== "archived" && raw !== "any") {
+    throw new Error("--status must be one of: active, archived, any");
   }
   return raw;
 }
@@ -563,6 +579,40 @@ async function main(): Promise<void> {
         includePerson: has("--include-person"),
       });
       console.log(JSON.stringify({ memories }, null, 2));
+      return;
+    }
+
+    if (command === "list") {
+      const memories = await memory.list({
+        profileId,
+        query: value("--query"),
+        limit: positiveIntegerOption("--limit", 50),
+        status: listStatusOption(),
+        kind: optionalMemoryKindOption(),
+        scope: value("--scope"),
+        includeSensitive: has("--include-sensitive"),
+        includePerson: has("--include-person"),
+      });
+      console.log(JSON.stringify({ memories }, null, 2));
+      return;
+    }
+
+    if (command === "get") {
+      const id = value("--id");
+      if (!id) usage();
+      const memoryRecord = await memory.get({
+        profileId,
+        id,
+        includeSensitive: has("--include-sensitive"),
+        includePerson: has("--include-person"),
+        includeArchived: has("--include-archived"),
+      });
+      if (!memoryRecord) {
+        console.error(`Memory not found: ${id}`);
+        process.exitCode = 1;
+        return;
+      }
+      console.log(JSON.stringify(memoryRecord, null, 2));
       return;
     }
 

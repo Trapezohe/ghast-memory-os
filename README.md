@@ -70,6 +70,8 @@ node dist/cli/gmos.js update --db ./gmos.db --profile local --id memory_xxx --te
 node dist/cli/gmos.js delete --db ./gmos.db --profile local --id memory_xxx
 node dist/cli/gmos.js clear --db ./gmos.db --profile local --scope global
 node dist/cli/gmos.js search --db ./gmos.db --profile local --query "简洁"
+node dist/cli/gmos.js list --db ./gmos.db --profile local --query "简洁" --status active
+node dist/cli/gmos.js get --db ./gmos.db --profile local --id memory_xxx
 node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "我喜欢简洁的中文回答。"
 node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
 node dist/cli/gmos.js mcp tools
@@ -200,6 +202,9 @@ await memory.archive({
   id: saved.id,
 });
 
+// The CLI exposes the same managed read boundary:
+// gmos list --db ./gmos.db --profile local --status archived
+// gmos get --db ./gmos.db --profile local --id memory_xxx --include-archived
 const archived = await memory.list({
   profileId: "local-user",
   status: "archived",

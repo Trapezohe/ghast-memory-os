@@ -1418,6 +1418,237 @@ const cliSearch = spawnSync(
 );
 assert.equal(cliSearch.status, 0, cliSearch.stderr);
 assert.match(cliSearch.stdout, /CLI low-level add prefers concise answers/);
+const cliList = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "list",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--query",
+    "concise answers",
+    "--kind",
+    "preference",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliList.status, 0, cliList.stderr);
+const cliListPayload = JSON.parse(cliList.stdout) as { memories?: Array<{ id?: string }> };
+assert.equal(
+  cliListPayload.memories?.some((entry) => entry.id === cliAddMemory.id),
+  true,
+);
+const cliGet = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "get",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--id",
+    cliAddMemory.id!,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliGet.status, 0, cliGet.stderr);
+assert.match(cliGet.stdout, /CLI low-level add prefers concise answers/);
+const cliSensitiveAdd = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "add",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--kind",
+    "fact",
+    "--text",
+    "CLI 管理视图可以保存护照办理偏好。",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliSensitiveAdd.status, 0, cliSensitiveAdd.stderr);
+const cliSensitiveMemory = JSON.parse(cliSensitiveAdd.stdout) as { id?: string };
+const cliSensitiveDefaultList = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "list",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--query",
+    "护照",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliSensitiveDefaultList.status, 0, cliSensitiveDefaultList.stderr);
+assert.equal(cliSensitiveDefaultList.stdout.includes("护照办理偏好"), false);
+const cliSensitiveIncludedList = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "list",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--query",
+    "护照",
+    "--include-sensitive",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliSensitiveIncludedList.status, 0, cliSensitiveIncludedList.stderr);
+assert.match(cliSensitiveIncludedList.stdout, /护照办理偏好/);
+const cliSensitiveDefaultGet = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "get",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--id",
+    cliSensitiveMemory.id!,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliSensitiveDefaultGet.status, 0);
+assert.match(cliSensitiveDefaultGet.stderr, /Memory not found/);
+const cliSensitiveIncludedGet = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "get",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--id",
+    cliSensitiveMemory.id!,
+    "--include-sensitive",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliSensitiveIncludedGet.status, 0, cliSensitiveIncludedGet.stderr);
+assert.match(cliSensitiveIncludedGet.stdout, /护照办理偏好/);
+const cliPersonAdd = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "add",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--kind",
+    "person",
+    "--text",
+    "PERSON:李雷: 喜欢先看风险摘要。",
+    "--allow-person",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliPersonAdd.status, 0, cliPersonAdd.stderr);
+const cliPersonMemory = JSON.parse(cliPersonAdd.stdout) as { id?: string };
+const cliPersonDefaultList = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "list",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--query",
+    "李雷",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliPersonDefaultList.status, 0, cliPersonDefaultList.stderr);
+assert.equal(cliPersonDefaultList.stdout.includes("李雷"), false);
+const cliPersonIncludedList = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "list",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--query",
+    "李雷",
+    "--include-person",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliPersonIncludedList.status, 0, cliPersonIncludedList.stderr);
+assert.match(cliPersonIncludedList.stdout, /李雷/);
+const cliPersonDefaultGet = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "get",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--id",
+    cliPersonMemory.id!,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliPersonDefaultGet.status, 0);
+assert.match(cliPersonDefaultGet.stderr, /Memory not found/);
+const cliPersonIncludedGet = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "get",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--id",
+    cliPersonMemory.id!,
+    "--include-person",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliPersonIncludedGet.status, 0, cliPersonIncludedGet.stderr);
+assert.match(cliPersonIncludedGet.stdout, /李雷/);
 const cliUpdate = spawnSync(
   process.execPath,
   [
@@ -1458,6 +1689,61 @@ const cliDelete = spawnSync(
 );
 assert.equal(cliDelete.status, 0, cliDelete.stderr);
 assert.match(cliDelete.stdout, /archivedMemoryIds/);
+const cliArchivedDefaultGet = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "get",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--id",
+    cliAddMemory.id!,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliArchivedDefaultGet.status, 0);
+assert.match(cliArchivedDefaultGet.stderr, /Memory not found/);
+const cliArchivedIncludedGet = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "get",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--id",
+    cliAddMemory.id!,
+    "--include-archived",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliArchivedIncludedGet.status, 0, cliArchivedIncludedGet.stderr);
+assert.match(cliArchivedIncludedGet.stdout, /risk-first answers/);
+const cliArchivedList = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "list",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--status",
+    "archived",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliArchivedList.status, 0, cliArchivedList.stderr);
+assert.match(cliArchivedList.stdout, /risk-first answers/);
 const cliClearAdd = spawnSync(
   process.execPath,
   [
