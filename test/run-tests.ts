@@ -367,7 +367,10 @@ const extractorMemory = createMemoryOS({
           confidence: 0.91,
           predicate: "user.preference",
           actionPolicyKind: "prefer",
-          metadata: { extractorFixture: "preference" },
+          metadata: {
+            extractorFixture: "preference",
+            apiKey: "sk-custommetadatasecret1234567890",
+          },
         },
         {
           kind: "project",
@@ -382,17 +385,30 @@ const extractorMemory = createMemoryOS({
     },
   },
 });
-await extractorMemory.observe({
+const customExtractionReport = await extractorMemory.observeWithReport({
   type: "conversation.message",
   profileId: "extractor",
   role: "user",
   content: "我喜欢先讲风险，而且 Helio 项目卡在 migration probe。",
 });
+assert.equal(customExtractionReport.extraction?.extractionSource, "custom");
+assert.equal(customExtractionReport.extraction?.acceptedCandidateCount, 2);
+assert.equal(customExtractionReport.extraction?.rejectedCandidateCount, 0);
+assert.equal(customExtractionReport.memoryIds.length, 2);
+assert.equal(customExtractionReport.worldBeliefIds.length, 2);
+assert.equal(
+  customExtractionReport.extraction?.decisions.every(
+    (decision) => decision.decision === "accepted",
+  ),
+  true,
+);
+assert.equal(JSON.stringify(customExtractionReport).includes("sk-custommetadatasecret"), false);
 const extractedPreference = await extractorMemory.search({
   profileId: "extractor",
   query: "risk-first plans",
   limit: 5,
 });
+assert.equal(JSON.stringify(extractedPreference).includes("sk-custommetadatasecret"), false);
 const extractedProject = await extractorMemory.search({
   profileId: "extractor",
   query: "Helio migration probe",
@@ -898,13 +914,25 @@ const llmExtractorMemory = createMemoryOS({
     },
   }),
 });
-await llmExtractorMemory.observe({
+const llmExtractionReport = await llmExtractorMemory.observeWithReport({
   type: "conversation.message",
   profileId: "llm_extractor",
   role: "user",
   content: "我喜欢风险优先摘要；Mira 项目当前卡在 rollout audit。",
   metadata: { internalTrace: "sk-metadatashouldnotleave1234567890" },
 });
+assert.equal(llmExtractionReport.extraction?.extractorName, "fixture-openai-compatible-extractor");
+assert.equal(llmExtractionReport.extraction?.acceptedCandidateCount, 2);
+assert.equal(llmExtractionReport.extraction?.rejectedCandidateCount, 1);
+assert.equal(llmExtractionReport.memoryIds.length, 2);
+assert.equal(llmExtractionReport.worldBeliefIds.length, 2);
+assert.deepEqual(
+  llmExtractionReport.extraction?.decisions
+    .filter((decision) => decision.decision === "rejected")
+    .map((decision) => decision.reason),
+  ["secret_like"],
+);
+assert.equal(JSON.stringify(llmExtractionReport).includes("sk-llmextractorsecret"), false);
 assert.equal(llmExtractorRequest.url, "https://memory-model.invalid/v1/chat/completions");
 assert.equal(llmExtractorRequest.headers?.authorization, "Bearer test-key");
 assert.equal(llmExtractorRequest.headers?.["x-provider-fixture"], "enabled");
@@ -943,12 +971,15 @@ const suppressRulesMemory = createMemoryOS({
   store: suppressRulesStore,
   extractor: () => [],
 });
-await suppressRulesMemory.observe({
+const suppressRulesReport = await suppressRulesMemory.observeWithReport({
   type: "conversation.message",
   profileId: "suppress",
   role: "user",
   content: "我喜欢这个本来会被规则抽取的偏好。",
 });
+assert.equal(suppressRulesReport.extraction?.extractionSource, "custom");
+assert.equal(suppressRulesReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(suppressRulesReport.memoryIds.length, 0);
 assert.equal(
   (
     await suppressRulesMemory.search({
@@ -973,12 +1004,17 @@ const fallbackExtractorMemory = createMemoryOS({
     },
   },
 });
-await fallbackExtractorMemory.observe({
+const fallbackExtractionReport = await fallbackExtractorMemory.observeWithReport({
   type: "conversation.message",
   profileId: "fallback_extractor",
   role: "user",
   content: "我喜欢 fallback rule extraction.",
 });
+assert.equal(fallbackExtractionReport.extraction?.extractionSource, "rules");
+assert.equal(fallbackExtractionReport.extraction?.fallbackUsed, true);
+assert.equal(fallbackExtractionReport.extraction?.extractorFailed, true);
+assert.equal(fallbackExtractionReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(fallbackExtractionReport.memoryIds.length, 1);
 const fallbackMatches = await fallbackExtractorMemory.search({
   profileId: "fallback_extractor",
   query: "fallback rule extraction",
@@ -999,6 +1035,7 @@ const unsafeExtractorMemory = createMemoryOS({
       content: "Custom extractor leaked token sk-customextractorsecret1234567890.",
       confidence: 0.99,
       predicate: "user.preference",
+      subject: "sk-customsubjectsecret1234567890",
     },
     {
       kind: "fact",
@@ -1020,12 +1057,22 @@ const unsafeExtractorMemory = createMemoryOS({
     },
   ],
 });
-await unsafeExtractorMemory.observe({
+const unsafeExtractionReport = await unsafeExtractorMemory.observeWithReport({
   type: "conversation.message",
   profileId: "unsafe_extractor",
   role: "user",
   content: "A harmless message should not persist unsafe custom candidates.",
 });
+assert.equal(unsafeExtractionReport.extraction?.acceptedCandidateCount, 0);
+assert.deepEqual(
+  unsafeExtractionReport.extraction?.decisions
+    .filter((decision) => decision.decision === "rejected")
+    .map((decision) => decision.reason)
+    .sort(),
+  ["invalid_kind", "person_kind", "person_routed", "secret_like"],
+);
+assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customextractorsecret"), false);
+assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customsubjectsecret"), false);
 assert.equal(
   (
     await unsafeExtractorMemory.search({
@@ -1042,6 +1089,23 @@ await unsafeExtractorMemory.close();
 await fallbackExtractorMemory.close();
 await suppressRulesMemory.close();
 await extractorMemory.close();
+
+const rulesReportStore = createSqliteMemoryStore({ path: path.join(tmp, "rules-report.db") });
+const rulesReportMemory = createMemoryOS({
+  profileId: "rules_report",
+  store: rulesReportStore,
+});
+const rulesReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "I prefer concise release summaries.",
+});
+assert.equal(rulesReport.extraction?.extractionSource, "rules");
+assert.equal(rulesReport.extraction?.fallbackUsed, false);
+assert.equal(rulesReport.extraction?.extractorFailed, false);
+assert.equal(rulesReport.extraction?.acceptedCandidateCount, 1);
+await rulesReportMemory.close();
 
 const lowLevelMemory = await memory.add({
   profileId: "test",

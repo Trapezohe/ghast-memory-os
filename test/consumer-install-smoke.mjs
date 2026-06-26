@@ -413,8 +413,10 @@ try {
         createOpenAICompatibleExtractor,
         type MemoryExtractionCandidate,
         type MemoryExtractor,
+        type MemoryOS,
         type MemoryRecord,
         type MemoryStore,
+        type ObserveResult,
         type OpenAICompatibleExtractorOptions,
         type RepairSearchIndexResult,
         type SearchIndexStatus,
@@ -474,6 +476,10 @@ try {
       const genericStore: MemoryStore = sqliteStore;
       const schemaVersion: number = sqliteStore.schemaVersion();
       const memory = createMemoryOS({ profileId: "consumer-types", store: genericStore });
+      const observeOnlyHost: Pick<MemoryOS, "observe"> = {
+        async observe() {},
+      };
+      void observeOnlyHost;
       const typedExtractor: MemoryExtractor = (input) => {
         const candidate: MemoryExtractionCandidate = {
           kind: "preference",
@@ -491,12 +497,15 @@ try {
         store: extractorStore,
         extractor: typedExtractor,
       });
-      await extractorMemory.observe({
+      const typedObserveResult: ObserveResult = await extractorMemory.observeWithReport({
         type: "conversation.message",
         profileId: "consumer-types-extractor",
         role: "user",
         content: "public custom extraction",
       });
+      if (typedObserveResult.extraction?.acceptedCandidateCount !== 1) {
+        throw new Error("typed observe result failed");
+      }
       const typedExtractorMatches = await extractorMemory.search({
         profileId: "consumer-types-extractor",
         query: "public custom extraction",

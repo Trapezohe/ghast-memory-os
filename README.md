@@ -295,6 +295,28 @@ returning `null` or throwing falls back to the built-in rules by default. Use
 `createMemoryOS({ extraction: { fallbackToRules: false } })` when a host wants
 custom extraction failure to produce no memory instead of rule fallback.
 
+`observe()` remains the stable fire-and-forget observation API. Use
+`observeWithReport()` when a host or benchmark needs an `ObserveResult` to
+audit the write path without reading private tables:
+
+```ts
+const report = await memory.observeWithReport({
+  type: "conversation.message",
+  role: "user",
+  content: "I prefer risk-first release plans.",
+});
+
+console.log(report.memoryIds);
+console.log(report.extraction?.decisions);
+```
+
+The report includes the evidence id, accepted memory ids, world belief ids,
+rule/custom candidate counts, fallback status, and accepted/rejected candidate
+decisions after candidates enter gmOS write-path validation. It is not a raw
+LLM-output transcript. Candidate snapshots are sanitized; rejected secret-like
+fields and sensitive metadata are redacted or omitted so the report can be
+logged by a host without becoming a credential side channel.
+
 For OpenAI-compatible providers, gmOS includes an optional structured extractor
 factory. It is never enabled by default and the SDK never stores provider keys:
 

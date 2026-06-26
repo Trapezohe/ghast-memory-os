@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { composeTurnContext } from "../kernel/context-composer.js";
 import {
-  extractMemoryCandidates,
+  extractMemoryCandidatePlan,
   extractRuleMemoryCandidates,
 } from "../kernel/extraction.js";
 import { reconstructMemoryContext } from "../kernel/reconstruction.js";
@@ -33,6 +33,7 @@ import type {
   MemoryRecord,
   MemoryOS,
   MemoryOSOptions,
+  ObserveResult,
   PrepareTurnInput,
   ReconstructContextInput,
   ReconstructedContext,
@@ -335,12 +336,23 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   }
 
   async function observe(event: HostEvent): Promise<void> {
+    await observeWithReport(event);
+  }
+
+  async function observeWithReport(event: HostEvent): Promise<ObserveResult> {
     await initialize();
     const profileId = profileIdFor(defaultProfileId, event.profileId);
+    const result: ObserveResult = {
+      profileId,
+      eventType: event.type,
+      observedAt: event.createdAt ?? nowIso(),
+      memoryIds: [],
+      worldBeliefIds: [],
+    };
 
     if (event.type === "user.forget_request") {
       await store.forget({ profileId, query: event.query, reason: event.reason });
-      return;
+      return { ...result, skippedReason: "forget_request" };
     }
 
     if (event.type === "user.feedback" || event.type === "user.correction") {
@@ -350,7 +362,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         content: event.content,
         createdAt: event.createdAt,
       });
-      return;
+      return { ...result, skippedReason: "feedback_recorded" };
     }
 
     if (event.type === "task.completed" || event.type === "task.failed") {
@@ -370,11 +382,11 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           createdAt: event.createdAt,
         });
       }
-      return;
+      return { ...result, skippedReason: "task_trajectory_recorded" };
     }
 
-    if (event.type !== "conversation.message") return;
-    if (event.role !== "user") return;
+    if (event.type !== "conversation.message") return { ...result, skippedReason: "unsupported_event" };
+    if (event.role !== "user") return { ...result, skippedReason: "non_user_message" };
 
     const sensitivity = classifySensitivity(event.content);
     const eligible = eligibleForLongTermMemory({
@@ -397,9 +409,12 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       },
       createdAt: event.createdAt,
     });
+    result.evidenceId = evidence.id;
+    result.eligibleForLongTermMemory = eligible;
 
-    if (!eligible || isPersonRoutedMemory(event.content)) return;
-    const candidates = await extractMemoryCandidates({
+    if (!eligible) return { ...result, skippedReason: "not_eligible_for_long_term_memory" };
+    if (isPersonRoutedMemory(event.content)) return { ...result, skippedReason: "person_routed" };
+    const extraction = await extractMemoryCandidatePlan({
       extractor: options.extractor,
       extractionInput: {
         profileId,
@@ -410,7 +425,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       fallbackToRules: options.extraction?.fallbackToRules,
       minConfidence: options.extraction?.minConfidence,
     });
-    for (const candidate of candidates) {
+    result.extraction = extraction.report;
+    for (const candidate of extraction.candidates) {
       const candidateSensitivity = classifySensitivity(candidate.content);
       if (
         candidate.kind === "person" ||
@@ -433,8 +449,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         },
         createdAt: event.createdAt,
       });
+      result.memoryIds.push(memory.id);
       if (candidate.predicate) {
-        await store.addWorldBelief({
+        const belief = await store.addWorldBelief({
           profileId,
           subject: candidate.subject ?? "user",
           predicate: candidate.predicate,
@@ -443,8 +460,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           sourceMemoryId: memory.id,
           cardinality: candidate.cardinality,
         });
+        result.worldBeliefIds.push(belief.id);
       }
     }
+    return result;
   }
 
   async function prepareTurn(input: PrepareTurnInput) {
@@ -599,6 +618,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     list,
     get,
     observe,
+    observeWithReport,
     prepareTurn,
     reconstructContext,
     commitOutcome,

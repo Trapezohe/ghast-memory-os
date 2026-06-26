@@ -141,6 +141,74 @@ export type MemoryExtractor =
       ): Promise<MemoryExtractionResult> | MemoryExtractionResult;
     };
 
+export type MemoryExtractionRejectReason =
+  | "empty_content"
+  | "invalid_kind"
+  | "person_kind"
+  | "person_routed"
+  | "secret_like"
+  | "low_confidence"
+  | "duplicate";
+
+export interface MemoryExtractionCandidateSnapshot {
+  kind?: string | undefined;
+  content: string;
+  confidence?: number | undefined;
+  predicate?: string | undefined;
+  subject?: string | undefined;
+  cardinality?: string | undefined;
+  actionPolicyKind?: string | undefined;
+  metadata?: Record<string, unknown> | undefined;
+}
+
+export interface AcceptedMemoryExtractionDecision {
+  decision: "accepted";
+  candidate: MemoryExtractionCandidateSnapshot;
+}
+
+export interface RejectedMemoryExtractionDecision {
+  decision: "rejected";
+  candidate: MemoryExtractionCandidateSnapshot;
+  reason: MemoryExtractionRejectReason;
+}
+
+export type MemoryExtractionDecision =
+  | AcceptedMemoryExtractionDecision
+  | RejectedMemoryExtractionDecision;
+
+export interface MemoryExtractionReport {
+  extractorName?: string | undefined;
+  extractionSource: "rules" | "custom" | "none";
+  fallbackUsed: boolean;
+  extractorFailed: boolean;
+  ruleCandidateCount: number;
+  rawCandidateCount: number;
+  acceptedCandidateCount: number;
+  rejectedCandidateCount: number;
+  decisions: MemoryExtractionDecision[];
+}
+
+export type ObserveSkippedReason =
+  | "forget_request"
+  | "feedback_recorded"
+  | "task_trajectory_recorded"
+  | "unsupported_event"
+  | "non_user_message"
+  | "not_eligible_for_long_term_memory"
+  | "person_routed";
+
+export interface ObserveResult {
+  profileId: string;
+  eventType: HostEvent["type"];
+  observedAt: string;
+  evidenceId?: string | undefined;
+  eligibleForLongTermMemory?: boolean | undefined;
+  skippedReason?: ObserveSkippedReason | undefined;
+  memoryIds: string[];
+  worldBeliefIds: string[];
+  extraction?: MemoryExtractionReport | undefined;
+}
+
 export interface MemoryRecord {
   id: string;
   profileId: string;
@@ -696,6 +764,7 @@ export interface MemoryOS {
   list(input?: LowLevelListMemoriesInput): Promise<MemoryRecord[]>;
   get(input: LowLevelGetMemoryInput): Promise<MemoryRecord | null>;
   observe(event: HostEvent): Promise<void>;
+  observeWithReport(event: HostEvent): Promise<ObserveResult>;
   prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn>;
   reconstructContext(input: ReconstructContextInput): Promise<ReconstructedContext>;
   commitOutcome(input: CommitOutcomeInput): Promise<void>;

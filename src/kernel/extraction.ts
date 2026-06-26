@@ -1,10 +1,24 @@
 import type {
   MemoryExtractionCandidate,
+  MemoryExtractionCandidateSnapshot,
+  MemoryExtractionDecision,
   MemoryExtractionInput,
+  MemoryExtractionReport,
   MemoryExtractionResult,
+  MemoryExtractionRejectReason,
   MemoryExtractor,
 } from "./types.js";
-import { isPersonRoutedMemory } from "./safety.js";
+import {
+  classifySensitivity,
+  isPersonRoutedMemory,
+  redactForReport,
+  sanitizePublicPayloadRecord,
+} from "./safety.js";
+
+interface MemoryExtractionPlan {
+  report: MemoryExtractionReport;
+  candidates: MemoryExtractionCandidate[];
+}
 
 function normalize(content: string): string {
   return content.replace(/\s+/gu, " ").trim();
@@ -36,37 +50,105 @@ function boundedConfidence(input: number, fallback: number): number {
   return Math.max(0, Math.min(1, input));
 }
 
-function normalizeCandidate(
-  candidate: MemoryExtractionCandidate,
-  options: { minConfidence: number },
-): MemoryExtractionCandidate | null {
-  const content = normalize(candidate.content);
-  if (
-    !KNOWN_MEMORY_KINDS.has(String(candidate.kind)) ||
-    !content ||
-    candidate.kind === "person" ||
-    isPersonRoutedMemory(content)
-  ) {
-    return null;
-  }
-  const confidence = boundedConfidence(candidate.confidence, 0);
-  if (confidence < options.minConfidence) return null;
+function publicString(value: string): string {
+  return redactForReport(normalize(value));
+}
+
+function snapshotCandidate(candidate: unknown): MemoryExtractionCandidateSnapshot {
+  const record = candidate && typeof candidate === "object" && !Array.isArray(candidate)
+    ? (candidate as Record<string, unknown>)
+    : {};
+  const content = typeof record.content === "string" ? normalize(record.content) : "";
+  const confidence = Number(record.confidence);
+  const metadata =
+    record.metadata && typeof record.metadata === "object" && !Array.isArray(record.metadata)
+      ? sanitizePublicPayloadRecord(record.metadata as Record<string, unknown>)
+      : undefined;
   return {
-    ...candidate,
-    content,
-    confidence,
+    ...(typeof record.kind === "string" ? { kind: publicString(record.kind) } : {}),
+    content: publicString(content),
+    ...(Number.isFinite(confidence) ? { confidence } : {}),
+    ...(typeof record.predicate === "string" ? { predicate: publicString(record.predicate) } : {}),
+    ...(typeof record.subject === "string" ? { subject: publicString(record.subject) } : {}),
+    ...(typeof record.cardinality === "string" ? { cardinality: publicString(record.cardinality) } : {}),
+    ...(typeof record.actionPolicyKind === "string"
+      ? { actionPolicyKind: publicString(record.actionPolicyKind) }
+      : {}),
+    ...(metadata && Object.keys(metadata).length > 0 ? { metadata } : {}),
   };
 }
 
-function uniqueCandidates(candidates: MemoryExtractionCandidate[]): MemoryExtractionCandidate[] {
+function rejectDecision(
+  candidate: unknown,
+  reason: MemoryExtractionRejectReason,
+): MemoryExtractionDecision {
+  return {
+    decision: "rejected",
+    reason,
+    candidate: snapshotCandidate(candidate),
+  };
+}
+
+function allowedActionPolicyKind(
+  value: MemoryExtractionCandidate["actionPolicyKind"],
+): value is MemoryExtractionCandidate["actionPolicyKind"] {
+  return value === undefined || value === "do_not_push" || value === "prefer" || value === "procedure";
+}
+
+function allowedCardinality(
+  value: MemoryExtractionCandidate["cardinality"],
+): value is MemoryExtractionCandidate["cardinality"] {
+  return value === undefined || value === "single" || value === "multi";
+}
+
+function hasSecretLikeAuxiliaryField(candidate: MemoryExtractionCandidate): boolean {
+  return [candidate.predicate, candidate.subject, candidate.cardinality, candidate.actionPolicyKind]
+    .filter((value): value is string => typeof value === "string")
+    .some((value) => classifySensitivity(value) === "secret_like");
+}
+
+function normalizeCandidate(
+  candidate: MemoryExtractionCandidate,
+  options: { minConfidence: number },
+):
+  | { candidate: MemoryExtractionCandidate }
+  | { reason: MemoryExtractionRejectReason } {
+  const content = normalize(candidate.content);
+  if (!KNOWN_MEMORY_KINDS.has(String(candidate.kind))) return { reason: "invalid_kind" };
+  if (!content) return { reason: "empty_content" };
+  if (candidate.kind === "person") return { reason: "person_kind" };
+  if (isPersonRoutedMemory(content)) return { reason: "person_routed" };
+  if (classifySensitivity(content) === "secret_like") return { reason: "secret_like" };
+  if (hasSecretLikeAuxiliaryField(candidate)) return { reason: "secret_like" };
+  if (!allowedActionPolicyKind(candidate.actionPolicyKind)) return { reason: "invalid_kind" };
+  if (!allowedCardinality(candidate.cardinality)) return { reason: "invalid_kind" };
+  const confidence = boundedConfidence(candidate.confidence, 0);
+  if (confidence < options.minConfidence) return { reason: "low_confidence" };
+  return {
+    candidate: {
+      ...candidate,
+      content,
+      confidence,
+      metadata: sanitizePublicPayloadRecord(candidate.metadata ?? {}),
+    },
+  };
+}
+
+function candidateKey(candidate: MemoryExtractionCandidate): string {
+  return [
+    candidate.kind,
+    candidate.predicate ?? "",
+    candidate.content.toLowerCase(),
+  ].join("\n");
+}
+
+function uniqueCandidatesWithDecisions(
+  candidates: MemoryExtractionCandidate[],
+): MemoryExtractionCandidate[] {
   const seen = new Set<string>();
   const result: MemoryExtractionCandidate[] = [];
   for (const candidate of candidates) {
-    const key = [
-      candidate.kind,
-      candidate.predicate ?? "",
-      candidate.content.toLowerCase(),
-    ].join("\n");
+    const key = candidateKey(candidate);
     if (seen.has(key)) continue;
     seen.add(key);
     result.push(candidate);
@@ -153,9 +235,28 @@ export async function extractMemoryCandidates(input: {
   fallbackToRules?: boolean | undefined;
   minConfidence?: number | undefined;
 }): Promise<MemoryExtractionCandidate[]> {
+  return (await extractMemoryCandidatePlan(input)).candidates;
+}
+
+export async function extractMemoryCandidateReport(input: {
+  extractor?: MemoryExtractor | undefined;
+  extractionInput: MemoryExtractionInput;
+  fallbackToRules?: boolean | undefined;
+  minConfidence?: number | undefined;
+}): Promise<MemoryExtractionReport> {
+  return (await extractMemoryCandidatePlan(input)).report;
+}
+
+export async function extractMemoryCandidatePlan(input: {
+  extractor?: MemoryExtractor | undefined;
+  extractionInput: MemoryExtractionInput;
+  fallbackToRules?: boolean | undefined;
+  minConfidence?: number | undefined;
+}): Promise<MemoryExtractionPlan> {
   const minConfidence = input.minConfidence ?? 0.01;
   const ruleCandidates = input.extractionInput.ruleCandidates;
   let selected: MemoryExtractionCandidate[] | null = null;
+  let extractorFailed = false;
 
   if (input.extractor) {
     try {
@@ -165,28 +266,75 @@ export async function extractMemoryCandidates(input: {
           : await input.extractor.extract(input.extractionInput);
       selected = asCandidateArray(raw);
     } catch {
+      extractorFailed = true;
       selected = null;
     }
   }
 
   const fallbackToRules = input.fallbackToRules ?? true;
-  const source = selected === null && fallbackToRules ? ruleCandidates : (selected ?? []);
-  return uniqueCandidates(
-    source
-      .map((candidate) => normalizeCandidate(candidate, { minConfidence }))
-      .filter((candidate): candidate is MemoryExtractionCandidate => candidate !== null)
-      .map((candidate) => ({
-        ...candidate,
-        metadata: {
-          ...(candidate.metadata ?? {}),
-          extractionSource:
-            selected === null && fallbackToRules ? "rules" : "custom",
-          ...(selected === null && input.extractor
-            ? { extractorFallback: true, extractorName: extractorName(input.extractor) }
-            : input.extractor
-              ? { extractorName: extractorName(input.extractor) }
-              : {}),
-        },
-      })),
-  );
+  const useRules = selected === null && fallbackToRules;
+  const fallbackUsed = Boolean(input.extractor && useRules);
+  const extractionSource: MemoryExtractionReport["extractionSource"] =
+    useRules ? "rules" : selected === null ? "none" : "custom";
+  const source = useRules ? ruleCandidates : (selected ?? []);
+  const extractor = extractorName(input.extractor);
+  const normalized: Array<{
+    raw: MemoryExtractionCandidate;
+    candidate: MemoryExtractionCandidate;
+  }> = [];
+  const rejected: MemoryExtractionDecision[] = [];
+  for (const rawCandidate of source) {
+    const result = normalizeCandidate(rawCandidate, { minConfidence });
+    if ("reason" in result) {
+      rejected.push(rejectDecision(rawCandidate, result.reason));
+      continue;
+    }
+    const candidate: MemoryExtractionCandidate = {
+      ...result.candidate,
+      metadata: {
+        ...(result.candidate.metadata ?? {}),
+        extractionSource,
+        ...(fallbackUsed && input.extractor
+          ? { extractorFallback: true, extractorName: extractor }
+          : input.extractor && selected !== null
+            ? { extractorName: extractor }
+            : {}),
+      },
+    };
+    normalized.push({ raw: rawCandidate, candidate });
+  }
+
+  const deduped = uniqueCandidatesWithDecisions(normalized.map((entry) => entry.candidate));
+  const acceptedKeys = new Set(deduped.map(candidateKey));
+  const decisions: MemoryExtractionDecision[] = [];
+  const candidates: MemoryExtractionCandidate[] = [];
+  for (const entry of normalized) {
+    const key = candidateKey(entry.candidate);
+    if (!acceptedKeys.has(key)) {
+      decisions.push(rejectDecision(entry.raw, "duplicate"));
+      continue;
+    }
+    acceptedKeys.delete(key);
+    candidates.push(entry.candidate);
+    decisions.push({
+      decision: "accepted",
+      candidate: snapshotCandidate(entry.candidate),
+    });
+  }
+  decisions.push(...rejected);
+
+  return {
+    candidates,
+    report: {
+      ...(extractor ? { extractorName: extractor } : {}),
+      extractionSource,
+      fallbackUsed,
+      extractorFailed,
+      ruleCandidateCount: ruleCandidates.length,
+      rawCandidateCount: source.length,
+      acceptedCandidateCount: candidates.length,
+      rejectedCandidateCount: decisions.filter((decision) => decision.decision === "rejected").length,
+      decisions,
+    },
+  };
 }
