@@ -253,7 +253,10 @@ rows, sensitive rows, or person memories unless explicitly requested. `--mode
 full` is for trusted engineering use and includes archived/sensitive/person
 memories, evidence events, world beliefs, failure events, and task
 trajectories. The backup is plaintext JSON; gmOS does not encrypt local
-databases or backup files.
+databases or backup files. `parseSqliteProfileBackup()` validates the document
+before restore: schema, mode, options, row fields, enum values, counts,
+duplicate IDs, source profile IDs, and included evidence/world-belief
+references must all be consistent.
 
 The same path is available in-process:
 

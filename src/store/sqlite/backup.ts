@@ -12,6 +12,11 @@ import type {
   WorldBeliefRecord,
 } from "../../kernel/types.js";
 import { readGmosPackageInfo, type GmosPackageInfo } from "../../kernel/package-info.js";
+import {
+  classifyPayloadSensitivity,
+  classifySensitivity,
+  payloadContainsRestrictedValue,
+} from "../../kernel/safety.js";
 
 export type SqliteProfileBackupMode = "safe" | "full";
 export type SqliteProfileBackupConflictPolicy = "skip" | "replace" | "fail";
@@ -82,6 +87,36 @@ export interface SqliteProfileBackupRestoreResult {
   inserted: SqliteProfileBackupDocument["counts"];
   skipped: SqliteProfileBackupDocument["counts"];
 }
+
+const MEMORY_KINDS = new Set<MemoryKind>([
+  "fact",
+  "preference",
+  "boundary",
+  "procedure",
+  "project",
+  "person",
+  "task_trajectory",
+]);
+const SENSITIVITIES = new Set<Sensitivity>(["normal", "sensitive", "secret_like"]);
+const MEMORY_STATUSES = new Set<MemoryStatus>(["active", "archived"]);
+const WORLD_BELIEF_STATUSES = new Set<WorldBeliefRecord["status"]>([
+  "active",
+  "candidate",
+  "rejected",
+]);
+const FAILURE_KINDS = new Set<FailureEventRecord["failureKind"]>([
+  "missed_recall",
+  "wrong_recall",
+  "privacy_leak",
+  "forget_failure",
+  "controller_route_error",
+  "action_policy_missing",
+  "task_failure",
+]);
+const TASK_STATUSES = new Set<SqliteTaskTrajectoryRecord["status"]>([
+  "completed",
+  "failed",
+]);
 
 interface BackupOptions {
   mode: SqliteProfileBackupMode;
@@ -278,7 +313,10 @@ function memoryRowsForBackup(
          ORDER BY updated_at DESC, id ASC`,
       )
       .all(...params) as Record<string, unknown>[]
-  ).map(normalizeMemory);
+  )
+    .map(normalizeMemory)
+    .map(withInferredMemorySensitivity)
+    .filter((memory) => memoryAllowedBySensitivity(memory, options));
 }
 
 function evidenceRowsForBackup(
@@ -297,14 +335,18 @@ function evidenceRowsForBackup(
            ORDER BY created_at ASC, id ASC`,
         )
         .all(profileId) as Record<string, unknown>[]
-    ).map(normalizeEvidence);
+    )
+      .map(normalizeEvidence)
+      .map(withInferredEvidenceSensitivity)
+      .filter((event) => evidenceAllowedBySensitivity(event, options));
   }
   const sourceEventIds = [
     ...new Set(memories.map((memory) => memory.sourceEventId).filter((id): id is string => !!id)),
   ];
   return rowsByIds(db, "gmos_evidence_events", sourceEventIds)
     .map(normalizeEvidence)
-    .filter((event) => event.profileId === profileId && event.sensitivity === "normal")
+    .map(withInferredEvidenceSensitivity)
+    .filter((event) => event.profileId === profileId && evidenceAllowedBySensitivity(event, options))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
 }
 
@@ -327,10 +369,7 @@ function worldBeliefRowsForBackup(
   )
     .map(normalizeWorldBelief)
     .filter(
-      (belief) =>
-        options.mode === "full" ||
-        belief.sourceMemoryId == null ||
-        memoryIds.has(belief.sourceMemoryId),
+      (belief) => belief.sourceMemoryId == null || memoryIds.has(belief.sourceMemoryId),
     );
 }
 
@@ -368,17 +407,179 @@ function taskRowsForBackup(
   ).map(normalizeTaskTrajectory);
 }
 
+function sensitivityRank(sensitivity: Sensitivity): number {
+  if (sensitivity === "secret_like") return 2;
+  if (sensitivity === "sensitive") return 1;
+  return 0;
+}
+
+function maxSensitivity(left: Sensitivity, right: Sensitivity): Sensitivity {
+  return sensitivityRank(left) >= sensitivityRank(right) ? left : right;
+}
+
+function combinedContentSensitivity(values: Array<string | null | undefined>): Sensitivity {
+  return values.reduce<Sensitivity>(
+    (current, value) =>
+      value == null ? current : maxSensitivity(current, classifySensitivity(value)),
+    "normal",
+  );
+}
+
+function memoryInferredSensitivity(memory: MemoryRecord): Sensitivity {
+  return maxSensitivity(
+    combinedContentSensitivity([
+      memory.id,
+      memory.profileId,
+      memory.scope,
+      memory.content,
+      memory.sourceEventId,
+    ]),
+    classifyPayloadSensitivity(memory.metadata),
+  );
+}
+
+function evidenceInferredSensitivity(event: EvidenceEvent): Sensitivity {
+  return maxSensitivity(
+    combinedContentSensitivity([
+      event.id,
+      event.eventKey,
+      event.profileId,
+      event.sourceType,
+      event.sourceUri,
+      event.content,
+    ]),
+    classifyPayloadSensitivity(event.payload),
+  );
+}
+
+function withInferredMemorySensitivity(memory: MemoryRecord): MemoryRecord {
+  const inferred = memoryInferredSensitivity(memory);
+  return sensitivityRank(inferred) > sensitivityRank(memory.sensitivity)
+    ? { ...memory, sensitivity: inferred }
+    : memory;
+}
+
+function withInferredEvidenceSensitivity(event: EvidenceEvent): EvidenceEvent {
+  const inferred = evidenceInferredSensitivity(event);
+  return sensitivityRank(inferred) > sensitivityRank(event.sensitivity)
+    ? { ...event, sensitivity: inferred }
+    : event;
+}
+
+function contentAllowedBySensitivity(
+  content: string,
+  options: { includeSensitive: boolean },
+): boolean {
+  return options.includeSensitive || classifySensitivity(content) === "normal";
+}
+
+function optionalContentAllowedBySensitivity(
+  content: string | null | undefined,
+  options: { includeSensitive: boolean },
+): boolean {
+  return content == null || contentAllowedBySensitivity(content, options);
+}
+
+function payloadAllowedBySensitivity(
+  value: Record<string, unknown>,
+  options: { includeSensitive: boolean },
+): boolean {
+  return options.includeSensitive || !payloadContainsRestrictedValue(value);
+}
+
+function memoryAllowedBySensitivity(
+  memory: MemoryRecord,
+  options: { includeSensitive: boolean },
+): boolean {
+  return (
+    contentAllowedBySensitivity(memory.id, options) &&
+    contentAllowedBySensitivity(memory.profileId, options) &&
+    contentAllowedBySensitivity(memory.scope, options) &&
+    contentAllowedBySensitivity(memory.content, options) &&
+    optionalContentAllowedBySensitivity(memory.sourceEventId, options) &&
+    payloadAllowedBySensitivity(memory.metadata, options)
+  );
+}
+
+function evidenceAllowedBySensitivity(
+  event: EvidenceEvent,
+  options: { includeSensitive: boolean },
+): boolean {
+  return (
+    (options.includeSensitive || event.sensitivity === "normal") &&
+    contentAllowedBySensitivity(event.id, options) &&
+    contentAllowedBySensitivity(event.eventKey, options) &&
+    contentAllowedBySensitivity(event.profileId, options) &&
+    contentAllowedBySensitivity(event.sourceType, options) &&
+    optionalContentAllowedBySensitivity(event.sourceUri, options) &&
+    contentAllowedBySensitivity(event.content, options) &&
+    payloadAllowedBySensitivity(event.payload, options)
+  );
+}
+
+function beliefAllowedBySensitivity(
+  belief: WorldBeliefRecord,
+  options: { includeSensitive: boolean },
+): boolean {
+  return contentAllowedBySensitivity(
+    `${belief.id}\n${belief.profileId}\n${belief.subject}\n${belief.predicate}\n${belief.object}\n${belief.sourceMemoryId ?? ""}`,
+    options,
+  );
+}
+
+function failureAllowedBySensitivity(
+  failure: FailureEventRecord,
+  options: { includeSensitive: boolean },
+): boolean {
+  return (
+    contentAllowedBySensitivity(`${failure.id}\n${failure.profileId}\n${failure.failureKind}\n${failure.content}`, options) &&
+    payloadAllowedBySensitivity(failure.metadata, options)
+  );
+}
+
+function taskAllowedBySensitivity(
+  trajectory: SqliteTaskTrajectoryRecord,
+  options: { includeSensitive: boolean },
+): boolean {
+  return contentAllowedBySensitivity(
+    `${trajectory.id}\n${trajectory.profileId}\n${trajectory.taskId ?? ""}\n${trajectory.objective}\n${trajectory.summary ?? ""}`,
+    options,
+  );
+}
+
+function withExportedEvidenceClosure(
+  memories: MemoryRecord[],
+  evidenceEvents: EvidenceEvent[],
+): MemoryRecord[] {
+  const evidenceIds = new Set(evidenceEvents.map((event) => event.id));
+  return memories.map((memory) =>
+    memory.sourceEventId && !evidenceIds.has(memory.sourceEventId)
+      ? { ...memory, sourceEventId: null }
+      : memory,
+  );
+}
+
 export function exportSqliteProfileBackup(
   db: Database.Database,
   input: ExportSqliteProfileBackupInput,
 ): SqliteProfileBackupDocument {
   const profileId = requireNonEmptyProfile(input.profileId);
   const options = backupOptions(input);
-  const memories = memoryRowsForBackup(db, profileId, options);
-  const evidenceEvents = evidenceRowsForBackup(db, profileId, memories, options);
-  const worldBeliefs = worldBeliefRowsForBackup(db, profileId, memories, options);
-  const failureEvents = failureRowsForBackup(db, profileId, options);
-  const taskTrajectories = taskRowsForBackup(db, profileId, options);
+  if (!contentAllowedBySensitivity(profileId, options)) {
+    throw new Error("gmOS profile backup profileId requires includeSensitive=true");
+  }
+  const memoryRows = memoryRowsForBackup(db, profileId, options);
+  const evidenceEvents = evidenceRowsForBackup(db, profileId, memoryRows, options);
+  const memories = withExportedEvidenceClosure(memoryRows, evidenceEvents);
+  const worldBeliefs = worldBeliefRowsForBackup(db, profileId, memories, options).filter((belief) =>
+    beliefAllowedBySensitivity(belief, options),
+  );
+  const failureEvents = failureRowsForBackup(db, profileId, options).filter((failure) =>
+    failureAllowedBySensitivity(failure, options),
+  );
+  const taskTrajectories = taskRowsForBackup(db, profileId, options).filter((trajectory) =>
+    taskAllowedBySensitivity(trajectory, options),
+  );
   return {
     schema: "gmos.profile_backup.v1",
     exportedAt: nowIso(),
@@ -419,6 +620,398 @@ function countBucket(): SqliteProfileBackupDocument["counts"] {
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function backupError(path: string, message: string): Error {
+  return new Error(`gmOS profile backup invalid ${path}: ${message}`);
+}
+
+function assertRecord(value: unknown, path: string): asserts value is Record<string, unknown> {
+  if (!isRecord(value)) throw backupError(path, "must be an object");
+}
+
+function assertNonEmptyString(value: unknown, path: string): asserts value is string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw backupError(path, "must be a non-empty string");
+  }
+}
+
+function assertString(value: unknown, path: string): asserts value is string {
+  if (typeof value !== "string") throw backupError(path, "must be a string");
+}
+
+function assertOptionalStringOrNull(value: unknown, path: string): void {
+  if (value === undefined || value === null) return;
+  assertString(value, path);
+}
+
+function assertOptionalNonEmptyStringOrNull(value: unknown, path: string): void {
+  if (value === undefined || value === null) return;
+  assertNonEmptyString(value, path);
+}
+
+function assertBoolean(value: unknown, path: string): asserts value is boolean {
+  if (typeof value !== "boolean") throw backupError(path, "must be a boolean");
+}
+
+function assertPlainObject(value: unknown, path: string): asserts value is Record<string, unknown> {
+  if (!isRecord(value)) throw backupError(path, "must be a plain object");
+}
+
+function assertFiniteNumber(
+  value: unknown,
+  path: string,
+  options: { min?: number; max?: number } = {},
+): asserts value is number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw backupError(path, "must be a finite number");
+  }
+  if (options.min !== undefined && value < options.min) {
+    throw backupError(path, `must be >= ${options.min}`);
+  }
+  if (options.max !== undefined && value > options.max) {
+    throw backupError(path, `must be <= ${options.max}`);
+  }
+}
+
+function assertNonNegativeInteger(value: unknown, path: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw backupError(path, "must be a non-negative integer");
+  }
+}
+
+function assertEnum(value: unknown, allowed: ReadonlySet<string>, path: string): asserts value is string {
+  if (typeof value !== "string" || !allowed.has(value)) {
+    throw backupError(path, `must be one of ${[...allowed].join(", ")}`);
+  }
+}
+
+function assertProfileId(value: unknown, sourceProfileId: string, path: string): void {
+  assertNonEmptyString(value, path);
+  if (value !== sourceProfileId) {
+    throw backupError(path, `must match backup profileId ${sourceProfileId}`);
+  }
+}
+
+function assertCountMatches(
+  counts: Record<string, unknown>,
+  key: keyof SqliteProfileBackupDocument["counts"],
+  actual: number,
+): void {
+  assertNonNegativeInteger(counts[key], `counts.${key}`);
+  if (counts[key] !== actual) {
+    throw backupError(`counts.${key}`, `must match ${key}.length`);
+  }
+}
+
+function assertUnique(values: string[], path: string): void {
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value)) throw backupError(path, `duplicate value ${value}`);
+    seen.add(value);
+  }
+}
+
+function assertPackageInfo(value: unknown): void {
+  assertRecord(value, "package");
+  assertNonEmptyString(value.name, "package.name");
+  assertNonEmptyString(value.version, "package.version");
+}
+
+function assertBackupOptions(value: unknown): asserts value is SqliteProfileBackupDocument["options"] {
+  assertRecord(value, "options");
+  for (const key of [
+    "includeArchived",
+    "includeSensitive",
+    "includePerson",
+    "includeEvidence",
+    "includeWorldBeliefs",
+    "includeFailures",
+    "includeTaskTrajectories",
+  ] as const) {
+    assertBoolean(value[key], `options.${key}`);
+  }
+}
+
+function assertEvidenceEvent(value: unknown, sourceProfileId: string, index: number): asserts value is EvidenceEvent {
+  const path = `evidenceEvents[${index}]`;
+  assertRecord(value, path);
+  assertNonEmptyString(value.id, `${path}.id`);
+  assertNonEmptyString(value.eventKey, `${path}.eventKey`);
+  assertProfileId(value.profileId, sourceProfileId, `${path}.profileId`);
+  assertString(value.sourceType, `${path}.sourceType`);
+  assertOptionalStringOrNull(value.sourceUri, `${path}.sourceUri`);
+  assertString(value.content, `${path}.content`);
+  assertEnum(value.sensitivity, SENSITIVITIES, `${path}.sensitivity`);
+  assertBoolean(value.eligibleForLongTermMemory, `${path}.eligibleForLongTermMemory`);
+  assertPlainObject(value.payload, `${path}.payload`);
+  assertString(value.createdAt, `${path}.createdAt`);
+}
+
+function assertMemoryRecord(value: unknown, sourceProfileId: string, index: number): asserts value is MemoryRecord {
+  const path = `memories[${index}]`;
+  assertRecord(value, path);
+  assertNonEmptyString(value.id, `${path}.id`);
+  assertProfileId(value.profileId, sourceProfileId, `${path}.profileId`);
+  assertEnum(value.kind, MEMORY_KINDS, `${path}.kind`);
+  assertString(value.scope, `${path}.scope`);
+  assertString(value.content, `${path}.content`);
+  assertEnum(value.sensitivity, SENSITIVITIES, `${path}.sensitivity`);
+  assertEnum(value.status, MEMORY_STATUSES, `${path}.status`);
+  assertFiniteNumber(value.confidence, `${path}.confidence`, { min: 0, max: 1 });
+  assertOptionalNonEmptyStringOrNull(value.sourceEventId, `${path}.sourceEventId`);
+  assertPlainObject(value.metadata, `${path}.metadata`);
+  assertString(value.createdAt, `${path}.createdAt`);
+  assertString(value.updatedAt, `${path}.updatedAt`);
+}
+
+function assertWorldBeliefRecord(
+  value: unknown,
+  sourceProfileId: string,
+  index: number,
+): asserts value is WorldBeliefRecord {
+  const path = `worldBeliefs[${index}]`;
+  assertRecord(value, path);
+  assertNonEmptyString(value.id, `${path}.id`);
+  assertProfileId(value.profileId, sourceProfileId, `${path}.profileId`);
+  assertString(value.subject, `${path}.subject`);
+  assertString(value.predicate, `${path}.predicate`);
+  assertString(value.object, `${path}.object`);
+  assertFiniteNumber(value.confidence, `${path}.confidence`, { min: 0, max: 1 });
+  assertEnum(value.status, WORLD_BELIEF_STATUSES, `${path}.status`);
+  assertOptionalNonEmptyStringOrNull(value.sourceMemoryId, `${path}.sourceMemoryId`);
+  assertString(value.createdAt, `${path}.createdAt`);
+  assertString(value.updatedAt, `${path}.updatedAt`);
+}
+
+function assertFailureEventRecord(
+  value: unknown,
+  sourceProfileId: string,
+  index: number,
+): asserts value is FailureEventRecord {
+  const path = `failureEvents[${index}]`;
+  assertRecord(value, path);
+  assertNonEmptyString(value.id, `${path}.id`);
+  assertProfileId(value.profileId, sourceProfileId, `${path}.profileId`);
+  assertEnum(value.failureKind, FAILURE_KINDS, `${path}.failureKind`);
+  assertString(value.content, `${path}.content`);
+  assertPlainObject(value.metadata, `${path}.metadata`);
+  assertString(value.createdAt, `${path}.createdAt`);
+}
+
+function assertTaskTrajectoryRecord(
+  value: unknown,
+  sourceProfileId: string,
+  index: number,
+): asserts value is SqliteTaskTrajectoryRecord {
+  const path = `taskTrajectories[${index}]`;
+  assertRecord(value, path);
+  assertNonEmptyString(value.id, `${path}.id`);
+  assertProfileId(value.profileId, sourceProfileId, `${path}.profileId`);
+  assertOptionalStringOrNull(value.taskId, `${path}.taskId`);
+  assertString(value.objective, `${path}.objective`);
+  assertEnum(value.status, TASK_STATUSES, `${path}.status`);
+  assertOptionalStringOrNull(value.summary, `${path}.summary`);
+  assertString(value.createdAt, `${path}.createdAt`);
+}
+
+function assertBackupRows(backup: SqliteProfileBackupDocument): void {
+  backup.evidenceEvents.forEach((event, index) =>
+    assertEvidenceEvent(event, backup.profileId, index),
+  );
+  backup.memories.forEach((memory, index) =>
+    assertMemoryRecord(memory, backup.profileId, index),
+  );
+  backup.worldBeliefs.forEach((belief, index) =>
+    assertWorldBeliefRecord(belief, backup.profileId, index),
+  );
+  backup.failureEvents.forEach((failure, index) =>
+    assertFailureEventRecord(failure, backup.profileId, index),
+  );
+  backup.taskTrajectories.forEach((trajectory, index) =>
+    assertTaskTrajectoryRecord(trajectory, backup.profileId, index),
+  );
+
+  assertUnique(
+    backup.evidenceEvents.map((event) => event.id),
+    "evidenceEvents.id",
+  );
+  assertUnique(
+    backup.evidenceEvents.map((event) => event.eventKey),
+    "evidenceEvents.eventKey",
+  );
+  assertUnique(
+    backup.memories.map((memory) => memory.id),
+    "memories.id",
+  );
+  assertUnique(
+    backup.worldBeliefs.map((belief) => belief.id),
+    "worldBeliefs.id",
+  );
+  assertUnique(
+    backup.failureEvents.map((failure) => failure.id),
+    "failureEvents.id",
+  );
+  assertUnique(
+    backup.taskTrajectories.map((trajectory) => trajectory.id),
+    "taskTrajectories.id",
+  );
+
+  const evidenceIds = new Set(backup.evidenceEvents.map((event) => event.id));
+  if (backup.options.includeEvidence) {
+    const referencedEvidenceIds = new Set(
+      backup.memories.map((memory) => memory.sourceEventId).filter((id): id is string => !!id),
+    );
+    for (const [index, memory] of backup.memories.entries()) {
+      if (memory.sourceEventId && !evidenceIds.has(memory.sourceEventId)) {
+        throw backupError(
+          `memories[${index}].sourceEventId`,
+          `references missing evidence event ${memory.sourceEventId}`,
+        );
+      }
+    }
+    if (backup.mode === "safe") {
+      for (const [index, event] of backup.evidenceEvents.entries()) {
+        if (!referencedEvidenceIds.has(event.id)) {
+          throw backupError(
+            `evidenceEvents[${index}].id`,
+            "is not referenced by any exported memory sourceEventId",
+          );
+        }
+      }
+    }
+  }
+
+  const memoryIds = new Set(backup.memories.map((memory) => memory.id));
+  if (backup.options.includeWorldBeliefs) {
+    for (const [index, belief] of backup.worldBeliefs.entries()) {
+      if (belief.sourceMemoryId && !memoryIds.has(belief.sourceMemoryId)) {
+        throw backupError(
+          `worldBeliefs[${index}].sourceMemoryId`,
+          `references missing memory ${belief.sourceMemoryId}`,
+        );
+      }
+    }
+  }
+}
+
+function assertBackupOptionSemantics(backup: SqliteProfileBackupDocument): void {
+  for (const [index, memory] of backup.memories.entries()) {
+    const inferred = memoryInferredSensitivity(memory);
+    if (sensitivityRank(inferred) > sensitivityRank(memory.sensitivity)) {
+      throw backupError(
+        `memories[${index}].sensitivity`,
+        `declared ${memory.sensitivity} is lower than inferred ${inferred}`,
+      );
+    }
+  }
+  for (const [index, event] of backup.evidenceEvents.entries()) {
+    const inferred = evidenceInferredSensitivity(event);
+    if (sensitivityRank(inferred) > sensitivityRank(event.sensitivity)) {
+      throw backupError(
+        `evidenceEvents[${index}].sensitivity`,
+        `declared ${event.sensitivity} is lower than inferred ${inferred}`,
+      );
+    }
+  }
+
+  if (!backup.options.includeEvidence && backup.evidenceEvents.length > 0) {
+    throw backupError("options.includeEvidence", "is false but evidenceEvents is non-empty");
+  }
+  if (!backup.options.includeEvidence) {
+    for (const [index, memory] of backup.memories.entries()) {
+      if (memory.sourceEventId) {
+        throw backupError(
+          `memories[${index}].sourceEventId`,
+          "must be null when options.includeEvidence is false",
+        );
+      }
+    }
+  }
+  if (!backup.options.includeWorldBeliefs && backup.worldBeliefs.length > 0) {
+    throw backupError("options.includeWorldBeliefs", "is false but worldBeliefs is non-empty");
+  }
+  if (!backup.options.includeFailures && backup.failureEvents.length > 0) {
+    throw backupError("options.includeFailures", "is false but failureEvents is non-empty");
+  }
+  if (!backup.options.includeTaskTrajectories && backup.taskTrajectories.length > 0) {
+    throw backupError(
+      "options.includeTaskTrajectories",
+      "is false but taskTrajectories is non-empty",
+    );
+  }
+
+  if (!backup.options.includeArchived) {
+    for (const [index, memory] of backup.memories.entries()) {
+      if (memory.status === "archived") {
+        throw backupError(
+          `memories[${index}].status`,
+          "archived memory requires options.includeArchived=true",
+        );
+      }
+    }
+  }
+
+  if (!backup.options.includeSensitive) {
+    if (!contentAllowedBySensitivity(backup.profileId, backup.options)) {
+      throw backupError("profileId", "sensitive profileId requires options.includeSensitive=true");
+    }
+    for (const [index, memory] of backup.memories.entries()) {
+      if (memory.sensitivity !== "normal" || !memoryAllowedBySensitivity(memory, backup.options)) {
+        throw backupError(
+          `memories[${index}].sensitivity`,
+          "sensitive memory requires options.includeSensitive=true",
+        );
+      }
+    }
+    for (const [index, event] of backup.evidenceEvents.entries()) {
+      if (!evidenceAllowedBySensitivity(event, backup.options)) {
+        throw backupError(
+          `evidenceEvents[${index}].sensitivity`,
+          "sensitive evidence requires options.includeSensitive=true",
+        );
+      }
+    }
+    for (const [index, belief] of backup.worldBeliefs.entries()) {
+      if (!beliefAllowedBySensitivity(belief, backup.options)) {
+        throw backupError(
+          `worldBeliefs[${index}]`,
+          "sensitive belief content requires options.includeSensitive=true",
+        );
+      }
+    }
+    for (const [index, failure] of backup.failureEvents.entries()) {
+      if (!failureAllowedBySensitivity(failure, backup.options)) {
+        throw backupError(
+          `failureEvents[${index}].content`,
+          "sensitive failure content requires options.includeSensitive=true",
+        );
+      }
+    }
+    for (const [index, trajectory] of backup.taskTrajectories.entries()) {
+      if (!taskAllowedBySensitivity(trajectory, backup.options)) {
+        throw backupError(
+          `taskTrajectories[${index}]`,
+          "sensitive task trajectory content requires options.includeSensitive=true",
+        );
+      }
+    }
+  }
+
+  if (!backup.options.includePerson) {
+    for (const [index, memory] of backup.memories.entries()) {
+      if (memory.kind === "person") {
+        throw backupError(
+          `memories[${index}].kind`,
+          "person memory requires options.includePerson=true",
+        );
+      }
+    }
+  }
+}
+
 function assertBackupDocument(value: unknown): asserts value is SqliteProfileBackupDocument {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("gmOS profile backup must be an object");
@@ -430,6 +1023,11 @@ function assertBackupDocument(value: unknown): asserts value is SqliteProfileBac
   if (typeof backup.profileId !== "string" || !backup.profileId.trim()) {
     throw new Error("gmOS profile backup requires profileId");
   }
+  assertNonEmptyString(backup.exportedAt, "exportedAt");
+  assertPackageInfo(backup.package);
+  assertEnum(backup.mode, new Set<SqliteProfileBackupMode>(["safe", "full"]), "mode");
+  assertBackupOptions(backup.options);
+  assertRecord(backup.counts, "counts");
   for (const key of [
     "memories",
     "evidenceEvents",
@@ -441,6 +1039,14 @@ function assertBackupDocument(value: unknown): asserts value is SqliteProfileBac
       throw new Error(`gmOS profile backup requires array ${key}`);
     }
   }
+  const document = backup as SqliteProfileBackupDocument;
+  assertCountMatches(document.counts, "memories", document.memories.length);
+  assertCountMatches(document.counts, "evidenceEvents", document.evidenceEvents.length);
+  assertCountMatches(document.counts, "worldBeliefs", document.worldBeliefs.length);
+  assertCountMatches(document.counts, "failureEvents", document.failureEvents.length);
+  assertCountMatches(document.counts, "taskTrajectories", document.taskTrajectories.length);
+  assertBackupRows(document);
+  assertBackupOptionSemantics(document);
 }
 
 export function parseSqliteProfileBackup(value: unknown): SqliteProfileBackupDocument {

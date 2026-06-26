@@ -2,9 +2,10 @@ import type { EvidenceEvent, PrivacyMode, Sensitivity } from "./types.js";
 
 const SECRET_PATTERNS = [
   /\bsk-[A-Za-z0-9_-]{16,}\b/u,
-  /\b(api[_-]?key|token|password|secret)\b\s*[:=]\s*\S{8,}/iu,
+  /\b(api[\s_.-]?key|token|password|secret)\b\s*["']?\s*[:=]\s*["']?\S{8,}/iu,
+  /\b(access[\s_.-]?token|refresh[\s_.-]?token|id[\s_.-]?token|client[\s_.-]?secret|auth(?:entication)?(?:[\s_.-]?token)?|authorization|cookies?|credentials?(?:[\s_.-]?id)?|session(?:[\s_.-]?(?:id|token))?)\b\s*["']?\s*[:=]\s*["']?\S{8,}/iu,
   /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/iu,
-  /\b[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b/u,
+  /\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/u,
 ];
 
 const SENSITIVE_PATTERNS = [
@@ -14,9 +15,23 @@ const SENSITIVE_PATTERNS = [
 ];
 
 const SENSITIVE_METADATA_KEYS =
-  /(^|[_-])(api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret|authorization|authentication|auth|cookie|credential|session|ssn|social[_-]?security)($|[_-])/iu;
+  /(^|[\s_.-])(api[\s_.-]?key|access[\s_.-]?token|refresh[\s_.-]?token|token|password|secret|authorization|authentication|auth(?:entication)?(?:[\s_.-]?token)?|cookie|credential(?:[\s_.-]?id)?|session(?:[\s_.-]?id)?|ssn|social[\s_.-]?security)($|[\s_.-])/iu;
 
 const REDACTED_METADATA = "[redacted_sensitive_metadata]";
+const CREDENTIAL_KEY_PATTERN =
+  "api[\\s_.-]?key|access[\\s_.-]?token|refresh[\\s_.-]?token|id[\\s_.-]?token|client[\\s_.-]?secret|token|password|secret|auth(?:entication)?(?:[\\s_.-]?token)?|authorization|cookies?|credentials?(?:[\\s_.-]?id)?|session(?:[\\s_.-]?(?:id|token))?";
+const DOUBLE_QUOTED_CREDENTIAL_ASSIGNMENT_PATTERN = new RegExp(
+  `\\b(${CREDENTIAL_KEY_PATTERN})\\b(\\s*["']?\\s*[:=]\\s*)"(?:\\\\.|[^"\\\\])*"`,
+  "giu",
+);
+const SINGLE_QUOTED_CREDENTIAL_ASSIGNMENT_PATTERN = new RegExp(
+  `\\b(${CREDENTIAL_KEY_PATTERN})\\b(\\s*["']?\\s*[:=]\\s*)'(?:\\\\.|[^'\\\\])*'`,
+  "giu",
+);
+const UNQUOTED_CREDENTIAL_ASSIGNMENT_PATTERN = new RegExp(
+  `\\b(${CREDENTIAL_KEY_PATTERN})\\b(\\s*["']?\\s*[:=]\\s*)(?!["'])(\\S{8,})`,
+  "giu",
+);
 
 export function classifySensitivity(content: string): Sensitivity {
   if (SECRET_PATTERNS.some((pattern) => pattern.test(content))) {
@@ -50,14 +65,22 @@ export function shouldHideFromOrdinaryContext(input: {
 }
 
 export function redactForReport(content: string): string {
-  return content
+  const redacted = content
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gu, "[redacted_secret]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/giu, "Bearer [redacted_secret]")
-    .replace(/\b\d{3}-\d{2}-\d{4}\b/gu, "[redacted_sensitive]")
     .replace(
-      /\b(api[_-]?key|token|password|secret)\b\s*[:=]\s*\S+/giu,
-      "$1=[redacted_secret]",
-    );
+      /\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/gu,
+      "[redacted_secret]",
+    )
+    .replace(/\b\d{3}-\d{2}-\d{4}\b/gu, "[redacted_sensitive]")
+    .replace(DOUBLE_QUOTED_CREDENTIAL_ASSIGNMENT_PATTERN, '$1$2"[redacted_secret]"')
+    .replace(SINGLE_QUOTED_CREDENTIAL_ASSIGNMENT_PATTERN, "$1$2'[redacted_secret]'")
+    .replace(UNQUOTED_CREDENTIAL_ASSIGNMENT_PATTERN, "$1$2[redacted_secret]");
+  if (redacted !== content) return redacted;
+  const sensitivity = classifySensitivity(content);
+  if (sensitivity === "secret_like") return "[redacted_secret]";
+  if (sensitivity === "sensitive") return "[redacted_sensitive]";
+  return content;
 }
 
 export function sanitizePublicPayload(value: unknown): unknown {
@@ -71,16 +94,22 @@ export function sanitizePublicPayloadRecord(input: Record<string, unknown>): Rec
 }
 
 export function payloadContainsRestrictedValue(value: unknown): boolean {
-  return sanitizePayloadValue(value, undefined, new WeakSet()).redacted;
+  return classifyPayloadSensitivity(value) !== "normal";
+}
+
+export function classifyPayloadSensitivity(value: unknown): Sensitivity {
+  return classifyPayloadValue(value, undefined, new WeakSet());
 }
 
 export function sanitizeEvidenceForPublicOutput(evidence: EvidenceEvent): EvidenceEvent {
   return {
     ...evidence,
-    content:
-      evidence.sensitivity === "normal" && classifySensitivity(evidence.content) === "normal"
-        ? evidence.content
-        : redactForReport(evidence.content),
+    id: redactForReport(evidence.id),
+    eventKey: redactForReport(evidence.eventKey),
+    profileId: redactForReport(evidence.profileId),
+    sourceType: redactForReport(evidence.sourceType),
+    sourceUri: evidence.sourceUri == null ? evidence.sourceUri : redactForReport(evidence.sourceUri),
+    content: redactForReport(evidence.content),
     payload: sanitizePublicPayloadRecord(evidence.payload),
   };
 }
@@ -90,7 +119,7 @@ function sanitizePayloadValue(
   key: string | undefined,
   seen: WeakSet<object>,
 ): { value: unknown; redacted: boolean; omit?: boolean } {
-  if (key !== undefined && SENSITIVE_METADATA_KEYS.test(key)) {
+  if (key !== undefined && classifyMetadataKeySensitivity(key) !== "normal") {
     return { value: REDACTED_METADATA, redacted: true, omit: true };
   }
   if (typeof value === "string") {
@@ -128,4 +157,62 @@ function sanitizePayloadValue(
     return { value: output, redacted };
   }
   return { value: REDACTED_METADATA, redacted: true };
+}
+
+function maxSensitivity(left: Sensitivity, right: Sensitivity): Sensitivity {
+  if (left === "secret_like" || right === "secret_like") return "secret_like";
+  if (left === "sensitive" || right === "sensitive") return "sensitive";
+  return "normal";
+}
+
+function normalizeMetadataKey(key: string): string {
+  return key
+    .replace(/([a-z0-9])([A-Z])/gu, "$1 $2")
+    .replace(/[^A-Za-z0-9]+/gu, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function classifyMetadataKeySensitivity(key: string): Sensitivity {
+  if (SENSITIVE_METADATA_KEYS.test(key)) return /ssn|social/iu.test(key) ? "sensitive" : "secret_like";
+  const normalized = normalizeMetadataKey(key);
+  if (!normalized) return "normal";
+  if (/(^|\s)(ssn|social\s+security)($|\s)/iu.test(normalized)) return "sensitive";
+  if (
+    /(^|\s)(api\s*key|access\s*token|refresh\s*token|id\s*token|auth(?:entication)?(?:\s*token)?|authorization|cookies?|credentials?(?:\s*id)?|session(?:\s*(?:id|token))?|client\s*secret|password|secret|token)($|\s)/iu.test(
+      normalized,
+    )
+  ) {
+    return "secret_like";
+  }
+  return "normal";
+}
+
+function classifyPayloadValue(
+  value: unknown,
+  key: string | undefined,
+  seen: WeakSet<object>,
+): Sensitivity {
+  let sensitivity = key === undefined ? "normal" : classifyMetadataKeySensitivity(key);
+  if (sensitivity === "secret_like") return sensitivity;
+  if (typeof value === "string") return maxSensitivity(sensitivity, classifySensitivity(value));
+  if (value === null || typeof value === "number" || typeof value === "boolean") return sensitivity;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      sensitivity = maxSensitivity(sensitivity, classifyPayloadValue(entry, undefined, seen));
+      if (sensitivity === "secret_like") return sensitivity;
+    }
+    return sensitivity;
+  }
+  if (value && typeof value === "object") {
+    if (seen.has(value)) return maxSensitivity(sensitivity, "sensitive");
+    seen.add(value);
+    for (const [entryKey, entryValue] of Object.entries(value as Record<string, unknown>)) {
+      sensitivity = maxSensitivity(sensitivity, classifyPayloadValue(entryValue, entryKey, seen));
+      if (sensitivity === "secret_like") break;
+    }
+    seen.delete(value);
+    return sensitivity;
+  }
+  return "sensitive";
 }

@@ -24,6 +24,7 @@ import {
   createSqliteMemoryStore,
   parseSqliteProfileBackup,
   type SqliteMemoryStore,
+  type SqliteProfileBackupDocument,
 } from "../src/store/sqlite/index.js";
 import {
   classifyHostCompatibility,
@@ -53,6 +54,14 @@ import {
   renderMemoryStatusMarkdown,
 } from "../src/diagnostics/index.js";
 import { createMemoryHttpServer } from "../src/http/index.js";
+import {
+  classifyPayloadSensitivity,
+  classifySensitivity,
+  payloadContainsRestrictedValue,
+  redactForReport,
+  sanitizeEvidenceForPublicOutput,
+  sanitizePublicPayload,
+} from "../src/kernel/safety.js";
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-sdk-test-"));
 const dbPath = path.join(tmp, "test.db");
@@ -70,6 +79,18 @@ const expectedGit = {
   sha: gitOutput(["rev-parse", "HEAD"]),
   dirty: gitOutput(["status", "--porcelain"]).length > 0,
 };
+function cloneProfileBackup(
+  backup: SqliteProfileBackupDocument,
+): SqliteProfileBackupDocument {
+  return JSON.parse(JSON.stringify(backup)) as SqliteProfileBackupDocument;
+}
+function refreshProfileBackupCounts(backup: SqliteProfileBackupDocument): void {
+  backup.counts.memories = backup.memories.length;
+  backup.counts.evidenceEvents = backup.evidenceEvents.length;
+  backup.counts.worldBeliefs = backup.worldBeliefs.length;
+  backup.counts.failureEvents = backup.failureEvents.length;
+  backup.counts.taskTrajectories = backup.taskTrajectories.length;
+}
 
 async function httpJson(
   url: string,
@@ -870,10 +891,140 @@ const backupBelief = await store.addWorldBelief({
   object: "portable restores",
   sourceMemoryId: backupMemory.id,
 });
+await store.addWorldBelief({
+  profileId: backupProfileId,
+  subject: "user",
+  predicate: "stores",
+  object: "sensitive fixture",
+  sourceMemoryId: backupSensitiveMemory.id,
+});
+await store.addWorldBelief({
+  profileId: backupProfileId,
+  subject: "user",
+  predicate: "mentioned",
+  object: "SSN 123-45-6789 in a source-less belief",
+});
+const sensitiveEvidenceForNormalMemory = await store.recordEvidence({
+  profileId: backupProfileId,
+  eventKey: "backup_sensitive_evidence_for_normal_memory",
+  sourceType: "test",
+  content: "Sensitive evidence says SSN 123-45-6789.",
+  sensitivity: "sensitive",
+  eligibleForLongTermMemory: true,
+});
+await store.addMemory({
+  profileId: backupProfileId,
+  kind: "fact",
+  content: "Normal memory linked to evidence that is not safe to export.",
+  sensitivity: "normal",
+  confidence: 0.8,
+  sourceEventId: sensitiveEvidenceForNormalMemory.id,
+});
+await store.addMemory({
+  profileId: backupProfileId,
+  kind: "fact",
+  content: "Normal memory with sensitive metadata should not be safe to export.",
+  sensitivity: "normal",
+  confidence: 0.8,
+  metadata: { ssn: "123-45-6789" },
+});
+await store.addMemory({
+  profileId: backupProfileId,
+  kind: "fact",
+  content: "Normal memory with sessionid metadata should not be safe to export.",
+  sensitivity: "normal",
+  confidence: 0.8,
+  metadata: { sessionid: "abcdefghijkl" },
+});
+await store.addMemory({
+  profileId: backupProfileId,
+  kind: "fact",
+  content: "Normal memory with dotted session metadata should not be safe to export.",
+  sensitivity: "normal",
+  confidence: 0.8,
+  metadata: { "session.id": "abcdefghijkl" },
+});
+await store.addMemory({
+  profileId: backupProfileId,
+  kind: "fact",
+  content: "Normal memory with space credential metadata should not be safe to export.",
+  sensitivity: "normal",
+  confidence: 0.8,
+  metadata: { "credential id": "abcdefghijkl" },
+});
+await store.addMemory({
+  profileId: backupProfileId,
+  kind: "fact",
+  content: "Normal memory with camel credential metadata should not be safe to export.",
+  sensitivity: "normal",
+  confidence: 0.8,
+  metadata: { sessionToken: "abcdefghijkl", clientSecret: "abcdefghijkl" },
+});
+await store.addMemory({
+  profileId: backupProfileId,
+  kind: "fact",
+  content: "Normal memory with plural credential metadata should not be safe to export.",
+  sensitivity: "normal",
+  confidence: 0.8,
+  metadata: { credentials: "abcdefghijkl", cookies: "abcdefghijkl" },
+});
+await store.addMemory({
+  profileId: backupProfileId,
+  kind: "fact",
+  content: "{\"sessionid\":\"abcdefghijkl\"}",
+  sensitivity: "normal",
+  confidence: 0.8,
+});
+await store.addMemory({
+  profileId: backupProfileId,
+  kind: "fact",
+  scope: "SSN 123-45-6789",
+  content: "Normal memory with sensitive scope should not be safe to export.",
+  sensitivity: "normal",
+  confidence: 0.8,
+});
+const normalEvidenceWithSensitivePayload = await store.recordEvidence({
+  profileId: backupProfileId,
+  eventKey: "backup_normal_evidence_sensitive_payload",
+  sourceType: "test",
+  content: "Normal evidence with sensitive payload should not be safe to export.",
+  sensitivity: "normal",
+  eligibleForLongTermMemory: true,
+  payload: { authorization: "Bearer backup-sensitive-token" },
+});
+await store.recordEvidence({
+  profileId: backupProfileId,
+  eventKey: "backup sensitive event key 123-45-6789",
+  sourceType: "test",
+  sourceUri: "conversation://safe",
+  content: "Normal evidence with sensitive event key should not be safe to export.",
+  sensitivity: "normal",
+  eligibleForLongTermMemory: true,
+});
+await store.recordEvidence({
+  profileId: backupProfileId,
+  eventKey: "backup_normal_event_sensitive_source_uri",
+  sourceType: "test",
+  sourceUri: "conversation://SSN 123-45-6789",
+  content: "Normal evidence with sensitive source URI should not be safe to export.",
+  sensitivity: "normal",
+  eligibleForLongTermMemory: true,
+});
 await memory.recordFeedback({
   profileId: backupProfileId,
   content: "Backup profile wrong recall fixture.",
   failureKind: "wrong_recall",
+});
+await store.recordFailure({
+  profileId: backupProfileId,
+  content: "Backup sensitive failure mentions SSN 123-45-6789.",
+  failureKind: "privacy_leak",
+});
+await store.recordFailure({
+  profileId: backupProfileId,
+  content: "Backup normal failure with sensitive metadata should not be safe to export.",
+  failureKind: "privacy_leak",
+  metadata: { authorization: "Bearer backup-sensitive-failure-token" },
 });
 await memory.commitOutcome({
   profileId: backupProfileId,
@@ -881,6 +1032,20 @@ await memory.commitOutcome({
   objective: "Backup profile task trajectory fixture.",
   status: "completed",
   summary: "Backup task restored successfully.",
+});
+await memory.commitOutcome({
+  profileId: backupProfileId,
+  taskId: "backup-task-sensitive",
+  objective: "Backup sensitive task mentions SSN 123-45-6789.",
+  status: "failed",
+  summary: "Sensitive task should not export when includeSensitive=false.",
+});
+await memory.commitOutcome({
+  profileId: backupProfileId,
+  taskId: "task 123-45-6789",
+  objective: "Backup task with sensitive task id should not export when includeSensitive=false.",
+  status: "completed",
+  summary: "Task id carries the sensitive value.",
 });
 const safeProfileBackup = store.exportProfileBackup({ profileId: backupProfileId });
 assert.equal(safeProfileBackup.schema, "gmos.profile_backup.v1");
@@ -902,9 +1067,43 @@ assert.equal(
   false,
 );
 assert.equal(JSON.stringify(safeProfileBackup).includes("123-45-6789"), false);
+assert.equal(JSON.stringify(safeProfileBackup).includes("Bearer backup-sensitive-token"), false);
+assert.equal(JSON.stringify(safeProfileBackup).includes("sessionid"), false);
+assert.equal(JSON.stringify(safeProfileBackup).includes("session.id"), false);
+assert.equal(JSON.stringify(safeProfileBackup).includes("credential id"), false);
+assert.equal(JSON.stringify(safeProfileBackup).includes("sessionToken"), false);
+assert.equal(JSON.stringify(safeProfileBackup).includes("clientSecret"), false);
+assert.equal(JSON.stringify(safeProfileBackup).includes("credentials"), false);
+assert.equal(JSON.stringify(safeProfileBackup).includes("cookies"), false);
+assert.equal(JSON.stringify(safeProfileBackup).includes("abcdefghijkl"), false);
 assert.equal(JSON.stringify(safeProfileBackup).includes("Backup person fixture"), false);
+assert.equal(
+  safeProfileBackup.memories
+    .filter((entry) => entry.content.includes("Normal memory linked to evidence"))
+    .every((entry) => entry.sourceEventId === null),
+  true,
+);
 assert.equal(safeProfileBackup.failureEvents.length, 0);
 assert.equal(safeProfileBackup.taskTrajectories.length, 0);
+assert.equal(parseSqliteProfileBackup(safeProfileBackup).memories.length, safeProfileBackup.memories.length);
+const forgedSafeOrphanEvidenceBackup = cloneProfileBackup(safeProfileBackup);
+forgedSafeOrphanEvidenceBackup.evidenceEvents.push({
+  id: "evidence_forged_safe_orphan",
+  eventKey: "evidence_forged_safe_orphan",
+  profileId: backupProfileId,
+  sourceType: "test",
+  sourceUri: null,
+  content: "Safe-looking orphan evidence should not be accepted in safe backups.",
+  sensitivity: "normal",
+  eligibleForLongTermMemory: true,
+  payload: {},
+  createdAt: "2026-06-25T00:00:00.000Z",
+});
+refreshProfileBackupCounts(forgedSafeOrphanEvidenceBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(forgedSafeOrphanEvidenceBackup),
+  /evidenceEvents\[\d+\]\.id/,
+);
 const fullProfileBackup = store.exportProfileBackup({ profileId: backupProfileId, mode: "full" });
 assert.equal(fullProfileBackup.mode, "full");
 assert.equal(fullProfileBackup.options.includeSensitive, true);
@@ -919,14 +1118,693 @@ for (const expectedId of [
   assert.equal(fullProfileBackup.memories.some((entry) => entry.id === expectedId), true);
 }
 assert.equal(fullProfileBackup.worldBeliefs.some((entry) => entry.id === backupBelief.id), true);
-assert.equal(fullProfileBackup.failureEvents.length, 1);
-assert.equal(fullProfileBackup.taskTrajectories.length, 1);
-assert.equal(fullProfileBackup.evidenceEvents.length >= fullProfileBackup.memories.length, true);
+assert.equal(fullProfileBackup.failureEvents.length, 4);
+assert.equal(fullProfileBackup.taskTrajectories.length, 3);
+assert.equal(
+  fullProfileBackup.evidenceEvents.some(
+    (entry) => entry.id === normalEvidenceWithSensitivePayload.id,
+  ),
+  true,
+);
+assert.equal(
+  fullProfileBackup.memories.find((entry) =>
+    entry.content.includes("Normal memory with camel credential metadata"),
+  )?.sensitivity,
+  "secret_like",
+);
+assert.equal(
+  fullProfileBackup.memories.find((entry) => entry.content.includes("\"sessionid\""))?.sensitivity,
+  "secret_like",
+);
+assert.equal(
+  fullProfileBackup.evidenceEvents.find((entry) => entry.id === normalEvidenceWithSensitivePayload.id)
+    ?.sensitivity,
+  "secret_like",
+);
 const parsedProfileBackup = parseSqliteProfileBackup(JSON.parse(JSON.stringify(fullProfileBackup)));
 assert.equal(parsedProfileBackup.counts.memories, fullProfileBackup.counts.memories);
+const forgedFullDowngradedMemoryBackup = cloneProfileBackup(fullProfileBackup);
+forgedFullDowngradedMemoryBackup.memories.push({
+  id: "memory_forged_full_downgraded_secret",
+  profileId: backupProfileId,
+  kind: "fact",
+  scope: "global",
+  content: "password=\"correct horse battery staple\"",
+  sensitivity: "normal",
+  status: "active",
+  confidence: 0.8,
+  sourceEventId: null,
+  metadata: {},
+  createdAt: "2026-06-25T00:00:00.000Z",
+  updatedAt: "2026-06-25T00:00:00.000Z",
+});
+refreshProfileBackupCounts(forgedFullDowngradedMemoryBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(forgedFullDowngradedMemoryBackup),
+  /memories\[\d+\]\.sensitivity/,
+);
+const forgedFullAliasDowngradedMemoryBackup = cloneProfileBackup(fullProfileBackup);
+forgedFullAliasDowngradedMemoryBackup.memories.push({
+  id: "memory_forged_full_alias_downgraded_secret",
+  profileId: backupProfileId,
+  kind: "fact",
+  scope: "global",
+  content: "clientSecret=abcdefghijkl",
+  sensitivity: "normal",
+  status: "active",
+  confidence: 0.8,
+  sourceEventId: null,
+  metadata: {},
+  createdAt: "2026-06-25T00:00:00.000Z",
+  updatedAt: "2026-06-25T00:00:00.000Z",
+});
+refreshProfileBackupCounts(forgedFullAliasDowngradedMemoryBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(forgedFullAliasDowngradedMemoryBackup),
+  /memories\[\d+\]\.sensitivity/,
+);
+const forgedFullDowngradedEvidenceBackup = cloneProfileBackup(fullProfileBackup);
+forgedFullDowngradedEvidenceBackup.evidenceEvents.push({
+  id: "evidence_forged_full_downgraded_secret",
+  eventKey: "evidence_forged_full_downgraded_secret",
+  profileId: backupProfileId,
+  sourceType: "test",
+  sourceUri: "conversation://fixture?sessionToken=abcdefghijkl",
+  content: "Normal-looking evidence with secret metadata.",
+  sensitivity: "normal",
+  eligibleForLongTermMemory: true,
+  payload: { credentials: "abcdefghijkl" },
+  createdAt: "2026-06-25T00:00:00.000Z",
+});
+refreshProfileBackupCounts(forgedFullDowngradedEvidenceBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(forgedFullDowngradedEvidenceBackup),
+  /evidenceEvents\[\d+\]\.sensitivity/,
+);
+const forgedFullAliasDowngradedEvidenceBackup = cloneProfileBackup(fullProfileBackup);
+forgedFullAliasDowngradedEvidenceBackup.evidenceEvents.push({
+  id: "evidence_forged_full_alias_downgraded_secret",
+  eventKey: "evidence_forged_full_alias_downgraded_secret",
+  profileId: backupProfileId,
+  sourceType: "test",
+  sourceUri: "conversation://fixture?idToken=abcdefghijkl",
+  content: "Normal-looking evidence with alias token in sourceUri.",
+  sensitivity: "normal",
+  eligibleForLongTermMemory: true,
+  payload: {},
+  createdAt: "2026-06-25T00:00:00.000Z",
+});
+refreshProfileBackupCounts(forgedFullAliasDowngradedEvidenceBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(forgedFullAliasDowngradedEvidenceBackup),
+  /evidenceEvents\[\d+\]\.sensitivity/,
+);
 assert.throws(
   () => parseSqliteProfileBackup({ schema: "gmos.unknown", memories: [] }),
   /gmos.profile_backup.v1/,
+);
+const noEvidenceFullBackup = store.exportProfileBackup({
+  profileId: backupProfileId,
+  mode: "full",
+  includeEvidence: false,
+});
+assert.equal(noEvidenceFullBackup.evidenceEvents.length, 0);
+assert.equal(parseSqliteProfileBackup(noEvidenceFullBackup).evidenceEvents.length, 0);
+const forgedNoEvidenceSourceBackup = cloneProfileBackup(noEvidenceFullBackup);
+forgedNoEvidenceSourceBackup.memories[0].sourceEventId = "forged_evidence_reference";
+assert.throws(
+  () => parseSqliteProfileBackup(forgedNoEvidenceSourceBackup),
+  /memories\[0\]\.sourceEventId/,
+);
+const safeBeliefBackup = store.exportProfileBackup({
+  profileId: backupProfileId,
+  mode: "safe",
+  includeWorldBeliefs: true,
+});
+assert.equal(safeBeliefBackup.worldBeliefs.some((entry) => entry.id === backupBelief.id), true);
+assert.equal(
+  safeBeliefBackup.worldBeliefs.some((entry) => entry.object === "sensitive fixture"),
+  false,
+);
+assert.equal(parseSqliteProfileBackup(safeBeliefBackup).worldBeliefs.length, 1);
+const filteredFullBackup = store.exportProfileBackup({
+  profileId: backupProfileId,
+  mode: "full",
+  includeSensitive: false,
+  includeArchived: false,
+  includePerson: false,
+  includeWorldBeliefs: true,
+});
+assert.equal(
+  filteredFullBackup.memories.some((entry) => entry.id === backupSensitiveMemory.id),
+  false,
+);
+assert.equal(
+  filteredFullBackup.memories.some((entry) => entry.id === backupArchivedMemory.id),
+  false,
+);
+assert.equal(
+  filteredFullBackup.memories.some((entry) => entry.id === backupPersonMemory.id),
+  false,
+);
+assert.equal(
+  filteredFullBackup.evidenceEvents.every((entry) => entry.sensitivity === "normal"),
+  true,
+);
+assert.equal(
+  filteredFullBackup.evidenceEvents.some(
+    (entry) => entry.id === normalEvidenceWithSensitivePayload.id,
+  ),
+  false,
+);
+assert.equal(JSON.stringify(filteredFullBackup).includes("Bearer backup-sensitive-token"), false);
+assert.equal(
+  filteredFullBackup.memories.some((entry) =>
+    entry.content.includes("Normal memory with sensitive metadata"),
+  ),
+  false,
+);
+assert.equal(
+  filteredFullBackup.memories.some((entry) =>
+    entry.content.includes("Normal memory with sessionid metadata"),
+  ),
+  false,
+);
+assert.equal(
+  filteredFullBackup.memories.some((entry) =>
+    entry.content.includes("Normal memory with dotted session metadata"),
+  ),
+  false,
+);
+assert.equal(
+  filteredFullBackup.memories.some((entry) =>
+    entry.content.includes("Normal memory with space credential metadata"),
+  ),
+  false,
+);
+assert.equal(
+  filteredFullBackup.memories.some((entry) =>
+    entry.content.includes("Normal memory with camel credential metadata"),
+  ),
+  false,
+);
+assert.equal(
+  filteredFullBackup.memories.some((entry) =>
+    entry.content.includes("Normal memory with plural credential metadata"),
+  ),
+  false,
+);
+assert.equal(
+  filteredFullBackup.memories.some((entry) => entry.content.includes("\"sessionid\"")),
+  false,
+);
+assert.equal(
+  filteredFullBackup.memories.some((entry) =>
+    entry.content.includes("Normal memory with sensitive scope"),
+  ),
+  false,
+);
+assert.equal(
+  filteredFullBackup.evidenceEvents.some((entry) =>
+    entry.content.includes("sensitive event key"),
+  ),
+  false,
+);
+assert.equal(
+  filteredFullBackup.evidenceEvents.some((entry) =>
+    entry.content.includes("sensitive source URI"),
+  ),
+  false,
+);
+assert.equal(
+  filteredFullBackup.memories
+    .filter((entry) => entry.content.includes("Normal memory linked to evidence"))
+    .every((entry) => entry.sourceEventId === null),
+  true,
+);
+assert.equal(
+  filteredFullBackup.worldBeliefs.some((entry) => entry.object === "sensitive fixture"),
+  false,
+);
+assert.equal(
+  filteredFullBackup.worldBeliefs.some((entry) => entry.object.includes("123-45-6789")),
+  false,
+);
+assert.equal(
+  filteredFullBackup.failureEvents.some((entry) => entry.content.includes("123-45-6789")),
+  false,
+);
+assert.equal(
+  JSON.stringify(filteredFullBackup.failureEvents).includes("Bearer backup-sensitive-failure-token"),
+  false,
+);
+assert.equal(
+  filteredFullBackup.taskTrajectories.some((entry) =>
+    `${entry.objective}\n${entry.summary ?? ""}`.includes("123-45-6789"),
+  ),
+  false,
+);
+assert.equal(
+  filteredFullBackup.taskTrajectories.some((entry) => entry.taskId?.includes("123-45-6789")),
+  false,
+);
+parseSqliteProfileBackup(filteredFullBackup);
+assert.throws(
+  () => store.exportProfileBackup({ profileId: "profile SSN 123-45-6789" }),
+  /profileId requires includeSensitive=true/,
+);
+const sensitiveProfileFullBackup = store.exportProfileBackup({
+  profileId: "profile SSN 123-45-6789",
+  mode: "full",
+});
+assert.equal(sensitiveProfileFullBackup.profileId, "profile SSN 123-45-6789");
+const malformedCountBackup = cloneProfileBackup(fullProfileBackup);
+malformedCountBackup.counts.memories += 1;
+assert.throws(
+  () => parseSqliteProfileBackup(malformedCountBackup),
+  /counts\.memories/,
+);
+const contradictoryEvidenceBackup = cloneProfileBackup(fullProfileBackup);
+contradictoryEvidenceBackup.options.includeEvidence = false;
+assert.throws(
+  () => parseSqliteProfileBackup(contradictoryEvidenceBackup),
+  /options\.includeEvidence/,
+);
+const contradictoryWorldBeliefBackup = cloneProfileBackup(fullProfileBackup);
+contradictoryWorldBeliefBackup.options.includeWorldBeliefs = false;
+assert.throws(
+  () => parseSqliteProfileBackup(contradictoryWorldBeliefBackup),
+  /options\.includeWorldBeliefs/,
+);
+const contradictoryFailureBackup = cloneProfileBackup(fullProfileBackup);
+contradictoryFailureBackup.options.includeFailures = false;
+assert.throws(
+  () => parseSqliteProfileBackup(contradictoryFailureBackup),
+  /options\.includeFailures/,
+);
+const contradictoryTrajectoryBackup = cloneProfileBackup(fullProfileBackup);
+contradictoryTrajectoryBackup.options.includeTaskTrajectories = false;
+assert.throws(
+  () => parseSqliteProfileBackup(contradictoryTrajectoryBackup),
+  /options\.includeTaskTrajectories/,
+);
+const contradictorySensitiveBackup = cloneProfileBackup(fullProfileBackup);
+contradictorySensitiveBackup.options.includeSensitive = false;
+assert.throws(
+  () => parseSqliteProfileBackup(contradictorySensitiveBackup),
+  /includeSensitive|sensitivity|metadata/,
+);
+const forgedSensitiveProfileBackup = cloneProfileBackup(filteredFullBackup);
+forgedSensitiveProfileBackup.profileId = "profile SSN 123-45-6789";
+for (const memoryRecord of forgedSensitiveProfileBackup.memories) {
+  memoryRecord.profileId = forgedSensitiveProfileBackup.profileId;
+}
+for (const eventRecord of forgedSensitiveProfileBackup.evidenceEvents) {
+  eventRecord.profileId = forgedSensitiveProfileBackup.profileId;
+}
+for (const beliefRecord of forgedSensitiveProfileBackup.worldBeliefs) {
+  beliefRecord.profileId = forgedSensitiveProfileBackup.profileId;
+}
+for (const failureRecord of forgedSensitiveProfileBackup.failureEvents) {
+  failureRecord.profileId = forgedSensitiveProfileBackup.profileId;
+}
+for (const trajectoryRecord of forgedSensitiveProfileBackup.taskTrajectories) {
+  trajectoryRecord.profileId = forgedSensitiveProfileBackup.profileId;
+}
+assert.throws(
+  () => parseSqliteProfileBackup(forgedSensitiveProfileBackup),
+  /profileId|sensitivity/,
+);
+const forgedNormalSensitiveMemoryBackup = cloneProfileBackup(filteredFullBackup);
+forgedNormalSensitiveMemoryBackup.memories.push({
+  id: "memory_forged_sensitive_content",
+  profileId: backupProfileId,
+  kind: "fact",
+  scope: "global",
+  content: "Forged normal memory contains SSN 123-45-6789.",
+  sensitivity: "normal",
+  status: "active",
+  confidence: 0.8,
+  sourceEventId: null,
+  metadata: {},
+  createdAt: "2026-06-25T00:00:00.000Z",
+  updatedAt: "2026-06-25T00:00:00.000Z",
+});
+refreshProfileBackupCounts(forgedNormalSensitiveMemoryBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(forgedNormalSensitiveMemoryBackup),
+  /memories\[\d+\]\.sensitivity/,
+);
+const forgedNormalSensitiveMemoryMetadataBackup = cloneProfileBackup(filteredFullBackup);
+forgedNormalSensitiveMemoryMetadataBackup.memories.push({
+  id: "memory_forged_sensitive_metadata",
+  profileId: backupProfileId,
+  kind: "fact",
+  scope: "global",
+  content: "Forged normal memory contains sensitive metadata only.",
+  sensitivity: "normal",
+  status: "active",
+  confidence: 0.8,
+  sourceEventId: null,
+  metadata: { ssn: "123-45-6789" },
+  createdAt: "2026-06-25T00:00:00.000Z",
+  updatedAt: "2026-06-25T00:00:00.000Z",
+});
+refreshProfileBackupCounts(forgedNormalSensitiveMemoryMetadataBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(forgedNormalSensitiveMemoryMetadataBackup),
+  /memories\[\d+\]\.sensitivity/,
+);
+const forgedNormalSessionIdMemoryMetadataBackup = cloneProfileBackup(filteredFullBackup);
+forgedNormalSessionIdMemoryMetadataBackup.memories.push({
+  id: "memory_forged_sessionid_metadata",
+  profileId: backupProfileId,
+  kind: "fact",
+  scope: "global",
+  content: "Forged normal memory contains sessionid metadata only.",
+  sensitivity: "normal",
+  status: "active",
+  confidence: 0.8,
+  sourceEventId: null,
+  metadata: { sessionid: "abcdefghijkl" },
+  createdAt: "2026-06-25T00:00:00.000Z",
+  updatedAt: "2026-06-25T00:00:00.000Z",
+});
+refreshProfileBackupCounts(forgedNormalSessionIdMemoryMetadataBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(forgedNormalSessionIdMemoryMetadataBackup),
+  /memories\[\d+\]\.sensitivity/,
+);
+const forgedNormalDottedSessionMemoryMetadataBackup = cloneProfileBackup(filteredFullBackup);
+forgedNormalDottedSessionMemoryMetadataBackup.memories.push({
+  id: "memory_forged_dotted_session_metadata",
+  profileId: backupProfileId,
+  kind: "fact",
+  scope: "global",
+  content: "Forged normal memory contains dotted session metadata only.",
+  sensitivity: "normal",
+  status: "active",
+  confidence: 0.8,
+  sourceEventId: null,
+  metadata: { "session.id": "abcdefghijkl" },
+  createdAt: "2026-06-25T00:00:00.000Z",
+  updatedAt: "2026-06-25T00:00:00.000Z",
+});
+refreshProfileBackupCounts(forgedNormalDottedSessionMemoryMetadataBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(forgedNormalDottedSessionMemoryMetadataBackup),
+  /memories\[\d+\]\.sensitivity/,
+);
+const forgedNormalJsonCredentialMemoryBackup = cloneProfileBackup(filteredFullBackup);
+forgedNormalJsonCredentialMemoryBackup.memories.push({
+  id: "memory_forged_json_credential",
+  profileId: backupProfileId,
+  kind: "fact",
+  scope: "global",
+  content: "{\"sessionid\":\"abcdefghijkl\"}",
+  sensitivity: "normal",
+  status: "active",
+  confidence: 0.8,
+  sourceEventId: null,
+  metadata: {},
+  createdAt: "2026-06-25T00:00:00.000Z",
+  updatedAt: "2026-06-25T00:00:00.000Z",
+});
+refreshProfileBackupCounts(forgedNormalJsonCredentialMemoryBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(forgedNormalJsonCredentialMemoryBackup),
+  /memories\[\d+\]\.sensitivity/,
+);
+const forgedNormalSensitiveMemoryScopeBackup = cloneProfileBackup(filteredFullBackup);
+forgedNormalSensitiveMemoryScopeBackup.memories.push({
+  id: "memory_forged_sensitive_scope",
+  profileId: backupProfileId,
+  kind: "fact",
+  scope: "SSN 123-45-6789",
+  content: "Forged normal memory contains sensitive scope only.",
+  sensitivity: "normal",
+  status: "active",
+  confidence: 0.8,
+  sourceEventId: null,
+  metadata: {},
+  createdAt: "2026-06-25T00:00:00.000Z",
+  updatedAt: "2026-06-25T00:00:00.000Z",
+});
+refreshProfileBackupCounts(forgedNormalSensitiveMemoryScopeBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(forgedNormalSensitiveMemoryScopeBackup),
+  /memories\[\d+\]\.sensitivity/,
+);
+const forgedNormalSensitiveEvidenceBackup = cloneProfileBackup(filteredFullBackup);
+forgedNormalSensitiveEvidenceBackup.evidenceEvents.push({
+  id: "evidence_forged_sensitive_content",
+  eventKey: "evidence_forged_sensitive_content",
+  profileId: backupProfileId,
+  sourceType: "test",
+  sourceUri: null,
+  content: "Forged normal evidence contains SSN 123-45-6789.",
+  sensitivity: "normal",
+  eligibleForLongTermMemory: true,
+  payload: {},
+  createdAt: "2026-06-25T00:00:00.000Z",
+});
+refreshProfileBackupCounts(forgedNormalSensitiveEvidenceBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(forgedNormalSensitiveEvidenceBackup),
+  /evidenceEvents\[\d+\]\.sensitivity/,
+);
+const forgedNormalSensitiveEvidencePayloadBackup = cloneProfileBackup(filteredFullBackup);
+forgedNormalSensitiveEvidencePayloadBackup.evidenceEvents.push({
+  id: "evidence_forged_sensitive_payload",
+  eventKey: "evidence_forged_sensitive_payload",
+  profileId: backupProfileId,
+  sourceType: "test",
+  sourceUri: null,
+  content: "Forged normal evidence contains sensitive payload only.",
+  sensitivity: "normal",
+  eligibleForLongTermMemory: true,
+  payload: { authorization: "Bearer forged-sensitive-token" },
+  createdAt: "2026-06-25T00:00:00.000Z",
+});
+refreshProfileBackupCounts(forgedNormalSensitiveEvidencePayloadBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(forgedNormalSensitiveEvidencePayloadBackup),
+  /evidenceEvents\[\d+\]\.sensitivity/,
+);
+const forgedNormalSensitiveEvidenceEventKeyBackup = cloneProfileBackup(filteredFullBackup);
+forgedNormalSensitiveEvidenceEventKeyBackup.evidenceEvents.push({
+  id: "evidence_forged_sensitive_event_key",
+  eventKey: "event key 123-45-6789",
+  profileId: backupProfileId,
+  sourceType: "test",
+  sourceUri: null,
+  content: "Forged normal evidence contains sensitive event key only.",
+  sensitivity: "normal",
+  eligibleForLongTermMemory: true,
+  payload: {},
+  createdAt: "2026-06-25T00:00:00.000Z",
+});
+refreshProfileBackupCounts(forgedNormalSensitiveEvidenceEventKeyBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(forgedNormalSensitiveEvidenceEventKeyBackup),
+  /evidenceEvents\[\d+\]\.sensitivity/,
+);
+const forgedNormalSensitiveEvidenceSourceUriBackup = cloneProfileBackup(filteredFullBackup);
+forgedNormalSensitiveEvidenceSourceUriBackup.evidenceEvents.push({
+  id: "evidence_forged_sensitive_source_uri",
+  eventKey: "evidence_forged_sensitive_source_uri",
+  profileId: backupProfileId,
+  sourceType: "test",
+  sourceUri: "conversation://SSN 123-45-6789",
+  content: "Forged normal evidence contains sensitive source URI only.",
+  sensitivity: "normal",
+  eligibleForLongTermMemory: true,
+  payload: {},
+  createdAt: "2026-06-25T00:00:00.000Z",
+});
+refreshProfileBackupCounts(forgedNormalSensitiveEvidenceSourceUriBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(forgedNormalSensitiveEvidenceSourceUriBackup),
+  /evidenceEvents\[\d+\]\.sensitivity/,
+);
+const contradictoryWorldBeliefSensitiveContentBackup = cloneProfileBackup(filteredFullBackup);
+contradictoryWorldBeliefSensitiveContentBackup.worldBeliefs = [
+  {
+    id: "belief_sensitive_content_fixture",
+    profileId: backupProfileId,
+    subject: "user",
+    predicate: "mentioned",
+    object: "SSN 123-45-6789",
+    confidence: 0.8,
+    status: "active",
+    sourceMemoryId: null,
+    createdAt: "2026-06-25T00:00:00.000Z",
+    updatedAt: "2026-06-25T00:00:00.000Z",
+  },
+];
+contradictoryWorldBeliefSensitiveContentBackup.failureEvents = [];
+contradictoryWorldBeliefSensitiveContentBackup.taskTrajectories = [];
+refreshProfileBackupCounts(contradictoryWorldBeliefSensitiveContentBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(contradictoryWorldBeliefSensitiveContentBackup),
+  /worldBeliefs\[0\]/,
+);
+const contradictoryFailureSensitiveContentBackup = cloneProfileBackup(
+  contradictoryWorldBeliefSensitiveContentBackup,
+);
+contradictoryFailureSensitiveContentBackup.worldBeliefs = [];
+contradictoryFailureSensitiveContentBackup.failureEvents = [
+  {
+    id: "failure_sensitive_content_fixture",
+    profileId: backupProfileId,
+    failureKind: "privacy_leak",
+    content: "SSN 123-45-6789",
+    metadata: {},
+    createdAt: "2026-06-25T00:00:00.000Z",
+  },
+];
+refreshProfileBackupCounts(contradictoryFailureSensitiveContentBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(contradictoryFailureSensitiveContentBackup),
+  /failureEvents\[0\]\.content/,
+);
+const contradictoryFailureSensitiveMetadataBackup = cloneProfileBackup(
+  contradictoryWorldBeliefSensitiveContentBackup,
+);
+contradictoryFailureSensitiveMetadataBackup.worldBeliefs = [];
+contradictoryFailureSensitiveMetadataBackup.failureEvents = [
+  {
+    id: "failure_sensitive_metadata_fixture",
+    profileId: backupProfileId,
+    failureKind: "privacy_leak",
+    content: "Normal failure content with sensitive metadata only.",
+    metadata: { authorization: "Bearer forged-sensitive-failure-token" },
+    createdAt: "2026-06-25T00:00:00.000Z",
+  },
+];
+refreshProfileBackupCounts(contradictoryFailureSensitiveMetadataBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(contradictoryFailureSensitiveMetadataBackup),
+  /failureEvents\[0\]\.content/,
+);
+const contradictoryFailureSensitiveIdBackup = cloneProfileBackup(
+  contradictoryWorldBeliefSensitiveContentBackup,
+);
+contradictoryFailureSensitiveIdBackup.worldBeliefs = [];
+contradictoryFailureSensitiveIdBackup.failureEvents = [
+  {
+    id: "failure 123-45-6789",
+    profileId: backupProfileId,
+    failureKind: "privacy_leak",
+    content: "Normal failure content with sensitive id only.",
+    metadata: {},
+    createdAt: "2026-06-25T00:00:00.000Z",
+  },
+];
+refreshProfileBackupCounts(contradictoryFailureSensitiveIdBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(contradictoryFailureSensitiveIdBackup),
+  /failureEvents\[0\]\.content/,
+);
+const contradictoryTaskSensitiveContentBackup = cloneProfileBackup(
+  contradictoryWorldBeliefSensitiveContentBackup,
+);
+contradictoryTaskSensitiveContentBackup.worldBeliefs = [];
+contradictoryTaskSensitiveContentBackup.taskTrajectories = [
+  {
+    id: "trajectory_sensitive_content_fixture",
+    profileId: backupProfileId,
+    taskId: "sensitive-task",
+    objective: "SSN 123-45-6789",
+    status: "failed",
+    summary: "sensitive",
+    createdAt: "2026-06-25T00:00:00.000Z",
+  },
+];
+refreshProfileBackupCounts(contradictoryTaskSensitiveContentBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(contradictoryTaskSensitiveContentBackup),
+  /taskTrajectories\[0\]/,
+);
+const contradictoryTaskSensitiveIdBackup = cloneProfileBackup(
+  contradictoryWorldBeliefSensitiveContentBackup,
+);
+contradictoryTaskSensitiveIdBackup.worldBeliefs = [];
+contradictoryTaskSensitiveIdBackup.taskTrajectories = [
+  {
+    id: "trajectory_sensitive_task_id_fixture",
+    profileId: backupProfileId,
+    taskId: "task 123-45-6789",
+    objective: "Normal objective with sensitive task id.",
+    status: "completed",
+    summary: "normal summary",
+    createdAt: "2026-06-25T00:00:00.000Z",
+  },
+];
+refreshProfileBackupCounts(contradictoryTaskSensitiveIdBackup);
+assert.throws(
+  () => parseSqliteProfileBackup(contradictoryTaskSensitiveIdBackup),
+  /taskTrajectories\[0\]/,
+);
+const contradictoryPersonBackup = cloneProfileBackup(fullProfileBackup);
+contradictoryPersonBackup.options.includePerson = false;
+assert.throws(
+  () => parseSqliteProfileBackup(contradictoryPersonBackup),
+  /includePerson/,
+);
+const contradictoryArchivedBackup = cloneProfileBackup(fullProfileBackup);
+contradictoryArchivedBackup.options.includeArchived = false;
+assert.throws(
+  () => parseSqliteProfileBackup(contradictoryArchivedBackup),
+  /includeArchived/,
+);
+const malformedKindBackup = cloneProfileBackup(fullProfileBackup);
+malformedKindBackup.memories[0].kind = "note";
+assert.throws(
+  () => parseSqliteProfileBackup(malformedKindBackup),
+  /memories\[0\]\.kind/,
+);
+const malformedProfileBackup = cloneProfileBackup(fullProfileBackup);
+malformedProfileBackup.memories[0].profileId = "other_profile";
+assert.throws(
+  () => parseSqliteProfileBackup(malformedProfileBackup),
+  /memories\[0\]\.profileId/,
+);
+const malformedSourceEventBackup = cloneProfileBackup(fullProfileBackup);
+malformedSourceEventBackup.memories[0].sourceEventId = "missing_evidence_event";
+assert.throws(
+  () => parseSqliteProfileBackup(malformedSourceEventBackup),
+  /memories\[0\]\.sourceEventId/,
+);
+const malformedBeliefSourceBackup = cloneProfileBackup(fullProfileBackup);
+malformedBeliefSourceBackup.worldBeliefs[0].sourceMemoryId = "missing_memory";
+assert.throws(
+  () => parseSqliteProfileBackup(malformedBeliefSourceBackup),
+  /worldBeliefs\[0\]\.sourceMemoryId/,
+);
+const duplicateMemoryIdBackup = cloneProfileBackup(fullProfileBackup);
+duplicateMemoryIdBackup.memories[1].id = duplicateMemoryIdBackup.memories[0].id;
+assert.throws(
+  () => parseSqliteProfileBackup(duplicateMemoryIdBackup),
+  /memories\.id/,
+);
+const malformedFailureBackup = cloneProfileBackup(fullProfileBackup);
+malformedFailureBackup.failureEvents[0].failureKind = "bad_failure";
+assert.throws(
+  () => parseSqliteProfileBackup(malformedFailureBackup),
+  /failureEvents\[0\]\.failureKind/,
+);
+const malformedTrajectoryBackup = cloneProfileBackup(fullProfileBackup);
+malformedTrajectoryBackup.taskTrajectories[0].status = "pending";
+assert.throws(
+  () => parseSqliteProfileBackup(malformedTrajectoryBackup),
+  /taskTrajectories\[0\]\.status/,
+);
+const malformedPayloadBackup = cloneProfileBackup(fullProfileBackup);
+malformedPayloadBackup.evidenceEvents[0].payload = [];
+assert.throws(
+  () => parseSqliteProfileBackup(malformedPayloadBackup),
+  /evidenceEvents\[0\]\.payload/,
 );
 const sameDbOverrideRestore = store.restoreProfileBackup({
   backup: parsedProfileBackup,
@@ -1124,7 +2002,8 @@ await memory.recordFeedback({
   content: "other profile wrong recall must not leak",
   failureKind: "wrong_recall",
 });
-assert.equal((await store.rowCounts()).gmos_failure_events, 6);
+const testProfileFailures = store.listFailures({ profileId: "test" });
+assert.equal(testProfileFailures.length, 3);
 
 const compat = classifyHostCompatibility({
   hostId: "ghast",
@@ -1191,7 +2070,7 @@ assert.equal(statusReport.storage.status, "ok");
 assert.equal(statusReport.storage.schemaVersion, 2);
 assert.equal(statusReport.storage.searchIndex?.status, "ok");
 assert.equal(statusReport.storage.searchIndex?.missingEntryCount, 0);
-assert.equal(statusReport.storage.rowCounts.gmos_failure_events, 6);
+assert.equal(statusReport.storage.rowCounts.gmos_failure_events >= testProfileFailures.length, true);
 assert.equal(statusReport.failureSummary.status, "ok");
 assert.equal(statusReport.failureSummary.inspectedFailureCount, 3);
 assert.equal(statusReport.failureSummary.byKind.wrong_recall, 1);
@@ -1240,6 +2119,71 @@ assert.equal(
   }),
   "secret_like",
 );
+for (const [credentialFixture, leakedFragment] of [
+  ["https://example.test/callback?access_token=abcdefghijkl", "abcdefghijkl"],
+  ["https://example.test/callback?refresh_token=abcdefghijkl", "abcdefghijkl"],
+  ["https://example.test/callback?session_id=abcdefghijkl", "abcdefghijkl"],
+  ["https://example.test/callback?sessionid=abcdefghijkl", "abcdefghijkl"],
+  ["https://example.test/callback?auth_token=abcdefghijkl", "abcdefghijkl"],
+  ["https://example.test/callback?credential_id=abcdefghijkl", "abcdefghijkl"],
+  ["https://example.test/callback?credential.id=abcdefghijkl", "abcdefghijkl"],
+  ["https://example.test/callback?credential id=abcdefghijkl", "abcdefghijkl"],
+  ["Cookie=abcdefghijkl", "abcdefghijkl"],
+  ["authorization=abcdefghijkl", "abcdefghijkl"],
+  ["{\"sessionid\":\"abcdefghijkl\"}", "abcdefghijkl"],
+  ["{\"session.id\":\"abcdefghijkl\"}", "abcdefghijkl"],
+  ["access_token=abc%2Fdefgh", "abc%2Fdefgh"],
+  ["password=p@ssw0rd!", "p@ssw0rd!"],
+  ["secret=abc:defgh", "abc:defgh"],
+  ["api_key=abc&defgh", "abc&defgh"],
+  ["clientSecret=abcdefghijkl", "abcdefghijkl"],
+  ["idToken=abcdefghijkl", "abcdefghijkl"],
+  ["sessionToken=abcdefghijkl", "abcdefghijkl"],
+  ["credentials=abcdefghijkl", "abcdefghijkl"],
+  ["cookies=abcdefghijkl", "abcdefghijkl"],
+  ["conversation://callback?clientSecret=abcdefghijkl", "abcdefghijkl"],
+  ["conversation://callback?idToken=abcdefghijkl", "abcdefghijkl"],
+  ["password=\"correct horse battery staple\"", "correct horse battery staple"],
+  ["password=\"correct horse's battery staple\"", "correct horse's battery staple"],
+  ['password="correct \\"horse\\" battery staple"', "horse"],
+  [
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+    "eyJhbGciOiJIUzI1NiJ9",
+  ],
+] as const) {
+  assert.equal(classifySensitivity(credentialFixture), "secret_like");
+  assert.equal(redactForReport(credentialFixture).includes(leakedFragment), false);
+}
+const sanitizedCredentialEvidence = sanitizeEvidenceForPublicOutput({
+  id: "evidence_redaction_fixture",
+  eventKey: "evidence_redaction_fixture?access_token=abcdefghijkl",
+  profileId: "profile SSN 123-45-6789",
+  sourceType: "test",
+  sourceUri: "conversation://fixture?credential.id=abcdefghijkl",
+  content: "{\"sessionid\":\"abcdefghijkl\"}",
+  sensitivity: "secret_like",
+  eligibleForLongTermMemory: false,
+  payload: { "credential.id": "abcdefghijkl", note: "safe" },
+  createdAt: "2026-06-25T00:00:00.000Z",
+});
+assert.equal(sanitizedCredentialEvidence.eventKey.includes("abcdefghijkl"), false);
+assert.equal(sanitizedCredentialEvidence.profileId.includes("123-45-6789"), false);
+assert.equal(sanitizedCredentialEvidence.sourceUri?.includes("abcdefghijkl"), false);
+assert.equal(sanitizedCredentialEvidence.content, "{\"sessionid\":\"[redacted_secret]\"}");
+assert.equal(sanitizedCredentialEvidence.content.includes("abcdefghijkl"), false);
+assert.equal(JSON.stringify(sanitizedCredentialEvidence.payload).includes("abcdefghijkl"), false);
+assert.equal(JSON.stringify(sanitizedCredentialEvidence.payload).includes("credential.id"), false);
+for (const restrictedPayload of [
+  { sessionToken: "abcdefghijkl" },
+  { clientSecret: "abcdefghijkl" },
+  { credentials: "abcdefghijkl" },
+  { cookies: "abcdefghijkl" },
+  { idToken: "abcdefghijkl" },
+]) {
+  assert.equal(classifyPayloadSensitivity(restrictedPayload), "secret_like");
+  assert.equal(payloadContainsRestrictedValue(restrictedPayload), true);
+  assert.equal(JSON.stringify(sanitizePublicPayload(restrictedPayload)).includes("abcdefghijkl"), false);
+}
 const hostImportReport = await loadHostMemorySnapshotsIntoStore({
   store,
   profileId: "host_import",
