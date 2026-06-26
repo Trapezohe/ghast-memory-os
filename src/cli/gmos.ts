@@ -21,6 +21,7 @@ import {
   renderMemoryScaleMarkdown,
   runHostCompatibilityGym,
   hashExternalMemoryBenchmarkInput,
+  parseExternalMemoryBenchmarkDataset,
   parseExternalMemoryBenchmarkJsonl,
   runExternalMemoryBenchmark,
   runMemoryGym,
@@ -107,7 +108,9 @@ Usage:
   gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
   gmos gym run --db :memory: --generated-seeds 3 --format markdown --report-file ./memory-gym.md
   gmos gym scale --sizes 100,1000 --threshold-p95-ms 250
-  gmos gym external --input-file ./long-memory-qa.jsonl --format markdown --require-convergence
+  gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --require-convergence
+  gmos gym external --input-file ./longmemeval_s_cleaned.json --dataset-format longmemeval --format markdown
+  gmos gym external --input-file ./locomo10.json --dataset-format locomo --format markdown
   gmos gym gate --generated-seeds 3 --scale-sizes 100,1000 --format json
   gmos gym host --hosts ghast,mcp,mock_l3,search_only --actual-report ./host-status.json --format markdown
 `);
@@ -461,7 +464,22 @@ async function main(): Promise<void> {
     if (!inputFile) throw new Error("gmos gym external requires --input-file");
     const inputPath = path.resolve(process.cwd(), inputFile);
     const inputText = readFileSync(inputPath, "utf8");
-    const cases = parseExternalMemoryBenchmarkJsonl(inputText);
+    const datasetFormat = value("--dataset-format", "gmos");
+    if (
+      datasetFormat !== "gmos" &&
+      datasetFormat !== "longmemeval" &&
+      datasetFormat !== "locomo"
+    ) {
+      throw new Error("--dataset-format must be gmos, longmemeval, or locomo");
+    }
+    const parsedDataset =
+      datasetFormat === "gmos"
+        ? {
+            datasetFormat: "gmos.external_long_memory_qa.jsonl" as const,
+            cases: parseExternalMemoryBenchmarkJsonl(inputText),
+          }
+        : parseExternalMemoryBenchmarkDataset(inputText, { adapter: datasetFormat });
+    const cases = parsedDataset.cases;
     const mode = value("--mode");
     if (mode !== undefined && mode !== "prepare" && mode !== "reconstruct") {
       throw new Error("--mode must be prepare or reconstruct");
@@ -480,6 +498,8 @@ async function main(): Promise<void> {
         : cases,
       datasetHash: hashExternalMemoryBenchmarkInput(inputText),
       datasetId: path.basename(inputPath),
+      datasetFormat: parsedDataset.datasetFormat,
+      datasetWarnings: "warnings" in parsedDataset ? parsedDataset.warnings : [],
       ...(mode !== undefined ? { mode } : {}),
       maxSteps: positiveIntegerOption("--max-steps", 4),
       maxBranch: positiveIntegerOption("--max-branch", 6),

@@ -74,6 +74,9 @@ try {
         renderHostCompatibilityGymMarkdown,
         renderExternalMemoryBenchmarkMarkdown,
         renderMemoryReleaseGateMarkdown,
+        parseExternalMemoryBenchmarkDataset,
+        parseLocomoBenchmarkDataset,
+        parseLongMemEvalBenchmarkDataset,
         runExternalMemoryBenchmark,
         runHostCompatibilityGym,
         runMemoryGym,
@@ -213,6 +216,32 @@ try {
       });
       assert.equal(externalGym.pass, true);
       assert.match(renderExternalMemoryBenchmarkMarkdown(externalGym), /External Long-Memory QA/);
+      const parsedConsumerLongMemEval = parseExternalMemoryBenchmarkDataset(JSON.stringify([{
+        question_id: "consumer-lme",
+        question: "What should the consumer adapter remember?",
+        answer: "adapter rollback matrix",
+        haystack_sessions: [[{
+          role: "user",
+          content: "Consumer adapter project workflow says to remember adapter rollback matrix.",
+        }]],
+      }]), { adapter: "longmemeval" });
+      assert.equal(parsedConsumerLongMemEval.datasetFormat, "longmemeval.json");
+      assert.equal(parsedConsumerLongMemEval.cases.length, 1);
+      assert.equal(parseLongMemEvalBenchmarkDataset(JSON.stringify([{
+        question_id: "consumer-lme-direct",
+        question: "What should the direct adapter parse?",
+        answer: "direct answer",
+        haystack_sessions: [[{ role: "user", content: "direct project answer" }]],
+      }])).length, 1);
+      assert.equal(parseLocomoBenchmarkDataset(JSON.stringify([{
+        sample_id: "consumer-locomo",
+        conversation: {
+          speaker_a: "A",
+          speaker_b: "B",
+          session_1: [{ speaker: "A", text: "consumer locomo project answer" }],
+        },
+        qa: [{ question: "What is the locomo answer?", answer: "consumer locomo answer" }],
+      }])).length, 1);
       const installedPackage = JSON.parse(
         readFileSync(path.join(process.cwd(), "node_modules", "@ghast", "memory", "package.json"), "utf8"),
       );
@@ -397,9 +426,12 @@ try {
       import { createEvolutionControlPlane } from "@ghast/memory/evolution";
       import {
         runExternalMemoryBenchmark,
+        parseExternalMemoryBenchmarkDataset,
         runHostCompatibilityGym,
         runMemoryGym,
         runMemoryReleaseGate,
+        type ExternalMemoryBenchmarkDatasetAdapter,
+        type ExternalMemoryBenchmarkDatasetFormat,
         type ExternalMemoryBenchmarkResult,
         type HostCompatibilityGymResult,
         type MemoryGymResult,
@@ -580,6 +612,17 @@ try {
         }],
       });
       if (!externalResult.pass) throw new Error("typed external benchmark failed");
+      const adapterName: ExternalMemoryBenchmarkDatasetAdapter = "longmemeval";
+      const adapterFormat: ExternalMemoryBenchmarkDatasetFormat = "longmemeval.json";
+      const parsedExternalDataset = parseExternalMemoryBenchmarkDataset(JSON.stringify([{
+        question_id: "typed-lme",
+        question: "What is typed?",
+        answer: "typed answer",
+        haystack_sessions: [[{ role: "user", content: "typed project answer" }]],
+      }]), { adapter: adapterName });
+      if (parsedExternalDataset.datasetFormat !== adapterFormat) {
+        throw new Error("typed external adapter format failed");
+      }
       const hostAdapter: HostAdapter = createPresetHostAdapter("ghast");
       const hostCompatibility: HostCompatibilityReport = hostAdapter.compatibility;
       if (hostCompatibility.level !== "L4") throw new Error("unexpected typed host compatibility");

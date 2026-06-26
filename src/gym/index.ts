@@ -14,6 +14,7 @@ import {
   parseExternalMemoryBenchmarkJsonl,
   hashExternalMemoryBenchmarkInput,
   runExternalMemoryBenchmark,
+  type ExternalMemoryBenchmarkDatasetFormat,
   type ExternalMemoryBenchmarkCase,
   type ExternalMemoryBenchmarkCaseResult,
   type ExternalMemoryBenchmarkEvent,
@@ -22,6 +23,14 @@ import {
   type ExternalMemoryBenchmarkRunManifest,
   type RunExternalMemoryBenchmarkOptions,
 } from "./external.js";
+import {
+  parseExternalMemoryBenchmarkDataset,
+  parseLocomoBenchmarkDataset,
+  parseLongMemEvalBenchmarkDataset,
+  type ExternalMemoryBenchmarkDatasetAdapter,
+  type ParsedExternalMemoryBenchmarkDataset,
+  type ParseExternalMemoryBenchmarkDatasetOptions,
+} from "./external-adapters.js";
 import {
   runHostCompatibilityGym,
   type HostCompatibilityGymResult,
@@ -44,11 +53,16 @@ export {
 } from "./report.js";
 export {
   parseExternalMemoryBenchmarkJsonl,
+  parseExternalMemoryBenchmarkDataset,
+  parseLocomoBenchmarkDataset,
+  parseLongMemEvalBenchmarkDataset,
   hashExternalMemoryBenchmarkInput,
   runExternalMemoryBenchmark,
   runHostCompatibilityGym,
 };
 export type {
+  ExternalMemoryBenchmarkDatasetAdapter,
+  ExternalMemoryBenchmarkDatasetFormat,
   ExternalMemoryBenchmarkCase,
   ExternalMemoryBenchmarkCaseResult,
   ExternalMemoryBenchmarkEvent,
@@ -60,6 +74,8 @@ export type {
   HostCompatibilityProbeArea,
   HostCompatibilityProbeResult,
   HostCompatibilityProbeStatus,
+  ParsedExternalMemoryBenchmarkDataset,
+  ParseExternalMemoryBenchmarkDatasetOptions,
   RunHostCompatibilityGymOptions,
   RunExternalMemoryBenchmarkOptions,
 };

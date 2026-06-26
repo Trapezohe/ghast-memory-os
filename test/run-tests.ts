@@ -21,7 +21,10 @@ import {
   renderMemoryReleaseGateMarkdown,
   renderMemoryScaleMarkdown,
   hashExternalMemoryBenchmarkInput,
+  parseExternalMemoryBenchmarkDataset,
   parseExternalMemoryBenchmarkJsonl,
+  parseLocomoBenchmarkDataset,
+  parseLongMemEvalBenchmarkDataset,
   runExternalMemoryBenchmark,
   runHostCompatibilityGym,
   runMemoryGym,
@@ -5359,6 +5362,12 @@ const externalBenchmarkFile = path.join(tmp, "external-long-memory-qa.jsonl");
 writeFileSync(externalBenchmarkFile, externalBenchmarkJsonl);
 const externalCases = parseExternalMemoryBenchmarkJsonl(externalBenchmarkJsonl);
 assert.equal(externalCases.length, 2);
+const parsedGmosExternalDataset = parseExternalMemoryBenchmarkDataset(externalBenchmarkJsonl, {
+  adapter: "gmos",
+});
+assert.equal(parsedGmosExternalDataset.adapter, "gmos");
+assert.equal(parsedGmosExternalDataset.datasetFormat, "gmos.external_long_memory_qa.jsonl");
+assert.equal(parsedGmosExternalDataset.cases.length, 2);
 const externalBenchmark = await runExternalMemoryBenchmark({ cases: externalCases });
 assert.equal(externalBenchmark.pass, true);
 assert.equal(externalBenchmark.score, 1);
@@ -5399,11 +5408,158 @@ const sparseExternalConvergence = await runExternalMemoryBenchmark({
 });
 assert.equal(sparseExternalConvergence.pass, true);
 assert.equal(sparseExternalConvergence.cases[0]?.diagnostics.evidenceConvergenceReached, true);
+const longMemEvalFixture = JSON.stringify([
+  {
+    question_id: "lme-vega-next-step",
+    question_type: "multi-session",
+    question: "Vega 这个发布计划下一步先做什么？",
+    answer: "rollback matrix",
+    question_date: "2026-06-24",
+    haystack_session_ids: ["session-1", "session-2"],
+    haystack_dates: ["2026-06-20", "2026-06-21"],
+    haystack_sessions: [
+      [
+        {
+          role: "user",
+          content: "代号 Vega 的项目计划叫做 Lantern Run。",
+        },
+      ],
+      [
+        {
+          role: "user",
+          content: "Lantern Run 的流程步骤是先更新 rollback matrix，再做发布实现。",
+          has_answer: true,
+        },
+      ],
+    ],
+    answer_session_ids: ["session-2"],
+  },
+]);
+const longMemEvalCases = parseLongMemEvalBenchmarkDataset(longMemEvalFixture);
+assert.equal(longMemEvalCases.length, 1);
+assert.equal(longMemEvalCases[0]?.id, "lme-vega-next-step");
+assert.equal(longMemEvalCases[0]?.events.length, 2);
+assert.equal(JSON.stringify(longMemEvalCases[0]?.events).includes("has_answer"), false);
+assert.equal(JSON.stringify(longMemEvalCases[0]?.events).includes("answer_session_ids"), false);
+const longMemEvalJsonlCases = parseLongMemEvalBenchmarkDataset(
+  longMemEvalFixture.slice(1, -1),
+);
+assert.equal(longMemEvalJsonlCases.length, 1);
+const longMemEvalAbstentionFixture = JSON.stringify([
+  {
+    question_id: "lme-unknown_abs",
+    question: "What was never mentioned?",
+    answer: "unknown",
+    haystack_sessions: [[{ role: "user", content: "This project history has no answer." }]],
+  },
+  {
+    question_id: "lme-answerable",
+    question: "What workflow is answerable?",
+    answer: "answerable matrix",
+    haystack_sessions: [[{ role: "user", content: "The project workflow uses answerable matrix." }]],
+  },
+]);
+const parsedLongMemEvalWithAbstention = parseExternalMemoryBenchmarkDataset(
+  longMemEvalAbstentionFixture,
+  { adapter: "longmemeval" },
+);
+assert.equal(parsedLongMemEvalWithAbstention.cases.length, 1);
+assert.deepEqual(parsedLongMemEvalWithAbstention.warnings, [
+  "skipped_longmemeval_abstention:lme-unknown_abs",
+]);
+const parsedLongMemEvalDataset = parseExternalMemoryBenchmarkDataset(longMemEvalFixture, {
+  adapter: "longmemeval",
+});
+assert.equal(parsedLongMemEvalDataset.datasetFormat, "longmemeval.json");
+const longMemEvalBenchmark = await runExternalMemoryBenchmark({
+  cases: parsedLongMemEvalDataset.cases,
+  datasetFormat: parsedLongMemEvalDataset.datasetFormat,
+  datasetId: "longmemeval-fixture",
+});
+assert.equal(longMemEvalBenchmark.pass, true);
+assert.equal(longMemEvalBenchmark.datasetFormat, "longmemeval.json");
+assert.equal(longMemEvalBenchmark.runManifest.dataset.format, "longmemeval.json");
+assert.deepEqual(longMemEvalBenchmark.cases[0]?.expectedAnyMatched, ["rollback matrix"]);
+const locomoFixture = JSON.stringify([
+  {
+    sample_id: "locomo-atlas",
+    conversation: {
+      speaker_a: "Alex",
+      speaker_b: "Blair",
+      session_1_date_time: "2026-06-20T09:00:00Z",
+      session_1: [
+        {
+          speaker: "Alex",
+          dia_id: "d1",
+          text: "Atlas 项目的流程步骤是先核证据链，再写风险清单。Atlas 年份是 2022。",
+        },
+        {
+          speaker: "Blair",
+          dia_id: "d2",
+          text: "我会记住 Atlas 的推进方式。",
+        },
+      ],
+    },
+    qa: [
+      {
+        question: "Atlas 项目的流程步骤是什么？",
+        answer: "先核证据链",
+        category: 3,
+        evidence: ["d1"],
+      },
+      {
+        question: "Atlas 年份是什么？",
+        answer: 2022,
+        category: 2,
+        evidence: ["d1"],
+      },
+      {
+        question: "Atlas 的误导答案应该是什么？",
+        adversarial_answer: "不要采用旧路线",
+        category: 5,
+        evidence: ["d1"],
+      },
+    ],
+  },
+]);
+const locomoCases = parseLocomoBenchmarkDataset(locomoFixture);
+assert.equal(locomoCases.length, 3);
+assert.equal(locomoCases[0]?.id, "locomo-atlas:qa-1");
+assert.equal(locomoCases[0]?.events.length, 2);
+assert.equal(locomoCases[1]?.expectedAny?.[0], "2022");
+assert.equal(locomoCases[2]?.expectedAny?.[0], "不要采用旧路线");
+assert.equal(JSON.stringify(locomoCases[0]?.events).includes("evidence"), false);
+assert.equal(JSON.stringify(locomoCases[0]?.events).includes("category"), false);
+const locomoJsonlCases = parseLocomoBenchmarkDataset(locomoFixture.slice(1, -1));
+assert.equal(locomoJsonlCases.length, 3);
+const parsedLocomoDataset = parseExternalMemoryBenchmarkDataset(locomoFixture, {
+  adapter: "locomo",
+});
+assert.equal(parsedLocomoDataset.datasetFormat, "locomo.json");
+assert.equal(parsedLocomoDataset.cases.length, 3);
+const locomoBenchmark = await runExternalMemoryBenchmark({
+  cases: parsedLocomoDataset.cases.slice(0, 2),
+  datasetFormat: parsedLocomoDataset.datasetFormat,
+  datasetId: "locomo-fixture",
+});
+assert.equal(locomoBenchmark.pass, true);
+assert.equal(locomoBenchmark.datasetFormat, "locomo.json");
+assert.equal(locomoBenchmark.runManifest.dataset.format, "locomo.json");
+assert.deepEqual(locomoBenchmark.cases[0]?.expectedAnyMatched, ["先核证据链"]);
+assert.deepEqual(locomoBenchmark.cases[1]?.expectedAnyMatched, ["2022"]);
 const externalMarkdown = renderExternalMemoryBenchmarkMarkdown(externalBenchmarkWithManifest);
 assert.match(externalMarkdown, /External Long-Memory QA/);
 assert.match(externalMarkdown, /Run Manifest/);
+assert.match(externalMarkdown, /format=gmos\.external_long_memory_qa\.jsonl/);
 assert.match(externalMarkdown, /Failure reasons/);
 assert.match(externalMarkdown, /Missing intent groups/);
+assert.throws(
+  () =>
+    parseExternalMemoryBenchmarkDataset(externalBenchmarkJsonl, {
+      adapter: "beam",
+    }),
+  /adapter must be gmos, longmemeval, or locomo/,
+);
 const externalConvergenceFailure = await runExternalMemoryBenchmark({
   cases: [
     {
@@ -5719,15 +5875,114 @@ const cliExternalJson = JSON.parse(cliExternal.stdout) as {
   schema?: string;
   pass?: boolean;
   runManifest?: {
-    dataset?: { hash?: string | null; id?: string | null };
+    dataset?: { format?: string; hash?: string | null; id?: string | null };
     options?: { requireConvergence?: boolean };
   };
 };
 assert.equal(cliExternalJson.schema, "gmos.external_long_memory_qa.v1");
 assert.equal(cliExternalJson.pass, true);
+assert.equal(cliExternalJson.runManifest?.dataset?.format, "gmos.external_long_memory_qa.jsonl");
 assert.match(cliExternalJson.runManifest?.dataset?.hash ?? "", /^sha256:[a-f0-9]{64}$/);
 assert.equal(cliExternalJson.runManifest?.dataset?.id, path.basename(externalBenchmarkFile));
 assert.equal(cliExternalJson.runManifest?.options?.requireConvergence, false);
+const longMemEvalFixtureFile = path.join(tmp, "longmemeval-fixture.json");
+writeFileSync(longMemEvalFixtureFile, longMemEvalFixture);
+const cliLongMemEvalExternal = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    longMemEvalFixtureFile,
+    "--dataset-format",
+    "longmemeval",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliLongMemEvalExternal.status, 0, cliLongMemEvalExternal.stderr);
+const cliLongMemEvalJson = JSON.parse(cliLongMemEvalExternal.stdout) as {
+  pass?: boolean;
+  datasetFormat?: string;
+  runManifest?: { dataset?: { format?: string; id?: string | null } };
+};
+assert.equal(cliLongMemEvalJson.pass, true);
+assert.equal(cliLongMemEvalJson.datasetFormat, "longmemeval.json");
+assert.equal(cliLongMemEvalJson.runManifest?.dataset?.format, "longmemeval.json");
+assert.equal(cliLongMemEvalJson.runManifest?.dataset?.id, path.basename(longMemEvalFixtureFile));
+const locomoFixtureFile = path.join(tmp, "locomo-fixture.json");
+writeFileSync(
+  locomoFixtureFile,
+  JSON.stringify([
+    {
+      sample_id: "locomo-cli-atlas",
+      conversation: {
+        speaker_a: "Alex",
+        speaker_b: "Blair",
+        session_1: [
+          {
+            speaker: "Alex",
+            text: "Atlas CLI 项目的流程步骤是先核证据链，再写风险清单。",
+          },
+        ],
+      },
+      qa: [{ question: "Atlas CLI 项目的流程步骤是什么？", answer: "先核证据链" }],
+    },
+  ]),
+);
+const cliLocomoExternal = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    locomoFixtureFile,
+    "--dataset-format",
+    "locomo",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliLocomoExternal.status, 0, cliLocomoExternal.stderr);
+const cliLocomoJson = JSON.parse(cliLocomoExternal.stdout) as {
+  pass?: boolean;
+  datasetFormat?: string;
+  runManifest?: { dataset?: { format?: string; id?: string | null } };
+};
+assert.equal(cliLocomoJson.pass, true);
+assert.equal(cliLocomoJson.datasetFormat, "locomo.json");
+assert.equal(cliLocomoJson.runManifest?.dataset?.format, "locomo.json");
+assert.equal(cliLocomoJson.runManifest?.dataset?.id, path.basename(locomoFixtureFile));
+const cliExternalInvalidDatasetFormat = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--dataset-format",
+    "beam",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalInvalidDatasetFormat.status, 0);
+assert.match(
+  cliExternalInvalidDatasetFormat.stderr,
+  /--dataset-format must be gmos, longmemeval, or locomo/,
+);
 const convergedExternalBenchmarkFile = path.join(
   tmp,
   "external-long-memory-qa-converged.jsonl",

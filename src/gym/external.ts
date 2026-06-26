@@ -16,6 +16,10 @@ import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 
 export type ExternalMemoryBenchmarkMode = "prepare" | "reconstruct";
+export type ExternalMemoryBenchmarkDatasetFormat =
+  | "gmos.external_long_memory_qa.jsonl"
+  | "longmemeval.json"
+  | "locomo.json";
 
 export interface ExternalMemoryBenchmarkMessageEvent {
   type?: "message" | undefined;
@@ -102,10 +106,11 @@ export interface ExternalMemoryBenchmarkRunManifest {
     dirty: boolean | null;
   };
   dataset: {
-    format: "gmos.external_long_memory_qa.jsonl";
+    format: ExternalMemoryBenchmarkDatasetFormat;
     caseCount: number;
     hash: string | null;
     id: string | null;
+    warnings: string[];
   };
   options: {
     mode: ExternalMemoryBenchmarkMode | null;
@@ -121,7 +126,7 @@ export interface ExternalMemoryBenchmarkRunManifest {
 export interface ExternalMemoryBenchmarkResult {
   schema: "gmos.external_long_memory_qa.v1";
   pass: boolean;
-  datasetFormat: "gmos.external_long_memory_qa.jsonl";
+  datasetFormat: ExternalMemoryBenchmarkDatasetFormat;
   caseCount: number;
   passedCount: number;
   failedCount: number;
@@ -132,8 +137,10 @@ export interface ExternalMemoryBenchmarkResult {
 
 export interface RunExternalMemoryBenchmarkOptions {
   cases: ExternalMemoryBenchmarkCase[];
+  datasetFormat?: ExternalMemoryBenchmarkDatasetFormat | undefined;
   datasetHash?: string | undefined;
   datasetId?: string | undefined;
+  datasetWarnings?: string[] | undefined;
   mode?: ExternalMemoryBenchmarkMode | undefined;
   maxSteps?: number | undefined;
   maxBranch?: number | undefined;
@@ -402,10 +409,11 @@ function createRunManifest(input: {
     },
     git: gitInfo(),
     dataset: {
-      format: "gmos.external_long_memory_qa.jsonl",
+      format: input.options.datasetFormat ?? "gmos.external_long_memory_qa.jsonl",
       caseCount: input.caseCount,
       hash: input.options.datasetHash ?? null,
       id: input.options.datasetId ?? null,
+      warnings: input.options.datasetWarnings ?? [],
     },
     options: {
       mode: input.options.mode ?? null,
@@ -551,7 +559,7 @@ export async function runExternalMemoryBenchmark(
   return {
     schema: "gmos.external_long_memory_qa.v1",
     pass: passedCount === cases.length,
-    datasetFormat: "gmos.external_long_memory_qa.jsonl",
+    datasetFormat: normalizedOptions.datasetFormat ?? "gmos.external_long_memory_qa.jsonl",
     caseCount: cases.length,
     passedCount,
     failedCount: cases.length - passedCount,
