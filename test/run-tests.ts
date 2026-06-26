@@ -1,6 +1,14 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { connect } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -32,6 +40,7 @@ import {
   runMemoryReleaseGate,
   runMemoryScaleBenchmark,
   prepareStateBenchAgentLearningRun,
+  summarizeStateBenchResults,
   stateBenchAgentPythonTemplate,
 } from "../src/gym/index.js";
 import {
@@ -6082,6 +6091,197 @@ assert.throws(
     }),
   /must not reuse/,
 );
+const stateBenchResultsDir = path.join(stateBenchCheckoutDir, "outputs", "travel");
+mkdirSync(path.join(stateBenchResultsDir, "run1"), { recursive: true });
+mkdirSync(path.join(stateBenchResultsDir, "run2"), { recursive: true });
+mkdirSync(path.join(stateBenchResultsDir, "per_task_metrics"), { recursive: true });
+writeFileSync(path.join(stateBenchResultsDir, "run1", "task-a.json"), "{}");
+writeFileSync(path.join(stateBenchResultsDir, "run2", "task-a.json"), "{}");
+writeFileSync(path.join(stateBenchResultsDir, "per_task_metrics", "task-a.json"), "{}");
+writeFileSync(
+  path.join(stateBenchResultsDir, "metrics.json"),
+  JSON.stringify(
+    {
+      benchmark_version: "state-bench-test",
+      timestamp: "2026-06-26T00:00:00Z",
+      evaluation_protocol_id: "state-bench-protocol-test",
+      num_runs: 2,
+	      agent_model: {
+	        model_name: "gpt-test-statebench",
+	        reasoning_level: "medium",
+	        api_key: "sk-statebenchmetricssecret1234567890",
+	        nested: { token: "sk-statebenchnestedsecret1234567890" },
+	      },
+      metrics: {
+        "task_completion_pass@1": 0.75,
+        "task_completion_pass@1_std_dev": 0.1,
+        "task_completion_pass^2": 0.5,
+        mean_ux_score: 4.2,
+        mean_cost_usd: 0.0123,
+        ignored_string: "not copied",
+      },
+    },
+    null,
+    2,
+  ),
+);
+const stateBenchSummary = summarizeStateBenchResults({
+  domain: "travel",
+  checkoutDir: stateBenchCheckoutDir,
+  prepareManifestFile: "outputs/gmos-learnings/travel.prepare.json",
+});
+assert.equal(stateBenchSummary.schema, "gmos.state_bench_results_summary.v1");
+assert.equal(stateBenchSummary.source.metricsFile, "outputs/travel/metrics.json");
+assert.equal(stateBenchSummary.source.resultsDir, "outputs/travel");
+assert.equal(stateBenchSummary.source.prepareManifestFile, "outputs/gmos-learnings/travel.prepare.json");
+assert.equal(stateBenchSummary.officialMetrics.benchmarkVersion, "state-bench-test");
+assert.equal(stateBenchSummary.officialMetrics.evaluationProtocolId, "state-bench-protocol-test");
+assert.equal(stateBenchSummary.officialMetrics.numRuns, 2);
+assert.equal(
+  (stateBenchSummary.officialMetrics.agentModel as { model_name?: string }).model_name,
+  "gpt-test-statebench",
+);
+assert.equal(JSON.stringify(stateBenchSummary).includes("sk-statebenchmetricssecret"), false);
+assert.equal(JSON.stringify(stateBenchSummary).includes("sk-statebenchnestedsecret"), false);
+assert.equal(stateBenchSummary.officialMetrics.metrics["task_completion_pass@1"], 0.75);
+assert.equal(stateBenchSummary.officialMetrics.metrics.ignored_string, undefined);
+assert.equal(stateBenchSummary.preparedRun?.retrieveLearningsTopK, 3);
+assert.equal(stateBenchSummary.preparedRun?.agentModelName, "gpt-test-statebench");
+assert.equal(stateBenchSummary.coverage.runDirectoryCount, 2);
+assert.equal(stateBenchSummary.coverage.trajectoryFileCount, 2);
+assert.equal(stateBenchSummary.coverage.perTaskMetricsCount, 1);
+assert.deepEqual(stateBenchSummary.coverage.perRunTrajectoryFileCounts, [
+  { run: "run1", count: 1 },
+  { run: "run2", count: 1 },
+]);
+assert.equal(stateBenchSummary.validation.status, "warning");
+assert.equal(
+  stateBenchSummary.validation.warnings.includes("prepare_manifest_num_runs_mismatch"),
+  true,
+);
+assert.equal(JSON.stringify(stateBenchSummary).includes(stateBenchCheckoutDir), false);
+assert.equal(JSON.stringify(stateBenchSummary).includes("sk-statebenchusersecret"), false);
+const maliciousPrepareManifestPath = path.join(
+  stateBenchCheckoutDir,
+  "outputs",
+  "gmos-learnings",
+  "travel-malicious.prepare.json",
+);
+const outsideStateBenchArtifactPath = path.join(tmp, "outside-statebench-artifact.json");
+writeFileSync(
+  maliciousPrepareManifestPath,
+  JSON.stringify({
+    ...preparedStateBench,
+    artifacts: {
+      ...preparedStateBench.artifacts,
+      learningsFile: outsideStateBenchArtifactPath,
+      agentFile: "../outside-agent.py",
+    },
+    officialSettings: {
+      ...preparedStateBench.officialSettings,
+      numRuns: 2,
+    },
+  }),
+);
+const maliciousPrepareSummary = summarizeStateBenchResults({
+  domain: "travel",
+  checkoutDir: stateBenchCheckoutDir,
+  prepareManifestFile: "outputs/gmos-learnings/travel-malicious.prepare.json",
+});
+assert.equal(maliciousPrepareSummary.validation.status, "warning");
+assert.equal(
+  maliciousPrepareSummary.validation.warnings.includes("prepare_manifest_learnings_file_unsafe"),
+  true,
+);
+assert.equal(
+  maliciousPrepareSummary.validation.warnings.includes("prepare_manifest_agent_file_unsafe"),
+  true,
+);
+assert.equal(maliciousPrepareSummary.preparedRun?.learningsFile, undefined);
+assert.equal(maliciousPrepareSummary.preparedRun?.agentFile, undefined);
+assert.equal(JSON.stringify(maliciousPrepareSummary).includes(outsideStateBenchArtifactPath), false);
+const symlinkOutsideResultsDir = path.join(tmp, "statebench-outside-results");
+mkdirSync(symlinkOutsideResultsDir, { recursive: true });
+writeFileSync(
+  path.join(symlinkOutsideResultsDir, "metrics.json"),
+  JSON.stringify({
+    num_runs: 1,
+    metrics: {
+      "task_completion_pass@1": 1,
+    },
+  }),
+);
+try {
+  symlinkSync(symlinkOutsideResultsDir, path.join(stateBenchCheckoutDir, "outputs", "symlinked-results"), "dir");
+  assert.throws(
+    () =>
+      summarizeStateBenchResults({
+        domain: "travel",
+        checkoutDir: stateBenchCheckoutDir,
+        resultsDir: "outputs/symlinked-results",
+        metricsFile: "outputs/symlinked-results/metrics.json",
+      }),
+    /inside the STATE-Bench checkout/,
+  );
+} catch (error) {
+  if ((error as NodeJS.ErrnoException).code !== "EPERM" && (error as NodeJS.ErrnoException).code !== "EACCES") {
+    throw error;
+  }
+}
+try {
+  symlinkSync(
+    path.join(symlinkOutsideResultsDir, "metrics.json"),
+    path.join(stateBenchResultsDir, "linked-metrics.json"),
+    "file",
+  );
+  assert.throws(
+    () =>
+      summarizeStateBenchResults({
+        domain: "travel",
+        checkoutDir: stateBenchCheckoutDir,
+        metricsFile: "outputs/travel/linked-metrics.json",
+      }),
+    /inside the STATE-Bench checkout/,
+  );
+} catch (error) {
+  if ((error as NodeJS.ErrnoException).code !== "EPERM" && (error as NodeJS.ErrnoException).code !== "EACCES") {
+    throw error;
+  }
+}
+assert.throws(
+  () =>
+    summarizeStateBenchResults({
+      domain: "travel",
+      checkoutDir: stateBenchCheckoutDir,
+      metricsFile: "../metrics.json",
+    }),
+  /inside the STATE-Bench checkout/,
+);
+assert.throws(
+  () =>
+    summarizeStateBenchResults({
+      domain: "travel",
+      checkoutDir: stateBenchCheckoutDir,
+      metricsFile: "outputs/travel/missing.json",
+    }),
+  /metrics file does not exist/,
+);
+const stateBenchTrainFilePath = path.join(
+  stateBenchCheckoutDir,
+  "datasets",
+  "train_task_trajectories",
+  "customer_support",
+);
+mkdirSync(path.dirname(stateBenchTrainFilePath), { recursive: true });
+writeFileSync(stateBenchTrainFilePath, "not a directory");
+assert.throws(
+  () =>
+    buildStateBenchLearnings({
+      domain: "customer_support",
+      inputDir: stateBenchTrainFilePath,
+    }),
+  /train trajectory directory does not exist/,
+);
 const externalMarkdown = renderExternalMemoryBenchmarkMarkdown(externalBenchmarkWithManifest);
 assert.match(externalMarkdown, /External Long-Memory QA/);
 assert.match(externalMarkdown, /Run Manifest/);
@@ -6520,6 +6720,8 @@ const cliStateBenchBuild = spawnSync(
   { cwd: process.cwd(), encoding: "utf8" },
 );
 assert.equal(cliStateBenchBuild.status, 0, cliStateBenchBuild.stderr);
+assert.equal(cliStateBenchBuild.stdout.includes(tmp), false);
+assert.equal(path.isAbsolute((JSON.parse(cliStateBenchBuild.stdout) as { outputFile?: string }).outputFile ?? ""), false);
 assert.equal(existsSync(stateBenchArtifactFile), true);
 const cliStateBenchArtifact = JSON.parse(readFileSync(stateBenchArtifactFile, "utf8")) as {
   schema?: string;
@@ -6564,6 +6766,8 @@ const cliStateBenchAgent = spawnSync(
   { cwd: process.cwd(), encoding: "utf8" },
 );
 assert.equal(cliStateBenchAgent.status, 0, cliStateBenchAgent.stderr);
+assert.equal(cliStateBenchAgent.stdout.includes(tmp), false);
+assert.equal(path.isAbsolute((JSON.parse(cliStateBenchAgent.stdout) as { outputFile?: string }).outputFile ?? ""), false);
 const stateBenchAgentPython = readFileSync(stateBenchAgentFile, "utf8");
 assert.match(stateBenchAgentPython, /class GmosMemoryAgent\(StateBenchAgent\)/);
 assert.match(stateBenchAgentPython, /f"\{base_url\}\/search"/);
@@ -6637,6 +6841,102 @@ assert.equal(JSON.stringify(cliStateBenchPrepareJson).includes(cliStateBenchChec
 assert.equal(existsSync(path.join(cliStateBenchCheckoutDir, "outputs/gmos-learnings/travel.json")), true);
 assert.equal(existsSync(path.join(cliStateBenchCheckoutDir, "agents/gmos_memory_agent.py")), true);
 assert.equal(existsSync(path.join(cliStateBenchCheckoutDir, "outputs/gmos-learnings/travel.prepare.json")), true);
+const cliStateBenchResultsDir = path.join(cliStateBenchCheckoutDir, "outputs", "travel");
+mkdirSync(path.join(cliStateBenchResultsDir, "run1"), { recursive: true });
+writeFileSync(path.join(cliStateBenchResultsDir, "run1", "task-a.json"), "{}");
+writeFileSync(
+  path.join(cliStateBenchResultsDir, "metrics.json"),
+  JSON.stringify({
+    benchmark_version: "state-bench-cli",
+    evaluation_protocol_id: "protocol-cli",
+    num_runs: 1,
+    agent_model: { model_name: "gpt-test-statebench" },
+    metrics: {
+      "task_completion_pass@1": 1,
+      "task_completion_pass^1": 1,
+      mean_ux_score: 4.5,
+      mean_cost_usd: 0.01,
+    },
+  }),
+);
+const cliStateBenchSummarize = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "statebench",
+    "summarize",
+    "--checkout-dir",
+    cliStateBenchCheckoutDir,
+    "--domain",
+    "travel",
+    "--metrics-file",
+    "outputs/travel/metrics.json",
+    "--prepare-manifest",
+    "outputs/gmos-learnings/travel.prepare.json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliStateBenchSummarize.status, 0, cliStateBenchSummarize.stderr);
+const cliStateBenchSummaryJson = JSON.parse(cliStateBenchSummarize.stdout) as {
+  schema?: string;
+  source?: { metricsFile?: string; resultsDir?: string; prepareManifestFile?: string };
+  officialMetrics?: { benchmarkVersion?: string; numRuns?: number; metrics?: Record<string, number> };
+  coverage?: { runDirectoryCount?: number; trajectoryFileCount?: number };
+  validation?: { status?: string; warnings?: string[] };
+};
+assert.equal(cliStateBenchSummaryJson.schema, "gmos.state_bench_results_summary.v1");
+assert.equal(cliStateBenchSummaryJson.source?.metricsFile, "outputs/travel/metrics.json");
+assert.equal(cliStateBenchSummaryJson.source?.prepareManifestFile, "outputs/gmos-learnings/travel.prepare.json");
+assert.equal(cliStateBenchSummaryJson.officialMetrics?.benchmarkVersion, "state-bench-cli");
+assert.equal(cliStateBenchSummaryJson.officialMetrics?.numRuns, 1);
+assert.equal(cliStateBenchSummaryJson.officialMetrics?.metrics?.["task_completion_pass@1"], 1);
+assert.equal(cliStateBenchSummaryJson.coverage?.runDirectoryCount, 1);
+assert.equal(cliStateBenchSummaryJson.coverage?.trajectoryFileCount, 1);
+assert.equal(cliStateBenchSummaryJson.validation?.status, "warning");
+assert.equal(JSON.stringify(cliStateBenchSummaryJson).includes(cliStateBenchCheckoutDir), false);
+const cliStateBenchSummaryOutputFile = path.join(
+  cliStateBenchCheckoutDir,
+  "outputs",
+  "gmos-learnings",
+  "travel.summary.json",
+);
+const cliStateBenchSummarizeToFile = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "statebench",
+    "summarize",
+    "--checkout-dir",
+    cliStateBenchCheckoutDir,
+    "--domain",
+    "travel",
+    "--metrics-file",
+    "outputs/travel/metrics.json",
+    "--prepare-manifest",
+    "outputs/gmos-learnings/travel.prepare.json",
+    "--output-file",
+    cliStateBenchSummaryOutputFile,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliStateBenchSummarizeToFile.status, 0, cliStateBenchSummarizeToFile.stderr);
+assert.equal(cliStateBenchSummarizeToFile.stdout.includes(cliStateBenchCheckoutDir), false);
+const cliStateBenchSummarizeToFileAck = JSON.parse(cliStateBenchSummarizeToFile.stdout) as {
+  ok?: boolean;
+  outputFile?: string;
+};
+assert.equal(cliStateBenchSummarizeToFileAck.ok, true);
+assert.equal(path.isAbsolute(cliStateBenchSummarizeToFileAck.outputFile ?? ""), false);
+const cliStateBenchSummaryFileJson = JSON.parse(readFileSync(cliStateBenchSummaryOutputFile, "utf8")) as {
+  schema?: string;
+};
+assert.equal(cliStateBenchSummaryFileJson.schema, "gmos.state_bench_results_summary.v1");
 const cliStateBenchPrepareMissingModel = spawnSync(
   process.execPath,
   [

@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 
 import { redactForReport } from "../kernel/safety.js";
@@ -87,6 +95,52 @@ export interface StateBenchPreparedRunManifest {
   notes: string[];
 }
 
+export interface SummarizeStateBenchResultsOptions {
+  domain: string;
+  checkoutDir: string;
+  resultsDir?: string | undefined;
+  metricsFile?: string | undefined;
+  prepareManifestFile?: string | undefined;
+}
+
+export interface StateBenchResultsSummary {
+  schema: "gmos.state_bench_results_summary.v1";
+  framework: "state-bench-agent-learning-track";
+  domain: string;
+  source: {
+    protocol: "state-bench-agent-learning-track";
+    metricsFile: string;
+    resultsDir: string;
+    prepareManifestFile?: string | undefined;
+  };
+  officialMetrics: {
+    benchmarkVersion?: string | undefined;
+    evaluationProtocolId?: string | undefined;
+    numRuns: number;
+    agentModel?: unknown;
+    metrics: Record<string, number>;
+  };
+  preparedRun?: {
+    agentClass: string;
+    retrieveLearningsTopK: number;
+    numRuns: number;
+    agentModelName: string;
+    learningsFile?: string | undefined;
+    agentFile?: string | undefined;
+  } | undefined;
+  coverage: {
+    runDirectoryCount: number;
+    trajectoryFileCount: number;
+    perRunTrajectoryFileCounts: Array<{ run: string; count: number }>;
+    perTaskMetricsCount: number;
+  };
+  validation: {
+    status: "pass" | "warning";
+    warnings: string[];
+  };
+  notes: string[];
+}
+
 interface ToolCallSummary {
   name: string;
   marker: string;
@@ -150,9 +204,50 @@ function ensureInsideCheckout(input: {
   return { absolute, relative };
 }
 
+function assertRealPathInsideCheckout(input: {
+  checkoutDir: string;
+  absolute: string;
+  label: string;
+}): void {
+  const checkoutRealPath = realpathSync(input.checkoutDir);
+  const realPath = realpathSync(input.absolute);
+  const relative = path.relative(checkoutRealPath, realPath).split(path.sep).join("/");
+  if (!relative || relative.startsWith("../") || relative === ".." || path.isAbsolute(relative)) {
+    throw new Error(`${input.label} must stay inside the STATE-Bench checkout`);
+  }
+}
+
+function assertExistingFileInsideCheckout(input: {
+  checkoutDir: string;
+  absolute: string;
+  label: string;
+}): void {
+  if (!existsSync(input.absolute) || !statSync(input.absolute).isFile()) {
+    throw new Error(`${input.label} file does not exist`);
+  }
+  assertRealPathInsideCheckout(input);
+}
+
+function assertExistingDirectoryInsideCheckout(input: {
+  checkoutDir: string;
+  absolute: string;
+  label: string;
+}): void {
+  if (!existsSync(input.absolute)) return;
+  if (!statSync(input.absolute).isDirectory()) {
+    throw new Error(`${input.label} directory does not exist`);
+  }
+  assertRealPathInsideCheckout(input);
+}
+
 function writeJsonFile(filePath: string, payload: unknown): void {
   mkdirSync(path.dirname(filePath), { recursive: true });
   writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`);
+}
+
+function readJsonFile(filePath: string, label: string): Record<string, unknown> {
+  const parsed = JSON.parse(readFileSync(filePath, "utf8")) as unknown;
+  return assertRecord(parsed, label);
 }
 
 function assertDistinctFiles(files: Array<{ label: string; absolute: string }>): void {
@@ -164,6 +259,112 @@ function assertDistinctFiles(files: Array<{ label: string; absolute: string }>):
     }
     seen.set(file.absolute, file.label);
   }
+}
+
+function assertDirectoryExists(input: { absolute: string; label: string }): void {
+  if (!existsSync(input.absolute) || !statSync(input.absolute).isDirectory()) {
+    throw new Error(`${input.label} directory does not exist`);
+  }
+}
+
+function numericMetrics(value: unknown): Record<string, number> {
+  const record = assertRecord(value, "STATE-Bench metrics.metrics");
+  const output: Record<string, number> = {};
+  for (const [key, entry] of Object.entries(record)) {
+    if (typeof entry === "number" && Number.isFinite(entry)) output[key] = entry;
+  }
+  return output;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? redactForReport(value.trim()) : undefined;
+}
+
+function requiredNumber(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${label} must be a number`);
+  }
+  return value;
+}
+
+function publicJsonScalar(value: unknown): unknown {
+  if (value === null || typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "string") return redactForReport(value);
+  return undefined;
+}
+
+function publicJsonObject(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const output: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const safeValue = publicJsonScalar(entry);
+    if (safeValue !== undefined) output[redactForReport(key)] = safeValue;
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
+}
+
+function publicAgentModel(value: unknown): unknown {
+  const scalar = publicJsonScalar(value);
+  if (scalar !== undefined) return scalar;
+  return publicJsonObject(value);
+}
+
+function safePreparedArtifactPath(input: {
+  checkoutDir: string;
+  filePath: unknown;
+  label: "learnings_file" | "agent_file";
+  warnings: string[];
+}): string | undefined {
+  if (typeof input.filePath !== "string" || !input.filePath.trim()) {
+    input.warnings.push(`prepare_manifest_${input.label}_missing`);
+    return undefined;
+  }
+  try {
+    const safePath = ensureInsideCheckout({
+      checkoutDir: input.checkoutDir,
+      filePath: input.filePath,
+      label: `STATE-Bench prepare manifest ${input.label}`,
+    });
+    return redactForReport(safePath.relative);
+  } catch {
+    input.warnings.push(`prepare_manifest_${input.label}_unsafe`);
+    return undefined;
+  }
+}
+
+function optionalPositiveNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function runDirectories(resultsDir: string): string[] {
+  if (!existsSync(resultsDir) || !statSync(resultsDir).isDirectory()) return [];
+  return readdirSync(resultsDir)
+    .filter((entry) => /^run\d+$/u.test(entry))
+    .filter((entry) => statSync(path.join(resultsDir, entry)).isDirectory())
+    .sort((left, right) => Number(left.slice(3)) - Number(right.slice(3)));
+}
+
+function jsonFileCount(dir: string): number {
+  if (!existsSync(dir) || !statSync(dir).isDirectory()) return 0;
+  return readdirSync(dir).filter((entry) => entry.endsWith(".json")).length;
+}
+
+function parsePreparedManifest(value: Record<string, unknown>): StateBenchPreparedRunManifest | null {
+  if (value.schema !== "gmos.state_bench_prepare_run.v1") return null;
+  const officialSettings = assertRecord(value.officialSettings, "STATE-Bench prepare officialSettings");
+  const artifacts = assertRecord(value.artifacts, "STATE-Bench prepare artifacts");
+  return {
+    schema: "gmos.state_bench_prepare_run.v1",
+    framework: "state-bench-agent-learning-track",
+    domain: String(value.domain ?? ""),
+    source: assertRecord(value.source, "STATE-Bench prepare source") as StateBenchPreparedRunManifest["source"],
+    artifacts: artifacts as StateBenchPreparedRunManifest["artifacts"],
+    officialSettings: officialSettings as StateBenchPreparedRunManifest["officialSettings"],
+    environment: assertRecord(value.environment, "STATE-Bench prepare environment") as StateBenchPreparedRunManifest["environment"],
+    commands: assertRecord(value.commands, "STATE-Bench prepare commands") as StateBenchPreparedRunManifest["commands"],
+    learnings: assertRecord(value.learnings, "STATE-Bench prepare learnings") as StateBenchPreparedRunManifest["learnings"],
+    notes: Array.isArray(value.notes) ? value.notes.map(String) : [],
+  };
 }
 
 function conversationFromFile(filePath: string): Record<string, unknown>[] | null {
@@ -267,9 +468,10 @@ export function buildStateBenchLearnings(
   if (!domain) throw new Error("STATE-Bench learnings require a domain");
   const inputDir = path.resolve(options.inputDir);
   assertTrainTrajectoryInput(inputDir, domain, options.allowNonTrainInput === true);
-  if (!existsSync(inputDir)) {
-    throw new Error("STATE-Bench train trajectory directory does not exist");
-  }
+  assertDirectoryExists({
+    absolute: inputDir,
+    label: "STATE-Bench train trajectory",
+  });
   const maxContentChars = Math.max(120, Math.trunc(options.maxContentChars ?? DEFAULT_MAX_CONTENT_CHARS));
   const maxItems =
     options.maxItems === undefined ? Number.POSITIVE_INFINITY : Math.max(1, Math.trunc(options.maxItems));
@@ -464,6 +666,160 @@ export function prepareStateBenchAgentLearningRun(
   };
   if (manifestPath) writeJsonFile(manifestPath.absolute, manifest);
   return manifest;
+}
+
+export function summarizeStateBenchResults(
+  options: SummarizeStateBenchResultsOptions,
+): StateBenchResultsSummary {
+  const domain = cleanText(options.domain);
+  if (!domain) throw new Error("STATE-Bench summarize requires a domain");
+  const checkoutDir = path.resolve(options.checkoutDir);
+  const resultsPath = ensureInsideCheckout({
+    checkoutDir,
+    filePath: options.resultsDir ?? path.join(DEFAULT_OUTPUTS_DIR, domain),
+    label: "STATE-Bench resultsDir",
+  });
+  assertExistingDirectoryInsideCheckout({
+    checkoutDir,
+    absolute: resultsPath.absolute,
+    label: "STATE-Bench resultsDir",
+  });
+  const metricsPath = ensureInsideCheckout({
+    checkoutDir,
+    filePath: options.metricsFile ?? path.join(resultsPath.relative, "metrics.json"),
+    label: "STATE-Bench metricsFile",
+  });
+  assertExistingFileInsideCheckout({
+    checkoutDir,
+    absolute: metricsPath.absolute,
+    label: "STATE-Bench metrics",
+  });
+  const defaultPrepareManifest = path.join(DEFAULT_LEARNINGS_DIR, `${domain}.prepare.json`);
+  const prepareManifestPath =
+    options.prepareManifestFile !== undefined
+      ? ensureInsideCheckout({
+          checkoutDir,
+          filePath: options.prepareManifestFile,
+          label: "STATE-Bench prepareManifestFile",
+        })
+      : ensureInsideCheckout({
+          checkoutDir,
+          filePath: defaultPrepareManifest,
+          label: "STATE-Bench prepareManifestFile",
+        });
+  const metrics = readJsonFile(metricsPath.absolute, "STATE-Bench metrics");
+  const officialMetrics = numericMetrics(metrics.metrics);
+  const numRuns = requiredNumber(metrics.num_runs, "STATE-Bench metrics.num_runs");
+  const warnings: string[] = [];
+  let preparedRun: StateBenchResultsSummary["preparedRun"];
+  let prepareManifestRelative: string | undefined;
+  if (existsSync(prepareManifestPath.absolute)) {
+    assertExistingFileInsideCheckout({
+      checkoutDir,
+      absolute: prepareManifestPath.absolute,
+      label: "STATE-Bench prepare manifest",
+    });
+    const prepareManifest = parsePreparedManifest(
+      readJsonFile(prepareManifestPath.absolute, "STATE-Bench prepare manifest"),
+    );
+    if (prepareManifest) {
+      prepareManifestRelative = prepareManifestPath.relative;
+      if (prepareManifest.domain !== domain) {
+        warnings.push("prepare_manifest_domain_mismatch");
+      }
+      const preparedNumRuns = optionalPositiveNumber(prepareManifest.officialSettings.numRuns);
+      const preparedTopK = optionalPositiveNumber(
+        prepareManifest.officialSettings.retrieveLearningsTopK,
+      );
+      if (preparedNumRuns === undefined) {
+        warnings.push("prepare_manifest_num_runs_invalid");
+      } else if (preparedNumRuns !== numRuns) {
+        warnings.push("prepare_manifest_num_runs_mismatch");
+      }
+      if (preparedTopK === undefined) {
+        warnings.push("prepare_manifest_top_k_invalid");
+      } else if (preparedTopK !== STATE_BENCH_TOP_K) {
+        warnings.push("prepare_manifest_top_k_not_official");
+      }
+      const agentClass = optionalString(prepareManifest.officialSettings.agentClass);
+      const agentModelName = optionalString(prepareManifest.officialSettings.agentModelName);
+      const learningsFile = safePreparedArtifactPath({
+        checkoutDir,
+        filePath: prepareManifest.artifacts.learningsFile,
+        label: "learnings_file",
+        warnings,
+      });
+      const agentFile = safePreparedArtifactPath({
+        checkoutDir,
+        filePath: prepareManifest.artifacts.agentFile,
+        label: "agent_file",
+        warnings,
+      });
+      if (agentClass && agentModelName && preparedTopK !== undefined && preparedNumRuns !== undefined) {
+        preparedRun = {
+          agentClass,
+          retrieveLearningsTopK: preparedTopK,
+          numRuns: preparedNumRuns,
+          agentModelName,
+          ...(learningsFile ? { learningsFile } : {}),
+          ...(agentFile ? { agentFile } : {}),
+        };
+      } else {
+        warnings.push("prepare_manifest_summary_incomplete");
+      }
+    } else if (options.prepareManifestFile !== undefined) {
+      warnings.push("prepare_manifest_schema_unrecognized");
+    }
+  } else if (options.prepareManifestFile !== undefined) {
+    warnings.push("prepare_manifest_missing");
+  }
+
+  const runDirs = runDirectories(resultsPath.absolute);
+  const perRunTrajectoryFileCounts = runDirs.map((runDir) => ({
+    run: runDir,
+    count: jsonFileCount(path.join(resultsPath.absolute, runDir)),
+  }));
+  if (runDirs.length > 0 && runDirs.length !== numRuns) {
+    warnings.push("run_directory_count_mismatch");
+  }
+  if (Number(officialMetrics[`task_completion_pass^${numRuns}`] ?? Number.NaN) < 0) {
+    warnings.push("official_metrics_pass_n_invalid");
+  }
+  const perTaskMetricsDir = path.join(resultsPath.absolute, "per_task_metrics");
+  return {
+    schema: "gmos.state_bench_results_summary.v1",
+    framework: "state-bench-agent-learning-track",
+    domain,
+    source: {
+      protocol: "state-bench-agent-learning-track",
+      metricsFile: metricsPath.relative,
+      resultsDir: resultsPath.relative,
+      ...(prepareManifestRelative ? { prepareManifestFile: prepareManifestRelative } : {}),
+    },
+	    officialMetrics: {
+	      benchmarkVersion: optionalString(metrics.benchmark_version),
+	      evaluationProtocolId: optionalString(metrics.evaluation_protocol_id),
+	      numRuns,
+	      agentModel: publicAgentModel(metrics.agent_model),
+	      metrics: officialMetrics,
+	    },
+    ...(preparedRun ? { preparedRun } : {}),
+    coverage: {
+      runDirectoryCount: runDirs.length,
+      trajectoryFileCount: perRunTrajectoryFileCounts.reduce((sum, row) => sum + row.count, 0),
+      perRunTrajectoryFileCounts,
+      perTaskMetricsCount: jsonFileCount(perTaskMetricsDir),
+    },
+    validation: {
+      status: warnings.length === 0 ? "pass" : "warning",
+      warnings,
+    },
+    notes: [
+      "This summary reads official STATE-Bench metrics artifacts; it does not recompute official scores.",
+      "Run official STATE-Bench compute_metrics before publishing this summary.",
+      "Paths are relative to the STATE-Bench checkout root.",
+    ],
+  };
 }
 
 export function stateBenchAgentPythonTemplate(): string {

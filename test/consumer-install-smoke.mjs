@@ -430,6 +430,7 @@ try {
         stateBenchAgentPythonTemplate,
         buildStateBenchLearnings,
         prepareStateBenchAgentLearningRun,
+        summarizeStateBenchResults,
         runExternalMemoryBenchmark,
         parseExternalMemoryBenchmarkDataset,
         runHostCompatibilityGym,
@@ -437,6 +438,8 @@ try {
         runMemoryReleaseGate,
         type BuildStateBenchLearningsOptions,
         type PrepareStateBenchAgentLearningRunOptions,
+        type SummarizeStateBenchResultsOptions,
+        type StateBenchResultsSummary,
         type StateBenchPreparedRunManifest,
         type ExternalMemoryBenchmarkDatasetAdapter,
         type ExternalMemoryBenchmarkDatasetFormat,
@@ -665,11 +668,24 @@ try {
       if (typeof prepareStateBenchAgentLearningRun !== "function") {
         throw new Error("typed statebench prepare failed");
       }
+      if (typeof summarizeStateBenchResults !== "function") {
+        throw new Error("typed statebench summarize failed");
+      }
       const stateBenchPreparedShape: Pick<StateBenchPreparedRunManifest, "schema" | "framework"> = {
         schema: "gmos.state_bench_prepare_run.v1",
         framework: "state-bench-agent-learning-track",
       };
       void stateBenchPreparedShape;
+      const stateBenchSummarizeOptions: SummarizeStateBenchResultsOptions = {
+        domain: "travel",
+        checkoutDir: ".",
+      };
+      void stateBenchSummarizeOptions;
+      const stateBenchSummaryShape: Pick<StateBenchResultsSummary, "schema" | "framework"> = {
+        schema: "gmos.state_bench_results_summary.v1",
+        framework: "state-bench-agent-learning-track",
+      };
+      void stateBenchSummaryShape;
       const hostAdapter: HostAdapter = createPresetHostAdapter("ghast");
       const hostCompatibility: HostCompatibilityReport = hostAdapter.compatibility;
       if (hostCompatibility.level !== "L4") throw new Error("unexpected typed host compatibility");

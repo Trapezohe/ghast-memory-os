@@ -23,6 +23,7 @@ import {
   hashExternalMemoryBenchmarkInput,
   buildStateBenchLearnings,
   prepareStateBenchAgentLearningRun,
+  summarizeStateBenchResults,
   parseExternalMemoryBenchmarkDataset,
   parseExternalMemoryBenchmarkJsonl,
   runExternalMemoryBenchmark,
@@ -117,6 +118,7 @@ Usage:
   gmos gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
   gmos gym statebench write-agent --output-file ./STATE-Bench/agents/gmos_memory_agent.py
   gmos gym statebench prepare --checkout-dir ./STATE-Bench --domain travel --agent-model-name gpt-5.1 --num-workers 2 --manifest-file outputs/gmos-learnings/travel.prepare.json
+  gmos gym statebench summarize --checkout-dir ./STATE-Bench --domain travel --metrics-file outputs/travel/metrics.json
   gmos gym gate --generated-seeds 3 --scale-sizes 100,1000 --format json
   gmos gym host --hosts ghast,mcp,mock_l3,search_only --actual-report ./host-status.json --format markdown
 `);
@@ -325,6 +327,14 @@ function readJsonFileOption(name: string): unknown {
   return JSON.parse(readFileSync(path.resolve(process.cwd(), file), "utf8")) as unknown;
 }
 
+function publicOutputPath(resolved: string): string {
+  const relative = path.relative(process.cwd(), resolved).split(path.sep).join("/");
+  if (relative && !relative.startsWith("../") && relative !== ".." && !path.isAbsolute(relative)) {
+    return relative;
+  }
+  return path.basename(resolved);
+}
+
 function writeJsonOutput(payload: unknown): void {
   const output = JSON.stringify(payload, null, 2);
   const outputFile = value("--output-file");
@@ -332,7 +342,7 @@ function writeJsonOutput(payload: unknown): void {
     const resolved = path.resolve(process.cwd(), outputFile);
     mkdirSync(path.dirname(resolved), { recursive: true });
     writeFileSync(resolved, output);
-    console.log(JSON.stringify({ ok: true, outputFile: resolved }, null, 2));
+    console.log(JSON.stringify({ ok: true, outputFile: publicOutputPath(resolved) }, null, 2));
     return;
   }
   console.log(output);
@@ -494,7 +504,7 @@ async function main(): Promise<void> {
       }
       mkdirSync(path.dirname(resolved), { recursive: true });
       writeFileSync(resolved, stateBenchAgentPythonTemplate());
-      console.log(JSON.stringify({ ok: true, outputFile: resolved }, null, 2));
+      console.log(JSON.stringify({ ok: true, outputFile: publicOutputPath(resolved) }, null, 2));
       return;
     }
     if (action === "prepare") {
@@ -524,7 +534,22 @@ async function main(): Promise<void> {
       );
       return;
     }
-    throw new Error("gmos gym statebench action must be build-learnings, write-agent, or prepare");
+    if (action === "summarize") {
+      const domain = strictOptionValue("--domain");
+      if (!domain) throw new Error("gmos gym statebench summarize requires --domain");
+      const checkoutDir = strictOptionValue("--checkout-dir", ".") ?? ".";
+      writeJsonOutput(
+        summarizeStateBenchResults({
+          domain,
+          checkoutDir,
+          resultsDir: value("--results-dir"),
+          metricsFile: value("--metrics-file"),
+          prepareManifestFile: value("--prepare-manifest"),
+        }),
+      );
+      return;
+    }
+    throw new Error("gmos gym statebench action must be build-learnings, write-agent, prepare, or summarize");
   }
 
   if (command === "gym" && subcommand === "external") {

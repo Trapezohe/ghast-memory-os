@@ -47,12 +47,15 @@ import {
 import {
   buildStateBenchLearnings,
   prepareStateBenchAgentLearningRun,
+  summarizeStateBenchResults,
   stateBenchAgentPythonTemplate,
   type BuildStateBenchLearningsOptions,
   type PrepareStateBenchAgentLearningRunOptions,
+  type StateBenchResultsSummary,
   type StateBenchLearning,
   type StateBenchLearningsArtifact,
   type StateBenchPreparedRunManifest,
+  type SummarizeStateBenchResultsOptions,
 } from "./state-bench.js";
 export {
   renderHostCompatibilityGymMarkdown,
@@ -69,6 +72,7 @@ export {
   hashExternalMemoryBenchmarkInput,
   buildStateBenchLearnings,
   prepareStateBenchAgentLearningRun,
+  summarizeStateBenchResults,
   stateBenchAgentPythonTemplate,
   runExternalMemoryBenchmark,
   runHostCompatibilityGym,
@@ -93,9 +97,11 @@ export type {
   ParseExternalMemoryBenchmarkDatasetOptions,
   RunHostCompatibilityGymOptions,
   RunExternalMemoryBenchmarkOptions,
+  StateBenchResultsSummary,
   StateBenchLearning,
   StateBenchLearningsArtifact,
   StateBenchPreparedRunManifest,
+  SummarizeStateBenchResultsOptions,
 };
 export { runMemoryScaleBenchmark };
 export type { MemoryScaleBenchmarkResult };

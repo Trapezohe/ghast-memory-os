@@ -115,6 +115,7 @@ node dist/cli/gmos.js gym external --input-file ./locomo10.json --dataset-format
 node dist/cli/gmos.js gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
 node dist/cli/gmos.js gym statebench write-agent --output-file ./STATE-Bench/agents/gmos_memory_agent.py
 node dist/cli/gmos.js gym statebench prepare --checkout-dir ./STATE-Bench --domain travel --agent-model-name gpt-5.1 --num-workers 2 --manifest-file outputs/gmos-learnings/travel.prepare.json
+node dist/cli/gmos.js gym statebench summarize --checkout-dir ./STATE-Bench --domain travel --metrics-file outputs/travel/metrics.json --prepare-manifest outputs/gmos-learnings/travel.prepare.json
 node dist/cli/gmos.js gym gate --generated-seeds 3 --scale-sizes 100,1000 --format json
 node dist/cli/gmos.js gym host --hosts ghast,mcp,mock_l3,search_only --format markdown
 node dist/cli/gmos.js gym host --hosts ghast --actual-report ./ghast-memory-status.json --format markdown
@@ -131,6 +132,7 @@ node dist/cli/gmos.js gym scale --sizes 100,1000 --threshold-p95-ms 250 --format
 node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format json --require-convergence
 node dist/cli/gmos.js gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
 node dist/cli/gmos.js gym statebench prepare --checkout-dir ./STATE-Bench --domain travel --agent-model-name gpt-5.1 --manifest-file outputs/gmos-learnings/travel.prepare.json
+node dist/cli/gmos.js gym statebench summarize --checkout-dir ./STATE-Bench --domain travel --metrics-file outputs/travel/metrics.json --output-file outputs/gmos-learnings/travel.summary.json
 node dist/cli/gmos.js repair --db ./gmos.db --search-index
 node dist/cli/gmos.js repair --db ./gmos.db --associations
 npm pack --dry-run
@@ -193,6 +195,14 @@ local paths and train trajectory content. Officially comparable STATE-Bench
 numbers still require running the unchanged STATE-Bench protocol, fixed
 evaluator/simulator setup, and `--retrieve-learnings-top-k 3` inside a
 STATE-Bench checkout.
+
+After the official `compute_metrics` command writes `metrics.json`,
+`gym statebench summarize` can archive a gmOS-side
+`gmos.state_bench_results_summary.v1` report. It reads the official metrics
+artifact and optional prepare manifest, counts run output files, and keeps all
+paths relative to the checkout root. It does not inspect held-out task
+definitions, read evaluator labels, re-score trajectories, or claim a score
+that STATE-Bench did not produce.
 
 This adapter targets the original/cleaned LongMemEval schema, not the newer
 LongMemEval-V2 trajectory/haystack schema. It is deterministic context and
