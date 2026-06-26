@@ -38,7 +38,12 @@ import {
   listMemoryMcpTools,
   serveMemoryMcpStdio,
 } from "../mcp/index.js";
-import { createSqliteMemoryStore } from "../store/sqlite/index.js";
+import {
+  createSqliteMemoryStore,
+  parseSqliteProfileBackup,
+  type SqliteProfileBackupConflictPolicy,
+  type SqliteProfileBackupMode,
+} from "../store/sqlite/index.js";
 import type {
   FailureKind,
   LowLevelListMemoriesInput,
@@ -82,6 +87,8 @@ Usage:
   gmos get --db ./gmos.db --profile local --id memory_xxx
   gmos export --db ./gmos.db --profile local --output-file ./gmos-memory-export.json
   gmos import --db ./gmos.db --profile local --input-file ./gmos-memory-export.json
+  gmos backup --db ./gmos.db --profile local --mode safe --output-file ./gmos-profile-backup.json
+  gmos restore --db ./gmos.db --input-file ./gmos-profile-backup.json --on-conflict skip
   gmos observe --db ./gmos.db --profile local --text "我喜欢简洁回答"
   gmos prepare --db ./gmos.db --profile local --text "你知道我什么偏好吗？"
   gmos forget --db ./gmos.db --profile local --query "Moonbase"
@@ -265,6 +272,22 @@ function failureKindOption(): FailureKind | undefined {
     throw new Error(
       "--failure-kind must be one of: missed_recall, wrong_recall, privacy_leak, forget_failure, controller_route_error, action_policy_missing, task_failure",
     );
+  }
+  return raw;
+}
+
+function profileBackupModeOption(): SqliteProfileBackupMode {
+  const raw = value("--mode", "safe");
+  if (raw !== "safe" && raw !== "full") {
+    throw new Error("--mode must be safe or full");
+  }
+  return raw;
+}
+
+function profileBackupConflictOption(): SqliteProfileBackupConflictPolicy {
+  const raw = value("--on-conflict", "skip");
+  if (raw !== "skip" && raw !== "replace" && raw !== "fail") {
+    throw new Error("--on-conflict must be one of: skip, replace, fail");
   }
   return raw;
 }
@@ -658,6 +681,33 @@ async function main(): Promise<void> {
         sourceUriPrefix: parsed.sourceUriPrefix,
         skipPerson: !has("--include-person"),
         skipSecretLike: true,
+      });
+      console.log(JSON.stringify({ ok: true, ...report }, null, 2));
+      return;
+    }
+
+    if (command === "backup") {
+      const backup = store.exportProfileBackup({
+        profileId,
+        mode: profileBackupModeOption(),
+        includeArchived: has("--include-archived") ? true : undefined,
+        includeSensitive: has("--include-sensitive") ? true : undefined,
+        includePerson: has("--include-person") ? true : undefined,
+        includeEvidence: has("--no-evidence") ? false : undefined,
+        includeWorldBeliefs: has("--include-world-beliefs") ? true : undefined,
+        includeFailures: has("--include-failures") ? true : undefined,
+        includeTaskTrajectories: has("--include-task-trajectories") ? true : undefined,
+      });
+      writeJsonOutput(backup);
+      return;
+    }
+
+    if (command === "restore") {
+      const parsed = parseSqliteProfileBackup(readJsonFileOption("--input-file"));
+      const report = store.restoreProfileBackup({
+        backup: parsed,
+        profileId: value("--profile"),
+        onConflict: profileBackupConflictOption(),
       });
       console.log(JSON.stringify({ ok: true, ...report }, null, 2));
       return;

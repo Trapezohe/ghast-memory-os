@@ -22,6 +22,7 @@ import {
 } from "../src/gym/index.js";
 import {
   createSqliteMemoryStore,
+  parseSqliteProfileBackup,
   type SqliteMemoryStore,
 } from "../src/store/sqlite/index.js";
 import {
@@ -831,6 +832,200 @@ assert.throws(
   () => parseMemorySnapshotExport(snapshotExportMissingTimestamp),
   /requires exportedAt/,
 );
+const backupProfileId = "backup_profile";
+const backupMemory = await memory.add({
+  profileId: backupProfileId,
+  kind: "preference",
+  content: "Backup profile prefers portable restores.",
+  metadata: { backupFixture: "primary" },
+});
+const backupArchivedMemory = await memory.add({
+  profileId: backupProfileId,
+  kind: "project",
+  content: "Backup archived row should only appear in full backups.",
+});
+await memory.archive({
+  profileId: backupProfileId,
+  id: backupArchivedMemory.id,
+  reason: "backup fixture archive",
+});
+const backupSensitiveMemory = await memory.add({
+  profileId: backupProfileId,
+  kind: "fact",
+  content: "Backup sensitive fixture uses SSN 123-45-6789.",
+  sensitivity: "sensitive",
+});
+const backupPersonMemory = await memory.add({
+  profileId: backupProfileId,
+  kind: "person",
+  content: "PERSON: Bob: Backup person fixture prefers tea.",
+  allowPerson: true,
+});
+const backupBelief = await store.addWorldBelief({
+  profileId: backupProfileId,
+  subject: "user",
+  predicate: "prefers",
+  object: "portable restores",
+  sourceMemoryId: backupMemory.id,
+});
+await memory.recordFeedback({
+  profileId: backupProfileId,
+  content: "Backup profile wrong recall fixture.",
+  failureKind: "wrong_recall",
+});
+await memory.commitOutcome({
+  profileId: backupProfileId,
+  taskId: "backup-task-1",
+  objective: "Backup profile task trajectory fixture.",
+  status: "completed",
+  summary: "Backup task restored successfully.",
+});
+const safeProfileBackup = store.exportProfileBackup({ profileId: backupProfileId });
+assert.equal(safeProfileBackup.schema, "gmos.profile_backup.v1");
+assert.equal(safeProfileBackup.mode, "safe");
+assert.equal(safeProfileBackup.options.includeSensitive, false);
+assert.equal(safeProfileBackup.options.includePerson, false);
+assert.equal(safeProfileBackup.options.includeArchived, false);
+assert.equal(safeProfileBackup.memories.some((entry) => entry.id === backupMemory.id), true);
+assert.equal(
+  safeProfileBackup.memories.some((entry) => entry.id === backupArchivedMemory.id),
+  false,
+);
+assert.equal(
+  safeProfileBackup.memories.some((entry) => entry.id === backupSensitiveMemory.id),
+  false,
+);
+assert.equal(
+  safeProfileBackup.memories.some((entry) => entry.id === backupPersonMemory.id),
+  false,
+);
+assert.equal(JSON.stringify(safeProfileBackup).includes("123-45-6789"), false);
+assert.equal(JSON.stringify(safeProfileBackup).includes("Backup person fixture"), false);
+assert.equal(safeProfileBackup.failureEvents.length, 0);
+assert.equal(safeProfileBackup.taskTrajectories.length, 0);
+const fullProfileBackup = store.exportProfileBackup({ profileId: backupProfileId, mode: "full" });
+assert.equal(fullProfileBackup.mode, "full");
+assert.equal(fullProfileBackup.options.includeSensitive, true);
+assert.equal(fullProfileBackup.options.includePerson, true);
+assert.equal(fullProfileBackup.options.includeArchived, true);
+for (const expectedId of [
+  backupMemory.id,
+  backupArchivedMemory.id,
+  backupSensitiveMemory.id,
+  backupPersonMemory.id,
+]) {
+  assert.equal(fullProfileBackup.memories.some((entry) => entry.id === expectedId), true);
+}
+assert.equal(fullProfileBackup.worldBeliefs.some((entry) => entry.id === backupBelief.id), true);
+assert.equal(fullProfileBackup.failureEvents.length, 1);
+assert.equal(fullProfileBackup.taskTrajectories.length, 1);
+assert.equal(fullProfileBackup.evidenceEvents.length >= fullProfileBackup.memories.length, true);
+const parsedProfileBackup = parseSqliteProfileBackup(JSON.parse(JSON.stringify(fullProfileBackup)));
+assert.equal(parsedProfileBackup.counts.memories, fullProfileBackup.counts.memories);
+assert.throws(
+  () => parseSqliteProfileBackup({ schema: "gmos.unknown", memories: [] }),
+  /gmos.profile_backup.v1/,
+);
+const sameDbOverrideRestore = store.restoreProfileBackup({
+  backup: parsedProfileBackup,
+  profileId: "backup_profile_same_db",
+});
+assert.equal(sameDbOverrideRestore.inserted.memories, fullProfileBackup.counts.memories);
+const sourceProfileAfterSameDbRestore = await memory.search({
+  profileId: backupProfileId,
+  query: "portable restores",
+});
+assert.equal(sourceProfileAfterSameDbRestore.some((entry) => entry.id === backupMemory.id), true);
+const sameDbTargetMatches = await memory.search({
+  profileId: "backup_profile_same_db",
+  query: "portable restores",
+});
+assert.equal(sameDbTargetMatches.some((entry) => entry.content.includes("portable restores")), true);
+assert.equal(sameDbTargetMatches.some((entry) => entry.id === backupMemory.id), false);
+const sameDbRepeatedRestore = store.restoreProfileBackup({
+  backup: parsedProfileBackup,
+  profileId: "backup_profile_same_db",
+});
+assert.equal(sameDbRepeatedRestore.inserted.memories, 0);
+assert.equal(sameDbRepeatedRestore.skipped.memories, fullProfileBackup.counts.memories);
+const sameDbReplaceRestore = store.restoreProfileBackup({
+  backup: parsedProfileBackup,
+  profileId: "backup_profile_same_db",
+  onConflict: "replace",
+});
+assert.equal(sameDbReplaceRestore.inserted.memories, fullProfileBackup.counts.memories);
+const sourceProfileAfterSameDbReplace = await memory.search({
+  profileId: backupProfileId,
+  query: "portable restores",
+});
+assert.equal(sourceProfileAfterSameDbReplace.some((entry) => entry.id === backupMemory.id), true);
+const restoreStore = createSqliteMemoryStore({
+  path: path.join(tmp, "profile-restore.db"),
+});
+await restoreStore.initialize();
+const restoreReport = restoreStore.restoreProfileBackup({
+  backup: parsedProfileBackup,
+  profileId: "backup_profile_restored",
+});
+assert.equal(restoreReport.sourceProfileId, backupProfileId);
+assert.equal(restoreReport.targetProfileId, "backup_profile_restored");
+assert.equal(restoreReport.inserted.memories, fullProfileBackup.counts.memories);
+assert.equal(restoreReport.inserted.evidenceEvents, fullProfileBackup.counts.evidenceEvents);
+assert.equal(restoreReport.inserted.worldBeliefs, fullProfileBackup.counts.worldBeliefs);
+assert.equal(restoreReport.inserted.failureEvents, fullProfileBackup.counts.failureEvents);
+assert.equal(restoreReport.inserted.taskTrajectories, fullProfileBackup.counts.taskTrajectories);
+const restoredMemory = createMemoryOS({
+  profileId: "backup_profile_restored",
+  store: restoreStore,
+});
+const restoredBackupMatches = await restoredMemory.search({
+  profileId: "backup_profile_restored",
+  query: "portable restores",
+});
+assert.equal(restoredBackupMatches.some((entry) => entry.content.includes("portable restores")), true);
+assert.equal(restoredBackupMatches.some((entry) => entry.id === backupMemory.id), false);
+const restoredSensitiveDefault = await restoredMemory.search({
+  profileId: "backup_profile_restored",
+  query: "123-45-6789",
+});
+assert.equal(
+  restoredSensitiveDefault.some((entry) => entry.id === backupSensitiveMemory.id),
+  false,
+);
+const restoredSensitiveIncluded = await restoredMemory.search({
+  profileId: "backup_profile_restored",
+  query: "123-45-6789",
+  includeSensitive: true,
+});
+assert.equal(
+  restoredSensitiveIncluded.some((entry) => entry.content.includes("123-45-6789")),
+  true,
+);
+const restoredFullBackup = restoreStore.exportProfileBackup({
+  profileId: "backup_profile_restored",
+  mode: "full",
+});
+assert.equal(restoredFullBackup.counts.memories, fullProfileBackup.counts.memories);
+assert.equal(restoredFullBackup.counts.evidenceEvents, fullProfileBackup.counts.evidenceEvents);
+assert.equal(restoredFullBackup.counts.worldBeliefs, fullProfileBackup.counts.worldBeliefs);
+assert.equal(restoredFullBackup.counts.failureEvents, fullProfileBackup.counts.failureEvents);
+assert.equal(restoredFullBackup.counts.taskTrajectories, fullProfileBackup.counts.taskTrajectories);
+const repeatedRestore = restoreStore.restoreProfileBackup({
+  backup: parsedProfileBackup,
+  profileId: "backup_profile_restored",
+});
+assert.equal(repeatedRestore.inserted.memories, 0);
+assert.equal(repeatedRestore.skipped.memories, fullProfileBackup.counts.memories);
+assert.throws(
+  () =>
+    restoreStore.restoreProfileBackup({
+      backup: parsedProfileBackup,
+      profileId: "backup_profile_restored",
+      onConflict: "fail",
+    }),
+  /restore conflict/,
+);
+await restoredMemory.close();
 assert.throws(
   () =>
     parseMemorySnapshotExport({
@@ -927,7 +1122,7 @@ await memory.recordFeedback({
   content: "other profile wrong recall must not leak",
   failureKind: "wrong_recall",
 });
-assert.equal((await store.rowCounts()).gmos_failure_events, 4);
+assert.equal((await store.rowCounts()).gmos_failure_events, 6);
 
 const compat = classifyHostCompatibility({
   hostId: "ghast",
@@ -994,7 +1189,7 @@ assert.equal(statusReport.storage.status, "ok");
 assert.equal(statusReport.storage.schemaVersion, 2);
 assert.equal(statusReport.storage.searchIndex?.status, "ok");
 assert.equal(statusReport.storage.searchIndex?.missingEntryCount, 0);
-assert.equal(statusReport.storage.rowCounts.gmos_failure_events, 4);
+assert.equal(statusReport.storage.rowCounts.gmos_failure_events, 6);
 assert.equal(statusReport.failureSummary.status, "ok");
 assert.equal(statusReport.failureSummary.inspectedFailureCount, 3);
 assert.equal(statusReport.failureSummary.byKind.wrong_recall, 1);
@@ -2629,6 +2824,142 @@ const cliArchivedExport = spawnSync(
 );
 assert.equal(cliArchivedExport.status, 0, cliArchivedExport.stderr);
 assert.match(cliArchivedExport.stdout, /risk-first answers/);
+const cliProfileBackupFile = path.join(tmp, "cli-profile-backup.json");
+const cliProfileBackup = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "backup",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--mode",
+    "full",
+    "--output-file",
+    cliProfileBackupFile,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliProfileBackup.status, 0, cliProfileBackup.stderr);
+assert.equal(existsSync(cliProfileBackupFile), true);
+const cliProfileBackupPayload = JSON.parse(readFileSync(cliProfileBackupFile, "utf8")) as {
+  schema?: string;
+  mode?: string;
+  counts?: { memories?: number; evidenceEvents?: number };
+  memories?: Array<{ id?: string; status?: string; content?: string }>;
+};
+assert.equal(cliProfileBackupPayload.schema, "gmos.profile_backup.v1");
+assert.equal(cliProfileBackupPayload.mode, "full");
+assert.equal((cliProfileBackupPayload.counts?.memories ?? 0) > 0, true);
+assert.equal((cliProfileBackupPayload.counts?.evidenceEvents ?? 0) > 0, true);
+assert.equal(
+  cliProfileBackupPayload.memories?.some(
+    (entry) => entry.id === cliAddMemory.id && entry.status === "archived",
+  ),
+  true,
+);
+const cliProfileRestoreDb = path.join(tmp, "cli-profile-restore.db");
+const cliProfileRestore = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "restore",
+    "--db",
+    cliProfileRestoreDb,
+    "--profile",
+    "cli_restored",
+    "--input-file",
+    cliProfileBackupFile,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliProfileRestore.status, 0, cliProfileRestore.stderr);
+const cliProfileRestorePayload = JSON.parse(cliProfileRestore.stdout) as {
+  inserted?: { memories?: number };
+  targetProfileId?: string;
+};
+assert.equal(cliProfileRestorePayload.targetProfileId, "cli_restored");
+assert.equal(cliProfileRestorePayload.inserted?.memories, cliProfileBackupPayload.counts?.memories);
+const cliProfileRestoreArchivedList = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "list",
+    "--db",
+    cliProfileRestoreDb,
+    "--profile",
+    "cli_restored",
+    "--status",
+    "archived",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliProfileRestoreArchivedList.status, 0, cliProfileRestoreArchivedList.stderr);
+assert.match(cliProfileRestoreArchivedList.stdout, /risk-first answers/);
+const cliProfileRestoreRepeat = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "restore",
+    "--db",
+    cliProfileRestoreDb,
+    "--profile",
+    "cli_restored",
+    "--input-file",
+    cliProfileBackupFile,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliProfileRestoreRepeat.status, 0, cliProfileRestoreRepeat.stderr);
+assert.equal(JSON.parse(cliProfileRestoreRepeat.stdout).inserted.memories, 0);
+const cliProfileRestoreOriginalDb = path.join(tmp, "cli-profile-restore-original.db");
+const cliProfileRestoreOriginal = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "restore",
+    "--db",
+    cliProfileRestoreOriginalDb,
+    "--input-file",
+    cliProfileBackupFile,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliProfileRestoreOriginal.status, 0, cliProfileRestoreOriginal.stderr);
+assert.equal(JSON.parse(cliProfileRestoreOriginal.stdout).targetProfileId, "cli_low");
+const cliProfileRestoreOriginalArchivedList = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "list",
+    "--db",
+    cliProfileRestoreOriginalDb,
+    "--profile",
+    "cli_low",
+    "--status",
+    "archived",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(
+  cliProfileRestoreOriginalArchivedList.status,
+  0,
+  cliProfileRestoreOriginalArchivedList.stderr,
+);
+assert.match(cliProfileRestoreOriginalArchivedList.stdout, /risk-first answers/);
 const cliClearAdd = spawnSync(
   process.execPath,
   [

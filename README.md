@@ -49,6 +49,9 @@ const prepared = await memory.prepareTurn({
   memory store into gmOS.
 - Host memory snapshot sync for adapters that need stale imported memories
   archived when the host source changes.
+- SQLite profile backup/restore for portable QA reproduction, migration, and
+  rollback. Safe backups exclude archived, sensitive, and person memories by
+  default; full backups are explicit.
 - In-process MCP-style tool router and real MCP stdio server for host/agent
   runtime adapters.
 - Local HTTP adapter for hosts that need a small service boundary instead of
@@ -78,6 +81,8 @@ node dist/cli/gmos.js list --db ./gmos.db --profile local --query "简洁" --sta
 node dist/cli/gmos.js get --db ./gmos.db --profile local --id memory_xxx
 node dist/cli/gmos.js export --db ./gmos.db --profile local --output-file ./gmos-memory-export.json
 node dist/cli/gmos.js import --db ./gmos.db --profile local --input-file ./gmos-memory-export.json
+node dist/cli/gmos.js backup --db ./gmos.db --profile local --mode safe --output-file ./gmos-profile-backup.json
+node dist/cli/gmos.js restore --db ./new-gmos.db --profile local-restored --input-file ./gmos-profile-backup.json
 node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "我喜欢简洁的中文回答。"
 node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
 node dist/cli/gmos.js mcp tools
@@ -231,6 +236,42 @@ host snapshot importer used by adapters. By default, export only includes
 active, non-sensitive, non-person memories. Use `--include-sensitive`,
 `--include-person`, or `--include-archived` only when the host explicitly needs
 those management views.
+
+For engineering reproduction, migration rehearsal, or rollback, use profile
+backup instead of public snapshot export:
+
+```bash
+gmos backup --db ./gmos.db --profile local --mode safe --output-file ./gmos-profile-backup.json
+gmos backup --db ./gmos.db --profile local --mode full --output-file ./gmos-profile-full-backup.json
+gmos restore --db ./new-gmos.db --profile local-restored --input-file ./gmos-profile-full-backup.json
+```
+
+`gmos.profile_backup.v1` is a SQLite profile backup document. `--mode safe`
+keeps the ordinary migration boundary: active, normal, non-person memories plus
+their safe evidence. It does not include failures, task trajectories, archived
+rows, sensitive rows, or person memories unless explicitly requested. `--mode
+full` is for trusted engineering use and includes archived/sensitive/person
+memories, evidence events, world beliefs, failure events, and task
+trajectories. The backup is plaintext JSON; gmOS does not encrypt local
+databases or backup files.
+
+The same path is available in-process:
+
+```ts
+import {
+  createSqliteMemoryStore,
+  parseSqliteProfileBackup,
+} from "@ghast/memory/store/sqlite";
+
+const store = createSqliteMemoryStore({ path: "./gmos.db" });
+const backup = store.exportProfileBackup({ profileId: "local", mode: "full" });
+const parsed = parseSqliteProfileBackup(JSON.parse(JSON.stringify(backup)));
+store.restoreProfileBackup({
+  backup: parsed,
+  profileId: "local-restored",
+  onConflict: "skip",
+});
+```
 
 ```ts
 const saved = await memory.add({

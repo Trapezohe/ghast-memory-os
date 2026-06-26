@@ -75,7 +75,10 @@ try {
         runMemoryReleaseGate,
       } from "@ghast/memory/gym";
       import { createMemoryMcpServer, createMemoryMcpStdioServer } from "@ghast/memory/mcp";
-      import { createSqliteMemoryStore } from "@ghast/memory/store/sqlite";
+      import {
+        createSqliteMemoryStore,
+        parseSqliteProfileBackup,
+      } from "@ghast/memory/store/sqlite";
 
       const store = createSqliteMemoryStore({ path: path.join(process.cwd(), "consumer.db") });
       const memory = createMemoryOS({ profileId: "consumer", store });
@@ -234,6 +237,30 @@ try {
       assert.equal(failureReview.autoRollout, false);
       assert.equal(failureReview.decision, "report_only_review");
       assert.equal(failureReview.inspectedFailureCount, 1);
+      const profileBackup = store.exportProfileBackup({ profileId: "consumer", mode: "full" });
+      assert.equal(profileBackup.schema, "gmos.profile_backup.v1");
+      assert.equal(profileBackup.failureEvents.length, 1);
+      const parsedProfileBackup = parseSqliteProfileBackup(JSON.parse(JSON.stringify(profileBackup)));
+      const profileRestoreStore = createSqliteMemoryStore({
+        path: path.join(process.cwd(), "consumer-profile-restore.db"),
+      });
+      const profileRestoreReport = profileRestoreStore.restoreProfileBackup({
+        backup: parsedProfileBackup,
+        profileId: "consumer-restored",
+      });
+      assert.equal(profileRestoreReport.inserted.memories, profileBackup.counts.memories);
+      assert.equal(profileRestoreReport.inserted.failureEvents, 1);
+      const profileRestoreMemory = createMemoryOS({
+        profileId: "consumer-restored",
+        store: profileRestoreStore,
+      });
+      const profileRestoreMatches = await profileRestoreMemory.search({
+        profileId: "consumer-restored",
+        query: "stable manifests",
+      });
+      assert.ok(profileRestoreMatches.some((entry) => entry.content.includes("stable manifests")));
+      assert.equal(profileRestoreMatches.some((entry) => entry.id === lowLevel.id), false);
+      await profileRestoreMemory.close();
       const status = await createMemoryStatusReport({
         store,
         profileId: "consumer",
@@ -367,6 +394,9 @@ try {
       } from "@ghast/memory/mcp";
       import {
         createSqliteMemoryStore,
+        parseSqliteProfileBackup,
+        type SqliteProfileBackupDocument,
+        type SqliteProfileBackupRestoreResult,
         type SqliteMemoryStore,
       } from "@ghast/memory/store/sqlite";
 
@@ -389,6 +419,17 @@ try {
       const typedRepairSearchIndex: RepairSearchIndexResult = sqliteStore.repairSearchIndex();
       if (typedRepairSearchIndex.after.status !== "ok") {
         throw new Error("typed search index repair failed");
+      }
+      const typedBackup: SqliteProfileBackupDocument = sqliteStore.exportProfileBackup({
+        profileId: "consumer-types",
+        mode: "full",
+      });
+      const typedParsedBackup = parseSqliteProfileBackup(typedBackup);
+      const typedRestore: SqliteProfileBackupRestoreResult = sqliteStore.restoreProfileBackup({
+        backup: typedParsedBackup,
+      });
+      if (typedRestore.targetProfileId !== "consumer-types") {
+        throw new Error("typed profile backup restore failed");
       }
       const listed: MemoryRecord[] = await memory.list({
         profileId: "consumer-types",

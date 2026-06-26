@@ -29,7 +29,26 @@ import type {
   WorldBeliefRecord,
 } from "../../kernel/types.js";
 import { shouldHideFromOrdinaryContext } from "../../kernel/safety.js";
+import {
+  exportSqliteProfileBackup,
+  restoreSqliteProfileBackup,
+  type ExportSqliteProfileBackupInput,
+  type RestoreSqliteProfileBackupInput,
+  type SqliteProfileBackupDocument,
+  type SqliteProfileBackupRestoreResult,
+} from "./backup.js";
 import { ensureSqliteSchema, sqliteSchemaVersion } from "./schema.js";
+
+export type {
+  ExportSqliteProfileBackupInput,
+  RestoreSqliteProfileBackupInput,
+  SqliteProfileBackupConflictPolicy,
+  SqliteProfileBackupDocument,
+  SqliteProfileBackupMode,
+  SqliteProfileBackupRestoreResult,
+  SqliteTaskTrajectoryRecord,
+} from "./backup.js";
+export { parseSqliteProfileBackup } from "./backup.js";
 
 export interface SqliteMemoryStoreOptions {
   path: string;
@@ -43,6 +62,8 @@ export interface SqliteMemoryStore extends MemoryStore {
   schemaVersion(): number;
   searchIndexStatus(): SearchIndexStatus;
   repairSearchIndex(): RepairSearchIndexResult;
+  exportProfileBackup(input: ExportSqliteProfileBackupInput): SqliteProfileBackupDocument;
+  restoreProfileBackup(input: RestoreSqliteProfileBackupInput): SqliteProfileBackupRestoreResult;
 }
 
 function nowIso(): string {
@@ -1050,5 +1071,13 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     schemaVersion,
     searchIndexStatus,
     repairSearchIndex,
+    exportProfileBackup(input) {
+      initialize();
+      return exportSqliteProfileBackup(db, input);
+    },
+    restoreProfileBackup(input) {
+      initialize();
+      return restoreSqliteProfileBackup(db, input);
+    },
   };
 }
