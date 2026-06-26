@@ -128,6 +128,38 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
         },
       },
     },
+    "memory.explain_evidence_path": {
+      name: "memory.explain_evidence_path",
+      description: "Explain the reconstructed cue-tag-content evidence path without returning a prompt block.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          profileId: { type: "string" },
+          text: { type: "string" },
+          messages: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["content"],
+              properties: {
+                role: { type: "string", enum: ["system", "user", "assistant", "tool"] },
+                content: { type: "string" },
+              },
+            },
+          },
+          includeEvidence: { type: "boolean" },
+          includePlannerTrace: { type: "boolean" },
+          contextBudgetTokens: { type: "number" },
+          maxSteps: { type: "integer", minimum: 1 },
+          maxBranch: { type: "integer", minimum: 1 },
+          maxMemories: { type: "integer", minimum: 1 },
+          stopWhenEvidenceEnough: { type: "boolean" },
+          evidenceConvergenceThreshold: { type: "number", minimum: 0 },
+        },
+      },
+    },
     "memory.commit_outcome": {
       name: "memory.commit_outcome",
       description: "Commit task outcome feedback.",

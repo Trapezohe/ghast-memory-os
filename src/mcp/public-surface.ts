@@ -4,6 +4,7 @@ export const PUBLIC_MEMORY_MCP_TOOL_NAMES = [
   "memory.observe",
   "memory.prepare_context",
   "memory.reconstruct_context",
+  "memory.explain_evidence_path",
   "memory.commit_outcome",
   "memory.record_feedback",
   "memory.forget",
@@ -28,6 +29,12 @@ export const PUBLIC_MEMORY_HTTP_ROUTE_REGISTRY = [
     pathname: "/reconstruct",
     route: "POST /reconstruct",
     toolName: "memory.reconstruct_context",
+  },
+  {
+    method: "POST",
+    pathname: "/explain-path",
+    route: "POST /explain-path",
+    toolName: "memory.explain_evidence_path",
   },
   {
     method: "POST",

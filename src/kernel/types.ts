@@ -275,6 +275,10 @@ export interface ReconstructContextInput {
   evidenceConvergenceThreshold?: number | undefined;
 }
 
+export interface ExplainEvidencePathInput extends ReconstructContextInput {
+  includePlannerTrace?: boolean | undefined;
+}
+
 export interface ReconstructedEvidencePath {
   id: string;
   step: number;
@@ -369,6 +373,32 @@ export interface ReconstructedContext {
       selectedTags: string[];
     } | undefined;
   };
+}
+
+export interface EvidencePathExplanation {
+  schema: "gmos.evidence_path_explanation.v1";
+  profileId: string;
+  query: string;
+  summary: {
+    pathCount: number;
+    evidenceCount: number;
+    memoryCount: number;
+    stopReason: ReconstructedContext["stats"]["stopReason"];
+    convergenceReached: boolean;
+    uncertaintyLevel: "low" | "medium" | "high" | null;
+  };
+  paths: ReconstructedEvidencePath[];
+  evidence: EvidenceEvent[];
+  stats: {
+    evidenceCoverage?: ReconstructedContext["stats"]["evidenceCoverage"] | undefined;
+    evidenceConvergence?: ReconstructedContext["stats"]["evidenceConvergence"] | undefined;
+    uncertainty?: ReconstructedContext["stats"]["uncertainty"] | undefined;
+    promptTokenEstimate: number;
+    stepCount: number;
+    exploredCueCount: number;
+    associationCount: number;
+  };
+  plannerTrace?: ReconstructedPlannerTrace | undefined;
 }
 
 export interface CommitOutcomeInput {
@@ -767,6 +797,7 @@ export interface MemoryOS {
   observeWithReport(event: HostEvent): Promise<ObserveResult>;
   prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn>;
   reconstructContext(input: ReconstructContextInput): Promise<ReconstructedContext>;
+  explainEvidencePath(input: ExplainEvidencePathInput): Promise<EvidencePathExplanation>;
   commitOutcome(input: CommitOutcomeInput): Promise<void>;
   recordFeedback(input: FeedbackInput): Promise<void>;
   forget(input: ForgetInput): Promise<ForgetResult>;

@@ -1,6 +1,7 @@
 import type {
   CommitOutcomeInput,
   EvidenceEvent,
+  ExplainEvidencePathInput,
   ExplainResult,
   FailureKind,
   FeedbackInput,
@@ -335,6 +336,59 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
   return input;
 }
 
+function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidencePathInput {
+  assertAllowedKeys(
+    args,
+    new Set([
+      "profileId",
+      "text",
+      "messages",
+      "includeEvidence",
+      "includeSensitive",
+      "includePlannerTrace",
+      "contextBudgetTokens",
+      "maxSteps",
+      "maxBranch",
+      "maxMemories",
+      "stopWhenEvidenceEnough",
+      "evidenceConvergenceThreshold",
+    ]),
+    "memory.explain_evidence_path",
+  );
+  if (args.includeSensitive !== undefined) {
+    throw new Error("memory.explain_evidence_path does not allow includeSensitive over MCP");
+  }
+  const input: ExplainEvidencePathInput = {
+    messages: messagesArg(args),
+  };
+  const profileId = optionalString(args, "profileId");
+  const includeEvidence = optionalBoolean(args, "includeEvidence");
+  const includePlannerTrace = optionalBoolean(args, "includePlannerTrace");
+  const contextBudgetTokens = optionalPositiveNumber(args, "contextBudgetTokens");
+  const maxSteps = optionalPositiveInteger(args, "maxSteps");
+  const maxBranch = optionalPositiveInteger(args, "maxBranch");
+  const maxMemories = optionalPositiveInteger(args, "maxMemories");
+  const stopWhenEvidenceEnough = optionalBoolean(args, "stopWhenEvidenceEnough");
+  const evidenceConvergenceThreshold = optionalPositiveNumber(
+    args,
+    "evidenceConvergenceThreshold",
+  );
+  if (profileId !== undefined) input.profileId = profileId;
+  if (includeEvidence !== undefined) input.includeEvidence = includeEvidence;
+  if (includePlannerTrace !== undefined) input.includePlannerTrace = includePlannerTrace;
+  if (contextBudgetTokens !== undefined) input.contextBudgetTokens = contextBudgetTokens;
+  if (maxSteps !== undefined) input.maxSteps = maxSteps;
+  if (maxBranch !== undefined) input.maxBranch = maxBranch;
+  if (maxMemories !== undefined) input.maxMemories = maxMemories;
+  if (stopWhenEvidenceEnough !== undefined) {
+    input.stopWhenEvidenceEnough = stopWhenEvidenceEnough;
+  }
+  if (evidenceConvergenceThreshold !== undefined) {
+    input.evidenceConvergenceThreshold = evidenceConvergenceThreshold;
+  }
+  return input;
+}
+
 function outcomeInput(args: Record<string, unknown>): CommitOutcomeInput {
   const input: CommitOutcomeInput = {
     objective: requiredString(args, "objective"),
@@ -451,6 +505,11 @@ export function createMemoryMcpServer(memory: MemoryOS): MemoryMcpServer {
       ok({ ok: true, prepared: await memory.prepareTurn(prepareInput(object)) }),
     "memory.reconstruct_context": async (object) =>
       ok({ ok: true, reconstructed: await memory.reconstructContext(reconstructInput(object)) }),
+    "memory.explain_evidence_path": async (object) =>
+      ok({
+        ok: true,
+        explanation: await memory.explainEvidencePath(explainEvidencePathInput(object)),
+      }),
     "memory.commit_outcome": async (object) => {
       await memory.commitOutcome(outcomeInput(object));
       return ok({ ok: true });

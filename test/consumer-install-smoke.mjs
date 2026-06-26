@@ -108,6 +108,15 @@ try {
       });
       assert.match(prepared.contextBlock, /先讲风险/);
       assert.equal(prepared.evidence.length, 1);
+      const explainedPath = await memory.explainEvidencePath({
+        profileId: "consumer",
+        query: "风险 方案",
+        includePlannerTrace: true,
+      });
+      assert.equal(explainedPath.schema, "gmos.evidence_path_explanation.v1");
+      assert.equal(explainedPath.summary.evidenceCount >= 1, true);
+      assert.equal(JSON.stringify(explainedPath).includes("contextBlock"), false);
+      assert.ok(explainedPath.plannerTrace);
       const lowLevel = await memory.add({
         profileId: "consumer",
         kind: "preference",
@@ -166,7 +175,11 @@ try {
 
       const mcp = createMemoryMcpServer(memory);
       const prepareTool = mcp.listTools().find((tool) => tool.name === "memory.prepare_context");
+      const explainEvidencePathTool = mcp
+        .listTools()
+        .find((tool) => tool.name === "memory.explain_evidence_path");
       assert.ok(prepareTool);
+      assert.ok(explainEvidencePathTool);
       assert.deepEqual(
         mcp.listTools().map((tool) => tool.name),
         [...PUBLIC_MEMORY_MCP_TOOL_NAMES],
@@ -175,6 +188,10 @@ try {
       assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /backup"), false);
       assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /restore"), false);
       assert.equal(Object.hasOwn(prepareTool.inputSchema.properties, "includeSensitive"), false);
+      assert.equal(
+        Object.hasOwn(explainEvidencePathTool.inputSchema.properties, "includeSensitive"),
+        false,
+      );
       const mcpAddResult = await mcp.callTool("memory.add", {
         profileId: "consumer",
         kind: "preference",
@@ -201,6 +218,23 @@ try {
       });
       assert.equal(mcpResult.isError, undefined);
       assert.match(JSON.stringify(mcpResult.structuredContent), /先讲风险/);
+      const mcpEvidencePath = await mcp.callTool("memory.explain_evidence_path", {
+        profileId: "consumer",
+        text: "风险 方案",
+        includePlannerTrace: true,
+      });
+      assert.equal(mcpEvidencePath.isError, undefined);
+      assert.match(JSON.stringify(mcpEvidencePath.structuredContent), /gmos\.evidence_path_explanation\.v1/);
+      assert.equal(JSON.stringify(mcpEvidencePath.structuredContent).includes("contextBlock"), false);
+      assert.match(JSON.stringify(mcpEvidencePath.structuredContent), /plannerTrace/);
+      assert.equal(
+        (await mcp.callTool("memory.explain_evidence_path", {
+          profileId: "consumer",
+          text: "风险 方案",
+          includeSensitive: true,
+        })).isError,
+        true,
+      );
       assert.equal(createMemoryMcpStdioServer(memory).isConnected(), false);
       const hostGym = await runHostCompatibilityGym({ hosts: ["ghast", "mcp"] });
       assert.equal(hostGym.pass, true);
@@ -395,6 +429,22 @@ try {
         });
         assert.equal(httpPrepare.status, 200);
         assert.match(JSON.stringify(await httpPrepare.json()), /stable SDK boundaries/);
+        const httpExplainPath = await fetch(httpAddress.url + "/explain-path", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer consumer-local-token",
+          },
+          body: JSON.stringify({
+            profileId: "consumer_http",
+            text: "stable SDK boundaries",
+            includePlannerTrace: true,
+          }),
+        });
+        assert.equal(httpExplainPath.status, 200);
+        const httpExplainPathBody = await httpExplainPath.json();
+        assert.match(JSON.stringify(httpExplainPathBody), /gmos\.evidence_path_explanation\.v1/);
+        assert.equal(JSON.stringify(httpExplainPathBody).includes("contextBlock"), false);
       } finally {
         await httpServer.close();
       }
@@ -412,6 +462,8 @@ try {
         createMemoryOS,
         createOpenAICompatibleExtractor,
         type MemoryExtractionCandidate,
+        type EvidencePathExplanation,
+        type ExplainEvidencePathInput,
         type MemoryExtractor,
         type MemoryOS,
         type MemoryRecord,
@@ -566,6 +618,15 @@ try {
         query: "fixture",
       });
       if (typedResults.length < 1) throw new Error("low-level typed search failed");
+      const typedExplainInput: ExplainEvidencePathInput = {
+        profileId: "consumer-types",
+        query: "fixture",
+        includePlannerTrace: true,
+      };
+      const typedEvidencePath: EvidencePathExplanation = await memory.explainEvidencePath(typedExplainInput);
+      if (typedEvidencePath.schema !== "gmos.evidence_path_explanation.v1") {
+        throw new Error("typed evidence path explanation failed");
+      }
       const typedSearchIndexStatus: SearchIndexStatus = sqliteStore.searchIndexStatus();
       if (typedSearchIndexStatus.status !== "ok") throw new Error("typed search index status failed");
       if (typedSearchIndexStatus.vectorIndex?.status !== "ok") {
@@ -842,6 +903,22 @@ try {
   );
   assert.equal(searchBin.status, 0, searchBin.stderr);
   assert.match(searchBin.stdout, /Installed bin low-level add prefers stable manifests/);
+  const explainPathBin = runInstalledCli(
+    [
+      "explain-path",
+      "--db",
+      binLowLevelDb,
+      "--profile",
+      "bin",
+      "--text",
+      "stable manifests",
+      "--include-trace",
+    ],
+  );
+  assert.equal(explainPathBin.status, 0, explainPathBin.stderr);
+  const explainPathBinPayload = JSON.parse(explainPathBin.stdout);
+  assert.equal(explainPathBinPayload.schema, "gmos.evidence_path_explanation.v1");
+  assert.equal(JSON.stringify(explainPathBinPayload).includes("contextBlock"), false);
   const listBin = runInstalledCli(
     [
       "list",

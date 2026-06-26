@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { composeTurnContext } from "../kernel/context-composer.js";
+import { buildEvidencePathExplanation } from "../kernel/evidence-path.js";
 import {
   extractMemoryCandidatePlan,
   extractRuleMemoryCandidates,
@@ -15,7 +16,9 @@ import {
 } from "../kernel/safety.js";
 import type {
   CommitOutcomeInput,
+  EvidencePathExplanation,
   EvidenceEvent,
+  ExplainEvidencePathInput,
   ExplainResult,
   FeedbackInput,
   ForgetInput,
@@ -547,6 +550,29 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     return reconstructed;
   }
 
+  async function explainEvidencePath(
+    input: ExplainEvidencePathInput,
+  ): Promise<EvidencePathExplanation> {
+    await initialize();
+    const before = await store.rowCounts();
+    const reconstructed = await reconstructMemoryContext({
+      store,
+      defaultProfileId,
+      request: {
+        ...input,
+        includeEvidence: input.includeEvidence ?? true,
+      },
+    });
+    const after = await store.rowCounts();
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      throw new Error("gmOS invariant failed: explainEvidencePath produced write side effects");
+    }
+    return buildEvidencePathExplanation({
+      reconstructed,
+      includePlannerTrace: input.includePlannerTrace,
+    });
+  }
+
   async function commitOutcome(input: CommitOutcomeInput): Promise<void> {
     await initialize();
     const profileId = profileIdFor(defaultProfileId, input.profileId);
@@ -621,6 +647,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     observeWithReport,
     prepareTurn,
     reconstructContext,
+    explainEvidencePath,
     commitOutcome,
     recordFeedback,
     forget,

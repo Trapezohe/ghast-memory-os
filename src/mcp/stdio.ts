@@ -89,6 +89,20 @@ const reconstructContextSchema = z.object({
   evidenceConvergenceThreshold: z.number().positive().optional(),
 }).strict();
 
+const explainEvidencePathSchema = z.object({
+  profileId: z.string().optional(),
+  text: z.string().optional(),
+  messages: z.array(messageSchema).optional(),
+  includeEvidence: z.boolean().optional(),
+  includePlannerTrace: z.boolean().optional(),
+  contextBudgetTokens: z.number().positive().optional(),
+  maxSteps: z.number().int().positive().optional(),
+  maxBranch: z.number().int().positive().optional(),
+  maxMemories: z.number().int().positive().optional(),
+  stopWhenEvidenceEnough: z.boolean().optional(),
+  evidenceConvergenceThreshold: z.number().positive().optional(),
+}).strict();
+
 const commitOutcomeSchema = z.object({
   profileId: z.string().optional(),
   taskId: z.string().optional(),
@@ -122,6 +136,7 @@ const STDIO_TOOL_SCHEMAS: Record<MemoryMcpToolName, z.ZodObject> = {
   "memory.observe": observeSchema,
   "memory.prepare_context": prepareContextSchema,
   "memory.reconstruct_context": reconstructContextSchema,
+  "memory.explain_evidence_path": explainEvidencePathSchema,
   "memory.commit_outcome": commitOutcomeSchema,
   "memory.record_feedback": recordFeedbackSchema,
   "memory.forget": forgetSchema,

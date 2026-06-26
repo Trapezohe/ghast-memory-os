@@ -102,6 +102,7 @@ Usage:
   gmos observe --db ./gmos.db --profile local --text "我喜欢简洁回答"
   gmos prepare --db ./gmos.db --profile local --text "你知道我什么偏好吗？"
   gmos reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？"
+  gmos explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？"
   gmos forget --db ./gmos.db --profile local --query "Moonbase"
   gmos explain --db ./gmos.db --profile local --id memory_xxx
   gmos mcp tools
@@ -941,6 +942,24 @@ async function main(): Promise<void> {
         maxMemories: positiveIntegerOption("--max-memories", 8),
       });
       console.log(JSON.stringify(reconstructed, null, 2));
+      return;
+    }
+
+    if (command === "explain-path") {
+      const text = value("--text");
+      if (!text) usage();
+      const explanation = await memory.explainEvidencePath({
+        profileId,
+        query: text,
+        includeEvidence: !has("--no-evidence"),
+        includeSensitive: has("--include-sensitive"),
+        includePlannerTrace: has("--include-trace"),
+        contextBudgetTokens: positiveIntegerOption("--context-budget-tokens", 1800),
+        maxSteps: positiveIntegerOption("--max-steps", 3),
+        maxBranch: positiveIntegerOption("--max-branch", 4),
+        maxMemories: positiveIntegerOption("--max-memories", 8),
+      });
+      console.log(JSON.stringify(explanation, null, 2));
       return;
     }
 

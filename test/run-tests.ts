@@ -3741,6 +3741,7 @@ try {
     "POST /observe",
     "POST /prepare",
     "POST /reconstruct",
+    "POST /explain-path",
     "POST /commit-outcome",
     "POST /feedback",
     "POST /forget",
@@ -3824,6 +3825,15 @@ try {
   });
   assert.equal(explanation.status, 200);
   assert.match(explanation.text, /先讲风险/);
+  const httpEvidencePath = await postJson(`${httpAddress.url}/explain-path`, {
+    profileId: "http",
+    text: "HTTP adapter 应该怎么回答？",
+    includePlannerTrace: true,
+  });
+  assert.equal(httpEvidencePath.status, 200);
+  assert.match(httpEvidencePath.text, /gmos\.evidence_path_explanation\.v1/);
+  assert.equal(httpEvidencePath.text.includes("contextBlock"), false);
+  assert.match(httpEvidencePath.text, /plannerTrace/);
   await postJson(`${httpAddress.url}/observe`, {
     profileId: "http",
     role: "user",
@@ -3843,6 +3853,13 @@ try {
   });
   assert.equal(reconstructSensitiveOverride.status, 400);
   assert.equal(reconstructSensitiveOverride.text.includes("123-45-6789"), false);
+  const explainPathSensitiveOverride = await postJson(`${httpAddress.url}/explain-path`, {
+    profileId: "http",
+    text: "SSN 是什么？",
+    includeSensitive: true,
+  });
+  assert.equal(explainPathSensitiveOverride.status, 400);
+  assert.equal(explainPathSensitiveOverride.text.includes("123-45-6789"), false);
   const mcpCall = await postJson(`${httpAddress.url}/mcp/call`, {
     tool: "memory.prepare_context",
     args: {
@@ -5162,6 +5179,32 @@ assert.ok(
 );
 assert.ok(reconstructed.paths.some((path) => (path.informationGain ?? 0) > 0));
 assert.notEqual(reconstructed.stats.uncertainty?.level, "high");
+const evidencePathRowsBefore = await reconstructionStore.rowCounts();
+const evidencePathExplanation = await reconstructionMemory.explainEvidencePath({
+  profileId: "recon",
+  query: "我之前说的那个计划，先做什么？",
+  includePlannerTrace: true,
+  maxSteps: 4,
+  maxBranch: 6,
+  maxMemories: 6,
+});
+assert.equal(evidencePathExplanation.schema, "gmos.evidence_path_explanation.v1");
+assert.equal(evidencePathExplanation.summary.convergenceReached, true);
+assert.equal(evidencePathExplanation.summary.pathCount >= 2, true);
+assert.equal(evidencePathExplanation.summary.evidenceCount >= 2, true);
+assert.match(JSON.stringify(evidencePathExplanation.paths), /Helio 项目推进时先写复现报告/);
+assert.equal(evidencePathExplanation.plannerTrace?.steps.length ? true : false, true);
+assert.equal(JSON.stringify(evidencePathExplanation).includes("contextBlock"), false);
+assert.equal(JSON.stringify(evidencePathRowsBefore), JSON.stringify(await reconstructionStore.rowCounts()));
+const evidencePathWithoutEvidence = await reconstructionMemory.explainEvidencePath({
+  profileId: "recon",
+  query: "我之前说的那个计划，先做什么？",
+  includeEvidence: false,
+  maxSteps: 4,
+  maxBranch: 6,
+  maxMemories: 6,
+});
+assert.equal(evidencePathWithoutEvidence.evidence.length, 0);
 const multiIntentReconstructed = await reconstructionMemory.reconstructContext({
   profileId: "recon",
   query: "我之前说的那个计划，先做什么，哪些不要主动做？",
@@ -5317,6 +5360,28 @@ assert.equal(mcpReconstruct.isError, undefined);
 assert.match(JSON.stringify(mcpReconstruct.structuredContent), /Helio 项目推进时先写复现报告/);
 assert.match(JSON.stringify(mcpReconstruct.structuredContent), /stopWhenEvidenceEnough/);
 assert.match(JSON.stringify(mcpReconstruct.structuredContent), /false/);
+const mcpExplainEvidencePath = await createMemoryMcpServer(reconstructionMemory).callTool(
+  "memory.explain_evidence_path",
+  {
+    profileId: "recon",
+    text: "我之前说的那个计划，先做什么？",
+    includePlannerTrace: true,
+    maxSteps: 4,
+  },
+);
+assert.equal(mcpExplainEvidencePath.isError, undefined);
+assert.match(JSON.stringify(mcpExplainEvidencePath.structuredContent), /gmos\.evidence_path_explanation\.v1/);
+assert.equal(JSON.stringify(mcpExplainEvidencePath.structuredContent).includes("contextBlock"), false);
+assert.match(JSON.stringify(mcpExplainEvidencePath.structuredContent), /plannerTrace/);
+const mcpExplainSensitive = await createMemoryMcpServer(reconstructionMemory).callTool(
+  "memory.explain_evidence_path",
+  {
+    profileId: "recon",
+    text: "Helio",
+    includeSensitive: true,
+  },
+);
+assert.equal(mcpExplainSensitive.isError, true);
 const mcpReconstructSensitive = await createMemoryMcpServer(reconstructionMemory).callTool(
   "memory.reconstruct_context",
   {
@@ -5359,6 +5424,38 @@ const cliReconstruct = spawnSync(
 );
 assert.equal(cliReconstruct.status, 0, cliReconstruct.stderr);
 assert.match(cliReconstruct.stdout, /Helio 项目推进时先写复现报告/);
+const cliExplainPath = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "explain-path",
+    "--db",
+    reconstructionDb,
+    "--profile",
+    "recon",
+    "--text",
+    "我之前说的那个计划，先做什么？",
+    "--include-trace",
+    "--max-steps",
+    "4",
+    "--max-branch",
+    "6",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliExplainPath.status, 0, cliExplainPath.stderr);
+const cliExplainPathJson = JSON.parse(cliExplainPath.stdout) as {
+  schema?: string;
+  summary?: { convergenceReached?: boolean; evidenceCount?: number };
+  plannerTrace?: unknown;
+};
+assert.equal(cliExplainPathJson.schema, "gmos.evidence_path_explanation.v1");
+assert.equal(cliExplainPathJson.summary?.convergenceReached, true);
+assert.ok((cliExplainPathJson.summary?.evidenceCount ?? 0) >= 2);
+assert.equal(JSON.stringify(cliExplainPathJson).includes("contextBlock"), false);
+assert.ok(cliExplainPathJson.plannerTrace);
 const corruptAssociationsDb = new Database(reconstructionDb);
 try {
   corruptAssociationsDb.prepare("DELETE FROM gmos_associations WHERE profile_id = 'recon'").run();

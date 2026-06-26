@@ -42,7 +42,7 @@ const prepared = await memory.prepareTurn({
   subjects such as `Atlas project`, `project:atlas`, and `Project Atlas`
   converge before single-cardinality invalidation runs.
 - Runtime facade: `observe`, `prepareTurn`, `commitOutcome`, `recordFeedback`,
-  `reconstructContext`, `forget`, `explain`.
+  `reconstructContext`, `explainEvidencePath`, `forget`, `explain`.
 - Pluggable extraction pipeline for host-provided structured extractors. The
   built-in rule extractor remains the safe fallback, so hosts can add LLM
   extraction without bypassing evidence, PERSON, secret-like, incognito, or
@@ -97,11 +97,13 @@ node dist/cli/gmos.js restore --db ./new-gmos.db --profile local-restored --inpu
 node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "我喜欢简洁的中文回答。"
 node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
 node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？"
+node dist/cli/gmos.js explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --include-trace
 node dist/cli/gmos.js mcp tools
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.add --input '{"kind":"preference","content":"我喜欢先讲风险"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.search --input '{"query":"先讲风险"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.prepare_context --input '{"text":"你之后怎么回答我？"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.reconstruct_context --input '{"text":"我之前说的项目下一步是什么？"}'
+node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.explain_evidence_path --input '{"text":"我之前说的项目下一步是什么？","includePlannerTrace":true}'
 node dist/cli/gmos.js mcp serve --db ./gmos.db --profile local
 node dist/cli/gmos.js http serve --db ./gmos.db --profile local --port 4787 --host ghast --auth-token local-dev-token
 node dist/cli/gmos.js evolution report --db ./gmos.db --profile local --format markdown
@@ -275,6 +277,13 @@ boundary.
 you want the planner to spend the full step budget and inspect additional
 branches. `evidenceConvergenceThreshold` can be raised for stricter release
 gates or lowered for exploratory tooling.
+`explainEvidencePath()` exposes the same reconstructed cue-tag-content evidence
+path as an audit object without returning `contextBlock` or a prompt-ready
+memory list. It is intended for host diagnostics, agent self-checks, Memory Gym
+reports, and product-visible "why did you remember this?" affordances. It
+defaults to including canonical evidence and can optionally include
+`plannerTrace`; public MCP and HTTP expose it as `memory.explain_evidence_path`
+and `POST /explain-path`, while still rejecting `includeSensitive`.
 Memory metadata may carry ISO timestamp validity windows through `validFrom` /
 `validTo` (or `valid_from` / `valid_to`; `expiresAt` is accepted as an expiry
 alias). Ordinary context search and active reconstruction only use memories
