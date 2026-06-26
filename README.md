@@ -265,6 +265,9 @@ const server = await serveMemoryMcpStdio(memory);
 await server.close();
 ```
 
+The stdio server reports the installed `@ghast/memory` package version during
+MCP initialization unless the host passes an explicit `version` override.
+
 Current tools are `memory.observe`, `memory.prepare_context`,
 `memory.commit_outcome`, `memory.record_feedback`, `memory.forget`, and
 `memory.explain_belief`.

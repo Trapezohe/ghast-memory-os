@@ -2850,6 +2850,8 @@ const stdioClient = new Client({
 });
 try {
   await stdioClient.connect(stdioTransport);
+  assert.equal(stdioClient.getServerVersion()?.name, "gmos-memory");
+  assert.equal(stdioClient.getServerVersion()?.version, packageJson.version);
   const stdioTools = await stdioClient.listTools();
   assert.ok(stdioTools.tools.some((tool) => tool.name === "memory.prepare_context"));
   await stdioClient.callTool({

@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
+import { readGmosPackageInfo } from "../kernel/package-info.js";
 import type { MemoryOS } from "../kernel/types.js";
 import { createMemoryMcpServer, type MemoryMcpToolResult } from "./router.js";
 
@@ -86,7 +87,7 @@ export function createMemoryMcpStdioServer(
   const router = createMemoryMcpServer(memory);
   const server = new McpServer({
     name: options.name ?? "gmos-memory",
-    version: options.version ?? "0.1.0-alpha",
+    version: options.version ?? readGmosPackageInfo().version,
   });
 
   server.registerTool(

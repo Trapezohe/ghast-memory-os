@@ -1,5 +1,3 @@
-import { createRequire } from "node:module";
-
 import type {
   FailureEventRecord,
   FailureKind,
@@ -13,6 +11,7 @@ import {
   type HostCompatibilityReport,
   type HostPreset,
 } from "../host/index.js";
+import { readGmosPackageInfo } from "../kernel/package-info.js";
 
 export interface DiagnosticsStore {
   rowCounts(): Promise<Record<string, number>> | Record<string, number>;
@@ -75,22 +74,6 @@ export interface MemoryStatusReport {
     reportContainsMemoryContent: false;
     readPathSideEffectsChecked: false;
   };
-}
-
-const DEFAULT_PACKAGE = {
-  name: "@ghast/memory",
-  version: "0.0.0-development",
-};
-
-function packageInfo(): { name: string; version: string } {
-  try {
-    const require = createRequire(import.meta.url);
-    const parsed = require("../../package.json") as { name?: string; version?: string };
-    if (parsed.name && parsed.version) return { name: parsed.name, version: parsed.version };
-  } catch {
-    // Keep diagnostics usable from source checkouts and bundled hosts.
-  }
-  return DEFAULT_PACKAGE;
 }
 
 function errorInfo(_error: unknown): { name: string; code: string } {
@@ -192,7 +175,7 @@ export async function createMemoryStatusReport(
     framework: "ghast-memory-os",
     generatedAt: input.now?.() ?? new Date().toISOString(),
     profileId,
-    package: input.packageInfo ?? packageInfo(),
+    package: input.packageInfo ?? readGmosPackageInfo(),
     storage,
     failureSummary: await failureSummary({
       store: input.store,

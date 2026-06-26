@@ -392,6 +392,9 @@ try {
   );
   assert.equal(existsSync(gmosBin), true);
   assert.equal(existsSync(installedCli), true);
+  const installedPackage = JSON.parse(
+    readFileSync(path.join(consumerDir, "node_modules", "@ghast", "memory", "package.json"), "utf8"),
+  );
 
   function runInstalledCli(args) {
     return spawnSync(process.execPath, [installedCli, ...args], {
@@ -555,6 +558,42 @@ try {
   const status = JSON.parse(statusBin.stdout);
   assert.equal(status.storage.schemaVersion, 1);
   assert.equal(status.hostCompatibility.level, "L4");
+  const installedMcpVersionScript = path.join(consumerDir, "installed-mcp-version.mjs");
+  writeFileSync(
+    installedMcpVersionScript,
+    `
+      import { strict as assert } from "node:assert";
+      import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+      import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+      const client = new Client({
+        name: "gmos-installed-consumer-test",
+        version: "0.0.0",
+      });
+      const transport = new StdioClientTransport({
+        command: process.execPath,
+        args: [
+          ${JSON.stringify(installedCli)},
+          "mcp",
+          "serve",
+          "--db",
+          ${JSON.stringify(path.join(consumerDir, "installed-mcp.db"))},
+          "--profile",
+          "installed_mcp",
+        ],
+        cwd: process.cwd(),
+        stderr: "pipe",
+      });
+      try {
+        await client.connect(transport);
+        assert.equal(client.getServerVersion()?.name, "gmos-memory");
+        assert.equal(client.getServerVersion()?.version, ${JSON.stringify(installedPackage.version)});
+      } finally {
+        await client.close();
+      }
+    `,
+  );
+  run(process.execPath, [installedMcpVersionScript], { cwd: consumerDir, stdio: "pipe" });
   const helpBin = spawnCommand(gmosBin, ["--help"], { cwd: consumerDir, encoding: "utf8" });
   assert.equal(helpBin.status, 1);
   assert.match(helpBin.stdout, /gmos http serve/);
