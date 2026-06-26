@@ -62,7 +62,9 @@ try {
         createPresetHostAdapter,
         exportMemorySnapshots,
         loadHostMemorySnapshotsIntoStore,
+        parseHostActualCompatibilityReports,
         parseMemorySnapshotExport,
+        requireHostActualCompatibilityReports,
       } from "@ghast/memory/host";
       import { createMemoryHttpServer } from "@ghast/memory/http";
       import {
@@ -122,6 +124,17 @@ try {
       });
       assert.equal(imported.length, 1);
       await importMemory.close();
+      const parsedActualReports = parseHostActualCompatibilityReports({
+        gmosSdkAdapter: {
+          hostId: "ghast_desktop",
+          level: "L4",
+          targetLevel: "L4",
+          canClaimTargetLevel: true,
+        },
+      });
+      assert.equal(parsedActualReports.length, 1);
+      assert.equal(parsedActualReports[0].hostId, "ghast_desktop");
+      assert.equal(requireHostActualCompatibilityReports(parsedActualReports)[0].level, "L4");
       const lowLevelExplanation = await memory.explain(lowLevel.id, "consumer");
       assert.equal(lowLevelExplanation.evidence[0].sourceType, "sdk.low_level_add");
       await assert.rejects(
@@ -290,8 +303,11 @@ try {
         createPresetHostAdapter,
         exportMemorySnapshots,
         loadHostMemorySnapshotsIntoStore,
+        parseHostActualCompatibilityReports,
         parseMemorySnapshotExport,
+        requireHostActualCompatibilityReports,
         type HostAdapter,
+        type HostActualCompatibilityReport,
         type HostCompatibilityReport,
         type MemorySnapshotExport,
       } from "@ghast/memory/host";
@@ -363,6 +379,17 @@ try {
       const hostAdapter: HostAdapter = createPresetHostAdapter("ghast");
       const hostCompatibility: HostCompatibilityReport = hostAdapter.compatibility;
       if (hostCompatibility.level !== "L4") throw new Error("unexpected typed host compatibility");
+      const actualReports: HostActualCompatibilityReport[] = parseHostActualCompatibilityReports({
+        gmosSdkAdapter: {
+          hostId: "ghast_desktop",
+          level: "L4",
+          targetLevel: "L4",
+          canClaimTargetLevel: true,
+        },
+      });
+      if (requireHostActualCompatibilityReports(actualReports)[0]?.level !== "L4") {
+        throw new Error("typed actual report parser failed");
+      }
       const hostGymResult: HostCompatibilityGymResult = await runHostCompatibilityGym({
         hosts: ["ghast"],
       });

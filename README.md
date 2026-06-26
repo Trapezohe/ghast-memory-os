@@ -148,6 +148,24 @@ Desktop status object containing `gmosSdkAdapter`. If the actual report says
 the app is still L3, the gym fails instead of treating the target L4 preset as
 proof of completed adoption.
 
+Host apps can use the same parser in-process:
+
+```ts
+import { runHostCompatibilityGym } from "@ghast/memory/gym";
+import { parseHostActualCompatibilityReports } from "@ghast/memory/host";
+
+const actualReports = parseHostActualCompatibilityReports(hostStatusJson);
+const result = await runHostCompatibilityGym({
+  hosts: ["ghast"],
+  actualReports,
+});
+```
+
+Use `requireHostActualCompatibilityReports` when the host gate should fail fast
+on malformed payloads. `parseHostActualCompatibilityReports` is tolerant by
+design and ignores invalid entries, such as reports with an unknown compatibility
+level.
+
 ## Examples
 
 Run the examples after installing dependencies:

@@ -31,7 +31,9 @@ import {
   loadHostMemorySnapshotsIntoStore,
   normalizeHostMemoryKind,
   normalizeHostMemorySensitivity,
+  parseHostActualCompatibilityReports,
   parseMemorySnapshotExport,
+  requireHostActualCompatibilityReports,
   syncHostMemorySnapshotsIntoStore,
 } from "../src/host/index.js";
 import {
@@ -3080,6 +3082,34 @@ const actualGhastL3Report = {
     "non-SDK-owned consolidation and cleanup primary storage still execute through legacy memoryService",
   ],
 };
+const parsedHostStatusReports = parseHostActualCompatibilityReports({
+  gmosSdkAdapter: actualGhastL3Report,
+});
+assert.equal(parsedHostStatusReports.length, 1);
+assert.equal(parsedHostStatusReports[0]?.hostId, "ghast_desktop");
+assert.equal(parsedHostStatusReports[0]?.level, "L3");
+assert.equal(parsedHostStatusReports[0]?.targetLevel, "L4");
+assert.equal(parsedHostStatusReports[0]?.canClaimTargetLevel, false);
+assert.deepEqual(parsedHostStatusReports[0]?.blockingGaps, actualGhastL3Report.blockingGaps);
+const parsedHostStatusArray = parseHostActualCompatibilityReports([
+  actualGhastL3Report,
+  { hostId: "bad_level", level: "L9" },
+]);
+assert.equal(parsedHostStatusArray.length, 1);
+assert.equal(parsedHostStatusArray[0]?.hostId, "ghast_desktop");
+assert.equal(
+  requireHostActualCompatibilityReports({
+    gmosSdkAdapter: actualGhastL3Report,
+  })[0]?.level,
+  "L3",
+);
+assert.throws(
+  () =>
+    requireHostActualCompatibilityReports({
+      gmosSdkAdapter: { hostId: "bad_level", level: "L9" },
+    }),
+  /host actual report payload/,
+);
 const actualHostGym = await runHostCompatibilityGym({
   hosts: ["ghast"],
   actualReports: [actualGhastL3Report],

@@ -29,6 +29,7 @@ import {
   type HostActualCompatibilityReport,
   type HostPreset,
   loadHostMemorySnapshotsIntoStore,
+  parseHostActualCompatibilityReports,
   parseMemorySnapshotExport,
 } from "../host/index.js";
 import { serveMemoryHttp } from "../http/index.js";
@@ -196,61 +197,12 @@ function hostReport(preset: HostPreset | undefined) {
   return createPresetHostAdapter(preset).compatibility;
 }
 
-function hostActualReportFromUnknown(value: unknown): HostActualCompatibilityReport[] {
-  if (Array.isArray(value)) {
-    return value.flatMap((entry) => hostActualReportFromUnknown(entry));
-  }
-  if (!value || typeof value !== "object") return [];
-  const record = value as Record<string, unknown>;
-  if (record.gmosSdkAdapter) {
-    return hostActualReportFromUnknown(record.gmosSdkAdapter);
-  }
-  const hostId = typeof record.hostId === "string" ? record.hostId : null;
-  const level = typeof record.level === "string" ? record.level : null;
-  if (!hostId || !level) return [];
-  if (level !== "L0" && level !== "L1" && level !== "L2" && level !== "L3" && level !== "L4") {
-    return [];
-  }
-  const targetLevel =
-    record.targetLevel === "L0" ||
-    record.targetLevel === "L1" ||
-    record.targetLevel === "L2" ||
-    record.targetLevel === "L3" ||
-    record.targetLevel === "L4"
-      ? record.targetLevel
-      : undefined;
-  return [
-    {
-      hostId,
-      level,
-      targetLevel,
-      canClaimTargetLevel:
-        typeof record.canClaimTargetLevel === "boolean"
-          ? record.canClaimTargetLevel
-          : undefined,
-      blockingGaps: Array.isArray(record.blockingGaps)
-        ? record.blockingGaps.filter((entry): entry is string => typeof entry === "string")
-        : undefined,
-      contextOwnership:
-        typeof record.contextOwnership === "string" ? record.contextOwnership : undefined,
-      candidateRetrievalOwnership:
-        typeof record.candidateRetrievalOwnership === "string"
-          ? record.candidateRetrievalOwnership
-          : undefined,
-      storageOwnership:
-        typeof record.storageOwnership === "string" ? record.storageOwnership : undefined,
-      mutationOwnership:
-        typeof record.mutationOwnership === "string" ? record.mutationOwnership : undefined,
-    },
-  ];
-}
-
 function actualHostReportsFromOption(): HostActualCompatibilityReport[] | undefined {
   const reportFile = value("--actual-report");
   if (!reportFile) return undefined;
   const resolved = path.resolve(process.cwd(), reportFile);
   const parsed = JSON.parse(readFileSync(resolved, "utf8")) as unknown;
-  const reports = hostActualReportFromUnknown(parsed);
+  const reports = parseHostActualCompatibilityReports(parsed);
   if (reports.length === 0) {
     throw new Error("--actual-report did not contain a host compatibility report");
   }

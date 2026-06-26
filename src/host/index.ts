@@ -63,6 +63,67 @@ export interface HostActualCompatibilityReport {
   mutationOwnership?: string | undefined;
 }
 
+export function parseHostActualCompatibilityReports(
+  value: unknown,
+): HostActualCompatibilityReport[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => parseHostActualCompatibilityReports(entry));
+  }
+  if (!value || typeof value !== "object") return [];
+  const record = value as Record<string, unknown>;
+  if (record.gmosSdkAdapter) {
+    return parseHostActualCompatibilityReports(record.gmosSdkAdapter);
+  }
+  const hostId = typeof record.hostId === "string" ? record.hostId : null;
+  const level = hostCompatibilityLevelFromUnknown(record.level);
+  if (!hostId || !level) return [];
+  const targetLevel = hostCompatibilityLevelFromUnknown(record.targetLevel);
+  return [
+    {
+      hostId,
+      level,
+      targetLevel: targetLevel ?? undefined,
+      canClaimTargetLevel:
+        typeof record.canClaimTargetLevel === "boolean"
+          ? record.canClaimTargetLevel
+          : undefined,
+      blockingGaps: Array.isArray(record.blockingGaps)
+        ? record.blockingGaps.filter(
+            (entry): entry is string => typeof entry === "string",
+          )
+        : undefined,
+      contextOwnership:
+        typeof record.contextOwnership === "string"
+          ? record.contextOwnership
+          : undefined,
+      candidateRetrievalOwnership:
+        typeof record.candidateRetrievalOwnership === "string"
+          ? record.candidateRetrievalOwnership
+          : undefined,
+      storageOwnership:
+        typeof record.storageOwnership === "string"
+          ? record.storageOwnership
+          : undefined,
+      mutationOwnership:
+        typeof record.mutationOwnership === "string"
+          ? record.mutationOwnership
+          : undefined,
+    },
+  ];
+}
+
+export function requireHostActualCompatibilityReports(
+  value: unknown,
+): HostActualCompatibilityReport[] {
+  const reports = parseHostActualCompatibilityReports(value);
+  if (reports.length === 0) {
+    throw new Error(
+      "gmOS host actual report payload did not contain a host compatibility report",
+    );
+  }
+  return reports;
+}
+
 export function classifyHostCompatibility(input: {
   hostId: string;
   capabilities?: Partial<HostCapabilities> | undefined;
@@ -169,6 +230,21 @@ export function createPresetHostAdapter(
       canInjectSystemContext: true,
     },
   });
+}
+
+function hostCompatibilityLevelFromUnknown(
+  value: unknown,
+): HostCompatibilityLevel | null {
+  if (
+    value === "L0" ||
+    value === "L1" ||
+    value === "L2" ||
+    value === "L3" ||
+    value === "L4"
+  ) {
+    return value;
+  }
+  return null;
 }
 
 function normalizeCapabilities(input: {
