@@ -5179,7 +5179,42 @@ assert.equal(externalCases.length, 2);
 const externalBenchmark = await runExternalMemoryBenchmark({ cases: externalCases });
 assert.equal(externalBenchmark.pass, true);
 assert.equal(externalBenchmark.score, 1);
+assert.equal(externalBenchmark.cases[0]?.failureReasons.length, 0);
+assert.equal(typeof externalBenchmark.cases[0]?.diagnostics.evidenceConvergenceScore, "number");
 assert.match(renderExternalMemoryBenchmarkMarkdown(externalBenchmark), /External Long-Memory QA/);
+assert.match(renderExternalMemoryBenchmarkMarkdown(externalBenchmark), /Failure reasons/);
+const externalConvergenceFailure = await runExternalMemoryBenchmark({
+  cases: [
+    {
+      id: "missing-boundary-convergence",
+      requireConvergence: true,
+      events: [
+        { type: "memory", kind: "project", content: "代号 Vega 的发布计划叫做 Lantern Run。" },
+        {
+          type: "memory",
+          kind: "procedure",
+          content: "Lantern Run 下一步先更新 rollback matrix，再做发布实现。",
+        },
+      ],
+      question: "Vega 这个发布计划下一步先做什么，哪些不要主动做？",
+      expectedAll: ["rollback matrix"],
+    },
+  ],
+});
+assert.equal(externalConvergenceFailure.pass, false);
+assert.deepEqual(externalConvergenceFailure.cases[0]?.failureReasons, [
+  "convergence_not_reached",
+]);
+assert.equal(
+  externalConvergenceFailure.cases[0]?.diagnostics.missingRequiredIntentGroups.includes(
+    "boundary",
+  ),
+  true,
+);
+assert.match(
+  renderExternalMemoryBenchmarkMarkdown(externalConvergenceFailure),
+  /convergence_not_reached/,
+);
 await assert.rejects(
   () =>
     runExternalMemoryBenchmark({
@@ -5485,6 +5520,7 @@ const cliExternalFail = spawnSync(
 );
 assert.notEqual(cliExternalFail.status, 0);
 assert.match(cliExternalFail.stdout, /Status: FAIL/);
+assert.match(cliExternalFail.stdout, /expected_all_missing/);
 const cliGate = spawnSync(
   process.execPath,
   [

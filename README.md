@@ -154,7 +154,12 @@ datasets. Each line is one deterministic case:
 The runner seeds a temporary plaintext SQLite store, executes `prepareTurn` or
 bounded `reconstructContext`, and scores context evidence by `expectedAny`,
 `expectedAll`, and `forbiddenAny`. It is deterministic and local-first; it does
-not call an LLM judge.
+not call an LLM judge. Results include deterministic failure reasons, warnings,
+evidence-convergence diagnostics, missing intent groups, uncertainty, token
+estimates, and reconstructed path counts. Add `"requireConvergence": true` to a
+case when the benchmark should fail unless active reconstruction converges; this
+is useful for multi-hop or multi-intent cases where a plain text hit is not
+strong enough evidence.
 
 `gmos gate` is the SDK release-candidate gate. It runs deterministic Memory Gym,
 the host compatibility gym, the local SQLite scale benchmark, and diagnostics

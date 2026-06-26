@@ -12,6 +12,10 @@ function markdownListCell(values: string[]): string {
   return values.length ? values.map(markdownCell).join(", ") : "-";
 }
 
+function markdownNullableNumber(value: number | null): string {
+  return value === null ? "-" : value.toFixed(2);
+}
+
 export function renderMemoryGymMarkdown(report: MemoryGymResult): string {
   return [
     "# gmOS Memory Gym Report",
@@ -113,11 +117,11 @@ export function renderExternalMemoryBenchmarkMarkdown(
     `Cases: ${report.passedCount}/${report.caseCount}`,
     `Score: ${report.score.toFixed(4)}`,
     "",
-    "| Case | Status | Mode | Missing expectedAny | Missing expectedAll | Forbidden matches | Tokens | Paths |",
-    "| --- | --- | --- | --- | --- | --- | ---: | ---: |",
+    "| Case | Status | Mode | Failure reasons | Warnings | Missing expectedAny | Missing expectedAll | Forbidden matches | Convergence | Uncertainty | Tokens | Paths |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: |",
     ...report.cases.map(
       (entry) =>
-        `| ${markdownCell(entry.id)} | ${entry.pass ? "PASS" : "FAIL"} | ${entry.mode} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.forbiddenMatches)} | ${entry.promptTokenEstimate} | ${entry.reconstructedPathCount} |`,
+        `| ${markdownCell(entry.id)} | ${entry.pass ? "PASS" : "FAIL"} | ${entry.mode}${entry.requireConvergence ? " + convergence" : ""} | ${markdownListCell(entry.failureReasons)} | ${markdownListCell(entry.warnings)} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.forbiddenMatches)} | ${markdownNullableNumber(entry.diagnostics.evidenceConvergenceScore)}${entry.diagnostics.evidenceConvergenceReached === null ? "" : entry.diagnostics.evidenceConvergenceReached ? " reached" : " not reached"} | ${entry.diagnostics.uncertaintyLevel ?? "-"} | ${entry.promptTokenEstimate} | ${entry.reconstructedPathCount} |`,
     ),
     "",
   ].join("\n");

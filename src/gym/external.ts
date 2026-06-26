@@ -2,7 +2,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type { MemoryKind, PrivacyMode, Sensitivity, TurnMessage } from "../kernel/types.js";
+import type {
+  MemoryKind,
+  PrivacyMode,
+  ReconstructedContext,
+  Sensitivity,
+  TurnMessage,
+} from "../kernel/types.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 
@@ -48,16 +54,30 @@ export interface ExternalMemoryBenchmarkCase {
   expectedAny?: string[] | undefined;
   expectedAll?: string[] | undefined;
   forbiddenAny?: string[] | undefined;
+  requireConvergence?: boolean | undefined;
+}
+
+export interface ExternalMemoryBenchmarkCaseDiagnostics {
+  evidenceCoverageRate: number | null;
+  evidenceConvergenceScore: number | null;
+  evidenceConvergenceReached: boolean | null;
+  missingRequiredIntentGroups: string[];
+  uncertaintyLevel: "low" | "medium" | "high" | null;
+  uncertaintyReasons: string[];
 }
 
 export interface ExternalMemoryBenchmarkCaseResult {
   id: string;
   pass: boolean;
   mode: ExternalMemoryBenchmarkMode;
+  requireConvergence: boolean;
   expectedAnyMatched: string[];
   expectedAnyMissing: string[];
   expectedAllMissing: string[];
   forbiddenMatches: string[];
+  failureReasons: string[];
+  warnings: string[];
+  diagnostics: ExternalMemoryBenchmarkCaseDiagnostics;
   promptTokenEstimate: number;
   retrievedMemoryCount: number;
   reconstructedPathCount: number;
@@ -81,6 +101,7 @@ export interface RunExternalMemoryBenchmarkOptions {
   maxBranch?: number | undefined;
   maxMemories?: number | undefined;
   contextBudgetTokens?: number | undefined;
+  requireConvergence?: boolean | undefined;
 }
 
 function stringArray(value: unknown, field: string): string[] | undefined {
@@ -96,6 +117,12 @@ function normalizeMode(value: unknown): ExternalMemoryBenchmarkMode | undefined 
   if (value !== "prepare" && value !== "reconstruct") {
     throw new Error("External benchmark mode must be prepare or reconstruct");
   }
+  return value;
+}
+
+function optionalBoolean(value: unknown, field: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") throw new Error(`External benchmark ${field} must be a boolean`);
   return value;
 }
 
@@ -199,6 +226,7 @@ function normalizeCase(value: unknown, index: number): ExternalMemoryBenchmarkCa
   const expectedAny = stringArray(row.expectedAny, `${id}.expectedAny`);
   const expectedAll = stringArray(row.expectedAll, `${id}.expectedAll`);
   const forbiddenAny = stringArray(row.forbiddenAny, `${id}.forbiddenAny`);
+  const requireConvergence = optionalBoolean(row.requireConvergence, `${id}.requireConvergence`);
   if (
     (expectedAny?.length ?? 0) === 0 &&
     (expectedAll?.length ?? 0) === 0 &&
@@ -215,6 +243,7 @@ function normalizeCase(value: unknown, index: number): ExternalMemoryBenchmarkCa
     ...(expectedAny ? { expectedAny } : {}),
     ...(expectedAll ? { expectedAll } : {}),
     ...(forbiddenAny ? { forbiddenAny } : {}),
+    ...(requireConvergence !== undefined ? { requireConvergence } : {}),
   };
 }
 
@@ -244,6 +273,57 @@ function includesTerm(haystack: string, term: string): boolean {
   return haystack.toLowerCase().includes(term.toLowerCase());
 }
 
+function reconstructionDiagnostics(
+  reconstructed: ReconstructedContext | null,
+): ExternalMemoryBenchmarkCaseDiagnostics {
+  return {
+    evidenceCoverageRate: reconstructed?.stats.evidenceCoverage?.coverageRate ?? null,
+    evidenceConvergenceScore: reconstructed?.stats.evidenceConvergence?.score ?? null,
+    evidenceConvergenceReached: reconstructed?.stats.evidenceConvergence?.reached ?? null,
+    missingRequiredIntentGroups:
+      reconstructed?.stats.evidenceConvergence?.missingRequiredIntentGroups ?? [],
+    uncertaintyLevel: reconstructed?.stats.uncertainty?.level ?? null,
+    uncertaintyReasons: reconstructed?.stats.uncertainty?.reasons ?? [],
+  };
+}
+
+function failureReasonsForCase(input: {
+  expectedAnyMissing: string[];
+  expectedAllMissing: string[];
+  forbiddenMatches: string[];
+  requireConvergence: boolean;
+  diagnostics: ExternalMemoryBenchmarkCaseDiagnostics;
+}): string[] {
+  const reasons: string[] = [];
+  if (input.expectedAnyMissing.length > 0) reasons.push("expected_any_missing");
+  if (input.expectedAllMissing.length > 0) reasons.push("expected_all_missing");
+  if (input.forbiddenMatches.length > 0) reasons.push("forbidden_match");
+  if (input.requireConvergence && input.diagnostics.evidenceConvergenceReached !== true) {
+    reasons.push("convergence_not_reached");
+  }
+  return reasons;
+}
+
+function warningsForCase(input: {
+  mode: ExternalMemoryBenchmarkMode;
+  diagnostics: ExternalMemoryBenchmarkCaseDiagnostics;
+}): string[] {
+  if (input.mode !== "reconstruct") return [];
+  const warnings: string[] = [];
+  if (input.diagnostics.evidenceConvergenceReached === false) {
+    warnings.push("convergence_not_reached");
+  }
+  if (input.diagnostics.uncertaintyLevel === "high") {
+    warnings.push("high_uncertainty");
+  } else if (input.diagnostics.uncertaintyLevel === "medium") {
+    warnings.push("medium_uncertainty");
+  }
+  if (input.diagnostics.missingRequiredIntentGroups.length > 0) {
+    warnings.push("missing_intent_groups");
+  }
+  return warnings;
+}
+
 async function runCase(input: {
   benchmarkCase: ExternalMemoryBenchmarkCase;
   index: number;
@@ -255,6 +335,8 @@ async function runCase(input: {
   const id = input.benchmarkCase.id ?? `case-${input.index + 1}`;
   const profileId = input.benchmarkCase.profileId ?? `external_${id}`;
   const mode = input.benchmarkCase.mode ?? input.options.mode ?? "reconstruct";
+  const requireConvergence =
+    input.benchmarkCase.requireConvergence ?? input.options.requireConvergence ?? false;
   try {
     await store.initialize();
     for (const event of input.benchmarkCase.events) {
@@ -315,17 +397,27 @@ async function runCase(input: {
     const forbiddenMatches = forbiddenAny.filter((term) => includesTerm(context, term));
     const expectedAnyMissing =
       expectedAny.length > 0 && expectedAnyMatched.length === 0 ? expectedAny : [];
+    const diagnostics = reconstructionDiagnostics(reconstructed);
+    const failureReasons = failureReasonsForCase({
+      expectedAnyMissing,
+      expectedAllMissing,
+      forbiddenMatches,
+      requireConvergence: mode === "reconstruct" && requireConvergence,
+      diagnostics,
+    });
+    const warnings = warningsForCase({ mode, diagnostics });
     return {
       id,
-      pass:
-        expectedAnyMissing.length === 0 &&
-        expectedAllMissing.length === 0 &&
-        forbiddenMatches.length === 0,
+      pass: failureReasons.length === 0,
       mode,
+      requireConvergence: mode === "reconstruct" && requireConvergence,
       expectedAnyMatched,
       expectedAnyMissing,
       expectedAllMissing,
       forbiddenMatches,
+      failureReasons,
+      warnings,
+      diagnostics,
       promptTokenEstimate:
         prepared?.stats.promptTokenEstimate ?? reconstructed?.stats.promptTokenEstimate ?? 0,
       retrievedMemoryCount:
