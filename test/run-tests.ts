@@ -4569,9 +4569,34 @@ const intentProcedurePath = intentReranked.paths.find(
 );
 assert.ok(intentProcedurePath);
 assert.match(intentProcedurePath.routeReason ?? "", /intent/);
+await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "procedure",
+  content: "Apollo rollout checklist says run temporal smoke before deploy.",
+  confidence: 0.35,
+});
+await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "fact",
+  content: "Apollo cafeteria note says the table is blue.",
+  confidence: 0.99,
+});
+const hybridReconstruction = await reconstructionMemory.reconstructContext({
+  profileId: "recon",
+  query: "What does the Apollo rollout checklist say before deploy?",
+  maxSteps: 4,
+  maxBranch: 1,
+  maxMemories: 3,
+});
+assert.match(hybridReconstruction.contextBlock, /temporal smoke/);
+const hybridPath = hybridReconstruction.paths.find((path) =>
+  path.targetSummary.includes("temporal smoke"),
+);
+assert.ok(hybridPath);
+assert.match(hybridPath.routeReason ?? "", /hybrid_(direct_memory_rrf|memory)/);
 const unrelatedReconstruction = await reconstructionMemory.reconstructContext({
   profileId: "recon",
-  query: "Completely unrelated Apollo cafeteria password?",
+  query: "Completely unrelated Neptune orbital password?",
   maxSteps: 2,
   maxBranch: 2,
   maxMemories: 2,

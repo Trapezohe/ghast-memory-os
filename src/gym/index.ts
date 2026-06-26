@@ -536,6 +536,37 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "reconstructContext should rerank noisy association branches by query intent, not raw confidence",
     "reconstruction",
   );
+  await memory.add({
+    profileId: "gym_reconstruct",
+    kind: "procedure",
+    content: "Apollo rollout checklist says run temporal smoke before deploy.",
+    confidence: 0.35,
+  });
+  await memory.add({
+    profileId: "gym_reconstruct",
+    kind: "fact",
+    content: "Apollo cafeteria note says the table is blue.",
+    confidence: 0.99,
+  });
+  const hybridReconstructed = await memory.reconstructContext({
+    profileId: "gym_reconstruct",
+    query: "What does the Apollo rollout checklist say before deploy?",
+    maxSteps: 4,
+    maxBranch: 1,
+    maxMemories: 3,
+  });
+  const hybridPath = hybridReconstructed.paths.find((path) =>
+    path.targetSummary.includes("temporal smoke"),
+  );
+  gate(
+    result,
+    "active_reconstruction_hybrid_rrf",
+    hybridReconstructed.contextBlock.includes("temporal smoke") &&
+      Boolean(hybridPath) &&
+      /hybrid_(direct_memory_rrf|memory)/.test(hybridPath?.routeReason ?? ""),
+    "reconstructContext should blend cue-tag associations with direct memory retrieval signals",
+    "reconstruction",
+  );
   gate(
     result,
     "reconstruction_read_path_side_effects",
@@ -800,6 +831,7 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "active_reconstruction_multihop",
     "active_reconstruction_coverage_signal",
     "active_reconstruction_intent_rerank",
+    "active_reconstruction_hybrid_rrf",
     "reconstruction_read_path_side_effects",
     "prepare_turn_reconstruction_shadow",
     "mcp_reconstruct_sensitive_rejection",

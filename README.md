@@ -183,8 +183,11 @@ matching memory content, generates new cues from intermediate evidence, and
 reranks noisy branches by query intent before spending context budget. For
 example, a "next step" query prefers procedure and task-trajectory paths over
 high-confidence but generic facts; a boundary query prefers boundary and
-`do_not_push` paths. Returned paths include `routeScore` and `routeReason` so a
-host can explain why a branch was selected. Returned stats also include
+`do_not_push` paths. The planner also blends association paths with direct
+memory-search hits using a bounded reciprocal-rank signal, so explicit entity or
+temporal clues can reinforce the chosen evidence path without replacing the
+cue-tag-content graph. Returned paths include `routeScore` and `routeReason` so
+a host can explain why a branch was selected. Returned stats also include
 evidence coverage and reconstruction uncertainty, giving hosts a direct signal
 for whether the reconstructed context is well grounded or should stay cautious.
 The first production mode is shadow-safe:

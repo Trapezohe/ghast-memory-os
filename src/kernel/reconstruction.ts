@@ -71,6 +71,12 @@ interface RankedAssociation {
   routeReason: string;
 }
 
+interface RankedMemoryCandidate {
+  memory: MemoryRecord;
+  routeScore: number;
+  routeReason: string;
+}
+
 function normalizedText(value: string): string {
   return value.toLowerCase();
 }
@@ -256,12 +262,26 @@ function associationMatchesIntent(
   );
 }
 
+function memoryMatchesIntent(memory: MemoryRecord, intent: ReconstructionIntent): boolean {
+  const actionPolicyKind =
+    typeof memory.metadata.actionPolicyKind === "string" ? memory.metadata.actionPolicyKind : "";
+  return (
+    intent.expectedTags.has(memory.kind) ||
+    (actionPolicyKind.length > 0 && intent.expectedTags.has(actionPolicyKind)) ||
+    (memory.kind === "boundary" && intent.expectedTags.has("do_not_push"))
+  );
+}
+
 function pathMatchesIntent(path: ReconstructedEvidencePath, intent: ReconstructionIntent): boolean {
   return (
     intent.expectedTags.has(path.tag) ||
     (path.targetKind !== undefined && intent.expectedTags.has(path.targetKind)) ||
     (path.targetKind !== undefined && intent.expectedTags.has(`${path.targetKind}.${path.tag}`))
   );
+}
+
+function reciprocalRankScore(rank: number): number {
+  return 1 / (60 + rank);
 }
 
 function rankAssociation(
@@ -306,6 +326,104 @@ function rankAssociation(
     routeScore,
     routeReason: reasons.length > 0 ? reasons.join(",") : cue.reason,
   };
+}
+
+function rankDirectMemory(
+  memory: MemoryRecord,
+  rank: number,
+  query: string,
+  intent: ReconstructionIntent,
+): RankedMemoryCandidate {
+  const reasons = [`hybrid_direct_memory_rrf:${rank}`];
+  let routeScore = memory.confidence + reciprocalRankScore(rank) * 100;
+  if (memoryMatchesIntent(memory, intent)) {
+    routeScore += 6;
+    reasons.push(`intent:${intent.reason}`);
+  }
+  const searchable = normalizedText(`${memory.kind} ${memory.scope} ${memory.content}`);
+  let overlapCount = 0;
+  for (const queryCue of intent.queryCues) {
+    if (searchable.includes(normalizedText(queryCue))) overlapCount += 1;
+  }
+  if (overlapCount > 0) {
+    routeScore += overlapCount * 0.75;
+    reasons.push(`query_overlap:${overlapCount}`);
+  }
+  if (includesAny(query, ["最近", "刚才", "上次", "latest", "recent", "last"])) {
+    routeScore += 0.5;
+    reasons.push("temporal_recent_hint");
+  }
+  return { memory, routeScore, routeReason: reasons.join(",") };
+}
+
+function pathFromDirectMemory(
+  candidate: RankedMemoryCandidate,
+  step: number,
+  query: string,
+): ReconstructedEvidencePath {
+  return {
+    id: `hybrid:${candidate.memory.id}`,
+    step,
+    cue: query,
+    tag: "hybrid_memory",
+    targetType: "memory",
+    targetId: candidate.memory.id,
+    targetKind: candidate.memory.kind,
+    targetSummary: candidate.memory.content,
+    confidence: candidate.memory.confidence,
+    routeScore: candidate.routeScore,
+    routeReason: candidate.routeReason,
+    sourceMemoryId: candidate.memory.id,
+    sourceEvidenceId: candidate.memory.sourceEventId,
+  };
+}
+
+function addRouteSignal(path: ReconstructedEvidencePath, score: number, reason: string): void {
+  path.routeScore = (path.routeScore ?? path.confidence) + score;
+  path.routeReason = path.routeReason ? `${path.routeReason},${reason}` : reason;
+}
+
+async function fuseDirectMemorySearch(input: {
+  store: MemoryStore;
+  profileId: string;
+  query: string;
+  intent: ReconstructionIntent;
+  includeSensitive?: boolean | undefined;
+  maxMemories: number;
+  memories: MemoryRecord[];
+  paths: ReconstructedEvidencePath[];
+  seenMemoryIds: Set<string>;
+}): Promise<void> {
+  const directMemoryCandidates = await input.store.searchMemories({
+    profileId: input.profileId,
+    query: input.query,
+    purpose: "context",
+    includeSensitive: input.includeSensitive,
+    limit: Math.min(input.maxMemories * 4, 48),
+  });
+  const rankedCandidates = directMemoryCandidates
+    .map((memory, index) => rankDirectMemory(memory, index + 1, input.query, input.intent))
+    .sort((a, b) => b.routeScore - a.routeScore);
+  for (const candidate of rankedCandidates) {
+    const existingPath = input.paths.find(
+      (path) => path.targetType === "memory" && path.targetId === candidate.memory.id,
+    );
+    if (!existingPath) continue;
+    if (!existingPath.routeReason?.includes("hybrid_direct_memory_rrf")) {
+      addRouteSignal(existingPath, candidate.routeScore, candidate.routeReason);
+    }
+  }
+  const directStep = Math.max(
+    1,
+    input.paths.length === 0 ? 1 : Math.max(...input.paths.map((path) => path.step)) + 1,
+  );
+  for (const candidate of rankedCandidates) {
+    if (input.memories.length >= input.maxMemories) break;
+    if (input.seenMemoryIds.has(candidate.memory.id)) continue;
+    input.seenMemoryIds.add(candidate.memory.id);
+    input.memories.push(candidate.memory);
+    input.paths.push(pathFromDirectMemory(candidate, directStep, input.query));
+  }
 }
 
 function composeReconstructedContext(input: {
@@ -468,6 +586,7 @@ export async function reconstructMemoryContext(input: {
   const maxSteps = boundedInteger(input.request.maxSteps, 3, 1, 8);
   const maxBranch = boundedInteger(input.request.maxBranch, 4, 1, 12);
   const maxMemories = boundedInteger(input.request.maxMemories, 8, 1, 24);
+  const intent = inferReconstructionIntent(query);
   if (!input.store.searchAssociations) {
     return fallbackReconstruction({
       store: input.store,
@@ -480,7 +599,6 @@ export async function reconstructMemoryContext(input: {
     });
   }
 
-  const intent = inferReconstructionIntent(query);
   const frontier = seedFrontier(query, intent);
   const explored = new Set<string>();
   const seenAssociationIds = new Set<string>();
@@ -557,6 +675,38 @@ export async function reconstructMemoryContext(input: {
       break;
     }
     stopReason = "budget_exhausted";
+  }
+
+  const finalCoverageBeforeHybrid = evidenceCoverageForPaths(query, paths);
+  const hasIntentEvidenceBeforeHybrid =
+    intent.expectedTags.size === 0 || paths.some((path) => pathMatchesIntent(path, intent));
+  if (
+    memories.length < maxMemories &&
+    (paths.length === 0 ||
+      memories.length < Math.min(2, maxMemories) ||
+      !hasIntentEvidenceBeforeHybrid ||
+      !coverageIsSufficient(finalCoverageBeforeHybrid))
+  ) {
+    await fuseDirectMemorySearch({
+      store: input.store,
+      profileId,
+      query,
+      intent,
+      includeSensitive: input.request.includeSensitive,
+      maxMemories,
+      memories,
+      paths,
+      seenMemoryIds,
+    });
+    const hasIntentEvidence =
+      intent.expectedTags.size === 0 || paths.some((path) => pathMatchesIntent(path, intent));
+    if (
+      memories.length > 0 &&
+      hasIntentEvidence &&
+      coverageIsSufficient(evidenceCoverageForPaths(query, paths))
+    ) {
+      stopReason = "evidence_sufficient";
+    }
   }
 
   return composeReconstructedContext({
