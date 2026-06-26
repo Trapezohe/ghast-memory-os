@@ -401,6 +401,16 @@ export interface EvidencePathExplanation {
   plannerTrace?: ReconstructedPlannerTrace | undefined;
 }
 
+export interface ReadAuditTableSnapshot {
+  rowCount: number;
+  stateHash: string;
+}
+
+export interface ReadAuditSnapshot {
+  schema: "gmos.read_audit_snapshot.v1";
+  tables: Record<string, ReadAuditTableSnapshot>;
+}
+
 export interface CommitOutcomeInput {
   profileId?: string | undefined;
   taskId?: string | undefined;
@@ -765,6 +775,7 @@ export interface MemoryStore {
   listFailures?(input: ListFailuresInput): Promise<FailureEventRecord[]> | FailureEventRecord[];
   recordTaskTrajectory(input: TaskTrajectoryInput): Promise<void> | void;
   rowCounts(): Promise<Record<string, number>> | Record<string, number>;
+  readAuditSnapshot?(): Promise<ReadAuditSnapshot> | ReadAuditSnapshot;
   schemaVersion?(): Promise<number> | number;
   searchIndexStatus?(): Promise<SearchIndexStatus> | SearchIndexStatus;
   repairSearchIndex?(): Promise<RepairSearchIndexResult> | RepairSearchIndexResult;

@@ -38,6 +38,7 @@ import type {
   MemoryOSOptions,
   ObserveResult,
   PrepareTurnInput,
+  ReadAuditSnapshot,
   ReconstructContextInput,
   ReconstructedContext,
   RestoreArchivedResult,
@@ -126,6 +127,30 @@ function requireArchiveMemories(
 ): NonNullable<MemoryOSOptions["store"]["archiveMemories"]> {
   if (!store.archiveMemories) throw new Error("gmOS store does not support low-level clear");
   return store.archiveMemories.bind(store);
+}
+
+async function readAuditSnapshot(store: MemoryOSOptions["store"]): Promise<ReadAuditSnapshot> {
+  if (store.readAuditSnapshot) return store.readAuditSnapshot();
+  const rowCounts = await store.rowCounts();
+  return {
+    schema: "gmos.read_audit_snapshot.v1",
+    tables: {
+      rowCounts: {
+        rowCount: Object.keys(rowCounts).length,
+        stateHash: JSON.stringify(rowCounts),
+      },
+    },
+  };
+}
+
+function assertNoReadSideEffects(input: {
+  operation: string;
+  before: ReadAuditSnapshot;
+  after: ReadAuditSnapshot;
+}): void {
+  if (JSON.stringify(input.before) !== JSON.stringify(input.after)) {
+    throw new Error(`gmOS invariant failed: ${input.operation} produced write side effects`);
+  }
 }
 
 export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
@@ -473,7 +498,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     await initialize();
     const profileId = profileIdFor(defaultProfileId, input.profileId);
     const query = latestUserText(input);
-    const before = await store.rowCounts();
+    const before = await readAuditSnapshot(store);
     const memories = await store.searchMemories({
       profileId,
       query,
@@ -528,25 +553,27 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
             },
           })
         : undefined;
-    const after = await store.rowCounts();
-    if (JSON.stringify(before) !== JSON.stringify(after)) {
-      throw new Error("gmOS invariant failed: prepareTurn produced write side effects");
-    }
+    assertNoReadSideEffects({
+      operation: "prepareTurn",
+      before,
+      after: await readAuditSnapshot(store),
+    });
     return reconstruction ? { ...prepared, reconstruction } : prepared;
   }
 
   async function reconstructContext(input: ReconstructContextInput): Promise<ReconstructedContext> {
     await initialize();
-    const before = await store.rowCounts();
+    const before = await readAuditSnapshot(store);
     const reconstructed = await reconstructMemoryContext({
       store,
       defaultProfileId,
       request: input,
     });
-    const after = await store.rowCounts();
-    if (JSON.stringify(before) !== JSON.stringify(after)) {
-      throw new Error("gmOS invariant failed: reconstructContext produced write side effects");
-    }
+    assertNoReadSideEffects({
+      operation: "reconstructContext",
+      before,
+      after: await readAuditSnapshot(store),
+    });
     return reconstructed;
   }
 
@@ -554,7 +581,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     input: ExplainEvidencePathInput,
   ): Promise<EvidencePathExplanation> {
     await initialize();
-    const before = await store.rowCounts();
+    const before = await readAuditSnapshot(store);
     const reconstructed = await reconstructMemoryContext({
       store,
       defaultProfileId,
@@ -563,10 +590,11 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         includeEvidence: input.includeEvidence ?? true,
       },
     });
-    const after = await store.rowCounts();
-    if (JSON.stringify(before) !== JSON.stringify(after)) {
-      throw new Error("gmOS invariant failed: explainEvidencePath produced write side effects");
-    }
+    assertNoReadSideEffects({
+      operation: "explainEvidencePath",
+      before,
+      after: await readAuditSnapshot(store),
+    });
     return buildEvidencePathExplanation({
       reconstructed,
       includePlannerTrace: input.includePlannerTrace,

@@ -1,6 +1,17 @@
 import type Database from "better-sqlite3";
 
-export const GMOS_SQLITE_SCHEMA_VERSION = 5;
+export const GMOS_SQLITE_SCHEMA_VERSION = 6;
+
+const READ_AUDIT_REVISION_TABLES = [
+  "gmos_evidence_events",
+  "gmos_memories",
+  "gmos_world_beliefs",
+  "gmos_failure_events",
+  "gmos_task_trajectories",
+  "gmos_associations",
+  "gmos_memory_vectors",
+  "gmos_memory_vector_terms",
+] as const;
 
 function columnExists(db: Database.Database, table: string, column: string): boolean {
   return db
@@ -10,6 +21,60 @@ function columnExists(db: Database.Database, table: string, column: string): boo
       const record = row as { name?: unknown };
       return record.name === column;
     });
+}
+
+function quotedIdentifier(input: string): string {
+  return `"${input.replaceAll('"', '""')}"`;
+}
+
+function ensureReadAuditRevisionSchema(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS gmos_read_audit_revisions (
+      table_name TEXT PRIMARY KEY,
+      revision INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    );
+  `);
+  for (const table of READ_AUDIT_REVISION_TABLES) {
+    db.exec(`
+      INSERT OR IGNORE INTO gmos_read_audit_revisions(table_name, revision, updated_at)
+        VALUES (
+          '${table}',
+          COALESCE((SELECT COUNT(*) FROM ${quotedIdentifier(table)}), 0),
+          strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        );
+
+      CREATE TRIGGER IF NOT EXISTS ${quotedIdentifier(`trg_${table}_read_audit_insert`)}
+        AFTER INSERT ON ${quotedIdentifier(table)}
+        BEGIN
+          INSERT INTO gmos_read_audit_revisions(table_name, revision, updated_at)
+            VALUES ('${table}', 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            ON CONFLICT(table_name) DO UPDATE SET
+              revision = revision + 1,
+              updated_at = excluded.updated_at;
+        END;
+
+      CREATE TRIGGER IF NOT EXISTS ${quotedIdentifier(`trg_${table}_read_audit_update`)}
+        AFTER UPDATE ON ${quotedIdentifier(table)}
+        BEGIN
+          INSERT INTO gmos_read_audit_revisions(table_name, revision, updated_at)
+            VALUES ('${table}', 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            ON CONFLICT(table_name) DO UPDATE SET
+              revision = revision + 1,
+              updated_at = excluded.updated_at;
+        END;
+
+      CREATE TRIGGER IF NOT EXISTS ${quotedIdentifier(`trg_${table}_read_audit_delete`)}
+        AFTER DELETE ON ${quotedIdentifier(table)}
+        BEGIN
+          INSERT INTO gmos_read_audit_revisions(table_name, revision, updated_at)
+            VALUES ('${table}', 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            ON CONFLICT(table_name) DO UPDATE SET
+              revision = revision + 1,
+              updated_at = excluded.updated_at;
+        END;
+    `);
+  }
 }
 
 export function ensureSqliteSchema(db: Database.Database): void {
@@ -203,6 +268,16 @@ export function ensureSqliteSchema(db: Database.Database): void {
       VALUES (
         5,
         'local_memory_vector_index',
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      );
+  `);
+
+  ensureReadAuditRevisionSchema(db);
+  db.exec(`
+    INSERT OR IGNORE INTO gmos_schema_migrations(version, name, applied_at)
+      VALUES (
+        6,
+        'read_audit_revision_triggers',
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       );
   `);

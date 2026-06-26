@@ -35,6 +35,10 @@ const prepared = await memory.prepareTurn({
 - SQLite FTS-backed recall for query search, with LIKE fallback for tokenizer
   edge cases.
 - Search index health reporting and explicit repair for SQLite FTS drift.
+- SQLite read-audit snapshots for read-path purity checks. The runtime uses
+  trigger-backed table revisions for durable tables and content digests for FTS
+  indexes, not only row counts, to catch accidental writes during `prepareTurn`,
+  `reconstructContext`, and `explainEvidencePath`.
 - SQLite association projection for active reconstruction. It derives
   cue-tag-content edges from existing memory, world belief, and task trajectory
   rows; those associations are an index, not a second source of truth.
@@ -746,6 +750,8 @@ and host boundaries, not database encryption:
 - ordinary context does not include sensitive memory unless explicitly allowed;
 - forget operations archive matching memory and remove it from future context;
 - read paths must not write.
+- SQLite read paths are audited with table state hashes so same-row updates or
+  same-row-count FTS rewrites are treated as side effects.
 
 SQLite stores include a `gmos_schema_migrations` ledger. `gmos doctor` reports
 the current schema version so host applications can verify upgrade state before

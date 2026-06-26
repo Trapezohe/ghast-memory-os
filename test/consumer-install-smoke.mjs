@@ -95,6 +95,9 @@ try {
 
       const store = createSqliteMemoryStore({ path: path.join(process.cwd(), "consumer.db") });
       const memory = createMemoryOS({ profileId: "consumer", store });
+      const initialReadAudit = store.readAuditSnapshot();
+      assert.equal(initialReadAudit.schema, "gmos.read_audit_snapshot.v1");
+      assert.equal(initialReadAudit.tables.gmos_memories.rowCount, 0);
       await memory.observe({
         type: "conversation.message",
         profileId: "consumer",
@@ -301,7 +304,7 @@ try {
       assert.equal(memoryGym.runManifest.package.name, installedPackage.name);
       assert.equal(memoryGym.runManifest.package.version, installedPackage.version);
       assert.notEqual(memoryGym.runManifest.package.name, "host-app-should-not-leak");
-      assert.equal(memoryGym.runManifest.sqliteSchemaVersion, 5);
+      assert.equal(memoryGym.runManifest.sqliteSchemaVersion, 6);
       const releaseGate = await runMemoryReleaseGate({
         generatedSeeds: 1,
         scaleSizes: [10],
@@ -356,7 +359,7 @@ try {
       });
       assert.equal(status.package.name, installedPackage.name);
       assert.equal(status.package.version, installedPackage.version);
-      assert.equal(status.storage.schemaVersion, 5);
+      assert.equal(status.storage.schemaVersion, 6);
       assert.equal(status.storage.searchIndex.status, "ok");
       assert.equal(status.storage.searchIndex.missingEntryCount, 0);
       assert.equal(status.hostCompatibility.level, "L4");
@@ -470,6 +473,7 @@ try {
         type MemoryStore,
         type ObserveResult,
         type OpenAICompatibleExtractorOptions,
+        type ReadAuditSnapshot,
         type RepairSearchIndexResult,
         type SearchIndexStatus,
       } from "@ghast/memory";
@@ -638,6 +642,13 @@ try {
       }
       if (typedRepairSearchIndex.after.vectorIndex?.status !== "ok") {
         throw new Error("typed vector index repair failed");
+      }
+      const typedReadAudit: ReadAuditSnapshot = sqliteStore.readAuditSnapshot();
+      if (typedReadAudit.schema !== "gmos.read_audit_snapshot.v1") {
+        throw new Error("typed read audit snapshot failed");
+      }
+      if (typedReadAudit.tables.gmos_memories.rowCount < 1) {
+        throw new Error("typed read audit memory table failed");
       }
       const typedBackup: SqliteProfileBackupDocument = sqliteStore.exportProfileBackup({
         profileId: "consumer-types",
@@ -852,7 +863,7 @@ try {
   const doctor = JSON.parse(bin.stdout);
   assert.equal(doctor.encrypted, false);
   assert.equal(doctor.schema.dialect, "sqlite");
-  assert.equal(doctor.schema.version, 5);
+  assert.equal(doctor.schema.version, 6);
   assert.equal(doctor.searchIndex.status, "ok");
   assert.equal(doctor.searchIndex.vectorIndex.status, "ok");
   assert.equal(doctor.hostCompatibility.level, "L4");
@@ -1036,7 +1047,7 @@ try {
   );
   assert.equal(statusBin.status, 0, statusBin.stderr);
   const status = JSON.parse(statusBin.stdout);
-  assert.equal(status.storage.schemaVersion, 5);
+  assert.equal(status.storage.schemaVersion, 6);
   assert.equal(status.storage.searchIndex.status, "ok");
   assert.equal(status.storage.searchIndex.missingEntryCount, 0);
   assert.equal(status.hostCompatibility.level, "L4");
@@ -1121,7 +1132,7 @@ try {
   assert.equal(quickstartOutput.ok, true);
   assert.equal(quickstartOutput.contextHasPreference, true);
   assert.equal(quickstartOutput.importedSearchHit, true);
-  assert.equal(quickstartOutput.schemaVersion, 5);
+  assert.equal(quickstartOutput.schemaVersion, 6);
   assert.equal(quickstartOutput.hostLevel, "L4");
   const installedHostAdapterExample = path.join(
     consumerDir,

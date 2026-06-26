@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 
 import type {
@@ -22,6 +22,7 @@ import type {
   MemoryStore,
   RecordEvidenceInput,
   RecordFailureInput,
+  ReadAuditSnapshot,
   RepairSearchIndexResult,
   RebuildAssociationsInput,
   RebuildAssociationsResult,
@@ -93,9 +94,32 @@ export interface SqliteMemoryStore extends MemoryStore {
   repairSearchIndex(): RepairSearchIndexResult;
   searchAssociations(input: MemoryAssociationSearchInput): MemoryAssociationRecord[];
   rebuildAssociations(input?: RebuildAssociationsInput): RebuildAssociationsResult;
+  readAuditSnapshot(): ReadAuditSnapshot;
   exportProfileBackup(input: ExportSqliteProfileBackupInput): SqliteProfileBackupDocument;
   restoreProfileBackup(input: RestoreSqliteProfileBackupInput): SqliteProfileBackupRestoreResult;
 }
+
+const READ_AUDIT_REVISION_TABLES = [
+  "gmos_evidence_events",
+  "gmos_memories",
+  "gmos_world_beliefs",
+  "gmos_failure_events",
+  "gmos_task_trajectories",
+  "gmos_associations",
+  "gmos_memory_vectors",
+  "gmos_memory_vector_terms",
+] as const;
+
+const READ_AUDIT_FTS_TABLES = [
+  {
+    name: "gmos_memories_fts",
+    columns: ["id", "profile_id", "kind", "scope", "status", "content"],
+  },
+  {
+    name: "gmos_associations_fts",
+    columns: ["id", "profile_id", "status", "target_type", "cue", "tag", "target_summary"],
+  },
+] as const;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -2310,6 +2334,79 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     );
   }
 
+  function quotedIdentifier(input: string): string {
+    return `"${input.replaceAll('"', '""')}"`;
+  }
+
+  function readAuditFtsTableSnapshot(
+    table: (typeof READ_AUDIT_FTS_TABLES)[number],
+  ): ReadAuditSnapshot["tables"][string] {
+    if (!tableExists(table.name)) return { rowCount: 0, stateHash: "missing" };
+    const columnsSql = table.columns.map(quotedIdentifier).join(", ");
+    const hash = createHash("sha256");
+    let rowCount = 0;
+    for (const row of db
+      .prepare(
+        `SELECT rowid AS __rowid, ${columnsSql}
+         FROM ${quotedIdentifier(table.name)}
+         ORDER BY id, rowid`,
+      )
+      .iterate() as Iterable<Record<string, unknown>>) {
+      rowCount += 1;
+      hash.update(JSON.stringify([row.__rowid ?? null, ...table.columns.map((column) => row[column] ?? null)]));
+      hash.update("\n");
+    }
+    return {
+      rowCount,
+      stateHash: hash.digest("hex"),
+    };
+  }
+
+  function readAuditSnapshot(): ReadAuditSnapshot {
+    initialize();
+    const tables: ReadAuditSnapshot["tables"] = {};
+    const revisions = new Map<string, number>();
+    if (tableExists("gmos_read_audit_revisions")) {
+      for (const row of db
+        .prepare("SELECT table_name, revision FROM gmos_read_audit_revisions")
+        .all() as Array<{ table_name: string; revision: number }>) {
+        revisions.set(row.table_name, Number(row.revision));
+      }
+    }
+    for (const table of READ_AUDIT_REVISION_TABLES) {
+      if (!tableExists(table)) {
+        tables[table] = { rowCount: 0, stateHash: "missing" };
+        continue;
+      }
+      const rowCount = Number(
+        (
+          db
+            .prepare(`SELECT COUNT(*) AS count FROM ${quotedIdentifier(table)}`)
+            .get() as { count: number }
+        ).count,
+      );
+      const hash = createHash("sha256");
+      hash.update(
+        JSON.stringify({
+          table,
+          rowCount,
+          revision: revisions.get(table) ?? 0,
+        }),
+      );
+      tables[table] = {
+        rowCount,
+        stateHash: hash.digest("hex"),
+      };
+    }
+    for (const table of READ_AUDIT_FTS_TABLES) {
+      tables[table.name] = readAuditFtsTableSnapshot(table);
+    }
+    return {
+      schema: "gmos.read_audit_snapshot.v1",
+      tables,
+    };
+  }
+
   function schemaVersion(): number {
     return sqliteSchemaVersion(db);
   }
@@ -2340,6 +2437,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     listFailures,
     recordTaskTrajectory,
     rowCounts,
+    readAuditSnapshot,
     schemaVersion,
     searchIndexStatus,
     repairSearchIndex,

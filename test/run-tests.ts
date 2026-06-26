@@ -165,7 +165,7 @@ function rawHttpRequest(port: number, payload: string): Promise<string> {
 const store: SqliteMemoryStore = createSqliteMemoryStore({ path: dbPath });
 const memory = createMemoryOS({ profileId: "test", store });
 await store.initialize();
-assert.equal(await store.schemaVersion(), 5);
+assert.equal(await store.schemaVersion(), 6);
 
 const legacyDbPath = path.join(tmp, "legacy-no-ledger.db");
 const legacyHandle = new Database(legacyDbPath);
@@ -197,7 +197,7 @@ legacyHandle.exec(`
 `);
 const legacyStore = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
 await legacyStore.initialize();
-assert.equal(await legacyStore.schemaVersion(), 5);
+assert.equal(await legacyStore.schemaVersion(), 6);
 assert.equal(
   (
     legacyHandle
@@ -260,7 +260,7 @@ assert.ok(
 );
 const legacyStoreReopen = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
 await legacyStoreReopen.initialize();
-assert.equal(await legacyStoreReopen.schemaVersion(), 5);
+assert.equal(await legacyStoreReopen.schemaVersion(), 6);
 assert.equal(
   (
     legacyHandle
@@ -308,7 +308,7 @@ legacyV2Handle.exec(`
 `);
 const legacyV2Store = createSqliteMemoryStore({ path: legacyV2DbPath, handle: legacyV2Handle });
 await legacyV2Store.initialize();
-assert.equal(await legacyV2Store.schemaVersion(), 5);
+assert.equal(await legacyV2Store.schemaVersion(), 6);
 assert.ok(
   (
     legacyV2Handle
@@ -3063,7 +3063,7 @@ assert.equal(statusReport.framework, "ghast-memory-os");
 assert.equal(statusReport.package.name, packageJson.name);
 assert.equal(statusReport.package.version, packageJson.version);
 assert.equal(statusReport.storage.status, "ok");
-assert.equal(statusReport.storage.schemaVersion, 5);
+assert.equal(statusReport.storage.schemaVersion, 6);
 assert.equal(statusReport.storage.searchIndex?.status, "ok");
 assert.equal(statusReport.storage.searchIndex?.missingEntryCount, 0);
 assert.equal(statusReport.storage.rowCounts.gmos_failure_events >= testProfileFailures.length, true);
@@ -3754,7 +3754,7 @@ try {
   assert.equal(status.status, 200);
   assert.equal(
     ((status.body.report as { storage?: { schemaVersion?: number } }).storage ?? {}).schemaVersion,
-    5,
+    6,
   );
   assert.equal(status.text.includes("mcp fixture failure"), false);
   const observe = await postJson(`${httpAddress.url}/observe`, {
@@ -5180,6 +5180,11 @@ assert.ok(
 assert.ok(reconstructed.paths.some((path) => (path.informationGain ?? 0) > 0));
 assert.notEqual(reconstructed.stats.uncertainty?.level, "high");
 const evidencePathRowsBefore = await reconstructionStore.rowCounts();
+const reconstructionReadAudit = reconstructionStore.readAuditSnapshot();
+assert.equal(reconstructionReadAudit.schema, "gmos.read_audit_snapshot.v1");
+assert.equal(reconstructionReadAudit.tables.gmos_memories?.rowCount >= 3, true);
+assert.match(reconstructionReadAudit.tables.gmos_memories?.stateHash ?? "", /^[a-f0-9]{64}$/u);
+assert.match(reconstructionReadAudit.tables.gmos_memories_fts?.stateHash ?? "", /^[a-f0-9]{64}$/u);
 const evidencePathExplanation = await reconstructionMemory.explainEvidencePath({
   profileId: "recon",
   query: "我之前说的那个计划，先做什么？",
@@ -5205,6 +5210,175 @@ const evidencePathWithoutEvidence = await reconstructionMemory.explainEvidencePa
   maxMemories: 6,
 });
 assert.equal(evidencePathWithoutEvidence.evidence.length, 0);
+
+async function assertReadAuditRejectsSameRowMutation(
+  operation: "prepareTurn" | "reconstructContext" | "explainEvidencePath",
+): Promise<void> {
+  const auditStore = createSqliteMemoryStore({
+    path: path.join(tmp, `read-audit-${operation}.db`),
+  });
+  const auditMemory = createMemoryOS({
+    profileId: `audit_${operation}`,
+    store: auditStore,
+  });
+  const profileId = `audit_${operation}`;
+  const memory = await auditMemory.add({
+    profileId,
+    kind: "preference",
+    content: "Read audit fixture prefers stable invariant checks.",
+  });
+  const beforeCounts = auditStore.rowCounts();
+  let mutated = false;
+  function mutateSameRows(): void {
+    if (mutated) return;
+    mutated = true;
+    const updated = auditStore.updateMemory?.({
+      profileId,
+      id: memory.id,
+      metadata: {
+        ...memory.metadata,
+        readAuditMutation: operation,
+      },
+      updatedAt: "2030-01-01T00:00:00.000Z",
+    });
+    assert.ok(updated);
+  }
+
+  if (operation === "prepareTurn") {
+    const originalSearchMemories = auditStore.searchMemories.bind(auditStore);
+    auditStore.searchMemories = ((input) => {
+      const result = originalSearchMemories(input);
+      mutateSameRows();
+      return result;
+    }) as typeof auditStore.searchMemories;
+    await assert.rejects(
+      () =>
+        auditMemory.prepareTurn({
+          profileId,
+          messages: [{ role: "user", content: "stable invariant checks" }],
+        }),
+      /prepareTurn produced write side effects/,
+    );
+  } else {
+    const originalSearchAssociations = auditStore.searchAssociations.bind(auditStore);
+    auditStore.searchAssociations = ((input) => {
+      const result = originalSearchAssociations(input);
+      mutateSameRows();
+      return result;
+    }) as typeof auditStore.searchAssociations;
+    await assert.rejects(
+      () =>
+        operation === "reconstructContext"
+          ? auditMemory.reconstructContext({
+              profileId,
+              query: "stable invariant checks",
+            })
+          : auditMemory.explainEvidencePath({
+              profileId,
+              query: "stable invariant checks",
+            }),
+      new RegExp(`${operation} produced write side effects`),
+    );
+  }
+  assert.equal(JSON.stringify(beforeCounts), JSON.stringify(auditStore.rowCounts()));
+  await auditMemory.close();
+}
+
+await assertReadAuditRejectsSameRowMutation("prepareTurn");
+await assertReadAuditRejectsSameRowMutation("reconstructContext");
+await assertReadAuditRejectsSameRowMutation("explainEvidencePath");
+
+async function assertReadAuditRejectsFtsSameRowMutation(
+  operation: "prepareTurn" | "reconstructContext" | "explainEvidencePath",
+): Promise<void> {
+  const auditDbPath = path.join(tmp, `read-audit-fts-${operation}.db`);
+  const auditHandle = new Database(auditDbPath);
+  const auditStore = createSqliteMemoryStore({
+    path: auditDbPath,
+    handle: auditHandle,
+  });
+  const auditMemory = createMemoryOS({
+    profileId: `audit_fts_${operation}`,
+    store: auditStore,
+  });
+  const profileId = `audit_fts_${operation}`;
+  const memory = await auditMemory.add({
+    profileId,
+    kind: "preference",
+    content: "Read audit fixture prefers FTS invariant checks.",
+  });
+  const beforeCounts = auditStore.rowCounts();
+  let mutated = false;
+  function mutateFtsSameRows(): void {
+    if (mutated) return;
+    mutated = true;
+    assert.equal(
+      auditHandle.prepare("DELETE FROM gmos_memories_fts WHERE id = ?").run(memory.id).changes,
+      1,
+    );
+    auditHandle
+      .prepare(
+        `INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        memory.id,
+        memory.profileId,
+        memory.kind,
+        memory.scope,
+        memory.status,
+        "FTS drift keeps the same row count but changes searchable content.",
+      );
+  }
+
+  try {
+    if (operation === "prepareTurn") {
+      const originalSearchMemories = auditStore.searchMemories.bind(auditStore);
+      auditStore.searchMemories = ((input) => {
+        const result = originalSearchMemories(input);
+        mutateFtsSameRows();
+        return result;
+      }) as typeof auditStore.searchMemories;
+      await assert.rejects(
+        () =>
+          auditMemory.prepareTurn({
+            profileId,
+            messages: [{ role: "user", content: "FTS invariant checks" }],
+          }),
+        /prepareTurn produced write side effects/,
+      );
+    } else {
+      const originalSearchAssociations = auditStore.searchAssociations.bind(auditStore);
+      auditStore.searchAssociations = ((input) => {
+        const result = originalSearchAssociations(input);
+        mutateFtsSameRows();
+        return result;
+      }) as typeof auditStore.searchAssociations;
+      await assert.rejects(
+        () =>
+          operation === "reconstructContext"
+            ? auditMemory.reconstructContext({
+                profileId,
+                query: "FTS invariant checks",
+              })
+            : auditMemory.explainEvidencePath({
+                profileId,
+                query: "FTS invariant checks",
+              }),
+        new RegExp(`${operation} produced write side effects`),
+      );
+    }
+    assert.equal(JSON.stringify(beforeCounts), JSON.stringify(auditStore.rowCounts()));
+  } finally {
+    await auditMemory.close();
+    auditHandle.close();
+  }
+}
+
+await assertReadAuditRejectsFtsSameRowMutation("prepareTurn");
+await assertReadAuditRejectsFtsSameRowMutation("reconstructContext");
+await assertReadAuditRejectsFtsSameRowMutation("explainEvidencePath");
+
 const multiIntentReconstructed = await reconstructionMemory.reconstructContext({
   profileId: "recon",
   query: "我之前说的那个计划，先做什么，哪些不要主动做？",
@@ -5683,7 +5857,7 @@ const cliStatusPayload = JSON.parse(cliStatus.stdout) as {
   failureSummary?: { inspectedFailureCount?: number };
   hostCompatibility?: { level?: string };
 };
-assert.equal(cliStatusPayload.storage?.schemaVersion, 5);
+assert.equal(cliStatusPayload.storage?.schemaVersion, 6);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_memories ?? 0) > 0);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_associations ?? 0) > 0);
 assert.equal(cliStatusPayload.storage?.searchIndex?.status, "ok");
@@ -5732,7 +5906,7 @@ assert.equal(gym.roadmapResult.status, "clear");
 assert.equal(gym.runManifest.dbPathMode, "memory");
 assert.equal(gym.runManifest.package.name, packageJson.name);
 assert.equal(gym.runManifest.package.version, packageJson.version);
-assert.equal(gym.runManifest.sqliteSchemaVersion, 5);
+assert.equal(gym.runManifest.sqliteSchemaVersion, 6);
 assert.equal(gym.runManifest.git.branch, expectedGit.branch);
 assert.equal(gym.runManifest.git.sha, expectedGit.sha);
 assert.equal(gym.runManifest.git.dirty, expectedGit.dirty);
@@ -5745,7 +5919,7 @@ assert.match(renderedGym, /gmOS Memory Gym Report/);
 assert.match(renderedGym, /Coverage Matrix/);
 assert.match(renderedGym, /Run Manifest/);
 assert.match(renderedGym, /Package: @ghast\/memory@/);
-assert.match(renderedGym, /SQLite schema: 5/);
+assert.match(renderedGym, /SQLite schema: 6/);
 const externalBenchmarkJsonl = [
   JSON.stringify({
     id: "project-next-step",
@@ -6577,7 +6751,7 @@ for (const [host, expectedLevel] of [
   };
   assert.equal(doctorJson.encrypted, false);
   assert.equal(doctorJson.schema?.dialect, "sqlite");
-  assert.equal(doctorJson.schema?.version, 5);
+  assert.equal(doctorJson.schema?.version, 6);
   assert.equal(doctorJson.hostCompatibility?.level, expectedLevel);
   assert.equal(doctorJson.searchIndex?.status, "ok");
   assert.equal(doctorJson.searchIndex?.missingEntryCount, 0);
