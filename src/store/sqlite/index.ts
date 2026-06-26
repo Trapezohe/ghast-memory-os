@@ -169,6 +169,25 @@ function visibleMemory(input: {
   });
 }
 
+function queryTerms(query: string): string[] {
+  return query
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}_-]+/u)
+    .map((term) => term.trim())
+    .filter(Boolean)
+    .slice(0, 16);
+}
+
+function ftsQuery(query: string): string | null {
+  const terms = queryTerms(query);
+  if (terms.length === 0) return null;
+  return terms.map((term) => `"${term.replaceAll('"', '""')}"`).join(" OR ");
+}
+
+function likePattern(term: string): string {
+  return `%${term.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+}
+
 export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): SqliteMemoryStore {
   const sqliteOptions: Database.Options = {};
   if (options.readonly !== undefined) sqliteOptions.readonly = options.readonly;
@@ -177,14 +196,17 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     options.handle ??
     new Database(options.path, sqliteOptions);
   let initialized = false;
+  let ftsAvailableCache: boolean | null = null;
 
   function initialize(): void {
     if (initialized) return;
     if (db.readonly) {
+      ftsAvailableCache = tableExists("gmos_memories_fts");
       initialized = true;
       return;
     }
     ensureSqliteSchema(db);
+    ftsAvailableCache = tableExists("gmos_memories_fts");
     initialized = true;
   }
 
@@ -193,6 +215,160 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
       .get(table) as { name?: string } | undefined;
     return row?.name === table;
+  }
+
+  function ftsAvailable(): boolean {
+    return ftsAvailableCache ?? tableExists("gmos_memories_fts");
+  }
+
+  function syncMemoryFts(memoryId: string): void {
+    if (!ftsAvailable()) return;
+    db.prepare("DELETE FROM gmos_memories_fts WHERE id = ?").run(memoryId);
+    const row = db
+      .prepare(
+        `SELECT id, profile_id, kind, scope, status, content
+         FROM gmos_memories
+         WHERE id = ?`,
+      )
+      .get(memoryId) as
+      | {
+          id: string;
+          profile_id: string;
+          kind: string;
+          scope: string;
+          status: string;
+          content: string;
+        }
+      | undefined;
+    if (!row) return;
+    db.prepare(
+      `INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(row.id, row.profile_id, row.kind, row.scope, row.status, row.content);
+  }
+
+  function memoryRowsForSearch(input: MemorySearchInput): Record<string, unknown>[] {
+    const query = input.query?.trim() ?? "";
+    const candidateLimit = Math.max(input.limit ?? 12, 100);
+    if (!query) {
+      return db
+        .prepare(
+          `SELECT * FROM gmos_memories
+           WHERE profile_id = ? AND status = 'active'
+           ORDER BY updated_at DESC
+           LIMIT ?`,
+        )
+        .all(input.profileId, Math.max(candidateLimit, 500)) as Record<string, unknown>[];
+    }
+
+    const match = ftsQuery(query);
+    if (match && ftsAvailable()) {
+      try {
+        const rows = db
+          .prepare(
+            `SELECT m.*
+             FROM gmos_memories_fts
+             JOIN gmos_memories m ON m.id = gmos_memories_fts.id
+             WHERE gmos_memories_fts MATCH ?
+               AND m.profile_id = ?
+               AND m.status = 'active'
+             ORDER BY bm25(gmos_memories_fts), m.updated_at DESC
+             LIMIT ?`,
+          )
+          .all(match, input.profileId, Math.max(candidateLimit, 500)) as Record<string, unknown>[];
+        if (rows.length > 0) return rows;
+      } catch {
+        // Fall back to LIKE search for tokenizer or parser edge cases.
+      }
+    }
+
+    const terms = queryTerms(query);
+    if (terms.length === 0) return [];
+    const clauses = terms.map(() => "content LIKE ? ESCAPE '\\'");
+    return db
+      .prepare(
+        `SELECT * FROM gmos_memories
+         WHERE profile_id = ?
+           AND status = 'active'
+           AND (${clauses.join(" OR ")})
+         ORDER BY updated_at DESC
+         LIMIT ?`,
+      )
+      .all(
+        input.profileId,
+        ...terms.map(likePattern),
+        Math.max(candidateLimit, 500),
+      ) as Record<string, unknown>[];
+  }
+
+  function memoryRowsForList(input: MemoryListInput): Record<string, unknown>[] {
+    const clauses = ["profile_id = ?"];
+    const params: unknown[] = [input.profileId];
+    if (input.status && input.status !== "any") {
+      clauses.push("status = ?");
+      params.push(input.status);
+    } else if (!input.status) {
+      clauses.push("status = 'active'");
+    }
+    if (input.kind) {
+      clauses.push("kind = ?");
+      params.push(input.kind);
+    }
+    if (input.scope) {
+      clauses.push("scope = ?");
+      params.push(input.scope);
+    }
+    const query = input.query?.trim() ?? "";
+    if (!query) {
+      return db
+        .prepare(
+          `SELECT * FROM gmos_memories
+           WHERE ${clauses.join(" AND ")}
+           ORDER BY updated_at DESC
+           LIMIT ?`,
+        )
+        .all(...params, limit(input.limit, 100, 500)) as Record<string, unknown>[];
+    }
+
+    const match = ftsQuery(query);
+    if (match && ftsAvailable()) {
+      try {
+        const rows = db
+          .prepare(
+            `SELECT m.*
+             FROM gmos_memories_fts
+             JOIN gmos_memories m ON m.id = gmos_memories_fts.id
+             WHERE gmos_memories_fts MATCH ?
+               AND ${clauses.map((clause) => `m.${clause}`).join(" AND ")}
+             ORDER BY bm25(gmos_memories_fts), m.updated_at DESC
+             LIMIT ?`,
+          )
+          .all(match, ...params, Math.max(limit(input.limit, 100, 500), 500)) as Record<
+          string,
+          unknown
+        >[];
+        if (rows.length > 0) return rows;
+      } catch {
+        // Fall back to LIKE search for tokenizer or parser edge cases.
+      }
+    }
+
+    const terms = queryTerms(query);
+    if (terms.length === 0) return [];
+    const likeClauses = terms.map(() => "content LIKE ? ESCAPE '\\'");
+    return db
+      .prepare(
+        `SELECT * FROM gmos_memories
+         WHERE ${clauses.join(" AND ")}
+           AND (${likeClauses.join(" OR ")})
+         ORDER BY updated_at DESC
+         LIMIT ?`,
+      )
+      .all(
+        ...params,
+        ...terms.map(likePattern),
+        Math.max(limit(input.limit, 100, 500), 500),
+      ) as Record<string, unknown>[];
   }
 
   function recordEvidence(input: RecordEvidenceInput): EvidenceEvent {
@@ -249,6 +425,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       createdAt,
       createdAt,
     );
+    syncMemoryFts(memoryId);
     return normalizeMemory(
       db
         .prepare("SELECT * FROM gmos_memories WHERE id = ?")
@@ -297,6 +474,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       input.profileId,
       input.id,
     );
+    syncMemoryFts(input.id);
     return normalizeMemory(
       db
         .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ?")
@@ -323,6 +501,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
          WHERE profile_id = ? AND id = ? AND status = 'active'`,
       )
       .run(archivedAt, JSON.stringify(metadata), input.profileId, input.id);
+    syncMemoryFts(input.id);
     return result.changes > 0;
   }
 
@@ -345,6 +524,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
          WHERE profile_id = ? AND id = ? AND status = 'archived'`,
       )
       .run(restoredAt, JSON.stringify(metadata), input.profileId, input.id);
+    syncMemoryFts(input.id);
     return result.changes > 0;
   }
 
@@ -383,6 +563,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           reason: input.reason,
         });
         stmt.run(archivedAt, JSON.stringify(metadata), input.profileId, row.id);
+        syncMemoryFts(row.id);
       }
     });
     tx(rows);
@@ -425,16 +606,8 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
 
   function searchMemories(input: MemorySearchInput): MemoryRecord[] {
     initialize();
-    const rows = db
-      .prepare(
-        `SELECT * FROM gmos_memories
-         WHERE profile_id = ? AND status = 'active'
-         ORDER BY updated_at DESC
-         LIMIT 500`,
-      )
-      .all(input.profileId) as Record<string, unknown>[];
     const query = input.query?.trim() ?? "";
-    return rows
+    return memoryRowsForSearch(input)
       .map(normalizeMemory)
       .filter((memory) => input.includePerson || memory.kind !== "person")
       .filter(
@@ -454,32 +627,8 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
 
   function listMemories(input: MemoryListInput): MemoryRecord[] {
     initialize();
-    const clauses = ["profile_id = ?"];
-    const params: unknown[] = [input.profileId];
-    if (input.status && input.status !== "any") {
-      clauses.push("status = ?");
-      params.push(input.status);
-    } else if (!input.status) {
-      clauses.push("status = 'active'");
-    }
-    if (input.kind) {
-      clauses.push("kind = ?");
-      params.push(input.kind);
-    }
-    if (input.scope) {
-      clauses.push("scope = ?");
-      params.push(input.scope);
-    }
     const query = input.query?.trim() ?? "";
-    const rows = db
-      .prepare(
-        `SELECT * FROM gmos_memories
-         WHERE ${clauses.join(" AND ")}
-         ORDER BY updated_at DESC
-         LIMIT ?`,
-      )
-      .all(...params, query ? 500 : limit(input.limit, 100, 500)) as Record<string, unknown>[];
-    return rows
+    return memoryRowsForList(input)
       .map(normalizeMemory)
       .filter((memory) =>
         visibleMemory({
@@ -565,7 +714,10 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       "UPDATE gmos_memories SET status = 'archived', updated_at = ? WHERE id = ?",
     );
     const tx = db.transaction((memoryIds: string[]) => {
-      for (const memoryId of memoryIds) stmt.run(archivedAt, memoryId);
+      for (const memoryId of memoryIds) {
+        stmt.run(archivedAt, memoryId);
+        syncMemoryFts(memoryId);
+      }
     });
     tx(ids);
     return ids;
@@ -640,7 +792,10 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       );
       const archivedAt = nowIso();
       const tx = db.transaction((ids: string[]) => {
-        for (const memoryId of ids) stmt.run(archivedAt, memoryId);
+        for (const memoryId of ids) {
+          stmt.run(archivedAt, memoryId);
+          syncMemoryFts(memoryId);
+        }
       });
       tx(archivedMemoryIds);
     }

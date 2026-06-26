@@ -32,6 +32,8 @@ const prepared = await memory.prepareTurn({
 ## Current Scope
 
 - Plaintext local SQLite store. No database encryption and no vault integration.
+- SQLite FTS-backed recall for query search, with LIKE fallback for tokenizer
+  edge cases.
 - Runtime facade: `observe`, `prepareTurn`, `commitOutcome`, `recordFeedback`,
   `forget`, `explain`.
 - Low-level compatibility APIs: `add` and `search` for import, admin, and
@@ -176,6 +178,9 @@ yet expose full event hooks. They are intentionally not raw database access:
 - `search()` defaults to `purpose: "context"`, which hides sensitive memory
   unless `includeSensitive` is explicitly set and hides person memory unless
   `includePerson` is explicitly set.
+- SQLite search uses a maintained full-text index for query recall instead of
+  only scanning the newest memories, so older relevant memories remain
+  discoverable as the local store grows.
 - `list()` and `get()` provide host management/migration reads without forcing a
   host to import the store directly. They still hide archived, sensitive, and
   person-scoped memory unless the caller explicitly asks for those management

@@ -116,7 +116,7 @@ function rawHttpRequest(port: number, payload: string): Promise<string> {
 const store: SqliteMemoryStore = createSqliteMemoryStore({ path: dbPath });
 const memory = createMemoryOS({ profileId: "test", store });
 await store.initialize();
-assert.equal(await store.schemaVersion(), 1);
+assert.equal(await store.schemaVersion(), 2);
 
 const legacyDbPath = path.join(tmp, "legacy-no-ledger.db");
 const legacyHandle = new Database(legacyDbPath);
@@ -148,7 +148,7 @@ legacyHandle.exec(`
 `);
 const legacyStore = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
 await legacyStore.initialize();
-assert.equal(await legacyStore.schemaVersion(), 1);
+assert.equal(await legacyStore.schemaVersion(), 2);
 assert.equal(
   (
     legacyHandle
@@ -170,6 +170,33 @@ assert.equal(
       .get() as { content: string }
   ).content,
   "legacy preference row",
+);
+assert.equal(
+  (
+    legacyHandle
+      .prepare("SELECT COUNT(*) AS count FROM gmos_schema_migrations WHERE version = 2")
+      .get() as { count: number }
+  ).count,
+  1,
+);
+assert.equal(
+  (
+    legacyHandle
+      .prepare("SELECT COUNT(*) AS count FROM gmos_memories_fts WHERE id = 'legacy_memory_1'")
+      .get() as { count: number }
+  ).count,
+  1,
+);
+const legacyStoreReopen = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
+await legacyStoreReopen.initialize();
+assert.equal(await legacyStoreReopen.schemaVersion(), 2);
+assert.equal(
+  (
+    legacyHandle
+      .prepare("SELECT COUNT(*) AS count FROM gmos_memories_fts WHERE id = 'legacy_memory_1'")
+      .get() as { count: number }
+  ).count,
+  1,
 );
 legacyHandle.close();
 
@@ -212,6 +239,66 @@ const lowLevelMatches = await memory.search({
   query: "compatibility concise SDK docs",
 });
 assert.ok(lowLevelMatches.some((entry) => entry.id === lowLevelMemory.id));
+const deepHistoryMemory = await memory.add({
+  profileId: "fts-history",
+  kind: "project",
+  content: "Deep history target mentions quasar-lighthouse migration recall.",
+  confidence: 0.9,
+  createdAt: "2026-01-01T00:00:00.000Z",
+});
+for (let index = 0; index < 650; index += 1) {
+  await memory.add({
+    profileId: "fts-history",
+    kind: "fact",
+    content: `Recent unrelated noise memory ${index} about ordinary topic ${index % 17}.`,
+    createdAt: `2026-02-01T00:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
+  });
+}
+const deepHistoryMatches = await memory.search({
+  profileId: "fts-history",
+  query: "quasar-lighthouse migration recall",
+  limit: 5,
+});
+assert.equal(deepHistoryMatches.some((entry) => entry.id === deepHistoryMemory.id), true);
+await memory.update({
+  profileId: "fts-history",
+  id: deepHistoryMemory.id,
+  content: "Deep history target now mentions nebula-harbor migration recall.",
+});
+const staleDeepHistoryMatches = await memory.search({
+  profileId: "fts-history",
+  query: "quasar-lighthouse",
+  limit: 5,
+});
+assert.equal(staleDeepHistoryMatches.some((entry) => entry.id === deepHistoryMemory.id), false);
+const updatedDeepHistoryMatches = await memory.search({
+  profileId: "fts-history",
+  query: "nebula-harbor migration recall",
+  limit: 5,
+});
+assert.equal(updatedDeepHistoryMatches.some((entry) => entry.id === deepHistoryMemory.id), true);
+await memory.archive({
+  profileId: "fts-history",
+  id: deepHistoryMemory.id,
+  reason: "fts archive sync test",
+});
+const archivedDeepHistoryMatches = await memory.search({
+  profileId: "fts-history",
+  query: "nebula-harbor",
+  limit: 5,
+});
+assert.equal(archivedDeepHistoryMatches.some((entry) => entry.id === deepHistoryMemory.id), false);
+await memory.restoreArchived({
+  profileId: "fts-history",
+  id: deepHistoryMemory.id,
+  reason: "fts restore sync test",
+});
+const restoredDeepHistoryMatches = await memory.search({
+  profileId: "fts-history",
+  query: "nebula-harbor",
+  limit: 5,
+});
+assert.equal(restoredDeepHistoryMatches.some((entry) => entry.id === deepHistoryMemory.id), true);
 const lowLevelExplanation = await memory.explain(lowLevelMemory.id, "test");
 assert.equal(lowLevelExplanation?.evidence[0]?.sourceType, "sdk.low_level_add");
 assert.equal(JSON.stringify(lowLevelExplanation).includes("sk-lowlevel-metadata-secret"), false);
@@ -784,7 +871,7 @@ assert.equal(statusReport.framework, "ghast-memory-os");
 assert.equal(statusReport.package.name, packageJson.name);
 assert.equal(statusReport.package.version, packageJson.version);
 assert.equal(statusReport.storage.status, "ok");
-assert.equal(statusReport.storage.schemaVersion, 1);
+assert.equal(statusReport.storage.schemaVersion, 2);
 assert.equal(statusReport.storage.rowCounts.gmos_failure_events, 4);
 assert.equal(statusReport.failureSummary.status, "ok");
 assert.equal(statusReport.failureSummary.inspectedFailureCount, 3);
@@ -1314,7 +1401,7 @@ try {
   assert.equal(status.status, 200);
   assert.equal(
     ((status.body.report as { storage?: { schemaVersion?: number } }).storage ?? {}).schemaVersion,
-    1,
+    2,
   );
   assert.equal(status.text.includes("mcp fixture failure"), false);
   const observe = await postJson(`${httpAddress.url}/observe`, {
@@ -2415,7 +2502,7 @@ const cliStatusPayload = JSON.parse(cliStatus.stdout) as {
   failureSummary?: { inspectedFailureCount?: number };
   hostCompatibility?: { level?: string };
 };
-assert.equal(cliStatusPayload.storage?.schemaVersion, 1);
+assert.equal(cliStatusPayload.storage?.schemaVersion, 2);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_memories ?? 0) > 0);
 assert.equal(cliStatusPayload.failureSummary?.inspectedFailureCount, 3);
 assert.equal(cliStatusPayload.hostCompatibility?.level, "L4");
@@ -2461,7 +2548,7 @@ assert.equal(gym.roadmapResult.status, "clear");
 assert.equal(gym.runManifest.dbPathMode, "memory");
 assert.equal(gym.runManifest.package.name, packageJson.name);
 assert.equal(gym.runManifest.package.version, packageJson.version);
-assert.equal(gym.runManifest.sqliteSchemaVersion, 1);
+assert.equal(gym.runManifest.sqliteSchemaVersion, 2);
 assert.equal(gym.runManifest.git.branch, expectedGit.branch);
 assert.equal(gym.runManifest.git.sha, expectedGit.sha);
 assert.equal(gym.runManifest.git.dirty, expectedGit.dirty);
@@ -2474,7 +2561,7 @@ assert.match(renderedGym, /gmOS Memory Gym Report/);
 assert.match(renderedGym, /Coverage Matrix/);
 assert.match(renderedGym, /Run Manifest/);
 assert.match(renderedGym, /Package: @ghast\/memory@/);
-assert.match(renderedGym, /SQLite schema: 1/);
+assert.match(renderedGym, /SQLite schema: 2/);
 const generatedGym = await runMemoryGym({ generatedSeeds: 2 });
 assert.equal(generatedGym.pass, true, generatedGym.details.join("\n"));
 assert.equal(generatedGym.generalizationResult.generatedSeedCount, 2);
@@ -2555,7 +2642,7 @@ for (const [host, expectedLevel] of [
   };
   assert.equal(doctorJson.encrypted, false);
   assert.equal(doctorJson.schema?.dialect, "sqlite");
-  assert.equal(doctorJson.schema?.version, 1);
+  assert.equal(doctorJson.schema?.version, 2);
   assert.equal(doctorJson.hostCompatibility?.level, expectedLevel);
   if (host === "ghast") assert.deepEqual(doctorJson.hostCompatibility?.gaps, []);
 }

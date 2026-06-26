@@ -1,8 +1,9 @@
 import type Database from "better-sqlite3";
 
-export const GMOS_SQLITE_SCHEMA_VERSION = 1;
+export const GMOS_SQLITE_SCHEMA_VERSION = 2;
 
 export function ensureSqliteSchema(db: Database.Database): void {
+  const previousSchemaVersion = sqliteSchemaVersion(db);
   db.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA foreign_keys = ON;
@@ -44,6 +45,8 @@ export function ensureSqliteSchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_gmos_memories_profile_kind_status
       ON gmos_memories(profile_id, kind, status, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_gmos_memories_profile_status_time
+      ON gmos_memories(profile_id, status, updated_at);
 
     CREATE TABLE IF NOT EXISTS gmos_world_beliefs (
       id TEXT PRIMARY KEY,
@@ -85,11 +88,37 @@ export function ensureSqliteSchema(db: Database.Database): void {
 
     INSERT OR IGNORE INTO gmos_schema_migrations(version, name, applied_at)
       VALUES (
-        ${GMOS_SQLITE_SCHEMA_VERSION},
+        1,
         'baseline',
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS gmos_memories_fts USING fts5(
+      id UNINDEXED,
+      profile_id UNINDEXED,
+      kind UNINDEXED,
+      scope UNINDEXED,
+      status UNINDEXED,
+      content,
+      tokenize = 'unicode61'
+    );
+
+    INSERT OR IGNORE INTO gmos_schema_migrations(version, name, applied_at)
+      VALUES (
+        2,
+        'memory_fts_search',
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      );
   `);
+
+  if (previousSchemaVersion < 2) {
+    db.exec(`
+      DELETE FROM gmos_memories_fts;
+      INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
+        SELECT id, profile_id, kind, scope, status, content
+        FROM gmos_memories;
+    `);
+  }
 }
 
 export function sqliteSchemaVersion(db: Database.Database): number {

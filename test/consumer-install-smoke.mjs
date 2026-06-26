@@ -174,7 +174,7 @@ try {
       assert.equal(memoryGym.runManifest.package.name, installedPackage.name);
       assert.equal(memoryGym.runManifest.package.version, installedPackage.version);
       assert.notEqual(memoryGym.runManifest.package.name, "host-app-should-not-leak");
-      assert.equal(memoryGym.runManifest.sqliteSchemaVersion, 1);
+      assert.equal(memoryGym.runManifest.sqliteSchemaVersion, 2);
       const releaseGate = await runMemoryReleaseGate({
         generatedSeeds: 1,
         scaleSizes: [10],
@@ -205,7 +205,7 @@ try {
       });
       assert.equal(status.package.name, installedPackage.name);
       assert.equal(status.package.version, installedPackage.version);
-      assert.equal(status.storage.schemaVersion, 1);
+      assert.equal(status.storage.schemaVersion, 2);
       assert.equal(status.hostCompatibility.level, "L4");
       assert.equal(JSON.stringify(status).includes("consumer package wrong recall"), false);
       const httpServer = createMemoryHttpServer({
@@ -423,7 +423,7 @@ try {
   const doctor = JSON.parse(bin.stdout);
   assert.equal(doctor.encrypted, false);
   assert.equal(doctor.schema.dialect, "sqlite");
-  assert.equal(doctor.schema.version, 1);
+  assert.equal(doctor.schema.version, 2);
   assert.equal(doctor.hostCompatibility.level, "L4");
   const binLowLevelDb = path.join(consumerDir, "bin-low-level.db");
   const addBin = runInstalledCli(
@@ -571,7 +571,7 @@ try {
   );
   assert.equal(statusBin.status, 0, statusBin.stderr);
   const status = JSON.parse(statusBin.stdout);
-  assert.equal(status.storage.schemaVersion, 1);
+  assert.equal(status.storage.schemaVersion, 2);
   assert.equal(status.hostCompatibility.level, "L4");
   const installedMcpVersionScript = path.join(consumerDir, "installed-mcp-version.mjs");
   writeFileSync(
@@ -654,7 +654,7 @@ try {
   assert.equal(quickstartOutput.ok, true);
   assert.equal(quickstartOutput.contextHasPreference, true);
   assert.equal(quickstartOutput.importedSearchHit, true);
-  assert.equal(quickstartOutput.schemaVersion, 1);
+  assert.equal(quickstartOutput.schemaVersion, 2);
   assert.equal(quickstartOutput.hostLevel, "L4");
   const installedHostAdapterExample = path.join(
     consumerDir,
