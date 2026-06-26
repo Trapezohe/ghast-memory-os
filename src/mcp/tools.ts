@@ -1,4 +1,6 @@
 export type MemoryMcpToolName =
+  | "memory.add"
+  | "memory.search"
   | "memory.observe"
   | "memory.prepare_context"
   | "memory.commit_outcome"
@@ -21,6 +23,38 @@ export interface MemoryMcpTool {
 
 export function listMemoryMcpTools(): MemoryMcpTool[] {
   return [
+    {
+      name: "memory.add",
+      description: "Remember a non-secret, non-person memory.",
+      inputSchema: {
+        type: "object",
+        required: ["kind", "content"],
+        additionalProperties: false,
+        properties: {
+          profileId: { type: "string" },
+          kind: {
+            type: "string",
+            enum: ["fact", "preference", "boundary", "procedure", "project", "task_trajectory"],
+          },
+          scope: { type: "string" },
+          content: { type: "string" },
+          confidence: { type: "number", exclusiveMinimum: 0, maximum: 1 },
+        },
+      },
+    },
+    {
+      name: "memory.search",
+      description: "Search public context-safe memories.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          profileId: { type: "string" },
+          query: { type: "string" },
+          limit: { type: "integer", minimum: 1 },
+        },
+      },
+    },
     {
       name: "memory.observe",
       description: "Ingest a host event into gmOS.",

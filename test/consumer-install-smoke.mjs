@@ -151,7 +151,29 @@ try {
       const mcp = createMemoryMcpServer(memory);
       const prepareTool = mcp.listTools().find((tool) => tool.name === "memory.prepare_context");
       assert.ok(prepareTool);
+      assert.ok(mcp.listTools().some((tool) => tool.name === "memory.add"));
+      assert.ok(mcp.listTools().some((tool) => tool.name === "memory.search"));
       assert.equal(Object.hasOwn(prepareTool.inputSchema.properties, "includeSensitive"), false);
+      const mcpAddResult = await mcp.callTool("memory.add", {
+        profileId: "consumer",
+        kind: "preference",
+        content: "Consumer MCP add remembers stable package contracts.",
+      });
+      assert.equal(mcpAddResult.isError, undefined);
+      const mcpSearchResult = await mcp.callTool("memory.search", {
+        profileId: "consumer",
+        query: "stable package contracts",
+      });
+      assert.equal(mcpSearchResult.isError, undefined);
+      assert.match(JSON.stringify(mcpSearchResult.structuredContent), /stable package contracts/);
+      assert.equal(
+        (await mcp.callTool("memory.search", {
+          profileId: "consumer",
+          query: "stable package contracts",
+          includeSensitive: true,
+        })).isError,
+        true,
+      );
       const mcpResult = await mcp.callTool("memory.prepare_context", {
         profileId: "consumer",
         text: "风险 方案",
@@ -253,6 +275,32 @@ try {
           }),
         });
         assert.equal(httpObserve.status, 200);
+        const httpAdd = await fetch(httpAddress.url + "/add", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer consumer-local-token",
+          },
+          body: JSON.stringify({
+            profileId: "consumer_http",
+            kind: "preference",
+            content: "HTTP consumer add remembers stable SDK boundaries.",
+          }),
+        });
+        assert.equal(httpAdd.status, 200);
+        const httpSearch = await fetch(httpAddress.url + "/search", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer consumer-local-token",
+          },
+          body: JSON.stringify({
+            profileId: "consumer_http",
+            query: "stable SDK boundaries",
+          }),
+        });
+        assert.equal(httpSearch.status, 200);
+        assert.match(JSON.stringify(await httpSearch.json()), /stable SDK boundaries/);
         const httpPrepare = await fetch(httpAddress.url + "/prepare", {
           method: "POST",
           headers: {
@@ -396,8 +444,16 @@ try {
       if (!hostGymResult.pass) throw new Error("typed host gym failed");
       const mcpServer: MemoryMcpServer = createMemoryMcpServer(memory);
       const prepareToolName: MemoryMcpToolName = "memory.prepare_context";
+      const addToolName: MemoryMcpToolName = "memory.add";
+      const searchToolName: MemoryMcpToolName = "memory.search";
       if (!mcpServer.listTools().some((tool) => tool.name === prepareToolName)) {
         throw new Error("typed mcp tool missing");
+      }
+      if (!mcpServer.listTools().some((tool) => tool.name === addToolName)) {
+        throw new Error("typed mcp add tool missing");
+      }
+      if (!mcpServer.listTools().some((tool) => tool.name === searchToolName)) {
+        throw new Error("typed mcp search tool missing");
       }
       const status: MemoryStatusReport = await createMemoryStatusReport({
         store: sqliteStore,

@@ -1304,6 +1304,70 @@ const mcpInvalidBefore = await store.rowCounts();
 const invalidMcpObserve = await mcpServer.callTool("memory.observe", { content: 42 });
 assert.equal(invalidMcpObserve.isError, true);
 assert.deepEqual(await store.rowCounts(), mcpInvalidBefore);
+const mcpAdd = await mcpServer.callTool("memory.add", {
+  profileId: "mcp",
+  kind: "preference",
+  content: "我喜欢 MCP add 工具记录稳定偏好。",
+});
+assert.equal(mcpAdd.isError, undefined);
+assert.equal((mcpAdd.structuredContent as { ok?: boolean }).ok, true);
+assert.match(JSON.stringify(mcpAdd.structuredContent), /MCP add/);
+assert.equal(JSON.stringify(mcpAdd.structuredContent).includes("metadata"), false);
+const mcpSearch = await mcpServer.callTool("memory.search", {
+  profileId: "mcp",
+  query: "MCP add 稳定偏好",
+});
+assert.equal(mcpSearch.isError, undefined);
+assert.match(JSON.stringify(mcpSearch.structuredContent), /MCP add 工具/);
+assert.equal(JSON.stringify(mcpSearch.structuredContent).includes("metadata"), false);
+const mcpSearchSensitiveOverride = await mcpServer.callTool("memory.search", {
+  profileId: "mcp",
+  query: "MCP add",
+  includeSensitive: true,
+});
+assert.equal(mcpSearchSensitiveOverride.isError, true);
+const mcpSearchPersonOverride = await mcpServer.callTool("memory.search", {
+  profileId: "mcp",
+  query: "MCP add",
+  includePerson: true,
+});
+assert.equal(mcpSearchPersonOverride.isError, true);
+const mcpBeforeUnsafeAdd = await store.rowCounts();
+const mcpAddWithPersonOverride = await mcpServer.callTool("memory.add", {
+  profileId: "mcp",
+  kind: "fact",
+  content: "Trying to pass hidden person override.",
+  allowPerson: true,
+});
+assert.equal(mcpAddWithPersonOverride.isError, true);
+const mcpAddWithSensitivityOverride = await mcpServer.callTool("memory.add", {
+  profileId: "mcp",
+  kind: "fact",
+  content: "Trying to pass hidden sensitivity override.",
+  sensitivity: "sensitive",
+});
+assert.equal(mcpAddWithSensitivityOverride.isError, true);
+const mcpAddWithBadConfidence = await mcpServer.callTool("memory.add", {
+  profileId: "mcp",
+  kind: "fact",
+  content: "Trying to pass confidence beyond public range.",
+  confidence: 2,
+});
+assert.equal(mcpAddWithBadConfidence.isError, true);
+const mcpSecretAdd = await mcpServer.callTool("memory.add", {
+  profileId: "mcp",
+  kind: "fact",
+  content: "api key: sk-mcpaddsecret1234567890",
+});
+assert.equal(mcpSecretAdd.isError, true);
+assert.deepEqual(await store.rowCounts(), mcpBeforeUnsafeAdd);
+const mcpPersonAdd = await mcpServer.callTool("memory.add", {
+  profileId: "mcp",
+  kind: "fact",
+  content: "PERSON: Alice: Alice likes tea.",
+});
+assert.equal(mcpPersonAdd.isError, true);
+assert.deepEqual(await store.rowCounts(), mcpBeforeUnsafeAdd);
 const mcpObserve = await mcpServer.callTool("memory.observe", {
   profileId: "mcp",
   conversationId: "conv_mcp",
@@ -1323,13 +1387,15 @@ const mcpPreparedPayload = mcpPrepared.structuredContent as {
   prepared?: {
     contextBlock: string;
     evidence: unknown[];
-    memories: Array<{ id: string }>;
+    memories: Array<{ id: string; content: string }>;
   };
 };
 assert.equal(mcpPreparedPayload.ok, true);
 assert.match(mcpPreparedPayload.prepared?.contextBlock ?? "", /先讲风险/);
-assert.equal(mcpPreparedPayload.prepared?.evidence.length, 1);
-const mcpMemoryId = mcpPreparedPayload.prepared?.memories[0]?.id;
+assert.ok((mcpPreparedPayload.prepared?.evidence.length ?? 0) >= 1);
+const mcpMemoryId = mcpPreparedPayload.prepared?.memories.find((entry) =>
+  entry.content.includes("先讲风险"),
+)?.id;
 assert.equal(typeof mcpMemoryId, "string");
 const mcpExplanation = await mcpServer.callTool("memory.explain_belief", {
   profileId: "mcp",
@@ -1534,6 +1600,41 @@ try {
   });
   assert.equal(observe.status, 200);
   assert.equal(observe.body.ok, true);
+  const httpAdd = await postJson(`${httpAddress.url}/add`, {
+    profileId: "http",
+    kind: "preference",
+    content: "HTTP add route prefers compact memory contracts.",
+  });
+  assert.equal(httpAdd.status, 200);
+  assert.match(httpAdd.text, /compact memory contracts/);
+  assert.equal(httpAdd.text.includes("metadata"), false);
+  const httpSearch = await postJson(`${httpAddress.url}/search`, {
+    profileId: "http",
+    query: "compact memory contracts",
+  });
+  assert.equal(httpSearch.status, 200);
+  assert.match(httpSearch.text, /compact memory contracts/);
+  assert.equal(httpSearch.text.includes("metadata"), false);
+  const httpSearchSensitiveOverride = await postJson(`${httpAddress.url}/search`, {
+    profileId: "http",
+    query: "compact memory contracts",
+    includeSensitive: true,
+  });
+  assert.equal(httpSearchSensitiveOverride.status, 400);
+  const httpUnsafeAdd = await postJson(`${httpAddress.url}/add`, {
+    profileId: "http",
+    kind: "fact",
+    content: "api key: sk-httpaddsecret1234567890",
+  });
+  assert.equal(httpUnsafeAdd.status, 400);
+  assert.equal(httpUnsafeAdd.text.includes("sk-httpaddsecret"), false);
+  const httpPersonAdd = await postJson(`${httpAddress.url}/add`, {
+    profileId: "http",
+    kind: "fact",
+    content: "PERSON: Bob: Bob likes black tea.",
+  });
+  assert.equal(httpPersonAdd.status, 400);
+  assert.equal(httpPersonAdd.text.includes("black tea"), false);
   const preparedHttp = await postJson(`${httpAddress.url}/prepare`, {
     profileId: "http",
     text: "HTTP adapter 应该怎么回答？",
@@ -3276,6 +3377,50 @@ const cliMcpPrepare = spawnSync(
 );
 assert.equal(cliMcpPrepare.status, 0, cliMcpPrepare.stderr);
 assert.match(cliMcpPrepare.stdout, /完整测试/);
+const cliMcpAdd = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "mcp",
+    "call",
+    "--db",
+    mcpCliDb,
+    "--profile",
+    "cli_mcp",
+    "--tool",
+    "memory.add",
+    "--input",
+    JSON.stringify({
+      kind: "preference",
+      content: "CLI MCP add remembers release gate coverage.",
+    }),
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliMcpAdd.status, 0, cliMcpAdd.stderr);
+const cliMcpSearch = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "mcp",
+    "call",
+    "--db",
+    mcpCliDb,
+    "--profile",
+    "cli_mcp",
+    "--tool",
+    "memory.search",
+    "--input",
+    JSON.stringify({ query: "release gate coverage" }),
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliMcpSearch.status, 0, cliMcpSearch.stderr);
+assert.match(cliMcpSearch.stdout, /release gate coverage/);
 const cliMcpInvalid = spawnSync(
   process.execPath,
   [
@@ -3348,6 +3493,26 @@ try {
   assert.equal(stdioClient.getServerVersion()?.version, packageJson.version);
   const stdioTools = await stdioClient.listTools();
   assert.ok(stdioTools.tools.some((tool) => tool.name === "memory.prepare_context"));
+  assert.ok(stdioTools.tools.some((tool) => tool.name === "memory.add"));
+  assert.ok(stdioTools.tools.some((tool) => tool.name === "memory.search"));
+  const stdioAdd = await stdioClient.callTool({
+    name: "memory.add",
+    arguments: {
+      profileId: "stdio_mcp",
+      kind: "preference",
+      content: "MCP stdio add remembers tool coverage.",
+    },
+  });
+  assert.equal(stdioAdd.isError, undefined);
+  const stdioSearch = await stdioClient.callTool({
+    name: "memory.search",
+    arguments: {
+      profileId: "stdio_mcp",
+      query: "tool coverage",
+    },
+  });
+  assert.equal(stdioSearch.isError, undefined);
+  assert.match(JSON.stringify(stdioSearch.structuredContent), /tool coverage/);
   await stdioClient.callTool({
     name: "memory.observe",
     arguments: {

@@ -81,6 +81,8 @@ node dist/cli/gmos.js import --db ./gmos.db --profile local --input-file ./gmos-
 node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "我喜欢简洁的中文回答。"
 node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
 node dist/cli/gmos.js mcp tools
+node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.add --input '{"kind":"preference","content":"我喜欢先讲风险"}'
+node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.search --input '{"query":"先讲风险"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.prepare_context --input '{"text":"你之后怎么回答我？"}'
 node dist/cli/gmos.js mcp serve --db ./gmos.db --profile local
 node dist/cli/gmos.js http serve --db ./gmos.db --profile local --port 4787 --host ghast --auth-token local-dev-token
@@ -303,9 +305,15 @@ await server.close();
 The stdio server reports the installed `@ghast/memory` package version during
 MCP initialization unless the host passes an explicit `version` override.
 
-Current tools are `memory.observe`, `memory.prepare_context`,
-`memory.commit_outcome`, `memory.record_feedback`, `memory.forget`, and
-`memory.explain_belief`.
+Current tools are `memory.add`, `memory.search`, `memory.observe`,
+`memory.prepare_context`, `memory.commit_outcome`, `memory.record_feedback`,
+`memory.forget`, and `memory.explain_belief`.
+
+`memory.add` and `memory.search` are public-safe tools for simple agent
+integrations. They do not expose `allowPerson`, `includeSensitive`,
+`includePerson`, or raw metadata fields. Secret-like content is rejected before
+write, person-routed content is rejected, and search returns only context-safe
+memory records.
 
 ## HTTP Adapter
 
@@ -341,6 +349,8 @@ Endpoints:
 - `GET /health` (always open; reports whether auth is required)
 - `GET /status?profileId=local`
 - `GET /tools`
+- `POST /add`
+- `POST /search`
 - `POST /observe`
 - `POST /prepare`
 - `POST /commit-outcome`
@@ -353,9 +363,10 @@ When `authToken` is configured, every endpoint except `/health` returns `401`
 unless the request includes `Authorization: Bearer <token>`. The token is never
 printed in status or health responses.
 
-The HTTP adapter intentionally rejects `includeSensitive` on `/prepare` through
-the same public-tool contract as MCP. Hosts that need sensitive/admin memory
-access should use the in-process SDK with an explicit internal trust boundary.
+The HTTP adapter intentionally rejects `includeSensitive` on `/prepare` and
+`/search` through the same public-tool contract as MCP. Hosts that need
+sensitive/admin memory access should use the in-process SDK with an explicit
+internal trust boundary.
 
 ## Evolution Review
 

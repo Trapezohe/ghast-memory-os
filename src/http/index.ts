@@ -166,6 +166,8 @@ function errorPayload(error: unknown): { ok: false; error: { code: string; messa
 }
 
 function routeToTool(pathname: string): string | null {
+  if (pathname === "/add") return "memory.add";
+  if (pathname === "/search") return "memory.search";
   if (pathname === "/observe") return "memory.observe";
   if (pathname === "/prepare") return "memory.prepare_context";
   if (pathname === "/commit-outcome") return "memory.commit_outcome";

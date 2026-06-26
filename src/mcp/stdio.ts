@@ -18,6 +18,14 @@ export interface MemoryMcpStdioHandle {
 
 const roleSchema = z.enum(["system", "user", "assistant", "tool"]);
 const privacyModeSchema = z.enum(["normal", "incognito"]);
+const publicAddKindSchema = z.enum([
+  "fact",
+  "preference",
+  "boundary",
+  "procedure",
+  "project",
+  "task_trajectory",
+]);
 const failureKindSchema = z.enum([
   "missed_recall",
   "wrong_recall",
@@ -38,6 +46,20 @@ const observeSchema = z.object({
   privacyMode: privacyModeSchema.optional(),
   createdAt: z.string().optional(),
   metadata: metadataSchema.optional(),
+}).strict();
+
+const addSchema = z.object({
+  profileId: z.string().optional(),
+  kind: publicAddKindSchema,
+  scope: z.string().optional(),
+  content: z.string().min(1),
+  confidence: z.number().positive().max(1).optional(),
+}).strict();
+
+const searchSchema = z.object({
+  profileId: z.string().optional(),
+  query: z.string().optional(),
+  limit: z.number().int().positive().optional(),
 }).strict();
 
 const messageSchema = z.object({
@@ -89,6 +111,24 @@ export function createMemoryMcpStdioServer(
     name: options.name ?? "gmos-memory",
     version: options.version ?? readGmosPackageInfo().version,
   });
+
+  server.registerTool(
+    "memory.add",
+    {
+      description: "Remember a non-secret, non-person memory.",
+      inputSchema: addSchema,
+    },
+    async (args) => resultToMcp(await router.callTool("memory.add", args)),
+  );
+
+  server.registerTool(
+    "memory.search",
+    {
+      description: "Search public context-safe memories.",
+      inputSchema: searchSchema,
+    },
+    async (args) => resultToMcp(await router.callTool("memory.search", args)),
+  );
 
   server.registerTool(
     "memory.observe",

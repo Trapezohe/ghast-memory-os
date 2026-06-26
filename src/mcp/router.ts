@@ -6,7 +6,11 @@ import type {
   FeedbackInput,
   ForgetInput,
   HostEvent,
+  LowLevelAddMemoryInput,
+  LowLevelSearchInput,
   MemoryOS,
+  MemoryKind,
+  MemoryRecord,
   MemoryRole,
   PrepareTurnInput,
   PrivacyMode,
@@ -40,6 +44,14 @@ export interface MemoryMcpServer {
 const TOOL_NAMES = new Set(listMemoryMcpTools().map((tool) => tool.name));
 const ROLES = new Set<MemoryRole>(["system", "user", "assistant", "tool"]);
 const PRIVACY_MODES = new Set<PrivacyMode>(["normal", "incognito"]);
+const PUBLIC_ADD_KINDS = new Set<MemoryKind>([
+  "fact",
+  "preference",
+  "boundary",
+  "procedure",
+  "project",
+  "task_trajectory",
+]);
 const FAILURE_KINDS = new Set<FailureKind>([
   "missed_recall",
   "wrong_recall",
@@ -65,6 +77,17 @@ function requiredString(args: Record<string, unknown>, key: string): string {
   return value;
 }
 
+function assertAllowedKeys(
+  args: Record<string, unknown>,
+  allowed: ReadonlySet<string>,
+  toolName: string,
+): void {
+  const unsupported = Object.keys(args).filter((key) => !allowed.has(key));
+  if (unsupported.length > 0) {
+    throw new Error(`${toolName} contains unsupported fields: ${unsupported.join(", ")}`);
+  }
+}
+
 function optionalString(args: Record<string, unknown>, key: string): string | undefined {
   const value = args[key];
   if (value === undefined) return undefined;
@@ -88,6 +111,13 @@ function optionalPositiveNumber(args: Record<string, unknown>, key: string): num
   return value;
 }
 
+function optionalPositiveInteger(args: Record<string, unknown>, key: string): number | undefined {
+  const value = optionalPositiveNumber(args, key);
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value)) throw new Error(`${key} must be a positive integer`);
+  return value;
+}
+
 function optionalMetadata(args: Record<string, unknown>): Record<string, unknown> | undefined {
   const value = args.metadata;
   if (value === undefined) return undefined;
@@ -95,6 +125,16 @@ function optionalMetadata(args: Record<string, unknown>): Record<string, unknown
     throw new Error("metadata must be an object");
   }
   return value as Record<string, unknown>;
+}
+
+function requiredPublicAddKind(args: Record<string, unknown>): LowLevelAddMemoryInput["kind"] {
+  const value = args.kind;
+  if (typeof value !== "string" || !PUBLIC_ADD_KINDS.has(value as MemoryKind)) {
+    throw new Error(
+      "kind must be one of: fact, preference, boundary, procedure, project, task_trajectory",
+    );
+  }
+  return value as LowLevelAddMemoryInput["kind"];
 }
 
 function optionalRole(args: Record<string, unknown>): MemoryRole {
@@ -188,6 +228,46 @@ function observeEvent(args: Record<string, unknown>): HostEvent {
   return event;
 }
 
+function addInput(args: Record<string, unknown>): LowLevelAddMemoryInput {
+  assertAllowedKeys(
+    args,
+    new Set(["profileId", "kind", "scope", "content", "confidence"]),
+    "memory.add",
+  );
+  const input: LowLevelAddMemoryInput = {
+    kind: requiredPublicAddKind(args),
+    content: requiredString(args, "content"),
+  };
+  const profileId = optionalString(args, "profileId");
+  const scope = optionalString(args, "scope");
+  const confidence = optionalPositiveNumber(args, "confidence");
+  if (confidence !== undefined && confidence > 1) {
+    throw new Error("confidence must be less than or equal to 1");
+  }
+  if (profileId !== undefined) input.profileId = profileId;
+  if (scope !== undefined) input.scope = scope;
+  if (confidence !== undefined) input.confidence = confidence;
+  return input;
+}
+
+function searchInput(args: Record<string, unknown>): LowLevelSearchInput {
+  assertAllowedKeys(
+    args,
+    new Set(["profileId", "query", "limit"]),
+    "memory.search",
+  );
+  const input: LowLevelSearchInput = {
+    purpose: "context",
+  };
+  const profileId = optionalString(args, "profileId");
+  const query = optionalString(args, "query");
+  const limit = optionalPositiveInteger(args, "limit");
+  if (profileId !== undefined) input.profileId = profileId;
+  if (query !== undefined) input.query = query;
+  if (limit !== undefined) input.limit = limit;
+  return input;
+}
+
 function prepareInput(args: Record<string, unknown>): PrepareTurnInput {
   if (args.includeSensitive !== undefined) {
     throw new Error("memory.prepare_context does not allow includeSensitive over MCP");
@@ -262,6 +342,20 @@ function memoryTextIsRestricted(content: string): boolean {
   return classifySensitivity(content) !== "normal" || isPersonRoutedMemory(content);
 }
 
+function publicMemoryRecord(memory: MemoryRecord): Record<string, unknown> {
+  return {
+    id: memory.id,
+    profileId: memory.profileId,
+    kind: memory.kind,
+    scope: memory.scope,
+    content: memory.content,
+    status: memory.status,
+    confidence: memory.confidence,
+    createdAt: memory.createdAt,
+    updatedAt: memory.updatedAt,
+  };
+}
+
 function ok(structuredContent: Record<string, unknown>): MemoryMcpToolResult {
   return {
     content: [{ type: "text", text: JSON.stringify(structuredContent, null, 2) }],
@@ -288,6 +382,16 @@ export function createMemoryMcpServer(memory: MemoryOS): MemoryMcpServer {
         throw new Error(`Unknown gmOS MCP tool: ${name}`);
       }
       const object = objectArgs(args);
+      if (name === "memory.add") {
+        return ok({ ok: true, memory: publicMemoryRecord(await memory.add(addInput(object))) });
+      }
+      if (name === "memory.search") {
+        const memories = await memory.search(searchInput(object));
+        return ok({
+          ok: true,
+          memories: memories.map(publicMemoryRecord),
+        });
+      }
       if (name === "memory.observe") {
         await memory.observe(observeEvent(object));
         return ok({ ok: true });
