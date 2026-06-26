@@ -9,7 +9,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import Database from "better-sqlite3";
 
-import { createMemoryOS, type MemoryStore } from "../src/index.js";
+import {
+  createMemoryOS,
+  createOpenAICompatibleExtractor,
+  type MemoryStore,
+} from "../src/index.js";
 import {
   renderHostCompatibilityGymMarkdown,
   renderExternalMemoryBenchmarkMarkdown,
@@ -706,6 +710,120 @@ const temporalReconstruction = await temporalMemory.reconstructContext({
 assert.match(temporalReconstruction.contextBlock, /ActiveOwner/);
 assert.doesNotMatch(temporalReconstruction.contextBlock, /ExpiredOwner/);
 assert.doesNotMatch(temporalReconstruction.contextBlock, /FutureOwner/);
+
+let llmExtractorRequest: {
+  url?: string;
+  headers?: Record<string, string>;
+  body?: Record<string, unknown>;
+} = {};
+const llmExtractorStore = createSqliteMemoryStore({
+  path: path.join(tmp, "llm-extractor.db"),
+});
+const llmExtractorMemory = createMemoryOS({
+  profileId: "llm_extractor",
+  store: llmExtractorStore,
+  extractor: createOpenAICompatibleExtractor({
+    name: "fixture-openai-compatible-extractor",
+    model: "fixture-memory-model",
+    baseUrl: "https://memory-model.invalid/v1",
+    apiKey: "test-key",
+    headers: { "x-provider-fixture": "enabled" },
+    timeoutMs: 5000,
+    fetch: async (url, init) => {
+      llmExtractorRequest = {
+        url: String(url),
+        headers: init?.headers as Record<string, string>,
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+      };
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () =>
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    memories: [
+                      {
+                        kind: "preference",
+                        content: "LLM extractor says the user prefers risk-first summaries.",
+                        confidence: 0.92,
+                        predicate: "user.preference",
+                        actionPolicyKind: "prefer",
+                      },
+                      {
+                        kind: "project",
+                        subject: "Project Mira",
+                        content: "Mira project current blocker is rollout audit.",
+                        confidence: 0.89,
+                        predicate: "project.state",
+                        cardinality: "single",
+                      },
+                      {
+                        kind: "person",
+                        content: "PERSON: Alice: Alice likes chamomile.",
+                        confidence: 0.99,
+                      },
+                      {
+                        kind: "fact",
+                        content: "api key sk-llmextractorsecret1234567890",
+                        confidence: 0.99,
+                      },
+                      {
+                        kind: "unknown",
+                        content: "invalid kind should be ignored",
+                        confidence: 0.99,
+                      },
+                    ],
+                  }),
+                },
+              },
+            ],
+          }),
+      };
+    },
+  }),
+});
+await llmExtractorMemory.observe({
+  type: "conversation.message",
+  profileId: "llm_extractor",
+  role: "user",
+  content: "我喜欢风险优先摘要；Mira 项目当前卡在 rollout audit。",
+  metadata: { internalTrace: "sk-metadatashouldnotleave1234567890" },
+});
+assert.equal(llmExtractorRequest.url, "https://memory-model.invalid/v1/chat/completions");
+assert.equal(llmExtractorRequest.headers?.authorization, "Bearer test-key");
+assert.equal(llmExtractorRequest.headers?.["x-provider-fixture"], "enabled");
+assert.equal(llmExtractorRequest.body?.model, "fixture-memory-model");
+assert.deepEqual(llmExtractorRequest.body?.response_format, { type: "json_object" });
+assert.equal(JSON.stringify(llmExtractorRequest.body).includes("sk-metadatashouldnotleave"), false);
+const llmPreference = await llmExtractorMemory.search({
+  profileId: "llm_extractor",
+  query: "risk-first summaries",
+  limit: 5,
+});
+assert.equal(llmPreference.some((entry) => entry.content.includes("risk-first summaries")), true);
+assert.equal(
+  llmPreference.some(
+    (entry) =>
+      entry.metadata.extractionSource === "custom" &&
+      entry.metadata.extractorName === "fixture-openai-compatible-extractor" &&
+      entry.metadata.llmExtractorModel === "fixture-memory-model",
+  ),
+  true,
+);
+const llmProject = await llmExtractorMemory.reconstructContext({
+  profileId: "llm_extractor",
+  query: "Mira project current blocker",
+  maxSteps: 4,
+  maxBranch: 6,
+});
+assert.match(llmProject.contextBlock, /rollout audit/);
+assert.doesNotMatch(llmProject.contextBlock, /sk-llmextractorsecret/);
+assert.doesNotMatch(llmProject.contextBlock, /Alice likes chamomile/);
+await llmExtractorMemory.close();
 
 const suppressRulesStore = createSqliteMemoryStore({ path: path.join(tmp, "suppress-rules.db") });
 const suppressRulesMemory = createMemoryOS({

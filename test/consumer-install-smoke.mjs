@@ -381,10 +381,12 @@ try {
     `
       import {
         createMemoryOS,
+        createOpenAICompatibleExtractor,
         type MemoryExtractionCandidate,
         type MemoryExtractor,
         type MemoryRecord,
         type MemoryStore,
+        type OpenAICompatibleExtractorOptions,
         type RepairSearchIndexResult,
         type SearchIndexStatus,
       } from "@ghast/memory";
@@ -469,6 +471,41 @@ try {
       });
       if (typedExtractorMatches.length !== 1) throw new Error("typed extractor failed");
       await extractorMemory.close();
+      const openAiExtractorOptions: OpenAICompatibleExtractorOptions = {
+        model: "consumer-fixture-model",
+        baseUrl: "https://memory-model.invalid/v1",
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          text: async () => JSON.stringify({ choices: [{ message: { content: "{\\"memories\\":[]}" } }] }),
+        }),
+      };
+      const openAiExtractor: MemoryExtractor = createOpenAICompatibleExtractor(openAiExtractorOptions);
+      const emptyExtraction = await (typeof openAiExtractor === "function"
+        ? openAiExtractor
+        : openAiExtractor.extract)({
+        profileId: "consumer-types",
+        event: {
+          type: "conversation.message",
+          profileId: "consumer-types",
+          role: "user",
+          content: "typed openai compatible extraction",
+        },
+        evidence: {
+          id: "evidence_consumer",
+          eventKey: "consumer",
+          profileId: "consumer-types",
+          sourceType: "consumer",
+          content: "typed openai compatible extraction",
+          sensitivity: "normal",
+          eligibleForLongTermMemory: true,
+          payload: {},
+          createdAt: new Date().toISOString(),
+        },
+        ruleCandidates: [],
+      });
+      if (!Array.isArray(emptyExtraction)) throw new Error("typed openai-compatible extractor failed");
       await memory.add({
         profileId: "consumer-types",
         kind: "preference",

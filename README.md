@@ -273,6 +273,30 @@ returning `null` or throwing falls back to the built-in rules by default. Use
 `createMemoryOS({ extraction: { fallbackToRules: false } })` when a host wants
 custom extraction failure to produce no memory instead of rule fallback.
 
+For OpenAI-compatible providers, gmOS includes an optional structured extractor
+factory. It is never enabled by default and the SDK never stores provider keys:
+
+```ts
+import { createOpenAICompatibleExtractor } from "@ghast/memory";
+
+const memory = createMemoryOS({
+  profileId: "local-user",
+  store,
+  extractor: createOpenAICompatibleExtractor({
+    model: "deepseek-v4-pro",
+    baseUrl: "https://api.deepseek.com/v1",
+    apiKey: process.env.DEEPSEEK_API_KEY,
+  }),
+});
+```
+
+The extractor calls `/chat/completions`, requests JSON output, parses
+`{"memories":[...]}`, and then sends candidates through the same gmOS write-path
+guards as every other extractor: incognito events are skipped before extraction,
+secret-like and PERSON-routed candidates are rejected, confidence is bounded,
+and rule fallback is used when the provider call fails unless disabled. Event
+metadata is not sent to the provider unless `includeEventMetadata: true` is set.
+
 Use `cardinality: "single"` only for current-state beliefs where one active
 value should replace the previous one, such as a project's current owner,
 status, or next step. gmOS first resolves the subject into a canonical entity
