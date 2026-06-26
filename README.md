@@ -112,6 +112,8 @@ node dist/cli/gmos.js gym scale --sizes 100,1000
 node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --require-convergence
 node dist/cli/gmos.js gym external --input-file ./longmemeval_s_cleaned.json --dataset-format longmemeval --format markdown
 node dist/cli/gmos.js gym external --input-file ./locomo10.json --dataset-format locomo --format markdown
+node dist/cli/gmos.js gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
+node dist/cli/gmos.js gym statebench write-agent --output-file ./STATE-Bench/agents/gmos_memory_agent.py
 node dist/cli/gmos.js gym gate --generated-seeds 3 --scale-sizes 100,1000 --format json
 node dist/cli/gmos.js gym host --hosts ghast,mcp,mock_l3,search_only --format markdown
 node dist/cli/gmos.js gym host --hosts ghast --actual-report ./ghast-memory-status.json --format markdown
@@ -126,6 +128,7 @@ node dist/cli/gmos.js gate --generated-seeds 3 --scale-sizes 100,1000 --hosts gh
 node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3 --format json
 node dist/cli/gmos.js gym scale --sizes 100,1000 --threshold-p95-ms 250 --format json
 node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format json --require-convergence
+node dist/cli/gmos.js gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
 node dist/cli/gmos.js repair --db ./gmos.db --search-index
 node dist/cli/gmos.js repair --db ./gmos.db --associations
 npm pack --dry-run
@@ -167,6 +170,22 @@ and category-5 `adversarial_answer` as deterministic scoring targets. Adapter
 code does not write answer labels, evidence ids, category labels, or
 `has_answer` labels into memory; those fields are reserved for scoring and
 traceability.
+
+`gym statebench` is a protocol bridge for the STATE-Bench Agent Learning Track,
+not a replacement for the official runner. `build-learnings` reads only
+`datasets/train_task_trajectories/<domain>` style JSON files, extracts compact
+procedural learnings from prior successful tool-call trajectories, and writes a
+`gmos.state_bench_learnings.v1` artifact. It does not read held-out test tasks,
+judge labels, or simulator state. By default the builder refuses paths that do
+not end in `datasets/train_task_trajectories/<domain>`; `--allow-non-train-input`
+is intended only for isolated fixtures and local smoke tests. `write-agent`
+writes a Python
+`GmosMemoryAgent(StateBenchAgent)` hook that implements the official
+`retrieve_learnings(query, top_k=3) -> list[str]` interface and refuses to
+overwrite existing files unless `--force` is passed. Officially
+comparable STATE-Bench numbers still require running the unchanged
+STATE-Bench protocol, fixed evaluator/simulator setup, and
+`--retrieve-learnings-top-k 3` inside a STATE-Bench checkout.
 
 This adapter targets the original/cleaned LongMemEval schema, not the newer
 LongMemEval-V2 trajectory/haystack schema. It is deterministic context and

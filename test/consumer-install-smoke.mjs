@@ -427,11 +427,14 @@ try {
       } from "@ghast/memory/diagnostics";
       import { createEvolutionControlPlane } from "@ghast/memory/evolution";
       import {
+        stateBenchAgentPythonTemplate,
+        buildStateBenchLearnings,
         runExternalMemoryBenchmark,
         parseExternalMemoryBenchmarkDataset,
         runHostCompatibilityGym,
         runMemoryGym,
         runMemoryReleaseGate,
+        type BuildStateBenchLearningsOptions,
         type ExternalMemoryBenchmarkDatasetAdapter,
         type ExternalMemoryBenchmarkDatasetFormat,
         type ExternalMemoryBenchmarkResult,
@@ -637,6 +640,18 @@ try {
       }]), { adapter: adapterName });
       if (parsedExternalDataset.datasetFormat !== adapterFormat) {
         throw new Error("typed external adapter format failed");
+      }
+      const stateBenchOptions: BuildStateBenchLearningsOptions = {
+        domain: "travel",
+        inputDir: ".",
+        allowNonTrainInput: true,
+      };
+      void stateBenchOptions;
+      if (!stateBenchAgentPythonTemplate().includes("class GmosMemoryAgent")) {
+        throw new Error("typed statebench agent template failed");
+      }
+      if (typeof buildStateBenchLearnings !== "function") {
+        throw new Error("typed statebench learnings builder failed");
       }
       const hostAdapter: HostAdapter = createPresetHostAdapter("ghast");
       const hostCompatibility: HostCompatibilityReport = hostAdapter.compatibility;

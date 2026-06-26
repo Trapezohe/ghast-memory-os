@@ -21,12 +21,14 @@ import {
   renderMemoryScaleMarkdown,
   runHostCompatibilityGym,
   hashExternalMemoryBenchmarkInput,
+  buildStateBenchLearnings,
   parseExternalMemoryBenchmarkDataset,
   parseExternalMemoryBenchmarkJsonl,
   runExternalMemoryBenchmark,
   runMemoryGym,
   runMemoryReleaseGate,
   runMemoryScaleBenchmark,
+  stateBenchAgentPythonTemplate,
 } from "../gym/index.js";
 import {
   createPresetHostAdapter,
@@ -111,6 +113,8 @@ Usage:
   gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --require-convergence
   gmos gym external --input-file ./longmemeval_s_cleaned.json --dataset-format longmemeval --format markdown
   gmos gym external --input-file ./locomo10.json --dataset-format locomo --format markdown
+  gmos gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
+  gmos gym statebench write-agent --output-file ./STATE-Bench/agents/gmos_memory_agent.py
   gmos gym gate --generated-seeds 3 --scale-sizes 100,1000 --format json
   gmos gym host --hosts ghast,mcp,mock_l3,search_only --actual-report ./host-status.json --format markdown
 `);
@@ -457,6 +461,41 @@ async function main(): Promise<void> {
     printReport(report, renderMemoryScaleMarkdown(report));
     if (!report.pass) process.exitCode = 1;
     return;
+  }
+
+  if (command === "gym" && subcommand === "statebench") {
+    const action = process.argv[4];
+    if (action === "build-learnings") {
+      const domain = strictOptionValue("--domain");
+      if (!domain) throw new Error("gmos gym statebench build-learnings requires --domain");
+      const inputDir = value(
+        "--input-dir",
+        path.join("datasets", "train_task_trajectories", domain),
+      )!;
+      writeJsonOutput(
+        buildStateBenchLearnings({
+          domain,
+          inputDir,
+          maxContentChars: positiveIntegerOption("--max-content-chars", 520),
+          maxItems: positiveIntegerOption("--max-items", 1000000),
+          allowNonTrainInput: has("--allow-non-train-input"),
+        }),
+      );
+      return;
+    }
+    if (action === "write-agent") {
+      const outputFile = strictOptionValue("--output-file");
+      if (!outputFile) throw new Error("gmos gym statebench write-agent requires --output-file");
+      const resolved = path.resolve(process.cwd(), outputFile);
+      if (existsSync(resolved) && !has("--force")) {
+        throw new Error("gmos gym statebench write-agent refuses to overwrite; pass --force to replace");
+      }
+      mkdirSync(path.dirname(resolved), { recursive: true });
+      writeFileSync(resolved, stateBenchAgentPythonTemplate());
+      console.log(JSON.stringify({ ok: true, outputFile: resolved }, null, 2));
+      return;
+    }
+    throw new Error("gmos gym statebench action must be build-learnings or write-agent");
   }
 
   if (command === "gym" && subcommand === "external") {

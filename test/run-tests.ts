@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -20,6 +20,7 @@ import {
   renderMemoryGymMarkdown,
   renderMemoryReleaseGateMarkdown,
   renderMemoryScaleMarkdown,
+  buildStateBenchLearnings,
   hashExternalMemoryBenchmarkInput,
   parseExternalMemoryBenchmarkDataset,
   parseExternalMemoryBenchmarkJsonl,
@@ -30,6 +31,7 @@ import {
   runMemoryGym,
   runMemoryReleaseGate,
   runMemoryScaleBenchmark,
+  stateBenchAgentPythonTemplate,
 } from "../src/gym/index.js";
 import {
   createSqliteMemoryStore,
@@ -5857,6 +5859,103 @@ assert.equal(locomoBenchmark.datasetFormat, "locomo.json");
 assert.equal(locomoBenchmark.runManifest.dataset.format, "locomo.json");
 assert.deepEqual(locomoBenchmark.cases[0]?.expectedAnyMatched, ["先核证据链"]);
 assert.deepEqual(locomoBenchmark.cases[1]?.expectedAnyMatched, ["2022"]);
+const stateBenchTrainDir = path.join(tmp, "statebench-train", "travel");
+mkdirSync(stateBenchTrainDir, { recursive: true });
+writeFileSync(
+  path.join(stateBenchTrainDir, "001-booking.json"),
+  JSON.stringify({
+    conversation: [
+      { role: "system", content: "synthetic state bench system prompt" },
+      {
+        role: "user",
+        content: "sk-statebenchusersecret1234567890 Please book a refundable flight using points.",
+      },
+      {
+        role: "assistant",
+        content: "I will check the user's account and available flights.",
+        tool_calls: [
+          {
+            name: "get_user_details",
+            arguments: { user_id: "user_001" },
+            result: { loyalty_points: 50000, secret: "sk-statebenchresultsecret1234567890" },
+          },
+          {
+            name: "search_flights",
+            arguments: { origin: "JFK", destination: "SFO" },
+            result: { flights: [{ flight_id: "DL100" }] },
+          },
+          {
+            name: "book_flight",
+            arguments: { confirm: false },
+            result: { preview: true },
+          },
+          {
+            name: "book_flight",
+            arguments: { confirm: true },
+            result: { booking_id: "booking_001" },
+          },
+        ],
+      },
+    ],
+  }),
+);
+writeFileSync(
+  path.join(stateBenchTrainDir, "002-no-tools.json"),
+  JSON.stringify({
+    conversation: [
+      { role: "user", content: "No tools here." },
+      { role: "assistant", content: "No reusable procedure." },
+    ],
+  }),
+);
+writeFileSync(path.join(stateBenchTrainDir, "003-invalid.json"), JSON.stringify([]));
+const stateBenchArtifact = buildStateBenchLearnings({
+  domain: "travel",
+  inputDir: stateBenchTrainDir,
+  maxItems: 10,
+  allowNonTrainInput: true,
+});
+const stateBenchArtifactAgain = buildStateBenchLearnings({
+  domain: "travel",
+  inputDir: stateBenchTrainDir,
+  maxItems: 10,
+  allowNonTrainInput: true,
+});
+assert.deepEqual(stateBenchArtifactAgain, stateBenchArtifact);
+assert.equal(stateBenchArtifact.schema, "gmos.state_bench_learnings.v1");
+assert.equal(stateBenchArtifact.framework, "state-bench-agent-learning-track");
+assert.deepEqual(stateBenchArtifact.source, {
+  protocol: "state-bench-agent-learning-track",
+  input: "datasets/train_task_trajectories",
+  domain: "travel",
+});
+assert.equal(stateBenchArtifact.itemCount, 1);
+assert.equal(stateBenchArtifact.learnings[0]?.domain, "travel");
+assert.equal(stateBenchArtifact.learnings[0]?.queryHint, "001 booking");
+assert.match(stateBenchArtifact.learnings[0]?.content ?? "", /get_user_details -> search_flights -> book_flight\(preview\) -> book_flight\(confirmed\)/);
+assert.equal(JSON.stringify(stateBenchArtifact).includes("sk-statebenchresultsecret"), false);
+assert.equal(JSON.stringify(stateBenchArtifact).includes("sk-statebenchusersecret"), false);
+assert.equal(JSON.stringify(stateBenchArtifact).includes("Please book a refundable flight"), false);
+assert.equal(JSON.stringify(stateBenchArtifact).includes(stateBenchTrainDir), false);
+assert.throws(
+  () =>
+    buildStateBenchLearnings({
+      domain: "travel",
+      inputDir: stateBenchTrainDir,
+    }),
+  /datasets\/train_task_trajectories/,
+);
+assert.equal(
+  stateBenchArtifact.warnings.some((warning) => warning.includes("skipped_no_tool_calls")),
+  true,
+);
+assert.equal(
+  stateBenchArtifact.warnings.some((warning) => warning === "skipped_invalid_json:003-invalid.json:invalid_trajectory"),
+  true,
+);
+const stateBenchAgentTemplate = stateBenchAgentPythonTemplate();
+assert.match(stateBenchAgentTemplate, /class GmosMemoryAgent\(StateBenchAgent\)/);
+assert.match(stateBenchAgentTemplate, /def retrieve_learnings/);
 const externalMarkdown = renderExternalMemoryBenchmarkMarkdown(externalBenchmarkWithManifest);
 assert.match(externalMarkdown, /External Long-Memory QA/);
 assert.match(externalMarkdown, /Run Manifest/);
@@ -6274,6 +6373,91 @@ assert.equal(cliLocomoJson.pass, true);
 assert.equal(cliLocomoJson.datasetFormat, "locomo.json");
 assert.equal(cliLocomoJson.runManifest?.dataset?.format, "locomo.json");
 assert.equal(cliLocomoJson.runManifest?.dataset?.id, path.basename(locomoFixtureFile));
+const stateBenchArtifactFile = path.join(tmp, "statebench-learnings.json");
+const cliStateBenchBuild = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "statebench",
+    "build-learnings",
+    "--domain",
+    "travel",
+    "--input-dir",
+    stateBenchTrainDir,
+    "--allow-non-train-input",
+    "--output-file",
+    stateBenchArtifactFile,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliStateBenchBuild.status, 0, cliStateBenchBuild.stderr);
+assert.equal(existsSync(stateBenchArtifactFile), true);
+const cliStateBenchArtifact = JSON.parse(readFileSync(stateBenchArtifactFile, "utf8")) as {
+  schema?: string;
+  itemCount?: number;
+  learnings?: Array<{ content?: string }>;
+};
+assert.equal(cliStateBenchArtifact.schema, "gmos.state_bench_learnings.v1");
+assert.equal(cliStateBenchArtifact.itemCount, 1);
+assert.match(cliStateBenchArtifact.learnings?.[0]?.content ?? "", /book_flight\(confirmed\)/);
+assert.equal(JSON.stringify(cliStateBenchArtifact).includes("Please book a refundable flight"), false);
+const cliStateBenchNonTrainFail = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "statebench",
+    "build-learnings",
+    "--domain",
+    "travel",
+    "--input-dir",
+    stateBenchTrainDir,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliStateBenchNonTrainFail.status, 0);
+assert.match(cliStateBenchNonTrainFail.stderr, /datasets\/train_task_trajectories/);
+const stateBenchAgentFile = path.join(tmp, "gmos_memory_agent.py");
+const cliStateBenchAgent = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "statebench",
+    "write-agent",
+    "--output-file",
+    stateBenchAgentFile,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliStateBenchAgent.status, 0, cliStateBenchAgent.stderr);
+const stateBenchAgentPython = readFileSync(stateBenchAgentFile, "utf8");
+assert.match(stateBenchAgentPython, /class GmosMemoryAgent\(StateBenchAgent\)/);
+assert.match(stateBenchAgentPython, /f"\{base_url\}\/search"/);
+assert.match(stateBenchAgentPython, /payload\.get\("memories"\)/);
+const cliStateBenchAgentOverwrite = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "statebench",
+    "write-agent",
+    "--output-file",
+    stateBenchAgentFile,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliStateBenchAgentOverwrite.status, 0);
+assert.match(cliStateBenchAgentOverwrite.stderr, /refuses to overwrite/);
 const cliExternalInvalidDatasetFormat = spawnSync(
   process.execPath,
   [
