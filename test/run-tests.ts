@@ -584,6 +584,64 @@ const sharedSourceReconstruction = await sharedSourceMemory.reconstructContext({
 });
 assert.match(sharedSourceReconstruction.contextBlock, /SharedOwner/);
 
+const temporalStore = createSqliteMemoryStore({ path: path.join(tmp, "temporal-validity.db") });
+const temporalMemory = createMemoryOS({
+  profileId: "temporal",
+  store: temporalStore,
+  extractor: () => [],
+});
+const expiredTemporalMemory = await temporalMemory.add({
+  profileId: "temporal",
+  kind: "project",
+  content: "Temporal window says Atlas owner is ExpiredOwner.",
+  confidence: 0.9,
+  metadata: { validTo: "2000-01-01T00:00:00.000Z" },
+});
+const futureTemporalMemory = await temporalMemory.add({
+  profileId: "temporal",
+  kind: "project",
+  content: "Temporal window says Atlas owner is FutureOwner.",
+  confidence: 0.9,
+  metadata: { validFrom: "2999-01-01T00:00:00.000Z" },
+});
+const activeTemporalMemory = await temporalMemory.add({
+  profileId: "temporal",
+  kind: "project",
+  content: "Temporal window says Atlas owner is ActiveOwner.",
+  confidence: 0.9,
+  metadata: {
+    validFrom: "2000-01-01T00:00:00.000Z",
+    validTo: "2999-01-01T00:00:00.000Z",
+  },
+});
+const contextTemporalSearch = await temporalMemory.search({
+  profileId: "temporal",
+  query: "Temporal window Atlas owner",
+  purpose: "context",
+  limit: 10,
+});
+assert.equal(contextTemporalSearch.some((entry) => entry.id === activeTemporalMemory.id), true);
+assert.equal(contextTemporalSearch.some((entry) => entry.id === expiredTemporalMemory.id), false);
+assert.equal(contextTemporalSearch.some((entry) => entry.id === futureTemporalMemory.id), false);
+const manageTemporalSearch = await temporalMemory.search({
+  profileId: "temporal",
+  query: "Temporal window Atlas owner",
+  purpose: "manage",
+  limit: 10,
+});
+assert.equal(manageTemporalSearch.some((entry) => entry.id === expiredTemporalMemory.id), true);
+assert.equal(manageTemporalSearch.some((entry) => entry.id === futureTemporalMemory.id), true);
+const temporalReconstruction = await temporalMemory.reconstructContext({
+  profileId: "temporal",
+  query: "Temporal window Atlas owner",
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.match(temporalReconstruction.contextBlock, /ActiveOwner/);
+assert.doesNotMatch(temporalReconstruction.contextBlock, /ExpiredOwner/);
+assert.doesNotMatch(temporalReconstruction.contextBlock, /FutureOwner/);
+
 const suppressRulesStore = createSqliteMemoryStore({ path: path.join(tmp, "suppress-rules.db") });
 const suppressRulesMemory = createMemoryOS({
   profileId: "suppress",

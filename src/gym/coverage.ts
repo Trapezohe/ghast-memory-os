@@ -113,11 +113,12 @@ export function memoryStackCoverage(result: MemoryGymResult): MemoryGymCoverageR
             result.hardGates.active_reconstruction_intent_rerank &&
             result.hardGates.reconstruction_read_path_side_effects &&
             result.hardGates.prepare_turn_reconstruction_shadow &&
-            result.hardGates.world_belief_single_cardinality_supersession,
+            result.hardGates.world_belief_single_cardinality_supersession &&
+            result.hardGates.temporal_validity_window_context_filter,
         ),
       ),
       evidence:
-        "reconstructContext follows association paths, reranks noisy branches by intent, respects current world belief state, and does not replace main context",
+        "reconstructContext follows association paths, reranks noisy branches by intent, respects current world belief and temporal validity state, and does not replace main context",
     },
     {
       layer: "MCP / Host",

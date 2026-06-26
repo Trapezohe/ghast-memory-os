@@ -834,6 +834,30 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     sourceMemoryId: activeCurrentStateSourceMemory.id,
     cardinality: "single",
   });
+  await memory.add({
+    profileId: "gym_reconstruct",
+    kind: "project",
+    content: "Atlas temporal validity says ExpiredTemporalOwner is active.",
+    confidence: 0.88,
+    metadata: { validTo: "2000-01-01T00:00:00.000Z" },
+  });
+  await memory.add({
+    profileId: "gym_reconstruct",
+    kind: "project",
+    content: "Atlas temporal validity says FutureTemporalOwner is active.",
+    confidence: 0.88,
+    metadata: { validFrom: "2999-01-01T00:00:00.000Z" },
+  });
+  await memory.add({
+    profileId: "gym_reconstruct",
+    kind: "project",
+    content: "Atlas temporal validity says ActiveTemporalOwner is active.",
+    confidence: 0.92,
+    metadata: {
+      validFrom: "2000-01-01T00:00:00.000Z",
+      validTo: "2999-01-01T00:00:00.000Z",
+    },
+  });
   if (store.rebuildAssociations) {
     await store.rebuildAssociations({ profileId: "gym_reconstruct" });
   }
@@ -856,6 +880,19 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     maxBranch: 8,
     maxMemories: 8,
   });
+  const temporalValidityReconstruction = await memory.reconstructContext({
+    profileId: "gym_reconstruct",
+    query: "atlas temporal validity owner",
+    maxSteps: 4,
+    maxBranch: 8,
+    maxMemories: 8,
+  });
+  const temporalValiditySearch = await memory.search({
+    profileId: "gym_reconstruct",
+    query: "atlas temporal validity owner",
+    purpose: "context",
+    limit: 10,
+  });
   gate(
     result,
     "world_belief_single_cardinality_supersession",
@@ -874,6 +911,18 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "context reconstruction should suppress source memories behind superseded single-cardinality beliefs",
     "reconstruction",
   );
+  gate(
+    result,
+    "temporal_validity_window_context_filter",
+    temporalValiditySearch.some((entry) => entry.content.includes("ActiveTemporalOwner")) &&
+      !temporalValiditySearch.some((entry) => entry.content.includes("ExpiredTemporalOwner")) &&
+      !temporalValiditySearch.some((entry) => entry.content.includes("FutureTemporalOwner")) &&
+      temporalValidityReconstruction.contextBlock.includes("ActiveTemporalOwner") &&
+      !temporalValidityReconstruction.contextBlock.includes("ExpiredTemporalOwner") &&
+      !temporalValidityReconstruction.contextBlock.includes("FutureTemporalOwner"),
+    "ordinary context and reconstruction should honor memory validFrom/validTo windows",
+    "reconstruction",
+  );
   scenario(result, "active_reconstruction", "dev", [
     "active_reconstruction_multihop",
     "active_reconstruction_coverage_signal",
@@ -889,6 +938,7 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "reconstruction_secret_like_belief_exclusion",
     "world_belief_single_cardinality_supersession",
     "current_state_suppresses_superseded_source_memory",
+    "temporal_validity_window_context_filter",
   ]);
 
   await memory.recordFeedback({

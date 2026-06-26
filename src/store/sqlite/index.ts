@@ -139,6 +139,30 @@ function metadataWithRestoreMarker(input: {
   };
 }
 
+function metadataString(input: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = input[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function parseInstant(value: string | null): number | null {
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function memoryMetadataIsValidAt(metadata: Record<string, unknown>, asOfIso: string): boolean {
+  const asOf = Date.parse(asOfIso);
+  if (!Number.isFinite(asOf)) return true;
+  const validFrom = parseInstant(metadataString(metadata, ["validFrom", "valid_from"]));
+  if (validFrom !== null && validFrom > asOf) return false;
+  const validTo = parseInstant(metadataString(metadata, ["validTo", "valid_to", "expiresAt"]));
+  if (validTo !== null && validTo <= asOf) return false;
+  return true;
+}
+
 function normalizeMemory(row: Record<string, unknown>): MemoryRecord {
   return {
     id: String(row.id),
@@ -1337,16 +1361,49 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     );
   }
 
+  function temporallyInvalidMemoryIds(profileId: string, asOfIso: string): Set<string> {
+    if (!tableExists("gmos_memories")) return new Set();
+    const rows = db
+      .prepare(
+        `SELECT id, metadata_json
+         FROM gmos_memories
+         WHERE profile_id = ?
+           AND status = 'active'
+           AND (
+             json_type(metadata_json, '$.validFrom') IS NOT NULL
+             OR json_type(metadata_json, '$.valid_from') IS NOT NULL
+             OR json_type(metadata_json, '$.validTo') IS NOT NULL
+             OR json_type(metadata_json, '$.valid_to') IS NOT NULL
+             OR json_type(metadata_json, '$.expiresAt') IS NOT NULL
+           )`,
+      )
+      .all(profileId) as Array<{ id?: string | null; metadata_json?: string | null }>;
+    return new Set(
+      rows
+        .filter((row) => !memoryMetadataIsValidAt(parseJsonObject(row.metadata_json), asOfIso))
+        .map((row) => row.id)
+        .filter((memoryId): memoryId is string => Boolean(memoryId)),
+    );
+  }
+
+  function contextHiddenMemoryIds(profileId: string, asOfIso: string): Set<string> {
+    const hidden = supersededSourceMemoryIds(profileId);
+    for (const memoryId of temporallyInvalidMemoryIds(profileId, asOfIso)) {
+      hidden.add(memoryId);
+    }
+    return hidden;
+  }
+
   function searchMemories(input: MemorySearchInput): MemoryRecord[] {
     initialize();
     const query = input.query?.trim() ?? "";
     const purpose = input.purpose ?? "context";
-    const staleCurrentStateSourceIds =
-      purpose === "context" ? supersededSourceMemoryIds(input.profileId) : new Set<string>();
+    const hiddenContextMemoryIds =
+      purpose === "context" ? contextHiddenMemoryIds(input.profileId, nowIso()) : new Set<string>();
     return memoryRowsForSearch(input)
       .map(normalizeMemory)
       .filter((memory) => input.includePerson || memory.kind !== "person")
-      .filter((memory) => !staleCurrentStateSourceIds.has(memory.id))
+      .filter((memory) => !hiddenContextMemoryIds.has(memory.id))
       .filter(
         (memory) =>
           purpose !== "context" ||
@@ -1611,14 +1668,14 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   function searchAssociations(input: MemoryAssociationSearchInput): MemoryAssociationRecord[] {
     initialize();
     const query = input.query.trim();
-    const staleCurrentStateSourceIds = supersededSourceMemoryIds(input.profileId);
+    const hiddenContextMemoryIds = contextHiddenMemoryIds(input.profileId, nowIso());
     const ranked = associationRowsForSearch(input)
       .map(normalizeAssociation)
       .filter(
         (association) =>
-          !staleCurrentStateSourceIds.has(association.targetId) &&
+          !hiddenContextMemoryIds.has(association.targetId) &&
           (association.sourceMemoryId == null ||
-            !staleCurrentStateSourceIds.has(association.sourceMemoryId)),
+            !hiddenContextMemoryIds.has(association.sourceMemoryId)),
       )
       .filter((association) =>
         visibleAssociation({

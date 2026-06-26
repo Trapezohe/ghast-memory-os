@@ -190,6 +190,12 @@ cue-tag-content graph. Returned paths include `routeScore` and `routeReason` so
 a host can explain why a branch was selected. Returned stats also include
 evidence coverage and reconstruction uncertainty, giving hosts a direct signal
 for whether the reconstructed context is well grounded or should stay cautious.
+Memory metadata may carry ISO timestamp validity windows through `validFrom` /
+`validTo` (or `valid_from` / `valid_to`; `expiresAt` is accepted as an expiry
+alias). Ordinary context search and active reconstruction only use memories
+whose validity window includes the current time; `validTo` and `expiresAt` are
+treated as exclusive expiries. Management and delete searches still see
+out-of-window memories so hosts can audit, repair, or forget them explicitly.
 The first production mode is shadow-safe:
 `prepareTurn({ reconstruction: { mode: "shadow" } })` returns a separate
 `reconstruction` field without replacing the ordinary `contextBlock`.
