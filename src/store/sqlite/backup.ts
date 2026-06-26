@@ -17,6 +17,11 @@ import {
   classifySensitivity,
   payloadContainsRestrictedValue,
 } from "../../kernel/safety.js";
+import {
+  localTextCandidateFeatures,
+  localTextVector,
+  vectorContentHash,
+} from "../../kernel/local-vector.js";
 
 export type SqliteProfileBackupMode = "safe" | "full";
 export type SqliteProfileBackupConflictPolicy = "skip" | "replace" | "fail";
@@ -1129,6 +1134,54 @@ function syncRestoredMemoryFts(db: Database.Database, memoryId: string): void {
   ).run(row.id, row.profile_id, row.kind, row.scope, row.status, row.content);
 }
 
+function syncRestoredMemoryVector(db: Database.Database, memoryId: string): void {
+  if (!tableExists(db, "gmos_memory_vectors")) return;
+  db.prepare("DELETE FROM gmos_memory_vectors WHERE id = ?").run(memoryId);
+  if (tableExists(db, "gmos_memory_vector_terms")) {
+    db.prepare("DELETE FROM gmos_memory_vector_terms WHERE id = ?").run(memoryId);
+  }
+  const row = db
+    .prepare(
+      `SELECT id, profile_id, status, content, updated_at
+       FROM gmos_memories
+       WHERE id = ?`,
+    )
+    .get(memoryId) as
+    | {
+        id: string;
+        profile_id: string;
+        status: string;
+        content: string;
+        updated_at: string;
+      }
+    | undefined;
+  if (!row) return;
+  const vector = localTextVector(row.content);
+  db.prepare(
+    `INSERT INTO gmos_memory_vectors(
+      id, profile_id, status, dimensions, vector_json, content_hash, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    row.id,
+    row.profile_id,
+    row.status,
+    vector.length,
+    JSON.stringify(vector),
+    vectorContentHash(row.content),
+    row.updated_at,
+  );
+  if (tableExists(db, "gmos_memory_vector_terms")) {
+    const termStmt = db.prepare(
+      `INSERT OR IGNORE INTO gmos_memory_vector_terms(
+        id, profile_id, status, feature_key, updated_at
+      ) VALUES (?, ?, ?, ?, ?)`,
+    );
+    for (const feature of localTextCandidateFeatures(row.content)) {
+      termStmt.run(row.id, row.profile_id, row.status, feature, row.updated_at);
+    }
+  }
+}
+
 function applyChangeCount(
   result: Database.RunResult,
   inserted: SqliteProfileBackupDocument["counts"],
@@ -1278,7 +1331,10 @@ export function restoreSqliteProfileBackup(
         memory.updatedAt,
       );
       applyChangeCount(result, inserted, skipped, "memories");
-      if (result.changes > 0) syncRestoredMemoryFts(db, memory.id);
+      if (result.changes > 0) {
+        syncRestoredMemoryFts(db, memory.id);
+        syncRestoredMemoryVector(db, memory.id);
+      }
     }
 
     const beliefStmt = db.prepare(

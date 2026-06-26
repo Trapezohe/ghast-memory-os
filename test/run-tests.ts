@@ -153,7 +153,7 @@ function rawHttpRequest(port: number, payload: string): Promise<string> {
 const store: SqliteMemoryStore = createSqliteMemoryStore({ path: dbPath });
 const memory = createMemoryOS({ profileId: "test", store });
 await store.initialize();
-assert.equal(await store.schemaVersion(), 4);
+assert.equal(await store.schemaVersion(), 5);
 
 const legacyDbPath = path.join(tmp, "legacy-no-ledger.db");
 const legacyHandle = new Database(legacyDbPath);
@@ -185,7 +185,7 @@ legacyHandle.exec(`
 `);
 const legacyStore = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
 await legacyStore.initialize();
-assert.equal(await legacyStore.schemaVersion(), 4);
+assert.equal(await legacyStore.schemaVersion(), 5);
 assert.equal(
   (
     legacyHandle
@@ -231,9 +231,24 @@ assert.ok(
       .get() as { count: number }
   ).count > 0,
 );
+assert.equal(
+  (
+    legacyHandle
+      .prepare("SELECT COUNT(*) AS count FROM gmos_memory_vectors WHERE id = 'legacy_memory_1'")
+      .get() as { count: number }
+  ).count,
+  1,
+);
+assert.ok(
+  (
+    legacyHandle
+      .prepare("SELECT COUNT(*) AS count FROM gmos_memory_vector_terms WHERE id = 'legacy_memory_1'")
+      .get() as { count: number }
+  ).count > 0,
+);
 const legacyStoreReopen = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
 await legacyStoreReopen.initialize();
-assert.equal(await legacyStoreReopen.schemaVersion(), 4);
+assert.equal(await legacyStoreReopen.schemaVersion(), 5);
 assert.equal(
   (
     legacyHandle
@@ -281,11 +296,26 @@ legacyV2Handle.exec(`
 `);
 const legacyV2Store = createSqliteMemoryStore({ path: legacyV2DbPath, handle: legacyV2Handle });
 await legacyV2Store.initialize();
-assert.equal(await legacyV2Store.schemaVersion(), 4);
+assert.equal(await legacyV2Store.schemaVersion(), 5);
 assert.ok(
   (
     legacyV2Handle
       .prepare("SELECT COUNT(*) AS count FROM gmos_associations WHERE target_id = 'legacy_v2_memory_1'")
+      .get() as { count: number }
+  ).count > 0,
+);
+assert.equal(
+  (
+    legacyV2Handle
+      .prepare("SELECT COUNT(*) AS count FROM gmos_memory_vectors WHERE id = 'legacy_v2_memory_1'")
+      .get() as { count: number }
+  ).count,
+  1,
+);
+assert.ok(
+  (
+    legacyV2Handle
+      .prepare("SELECT COUNT(*) AS count FROM gmos_memory_vector_terms WHERE id = 'legacy_v2_memory_1'")
       .get() as { count: number }
   ).count > 0,
 );
@@ -600,6 +630,85 @@ const legacyProjectState = await extractorMemory.reconstructContext({
 });
 assert.match(legacyProjectState.contextBlock, /beta from historical multi belief/);
 assert.doesNotMatch(legacyProjectState.contextBlock, /alpha from historical multi belief/);
+
+const fallbackOnlyMemory = createMemoryOS({
+  profileId: "fallback-only",
+  store: {
+    initialize() {},
+    close() {},
+    recordEvidence() {
+      throw new Error("fallback-only store does not record evidence");
+    },
+    addMemory() {
+      throw new Error("fallback-only store does not add memories");
+    },
+    addWorldBelief() {
+      throw new Error("fallback-only store does not add beliefs");
+    },
+    searchMemories() {
+      return [
+        {
+          id: "memory_fallback_false_positive",
+          profileId: "fallback-only",
+          kind: "fact",
+          scope: "global",
+          content: "Orbits correlated planning notes belong to a marketing campaign.",
+          sensitivity: "normal",
+          status: "active",
+          confidence: 0.95,
+          metadata: {},
+          createdAt: "2026-06-25T00:00:00.000Z",
+          updatedAt: "2026-06-25T00:00:00.000Z",
+        },
+      ];
+    },
+    getMemoryById(_profileId: string, id: string) {
+      return id === "memory_fallback_false_positive"
+        ? {
+            id: "memory_fallback_false_positive",
+            profileId: "fallback-only",
+            kind: "fact",
+            scope: "global",
+            content: "Orbits correlated planning notes belong to a marketing campaign.",
+            sensitivity: "normal",
+            status: "active",
+            confidence: 0.95,
+            metadata: {},
+            createdAt: "2026-06-25T00:00:00.000Z",
+            updatedAt: "2026-06-25T00:00:00.000Z",
+          }
+        : null;
+    },
+    listEvidenceForMemory() {
+      return [];
+    },
+    forget() {
+      return { archivedMemoryIds: [] };
+    },
+    rowCounts() {
+      return {
+        gmos_evidence_events: 0,
+        gmos_memories: 1,
+        gmos_world_beliefs: 0,
+        gmos_failure_events: 0,
+        gmos_task_trajectories: 0,
+        gmos_associations: 0,
+        gmos_memory_vectors: 0,
+        gmos_memory_vector_terms: 0,
+      };
+    },
+  } satisfies MemoryStore,
+});
+const fallbackOnlyReconstruction = await fallbackOnlyMemory.reconstructContext({
+  profileId: "fallback-only",
+  query: "Completely unrelated Neptune orbital password?",
+  maxMemories: 1,
+});
+assert.equal(fallbackOnlyReconstruction.contextBlock.includes("marketing campaign"), false);
+assert.equal(fallbackOnlyReconstruction.stats.uncertainty?.level, "high");
+assert.ok((fallbackOnlyReconstruction.stats.evidenceCoverage?.coverageRate ?? 1) < 0.5);
+assert.equal(fallbackOnlyReconstruction.stats.evidenceConvergence?.reached, false);
+await fallbackOnlyMemory.close();
 
 const sharedSourceStore = createSqliteMemoryStore({ path: path.join(tmp, "shared-source.db") });
 const sharedSourceMemory = createMemoryOS({
@@ -1011,6 +1120,40 @@ const restoredDeepHistoryMatches = await memory.search({
   limit: 5,
 });
 assert.equal(restoredDeepHistoryMatches.some((entry) => entry.id === deepHistoryMemory.id), true);
+const fuzzyVectorMemory = await memory.add({
+  profileId: "fts-history",
+  kind: "project",
+  content: "Aurora launch checklist requires cascade snapshot validation.",
+  confidence: 0.9,
+});
+const fuzzyHybridMatches = await memory.search({
+  profileId: "fts-history",
+  query: "Auroa cheklist valdiation",
+  limit: 5,
+});
+assert.equal(fuzzyHybridMatches.some((entry) => entry.id === fuzzyVectorMemory.id), true);
+const fuzzyManageMatches = await memory.search({
+  profileId: "fts-history",
+  query: "Auroa cheklist valdiation",
+  purpose: "manage",
+  limit: 5,
+});
+assert.equal(fuzzyManageMatches.some((entry) => entry.id === fuzzyVectorMemory.id), false);
+const vectorOnlyFalsePositiveMemory = await memory.add({
+  profileId: "fts-history",
+  kind: "fact",
+  content: "Orbits correlated planning notes belong to a marketing campaign.",
+  confidence: 0.9,
+});
+const vectorOnlyFalsePositiveMatches = await memory.search({
+  profileId: "fts-history",
+  query: "Completely unrelated Neptune orbital password?",
+  limit: 5,
+});
+assert.equal(
+  vectorOnlyFalsePositiveMatches.some((entry) => entry.id === vectorOnlyFalsePositiveMemory.id),
+  false,
+);
 const repairDbPath = path.join(tmp, "repair-search-index.db");
 const repairStore = createSqliteMemoryStore({ path: repairDbPath });
 const repairMemory = createMemoryOS({ profileId: "repair", store: repairStore });
@@ -1023,6 +1166,9 @@ let repairStatus = await repairStore.searchIndexStatus();
 assert.equal(repairStatus.status, "ok");
 assert.equal(repairStatus.totalMemoryCount, 1);
 assert.equal(repairStatus.indexedMemoryCount, 1);
+assert.equal(repairStatus.vectorIndex?.status, "ok");
+assert.equal(repairStatus.vectorIndex?.indexedMemoryCount, 1);
+assert.equal(repairStatus.vectorIndex?.dimensions, 384);
 const corruptRepairDb = new Database(repairDbPath);
 try {
   corruptRepairDb
@@ -1045,6 +1191,83 @@ const repairedMatches = await repairMemory.search({
   query: "resilient recall",
 });
 assert.equal(repairedMatches.some((entry) => entry.id === repairFixture.id), true);
+const missingVectorRepairDb = new Database(repairDbPath);
+try {
+  missingVectorRepairDb
+    .prepare("DELETE FROM gmos_memory_vectors WHERE id = ?")
+    .run(repairFixture.id);
+} finally {
+  missingVectorRepairDb.close();
+}
+repairStatus = await repairStore.searchIndexStatus();
+assert.equal(repairStatus.status, "stale");
+assert.equal(repairStatus.vectorIndex?.status, "stale");
+assert.equal(repairStatus.vectorIndex?.missingEntryCount, 1);
+assert.equal((await repairStore.repairSearchIndex()).after.vectorIndex?.status, "ok");
+const staleVectorRepairDb = new Database(repairDbPath);
+try {
+  staleVectorRepairDb
+    .prepare("UPDATE gmos_memory_vectors SET content_hash = ?, vector_json = ? WHERE id = ?")
+    .run("stale-content-hash", "[]", repairFixture.id);
+} finally {
+  staleVectorRepairDb.close();
+}
+repairStatus = await repairStore.searchIndexStatus();
+assert.equal(repairStatus.status, "stale");
+assert.equal(repairStatus.vectorIndex?.status, "stale");
+assert.equal(repairStatus.vectorIndex?.staleEntryCount, 1);
+assert.equal((await repairStore.repairSearchIndex()).after.vectorIndex?.status, "ok");
+const malformedVectorRepairDb = new Database(repairDbPath);
+try {
+  malformedVectorRepairDb
+    .prepare("UPDATE gmos_memory_vectors SET vector_json = ? WHERE id = ?")
+    .run("[]", repairFixture.id);
+} finally {
+  malformedVectorRepairDb.close();
+}
+repairStatus = await repairStore.searchIndexStatus();
+assert.equal(repairStatus.status, "stale");
+assert.equal(repairStatus.vectorIndex?.status, "stale");
+assert.equal(repairStatus.vectorIndex?.staleEntryCount, 1);
+assert.equal((await repairStore.repairSearchIndex()).after.vectorIndex?.status, "ok");
+const missingVectorTermsRepairDb = new Database(repairDbPath);
+try {
+  missingVectorTermsRepairDb
+    .prepare("DELETE FROM gmos_memory_vector_terms WHERE id = ?")
+    .run(repairFixture.id);
+} finally {
+  missingVectorTermsRepairDb.close();
+}
+repairStatus = await repairStore.searchIndexStatus();
+assert.equal(repairStatus.status, "stale");
+assert.equal(repairStatus.vectorIndex?.status, "stale");
+assert.equal(repairStatus.vectorIndex?.missingEntryCount, 1);
+assert.equal((await repairStore.repairSearchIndex()).after.vectorIndex?.status, "ok");
+const orphanVectorRepairDb = new Database(repairDbPath);
+try {
+  orphanVectorRepairDb
+    .prepare(
+      `INSERT INTO gmos_memory_vectors(
+        id, profile_id, status, dimensions, vector_json, content_hash, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      "memory_vector_orphan",
+      "repair",
+      "active",
+      384,
+      "[0]",
+      "orphan-content-hash",
+      "2026-01-01T00:00:00.000Z",
+    );
+} finally {
+  orphanVectorRepairDb.close();
+}
+repairStatus = await repairStore.searchIndexStatus();
+assert.equal(repairStatus.status, "stale");
+assert.equal(repairStatus.vectorIndex?.status, "stale");
+assert.equal(repairStatus.vectorIndex?.orphanEntryCount, 1);
+assert.equal((await repairStore.repairSearchIndex()).after.vectorIndex?.status, "ok");
 const duplicateRepairDb = new Database(repairDbPath);
 try {
   duplicateRepairDb
@@ -2557,6 +2780,10 @@ const restoredReconstruction = await restoredMemory.reconstructContext({
 });
 assert.match(restoredReconstruction.contextBlock, /portable restores/);
 assert.ok((await restoreStore.rowCounts()).gmos_associations > 0);
+const restoreSearchIndexStatus = await restoreStore.searchIndexStatus();
+assert.equal(restoreSearchIndexStatus.status, "ok");
+assert.equal(restoreSearchIndexStatus.vectorIndex?.status, "ok");
+assert.ok((await restoreStore.rowCounts()).gmos_memory_vector_terms > 0);
 const restoredSensitiveDefault = await restoredMemory.search({
   profileId: "backup_profile_restored",
   query: "123-45-6789",
@@ -2760,7 +2987,7 @@ assert.equal(statusReport.framework, "ghast-memory-os");
 assert.equal(statusReport.package.name, packageJson.name);
 assert.equal(statusReport.package.version, packageJson.version);
 assert.equal(statusReport.storage.status, "ok");
-assert.equal(statusReport.storage.schemaVersion, 4);
+assert.equal(statusReport.storage.schemaVersion, 5);
 assert.equal(statusReport.storage.searchIndex?.status, "ok");
 assert.equal(statusReport.storage.searchIndex?.missingEntryCount, 0);
 assert.equal(statusReport.storage.rowCounts.gmos_failure_events >= testProfileFailures.length, true);
@@ -3450,7 +3677,7 @@ try {
   assert.equal(status.status, 200);
   assert.equal(
     ((status.body.report as { storage?: { schemaVersion?: number } }).storage ?? {}).schemaVersion,
-    4,
+    5,
   );
   assert.equal(status.text.includes("mcp fixture failure"), false);
   const observe = await postJson(`${httpAddress.url}/observe`, {
@@ -4959,6 +5186,25 @@ const hybridPath = hybridReconstruction.paths.find((path) =>
 assert.ok(hybridPath);
 assert.match(hybridPath.routeReason ?? "", /hybrid_(direct_memory_rrf|memory)/);
 assert.ok((hybridPath.informationGain ?? 0) > 0);
+await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "fact",
+  content: "Orbits correlated planning notes belong to a marketing campaign.",
+  confidence: 0.95,
+});
+const vectorOnlyGuardReconstruction = await reconstructionMemory.reconstructContext({
+  profileId: "recon",
+  query: "Completely unrelated Neptune orbital password?",
+  maxSteps: 1,
+  maxBranch: 1,
+  maxMemories: 1,
+});
+assert.equal(
+  vectorOnlyGuardReconstruction.contextBlock.includes("marketing campaign"),
+  false,
+);
+assert.equal(vectorOnlyGuardReconstruction.stats.uncertainty?.level, "high");
+assert.equal(vectorOnlyGuardReconstruction.stats.evidenceConvergence?.reached, false);
 const unrelatedReconstruction = await reconstructionMemory.reconstructContext({
   profileId: "recon",
   query: "Completely unrelated Neptune orbital password?",
@@ -5264,7 +5510,7 @@ const cliStatusPayload = JSON.parse(cliStatus.stdout) as {
   failureSummary?: { inspectedFailureCount?: number };
   hostCompatibility?: { level?: string };
 };
-assert.equal(cliStatusPayload.storage?.schemaVersion, 4);
+assert.equal(cliStatusPayload.storage?.schemaVersion, 5);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_memories ?? 0) > 0);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_associations ?? 0) > 0);
 assert.equal(cliStatusPayload.storage?.searchIndex?.status, "ok");
@@ -5313,7 +5559,7 @@ assert.equal(gym.roadmapResult.status, "clear");
 assert.equal(gym.runManifest.dbPathMode, "memory");
 assert.equal(gym.runManifest.package.name, packageJson.name);
 assert.equal(gym.runManifest.package.version, packageJson.version);
-assert.equal(gym.runManifest.sqliteSchemaVersion, 4);
+assert.equal(gym.runManifest.sqliteSchemaVersion, 5);
 assert.equal(gym.runManifest.git.branch, expectedGit.branch);
 assert.equal(gym.runManifest.git.sha, expectedGit.sha);
 assert.equal(gym.runManifest.git.dirty, expectedGit.dirty);
@@ -5326,7 +5572,7 @@ assert.match(renderedGym, /gmOS Memory Gym Report/);
 assert.match(renderedGym, /Coverage Matrix/);
 assert.match(renderedGym, /Run Manifest/);
 assert.match(renderedGym, /Package: @ghast\/memory@/);
-assert.match(renderedGym, /SQLite schema: 4/);
+assert.match(renderedGym, /SQLite schema: 5/);
 const externalBenchmarkJsonl = [
   JSON.stringify({
     id: "project-next-step",
@@ -5654,9 +5900,11 @@ await assert.rejects(
 const scale = await runMemoryScaleBenchmark({ sizes: [10, 50], iterations: 3 });
 assert.equal(scale.pass, true);
 assert.equal(scale.results[0]?.reconstructContext.samples, 3);
+assert.equal(scale.results[0]?.contextNoHitSearch.samples, 3);
 assert.ok((scale.results[0]?.reconstructedPathCount.p95 ?? 0) > 0);
 assert.match(renderMemoryScaleMarkdown(scale), /gmOS Memory Scale Benchmark/);
 assert.match(renderMemoryScaleMarkdown(scale), /reconstructContext/);
+assert.match(renderMemoryScaleMarkdown(scale), /contextNoHitSearch/);
 await assert.rejects(
   () => runMemoryScaleBenchmark({ sizes: [], iterations: 3 }),
   /positive integer size/,
@@ -5739,14 +5987,15 @@ for (const [host, expectedLevel] of [
     encrypted: boolean;
     schema?: { dialect?: string; version?: number };
     hostCompatibility?: { level?: string; gaps?: string[] };
-    searchIndex?: { status?: string; missingEntryCount?: number };
+    searchIndex?: { status?: string; missingEntryCount?: number; vectorIndex?: { status?: string } };
   };
   assert.equal(doctorJson.encrypted, false);
   assert.equal(doctorJson.schema?.dialect, "sqlite");
-  assert.equal(doctorJson.schema?.version, 4);
+  assert.equal(doctorJson.schema?.version, 5);
   assert.equal(doctorJson.hostCompatibility?.level, expectedLevel);
   assert.equal(doctorJson.searchIndex?.status, "ok");
   assert.equal(doctorJson.searchIndex?.missingEntryCount, 0);
+  assert.equal(doctorJson.searchIndex?.vectorIndex?.status, "ok");
   if (host === "ghast") assert.deepEqual(doctorJson.hostCompatibility?.gaps, []);
 }
 const missingEvolutionDb = path.join(tmp, "evolution-missing.db");

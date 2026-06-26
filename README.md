@@ -202,11 +202,15 @@ it is still not an external long-term agent benchmark or a proof of mature
 digital-twin capability.
 
 `doctor` and `status` include a content-free search index health summary for
-SQLite stores: indexed row count, missing FTS rows, stale rows, orphan rows, and
-duplicates. If the index drifts from the canonical `gmos_memories` table, run
-`gmos repair --db ./gmos.db --search-index` to rebuild the FTS table from the
-stored memories. Repair does not create or delete memories; it only rebuilds
-the derived search index.
+SQLite stores: indexed row count, missing FTS rows, stale rows, orphan rows,
+duplicates, and the local vector side index. Context search uses a deterministic
+local vector projection with FTS/BM25 and LIKE fallback; delete and management
+search stay lexical so fuzzy recall cannot archive the wrong memory. The vector
+index is derived from `gmos_memories`, stored in plaintext SQLite, and never
+calls a network embedding service. If the index drifts from the canonical table,
+run `gmos repair --db ./gmos.db --search-index` to rebuild both FTS and vector
+rows from the stored memories. Repair does not create or delete memories; it
+only rebuilds derived search indexes.
 
 `reconstructContext()` is the active reconstruction API. It starts from the
 current turn's cue terms, explores bounded cue-tag-content associations, fetches

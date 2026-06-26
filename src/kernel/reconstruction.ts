@@ -489,7 +489,7 @@ function pathFromDirectMemory(
   return {
     id: `hybrid:${candidate.memory.id}`,
     step,
-    cue: query,
+    cue: directMemoryCue(candidate.memory, query),
     tag: "hybrid_memory",
     targetType: "memory",
     targetId: candidate.memory.id,
@@ -502,6 +502,14 @@ function pathFromDirectMemory(
     sourceMemoryId: candidate.memory.id,
     sourceEvidenceId: candidate.memory.sourceEventId,
   };
+}
+
+function directMemoryCue(memory: MemoryRecord, query: string): string {
+  const searchable = normalizedText(`${memory.kind} ${memory.scope} ${memory.content}`);
+  for (const cue of coverageCues(query)) {
+    if (searchable.includes(normalizedText(cue))) return cue;
+  }
+  return memory.kind;
 }
 
 function addRouteSignal(path: ReconstructedEvidencePath, score: number, reason: string): void {
@@ -768,7 +776,7 @@ async function fallbackReconstruction(input: {
   const paths = memories.map((memory, index) => ({
     id: `fallback:${memory.id}`,
     step: 1,
-    cue: input.query,
+    cue: directMemoryCue(memory, input.query),
     tag: memory.kind,
     targetType: "memory" as const,
     targetId: memory.id,
@@ -779,6 +787,26 @@ async function fallbackReconstruction(input: {
     sourceMemoryId: memory.id,
     sourceEvidenceId: memory.sourceEventId,
   }));
+  const fallbackCoverage = evidenceCoverageForPaths(input.query, paths);
+  const fallbackConvergence = evidenceConvergenceForPaths({
+    coverage: fallbackCoverage,
+    memories,
+    paths,
+    intent: input.intent,
+    threshold: input.evidenceConvergenceThreshold,
+    targetMemoryCount: input.targetMemoryCount,
+    stopWhenEvidenceEnough: input.stopWhenEvidenceEnough,
+    prunedBranchCount: 0,
+    frontierRemaining: 0,
+  });
+  const safeMemories = fallbackConvergence.reached ? memories : [];
+  const safePaths = fallbackConvergence.reached ? paths : [];
+  const stopReason =
+    memories.length === 0
+      ? "no_frontier"
+      : fallbackConvergence.reached
+        ? "evidence_sufficient"
+        : "no_frontier";
   const plannerTrace: ReconstructedPlannerTrace = {
     mode: "fallback",
     intentReason: input.intent.reason,
@@ -795,34 +823,34 @@ async function fallbackReconstruction(input: {
               selectedCue: input.query,
               cueReason: "fallback_memory_search",
               exploredAssociationCount: 0,
-              selectedBranchCount: paths.length,
+              selectedBranchCount: safePaths.length,
               prunedBranchCount: 0,
               generatedCues: [],
-              branches: paths.map((path) =>
+              branches: safePaths.map((path) =>
                 traceBranchFromPath(path, "selected", "fallback_memory_search"),
               ),
             },
           ],
-    stopReason: memories.length > 0 ? "evidence_sufficient" : "no_frontier",
+    stopReason,
   };
   return composeReconstructedContext({
     profileId: input.profileId,
     query: input.query,
-    memories,
-    evidence: input.includeEvidence ? await evidenceForMemories(input.store, memories) : [],
-    paths,
+    memories: safeMemories,
+    evidence: input.includeEvidence ? await evidenceForMemories(input.store, safeMemories) : [],
+    paths: safePaths,
     intent: input.intent,
     includeEvidence: input.includeEvidence,
     contextBudgetTokens: input.contextBudgetTokens,
-    stepCount: memories.length > 0 ? 1 : 0,
+    stepCount: safePaths.length > 0 ? 1 : 0,
     exploredCueCount: 1,
     associationCount: paths.length,
-    prunedBranchCount: 0,
+    prunedBranchCount: paths.length - safePaths.length,
     frontierRemaining: 0,
     stopWhenEvidenceEnough: input.stopWhenEvidenceEnough,
     evidenceConvergenceThreshold: input.evidenceConvergenceThreshold,
     targetMemoryCount: input.targetMemoryCount,
-    stopReason: memories.length > 0 ? "evidence_sufficient" : "no_frontier",
+    stopReason,
     plannerTrace,
   });
 }

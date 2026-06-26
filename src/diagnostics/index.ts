@@ -199,6 +199,7 @@ export async function createMemoryStatusReport(
 
 export function renderMemoryStatusMarkdown(report: MemoryStatusReport): string {
   const failureRows = Object.entries(report.failureSummary.byKind);
+  const vectorIndex = report.storage.searchIndex?.vectorIndex;
   return [
     "# gmOS Status Report",
     "",
@@ -216,6 +217,9 @@ export function renderMemoryStatusMarkdown(report: MemoryStatusReport): string {
       : "",
     report.storage.searchIndex
       ? `Search index: ${report.storage.searchIndex.status} (${report.storage.searchIndex.indexedMemoryCount}/${report.storage.searchIndex.totalMemoryCount} indexed; missing=${report.storage.searchIndex.missingEntryCount}; stale=${report.storage.searchIndex.staleEntryCount}; orphan=${report.storage.searchIndex.orphanEntryCount}; duplicate=${report.storage.searchIndex.duplicateEntryCount})`
+      : "",
+    vectorIndex
+      ? `Vector index: ${vectorIndex.status} (${vectorIndex.indexedMemoryCount} indexed; missing=${vectorIndex.missingEntryCount}; stale=${vectorIndex.staleEntryCount}; orphan=${vectorIndex.orphanEntryCount}; duplicate=${vectorIndex.duplicateEntryCount}; dimensions=${vectorIndex.dimensions})`
       : "",
     "",
     "### Row Counts",

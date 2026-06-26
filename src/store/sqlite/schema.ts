@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-export const GMOS_SQLITE_SCHEMA_VERSION = 4;
+export const GMOS_SQLITE_SCHEMA_VERSION = 5;
 
 function columnExists(db: Database.Database, table: string, column: string): boolean {
   return db
@@ -164,6 +164,29 @@ export function ensureSqliteSchema(db: Database.Database): void {
         'associative_reconstruction_index',
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       );
+
+    CREATE TABLE IF NOT EXISTS gmos_memory_vectors (
+      id TEXT PRIMARY KEY,
+      profile_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      dimensions INTEGER NOT NULL,
+      vector_json TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_gmos_memory_vectors_profile_status
+      ON gmos_memory_vectors(profile_id, status, updated_at);
+
+    CREATE TABLE IF NOT EXISTS gmos_memory_vector_terms (
+      id TEXT NOT NULL,
+      profile_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      feature_key TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(id, feature_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_gmos_memory_vector_terms_lookup
+      ON gmos_memory_vector_terms(profile_id, status, feature_key, updated_at);
   `);
 
   if (!columnExists(db, "gmos_world_beliefs", "metadata_json")) {
@@ -174,6 +197,12 @@ export function ensureSqliteSchema(db: Database.Database): void {
       VALUES (
         4,
         'world_belief_entity_metadata',
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      );
+    INSERT OR IGNORE INTO gmos_schema_migrations(version, name, applied_at)
+      VALUES (
+        5,
+        'local_memory_vector_index',
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       );
   `);

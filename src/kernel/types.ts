@@ -604,6 +604,15 @@ export interface SearchIndexStatus {
   staleEntryCount: number;
   orphanEntryCount: number;
   duplicateEntryCount: number;
+  vectorIndex?: {
+    status: "ok" | "missing" | "stale" | "unsupported";
+    indexedMemoryCount: number;
+    missingEntryCount: number;
+    staleEntryCount: number;
+    orphanEntryCount: number;
+    duplicateEntryCount: number;
+    dimensions: number;
+  } | undefined;
 }
 
 export interface RepairSearchIndexResult {

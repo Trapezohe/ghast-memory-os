@@ -21,6 +21,7 @@ export interface MemoryScaleBenchmarkRow {
   seedMs: number;
   prepareTurn: LatencySummary;
   reconstructContext: LatencySummary;
+  contextNoHitSearch: LatencySummary;
   promptTokenEstimate: {
     p50: number;
     p95: number;
@@ -40,7 +41,7 @@ export interface MemoryScaleBenchmarkRow {
 
 export interface MemoryScaleFailedOperation {
   size: number;
-  operation: "prepareTurn" | "reconstructContext";
+  operation: "prepareTurn" | "reconstructContext" | "contextNoHitSearch";
   p95Ms: number;
   thresholdMs: number;
 }
@@ -131,6 +132,7 @@ export async function runMemoryScaleBenchmark(
     const seedMs = performance.now() - seedStart;
     const prepareTurnLatencies: number[] = [];
     const reconstructContextLatencies: number[] = [];
+    const contextNoHitSearchLatencies: number[] = [];
     const tokens: number[] = [];
     const reconstructedTokens: number[] = [];
     const reconstructedPathCounts: number[] = [];
@@ -155,6 +157,13 @@ export async function runMemoryScaleBenchmark(
       reconstructContextLatencies.push(performance.now() - reconstructStarted);
       reconstructedTokens.push(reconstructed.stats.promptTokenEstimate);
       reconstructedPathCounts.push(reconstructed.paths.length);
+      const noHitStarted = performance.now();
+      await memory.search({
+        profileId: "scale",
+        query: `neptunian orbit passwd relationless ${iteration}`,
+        limit: 6,
+      });
+      contextNoHitSearchLatencies.push(performance.now() - noHitStarted);
     }
     await memory.close();
     rmSync(tmp, { recursive: true, force: true });
@@ -163,6 +172,7 @@ export async function runMemoryScaleBenchmark(
       seedMs,
       prepareTurn: summarize(prepareTurnLatencies),
       reconstructContext: summarize(reconstructContextLatencies),
+      contextNoHitSearch: summarize(contextNoHitSearchLatencies),
       promptTokenEstimate: {
         p50: percentile(tokens, 0.5),
         p95: percentile(tokens, 0.95),
@@ -195,6 +205,14 @@ export async function runMemoryScaleBenchmark(
         size: row.size,
         operation: "reconstructContext",
         p95Ms: row.reconstructContext.p95Ms,
+        thresholdMs: thresholdP95Ms,
+      });
+    }
+    if (row.contextNoHitSearch.p95Ms > thresholdP95Ms) {
+      failures.push({
+        size: row.size,
+        operation: "contextNoHitSearch",
+        p95Ms: row.contextNoHitSearch.p95Ms,
         thresholdMs: thresholdP95Ms,
       });
     }

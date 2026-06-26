@@ -52,6 +52,13 @@ import {
   shouldHideFromOrdinaryContext,
 } from "../../kernel/safety.js";
 import {
+  cosineSimilarity,
+  LOCAL_TEXT_VECTOR_DIMENSIONS,
+  localTextCandidateFeatures,
+  localTextVector,
+  vectorContentHash,
+} from "../../kernel/local-vector.js";
+import {
   exportSqliteProfileBackup,
   restoreSqliteProfileBackup,
   type ExportSqliteProfileBackupInput,
@@ -411,20 +418,26 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     new Database(options.path, sqliteOptions);
   let initialized = false;
   let ftsAvailableCache: boolean | null = null;
+  let vectorIndexAvailableCache: boolean | null = null;
 
   function initialize(): void {
     if (initialized) return;
     if (db.readonly) {
       ftsAvailableCache = tableExists("gmos_memories_fts");
+      vectorIndexAvailableCache = tableExists("gmos_memory_vectors");
       initialized = true;
       return;
     }
     const previousSchemaVersion = sqliteSchemaVersion(db);
     ensureSqliteSchema(db);
     ftsAvailableCache = tableExists("gmos_memories_fts");
+    vectorIndexAvailableCache = tableExists("gmos_memory_vectors");
     initialized = true;
     if (previousSchemaVersion < 3) {
       rebuildAssociations();
+    }
+    if (previousSchemaVersion < 5) {
+      rebuildMemoryVectorIndex();
     }
   }
 
@@ -437,6 +450,10 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
 
   function ftsAvailable(): boolean {
     return ftsAvailableCache ?? tableExists("gmos_memories_fts");
+  }
+
+  function vectorIndexAvailable(): boolean {
+    return vectorIndexAvailableCache ?? tableExists("gmos_memory_vectors");
   }
 
   function syncMemoryFts(memoryId: string): void {
@@ -463,6 +480,62 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       `INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
        VALUES (?, ?, ?, ?, ?, ?)`,
     ).run(row.id, row.profile_id, row.kind, row.scope, row.status, row.content);
+  }
+
+  function syncMemoryVector(memoryId: string): void {
+    if (!vectorIndexAvailable()) return;
+    db.prepare("DELETE FROM gmos_memory_vectors WHERE id = ?").run(memoryId);
+    db.prepare("DELETE FROM gmos_memory_vector_terms WHERE id = ?").run(memoryId);
+    const row = db
+      .prepare(
+        `SELECT id, profile_id, status, content, updated_at
+         FROM gmos_memories
+         WHERE id = ?`,
+      )
+      .get(memoryId) as
+      | {
+          id: string;
+          profile_id: string;
+          status: string;
+          content: string;
+          updated_at: string;
+        }
+      | undefined;
+    if (!row) return;
+    const vector = localTextVector(row.content);
+    db.prepare(
+      `INSERT INTO gmos_memory_vectors(
+        id, profile_id, status, dimensions, vector_json, content_hash, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      row.id,
+      row.profile_id,
+      row.status,
+      vector.length,
+      JSON.stringify(vector),
+      vectorContentHash(row.content),
+      row.updated_at,
+    );
+    const termStmt = db.prepare(
+      `INSERT OR IGNORE INTO gmos_memory_vector_terms(
+        id, profile_id, status, feature_key, updated_at
+      ) VALUES (?, ?, ?, ?, ?)`,
+    );
+    for (const feature of localTextCandidateFeatures(row.content)) {
+      termStmt.run(row.id, row.profile_id, row.status, feature, row.updated_at);
+    }
+  }
+
+  function rebuildMemoryVectorIndex(): void {
+    if (!vectorIndexAvailable()) return;
+    db.prepare("DELETE FROM gmos_memory_vectors").run();
+    db.prepare("DELETE FROM gmos_memory_vector_terms").run();
+    const rows = db
+      .prepare("SELECT id FROM gmos_memories")
+      .all() as Array<{ id: string }>;
+    for (const row of rows) {
+      syncMemoryVector(row.id);
+    }
   }
 
   function associationsFtsAvailable(): boolean {
@@ -775,7 +848,9 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         )
       : 0;
     const hasFts = tableExists("gmos_memories_fts");
+    const hasVectorIndex = tableExists("gmos_memory_vectors");
     ftsAvailableCache = hasFts;
+    vectorIndexAvailableCache = hasVectorIndex;
     if (!hasFts) {
       return {
         status: "missing",
@@ -786,6 +861,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         staleEntryCount: 0,
         orphanEntryCount: 0,
         duplicateEntryCount: 0,
+        vectorIndex: vectorIndexStatus(totalMemoryCount, hasVectorIndex),
       };
     }
     const indexedMemoryCount = Number(
@@ -852,11 +928,13 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           .get() as { count: number | null }
       ).count ?? 0,
     );
+    const vectorIndex = vectorIndexStatus(totalMemoryCount, hasVectorIndex);
     const status =
       missingEntryCount === 0 &&
       staleEntryCount === 0 &&
       orphanEntryCount === 0 &&
-      duplicateEntryCount === 0
+      duplicateEntryCount === 0 &&
+      vectorIndex.status === "ok"
         ? "ok"
         : "stale";
     return {
@@ -868,6 +946,187 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       staleEntryCount,
       orphanEntryCount,
       duplicateEntryCount,
+      vectorIndex,
+    };
+  }
+
+  function vectorIndexStatus(
+    totalMemoryCount: number,
+    hasVectorIndex = tableExists("gmos_memory_vectors"),
+  ): NonNullable<SearchIndexStatus["vectorIndex"]> {
+    const hasVectorTerms = tableExists("gmos_memory_vector_terms");
+    if (!hasVectorIndex) {
+      return {
+        status: "missing",
+        indexedMemoryCount: 0,
+        missingEntryCount: totalMemoryCount,
+        staleEntryCount: 0,
+        orphanEntryCount: 0,
+        duplicateEntryCount: 0,
+        dimensions: 0,
+      };
+    }
+    if (!hasVectorTerms) {
+      return {
+        status: "stale",
+        indexedMemoryCount: Number(
+          (
+            db
+              .prepare("SELECT COUNT(*) AS count FROM gmos_memory_vectors")
+              .get() as { count: number }
+          ).count,
+        ),
+        missingEntryCount: totalMemoryCount,
+        staleEntryCount: 0,
+        orphanEntryCount: 0,
+        duplicateEntryCount: 0,
+        dimensions: 0,
+      };
+    }
+    const indexedMemoryCount = Number(
+      (
+        db
+          .prepare("SELECT COUNT(*) AS count FROM gmos_memory_vectors")
+          .get() as { count: number }
+      ).count,
+    );
+    const missingEntryCount = Number(
+      (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM gmos_memories m
+             WHERE NOT EXISTS (
+               SELECT 1 FROM gmos_memory_vectors v WHERE v.id = m.id
+             )`,
+          )
+          .get() as { count: number }
+      ).count,
+    );
+    const orphanEntryCount = Number(
+      (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM gmos_memory_vectors v
+             WHERE NOT EXISTS (
+               SELECT 1 FROM gmos_memories m WHERE m.id = v.id
+             )`,
+          )
+          .get() as { count: number }
+      ).count,
+    );
+    const missingFeatureEntryCount = Number(
+      (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM gmos_memories m
+             WHERE NOT EXISTS (
+               SELECT 1 FROM gmos_memory_vector_terms t WHERE t.id = m.id
+             )`,
+          )
+          .get() as { count: number }
+      ).count,
+    );
+    const orphanFeatureEntryCount = Number(
+      (
+        db
+          .prepare(
+            `SELECT COUNT(DISTINCT t.id) AS count
+             FROM gmos_memory_vector_terms t
+             WHERE NOT EXISTS (
+               SELECT 1 FROM gmos_memories m WHERE m.id = t.id
+             )`,
+          )
+          .get() as { count: number }
+      ).count,
+    );
+    const staleFeatureEntryCount = Number(
+      (
+        db
+          .prepare(
+            `SELECT COUNT(DISTINCT t.id) AS count
+             FROM gmos_memory_vector_terms t
+             JOIN gmos_memories m ON m.id = t.id
+             WHERE t.profile_id IS NOT m.profile_id
+                OR t.status IS NOT m.status
+                OR t.updated_at IS NOT m.updated_at`,
+          )
+          .get() as { count: number }
+      ).count,
+    );
+    const staleVectorEntryCount = (
+      db
+        .prepare(
+          `SELECT v.profile_id, v.status, v.updated_at, v.dimensions, v.vector_json, v.content_hash,
+                  m.profile_id AS memory_profile_id, m.status AS memory_status,
+                  m.updated_at AS memory_updated_at, m.content AS memory_content
+           FROM gmos_memory_vectors v
+           JOIN gmos_memories m ON m.id = v.id`,
+        )
+        .all() as Array<{
+        profile_id?: string | null;
+        status?: string | null;
+        updated_at?: string | null;
+        dimensions?: number | null;
+        vector_json?: string | null;
+        content_hash?: string | null;
+        memory_profile_id?: string | null;
+        memory_status?: string | null;
+        memory_updated_at?: string | null;
+        memory_content?: string | null;
+      }>
+    ).filter(
+      (row) =>
+        row.profile_id !== row.memory_profile_id ||
+        row.status !== row.memory_status ||
+        row.updated_at !== row.memory_updated_at ||
+        row.dimensions !== LOCAL_TEXT_VECTOR_DIMENSIONS ||
+        !row.vector_json ||
+        parseJsonArray(row.vector_json).length !== LOCAL_TEXT_VECTOR_DIMENSIONS ||
+        row.content_hash !== vectorContentHash(row.memory_content ?? ""),
+    ).length;
+    const duplicateEntryCount = Number(
+      (
+        db
+          .prepare(
+            `SELECT COALESCE(SUM(entry_count - 1), 0) AS count
+             FROM (
+               SELECT id, COUNT(*) AS entry_count
+               FROM gmos_memory_vectors
+               GROUP BY id
+               HAVING COUNT(*) > 1
+             )`,
+          )
+          .get() as { count: number | null }
+      ).count ?? 0,
+    );
+    const dimensions = Number(
+      (
+        db
+          .prepare("SELECT COALESCE(MAX(dimensions), 0) AS dimensions FROM gmos_memory_vectors")
+          .get() as { dimensions: number | null }
+      ).dimensions ?? 0,
+    );
+    const status =
+      missingEntryCount === 0 &&
+      missingFeatureEntryCount === 0 &&
+      staleVectorEntryCount === 0 &&
+      staleFeatureEntryCount === 0 &&
+      orphanEntryCount === 0 &&
+      orphanFeatureEntryCount === 0 &&
+      duplicateEntryCount === 0
+        ? "ok"
+        : "stale";
+    return {
+      status,
+      indexedMemoryCount,
+      missingEntryCount: missingEntryCount + missingFeatureEntryCount,
+      staleEntryCount: staleVectorEntryCount + staleFeatureEntryCount,
+      orphanEntryCount: orphanEntryCount + orphanFeatureEntryCount,
+      duplicateEntryCount,
+      dimensions,
     };
   }
 
@@ -884,6 +1143,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
          SELECT id, profile_id, kind, scope, status, content
          FROM gmos_memories`,
       ).run();
+      rebuildMemoryVectorIndex();
     });
     tx();
     const after = searchIndexStatus();
@@ -909,6 +1169,18 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         .all(input.profileId, Math.max(candidateLimit, 500)) as Record<string, unknown>[];
     }
 
+    const lexicalRows = memoryLexicalRowsForSearch(input, candidateLimit);
+    if ((input.purpose ?? "context") !== "context") return lexicalRows;
+    const vectorRows = memoryVectorRowsForSearch(input, candidateLimit);
+    if (vectorRows.length === 0) return lexicalRows;
+    return mergeSearchRows(lexicalRows, vectorRows, candidateLimit);
+  }
+
+  function memoryLexicalRowsForSearch(
+    input: MemorySearchInput,
+    candidateLimit: number,
+  ): Record<string, unknown>[] {
+    const query = input.query?.trim() ?? "";
     const match = ftsQuery(query);
     if (match && ftsAvailable()) {
       try {
@@ -924,7 +1196,12 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
              LIMIT ?`,
           )
           .all(match, input.profileId, Math.max(candidateLimit, 500)) as Record<string, unknown>[];
-        if (rows.length > 0) return rows;
+        if (rows.length > 0) {
+          return rows.map((row, index) => ({
+            ...row,
+            __gmos_search_score: 100 / (60 + index + 1),
+          }));
+        }
       } catch {
         // Fall back to LIKE search for tokenizer or parser edge cases.
       }
@@ -933,7 +1210,8 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     const terms = queryTerms(query);
     if (terms.length === 0) return [];
     const clauses = terms.map(() => "content LIKE ? ESCAPE '\\'");
-    return db
+    return (
+      db
       .prepare(
         `SELECT * FROM gmos_memories
          WHERE profile_id = ?
@@ -946,7 +1224,110 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         input.profileId,
         ...terms.map(likePattern),
         Math.max(candidateLimit, 500),
-      ) as Record<string, unknown>[];
+      ) as Record<string, unknown>[]
+    ).map((row, index) => ({
+      ...row,
+      __gmos_search_score: 80 / (60 + index + 1),
+    }));
+  }
+
+  function memoryVectorRowsForSearch(
+    input: MemorySearchInput,
+    candidateLimit: number,
+  ): Record<string, unknown>[] {
+    const query = input.query?.trim() ?? "";
+    if (!query || !vectorIndexAvailable()) return [];
+    const queryFeatures = localTextCandidateFeatures(query, 128);
+    if (queryFeatures.length === 0 || !tableExists("gmos_memory_vector_terms")) return [];
+    const queryVector = localTextVector(query);
+    const candidateRowLimit = Math.min(Math.max(candidateLimit * 20, 100), 1000);
+    const featurePlaceholders = queryFeatures.map(() => "?").join(", ");
+    const rows = db
+      .prepare(
+        `SELECT m.*, v.vector_json, candidates.hit_count
+         FROM (
+           SELECT id, COUNT(*) AS hit_count, MAX(updated_at) AS latest_at
+           FROM gmos_memory_vector_terms
+           WHERE profile_id = ?
+             AND status = 'active'
+             AND feature_key IN (${featurePlaceholders})
+           GROUP BY id
+           ORDER BY hit_count DESC, latest_at DESC
+           LIMIT ?
+         ) candidates
+         JOIN gmos_memory_vectors v ON v.id = candidates.id
+         JOIN gmos_memories m ON m.id = candidates.id
+         WHERE v.profile_id = ?
+           AND v.status = 'active'
+           AND m.profile_id = ?
+           AND m.status = 'active'`,
+      )
+      .all(input.profileId, ...queryFeatures, candidateRowLimit, input.profileId, input.profileId) as Array<
+      Record<string, unknown>
+    >;
+    return rows
+      .map((row) => {
+        const rawVector = parseJsonArray(row.vector_json);
+        const similarity =
+          rawVector.length === queryVector.length ? cosineSimilarity(queryVector, rawVector) : 0;
+        const { vector_json: _vectorJson, hit_count: hitCount, ...memoryRow } = row;
+        return {
+          ...memoryRow,
+          __gmos_vector_similarity: similarity,
+          __gmos_feature_hit_count: Number(hitCount ?? 0),
+          __gmos_search_score: similarity > 0 ? similarity * 3 : 0,
+        };
+      })
+      .filter((row) => Number(row.__gmos_vector_similarity ?? 0) >= 0.45)
+      .sort((a, b) => Number(b.__gmos_search_score ?? 0) - Number(a.__gmos_search_score ?? 0))
+      .slice(0, candidateLimit);
+  }
+
+  function mergeSearchRows(
+    lexicalRows: Record<string, unknown>[],
+    vectorRows: Record<string, unknown>[],
+    candidateLimit: number,
+  ): Record<string, unknown>[] {
+    const merged = new Map<string, Record<string, unknown>>();
+    function addRows(rows: Record<string, unknown>[], source: "lexical" | "vector"): void {
+      rows.forEach((row, index) => {
+        const memoryId = String(row.id);
+        const existing = merged.get(memoryId);
+        const sourceScore =
+          Number(row.__gmos_search_score ?? 0) + 1 / (60 + index + 1);
+        merged.set(memoryId, {
+          ...(existing ?? row),
+          ...row,
+          __gmos_search_score:
+            Number(existing?.__gmos_search_score ?? 0) + sourceScore,
+          __gmos_search_reason: [
+            typeof existing?.__gmos_search_reason === "string"
+              ? existing.__gmos_search_reason
+              : "",
+            source,
+          ]
+            .filter(Boolean)
+            .join("+"),
+        });
+      });
+    }
+    addRows(lexicalRows, "lexical");
+    addRows(vectorRows, "vector");
+    return [...merged.values()]
+      .sort((a, b) => Number(b.__gmos_search_score ?? 0) - Number(a.__gmos_search_score ?? 0))
+      .slice(0, Math.max(candidateLimit, 500));
+  }
+
+  function parseJsonArray(value: unknown): number[] {
+    if (typeof value !== "string") return [];
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed)
+        ? parsed.filter((entry): entry is number => typeof entry === "number")
+        : [];
+    } catch {
+      return [];
+    }
   }
 
   function memoryRowsForList(input: MemoryListInput): Record<string, unknown>[] {
@@ -1108,34 +1489,38 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
 
   function addMemory(input: AddMemoryInput): MemoryRecord {
     initialize();
-    const createdAt = input.createdAt ?? nowIso();
-    const memoryId = id("memory");
-    db.prepare(
-      `INSERT INTO gmos_memories (
-        id, profile_id, kind, scope, content, sensitivity, status, confidence,
-        source_event_id, metadata_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
-    ).run(
-      memoryId,
-      input.profileId,
-      input.kind,
-      input.scope ?? "global",
-      input.content,
-      input.sensitivity ?? "normal",
-      input.confidence ?? 0.5,
-      input.sourceEventId ?? null,
-      JSON.stringify(input.metadata ?? {}),
-      createdAt,
-      createdAt,
-    );
-    syncMemoryFts(memoryId);
-    const memory = normalizeMemory(
-      db
-        .prepare("SELECT * FROM gmos_memories WHERE id = ?")
-        .get(memoryId) as Record<string, unknown>,
-    );
-    projectMemoryAssociations(memory);
-    return memory;
+    const tx = db.transaction((): MemoryRecord => {
+      const createdAt = input.createdAt ?? nowIso();
+      const memoryId = id("memory");
+      db.prepare(
+        `INSERT INTO gmos_memories (
+          id, profile_id, kind, scope, content, sensitivity, status, confidence,
+          source_event_id, metadata_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
+      ).run(
+        memoryId,
+        input.profileId,
+        input.kind,
+        input.scope ?? "global",
+        input.content,
+        input.sensitivity ?? "normal",
+        input.confidence ?? 0.5,
+        input.sourceEventId ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        createdAt,
+        createdAt,
+      );
+      syncMemoryFts(memoryId);
+      syncMemoryVector(memoryId);
+      const memory = normalizeMemory(
+        db
+          .prepare("SELECT * FROM gmos_memories WHERE id = ?")
+          .get(memoryId) as Record<string, unknown>,
+      );
+      projectMemoryAssociations(memory);
+      return memory;
+    });
+    return tx();
   }
 
   function updateMemory(input: UpdateMemoryInput): MemoryRecord | null {
@@ -1180,6 +1565,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       input.id,
     );
     syncMemoryFts(input.id);
+    syncMemoryVector(input.id);
     const memory = normalizeMemory(
       db
         .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ?")
@@ -1210,6 +1596,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       )
       .run(archivedAt, JSON.stringify(metadata), input.profileId, input.id);
     syncMemoryFts(input.id);
+    syncMemoryVector(input.id);
     deleteAssociationsForMemory(input.id);
     rejectBeliefsForMemory(input.id, archivedAt);
     return result.changes > 0;
@@ -1235,6 +1622,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       )
       .run(restoredAt, JSON.stringify(metadata), input.profileId, input.id);
     syncMemoryFts(input.id);
+    syncMemoryVector(input.id);
     const restored = db
       .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ?")
       .get(input.profileId, input.id) as Record<string, unknown> | undefined;
@@ -1278,6 +1666,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         });
         stmt.run(archivedAt, JSON.stringify(metadata), input.profileId, row.id);
         syncMemoryFts(row.id);
+        syncMemoryVector(row.id);
         deleteAssociationsForMemory(row.id);
         rejectBeliefsForMemory(row.id, archivedAt);
       }
@@ -1528,18 +1917,26 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     const hiddenContextMemoryIds =
       purpose === "context" ? contextHiddenMemoryIds(input.profileId, nowIso()) : new Set<string>();
     return memoryRowsForSearch(input)
-      .map(normalizeMemory)
-      .filter((memory) => input.includePerson || memory.kind !== "person")
-      .filter((memory) => !hiddenContextMemoryIds.has(memory.id))
+      .map((row) => ({
+        memory: normalizeMemory(row),
+        retrievalScore: Number(row.__gmos_search_score ?? 0),
+      }))
+      .filter((item) => input.includePerson || item.memory.kind !== "person")
+      .filter((item) => !hiddenContextMemoryIds.has(item.memory.id))
       .filter(
-        (memory) =>
+        (item) =>
           purpose !== "context" ||
           !shouldHideFromOrdinaryContext({
-            sensitivity: memory.sensitivity,
+            sensitivity: item.memory.sensitivity,
             includeSensitive: input.includeSensitive,
           }),
       )
-      .map((memory) => ({ memory, score: query ? scoreMemory(memory, query) : memory.confidence }))
+      .map((item) => ({
+        memory: item.memory,
+        score: query
+          ? Math.max(scoreMemory(item.memory, query), item.memory.confidence + item.retrievalScore)
+          : item.memory.confidence,
+      }))
       .filter((item) => !query || item.score > item.memory.confidence)
       .sort((a, b) => b.score - a.score)
       .slice(0, input.limit ?? 12)
@@ -1638,6 +2035,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       for (const memoryId of memoryIds) {
         stmt.run(archivedAt, memoryId);
         syncMemoryFts(memoryId);
+        syncMemoryVector(memoryId);
         deleteAssociationsForMemory(memoryId);
         rejectBeliefsForMemory(memoryId, archivedAt);
       }
@@ -1718,6 +2116,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         for (const memoryId of ids) {
           stmt.run(archivedAt, memoryId);
           syncMemoryFts(memoryId);
+          syncMemoryVector(memoryId);
           deleteAssociationsForMemory(memoryId);
           rejectBeliefsForMemory(memoryId, archivedAt);
         }
@@ -1898,6 +2297,8 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       "gmos_failure_events",
       "gmos_task_trajectories",
       "gmos_associations",
+      "gmos_memory_vectors",
+      "gmos_memory_vector_terms",
     ];
     return Object.fromEntries(
       tables.map((table) => [
