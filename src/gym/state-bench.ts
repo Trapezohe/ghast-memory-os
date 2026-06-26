@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { redactForReport } from "../kernel/safety.js";
@@ -34,12 +34,69 @@ export interface BuildStateBenchLearningsOptions {
   allowNonTrainInput?: boolean | undefined;
 }
 
+export interface PrepareStateBenchAgentLearningRunOptions {
+  domain: string;
+  checkoutDir: string;
+  agentModelName: string;
+  agentModelReasoningLevel?: string | undefined;
+  numRuns?: number | undefined;
+  numWorkers?: number | undefined;
+  maxContentChars?: number | undefined;
+  maxItems?: number | undefined;
+  learningsFile?: string | undefined;
+  agentFile?: string | undefined;
+  outputDir?: string | undefined;
+  manifestFile?: string | undefined;
+  force?: boolean | undefined;
+}
+
+export interface StateBenchPreparedRunManifest {
+  schema: "gmos.state_bench_prepare_run.v1";
+  framework: "state-bench-agent-learning-track";
+  domain: string;
+  source: {
+    protocol: "state-bench-agent-learning-track";
+    input: "datasets/train_task_trajectories";
+    domain: string;
+  };
+  artifacts: {
+    learningsFile: string;
+    agentFile: string;
+    outputDir: string;
+    manifestFile?: string | undefined;
+  };
+  officialSettings: {
+    agentClass: "GmosMemoryAgent";
+    retrieveLearningsTopK: 3;
+    numRuns: number;
+    numWorkers: number;
+    agentModelName: string;
+    agentModelReasoningLevel?: string | undefined;
+  };
+  environment: {
+    GMOS_STATE_BENCH_LEARNINGS_PATH: string;
+  };
+  commands: {
+    runBatch: string[];
+    computeMetrics: string[];
+  };
+  learnings: {
+    itemCount: number;
+    warnings: string[];
+  };
+  notes: string[];
+}
+
 interface ToolCallSummary {
   name: string;
   marker: string;
 }
 
 const DEFAULT_MAX_CONTENT_CHARS = 520;
+const DEFAULT_AGENT_FILE = path.join("agents", "gmos_memory_agent.py");
+const DEFAULT_LEARNINGS_DIR = path.join("outputs", "gmos-learnings");
+const DEFAULT_OUTPUTS_DIR = "outputs";
+const STATE_BENCH_TOP_K = 3;
 
 function assertRecord(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -70,6 +127,43 @@ function jsonFiles(inputDir: string): string[] {
     .filter((entry) => entry.endsWith(".json"))
     .sort((left, right) => left.localeCompare(right))
     .map((entry) => path.join(inputDir, entry));
+}
+
+function positiveInteger(value: number | undefined, fallback: number, label: string): number {
+  const parsed = Math.trunc(value ?? fallback);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${label} must be a positive integer`);
+  }
+  return parsed;
+}
+
+function ensureInsideCheckout(input: {
+  checkoutDir: string;
+  filePath: string;
+  label: string;
+}): { absolute: string; relative: string } {
+  const absolute = path.resolve(input.checkoutDir, input.filePath);
+  const relative = path.relative(input.checkoutDir, absolute).split(path.sep).join("/");
+  if (!relative || relative.startsWith("../") || relative === ".." || path.isAbsolute(relative)) {
+    throw new Error(`${input.label} must stay inside the STATE-Bench checkout`);
+  }
+  return { absolute, relative };
+}
+
+function writeJsonFile(filePath: string, payload: unknown): void {
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`);
+}
+
+function assertDistinctFiles(files: Array<{ label: string; absolute: string }>): void {
+  const seen = new Map<string, string>();
+  for (const file of files) {
+    const previous = seen.get(file.absolute);
+    if (previous) {
+      throw new Error(`STATE-Bench ${file.label} must not reuse ${previous}`);
+    }
+    seen.set(file.absolute, file.label);
+  }
 }
 
 function conversationFromFile(filePath: string): Record<string, unknown>[] | null {
@@ -173,6 +267,9 @@ export function buildStateBenchLearnings(
   if (!domain) throw new Error("STATE-Bench learnings require a domain");
   const inputDir = path.resolve(options.inputDir);
   assertTrainTrajectoryInput(inputDir, domain, options.allowNonTrainInput === true);
+  if (!existsSync(inputDir)) {
+    throw new Error("STATE-Bench train trajectory directory does not exist");
+  }
   const maxContentChars = Math.max(120, Math.trunc(options.maxContentChars ?? DEFAULT_MAX_CONTENT_CHARS));
   const maxItems =
     options.maxItems === undefined ? Number.POSITIVE_INFINITY : Math.max(1, Math.trunc(options.maxItems));
@@ -218,6 +315,155 @@ export function buildStateBenchLearnings(
     warnings,
     learnings,
   };
+}
+
+export function prepareStateBenchAgentLearningRun(
+  options: PrepareStateBenchAgentLearningRunOptions,
+): StateBenchPreparedRunManifest {
+  const domain = cleanText(options.domain);
+  if (!domain) throw new Error("STATE-Bench prepare requires a domain");
+  const agentModelName = cleanText(options.agentModelName);
+  if (!agentModelName) throw new Error("STATE-Bench prepare requires an agentModelName");
+  const checkoutDir = path.resolve(options.checkoutDir);
+  const inputDir = path.join(checkoutDir, "datasets", "train_task_trajectories", domain);
+  const learningsPath = ensureInsideCheckout({
+    checkoutDir,
+    filePath: options.learningsFile ?? path.join(DEFAULT_LEARNINGS_DIR, `${domain}.json`),
+    label: "STATE-Bench learningsFile",
+  });
+  const agentPath = ensureInsideCheckout({
+    checkoutDir,
+    filePath: options.agentFile ?? DEFAULT_AGENT_FILE,
+    label: "STATE-Bench agentFile",
+  });
+  const outputPath = ensureInsideCheckout({
+    checkoutDir,
+    filePath: options.outputDir ?? path.join(DEFAULT_OUTPUTS_DIR, domain),
+    label: "STATE-Bench outputDir",
+  });
+  const manifestPath = options.manifestFile
+    ? ensureInsideCheckout({
+        checkoutDir,
+        filePath: options.manifestFile,
+        label: "STATE-Bench manifestFile",
+      })
+    : null;
+  assertDistinctFiles(
+    [
+      { label: "learningsFile", absolute: learningsPath.absolute },
+      { label: "agentFile", absolute: agentPath.absolute },
+      manifestPath ? { label: "manifestFile", absolute: manifestPath.absolute } : null,
+    ].filter((file): file is { label: string; absolute: string } => file !== null),
+  );
+  const numRuns = positiveInteger(options.numRuns, 5, "STATE-Bench numRuns");
+  const numWorkers = positiveInteger(options.numWorkers, 1, "STATE-Bench numWorkers");
+  const artifact = buildStateBenchLearnings({
+    domain,
+    inputDir,
+    maxContentChars: options.maxContentChars,
+    maxItems: options.maxItems,
+  });
+  const agentPython = stateBenchAgentPythonTemplate();
+  const agentExists = existsSync(agentPath.absolute);
+  if (agentExists && !options.force) {
+    const existing = readFileSync(agentPath.absolute, "utf8");
+    if (existing !== agentPython) {
+      throw new Error("STATE-Bench agent file exists; pass force to replace it");
+    }
+  }
+
+  writeJsonFile(learningsPath.absolute, artifact);
+
+  if (!agentExists || options.force) {
+    mkdirSync(path.dirname(agentPath.absolute), { recursive: true });
+    writeFileSync(agentPath.absolute, agentPython);
+  }
+
+  const runBatch = [
+    "uv",
+    "run",
+    "python",
+    "-m",
+    "state_bench.scripts.run_batch",
+    "--domain",
+    domain,
+    "--agent-class",
+    "GmosMemoryAgent",
+    "--agent-model-name",
+    agentModelName,
+    "--num-runs",
+    String(numRuns),
+    "--retrieve-learnings-top-k",
+    String(STATE_BENCH_TOP_K),
+    "--num-workers",
+    String(numWorkers),
+    "--output-dir",
+    outputPath.relative,
+  ];
+  const agentModelReasoningLevel =
+    options.agentModelReasoningLevel === undefined
+      ? undefined
+      : cleanText(options.agentModelReasoningLevel);
+  if (agentModelReasoningLevel) {
+    runBatch.push("--agent-model-reasoning-level", agentModelReasoningLevel);
+  }
+  const computeMetrics = [
+    "uv",
+    "run",
+    "python",
+    "-m",
+    "state_bench.scripts.compute_metrics",
+    "--domain",
+    domain,
+    "--results-dir",
+    outputPath.relative,
+    "--num-runs",
+    String(numRuns),
+    "--output-dir",
+    outputPath.relative,
+  ];
+  const manifest: StateBenchPreparedRunManifest = {
+    schema: "gmos.state_bench_prepare_run.v1",
+    framework: "state-bench-agent-learning-track",
+    domain,
+    source: {
+      protocol: "state-bench-agent-learning-track",
+      input: "datasets/train_task_trajectories",
+      domain,
+    },
+    artifacts: {
+      learningsFile: learningsPath.relative,
+      agentFile: agentPath.relative,
+      outputDir: outputPath.relative,
+      ...(manifestPath ? { manifestFile: manifestPath.relative } : {}),
+    },
+    officialSettings: {
+      agentClass: "GmosMemoryAgent",
+      retrieveLearningsTopK: STATE_BENCH_TOP_K,
+      numRuns,
+      numWorkers,
+      agentModelName,
+      ...(agentModelReasoningLevel ? { agentModelReasoningLevel } : {}),
+    },
+    environment: {
+      GMOS_STATE_BENCH_LEARNINGS_PATH: learningsPath.relative,
+    },
+    commands: {
+      runBatch,
+      computeMetrics,
+    },
+    learnings: {
+      itemCount: artifact.itemCount,
+      warnings: artifact.warnings,
+    },
+    notes: [
+      "Run these commands from the STATE-Bench checkout root.",
+      "This prepares the Agent Learning Track hook; official scores still come only from STATE-Bench run_batch and compute_metrics.",
+      "The learnings artifact is built only from datasets/train_task_trajectories/<domain>.",
+    ],
+  };
+  if (manifestPath) writeJsonFile(manifestPath.absolute, manifest);
+  return manifest;
 }
 
 export function stateBenchAgentPythonTemplate(): string {

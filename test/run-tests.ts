@@ -31,6 +31,7 @@ import {
   runMemoryGym,
   runMemoryReleaseGate,
   runMemoryScaleBenchmark,
+  prepareStateBenchAgentLearningRun,
   stateBenchAgentPythonTemplate,
 } from "../src/gym/index.js";
 import {
@@ -5945,6 +5946,14 @@ assert.throws(
     }),
   /datasets\/train_task_trajectories/,
 );
+assert.throws(
+  () =>
+    buildStateBenchLearnings({
+      domain: "travel",
+      inputDir: path.join(tmp, "datasets", "train_task_trajectories", "travel"),
+    }),
+  /train trajectory directory does not exist/,
+);
 assert.equal(
   stateBenchArtifact.warnings.some((warning) => warning.includes("skipped_no_tool_calls")),
   true,
@@ -5956,6 +5965,123 @@ assert.equal(
 const stateBenchAgentTemplate = stateBenchAgentPythonTemplate();
 assert.match(stateBenchAgentTemplate, /class GmosMemoryAgent\(StateBenchAgent\)/);
 assert.match(stateBenchAgentTemplate, /def retrieve_learnings/);
+const stateBenchCheckoutDir = path.join(tmp, "STATE-Bench");
+const stateBenchOfficialTrainDir = path.join(
+  stateBenchCheckoutDir,
+  "datasets",
+  "train_task_trajectories",
+  "travel",
+);
+mkdirSync(stateBenchOfficialTrainDir, { recursive: true });
+writeFileSync(
+  path.join(stateBenchOfficialTrainDir, "001-booking.json"),
+  readFileSync(path.join(stateBenchTrainDir, "001-booking.json"), "utf8"),
+);
+writeFileSync(
+  path.join(stateBenchOfficialTrainDir, "002-no-tools.json"),
+  readFileSync(path.join(stateBenchTrainDir, "002-no-tools.json"), "utf8"),
+);
+const preparedStateBench = prepareStateBenchAgentLearningRun({
+  domain: "travel",
+  checkoutDir: stateBenchCheckoutDir,
+  agentModelName: "gpt-test-statebench",
+  agentModelReasoningLevel: "medium",
+  numWorkers: 2,
+  manifestFile: "outputs/gmos-learnings/travel.prepare.json",
+});
+assert.equal(preparedStateBench.schema, "gmos.state_bench_prepare_run.v1");
+assert.equal(preparedStateBench.officialSettings.agentClass, "GmosMemoryAgent");
+assert.equal(preparedStateBench.officialSettings.retrieveLearningsTopK, 3);
+assert.equal(preparedStateBench.officialSettings.numRuns, 5);
+assert.equal(preparedStateBench.officialSettings.numWorkers, 2);
+assert.equal(preparedStateBench.officialSettings.agentModelReasoningLevel, "medium");
+assert.equal(preparedStateBench.artifacts.learningsFile, "outputs/gmos-learnings/travel.json");
+assert.equal(preparedStateBench.artifacts.agentFile, "agents/gmos_memory_agent.py");
+assert.equal(preparedStateBench.artifacts.outputDir, "outputs/travel");
+assert.equal(preparedStateBench.artifacts.manifestFile, "outputs/gmos-learnings/travel.prepare.json");
+assert.deepEqual(preparedStateBench.source, {
+  protocol: "state-bench-agent-learning-track",
+  input: "datasets/train_task_trajectories",
+  domain: "travel",
+});
+assert.equal(preparedStateBench.learnings.itemCount, 1);
+assert.equal(preparedStateBench.environment.GMOS_STATE_BENCH_LEARNINGS_PATH, "outputs/gmos-learnings/travel.json");
+assert.deepEqual(
+  preparedStateBench.commands.runBatch.slice(0, 7),
+  [
+    "uv",
+    "run",
+    "python",
+    "-m",
+    "state_bench.scripts.run_batch",
+    "--domain",
+    "travel",
+  ],
+);
+assert.equal(preparedStateBench.commands.runBatch.includes("--retrieve-learnings-top-k"), true);
+assert.equal(
+  preparedStateBench.commands.runBatch[
+    preparedStateBench.commands.runBatch.indexOf("--retrieve-learnings-top-k") + 1
+  ],
+  "3",
+);
+assert.equal(preparedStateBench.commands.runBatch.includes("--agent-model-reasoning-level"), true);
+assert.equal(preparedStateBench.commands.computeMetrics.includes("state_bench.scripts.compute_metrics"), true);
+assert.equal(existsSync(path.join(stateBenchCheckoutDir, preparedStateBench.artifacts.learningsFile)), true);
+assert.equal(existsSync(path.join(stateBenchCheckoutDir, preparedStateBench.artifacts.agentFile)), true);
+assert.equal(existsSync(path.join(stateBenchCheckoutDir, preparedStateBench.artifacts.manifestFile!)), true);
+const preparedStateBenchManifest = JSON.parse(
+  readFileSync(path.join(stateBenchCheckoutDir, preparedStateBench.artifacts.manifestFile!), "utf8"),
+);
+assert.deepEqual(preparedStateBenchManifest, preparedStateBench);
+assert.equal(JSON.stringify(preparedStateBench).includes(stateBenchCheckoutDir), false);
+assert.equal(JSON.stringify(preparedStateBench).includes("sk-statebenchusersecret"), false);
+assert.equal(JSON.stringify(preparedStateBench).includes("Please book a refundable flight"), false);
+const preparedStateBenchAgain = prepareStateBenchAgentLearningRun({
+  domain: "travel",
+  checkoutDir: stateBenchCheckoutDir,
+  agentModelName: "gpt-test-statebench",
+  manifestFile: "outputs/gmos-learnings/travel.prepare.json",
+});
+assert.equal(preparedStateBenchAgain.schema, "gmos.state_bench_prepare_run.v1");
+writeFileSync(path.join(stateBenchCheckoutDir, preparedStateBench.artifacts.agentFile), "# custom local edits\n");
+assert.throws(
+  () =>
+    prepareStateBenchAgentLearningRun({
+      domain: "travel",
+      checkoutDir: stateBenchCheckoutDir,
+      agentModelName: "gpt-test-statebench",
+    }),
+  /agent file exists/,
+);
+const forcedPreparedStateBench = prepareStateBenchAgentLearningRun({
+  domain: "travel",
+  checkoutDir: stateBenchCheckoutDir,
+  agentModelName: "gpt-test-statebench",
+  force: true,
+});
+assert.equal(forcedPreparedStateBench.schema, "gmos.state_bench_prepare_run.v1");
+assert.throws(
+  () =>
+    prepareStateBenchAgentLearningRun({
+      domain: "travel",
+      checkoutDir: stateBenchCheckoutDir,
+      agentModelName: "gpt-test-statebench",
+      learningsFile: "../leak.json",
+    }),
+  /inside the STATE-Bench checkout/,
+);
+assert.throws(
+  () =>
+    prepareStateBenchAgentLearningRun({
+      domain: "travel",
+      checkoutDir: stateBenchCheckoutDir,
+      agentModelName: "gpt-test-statebench",
+      learningsFile: "outputs/gmos-learnings/same.json",
+      manifestFile: "outputs/gmos-learnings/same.json",
+    }),
+  /must not reuse/,
+);
 const externalMarkdown = renderExternalMemoryBenchmarkMarkdown(externalBenchmarkWithManifest);
 assert.match(externalMarkdown, /External Long-Memory QA/);
 assert.match(externalMarkdown, /Run Manifest/);
@@ -6458,6 +6584,77 @@ const cliStateBenchAgentOverwrite = spawnSync(
 );
 assert.notEqual(cliStateBenchAgentOverwrite.status, 0);
 assert.match(cliStateBenchAgentOverwrite.stderr, /refuses to overwrite/);
+const cliStateBenchCheckoutDir = path.join(tmp, "STATE-Bench-cli");
+const cliStateBenchTrainDir = path.join(
+  cliStateBenchCheckoutDir,
+  "datasets",
+  "train_task_trajectories",
+  "travel",
+);
+mkdirSync(cliStateBenchTrainDir, { recursive: true });
+writeFileSync(
+  path.join(cliStateBenchTrainDir, "001-booking.json"),
+  readFileSync(path.join(stateBenchTrainDir, "001-booking.json"), "utf8"),
+);
+const cliStateBenchPrepare = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "statebench",
+    "prepare",
+    "--checkout-dir",
+    cliStateBenchCheckoutDir,
+    "--domain",
+    "travel",
+    "--agent-model-name",
+    "gpt-test-statebench",
+    "--num-workers",
+    "2",
+    "--manifest-file",
+    "outputs/gmos-learnings/travel.prepare.json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliStateBenchPrepare.status, 0, cliStateBenchPrepare.stderr);
+const cliStateBenchPrepareJson = JSON.parse(cliStateBenchPrepare.stdout) as {
+  schema?: string;
+  artifacts?: { learningsFile?: string; agentFile?: string; manifestFile?: string };
+  officialSettings?: { retrieveLearningsTopK?: number; numWorkers?: number };
+  commands?: { runBatch?: string[]; computeMetrics?: string[] };
+};
+assert.equal(cliStateBenchPrepareJson.schema, "gmos.state_bench_prepare_run.v1");
+assert.equal(cliStateBenchPrepareJson.artifacts?.learningsFile, "outputs/gmos-learnings/travel.json");
+assert.equal(cliStateBenchPrepareJson.artifacts?.agentFile, "agents/gmos_memory_agent.py");
+assert.equal(cliStateBenchPrepareJson.artifacts?.manifestFile, "outputs/gmos-learnings/travel.prepare.json");
+assert.equal(cliStateBenchPrepareJson.officialSettings?.retrieveLearningsTopK, 3);
+assert.equal(cliStateBenchPrepareJson.officialSettings?.numWorkers, 2);
+assert.equal(cliStateBenchPrepareJson.commands?.runBatch?.includes("--retrieve-learnings-top-k"), true);
+assert.equal(cliStateBenchPrepareJson.commands?.computeMetrics?.includes("state_bench.scripts.compute_metrics"), true);
+assert.equal(JSON.stringify(cliStateBenchPrepareJson).includes(cliStateBenchCheckoutDir), false);
+assert.equal(existsSync(path.join(cliStateBenchCheckoutDir, "outputs/gmos-learnings/travel.json")), true);
+assert.equal(existsSync(path.join(cliStateBenchCheckoutDir, "agents/gmos_memory_agent.py")), true);
+assert.equal(existsSync(path.join(cliStateBenchCheckoutDir, "outputs/gmos-learnings/travel.prepare.json")), true);
+const cliStateBenchPrepareMissingModel = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "statebench",
+    "prepare",
+    "--checkout-dir",
+    cliStateBenchCheckoutDir,
+    "--domain",
+    "travel",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliStateBenchPrepareMissingModel.status, 0);
+assert.match(cliStateBenchPrepareMissingModel.stderr, /--agent-model-name/);
 const cliExternalInvalidDatasetFormat = spawnSync(
   process.execPath,
   [

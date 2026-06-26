@@ -46,10 +46,13 @@ import {
 } from "./scale.js";
 import {
   buildStateBenchLearnings,
+  prepareStateBenchAgentLearningRun,
   stateBenchAgentPythonTemplate,
   type BuildStateBenchLearningsOptions,
+  type PrepareStateBenchAgentLearningRunOptions,
   type StateBenchLearning,
   type StateBenchLearningsArtifact,
+  type StateBenchPreparedRunManifest,
 } from "./state-bench.js";
 export {
   renderHostCompatibilityGymMarkdown,
@@ -65,12 +68,14 @@ export {
   parseLongMemEvalBenchmarkDataset,
   hashExternalMemoryBenchmarkInput,
   buildStateBenchLearnings,
+  prepareStateBenchAgentLearningRun,
   stateBenchAgentPythonTemplate,
   runExternalMemoryBenchmark,
   runHostCompatibilityGym,
 };
 export type {
   BuildStateBenchLearningsOptions,
+  PrepareStateBenchAgentLearningRunOptions,
   ExternalMemoryBenchmarkDatasetAdapter,
   ExternalMemoryBenchmarkDatasetFormat,
   ExternalMemoryBenchmarkCase,
@@ -90,6 +95,7 @@ export type {
   RunExternalMemoryBenchmarkOptions,
   StateBenchLearning,
   StateBenchLearningsArtifact,
+  StateBenchPreparedRunManifest,
 };
 export { runMemoryScaleBenchmark };
 export type { MemoryScaleBenchmarkResult };

@@ -429,12 +429,15 @@ try {
       import {
         stateBenchAgentPythonTemplate,
         buildStateBenchLearnings,
+        prepareStateBenchAgentLearningRun,
         runExternalMemoryBenchmark,
         parseExternalMemoryBenchmarkDataset,
         runHostCompatibilityGym,
         runMemoryGym,
         runMemoryReleaseGate,
         type BuildStateBenchLearningsOptions,
+        type PrepareStateBenchAgentLearningRunOptions,
+        type StateBenchPreparedRunManifest,
         type ExternalMemoryBenchmarkDatasetAdapter,
         type ExternalMemoryBenchmarkDatasetFormat,
         type ExternalMemoryBenchmarkResult,
@@ -647,12 +650,26 @@ try {
         allowNonTrainInput: true,
       };
       void stateBenchOptions;
+      const stateBenchPrepareOptions: PrepareStateBenchAgentLearningRunOptions = {
+        domain: "travel",
+        checkoutDir: ".",
+        agentModelName: "typed-model",
+      };
+      void stateBenchPrepareOptions;
       if (!stateBenchAgentPythonTemplate().includes("class GmosMemoryAgent")) {
         throw new Error("typed statebench agent template failed");
       }
       if (typeof buildStateBenchLearnings !== "function") {
         throw new Error("typed statebench learnings builder failed");
       }
+      if (typeof prepareStateBenchAgentLearningRun !== "function") {
+        throw new Error("typed statebench prepare failed");
+      }
+      const stateBenchPreparedShape: Pick<StateBenchPreparedRunManifest, "schema" | "framework"> = {
+        schema: "gmos.state_bench_prepare_run.v1",
+        framework: "state-bench-agent-learning-track",
+      };
+      void stateBenchPreparedShape;
       const hostAdapter: HostAdapter = createPresetHostAdapter("ghast");
       const hostCompatibility: HostCompatibilityReport = hostAdapter.compatibility;
       if (hostCompatibility.level !== "L4") throw new Error("unexpected typed host compatibility");

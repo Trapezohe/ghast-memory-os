@@ -22,6 +22,7 @@ import {
   runHostCompatibilityGym,
   hashExternalMemoryBenchmarkInput,
   buildStateBenchLearnings,
+  prepareStateBenchAgentLearningRun,
   parseExternalMemoryBenchmarkDataset,
   parseExternalMemoryBenchmarkJsonl,
   runExternalMemoryBenchmark,
@@ -115,6 +116,7 @@ Usage:
   gmos gym external --input-file ./locomo10.json --dataset-format locomo --format markdown
   gmos gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
   gmos gym statebench write-agent --output-file ./STATE-Bench/agents/gmos_memory_agent.py
+  gmos gym statebench prepare --checkout-dir ./STATE-Bench --domain travel --agent-model-name gpt-5.1 --num-workers 2 --manifest-file outputs/gmos-learnings/travel.prepare.json
   gmos gym gate --generated-seeds 3 --scale-sizes 100,1000 --format json
   gmos gym host --hosts ghast,mcp,mock_l3,search_only --actual-report ./host-status.json --format markdown
 `);
@@ -495,7 +497,34 @@ async function main(): Promise<void> {
       console.log(JSON.stringify({ ok: true, outputFile: resolved }, null, 2));
       return;
     }
-    throw new Error("gmos gym statebench action must be build-learnings or write-agent");
+    if (action === "prepare") {
+      const domain = strictOptionValue("--domain");
+      if (!domain) throw new Error("gmos gym statebench prepare requires --domain");
+      const agentModelName = strictOptionValue("--agent-model-name");
+      if (!agentModelName) {
+        throw new Error("gmos gym statebench prepare requires --agent-model-name");
+      }
+      const checkoutDir = strictOptionValue("--checkout-dir", ".") ?? ".";
+      writeJsonOutput(
+        prepareStateBenchAgentLearningRun({
+          domain,
+          checkoutDir,
+          agentModelName,
+          agentModelReasoningLevel: value("--agent-model-reasoning-level"),
+          numRuns: positiveIntegerOption("--num-runs", 5),
+          numWorkers: positiveIntegerOption("--num-workers", 1),
+          maxContentChars: positiveIntegerOption("--max-content-chars", 520),
+          maxItems: positiveIntegerOption("--max-items", 1000000),
+          learningsFile: value("--learnings-file"),
+          agentFile: value("--agent-file"),
+          outputDir: value("--statebench-output-dir"),
+          manifestFile: value("--manifest-file"),
+          force: has("--force"),
+        }),
+      );
+      return;
+    }
+    throw new Error("gmos gym statebench action must be build-learnings, write-agent, or prepare");
   }
 
   if (command === "gym" && subcommand === "external") {
