@@ -123,6 +123,8 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
           maxSteps: { type: "integer", minimum: 1 },
           maxBranch: { type: "integer", minimum: 1 },
           maxMemories: { type: "integer", minimum: 1 },
+          stopWhenEvidenceEnough: { type: "boolean" },
+          evidenceConvergenceThreshold: { type: "number", minimum: 0 },
         },
       },
     },

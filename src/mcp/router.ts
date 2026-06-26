@@ -298,6 +298,8 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
       "maxSteps",
       "maxBranch",
       "maxMemories",
+      "stopWhenEvidenceEnough",
+      "evidenceConvergenceThreshold",
     ]),
     "memory.reconstruct_context",
   );
@@ -313,12 +315,23 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
   const maxSteps = optionalPositiveInteger(args, "maxSteps");
   const maxBranch = optionalPositiveInteger(args, "maxBranch");
   const maxMemories = optionalPositiveInteger(args, "maxMemories");
+  const stopWhenEvidenceEnough = optionalBoolean(args, "stopWhenEvidenceEnough");
+  const evidenceConvergenceThreshold = optionalPositiveNumber(
+    args,
+    "evidenceConvergenceThreshold",
+  );
   if (profileId !== undefined) input.profileId = profileId;
   if (includeEvidence !== undefined) input.includeEvidence = includeEvidence;
   if (contextBudgetTokens !== undefined) input.contextBudgetTokens = contextBudgetTokens;
   if (maxSteps !== undefined) input.maxSteps = maxSteps;
   if (maxBranch !== undefined) input.maxBranch = maxBranch;
   if (maxMemories !== undefined) input.maxMemories = maxMemories;
+  if (stopWhenEvidenceEnough !== undefined) {
+    input.stopWhenEvidenceEnough = stopWhenEvidenceEnough;
+  }
+  if (evidenceConvergenceThreshold !== undefined) {
+    input.evidenceConvergenceThreshold = evidenceConvergenceThreshold;
+  }
   return input;
 }
 

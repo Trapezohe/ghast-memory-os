@@ -4662,9 +4662,51 @@ assert.ok(reconstructed.paths.length >= 2);
 assert.ok(reconstructed.paths.some((path) => path.cue.toLowerCase() === "helio"));
 assert.ok(reconstructed.evidence.length >= 2);
 assert.match(reconstructed.contextBlock, /Evidence coverage:/);
+assert.match(reconstructed.contextBlock, /Evidence convergence:/);
 assert.match(reconstructed.contextBlock, /Reconstruction uncertainty:/);
 assert.ok((reconstructed.stats.evidenceCoverage?.coveredCueCount ?? 0) > 0);
+assert.equal(reconstructed.stats.evidenceConvergence?.reached, true);
+assert.equal(reconstructed.stats.evidenceConvergence?.stopWhenEvidenceEnough, true);
+assert.ok(
+  (reconstructed.stats.evidenceConvergence?.score ?? 0) >=
+    (reconstructed.stats.evidenceConvergence?.threshold ?? 1),
+);
+assert.ok(reconstructed.paths.some((path) => (path.informationGain ?? 0) > 0));
 assert.notEqual(reconstructed.stats.uncertainty?.level, "high");
+const multiIntentReconstructed = await reconstructionMemory.reconstructContext({
+  profileId: "recon",
+  query: "我之前说的那个计划，先做什么，哪些不要主动做？",
+  maxSteps: 5,
+  maxBranch: 6,
+  maxMemories: 6,
+});
+assert.match(multiIntentReconstructed.contextBlock, /Helio 项目推进时先写复现报告/);
+assert.match(multiIntentReconstructed.contextBlock, /不要主动催促用户/);
+assert.equal(multiIntentReconstructed.stats.evidenceConvergence?.reached, true);
+assert.ok(
+  (multiIntentReconstructed.stats.evidenceConvergence?.requiredIntentGroupCount ?? 0) >= 2,
+);
+assert.equal(
+  multiIntentReconstructed.stats.evidenceConvergence?.coveredIntentGroupCount,
+  multiIntentReconstructed.stats.evidenceConvergence?.requiredIntentGroupCount,
+);
+assert.deepEqual(
+  multiIntentReconstructed.stats.evidenceConvergence?.missingRequiredIntentGroups,
+  [],
+);
+const exhaustiveReconstructed = await reconstructionMemory.reconstructContext({
+  profileId: "recon",
+  query: "我之前说的那个计划，先做什么？",
+  maxSteps: 5,
+  maxBranch: 6,
+  maxMemories: 6,
+  stopWhenEvidenceEnough: false,
+});
+assert.equal(
+  exhaustiveReconstructed.stats.evidenceConvergence?.stopWhenEvidenceEnough,
+  false,
+);
+assert.match(exhaustiveReconstructed.contextBlock, /Evidence convergence:/);
 await reconstructionMemory.add({
   profileId: "recon",
   kind: "project",
@@ -4703,6 +4745,8 @@ const intentProcedurePath = intentReranked.paths.find(
 );
 assert.ok(intentProcedurePath);
 assert.match(intentProcedurePath.routeReason ?? "", /intent/);
+assert.match(intentProcedurePath.routeReason ?? "", /gain:/);
+assert.ok((intentProcedurePath.informationGain ?? 0) > 0);
 await reconstructionMemory.add({
   profileId: "recon",
   kind: "procedure",
@@ -4728,6 +4772,7 @@ const hybridPath = hybridReconstruction.paths.find((path) =>
 );
 assert.ok(hybridPath);
 assert.match(hybridPath.routeReason ?? "", /hybrid_(direct_memory_rrf|memory)/);
+assert.ok((hybridPath.informationGain ?? 0) > 0);
 const unrelatedReconstruction = await reconstructionMemory.reconstructContext({
   profileId: "recon",
   query: "Completely unrelated Neptune orbital password?",
@@ -4737,6 +4782,7 @@ const unrelatedReconstruction = await reconstructionMemory.reconstructContext({
 });
 assert.equal(unrelatedReconstruction.stats.uncertainty?.level, "high");
 assert.ok((unrelatedReconstruction.stats.evidenceCoverage?.coverageRate ?? 1) < 0.5);
+assert.equal(unrelatedReconstruction.stats.evidenceConvergence?.reached, false);
 const reconstructedRowsBefore = await reconstructionStore.rowCounts();
 const preparedWithShadow = await reconstructionMemory.prepareTurn({
   profileId: "recon",
@@ -4755,10 +4801,14 @@ const mcpReconstruct = await createMemoryMcpServer(reconstructionMemory).callToo
     text: "我之前说的那个计划，先做什么？",
     includeEvidence: true,
     maxSteps: 4,
+    stopWhenEvidenceEnough: false,
+    evidenceConvergenceThreshold: 0.8,
   },
 );
 assert.equal(mcpReconstruct.isError, undefined);
 assert.match(JSON.stringify(mcpReconstruct.structuredContent), /Helio 项目推进时先写复现报告/);
+assert.match(JSON.stringify(mcpReconstruct.structuredContent), /stopWhenEvidenceEnough/);
+assert.match(JSON.stringify(mcpReconstruct.structuredContent), /false/);
 const mcpReconstructSensitive = await createMemoryMcpServer(reconstructionMemory).callTool(
   "memory.reconstruct_context",
   {

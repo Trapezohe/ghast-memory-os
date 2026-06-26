@@ -492,6 +492,39 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "reconstructContext should report whether explored evidence covers query cues",
     "reconstruction",
   );
+  gate(
+    result,
+    "active_reconstruction_evidence_convergence",
+    /Evidence convergence:/.test(reconstructed.contextBlock) &&
+      reconstructed.stats.evidenceConvergence?.reached === true &&
+      (reconstructed.stats.evidenceConvergence?.score ?? 0) >=
+        (reconstructed.stats.evidenceConvergence?.threshold ?? 1) &&
+      reconstructed.paths.some((path) => (path.informationGain ?? 0) > 0),
+    "reconstructContext should expose evidence convergence and path information gain, not only top-k recall",
+    "reconstruction",
+  );
+  const multiIntentReconstructed = await memory.reconstructContext({
+    profileId: "gym_reconstruct",
+    query: "我之前说的那个计划，先做什么，哪些不要主动做？",
+    maxSteps: 5,
+    maxBranch: 6,
+    maxMemories: 6,
+  });
+  gate(
+    result,
+    "active_reconstruction_multi_intent_convergence",
+    multiIntentReconstructed.contextBlock.includes("Helio 项目推进时先写复现报告") &&
+      multiIntentReconstructed.contextBlock.includes("不要主动催促用户") &&
+      multiIntentReconstructed.stats.evidenceConvergence?.reached === true &&
+      (multiIntentReconstructed.stats.evidenceConvergence?.requiredIntentGroupCount ?? 0) >=
+        2 &&
+      multiIntentReconstructed.stats.evidenceConvergence?.coveredIntentGroupCount ===
+        multiIntentReconstructed.stats.evidenceConvergence?.requiredIntentGroupCount &&
+      (multiIntentReconstructed.stats.evidenceConvergence?.missingRequiredIntentGroups
+        .length ?? 1) === 0,
+    "reconstructContext should require every detected intent group to converge, not just any matching tag",
+    "reconstruction",
+  );
   await memory.add({
     profileId: "gym_reconstruct",
     kind: "project",
@@ -532,7 +565,9 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "active_reconstruction_intent_rerank",
     intentReranked.contextBlock.includes("rollback matrix") &&
       Boolean(intentProcedurePath) &&
-      /intent/.test(intentProcedurePath?.routeReason ?? ""),
+      /intent/.test(intentProcedurePath?.routeReason ?? "") &&
+      /gain:/.test(intentProcedurePath?.routeReason ?? "") &&
+      (intentProcedurePath?.informationGain ?? 0) > 0,
     "reconstructContext should rerank noisy association branches by query intent, not raw confidence",
     "reconstruction",
   );
@@ -926,6 +961,8 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   scenario(result, "active_reconstruction", "dev", [
     "active_reconstruction_multihop",
     "active_reconstruction_coverage_signal",
+    "active_reconstruction_evidence_convergence",
+    "active_reconstruction_multi_intent_convergence",
     "active_reconstruction_intent_rerank",
     "active_reconstruction_hybrid_rrf",
     "reconstruction_read_path_side_effects",

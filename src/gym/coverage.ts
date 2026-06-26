@@ -110,6 +110,8 @@ export function memoryStackCoverage(result: MemoryGymResult): MemoryGymCoverageR
       status: statusFor(
         Boolean(
           result.hardGates.active_reconstruction_multihop &&
+            result.hardGates.active_reconstruction_evidence_convergence &&
+            result.hardGates.active_reconstruction_multi_intent_convergence &&
             result.hardGates.active_reconstruction_intent_rerank &&
             result.hardGates.reconstruction_read_path_side_effects &&
             result.hardGates.prepare_turn_reconstruction_shadow &&
@@ -118,7 +120,7 @@ export function memoryStackCoverage(result: MemoryGymResult): MemoryGymCoverageR
         ),
       ),
       evidence:
-        "reconstructContext follows association paths, reranks noisy branches by intent, respects current world belief and temporal validity state, and does not replace main context",
+        "reconstructContext follows association paths, reports evidence convergence and information gain, requires all detected intent groups to converge, reranks noisy branches by intent, respects current world belief and temporal validity state, and does not replace main context",
     },
     {
       layer: "MCP / Host",

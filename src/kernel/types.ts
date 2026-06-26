@@ -88,6 +88,8 @@ export interface PrepareTurnInput {
     maxSteps?: number | undefined;
     maxBranch?: number | undefined;
     maxMemories?: number | undefined;
+    stopWhenEvidenceEnough?: boolean | undefined;
+    evidenceConvergenceThreshold?: number | undefined;
   } | undefined;
 }
 
@@ -200,6 +202,8 @@ export interface ReconstructContextInput {
   maxSteps?: number | undefined;
   maxBranch?: number | undefined;
   maxMemories?: number | undefined;
+  stopWhenEvidenceEnough?: boolean | undefined;
+  evidenceConvergenceThreshold?: number | undefined;
 }
 
 export interface ReconstructedEvidencePath {
@@ -214,6 +218,7 @@ export interface ReconstructedEvidencePath {
   confidence: number;
   routeScore?: number | undefined;
   routeReason?: string | undefined;
+  informationGain?: number | undefined;
   sourceMemoryId?: string | null | undefined;
   sourceEvidenceId?: string | null | undefined;
 }
@@ -242,6 +247,20 @@ export interface ReconstructedContext {
     uncertainty?: {
       level: "low" | "medium" | "high";
       reasons: string[];
+    } | undefined;
+    evidenceConvergence?: {
+      score: number;
+      reached: boolean;
+      threshold: number;
+      stopWhenEvidenceEnough: boolean;
+      intentMatched: boolean;
+      requiredIntentGroupCount: number;
+      coveredIntentGroupCount: number;
+      missingRequiredIntentGroups: string[];
+      prunedBranchCount: number;
+      frontierRemaining: number;
+      selectedPathCount: number;
+      selectedTags: string[];
     } | undefined;
   };
 }

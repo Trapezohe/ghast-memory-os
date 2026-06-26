@@ -501,6 +501,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
               maxSteps: input.reconstruction.maxSteps,
               maxBranch: input.reconstruction.maxBranch,
               maxMemories: input.reconstruction.maxMemories,
+              stopWhenEvidenceEnough: input.reconstruction.stopWhenEvidenceEnough,
+              evidenceConvergenceThreshold: input.reconstruction.evidenceConvergenceThreshold,
             },
           })
         : undefined;

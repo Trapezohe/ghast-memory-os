@@ -85,6 +85,8 @@ const reconstructContextSchema = z.object({
   maxSteps: z.number().int().positive().optional(),
   maxBranch: z.number().int().positive().optional(),
   maxMemories: z.number().int().positive().optional(),
+  stopWhenEvidenceEnough: z.boolean().optional(),
+  evidenceConvergenceThreshold: z.number().positive().optional(),
 }).strict();
 
 const commitOutcomeSchema = z.object({

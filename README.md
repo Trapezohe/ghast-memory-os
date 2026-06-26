@@ -187,9 +187,18 @@ high-confidence but generic facts; a boundary query prefers boundary and
 memory-search hits using a bounded reciprocal-rank signal, so explicit entity or
 temporal clues can reinforce the chosen evidence path without replacing the
 cue-tag-content graph. Returned paths include `routeScore` and `routeReason` so
-a host can explain why a branch was selected. Returned stats also include
-evidence coverage and reconstruction uncertainty, giving hosts a direct signal
-for whether the reconstructed context is well grounded or should stay cautious.
+a host can explain why a branch was selected. Returned paths also expose
+`informationGain`, and returned stats include evidence convergence, coverage,
+and reconstruction uncertainty. This lets hosts distinguish "we found enough
+supporting evidence" from "we only retrieved plausible nearby memories".
+When a query carries multiple intents, such as "what is the next step and what
+should I avoid?", convergence requires every detected intent group to be covered
+by evidence; a procedure path alone is not enough if the query also asks for a
+boundary.
+`stopWhenEvidenceEnough` defaults to true; set it to false for diagnostics when
+you want the planner to spend the full step budget and inspect additional
+branches. `evidenceConvergenceThreshold` can be raised for stricter release
+gates or lowered for exploratory tooling.
 Memory metadata may carry ISO timestamp validity windows through `validFrom` /
 `validTo` (or `valid_from` / `valid_to`; `expiresAt` is accepted as an expiry
 alias). Ordinary context search and active reconstruction only use memories
