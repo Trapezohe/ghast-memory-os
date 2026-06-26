@@ -6,6 +6,10 @@ export {
   normalizeHostMemorySensitivity,
   syncHostMemorySnapshotsIntoStore,
 } from "./snapshot-import.js";
+export {
+  exportMemorySnapshots,
+  parseMemorySnapshotExport,
+} from "./snapshot-export.js";
 export type {
   HostMemorySnapshot,
   HostMemorySnapshotImportInput,
@@ -13,6 +17,10 @@ export type {
   HostMemorySnapshotSkip,
   HostMemorySnapshotSyncReport,
 } from "./snapshot-import.js";
+export type {
+  MemorySnapshotExport,
+  MemorySnapshotExportInput,
+} from "./snapshot-export.js";
 
 export interface HostCapabilities {
   canObserveConversation: boolean;

@@ -72,6 +72,8 @@ node dist/cli/gmos.js clear --db ./gmos.db --profile local --scope global
 node dist/cli/gmos.js search --db ./gmos.db --profile local --query "简洁"
 node dist/cli/gmos.js list --db ./gmos.db --profile local --query "简洁" --status active
 node dist/cli/gmos.js get --db ./gmos.db --profile local --id memory_xxx
+node dist/cli/gmos.js export --db ./gmos.db --profile local --output-file ./gmos-memory-export.json
+node dist/cli/gmos.js import --db ./gmos.db --profile local --input-file ./gmos-memory-export.json
 node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "我喜欢简洁的中文回答。"
 node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
 node dist/cli/gmos.js mcp tools
@@ -178,6 +180,20 @@ yet expose full event hooks. They are intentionally not raw database access:
   host to import the store directly. They still hide archived, sensitive, and
   person-scoped memory unless the caller explicitly asks for those management
   views.
+
+The CLI also supports portable memory snapshot migration:
+
+```bash
+gmos export --db ./gmos.db --profile local --output-file ./gmos-memory-export.json
+gmos import --db ./new-gmos.db --profile local --input-file ./gmos-memory-export.json
+```
+
+This is not a byte-for-byte database backup. It exports a versioned
+`gmos.memory_snapshot_export.v1` JSON document and imports it through the same
+host snapshot importer used by adapters. By default, export only includes
+active, non-sensitive, non-person memories. Use `--include-sensitive`,
+`--include-person`, or `--include-archived` only when the host explicitly needs
+those management views.
 
 ```ts
 const saved = await memory.add({

@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -57,7 +57,12 @@ try {
       import { createMemoryOS } from "@ghast/memory";
       import { createMemoryStatusReport } from "@ghast/memory/diagnostics";
       import { createEvolutionControlPlane } from "@ghast/memory/evolution";
-      import { createPresetHostAdapter } from "@ghast/memory/host";
+      import {
+        createPresetHostAdapter,
+        exportMemorySnapshots,
+        loadHostMemorySnapshotsIntoStore,
+        parseMemorySnapshotExport,
+      } from "@ghast/memory/host";
       import { createMemoryHttpServer } from "@ghast/memory/http";
       import {
         renderHostCompatibilityGymMarkdown,
@@ -94,6 +99,28 @@ try {
         query: "stable manifests",
       });
       assert.ok(lowLevelMatches.some((entry) => entry.id === lowLevel.id));
+      const exported = await exportMemorySnapshots({
+        memory,
+        profileId: "consumer",
+        query: "stable manifests",
+      });
+      assert.equal(exported.schema, "gmos.memory_snapshot_export.v1");
+      assert.equal(exported.memoryCount, 1);
+      const parsedExport = parseMemorySnapshotExport(JSON.parse(JSON.stringify(exported)));
+      const importStore = createSqliteMemoryStore({ path: path.join(process.cwd(), "consumer-import.db") });
+      await loadHostMemorySnapshotsIntoStore({
+        store: importStore,
+        profileId: "consumer-import",
+        memories: parsedExport.memories,
+        sourceType: "gmos.snapshot_export",
+      });
+      const importMemory = createMemoryOS({ profileId: "consumer-import", store: importStore });
+      const imported = await importMemory.search({
+        profileId: "consumer-import",
+        query: "stable manifests",
+      });
+      assert.equal(imported.length, 1);
+      await importMemory.close();
       const lowLevelExplanation = await memory.explain(lowLevel.id, "consumer");
       assert.equal(lowLevelExplanation.evidence[0].sourceType, "sdk.low_level_add");
       await assert.rejects(
@@ -241,8 +268,12 @@ try {
       } from "@ghast/memory/gym";
       import {
         createPresetHostAdapter,
+        exportMemorySnapshots,
+        loadHostMemorySnapshotsIntoStore,
+        parseMemorySnapshotExport,
         type HostAdapter,
         type HostCompatibilityReport,
+        type MemorySnapshotExport,
       } from "@ghast/memory/host";
       import { createMemoryHttpServer } from "@ghast/memory/http";
       import {
@@ -280,6 +311,18 @@ try {
         id: listed[0].id,
       });
       if (!fetched) throw new Error("low-level typed get failed");
+      const typedExport: MemorySnapshotExport = await exportMemorySnapshots({
+        memory,
+        profileId: "consumer-types",
+        query: "fixture",
+      });
+      const typedParsedExport = parseMemorySnapshotExport(typedExport);
+      await loadHostMemorySnapshotsIntoStore({
+        store: sqliteStore,
+        profileId: "consumer-types-import",
+        memories: typedParsedExport.memories,
+        sourceType: "gmos.snapshot_export",
+      });
       const evolution = createEvolutionControlPlane({ store: sqliteStore, profileId: "consumer-types" });
       const evolutionMode: "report_only" = evolution.mode;
       if (evolutionMode !== "report_only") throw new Error("unexpected evolution mode");
@@ -455,6 +498,46 @@ try {
   );
   assert.equal(getShim.status, 0, getShim.stderr);
   assert.match(getShim.stdout, /Installed bin low-level add prefers stable manifests/);
+  const exportFile = path.join(consumerDir, "bin-memory-export.json");
+  const exportBin = runInstalledCli([
+    "export",
+    "--db",
+    binLowLevelDb,
+    "--profile",
+    "bin",
+    "--query",
+    "stable manifests",
+    "--output-file",
+    exportFile,
+  ]);
+  assert.equal(exportBin.status, 0, exportBin.stderr);
+  assert.equal(existsSync(exportFile), true);
+  const exportPayload = JSON.parse(readFileSync(exportFile, "utf8"));
+  assert.equal(exportPayload.schema, "gmos.memory_snapshot_export.v1");
+  assert.equal(exportPayload.memoryCount, 1);
+  const importDb = path.join(consumerDir, "bin-memory-import.db");
+  const importBin = runInstalledCli([
+    "import",
+    "--db",
+    importDb,
+    "--profile",
+    "bin-import",
+    "--input-file",
+    exportFile,
+  ]);
+  assert.equal(importBin.status, 0, importBin.stderr);
+  assert.equal(JSON.parse(importBin.stdout).loadedCount, 1);
+  const importSearchBin = runInstalledCli([
+    "search",
+    "--db",
+    importDb,
+    "--profile",
+    "bin-import",
+    "--query",
+    "stable manifests",
+  ]);
+  assert.equal(importSearchBin.status, 0, importSearchBin.stderr);
+  assert.match(importSearchBin.stdout, /Installed bin low-level add prefers stable manifests/);
   const statusBin = runInstalledCli(
     [
       "status",

@@ -25,8 +25,11 @@ import {
 } from "../gym/index.js";
 import {
   createPresetHostAdapter,
+  exportMemorySnapshots,
   type HostActualCompatibilityReport,
   type HostPreset,
+  loadHostMemorySnapshotsIntoStore,
+  parseMemorySnapshotExport,
 } from "../host/index.js";
 import { serveMemoryHttp } from "../http/index.js";
 import {
@@ -65,6 +68,8 @@ Usage:
   gmos search --db ./gmos.db --profile local --query "简洁"
   gmos list --db ./gmos.db --profile local --query "简洁" --status active
   gmos get --db ./gmos.db --profile local --id memory_xxx
+  gmos export --db ./gmos.db --profile local --output-file ./gmos-memory-export.json
+  gmos import --db ./gmos.db --profile local --input-file ./gmos-memory-export.json
   gmos observe --db ./gmos.db --profile local --text "我喜欢简洁回答"
   gmos prepare --db ./gmos.db --profile local --text "你知道我什么偏好吗？"
   gmos forget --db ./gmos.db --profile local --query "Moonbase"
@@ -310,6 +315,25 @@ function parseJsonInput(raw: string | undefined): unknown {
       `--input must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+}
+
+function readJsonFileOption(name: string): unknown {
+  const file = value(name);
+  if (!file) usage();
+  return JSON.parse(readFileSync(path.resolve(process.cwd(), file), "utf8")) as unknown;
+}
+
+function writeJsonOutput(payload: unknown): void {
+  const output = JSON.stringify(payload, null, 2);
+  const outputFile = value("--output-file");
+  if (outputFile) {
+    const resolved = path.resolve(process.cwd(), outputFile);
+    mkdirSync(path.dirname(resolved), { recursive: true });
+    writeFileSync(resolved, output);
+    console.log(JSON.stringify({ ok: true, outputFile: resolved }, null, 2));
+    return;
+  }
+  console.log(output);
 }
 
 async function createRuntime() {
@@ -613,6 +637,47 @@ async function main(): Promise<void> {
         return;
       }
       console.log(JSON.stringify(memoryRecord, null, 2));
+      return;
+    }
+
+    if (command === "export") {
+      const requestedStatus = listStatusOption();
+      if (
+        !has("--include-archived") &&
+        (requestedStatus === "archived" || requestedStatus === "any")
+      ) {
+        throw new Error("--status archived|any requires --include-archived");
+      }
+      const status = has("--include-archived")
+        ? (requestedStatus ?? "any")
+        : (requestedStatus ?? "active");
+      const exported = await exportMemorySnapshots({
+        memory,
+        profileId,
+        query: value("--query"),
+        limit: positiveIntegerOption("--limit", 500),
+        status,
+        kind: optionalMemoryKindOption(),
+        scope: value("--scope"),
+        includeSensitive: has("--include-sensitive"),
+        includePerson: has("--include-person"),
+      });
+      writeJsonOutput(exported);
+      return;
+    }
+
+    if (command === "import") {
+      const parsed = parseMemorySnapshotExport(readJsonFileOption("--input-file"));
+      const report = await loadHostMemorySnapshotsIntoStore({
+        store,
+        profileId,
+        memories: parsed.memories,
+        sourceType: "gmos.snapshot_export",
+        sourceUriPrefix: parsed.sourceUriPrefix,
+        skipPerson: !has("--include-person"),
+        skipSecretLike: true,
+      });
+      console.log(JSON.stringify({ ok: true, ...report }, null, 2));
       return;
     }
 

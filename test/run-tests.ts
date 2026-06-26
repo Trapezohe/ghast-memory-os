@@ -27,9 +27,11 @@ import {
 import {
   classifyHostCompatibility,
   createPresetHostAdapter,
+  exportMemorySnapshots,
   loadHostMemorySnapshotsIntoStore,
   normalizeHostMemoryKind,
   normalizeHostMemorySensitivity,
+  parseMemorySnapshotExport,
   syncHostMemorySnapshotsIntoStore,
 } from "../src/host/index.js";
 import {
@@ -549,6 +551,104 @@ assert.equal(
   }))?.id,
   lowLevelPerson.id,
 );
+const portableMemory = await memory.add({
+  profileId: "test",
+  kind: "preference",
+  content: "Portable snapshot migration fixture prefers explicit exports.",
+});
+const defaultSnapshotExport = await exportMemorySnapshots({
+  memory,
+  profileId: "test",
+  query: "portable snapshot migration",
+});
+assert.equal(defaultSnapshotExport.schema, "gmos.memory_snapshot_export.v1");
+assert.equal(defaultSnapshotExport.filters.status, "active");
+assert.equal(defaultSnapshotExport.filters.includeSensitive, false);
+assert.equal(defaultSnapshotExport.filters.includePerson, false);
+assert.deepEqual(
+  defaultSnapshotExport.memories.map((entry) => entry.id),
+  [portableMemory.id],
+);
+assert.equal(
+  JSON.stringify(defaultSnapshotExport).includes("123-45-6789"),
+  false,
+);
+assert.equal(JSON.stringify(defaultSnapshotExport).includes("Alice prefers tea"), false);
+const sensitiveSnapshotExport = await exportMemorySnapshots({
+  memory,
+  profileId: "test",
+  query: "123-45-6789",
+  includeSensitive: true,
+});
+assert.deepEqual(
+  sensitiveSnapshotExport.memories.map((entry) => entry.id),
+  [lowLevelSensitive.id],
+);
+const personSnapshotExport = await exportMemorySnapshots({
+  memory,
+  profileId: "test",
+  query: "Alice tea",
+  includePerson: true,
+});
+assert.deepEqual(
+  personSnapshotExport.memories.map((entry) => entry.id),
+  [lowLevelPerson.id],
+);
+const archivedSnapshotExport = await exportMemorySnapshots({
+  memory,
+  profileId: "test",
+  query: "risk-first SDK docs",
+  status: "archived",
+});
+assert.equal(
+  archivedSnapshotExport.memories.some((entry) => entry.id === lowLevelMemory.id),
+  true,
+);
+const parsedSnapshotExport = parseMemorySnapshotExport(
+  JSON.parse(JSON.stringify(defaultSnapshotExport)),
+);
+assert.equal(parsedSnapshotExport.memoryCount, defaultSnapshotExport.memoryCount);
+assert.throws(
+  () => parseMemorySnapshotExport({ schema: "gmos.unknown", memories: [] }),
+  /Unsupported gmOS memory snapshot export schema/,
+);
+const snapshotExportMissingTimestamp = JSON.parse(
+  JSON.stringify(defaultSnapshotExport),
+) as Record<string, unknown>;
+delete snapshotExportMissingTimestamp.exportedAt;
+assert.throws(
+  () => parseMemorySnapshotExport(snapshotExportMissingTimestamp),
+  /requires exportedAt/,
+);
+assert.throws(
+  () =>
+    parseMemorySnapshotExport({
+      ...JSON.parse(JSON.stringify(defaultSnapshotExport)),
+      memoryCount: defaultSnapshotExport.memoryCount + 1,
+    }),
+  /memoryCount does not match memories/,
+);
+const importedSnapshotStore = createSqliteMemoryStore({
+  path: path.join(tmp, "snapshot-import.db"),
+});
+await loadHostMemorySnapshotsIntoStore({
+  store: importedSnapshotStore,
+  profileId: "snapshot_import",
+  memories: parsedSnapshotExport.memories,
+  sourceType: "gmos.snapshot_export",
+  sourceUriPrefix: parsedSnapshotExport.sourceUriPrefix,
+});
+const importedSnapshotMemory = createMemoryOS({
+  profileId: "snapshot_import",
+  store: importedSnapshotStore,
+});
+const importedSnapshotMatches = await importedSnapshotMemory.search({
+  profileId: "snapshot_import",
+  query: "explicit exports",
+});
+assert.equal(importedSnapshotMatches.length, 1);
+assert.match(importedSnapshotMatches[0]?.content ?? "", /explicit exports/);
+await importedSnapshotMemory.close();
 
 await memory.observe({
   type: "conversation.message",
@@ -1649,6 +1749,288 @@ const cliPersonIncludedGet = spawnSync(
 );
 assert.equal(cliPersonIncludedGet.status, 0, cliPersonIncludedGet.stderr);
 assert.match(cliPersonIncludedGet.stdout, /李雷/);
+const cliExportFile = path.join(tmp, "cli-snapshot-export.json");
+const cliExport = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "export",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--query",
+    "concise answers",
+    "--output-file",
+    cliExportFile,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliExport.status, 0, cliExport.stderr);
+assert.equal(existsSync(cliExportFile), true);
+const cliExportPayload = JSON.parse(readFileSync(cliExportFile, "utf8")) as {
+  schema?: string;
+  memoryCount?: number;
+  memories?: Array<{ id?: string; content?: string }>;
+};
+assert.equal(cliExportPayload.schema, "gmos.memory_snapshot_export.v1");
+assert.equal(cliExportPayload.memoryCount, 1);
+assert.equal(cliExportPayload.memories?.[0]?.id, cliAddMemory.id);
+assert.match(cliExportPayload.memories?.[0]?.content ?? "", /concise answers/);
+assert.equal(JSON.stringify(cliExportPayload).includes("护照办理偏好"), false);
+assert.equal(JSON.stringify(cliExportPayload).includes("李雷"), false);
+const cliSensitiveExport = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "export",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--query",
+    "护照",
+    "--include-sensitive",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliSensitiveExport.status, 0, cliSensitiveExport.stderr);
+assert.match(cliSensitiveExport.stdout, /护照办理偏好/);
+const cliPersonExport = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "export",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--query",
+    "李雷",
+    "--include-person",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliPersonExport.status, 0, cliPersonExport.stderr);
+assert.match(cliPersonExport.stdout, /李雷/);
+const cliImportDb = path.join(tmp, "cli-snapshot-import.db");
+const cliImport = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "import",
+    "--db",
+    cliImportDb,
+    "--profile",
+    "cli_import",
+    "--input-file",
+    cliExportFile,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliImport.status, 0, cliImport.stderr);
+assert.equal(JSON.parse(cliImport.stdout).loadedCount, 1);
+const cliImportSearch = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "search",
+    "--db",
+    cliImportDb,
+    "--profile",
+    "cli_import",
+    "--query",
+    "concise answers",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliImportSearch.status, 0, cliImportSearch.stderr);
+assert.match(cliImportSearch.stdout, /concise answers/);
+const cliMixedImportFile = path.join(tmp, "cli-mixed-snapshot-export.json");
+writeFileSync(
+  cliMixedImportFile,
+  JSON.stringify(
+    {
+      schema: "gmos.memory_snapshot_export.v1",
+      exportedAt: "2026-06-25T00:00:00.000Z",
+      profileId: "cli_low",
+      sourceUriPrefix: "gmos://memory",
+      filters: {
+        status: "active",
+        includeSensitive: true,
+        includePerson: true,
+        limit: 3,
+      },
+      memoryCount: 3,
+      memories: [
+        {
+          id: "cli_mixed_normal",
+          content: "CLI mixed import keeps normal portable memory.",
+          kind: "fact",
+          sensitivity: "normal",
+          sourceUri: "gmos://memory/cli_mixed_normal",
+        },
+        {
+          id: "cli_mixed_person",
+          content: "PERSON: Dana: Dana prefers tea.",
+          kind: "person",
+          sensitivity: "normal",
+          sourceUri: "gmos://memory/cli_mixed_person",
+        },
+        {
+          id: "cli_mixed_secret",
+          content: "api key: sk-cliimportsecret1234567890",
+          kind: "fact",
+          sensitivity: "secret_like",
+          sourceUri: "gmos://memory/cli_mixed_secret",
+        },
+      ],
+    },
+    null,
+    2,
+  ),
+);
+const cliMixedDefaultImportDb = path.join(tmp, "cli-mixed-default-import.db");
+const cliMixedDefaultImport = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "import",
+    "--db",
+    cliMixedDefaultImportDb,
+    "--profile",
+    "cli_mixed_default",
+    "--input-file",
+    cliMixedImportFile,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliMixedDefaultImport.status, 0, cliMixedDefaultImport.stderr);
+const cliMixedDefaultImportPayload = JSON.parse(cliMixedDefaultImport.stdout) as {
+  loadedCount?: number;
+  skipped?: Array<{ reason?: string }>;
+};
+assert.equal(cliMixedDefaultImportPayload.loadedCount, 1);
+assert.deepEqual(
+  cliMixedDefaultImportPayload.skipped?.map((entry) => entry.reason).sort(),
+  ["person_memory", "secret_like"],
+);
+const cliMixedDefaultPersonSearch = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "search",
+    "--db",
+    cliMixedDefaultImportDb,
+    "--profile",
+    "cli_mixed_default",
+    "--query",
+    "Dana tea",
+    "--include-person",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliMixedDefaultPersonSearch.status, 0, cliMixedDefaultPersonSearch.stderr);
+assert.equal(cliMixedDefaultPersonSearch.stdout.includes("Dana prefers tea"), false);
+const cliMixedDefaultSecretSearch = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "search",
+    "--db",
+    cliMixedDefaultImportDb,
+    "--profile",
+    "cli_mixed_default",
+    "--query",
+    "sk-cliimportsecret",
+    "--include-sensitive",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliMixedDefaultSecretSearch.status, 0, cliMixedDefaultSecretSearch.stderr);
+assert.equal(cliMixedDefaultSecretSearch.stdout.includes("sk-cliimportsecret"), false);
+const cliMixedPersonImportDb = path.join(tmp, "cli-mixed-person-import.db");
+const cliMixedPersonImport = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "import",
+    "--db",
+    cliMixedPersonImportDb,
+    "--profile",
+    "cli_mixed_person",
+    "--input-file",
+    cliMixedImportFile,
+    "--include-person",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliMixedPersonImport.status, 0, cliMixedPersonImport.stderr);
+const cliMixedPersonImportPayload = JSON.parse(cliMixedPersonImport.stdout) as {
+  loadedCount?: number;
+  skipped?: Array<{ reason?: string }>;
+};
+assert.equal(cliMixedPersonImportPayload.loadedCount, 2);
+assert.deepEqual(
+  cliMixedPersonImportPayload.skipped?.map((entry) => entry.reason),
+  ["secret_like"],
+);
+const cliMixedPersonSearch = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "search",
+    "--db",
+    cliMixedPersonImportDb,
+    "--profile",
+    "cli_mixed_person",
+    "--query",
+    "Dana tea",
+    "--include-person",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliMixedPersonSearch.status, 0, cliMixedPersonSearch.stderr);
+assert.match(cliMixedPersonSearch.stdout, /Dana prefers tea/);
+const cliMixedPersonSecretSearch = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "search",
+    "--db",
+    cliMixedPersonImportDb,
+    "--profile",
+    "cli_mixed_person",
+    "--query",
+    "sk-cliimportsecret",
+    "--include-sensitive",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliMixedPersonSecretSearch.status, 0, cliMixedPersonSecretSearch.stderr);
+assert.equal(cliMixedPersonSecretSearch.stdout.includes("sk-cliimportsecret"), false);
 const cliUpdate = spawnSync(
   process.execPath,
   [
@@ -1744,6 +2126,45 @@ const cliArchivedList = spawnSync(
 );
 assert.equal(cliArchivedList.status, 0, cliArchivedList.stderr);
 assert.match(cliArchivedList.stdout, /risk-first answers/);
+const cliArchivedExportWithoutFlag = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "export",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--query",
+    "risk-first answers",
+    "--status",
+    "archived",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliArchivedExportWithoutFlag.status, 0);
+assert.match(cliArchivedExportWithoutFlag.stderr, /requires --include-archived/);
+const cliArchivedExport = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "export",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--query",
+    "risk-first answers",
+    "--include-archived",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliArchivedExport.status, 0, cliArchivedExport.stderr);
+assert.match(cliArchivedExport.stdout, /risk-first answers/);
 const cliClearAdd = spawnSync(
   process.execPath,
   [
