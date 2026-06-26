@@ -117,6 +117,18 @@ function normalizedMetadataValue(metadata: Record<string, unknown>, key: string)
   return typeof value === "string" && value.trim().length > 0 ? value.trim().toLowerCase() : null;
 }
 
+function metadataStringArray(metadata: Record<string, unknown>, key: string): string[] {
+  const value = metadata[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+}
+
+function entityAliases(metadata: Record<string, unknown>): string[] {
+  const entity = metadata.entityResolution;
+  if (!entity || typeof entity !== "object" || Array.isArray(entity)) return [];
+  return metadataStringArray(entity as Record<string, unknown>, "aliases");
+}
+
 export function associationTagsForMemory(memory: MemoryRecord): string[] {
   const tags = [
     memory.kind,
@@ -143,7 +155,9 @@ export function associationTagsForBelief(belief: WorldBeliefRecord): string[] {
 export function associationCuesForBelief(belief: WorldBeliefRecord): AssociationCue[] {
   return [
     { cue: belief.predicate, cueKind: "predicate" },
-    ...extractAssociationCues(`${belief.subject} ${belief.object}`),
+    ...extractAssociationCues(
+      [belief.subject, ...entityAliases(belief.metadata), belief.object].join(" "),
+    ),
   ];
 }
 

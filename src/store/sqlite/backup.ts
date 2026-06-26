@@ -209,6 +209,7 @@ function normalizeWorldBelief(row: Record<string, unknown>): WorldBeliefRecord {
     confidence: Number(row.confidence),
     status: String(row.status) as WorldBeliefRecord["status"],
     sourceMemoryId: row.source_memory_id == null ? null : String(row.source_memory_id),
+    metadata: parseJsonObject(row.metadata_json),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -522,9 +523,11 @@ function beliefAllowedBySensitivity(
   belief: WorldBeliefRecord,
   options: { includeSensitive: boolean },
 ): boolean {
-  return contentAllowedBySensitivity(
-    `${belief.id}\n${belief.profileId}\n${belief.subject}\n${belief.predicate}\n${belief.object}\n${belief.sourceMemoryId ?? ""}`,
-    options,
+  return (
+    contentAllowedBySensitivity(
+      `${belief.id}\n${belief.profileId}\n${belief.subject}\n${belief.predicate}\n${belief.object}\n${belief.sourceMemoryId ?? ""}`,
+      options,
+    ) && payloadAllowedBySensitivity(belief.metadata, options)
   );
 }
 
@@ -783,6 +786,10 @@ function assertWorldBeliefRecord(
   assertFiniteNumber(value.confidence, `${path}.confidence`, { min: 0, max: 1 });
   assertEnum(value.status, WORLD_BELIEF_STATUSES, `${path}.status`);
   assertOptionalNonEmptyStringOrNull(value.sourceMemoryId, `${path}.sourceMemoryId`);
+  if (value.metadata === undefined) {
+    (value as { metadata?: Record<string, unknown> }).metadata = {};
+  }
+  assertPlainObject(value.metadata, `${path}.metadata`);
   assertString(value.createdAt, `${path}.createdAt`);
   assertString(value.updatedAt, `${path}.updatedAt`);
 }
@@ -1190,6 +1197,7 @@ export function restoreSqliteProfileBackup(
       targetProfileId,
     }),
     profileId: targetProfileId,
+    metadata: belief.metadata ?? {},
     sourceMemoryId: belief.sourceMemoryId ? (memoryIdMap.get(belief.sourceMemoryId) ?? null) : null,
   }));
   const failureEvents = backup.failureEvents.map((failure) => ({
@@ -1276,8 +1284,8 @@ export function restoreSqliteProfileBackup(
     const beliefStmt = db.prepare(
       `${verb} INTO gmos_world_beliefs (
         id, profile_id, subject, predicate, object, confidence, status,
-        source_memory_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        source_memory_id, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const belief of worldBeliefs) {
       applyChangeCount(
@@ -1290,6 +1298,7 @@ export function restoreSqliteProfileBackup(
           belief.confidence,
           belief.status,
           belief.sourceMemoryId ?? null,
+          JSON.stringify(belief.metadata ?? {}),
           belief.createdAt,
           belief.updatedAt,
         ),

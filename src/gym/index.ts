@@ -841,6 +841,22 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     confidence: 0.94,
     cardinality: "single",
   });
+  await store.addWorldBelief({
+    profileId: "gym_reconstruct",
+    subject: "Orion project",
+    predicate: "project.state",
+    object: "OrionOwnerAlpha",
+    confidence: 0.82,
+    cardinality: "single",
+  });
+  await store.addWorldBelief({
+    profileId: "gym_reconstruct",
+    subject: "project:orion",
+    predicate: "project.state",
+    object: "OrionOwnerBeta",
+    confidence: 0.91,
+    cardinality: "single",
+  });
   const staleCurrentStateSourceMemory = await memory.add({
     profileId: "gym_reconstruct",
     kind: "project",
@@ -912,6 +928,12 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     maxSteps: 4,
     maxBranch: 8,
   });
+  const entityResolvedCurrentStateReconstruction = await memory.reconstructContext({
+    profileId: "gym_reconstruct",
+    query: "Orion project current state",
+    maxSteps: 4,
+    maxBranch: 8,
+  });
   const sourceCurrentStateReconstruction = await memory.reconstructContext({
     profileId: "gym_reconstruct",
     query: "atlas source current state",
@@ -940,6 +962,14 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
       legacyCurrentStateReconstruction.contextBlock.includes("AtlasLegacyBeta") &&
       !legacyCurrentStateReconstruction.contextBlock.includes("AtlasLegacyAlpha"),
     "single-cardinality world beliefs should supersede stale active beliefs and repair associations",
+    "world",
+  );
+  gate(
+    result,
+    "entity_resolution_current_state_invalidation",
+    entityResolvedCurrentStateReconstruction.contextBlock.includes("OrionOwnerBeta") &&
+      !entityResolvedCurrentStateReconstruction.contextBlock.includes("OrionOwnerAlpha"),
+    "entity-equivalent world belief subjects should converge before current-state invalidation",
     "world",
   );
   gate(
@@ -978,6 +1008,7 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "reconstruction_belief_source_privacy_inheritance",
     "reconstruction_secret_like_belief_exclusion",
     "world_belief_single_cardinality_supersession",
+    "entity_resolution_current_state_invalidation",
     "current_state_suppresses_superseded_source_memory",
     "temporal_validity_window_context_filter",
   ]);

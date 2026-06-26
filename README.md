@@ -38,6 +38,9 @@ const prepared = await memory.prepareTurn({
 - SQLite association projection for active reconstruction. It derives
   cue-tag-content edges from existing memory, world belief, and task trajectory
   rows; those associations are an index, not a second source of truth.
+- Deterministic world-entity normalization for current-state beliefs. Equivalent
+  subjects such as `Atlas project`, `project:atlas`, and `Project Atlas`
+  converge before single-cardinality invalidation runs.
 - Runtime facade: `observe`, `prepareTurn`, `commitOutcome`, `recordFeedback`,
   `reconstructContext`, `forget`, `explain`.
 - Pluggable extraction pipeline for host-provided structured extractors. The
@@ -267,14 +270,16 @@ custom extraction failure to produce no memory instead of rule fallback.
 
 Use `cardinality: "single"` only for current-state beliefs where one active
 value should replace the previous one, such as a project's current owner,
-status, or next step. gmOS then marks the previous active world belief for the
-same `profileId + subject + predicate` as `superseded` and removes its
-association projection from active reconstruction. Ordinary context search and
-active reconstruction also suppress source memories that only support the
-superseded current-state value, while `purpose: "manage"` and
-`purpose: "delete"` can still find those source memories for audit, cleanup,
-or explicit forgetting. Omit `cardinality`, or set `"multi"`, for preferences,
-boundaries, facts, and procedures that can validly coexist.
+status, or next step. gmOS first resolves the subject into a canonical entity
+key; for example, `Atlas project`, `project:atlas`, and `Project Atlas` all
+converge to the same project entity. It then marks the previous active world
+belief for the same `profileId + canonical subject + predicate` as
+`superseded` and removes its association projection from active reconstruction.
+Ordinary context search and active reconstruction also suppress source memories
+that only support the superseded current-state value, while `purpose: "manage"`
+and `purpose: "delete"` can still find those source memories for audit,
+cleanup, or explicit forgetting. Omit `cardinality`, or set `"multi"`, for
+preferences, boundaries, facts, and procedures that can validly coexist.
 
 The host compatibility gym distinguishes target presets from actual host
 adoption. `--hosts ghast` without an actual report tests the SDK's target Ghast

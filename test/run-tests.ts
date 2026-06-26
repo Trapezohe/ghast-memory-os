@@ -146,7 +146,7 @@ function rawHttpRequest(port: number, payload: string): Promise<string> {
 const store: SqliteMemoryStore = createSqliteMemoryStore({ path: dbPath });
 const memory = createMemoryOS({ profileId: "test", store });
 await store.initialize();
-assert.equal(await store.schemaVersion(), 3);
+assert.equal(await store.schemaVersion(), 4);
 
 const legacyDbPath = path.join(tmp, "legacy-no-ledger.db");
 const legacyHandle = new Database(legacyDbPath);
@@ -178,7 +178,7 @@ legacyHandle.exec(`
 `);
 const legacyStore = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
 await legacyStore.initialize();
-assert.equal(await legacyStore.schemaVersion(), 3);
+assert.equal(await legacyStore.schemaVersion(), 4);
 assert.equal(
   (
     legacyHandle
@@ -226,7 +226,7 @@ assert.ok(
 );
 const legacyStoreReopen = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
 await legacyStoreReopen.initialize();
-assert.equal(await legacyStoreReopen.schemaVersion(), 3);
+assert.equal(await legacyStoreReopen.schemaVersion(), 4);
 assert.equal(
   (
     legacyHandle
@@ -274,7 +274,7 @@ legacyV2Handle.exec(`
 `);
 const legacyV2Store = createSqliteMemoryStore({ path: legacyV2DbPath, handle: legacyV2Handle });
 await legacyV2Store.initialize();
-assert.equal(await legacyV2Store.schemaVersion(), 3);
+assert.equal(await legacyV2Store.schemaVersion(), 4);
 assert.ok(
   (
     legacyV2Handle
@@ -337,7 +337,7 @@ const extractorMemory = createMemoryOS({
           content: "Custom extractor says the Helio project is blocked on a migration probe.",
           confidence: 0.88,
           predicate: "project.state",
-          subject: "project:helio",
+          subject: "Helio project",
           cardinality: "single",
           metadata: { extractorFixture: "project" },
         },
@@ -379,7 +379,7 @@ await extractorMemory.observe({
 });
 await extractorStore.addWorldBelief({
   profileId: "extractor",
-  subject: "project:helio",
+  subject: "project:HELIO",
   predicate: "project.state",
   object: "Custom extractor says the Helio project is blocked on rollout review.",
   confidence: 0.93,
@@ -415,6 +415,24 @@ await extractorStore.addWorldBelief({
   confidence: 0.91,
   cardinality: "single",
 });
+await extractorStore.addWorldBelief({
+  profileId: "extractor",
+  subject: "project:alias-safety",
+  subjectAliases: ["sk-aliassecret1234567890"],
+  predicate: "project.state",
+  object: "Alias safety project has a public current state.",
+  confidence: 0.91,
+  cardinality: "single",
+});
+await extractorStore.addWorldBelief({
+  profileId: "extractor",
+  subject: "project:metadata-safety",
+  predicate: "project.state",
+  object: "Metadata safety project has a public current state.",
+  confidence: 0.91,
+  cardinality: "single",
+  metadata: { note: "ssn 123-45-6789 should not leak through backup metadata" },
+});
 const extractorInspectDb = new Database(path.join(tmp, "custom-extractor.db"), { readonly: true });
 try {
   const activeProjectBeliefCount = (
@@ -430,6 +448,28 @@ try {
       .get() as { count: number }
   ).count;
   assert.equal(activeProjectBeliefCount, 1);
+  const activeProjectBelief = extractorInspectDb
+    .prepare(
+      `SELECT subject, metadata_json AS metadataJson
+       FROM gmos_world_beliefs
+       WHERE profile_id = 'extractor'
+         AND subject = 'project:helio'
+         AND predicate = 'project.state'
+         AND status = 'active'
+       LIMIT 1`,
+    )
+    .get() as { subject: string; metadataJson: string } | undefined;
+  assert.equal(activeProjectBelief?.subject, "project:helio");
+  const activeProjectMetadata = JSON.parse(activeProjectBelief?.metadataJson ?? "{}") as {
+    entityResolution?: { aliases?: string[]; canonicalSubject?: string };
+  };
+  assert.equal(activeProjectMetadata.entityResolution?.canonicalSubject, "project:helio");
+  assert.equal(
+    activeProjectMetadata.entityResolution?.aliases?.some(
+      (alias) => alias.toLowerCase() === "helio project",
+    ),
+    true,
+  );
   const supersededProjectBeliefCount = (
     extractorInspectDb
       .prepare(
@@ -493,9 +533,33 @@ try {
       .get() as { count: number }
   ).count;
   assert.equal(staleLegacyWorldBeliefAssociationCount, 0);
+  const aliasSafetyRows = extractorInspectDb
+    .prepare(
+      `SELECT metadata_json AS metadataJson
+       FROM gmos_world_beliefs
+       WHERE profile_id = 'extractor'
+         AND subject = 'project:alias-safety'`,
+    )
+    .all() as Array<{ metadataJson: string }>;
+  assert.equal(JSON.stringify(aliasSafetyRows).includes("sk-aliassecret"), false);
+  const unsafeAliasAssociationCount = (
+    extractorInspectDb
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM gmos_associations
+         WHERE profile_id = 'extractor'
+           AND cue LIKE '%sk-aliassecret%'`,
+      )
+      .get() as { count: number }
+  ).count;
+  assert.equal(unsafeAliasAssociationCount, 0);
 } finally {
   extractorInspectDb.close();
 }
+const extractorSafeBackup = extractorStore.exportProfileBackup({ profileId: "extractor" });
+const extractorSafeBackupJson = JSON.stringify(extractorSafeBackup);
+assert.equal(extractorSafeBackupJson.includes("sk-aliassecret"), false);
+assert.equal(extractorSafeBackupJson.includes("123-45-6789"), false);
 await extractorStore.rebuildAssociations({ profileId: "extractor" });
 const currentProjectState = await extractorMemory.reconstructContext({
   profileId: "extractor",
@@ -2575,7 +2639,7 @@ assert.equal(statusReport.framework, "ghast-memory-os");
 assert.equal(statusReport.package.name, packageJson.name);
 assert.equal(statusReport.package.version, packageJson.version);
 assert.equal(statusReport.storage.status, "ok");
-assert.equal(statusReport.storage.schemaVersion, 3);
+assert.equal(statusReport.storage.schemaVersion, 4);
 assert.equal(statusReport.storage.searchIndex?.status, "ok");
 assert.equal(statusReport.storage.searchIndex?.missingEntryCount, 0);
 assert.equal(statusReport.storage.rowCounts.gmos_failure_events >= testProfileFailures.length, true);
@@ -3265,7 +3329,7 @@ try {
   assert.equal(status.status, 200);
   assert.equal(
     ((status.body.report as { storage?: { schemaVersion?: number } }).storage ?? {}).schemaVersion,
-    3,
+    4,
   );
   assert.equal(status.text.includes("mcp fixture failure"), false);
   const observe = await postJson(`${httpAddress.url}/observe`, {
@@ -5079,7 +5143,7 @@ const cliStatusPayload = JSON.parse(cliStatus.stdout) as {
   failureSummary?: { inspectedFailureCount?: number };
   hostCompatibility?: { level?: string };
 };
-assert.equal(cliStatusPayload.storage?.schemaVersion, 3);
+assert.equal(cliStatusPayload.storage?.schemaVersion, 4);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_memories ?? 0) > 0);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_associations ?? 0) > 0);
 assert.equal(cliStatusPayload.storage?.searchIndex?.status, "ok");
@@ -5128,7 +5192,7 @@ assert.equal(gym.roadmapResult.status, "clear");
 assert.equal(gym.runManifest.dbPathMode, "memory");
 assert.equal(gym.runManifest.package.name, packageJson.name);
 assert.equal(gym.runManifest.package.version, packageJson.version);
-assert.equal(gym.runManifest.sqliteSchemaVersion, 3);
+assert.equal(gym.runManifest.sqliteSchemaVersion, 4);
 assert.equal(gym.runManifest.git.branch, expectedGit.branch);
 assert.equal(gym.runManifest.git.sha, expectedGit.sha);
 assert.equal(gym.runManifest.git.dirty, expectedGit.dirty);
@@ -5141,7 +5205,7 @@ assert.match(renderedGym, /gmOS Memory Gym Report/);
 assert.match(renderedGym, /Coverage Matrix/);
 assert.match(renderedGym, /Run Manifest/);
 assert.match(renderedGym, /Package: @ghast\/memory@/);
-assert.match(renderedGym, /SQLite schema: 3/);
+assert.match(renderedGym, /SQLite schema: 4/);
 const externalBenchmarkJsonl = [
   JSON.stringify({
     id: "project-next-step",
@@ -5384,7 +5448,7 @@ for (const [host, expectedLevel] of [
   };
   assert.equal(doctorJson.encrypted, false);
   assert.equal(doctorJson.schema?.dialect, "sqlite");
-  assert.equal(doctorJson.schema?.version, 3);
+  assert.equal(doctorJson.schema?.version, 4);
   assert.equal(doctorJson.hostCompatibility?.level, expectedLevel);
   assert.equal(doctorJson.searchIndex?.status, "ok");
   assert.equal(doctorJson.searchIndex?.missingEntryCount, 0);

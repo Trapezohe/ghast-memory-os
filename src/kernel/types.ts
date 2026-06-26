@@ -165,6 +165,7 @@ export interface WorldBeliefRecord {
   confidence: number;
   status: "active" | "candidate" | "rejected" | "superseded";
   sourceMemoryId?: string | null | undefined;
+  metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
 }
@@ -509,11 +510,13 @@ export interface ArchiveMemoriesInput {
 export interface AddWorldBeliefInput {
   profileId: string;
   subject: string;
+  subjectAliases?: string[] | undefined;
   predicate: string;
   object: string;
   confidence?: number | undefined;
   sourceMemoryId?: string | null | undefined;
   cardinality?: "single" | "multi" | undefined;
+  metadata?: Record<string, unknown> | undefined;
 }
 
 export interface RecordFailureInput {

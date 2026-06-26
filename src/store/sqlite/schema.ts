@@ -1,6 +1,16 @@
 import type Database from "better-sqlite3";
 
-export const GMOS_SQLITE_SCHEMA_VERSION = 3;
+export const GMOS_SQLITE_SCHEMA_VERSION = 4;
+
+function columnExists(db: Database.Database, table: string, column: string): boolean {
+  return db
+    .prepare(`PRAGMA table_info(${table})`)
+    .all()
+    .some((row) => {
+      const record = row as { name?: unknown };
+      return record.name === column;
+    });
+}
 
 export function ensureSqliteSchema(db: Database.Database): void {
   const previousSchemaVersion = sqliteSchemaVersion(db);
@@ -57,6 +67,7 @@ export function ensureSqliteSchema(db: Database.Database): void {
       confidence REAL NOT NULL DEFAULT 0.5,
       status TEXT NOT NULL DEFAULT 'active',
       source_memory_id TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -151,6 +162,18 @@ export function ensureSqliteSchema(db: Database.Database): void {
       VALUES (
         3,
         'associative_reconstruction_index',
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      );
+  `);
+
+  if (!columnExists(db, "gmos_world_beliefs", "metadata_json")) {
+    db.exec("ALTER TABLE gmos_world_beliefs ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';");
+  }
+  db.exec(`
+    INSERT OR IGNORE INTO gmos_schema_migrations(version, name, applied_at)
+      VALUES (
+        4,
+        'world_belief_entity_metadata',
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       );
   `);

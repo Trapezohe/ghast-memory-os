@@ -94,11 +94,12 @@ export function memoryStackCoverage(result: MemoryGymResult): MemoryGymCoverageR
         Boolean(
           result.hardGates.preference_recall &&
             result.hardGates.holdout_preference_recall &&
-            result.hardGates.world_belief_single_cardinality_supersession,
+            result.hardGates.world_belief_single_cardinality_supersession &&
+            result.hardGates.entity_resolution_current_state_invalidation,
         ),
       ),
       evidence:
-        "preference extraction, generated preference recall, and single-cardinality world belief supersession are exercised",
+        "preference extraction, generated preference recall, entity resolution, and single-cardinality world belief supersession are exercised",
     },
     {
       layer: "Controller / Context",
@@ -116,11 +117,12 @@ export function memoryStackCoverage(result: MemoryGymResult): MemoryGymCoverageR
             result.hardGates.reconstruction_read_path_side_effects &&
             result.hardGates.prepare_turn_reconstruction_shadow &&
             result.hardGates.world_belief_single_cardinality_supersession &&
+            result.hardGates.entity_resolution_current_state_invalidation &&
             result.hardGates.temporal_validity_window_context_filter,
         ),
       ),
       evidence:
-        "reconstructContext follows association paths, reports evidence convergence and information gain, requires all detected intent groups to converge, reranks noisy branches by intent, respects current world belief and temporal validity state, and does not replace main context",
+        "reconstructContext follows association paths, reports evidence convergence and information gain, requires all detected intent groups to converge, reranks noisy branches by intent, respects entity-resolved current world belief and temporal validity state, and does not replace main context",
     },
     {
       layer: "MCP / Host",
