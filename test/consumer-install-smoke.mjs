@@ -369,6 +369,8 @@ try {
     `
       import {
         createMemoryOS,
+        type MemoryExtractionCandidate,
+        type MemoryExtractor,
         type MemoryRecord,
         type MemoryStore,
         type RepairSearchIndexResult,
@@ -424,6 +426,34 @@ try {
       const genericStore: MemoryStore = sqliteStore;
       const schemaVersion: number = sqliteStore.schemaVersion();
       const memory = createMemoryOS({ profileId: "consumer-types", store: genericStore });
+      const typedExtractor: MemoryExtractor = (input) => {
+        const candidate: MemoryExtractionCandidate = {
+          kind: "preference",
+          content: \`Typed extractor saw \${input.event.content}\`,
+          confidence: 0.83,
+          predicate: "user.preference",
+          actionPolicyKind: "prefer",
+        };
+        return [candidate];
+      };
+      const extractorStore = createSqliteMemoryStore({ path: ":memory:" });
+      const extractorMemory = createMemoryOS({
+        profileId: "consumer-types-extractor",
+        store: extractorStore,
+        extractor: typedExtractor,
+      });
+      await extractorMemory.observe({
+        type: "conversation.message",
+        profileId: "consumer-types-extractor",
+        role: "user",
+        content: "public custom extraction",
+      });
+      const typedExtractorMatches = await extractorMemory.search({
+        profileId: "consumer-types-extractor",
+        query: "public custom extraction",
+      });
+      if (typedExtractorMatches.length !== 1) throw new Error("typed extractor failed");
+      await extractorMemory.close();
       await memory.add({
         profileId: "consumer-types",
         kind: "preference",

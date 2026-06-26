@@ -104,6 +104,40 @@ export interface EvidenceEvent {
   createdAt: string;
 }
 
+export interface MemoryExtractionCandidate {
+  kind: MemoryKind;
+  content: string;
+  confidence: number;
+  predicate?: string | undefined;
+  subject?: string | undefined;
+  actionPolicyKind?: "do_not_push" | "prefer" | "procedure" | undefined;
+  metadata?: Record<string, unknown> | undefined;
+}
+
+export interface MemoryExtractionInput {
+  profileId: string;
+  event: ConversationMessageEvent;
+  evidence: EvidenceEvent;
+  ruleCandidates: MemoryExtractionCandidate[];
+}
+
+export type MemoryExtractionResult =
+  | MemoryExtractionCandidate
+  | MemoryExtractionCandidate[]
+  | null
+  | undefined;
+
+export type MemoryExtractor =
+  | ((
+      input: MemoryExtractionInput,
+    ) => Promise<MemoryExtractionResult> | MemoryExtractionResult)
+  | {
+      name?: string | undefined;
+      extract(
+        input: MemoryExtractionInput,
+      ): Promise<MemoryExtractionResult> | MemoryExtractionResult;
+    };
+
 export interface MemoryRecord {
   id: string;
   profileId: string;
@@ -557,6 +591,11 @@ export interface MemoryStore {
 export interface MemoryOSOptions {
   profileId?: string | undefined;
   store: MemoryStore;
+  extractor?: MemoryExtractor | undefined;
+  extraction?: {
+    fallbackToRules?: boolean | undefined;
+    minConfidence?: number | undefined;
+  } | undefined;
   host?: {
     hostId?: string | undefined;
     capabilities?: Record<string, boolean> | undefined;

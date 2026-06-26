@@ -309,6 +309,170 @@ assert.equal(explanation?.kind, "memory");
 assert.match(explanation?.text ?? "", /简洁的中文回答/);
 assert.equal(explanation?.evidence.length, 1);
 
+const extractorStore = createSqliteMemoryStore({ path: path.join(tmp, "custom-extractor.db") });
+const extractorMemory = createMemoryOS({
+  profileId: "extractor",
+  store: extractorStore,
+  extractor: {
+    name: "fixture-structured-extractor",
+    extract(input) {
+      assert.equal(input.profileId, "extractor");
+      assert.equal(input.evidence.sourceType, "conversation.message");
+      assert.ok(input.ruleCandidates.length >= 1);
+      return [
+        {
+          kind: "preference",
+          content: "Custom extractor says the user prefers risk-first plans.",
+          confidence: 0.91,
+          predicate: "user.preference",
+          actionPolicyKind: "prefer",
+          metadata: { extractorFixture: "preference" },
+        },
+        {
+          kind: "project",
+          content: "Custom extractor says the Helio project is blocked on a migration probe.",
+          confidence: 0.88,
+          predicate: "project.state",
+          subject: "project:helio",
+          metadata: { extractorFixture: "project" },
+        },
+      ];
+    },
+  },
+});
+await extractorMemory.observe({
+  type: "conversation.message",
+  profileId: "extractor",
+  role: "user",
+  content: "我喜欢先讲风险，而且 Helio 项目卡在 migration probe。",
+});
+const extractedPreference = await extractorMemory.search({
+  profileId: "extractor",
+  query: "risk-first plans",
+  limit: 5,
+});
+const extractedProject = await extractorMemory.search({
+  profileId: "extractor",
+  query: "Helio migration probe",
+  limit: 5,
+});
+assert.equal(extractedPreference.some((entry) => entry.content.includes("risk-first plans")), true);
+assert.equal(extractedProject.some((entry) => entry.content.includes("Helio project")), true);
+assert.equal(
+  extractedProject.some(
+    (entry) =>
+      entry.metadata.extractionSource === "custom" &&
+      entry.metadata.extractorName === "fixture-structured-extractor",
+  ),
+  true,
+);
+
+const suppressRulesStore = createSqliteMemoryStore({ path: path.join(tmp, "suppress-rules.db") });
+const suppressRulesMemory = createMemoryOS({
+  profileId: "suppress",
+  store: suppressRulesStore,
+  extractor: () => [],
+});
+await suppressRulesMemory.observe({
+  type: "conversation.message",
+  profileId: "suppress",
+  role: "user",
+  content: "我喜欢这个本来会被规则抽取的偏好。",
+});
+assert.equal(
+  (
+    await suppressRulesMemory.search({
+      profileId: "suppress",
+      query: "规则抽取",
+      purpose: "manage",
+    })
+  ).length,
+  0,
+);
+
+const fallbackExtractorStore = createSqliteMemoryStore({
+  path: path.join(tmp, "fallback-extractor.db"),
+});
+const fallbackExtractorMemory = createMemoryOS({
+  profileId: "fallback_extractor",
+  store: fallbackExtractorStore,
+  extractor: {
+    name: "throwing-extractor",
+    extract() {
+      throw new Error("fixture extractor unavailable");
+    },
+  },
+});
+await fallbackExtractorMemory.observe({
+  type: "conversation.message",
+  profileId: "fallback_extractor",
+  role: "user",
+  content: "我喜欢 fallback rule extraction.",
+});
+const fallbackMatches = await fallbackExtractorMemory.search({
+  profileId: "fallback_extractor",
+  query: "fallback rule extraction",
+});
+assert.equal(fallbackMatches.length, 1);
+assert.equal(fallbackMatches[0]?.metadata.extractionSource, "rules");
+assert.equal(fallbackMatches[0]?.metadata.extractorFallback, true);
+
+const unsafeExtractorStore = createSqliteMemoryStore({
+  path: path.join(tmp, "unsafe-extractor.db"),
+});
+const unsafeExtractorMemory = createMemoryOS({
+  profileId: "unsafe_extractor",
+  store: unsafeExtractorStore,
+  extractor: () => [
+    {
+      kind: "preference",
+      content: "Custom extractor leaked token sk-customextractorsecret1234567890.",
+      confidence: 0.99,
+      predicate: "user.preference",
+    },
+    {
+      kind: "fact",
+      content: "PERSON:Alice: likes private side-channel memory.",
+      confidence: 0.99,
+      predicate: "user.fact",
+    },
+    {
+      kind: "person",
+      content: "A custom extractor should not auto-write person-kind memory.",
+      confidence: 0.99,
+      predicate: "person.fact",
+    },
+    {
+      kind: "invalid-kind" as never,
+      content: "Invalid custom extractor kind should not enter memory storage.",
+      confidence: 0.99,
+      predicate: "invalid.kind",
+    },
+  ],
+});
+await unsafeExtractorMemory.observe({
+  type: "conversation.message",
+  profileId: "unsafe_extractor",
+  role: "user",
+  content: "A harmless message should not persist unsafe custom candidates.",
+});
+assert.equal(
+  (
+    await unsafeExtractorMemory.search({
+      profileId: "unsafe_extractor",
+      query: "customextractorsecret side-channel person-kind invalid-kind",
+      purpose: "manage",
+      includeSensitive: true,
+      includePerson: true,
+    })
+  ).length,
+  0,
+);
+await unsafeExtractorMemory.close();
+await fallbackExtractorMemory.close();
+await suppressRulesMemory.close();
+await extractorMemory.close();
+
 const lowLevelMemory = await memory.add({
   profileId: "test",
   kind: "preference",

@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 
 import { composeTurnContext } from "../kernel/context-composer.js";
-import { extractMemoryCandidate } from "../kernel/extraction.js";
+import {
+  extractMemoryCandidates,
+  extractRuleMemoryCandidates,
+} from "../kernel/extraction.js";
 import { reconstructMemoryContext } from "../kernel/reconstruction.js";
 import {
   classifySensitivity,
@@ -396,31 +399,50 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     });
 
     if (!eligible || isPersonRoutedMemory(event.content)) return;
-    const candidate = extractMemoryCandidate(event.content);
-    if (!candidate) return;
-
-    const memory = await store.addMemory({
-      profileId,
-      kind: candidate.kind,
-      content: candidate.content,
-      confidence: candidate.confidence,
-      sensitivity,
-      sourceEventId: evidence.id,
-      metadata: {
-        actionPolicyKind: candidate.actionPolicyKind,
-        predicate: candidate.predicate,
-      },
-      createdAt: event.createdAt,
-    });
-    if (candidate.predicate) {
-      await store.addWorldBelief({
+    const candidates = await extractMemoryCandidates({
+      extractor: options.extractor,
+      extractionInput: {
         profileId,
-        subject: "user",
-        predicate: candidate.predicate,
-        object: candidate.content,
+        event,
+        evidence,
+        ruleCandidates: extractRuleMemoryCandidates(event.content),
+      },
+      fallbackToRules: options.extraction?.fallbackToRules,
+      minConfidence: options.extraction?.minConfidence,
+    });
+    for (const candidate of candidates) {
+      const candidateSensitivity = classifySensitivity(candidate.content);
+      if (
+        candidate.kind === "person" ||
+        candidateSensitivity === "secret_like" ||
+        isPersonRoutedMemory(candidate.content)
+      ) {
+        continue;
+      }
+      const memory = await store.addMemory({
+        profileId,
+        kind: candidate.kind,
+        content: candidate.content,
         confidence: candidate.confidence,
-        sourceMemoryId: memory.id,
+        sensitivity: sensitivity === "sensitive" ? sensitivity : candidateSensitivity,
+        sourceEventId: evidence.id,
+        metadata: {
+          ...sanitizePublicPayloadRecord(candidate.metadata ?? {}),
+          actionPolicyKind: candidate.actionPolicyKind,
+          predicate: candidate.predicate,
+        },
+        createdAt: event.createdAt,
       });
+      if (candidate.predicate) {
+        await store.addWorldBelief({
+          profileId,
+          subject: candidate.subject ?? "user",
+          predicate: candidate.predicate,
+          object: candidate.content,
+          confidence: candidate.confidence,
+          sourceMemoryId: memory.id,
+        });
+      }
     }
   }
 

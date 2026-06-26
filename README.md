@@ -40,6 +40,10 @@ const prepared = await memory.prepareTurn({
   rows; those associations are an index, not a second source of truth.
 - Runtime facade: `observe`, `prepareTurn`, `commitOutcome`, `recordFeedback`,
   `reconstructContext`, `forget`, `explain`.
+- Pluggable extraction pipeline for host-provided structured extractors. The
+  built-in rule extractor remains the safe fallback, so hosts can add LLM
+  extraction without bypassing evidence, PERSON, secret-like, incognito, or
+  forgetting gates.
 - Low-level compatibility APIs: `add` and `search` for import, admin, and
   compatibility use cases that cannot emit full host events.
 - Safety gates for secret-like content, incognito events, PERSON isolation,
@@ -165,6 +169,40 @@ returns a separate `reconstruction` field without replacing the ordinary
 default. If a migrated SQLite file has no association rows, run
 `gmos repair --db ./gmos.db --associations` to rebuild the derived index from
 canonical memory, world, and task tables.
+
+`createMemoryOS({ extractor })` lets a host provide structured extraction while
+keeping gmOS as the write-path authority:
+
+```ts
+const memory = createMemoryOS({
+  profileId: "local-user",
+  store,
+  extractor: {
+    name: "host-llm-extractor",
+    async extract(input) {
+      // Use input.event, input.evidence, and input.ruleCandidates to produce
+      // structured candidates from the current user message.
+      return [
+        {
+          kind: "preference",
+          content: "The user prefers risk-first release plans.",
+          confidence: 0.9,
+          predicate: "user.preference",
+          actionPolicyKind: "prefer",
+        },
+      ];
+    },
+  },
+});
+```
+
+The extractor is intentionally not a raw database hook. `observe()` still
+records evidence first, rejects incognito and secret-like writes, skips PERSON
+routed candidates, bounds confidence, deduplicates candidates, and writes world
+beliefs from accepted candidates. Returning `[]` means "extract nothing";
+returning `null` or throwing falls back to the built-in rules by default. Use
+`createMemoryOS({ extraction: { fallbackToRules: false } })` when a host wants
+custom extraction failure to produce no memory instead of rule fallback.
 
 The host compatibility gym distinguishes target presets from actual host
 adoption. `--hosts ghast` without an actual report tests the SDK's target Ghast
