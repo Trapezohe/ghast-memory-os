@@ -184,9 +184,12 @@ reranks noisy branches by query intent before spending context budget. For
 example, a "next step" query prefers procedure and task-trajectory paths over
 high-confidence but generic facts; a boundary query prefers boundary and
 `do_not_push` paths. Returned paths include `routeScore` and `routeReason` so a
-host can explain why a branch was selected. The first production mode is
-shadow-safe: `prepareTurn({ reconstruction: { mode: "shadow" } })` returns a
-separate `reconstruction` field without replacing the ordinary `contextBlock`.
+host can explain why a branch was selected. Returned stats also include
+evidence coverage and reconstruction uncertainty, giving hosts a direct signal
+for whether the reconstructed context is well grounded or should stay cautious.
+The first production mode is shadow-safe:
+`prepareTurn({ reconstruction: { mode: "shadow" } })` returns a separate
+`reconstruction` field without replacing the ordinary `contextBlock`.
 Public MCP/HTTP reconstruction does not allow `includeSensitive`; sensitive and
 person-scoped memory remains hidden by default. If a migrated SQLite file has no
 association rows, run `gmos repair --db ./gmos.db --associations` to rebuild the

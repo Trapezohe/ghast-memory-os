@@ -84,6 +84,92 @@ function includesAny(text: string, needles: string[]): boolean {
   return needles.some((needle) => normalized.includes(normalizedText(needle)));
 }
 
+type ReconstructionEvidenceCoverage = NonNullable<
+  ReconstructedContext["stats"]["evidenceCoverage"]
+>;
+
+type ReconstructionUncertainty = NonNullable<ReconstructedContext["stats"]["uncertainty"]>;
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = normalizedText(value.trim());
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function coverageCues(query: string): string[] {
+  return uniqueStrings(extractAssociationCues(query, 16).map((cue) => cue.cue)).slice(0, 8);
+}
+
+function pathCoversCue(path: ReconstructedEvidencePath, cue: string): boolean {
+  const normalizedCue = normalizedText(cue);
+  return normalizedText(
+    `${path.cue} ${path.tag} ${path.targetKind ?? ""} ${path.targetSummary}`,
+  ).includes(normalizedCue);
+}
+
+function evidenceCoverageForPaths(
+  query: string,
+  paths: ReconstructedEvidencePath[],
+): ReconstructionEvidenceCoverage {
+  const cues = coverageCues(query);
+  const coveredCues = cues.filter((cue) => paths.some((path) => pathCoversCue(path, cue)));
+  const uncoveredCues = cues.filter((cue) => !coveredCues.includes(cue));
+  const coverageRate =
+    cues.length === 0 ? (paths.length > 0 ? 1 : 0) : coveredCues.length / cues.length;
+  return {
+    queryCueCount: cues.length,
+    coveredCueCount: coveredCues.length,
+    coverageRate,
+    coveredCues,
+    uncoveredCues,
+  };
+}
+
+function uncertaintyForReconstruction(input: {
+  coverage: ReconstructionEvidenceCoverage;
+  memories: MemoryRecord[];
+  paths: ReconstructedEvidencePath[];
+  stopReason: ReconstructedContext["stats"]["stopReason"];
+}): ReconstructionUncertainty {
+  const reasons: string[] = [];
+  if (input.paths.length === 0) reasons.push("no_evidence_path");
+  if (input.memories.length === 0) reasons.push("no_memory_content");
+  if (input.coverage.queryCueCount > 0 && input.coverage.coverageRate < 0.5) {
+    reasons.push("low_query_cue_coverage");
+  }
+  if (input.stopReason === "budget_exhausted") reasons.push("budget_exhausted");
+  if (input.stopReason === "no_frontier") reasons.push("frontier_exhausted");
+  let level: ReconstructionUncertainty["level"] = "low";
+  if (
+    input.paths.length === 0 ||
+    input.memories.length === 0 ||
+    input.coverage.coverageRate < 0.25
+  ) {
+    level = "high";
+  } else if (
+    input.stopReason === "budget_exhausted" ||
+    input.stopReason === "no_frontier" ||
+    input.coverage.coverageRate < 0.75
+  ) {
+    level = "medium";
+  }
+  return { level, reasons };
+}
+
+function coverageIsSufficient(coverage: ReconstructionEvidenceCoverage): boolean {
+  if (coverage.queryCueCount === 0) return coverage.coveredCueCount > 0;
+  return (
+    coverage.coverageRate >= 0.45 ||
+    coverage.coveredCueCount >= Math.min(2, coverage.queryCueCount)
+  );
+}
+
 function inferReconstructionIntent(query: string): ReconstructionIntent {
   const expectedTags = new Set<string>();
   const reasons: string[] = [];
@@ -238,39 +324,29 @@ function composeReconstructedContext(input: {
   const publicEvidence = input.includeEvidence
     ? input.evidence.map(sanitizeEvidenceForPublicOutput)
     : [];
-  const lines = [
-    "<gmos-reconstructed-context>",
-    `Query: ${input.query}`,
-    "Reconstructed evidence paths:",
-    ...input.paths.map(formatPathLine),
-    "Memory content:",
-    ...input.memories.map(
-      (memory) =>
-        `- [${memory.kind}; confidence=${memory.confidence.toFixed(2)}] ${memory.content}`,
-    ),
-  ];
-  if (input.includeEvidence) {
-    lines.push("Evidence:");
-    lines.push(
-      ...publicEvidence.map(
-        (event) =>
-          `- [${event.sourceType}; ${event.sensitivity}; eligible=${event.eligibleForLongTermMemory}] ${event.content}`,
-      ),
-    );
-  }
-  lines.push("</gmos-reconstructed-context>");
-
   let memories = [...input.memories];
   let paths = [...input.paths];
   let evidence = [...publicEvidence];
-  let contextBlock = lines.join("\n");
-  const budget = input.contextBudgetTokens ?? 1800;
-  while (estimateTokens(contextBlock) > budget && (memories.length > 0 || paths.length > 0)) {
-    if (memories.length > 0) memories = memories.slice(0, -1);
-    else paths = paths.slice(0, -1);
-    const budgetedLines = [
+  let coverage = evidenceCoverageForPaths(input.query, paths);
+  let uncertainty = uncertaintyForReconstruction({
+    coverage,
+    memories,
+    paths,
+    stopReason: input.stopReason,
+  });
+  const render = (): string => {
+    coverage = evidenceCoverageForPaths(input.query, paths);
+    uncertainty = uncertaintyForReconstruction({
+      coverage,
+      memories,
+      paths,
+      stopReason: input.stopReason,
+    });
+    const lines = [
       "<gmos-reconstructed-context>",
       `Query: ${input.query}`,
+      `Evidence coverage: ${coverage.coveredCueCount}/${coverage.queryCueCount} cues (${coverage.coverageRate.toFixed(2)}); uncovered=${coverage.uncoveredCues.join(", ") || "none"}`,
+      `Reconstruction uncertainty: ${uncertainty.level}${uncertainty.reasons.length ? ` (${uncertainty.reasons.join(", ")})` : ""}`,
       "Reconstructed evidence paths:",
       ...paths.map(formatPathLine),
       "Memory content:",
@@ -278,10 +354,26 @@ function composeReconstructedContext(input: {
         (memory) =>
           `- [${memory.kind}; confidence=${memory.confidence.toFixed(2)}] ${memory.content}`,
       ),
-      "</gmos-reconstructed-context>",
     ];
-    contextBlock = budgetedLines.join("\n");
+    if (input.includeEvidence) {
+      lines.push("Evidence:");
+      lines.push(
+        ...evidence.map(
+          (event) =>
+            `- [${event.sourceType}; ${event.sensitivity}; eligible=${event.eligibleForLongTermMemory}] ${event.content}`,
+        ),
+      );
+    }
+    lines.push("</gmos-reconstructed-context>");
+    return lines.join("\n");
+  };
+  let contextBlock = render();
+  const budget = input.contextBudgetTokens ?? 1800;
+  while (estimateTokens(contextBlock) > budget && (memories.length > 0 || paths.length > 0)) {
+    if (memories.length > 0) memories = memories.slice(0, -1);
+    else paths = paths.slice(0, -1);
     evidence = [];
+    contextBlock = render();
   }
 
   return {
@@ -298,6 +390,8 @@ function composeReconstructedContext(input: {
       retrievedMemoryCount: memories.length,
       promptTokenEstimate: estimateTokens(contextBlock),
       stopReason: input.stopReason,
+      evidenceCoverage: coverage,
+      uncertainty,
     },
   };
 }
@@ -452,7 +546,8 @@ export async function reconstructMemoryContext(input: {
     if (
       memories.length >= Math.min(3, maxMemories) &&
       paths.length >= memories.length &&
-      hasIntentEvidence
+      hasIntentEvidence &&
+      coverageIsSufficient(evidenceCoverageForPaths(query, paths))
     ) {
       stopReason = "evidence_sufficient";
       break;

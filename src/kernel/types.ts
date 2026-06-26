@@ -232,6 +232,17 @@ export interface ReconstructedContext {
     retrievedMemoryCount: number;
     promptTokenEstimate: number;
     stopReason: "budget_exhausted" | "evidence_sufficient" | "no_frontier";
+    evidenceCoverage?: {
+      queryCueCount: number;
+      coveredCueCount: number;
+      coverageRate: number;
+      coveredCues: string[];
+      uncoveredCues: string[];
+    } | undefined;
+    uncertainty?: {
+      level: "low" | "medium" | "high";
+      reasons: string[];
+    } | undefined;
   };
 }
 

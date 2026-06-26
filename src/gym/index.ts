@@ -482,6 +482,16 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "reconstructContext should follow cue-tag-content associations instead of one-shot top-k recall",
     "reconstruction",
   );
+  gate(
+    result,
+    "active_reconstruction_coverage_signal",
+    /Evidence coverage:/.test(reconstructed.contextBlock) &&
+      /Reconstruction uncertainty:/.test(reconstructed.contextBlock) &&
+      (reconstructed.stats.evidenceCoverage?.coveredCueCount ?? 0) > 0 &&
+      reconstructed.stats.uncertainty?.level !== "high",
+    "reconstructContext should report whether explored evidence covers query cues",
+    "reconstruction",
+  );
   await memory.add({
     profileId: "gym_reconstruct",
     kind: "project",
@@ -788,6 +798,7 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   );
   scenario(result, "active_reconstruction", "dev", [
     "active_reconstruction_multihop",
+    "active_reconstruction_coverage_signal",
     "active_reconstruction_intent_rerank",
     "reconstruction_read_path_side_effects",
     "prepare_turn_reconstruction_shadow",

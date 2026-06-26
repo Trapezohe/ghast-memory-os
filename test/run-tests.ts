@@ -4527,6 +4527,10 @@ assert.match(reconstructed.contextBlock, /Helio 项目推进时先写复现报�
 assert.ok(reconstructed.paths.length >= 2);
 assert.ok(reconstructed.paths.some((path) => path.cue.toLowerCase() === "helio"));
 assert.ok(reconstructed.evidence.length >= 2);
+assert.match(reconstructed.contextBlock, /Evidence coverage:/);
+assert.match(reconstructed.contextBlock, /Reconstruction uncertainty:/);
+assert.ok((reconstructed.stats.evidenceCoverage?.coveredCueCount ?? 0) > 0);
+assert.notEqual(reconstructed.stats.uncertainty?.level, "high");
 await reconstructionMemory.add({
   profileId: "recon",
   kind: "project",
@@ -4565,6 +4569,15 @@ const intentProcedurePath = intentReranked.paths.find(
 );
 assert.ok(intentProcedurePath);
 assert.match(intentProcedurePath.routeReason ?? "", /intent/);
+const unrelatedReconstruction = await reconstructionMemory.reconstructContext({
+  profileId: "recon",
+  query: "Completely unrelated Apollo cafeteria password?",
+  maxSteps: 2,
+  maxBranch: 2,
+  maxMemories: 2,
+});
+assert.equal(unrelatedReconstruction.stats.uncertainty?.level, "high");
+assert.ok((unrelatedReconstruction.stats.evidenceCoverage?.coverageRate ?? 1) < 0.5);
 const reconstructedRowsBefore = await reconstructionStore.rowCounts();
 const preparedWithShadow = await reconstructionMemory.prepareTurn({
   profileId: "recon",
