@@ -12,9 +12,12 @@ import Database from "better-sqlite3";
 import { createMemoryOS, type MemoryStore } from "../src/index.js";
 import {
   renderHostCompatibilityGymMarkdown,
+  renderExternalMemoryBenchmarkMarkdown,
   renderMemoryGymMarkdown,
   renderMemoryReleaseGateMarkdown,
   renderMemoryScaleMarkdown,
+  parseExternalMemoryBenchmarkJsonl,
+  runExternalMemoryBenchmark,
   runHostCompatibilityGym,
   runMemoryGym,
   runMemoryReleaseGate,
@@ -4916,6 +4919,88 @@ assert.match(renderedGym, /Coverage Matrix/);
 assert.match(renderedGym, /Run Manifest/);
 assert.match(renderedGym, /Package: @ghast\/memory@/);
 assert.match(renderedGym, /SQLite schema: 3/);
+const externalBenchmarkJsonl = [
+  JSON.stringify({
+    id: "project-next-step",
+    events: [
+      { type: "memory", kind: "project", content: "代号 Vega 的发布计划叫做 Lantern Run。" },
+      {
+        type: "memory",
+        kind: "procedure",
+        content: "Lantern Run 下一步先更新 rollback matrix，再做发布实现。",
+      },
+      { type: "memory", kind: "fact", content: "Lantern Run 的会议室记录在七楼。" },
+    ],
+    question: "Vega 这个发布计划下一步先做什么？",
+    expectedAll: ["rollback matrix"],
+    forbiddenAny: ["sk-external-secret"],
+  }),
+  JSON.stringify({
+    id: "task-trajectory",
+    events: [
+      {
+        type: "task",
+        taskId: "atlas-retro",
+        objective: "Atlas 复盘",
+        status: "completed",
+        summary: "先核证据链，再写风险清单。",
+      },
+    ],
+    question: "Atlas 复盘以前沉淀的做法是什么？",
+    expectedAny: ["证据链", "风险清单"],
+  }),
+].join("\n");
+const externalBenchmarkFile = path.join(tmp, "external-long-memory-qa.jsonl");
+writeFileSync(externalBenchmarkFile, externalBenchmarkJsonl);
+const externalCases = parseExternalMemoryBenchmarkJsonl(externalBenchmarkJsonl);
+assert.equal(externalCases.length, 2);
+const externalBenchmark = await runExternalMemoryBenchmark({ cases: externalCases });
+assert.equal(externalBenchmark.pass, true);
+assert.equal(externalBenchmark.score, 1);
+assert.match(renderExternalMemoryBenchmarkMarkdown(externalBenchmark), /External Long-Memory QA/);
+await assert.rejects(
+  () =>
+    runExternalMemoryBenchmark({
+      cases: [
+        {
+          id: "empty-assertions",
+          events: [{ type: "memory", kind: "fact", content: "用户喜欢先讲风险。" }],
+          question: "用户喜欢什么？",
+        },
+      ],
+    }),
+  /requires at least one expected or forbidden assertion/,
+);
+assert.throws(
+  () => parseExternalMemoryBenchmarkJsonl("{not-json"),
+  /invalid JSON/,
+);
+assert.throws(
+  () =>
+    parseExternalMemoryBenchmarkJsonl(
+      JSON.stringify({
+        id: "invalid-mode",
+        mode: "agent",
+        events: [{ content: "用户喜欢先讲风险。" }],
+        question: "用户喜欢什么？",
+        expectedAll: ["风险"],
+      }),
+    ),
+  /mode must be prepare or reconstruct/,
+);
+const escapedExternalMarkdown = renderExternalMemoryBenchmarkMarkdown({
+  ...externalBenchmark,
+  cases: [
+    {
+      ...externalBenchmark.cases[0]!,
+      id: "case|pipe",
+      pass: false,
+      forbiddenMatches: ["line|break\nvalue"],
+    },
+  ],
+});
+assert.match(escapedExternalMarkdown, /case\\\|pipe/);
+assert.match(escapedExternalMarkdown, /line\\\|break value/);
 const generatedGym = await runMemoryGym({ generatedSeeds: 2 });
 assert.equal(generatedGym.pass, true, generatedGym.details.join("\n"));
 assert.equal(generatedGym.generalizationResult.generatedSeedCount, 2);
@@ -5132,6 +5217,52 @@ const cliScaleFail = spawnSync(
 );
 assert.notEqual(cliScaleFail.status, 0);
 assert.match(cliScaleFail.stdout, /Status: FAIL/);
+const cliExternal = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliExternal.status, 0, cliExternal.stderr);
+const cliExternalJson = JSON.parse(cliExternal.stdout) as { schema?: string; pass?: boolean };
+assert.equal(cliExternalJson.schema, "gmos.external_long_memory_qa.v1");
+assert.equal(cliExternalJson.pass, true);
+const failedExternalBenchmarkFile = path.join(tmp, "external-long-memory-qa-fail.jsonl");
+writeFileSync(
+  failedExternalBenchmarkFile,
+  JSON.stringify({
+    id: "missing-answer",
+    events: [{ content: "用户喜欢先讲风险。" }],
+    question: "用户喜欢什么？",
+    expectedAll: ["不存在的答案"],
+  }),
+);
+const cliExternalFail = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    failedExternalBenchmarkFile,
+    "--format",
+    "markdown",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalFail.status, 0);
+assert.match(cliExternalFail.stdout, /Status: FAIL/);
 const cliGate = spawnSync(
   process.execPath,
   [

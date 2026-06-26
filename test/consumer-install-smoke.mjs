@@ -72,7 +72,9 @@ try {
       } from "@ghast/memory/http";
       import {
         renderHostCompatibilityGymMarkdown,
+        renderExternalMemoryBenchmarkMarkdown,
         renderMemoryReleaseGateMarkdown,
+        runExternalMemoryBenchmark,
         runHostCompatibilityGym,
         runMemoryGym,
         runMemoryReleaseGate,
@@ -201,6 +203,16 @@ try {
       assert.equal(hostGym.pass, true);
       assert.equal(hostGym.hostCount, 2);
       assert.match(renderHostCompatibilityGymMarkdown(hostGym), /gmOS Host Compatibility Gym/);
+      const externalGym = await runExternalMemoryBenchmark({
+        cases: [{
+          id: "consumer-external",
+          events: [{ type: "memory", kind: "preference", content: "用户喜欢先讲风险。" }],
+          question: "用户喜欢什么？",
+          expectedAll: ["先讲风险"],
+        }],
+      });
+      assert.equal(externalGym.pass, true);
+      assert.match(renderExternalMemoryBenchmarkMarkdown(externalGym), /External Long-Memory QA/);
       const installedPackage = JSON.parse(
         readFileSync(path.join(process.cwd(), "node_modules", "@ghast", "memory", "package.json"), "utf8"),
       );
@@ -382,9 +394,11 @@ try {
       } from "@ghast/memory/diagnostics";
       import { createEvolutionControlPlane } from "@ghast/memory/evolution";
       import {
+        runExternalMemoryBenchmark,
         runHostCompatibilityGym,
         runMemoryGym,
         runMemoryReleaseGate,
+        type ExternalMemoryBenchmarkResult,
         type HostCompatibilityGymResult,
         type MemoryGymResult,
         type MemoryReleaseGateResult,
@@ -516,6 +530,19 @@ try {
         hosts: ["ghast"],
       });
       if (!releaseGateResult.pass) throw new Error("typed release gate failed");
+      const externalResult: ExternalMemoryBenchmarkResult = await runExternalMemoryBenchmark({
+        cases: [{
+          id: "typed-external",
+          events: [{
+            type: "memory",
+            kind: "procedure",
+            content: "typed external benchmark remembers rollback matrix.",
+          }],
+          question: "What should the benchmark remember?",
+          expectedAll: ["rollback matrix"],
+        }],
+      });
+      if (!externalResult.pass) throw new Error("typed external benchmark failed");
       const hostAdapter: HostAdapter = createPresetHostAdapter("ghast");
       const hostCompatibility: HostCompatibilityReport = hostAdapter.compatibility;
       if (hostCompatibility.level !== "L4") throw new Error("unexpected typed host compatibility");

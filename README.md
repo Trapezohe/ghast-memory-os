@@ -106,6 +106,7 @@ node dist/cli/gmos.js gate --generated-seeds 3 --scale-sizes 100,1000 --format m
 node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3
 node dist/cli/gmos.js gym run --generated-seeds 10 --format markdown --report-file ./memory-gym.md
 node dist/cli/gmos.js gym scale --sizes 100,1000
+node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --format markdown
 node dist/cli/gmos.js gym gate --generated-seeds 3 --scale-sizes 100,1000 --format json
 node dist/cli/gmos.js gym host --hosts ghast,mcp,mock_l3,search_only --format markdown
 node dist/cli/gmos.js gym host --hosts ghast --actual-report ./ghast-memory-status.json --format markdown
@@ -119,6 +120,7 @@ npm run test:consumer
 node dist/cli/gmos.js gate --generated-seeds 3 --scale-sizes 100,1000 --hosts ghast,mcp,mock_l3,search_only --format json
 node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3 --format json
 node dist/cli/gmos.js gym scale --sizes 100,1000 --threshold-p95-ms 250 --format json
+node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --format json
 node dist/cli/gmos.js repair --db ./gmos.db --search-index
 node dist/cli/gmos.js repair --db ./gmos.db --associations
 npm pack --dry-run
@@ -139,6 +141,20 @@ jobs are deterministic SDK gates; they do not call an external LLM.
 layers, a generalization view, roadmap suggestions, and a run manifest. It does
 not run an LLM judge and should not be treated as proof of mature digital-twin
 capability.
+
+`gym external` runs a local long-memory QA adapter over a user-provided JSONL
+file. It is meant for converted external datasets such as long-memory QA or
+multi-session recall corpora, but gmOS does not download or vendor those
+datasets. Each line is one deterministic case:
+
+```jsonl
+{"id":"project-next-step","events":[{"type":"memory","kind":"project","content":"代号 Vega 的发布计划叫做 Lantern Run。"},{"type":"memory","kind":"procedure","content":"Lantern Run 下一步先更新 rollback matrix，再做发布实现。"}],"question":"Vega 这个发布计划下一步先做什么？","expectedAll":["rollback matrix"],"forbiddenAny":["会议室"]}
+```
+
+The runner seeds a temporary plaintext SQLite store, executes `prepareTurn` or
+bounded `reconstructContext`, and scores context evidence by `expectedAny`,
+`expectedAll`, and `forbiddenAny`. It is deterministic and local-first; it does
+not call an LLM judge.
 
 `gmos gate` is the SDK release-candidate gate. It runs deterministic Memory Gym,
 the host compatibility gym, the local SQLite scale benchmark, and diagnostics

@@ -11,6 +11,16 @@ import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 import { coverageMatrix, memoryStackCoverage, roadmap } from "./coverage.js";
 import {
+  parseExternalMemoryBenchmarkJsonl,
+  runExternalMemoryBenchmark,
+  type ExternalMemoryBenchmarkCase,
+  type ExternalMemoryBenchmarkCaseResult,
+  type ExternalMemoryBenchmarkEvent,
+  type ExternalMemoryBenchmarkMode,
+  type ExternalMemoryBenchmarkResult,
+  type RunExternalMemoryBenchmarkOptions,
+} from "./external.js";
+import {
   runHostCompatibilityGym,
   type HostCompatibilityGymResult,
   type HostCompatibilityGymHostResult,
@@ -25,20 +35,29 @@ import {
 } from "./scale.js";
 export {
   renderHostCompatibilityGymMarkdown,
+  renderExternalMemoryBenchmarkMarkdown,
   renderMemoryGymMarkdown,
   renderMemoryReleaseGateMarkdown,
   renderMemoryScaleMarkdown,
 } from "./report.js";
 export {
+  parseExternalMemoryBenchmarkJsonl,
+  runExternalMemoryBenchmark,
   runHostCompatibilityGym,
 };
 export type {
+  ExternalMemoryBenchmarkCase,
+  ExternalMemoryBenchmarkCaseResult,
+  ExternalMemoryBenchmarkEvent,
+  ExternalMemoryBenchmarkMode,
+  ExternalMemoryBenchmarkResult,
   HostCompatibilityGymHostResult,
   HostCompatibilityGymResult,
   HostCompatibilityProbeArea,
   HostCompatibilityProbeResult,
   HostCompatibilityProbeStatus,
   RunHostCompatibilityGymOptions,
+  RunExternalMemoryBenchmarkOptions,
 };
 export { runMemoryScaleBenchmark };
 export type { MemoryScaleBenchmarkResult };

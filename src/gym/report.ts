@@ -2,6 +2,15 @@ import type { MemoryGymResult } from "./types.js";
 import type { MemoryScaleBenchmarkResult } from "./scale.js";
 import type { HostCompatibilityGymResult } from "./host-compatibility.js";
 import type { MemoryReleaseGateResult } from "./types.js";
+import type { ExternalMemoryBenchmarkResult } from "./external.js";
+
+function markdownCell(value: string): string {
+  return value.replace(/\r?\n/g, " ").replace(/\|/g, "\\|");
+}
+
+function markdownListCell(values: string[]): string {
+  return values.length ? values.map(markdownCell).join(", ") : "-";
+}
 
 export function renderMemoryGymMarkdown(report: MemoryGymResult): string {
   return [
@@ -89,6 +98,27 @@ export function renderMemoryScaleMarkdown(report: MemoryScaleBenchmarkResult): s
           (failure) =>
             `- size=${failure.size} operation=${failure.operation} p95=${failure.p95Ms.toFixed(3)}ms threshold=${failure.thresholdMs}ms`,
         )),
+    "",
+  ].join("\n");
+}
+
+export function renderExternalMemoryBenchmarkMarkdown(
+  report: ExternalMemoryBenchmarkResult,
+): string {
+  return [
+    "# gmOS External Long-Memory QA Benchmark",
+    "",
+    `Status: ${report.pass ? "PASS" : "FAIL"}`,
+    `DatasetFormat: ${report.datasetFormat}`,
+    `Cases: ${report.passedCount}/${report.caseCount}`,
+    `Score: ${report.score.toFixed(4)}`,
+    "",
+    "| Case | Status | Mode | Missing expectedAny | Missing expectedAll | Forbidden matches | Tokens | Paths |",
+    "| --- | --- | --- | --- | --- | --- | ---: | ---: |",
+    ...report.cases.map(
+      (entry) =>
+        `| ${markdownCell(entry.id)} | ${entry.pass ? "PASS" : "FAIL"} | ${entry.mode} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.forbiddenMatches)} | ${entry.promptTokenEstimate} | ${entry.reconstructedPathCount} |`,
+    ),
     "",
   ].join("\n");
 }

@@ -15,10 +15,13 @@ import {
 } from "../diagnostics/index.js";
 import {
   renderHostCompatibilityGymMarkdown,
+  renderExternalMemoryBenchmarkMarkdown,
   renderMemoryGymMarkdown,
   renderMemoryReleaseGateMarkdown,
   renderMemoryScaleMarkdown,
   runHostCompatibilityGym,
+  parseExternalMemoryBenchmarkJsonl,
+  runExternalMemoryBenchmark,
   runMemoryGym,
   runMemoryReleaseGate,
   runMemoryScaleBenchmark,
@@ -103,6 +106,7 @@ Usage:
   gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
   gmos gym run --db :memory: --generated-seeds 3 --format markdown --report-file ./memory-gym.md
   gmos gym scale --sizes 100,1000 --threshold-p95-ms 250
+  gmos gym external --input-file ./long-memory-qa.jsonl --format markdown
   gmos gym gate --generated-seeds 3 --scale-sizes 100,1000 --format json
   gmos gym host --hosts ghast,mcp,mock_l3,search_only --actual-report ./host-status.json --format markdown
 `);
@@ -447,6 +451,29 @@ async function main(): Promise<void> {
       thresholdP95Ms: nonNegativeNumberOption("--threshold-p95-ms", 250),
     });
     printReport(report, renderMemoryScaleMarkdown(report));
+    if (!report.pass) process.exitCode = 1;
+    return;
+  }
+
+  if (command === "gym" && subcommand === "external") {
+    const inputFile = strictOptionValue("--input-file");
+    if (!inputFile) throw new Error("gmos gym external requires --input-file");
+    const cases = parseExternalMemoryBenchmarkJsonl(
+      readFileSync(path.resolve(process.cwd(), inputFile), "utf8"),
+    );
+    const mode = value("--mode");
+    if (mode !== undefined && mode !== "prepare" && mode !== "reconstruct") {
+      throw new Error("--mode must be prepare or reconstruct");
+    }
+    const report = await runExternalMemoryBenchmark({
+      cases,
+      ...(mode !== undefined ? { mode } : {}),
+      maxSteps: positiveIntegerOption("--max-steps", 4),
+      maxBranch: positiveIntegerOption("--max-branch", 6),
+      maxMemories: positiveIntegerOption("--max-memories", 6),
+      contextBudgetTokens: positiveIntegerOption("--context-budget-tokens", 1600),
+    });
+    printReport(report, renderExternalMemoryBenchmarkMarkdown(report));
     if (!report.pass) process.exitCode = 1;
     return;
   }
