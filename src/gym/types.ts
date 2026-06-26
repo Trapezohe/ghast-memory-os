@@ -119,6 +119,7 @@ export interface MemoryReleaseGateResult {
       sizes: number[];
       thresholdP95Ms: number;
       failedSizes: number[];
+      failedOperations?: import("./scale.js").MemoryScaleFailedOperation[] | undefined;
     };
     diagnostics: {
       pass: boolean;

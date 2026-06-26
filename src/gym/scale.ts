@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 
+import type { MemoryKind } from "../kernel/types.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 
@@ -19,18 +20,38 @@ export interface MemoryScaleBenchmarkRow {
   size: number;
   seedMs: number;
   prepareTurn: LatencySummary;
+  reconstructContext: LatencySummary;
   promptTokenEstimate: {
+    p50: number;
+    p95: number;
+    max: number;
+  };
+  reconstructedTokenEstimate: {
+    p50: number;
+    p95: number;
+    max: number;
+  };
+  reconstructedPathCount: {
     p50: number;
     p95: number;
     max: number;
   };
 }
 
+export interface MemoryScaleFailedOperation {
+  size: number;
+  operation: "prepareTurn" | "reconstructContext";
+  p95Ms: number;
+  thresholdMs: number;
+}
+
 export interface MemoryScaleBenchmarkResult {
   pass: boolean;
   thresholds: {
     prepareTurnP95Ms: number;
+    reconstructContextP95Ms: number;
   };
+  failedOperations: MemoryScaleFailedOperation[];
   results: MemoryScaleBenchmarkRow[];
 }
 
@@ -81,44 +102,112 @@ export async function runMemoryScaleBenchmark(
     const memory = createMemoryOS({ profileId: "scale", store });
     const seedStart = performance.now();
     await store.initialize();
+    const routeBucketCount = Math.max(1, Math.min(20, Math.floor(size / 3)));
     for (let index = 0; index < size; index += 1) {
+      const routeBucket = index % routeBucketCount;
+      let kind: MemoryKind;
+      let content: string;
+      if (index < routeBucketCount) {
+        kind = "project";
+        content = `scale project-${routeBucket} is the routed benchmark plan for route-${routeBucket}`;
+      } else if (index < routeBucketCount * 2) {
+        kind = "procedure";
+        content = `scale project-${routeBucket} next step is to verify route-${routeBucket} reconstruction evidence before implementation`;
+      } else if (index < routeBucketCount * 3) {
+        kind = "fact";
+        content = `scale project-${routeBucket} high-confidence distractor note ${index} should not replace the next step`;
+      } else {
+        kind = index % 5 === 0 ? "boundary" : index % 3 === 0 ? "preference" : "fact";
+        content = `scale memory ${index} project-${routeBucket} preference-${index % 11} distractor-${index}`;
+      }
       await store.addMemory({
         profileId: "scale",
-        kind: index % 5 === 0 ? "boundary" : index % 3 === 0 ? "preference" : "fact",
-        content: `scale memory ${index} project-${index % 20} preference-${index % 11}`,
+        kind,
+        content,
         confidence: 0.5 + (index % 10) / 20,
-        metadata: { synthetic: true, bucket: index % 20 },
+        metadata: { synthetic: true, bucket: routeBucket },
       });
     }
     const seedMs = performance.now() - seedStart;
-    const latencies: number[] = [];
+    const prepareTurnLatencies: number[] = [];
+    const reconstructContextLatencies: number[] = [];
     const tokens: number[] = [];
+    const reconstructedTokens: number[] = [];
+    const reconstructedPathCounts: number[] = [];
     for (let iteration = 0; iteration < iterations; iteration += 1) {
+      const routeBucket = iteration % routeBucketCount;
       const started = performance.now();
       const prepared = await memory.prepareTurn({
         profileId: "scale",
-        messages: [{ role: "user", content: `project-${iteration % 20} preference` }],
+        messages: [{ role: "user", content: `project-${routeBucket} preference` }],
       });
-      latencies.push(performance.now() - started);
+      prepareTurnLatencies.push(performance.now() - started);
       tokens.push(prepared.stats.promptTokenEstimate);
+      const reconstructStarted = performance.now();
+      const reconstructed = await memory.reconstructContext({
+        profileId: "scale",
+        query: `project-${routeBucket} next step`,
+        maxSteps: 4,
+        maxBranch: 6,
+        maxMemories: 6,
+        contextBudgetTokens: 1200,
+      });
+      reconstructContextLatencies.push(performance.now() - reconstructStarted);
+      reconstructedTokens.push(reconstructed.stats.promptTokenEstimate);
+      reconstructedPathCounts.push(reconstructed.paths.length);
     }
     await memory.close();
     rmSync(tmp, { recursive: true, force: true });
     results.push({
       size,
       seedMs,
-      prepareTurn: summarize(latencies),
+      prepareTurn: summarize(prepareTurnLatencies),
+      reconstructContext: summarize(reconstructContextLatencies),
       promptTokenEstimate: {
         p50: percentile(tokens, 0.5),
         p95: percentile(tokens, 0.95),
         max: Math.max(...tokens),
       },
+      reconstructedTokenEstimate: {
+        p50: percentile(reconstructedTokens, 0.5),
+        p95: percentile(reconstructedTokens, 0.95),
+        max: Math.max(...reconstructedTokens),
+      },
+      reconstructedPathCount: {
+        p50: percentile(reconstructedPathCounts, 0.5),
+        p95: percentile(reconstructedPathCounts, 0.95),
+        max: Math.max(...reconstructedPathCounts),
+      },
     });
   }
+  const failedOperations = results.flatMap((row) => {
+    const failures: MemoryScaleFailedOperation[] = [];
+    if (row.prepareTurn.p95Ms > thresholdP95Ms) {
+      failures.push({
+        size: row.size,
+        operation: "prepareTurn",
+        p95Ms: row.prepareTurn.p95Ms,
+        thresholdMs: thresholdP95Ms,
+      });
+    }
+    if (row.reconstructContext.p95Ms > thresholdP95Ms) {
+      failures.push({
+        size: row.size,
+        operation: "reconstructContext",
+        p95Ms: row.reconstructContext.p95Ms,
+        thresholdMs: thresholdP95Ms,
+      });
+    }
+    return failures;
+  });
 
   return {
-    pass: results.every((row) => row.prepareTurn.p95Ms <= thresholdP95Ms),
-    thresholds: { prepareTurnP95Ms: thresholdP95Ms },
+    pass: failedOperations.length === 0,
+    thresholds: {
+      prepareTurnP95Ms: thresholdP95Ms,
+      reconstructContextP95Ms: thresholdP95Ms,
+    },
+    failedOperations,
     results,
   };
 }

@@ -71,14 +71,24 @@ export function renderMemoryScaleMarkdown(report: MemoryScaleBenchmarkResult): s
     "# gmOS Memory Scale Benchmark",
     "",
     `Status: ${report.pass ? "PASS" : "FAIL"}`,
-    "Scope: local SQLite prepareTurn cost curve; not an external benchmark proof.",
+    "Scope: local SQLite prepareTurn and reconstructContext cost curve; not an external benchmark proof.",
+    `Thresholds: prepareTurn p95 <= ${report.thresholds.prepareTurnP95Ms}ms; reconstructContext p95 <= ${report.thresholds.reconstructContextP95Ms}ms`,
     "",
-    "| Memories | Seed ms | prepareTurn p50/p95/max ms | Prompt p95 tokens |",
-    "| ---: | ---: | ---: | ---: |",
+    "| Memories | Seed ms | prepareTurn p50/p95/max ms | reconstructContext p50/p95/max ms | Prompt p95 tokens | Reconstructed p95 tokens | Reconstructed p95 paths |",
+    "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ...report.results.map(
       (row) =>
-        `| ${row.size} | ${row.seedMs.toFixed(3)} | ${row.prepareTurn.p50Ms.toFixed(3)}/${row.prepareTurn.p95Ms.toFixed(3)}/${row.prepareTurn.maxMs.toFixed(3)} | ${row.promptTokenEstimate.p95} |`,
+        `| ${row.size} | ${row.seedMs.toFixed(3)} | ${row.prepareTurn.p50Ms.toFixed(3)}/${row.prepareTurn.p95Ms.toFixed(3)}/${row.prepareTurn.maxMs.toFixed(3)} | ${row.reconstructContext.p50Ms.toFixed(3)}/${row.reconstructContext.p95Ms.toFixed(3)}/${row.reconstructContext.maxMs.toFixed(3)} | ${row.promptTokenEstimate.p95} | ${row.reconstructedTokenEstimate.p95} | ${row.reconstructedPathCount.p95} |`,
     ),
+    "",
+    "## Failed Operations",
+    "",
+    ...(report.failedOperations.length === 0
+      ? ["None"]
+      : report.failedOperations.map(
+          (failure) =>
+            `- size=${failure.size} operation=${failure.operation} p95=${failure.p95Ms.toFixed(3)}ms threshold=${failure.thresholdMs}ms`,
+        )),
     "",
   ].join("\n");
 }
@@ -128,6 +138,7 @@ export function renderHostCompatibilityGymMarkdown(
 export function renderMemoryReleaseGateMarkdown(
   report: MemoryReleaseGateResult,
 ): string {
+  const scaleFailedOperations = report.components.scale.failedOperations ?? [];
   return [
     "# gmOS Release Gate Report",
     "",
@@ -151,7 +162,7 @@ export function renderMemoryReleaseGateMarkdown(
     "| --- | --- | --- |",
     `| Memory Gym | ${report.components.memoryGym.pass ? "PASS" : "FAIL"} | score=${report.components.memoryGym.score.toFixed(4)} hardGates=${report.components.memoryGym.hardGateCount} |`,
     `| Host Compatibility | ${report.components.hostCompatibility.pass ? "PASS" : "FAIL"} | hosts=${report.components.hostCompatibility.hostCount} |`,
-    `| Scale | ${report.components.scale.pass ? "PASS" : "FAIL"} | sizes=${report.components.scale.sizes.join(", ")} threshold=${report.components.scale.thresholdP95Ms}ms |`,
+    `| Scale | ${report.components.scale.pass ? "PASS" : "FAIL"} | sizes=${report.components.scale.sizes.join(", ")} threshold=${report.components.scale.thresholdP95Ms}ms failedOperations=${scaleFailedOperations.length} |`,
     `| Diagnostics | ${report.components.diagnostics.pass ? "PASS" : "FAIL"} | schema=${report.components.diagnostics.schemaVersion ?? "unknown"} plaintext SQLite encrypted=${report.components.diagnostics.encrypted ? "true" : "false"} |`,
     "",
     "## Failures",
@@ -165,9 +176,12 @@ export function renderMemoryReleaseGateMarkdown(
           ...report.components.hostCompatibility.failedHosts.map(
             (host) => `- host_compatibility:${host}`,
           ),
-          ...report.components.scale.failedSizes.map(
-            (size) => `- scale:${size}`,
-          ),
+          ...(scaleFailedOperations.length > 0
+            ? scaleFailedOperations.map(
+                (failure) =>
+                  `- scale:${failure.size}:${failure.operation}:p95=${failure.p95Ms.toFixed(3)}ms threshold=${failure.thresholdMs}ms`,
+              )
+            : report.components.scale.failedSizes.map((size) => `- scale:${size}`)),
           ...(!report.components.diagnostics.pass ? ["- diagnostics"] : []),
         ]),
     "",

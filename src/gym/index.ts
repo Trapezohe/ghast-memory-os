@@ -928,9 +928,7 @@ function failedHostIds(report: HostCompatibilityGymResult): string[] {
 }
 
 function failedScaleSizes(report: MemoryScaleBenchmarkResult): number[] {
-  return report.results
-    .filter((row) => row.prepareTurn.p95Ms > report.thresholds.prepareTurnP95Ms)
-    .map((row) => row.size);
+  return [...new Set(report.failedOperations.map((failure) => failure.size))];
 }
 
 export async function runMemoryReleaseGate(
@@ -1011,6 +1009,7 @@ export async function runMemoryReleaseGate(
           sizes: scale.results.map((row) => row.size),
           thresholdP95Ms: scale.thresholds.prepareTurnP95Ms,
           failedSizes,
+          failedOperations: scale.failedOperations,
         },
         diagnostics: {
           pass: diagnosticsPass,

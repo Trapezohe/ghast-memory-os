@@ -142,12 +142,15 @@ capability.
 
 `gmos gate` is the SDK release-candidate gate. It runs deterministic Memory Gym,
 the host compatibility gym, the local SQLite scale benchmark, and diagnostics
-in one command. By default it uses an in-memory database and does not inspect or
-mutate a user's production memory database. The gate intentionally does not
-accept a production DB input; use `gym run --db` or `status --db` when you need
-to inspect a specific file. The scale sub-check creates and deletes its own
-temporary SQLite files under the OS temp directory; it does not read a user's
-memory DB. Passing this gate means the SDK's local runtime contract is healthy;
+in one command. The scale sub-check covers both ordinary `prepareTurn` retrieval
+and bounded `reconstructContext` association planning, reporting p95 latency,
+prompt tokens, reconstructed tokens, and reconstructed path counts. By default
+the gate uses an in-memory database and does not inspect or mutate a user's
+production memory database. The gate intentionally does not accept a production
+DB input; use `gym run --db` or `status --db` when you need to inspect a specific
+file. The scale sub-check creates and deletes its own temporary SQLite files
+under the OS temp directory; it does not read a user's memory DB. Passing this
+gate means the SDK's local runtime contract is healthy;
 it is still not an external long-term agent benchmark or a proof of mature
 digital-twin capability.
 

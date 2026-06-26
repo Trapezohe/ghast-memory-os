@@ -4930,7 +4930,10 @@ await assert.rejects(
 );
 const scale = await runMemoryScaleBenchmark({ sizes: [10, 50], iterations: 3 });
 assert.equal(scale.pass, true);
+assert.equal(scale.results[0]?.reconstructContext.samples, 3);
+assert.ok((scale.results[0]?.reconstructedPathCount.p95 ?? 0) > 0);
 assert.match(renderMemoryScaleMarkdown(scale), /gmOS Memory Scale Benchmark/);
+assert.match(renderMemoryScaleMarkdown(scale), /reconstructContext/);
 await assert.rejects(
   () => runMemoryScaleBenchmark({ sizes: [], iterations: 3 }),
   /positive integer size/,
@@ -4954,6 +4957,7 @@ assert.equal(releaseGate.components.hostCompatibility.pass, true);
 assert.equal(releaseGate.components.hostCompatibility.hostCount, 2);
 assert.equal(releaseGate.components.scale.pass, true);
 assert.deepEqual(releaseGate.components.scale.failedSizes, []);
+assert.deepEqual(releaseGate.components.scale.failedOperations, []);
 assert.equal(releaseGate.components.diagnostics.pass, true);
 assert.equal(releaseGate.components.diagnostics.encrypted, false);
 assert.equal(releaseGate.reports.diagnostics.trustContract.encrypted, false);
@@ -4968,6 +4972,25 @@ const failedReleaseGate = await runMemoryReleaseGate({
 assert.equal(failedReleaseGate.pass, false);
 assert.equal(failedReleaseGate.releaseConfidence, "action_required");
 assert.deepEqual(failedReleaseGate.components.scale.failedSizes, [10]);
+assert.ok(
+  failedReleaseGate.components.scale.failedOperations.some(
+    (failure) => failure.operation === "reconstructContext",
+  ),
+);
+const failedReleaseGateMarkdown = renderMemoryReleaseGateMarkdown(failedReleaseGate);
+assert.match(failedReleaseGateMarkdown, /scale:10:reconstructContext/);
+assert.doesNotMatch(failedReleaseGateMarkdown, /^- scale:10$/m);
+const legacyReleaseGateMarkdown = renderMemoryReleaseGateMarkdown({
+  ...failedReleaseGate,
+  components: {
+    ...failedReleaseGate.components,
+    scale: {
+      ...failedReleaseGate.components.scale,
+      failedOperations: undefined,
+    },
+  },
+});
+assert.match(legacyReleaseGateMarkdown, /^- scale:10$/m);
 for (const [host, expectedLevel] of [
   ["ghast", "L4"],
   ["mock_l3", "L3"],
