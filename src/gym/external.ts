@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +11,7 @@ import type {
   Sensitivity,
   TurnMessage,
 } from "../kernel/types.js";
+import { readGmosPackageInfo } from "../kernel/package-info.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 
@@ -83,6 +86,38 @@ export interface ExternalMemoryBenchmarkCaseResult {
   reconstructedPathCount: number;
 }
 
+export interface ExternalMemoryBenchmarkRunManifest {
+  framework: "gmos-external-long-memory-qa";
+  startedAt: string;
+  finishedAt: string;
+  node: string;
+  platform: string;
+  package: {
+    name: string | null;
+    version: string | null;
+  };
+  git: {
+    branch: string | null;
+    sha: string | null;
+    dirty: boolean | null;
+  };
+  dataset: {
+    format: "gmos.external_long_memory_qa.jsonl";
+    caseCount: number;
+    hash: string | null;
+    id: string | null;
+  };
+  options: {
+    mode: ExternalMemoryBenchmarkMode | null;
+    maxSteps: number | null;
+    maxBranch: number | null;
+    maxMemories: number | null;
+    contextBudgetTokens: number | null;
+    requireConvergence: boolean;
+  };
+  deterministicOnly: true;
+}
+
 export interface ExternalMemoryBenchmarkResult {
   schema: "gmos.external_long_memory_qa.v1";
   pass: boolean;
@@ -91,17 +126,24 @@ export interface ExternalMemoryBenchmarkResult {
   passedCount: number;
   failedCount: number;
   score: number;
+  runManifest: ExternalMemoryBenchmarkRunManifest;
   cases: ExternalMemoryBenchmarkCaseResult[];
 }
 
 export interface RunExternalMemoryBenchmarkOptions {
   cases: ExternalMemoryBenchmarkCase[];
+  datasetHash?: string | undefined;
+  datasetId?: string | undefined;
   mode?: ExternalMemoryBenchmarkMode | undefined;
   maxSteps?: number | undefined;
   maxBranch?: number | undefined;
   maxMemories?: number | undefined;
   contextBudgetTokens?: number | undefined;
   requireConvergence?: boolean | undefined;
+}
+
+export function hashExternalMemoryBenchmarkInput(input: string): string {
+  return `sha256:${createHash("sha256").update(input).digest("hex")}`;
 }
 
 function stringArray(value: unknown, field: string): string[] | undefined {
@@ -324,6 +366,59 @@ function warningsForCase(input: {
   return warnings;
 }
 
+function gitText(args: string[]): string | null {
+  const result = spawnSync("git", args, {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+  return result.status === 0 ? result.stdout.trim() : null;
+}
+
+function gitInfo(): ExternalMemoryBenchmarkRunManifest["git"] {
+  const status = gitText(["status", "--porcelain"]);
+  return {
+    branch: gitText(["rev-parse", "--abbrev-ref", "HEAD"]),
+    sha: gitText(["rev-parse", "HEAD"]),
+    dirty: status === null ? null : status.length > 0,
+  };
+}
+
+function createRunManifest(input: {
+  startedAt: string;
+  finishedAt: string;
+  caseCount: number;
+  options: RunExternalMemoryBenchmarkOptions;
+}): ExternalMemoryBenchmarkRunManifest {
+  const packageInfo = readGmosPackageInfo();
+  return {
+    framework: "gmos-external-long-memory-qa",
+    startedAt: input.startedAt,
+    finishedAt: input.finishedAt,
+    node: process.version,
+    platform: `${process.platform}/${process.arch}`,
+    package: {
+      name: packageInfo.name,
+      version: packageInfo.version,
+    },
+    git: gitInfo(),
+    dataset: {
+      format: "gmos.external_long_memory_qa.jsonl",
+      caseCount: input.caseCount,
+      hash: input.options.datasetHash ?? null,
+      id: input.options.datasetId ?? null,
+    },
+    options: {
+      mode: input.options.mode ?? null,
+      maxSteps: input.options.maxSteps ?? null,
+      maxBranch: input.options.maxBranch ?? null,
+      maxMemories: input.options.maxMemories ?? null,
+      contextBudgetTokens: input.options.contextBudgetTokens ?? null,
+      requireConvergence: input.options.requireConvergence ?? false,
+    },
+    deterministicOnly: true,
+  };
+}
+
 async function runCase(input: {
   benchmarkCase: ExternalMemoryBenchmarkCase;
   index: number;
@@ -433,6 +528,7 @@ async function runCase(input: {
 export async function runExternalMemoryBenchmark(
   options: RunExternalMemoryBenchmarkOptions,
 ): Promise<ExternalMemoryBenchmarkResult> {
+  const startedAt = new Date().toISOString();
   if (!Array.isArray(options.cases) || options.cases.length === 0) {
     throw new Error("External benchmark requires at least one case");
   }
@@ -451,6 +547,7 @@ export async function runExternalMemoryBenchmark(
     ),
   );
   const passedCount = cases.filter((entry) => entry.pass).length;
+  const finishedAt = new Date().toISOString();
   return {
     schema: "gmos.external_long_memory_qa.v1",
     pass: passedCount === cases.length,
@@ -459,6 +556,12 @@ export async function runExternalMemoryBenchmark(
     passedCount,
     failedCount: cases.length - passedCount,
     score: cases.length === 0 ? 0 : passedCount / cases.length,
+    runManifest: createRunManifest({
+      startedAt,
+      finishedAt,
+      caseCount: cases.length,
+      options: normalizedOptions,
+    }),
     cases,
   };
 }

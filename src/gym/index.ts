@@ -12,12 +12,14 @@ import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 import { coverageMatrix, memoryStackCoverage, roadmap } from "./coverage.js";
 import {
   parseExternalMemoryBenchmarkJsonl,
+  hashExternalMemoryBenchmarkInput,
   runExternalMemoryBenchmark,
   type ExternalMemoryBenchmarkCase,
   type ExternalMemoryBenchmarkCaseResult,
   type ExternalMemoryBenchmarkEvent,
   type ExternalMemoryBenchmarkMode,
   type ExternalMemoryBenchmarkResult,
+  type ExternalMemoryBenchmarkRunManifest,
   type RunExternalMemoryBenchmarkOptions,
 } from "./external.js";
 import {
@@ -42,6 +44,7 @@ export {
 } from "./report.js";
 export {
   parseExternalMemoryBenchmarkJsonl,
+  hashExternalMemoryBenchmarkInput,
   runExternalMemoryBenchmark,
   runHostCompatibilityGym,
 };
@@ -51,6 +54,7 @@ export type {
   ExternalMemoryBenchmarkEvent,
   ExternalMemoryBenchmarkMode,
   ExternalMemoryBenchmarkResult,
+  ExternalMemoryBenchmarkRunManifest,
   HostCompatibilityGymHostResult,
   HostCompatibilityGymResult,
   HostCompatibilityProbeArea,

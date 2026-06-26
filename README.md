@@ -106,7 +106,7 @@ node dist/cli/gmos.js gate --generated-seeds 3 --scale-sizes 100,1000 --format m
 node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3
 node dist/cli/gmos.js gym run --generated-seeds 10 --format markdown --report-file ./memory-gym.md
 node dist/cli/gmos.js gym scale --sizes 100,1000
-node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --format markdown
+node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --format markdown --require-convergence
 node dist/cli/gmos.js gym gate --generated-seeds 3 --scale-sizes 100,1000 --format json
 node dist/cli/gmos.js gym host --hosts ghast,mcp,mock_l3,search_only --format markdown
 node dist/cli/gmos.js gym host --hosts ghast --actual-report ./ghast-memory-status.json --format markdown
@@ -120,7 +120,7 @@ npm run test:consumer
 node dist/cli/gmos.js gate --generated-seeds 3 --scale-sizes 100,1000 --hosts ghast,mcp,mock_l3,search_only --format json
 node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3 --format json
 node dist/cli/gmos.js gym scale --sizes 100,1000 --threshold-p95-ms 250 --format json
-node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --format json
+node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --format json --require-convergence
 node dist/cli/gmos.js repair --db ./gmos.db --search-index
 node dist/cli/gmos.js repair --db ./gmos.db --associations
 npm pack --dry-run
@@ -154,12 +154,17 @@ datasets. Each line is one deterministic case:
 The runner seeds a temporary plaintext SQLite store, executes `prepareTurn` or
 bounded `reconstructContext`, and scores context evidence by `expectedAny`,
 `expectedAll`, and `forbiddenAny`. It is deterministic and local-first; it does
-not call an LLM judge. Results include deterministic failure reasons, warnings,
-evidence-convergence diagnostics, missing intent groups, uncertainty, token
-estimates, and reconstructed path counts. Add `"requireConvergence": true` to a
-case when the benchmark should fail unless active reconstruction converges; this
-is useful for multi-hop or multi-intent cases where a plain text hit is not
-strong enough evidence.
+not call an LLM judge. Results include a run manifest, dataset SHA-256 hash,
+deterministic failure reasons, warnings, evidence-convergence diagnostics,
+missing intent groups, uncertainty, token estimates, and reconstructed path
+counts. Add `"requireConvergence": true` to a case, or pass
+`--require-convergence` for the whole run, when the benchmark should fail unless
+active reconstruction converges; this is useful for multi-hop or multi-intent
+cases where a plain text hit is not strong enough evidence. `--require-convergence`
+is only valid for reconstruct mode and forces every case in that run to require
+convergence. The manifest does not include dataset contents or absolute local
+paths, but public reports can still reveal repository branch names and dataset
+file names; redact those fields before publishing if needed.
 
 `gmos gate` is the SDK release-candidate gate. It runs deterministic Memory Gym,
 the host compatibility gym, the local SQLite scale benchmark, and diagnostics

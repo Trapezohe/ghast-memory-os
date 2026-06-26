@@ -16,6 +16,7 @@ import {
   renderMemoryGymMarkdown,
   renderMemoryReleaseGateMarkdown,
   renderMemoryScaleMarkdown,
+  hashExternalMemoryBenchmarkInput,
   parseExternalMemoryBenchmarkJsonl,
   runExternalMemoryBenchmark,
   runHostCompatibilityGym,
@@ -5179,10 +5180,27 @@ assert.equal(externalCases.length, 2);
 const externalBenchmark = await runExternalMemoryBenchmark({ cases: externalCases });
 assert.equal(externalBenchmark.pass, true);
 assert.equal(externalBenchmark.score, 1);
+assert.equal(externalBenchmark.runManifest.framework, "gmos-external-long-memory-qa");
+assert.equal(externalBenchmark.runManifest.dataset.caseCount, 2);
+assert.equal(externalBenchmark.runManifest.dataset.hash, null);
+assert.equal(externalBenchmark.runManifest.options.requireConvergence, false);
 assert.equal(externalBenchmark.cases[0]?.failureReasons.length, 0);
 assert.equal(typeof externalBenchmark.cases[0]?.diagnostics.evidenceConvergenceScore, "number");
-assert.match(renderExternalMemoryBenchmarkMarkdown(externalBenchmark), /External Long-Memory QA/);
-assert.match(renderExternalMemoryBenchmarkMarkdown(externalBenchmark), /Failure reasons/);
+const externalHash = hashExternalMemoryBenchmarkInput(externalBenchmarkJsonl);
+assert.match(externalHash, /^sha256:[a-f0-9]{64}$/);
+const externalBenchmarkWithManifest = await runExternalMemoryBenchmark({
+  cases: externalCases,
+  datasetHash: externalHash,
+  datasetId: "unit-fixture",
+  requireConvergence: false,
+});
+assert.equal(externalBenchmarkWithManifest.runManifest.dataset.hash, externalHash);
+assert.equal(externalBenchmarkWithManifest.runManifest.dataset.id, "unit-fixture");
+const externalMarkdown = renderExternalMemoryBenchmarkMarkdown(externalBenchmarkWithManifest);
+assert.match(externalMarkdown, /External Long-Memory QA/);
+assert.match(externalMarkdown, /Run Manifest/);
+assert.match(externalMarkdown, /Failure reasons/);
+assert.match(externalMarkdown, /Missing intent groups/);
 const externalConvergenceFailure = await runExternalMemoryBenchmark({
   cases: [
     {
@@ -5214,6 +5232,10 @@ assert.equal(
 assert.match(
   renderExternalMemoryBenchmarkMarkdown(externalConvergenceFailure),
   /convergence_not_reached/,
+);
+assert.match(
+  renderExternalMemoryBenchmarkMarkdown(externalConvergenceFailure),
+  /boundary/,
 );
 await assert.rejects(
   () =>
@@ -5490,9 +5512,108 @@ const cliExternal = spawnSync(
   { cwd: process.cwd(), encoding: "utf8" },
 );
 assert.equal(cliExternal.status, 0, cliExternal.stderr);
-const cliExternalJson = JSON.parse(cliExternal.stdout) as { schema?: string; pass?: boolean };
+const cliExternalJson = JSON.parse(cliExternal.stdout) as {
+  schema?: string;
+  pass?: boolean;
+  runManifest?: {
+    dataset?: { hash?: string | null; id?: string | null };
+    options?: { requireConvergence?: boolean };
+  };
+};
 assert.equal(cliExternalJson.schema, "gmos.external_long_memory_qa.v1");
 assert.equal(cliExternalJson.pass, true);
+assert.match(cliExternalJson.runManifest?.dataset?.hash ?? "", /^sha256:[a-f0-9]{64}$/);
+assert.equal(cliExternalJson.runManifest?.dataset?.id, path.basename(externalBenchmarkFile));
+assert.equal(cliExternalJson.runManifest?.options?.requireConvergence, false);
+const convergedExternalBenchmarkFile = path.join(
+  tmp,
+  "external-long-memory-qa-converged.jsonl",
+);
+writeFileSync(
+  convergedExternalBenchmarkFile,
+  JSON.stringify({
+    id: "converged-release-policy",
+    requireConvergence: false,
+    events: [
+      {
+        type: "memory",
+        kind: "project",
+        content: "Atlas temporal validity says ActiveTemporalOwner is current.",
+        confidence: 0.9,
+      },
+      {
+        type: "memory",
+        kind: "preference",
+        content: "The user prefers risk-first release notes for Atlas.",
+        confidence: 0.9,
+      },
+      {
+        type: "memory",
+        kind: "boundary",
+        content:
+          "For Atlas, do not auto-push release announcements without explicit confirmation.",
+        confidence: 0.9,
+      },
+    ],
+    question:
+      "For Atlas, which preference applies to release notes, who is the current owner, and which boundary says do not auto-push release announcements?",
+    expectedAll: [
+      "risk-first release notes",
+      "ActiveTemporalOwner",
+      "do not auto-push release announcements",
+    ],
+    forbiddenAny: ["ExpiredTemporalOwner"],
+  }),
+);
+const cliExternalConverged = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    convergedExternalBenchmarkFile,
+    "--require-convergence",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliExternalConverged.status, 0, cliExternalConverged.stderr);
+const cliExternalConvergedJson = JSON.parse(cliExternalConverged.stdout) as {
+  pass?: boolean;
+  runManifest?: { options?: { requireConvergence?: boolean } };
+  cases?: Array<{ requireConvergence?: boolean; failureReasons?: string[] }>;
+};
+assert.equal(cliExternalConvergedJson.pass, true);
+assert.equal(cliExternalConvergedJson.runManifest?.options?.requireConvergence, true);
+assert.equal(cliExternalConvergedJson.cases?.[0]?.requireConvergence, true);
+assert.deepEqual(cliExternalConvergedJson.cases?.[0]?.failureReasons, []);
+const cliExternalConvergencePrepare = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    convergedExternalBenchmarkFile,
+    "--mode",
+    "prepare",
+    "--require-convergence",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalConvergencePrepare.status, 0);
+assert.match(
+  cliExternalConvergencePrepare.stderr,
+  /--require-convergence requires reconstruct mode/,
+);
 const failedExternalBenchmarkFile = path.join(tmp, "external-long-memory-qa-fail.jsonl");
 writeFileSync(
   failedExternalBenchmarkFile,
