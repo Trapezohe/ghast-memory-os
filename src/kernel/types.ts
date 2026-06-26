@@ -398,6 +398,24 @@ export interface ArchiveStaleHostImportsInput {
   archivedAt?: string | undefined;
 }
 
+export interface SearchIndexStatus {
+  status: "ok" | "missing" | "stale" | "unsupported";
+  totalMemoryCount: number;
+  indexedMemoryCount: number;
+  activeMemoryCount: number;
+  missingEntryCount: number;
+  staleEntryCount: number;
+  orphanEntryCount: number;
+  duplicateEntryCount: number;
+}
+
+export interface RepairSearchIndexResult {
+  repaired: boolean;
+  before: SearchIndexStatus;
+  after: SearchIndexStatus;
+  repairedAt: string;
+}
+
 export interface MemoryStore {
   initialize(): Promise<void> | void;
   close(): Promise<void> | void;
@@ -438,6 +456,8 @@ export interface MemoryStore {
   recordTaskTrajectory(input: TaskTrajectoryInput): Promise<void> | void;
   rowCounts(): Promise<Record<string, number>> | Record<string, number>;
   schemaVersion?(): Promise<number> | number;
+  searchIndexStatus?(): Promise<SearchIndexStatus> | SearchIndexStatus;
+  repairSearchIndex?(): Promise<RepairSearchIndexResult> | RepairSearchIndexResult;
 }
 
 export interface MemoryOSOptions {

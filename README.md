@@ -34,6 +34,7 @@ const prepared = await memory.prepareTurn({
 - Plaintext local SQLite store. No database encryption and no vault integration.
 - SQLite FTS-backed recall for query search, with LIKE fallback for tokenizer
   edge cases.
+- Search index health reporting and explicit repair for SQLite FTS drift.
 - Runtime facade: `observe`, `prepareTurn`, `commitOutcome`, `recordFeedback`,
   `forget`, `explain`.
 - Low-level compatibility APIs: `add` and `search` for import, admin, and
@@ -66,6 +67,7 @@ npm run build
 
 node dist/cli/gmos.js init --db ./gmos.db
 node dist/cli/gmos.js doctor --db ./gmos.db --host ghast
+node dist/cli/gmos.js repair --db ./gmos.db --search-index
 node dist/cli/gmos.js status --db ./gmos.db --profile local --host ghast --format markdown
 node dist/cli/gmos.js add --db ./gmos.db --profile local --kind preference --text "我喜欢简洁回答"
 node dist/cli/gmos.js update --db ./gmos.db --profile local --id memory_xxx --text "我喜欢先讲风险"
@@ -100,6 +102,7 @@ npm run test:consumer
 node dist/cli/gmos.js gate --generated-seeds 3 --scale-sizes 100,1000 --hosts ghast,mcp,mock_l3,search_only --format json
 node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3 --format json
 node dist/cli/gmos.js gym scale --sizes 100,1000 --threshold-p95-ms 250 --format json
+node dist/cli/gmos.js repair --db ./gmos.db --search-index
 npm pack --dry-run
 ```
 
@@ -129,6 +132,13 @@ temporary SQLite files under the OS temp directory; it does not read a user's
 memory DB. Passing this gate means the SDK's local runtime contract is healthy;
 it is still not an external long-term agent benchmark or a proof of mature
 digital-twin capability.
+
+`doctor` and `status` include a content-free search index health summary for
+SQLite stores: indexed row count, missing FTS rows, stale rows, orphan rows, and
+duplicates. If the index drifts from the canonical `gmos_memories` table, run
+`gmos repair --db ./gmos.db --search-index` to rebuild the FTS table from the
+stored memories. Repair does not create or delete memories; it only rebuilds
+the derived search index.
 
 The host compatibility gym distinguishes target presets from actual host
 adoption. `--hosts ghast` without an actual report tests the SDK's target Ghast
@@ -181,6 +191,8 @@ yet expose full event hooks. They are intentionally not raw database access:
 - SQLite search uses a maintained full-text index for query recall instead of
   only scanning the newest memories, so older relevant memories remain
   discoverable as the local store grows.
+- `searchIndexStatus()` and `repairSearchIndex()` expose the same derived-index
+  health and repair path used by CLI diagnostics.
 - `list()` and `get()` provide host management/migration reads without forcing a
   host to import the store directly. They still hide archived, sensitive, and
   person-scoped memory unless the caller explicitly asks for those management

@@ -20,7 +20,9 @@ import type {
   MemoryStore,
   RecordEvidenceInput,
   RecordFailureInput,
+  RepairSearchIndexResult,
   RestoreArchivedMemoryInput,
+  SearchIndexStatus,
   Sensitivity,
   TaskTrajectoryInput,
   UpdateMemoryInput,
@@ -39,6 +41,8 @@ export interface SqliteMemoryStoreOptions {
 export interface SqliteMemoryStore extends MemoryStore {
   listFailures(input: ListFailuresInput): FailureEventRecord[];
   schemaVersion(): number;
+  searchIndexStatus(): SearchIndexStatus;
+  repairSearchIndex(): RepairSearchIndexResult;
 }
 
 function nowIso(): string {
@@ -245,6 +249,147 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       `INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
        VALUES (?, ?, ?, ?, ?, ?)`,
     ).run(row.id, row.profile_id, row.kind, row.scope, row.status, row.content);
+  }
+
+  function searchIndexStatus(): SearchIndexStatus {
+    initialize();
+    const totalMemoryCount = tableExists("gmos_memories")
+      ? Number(
+          (
+            db
+              .prepare("SELECT COUNT(*) AS count FROM gmos_memories")
+              .get() as { count: number }
+          ).count,
+        )
+      : 0;
+    const activeMemoryCount = tableExists("gmos_memories")
+      ? Number(
+          (
+            db
+              .prepare("SELECT COUNT(*) AS count FROM gmos_memories WHERE status = 'active'")
+              .get() as { count: number }
+          ).count,
+        )
+      : 0;
+    const hasFts = tableExists("gmos_memories_fts");
+    ftsAvailableCache = hasFts;
+    if (!hasFts) {
+      return {
+        status: "missing",
+        totalMemoryCount,
+        indexedMemoryCount: 0,
+        activeMemoryCount,
+        missingEntryCount: totalMemoryCount,
+        staleEntryCount: 0,
+        orphanEntryCount: 0,
+        duplicateEntryCount: 0,
+      };
+    }
+    const indexedMemoryCount = Number(
+      (
+        db
+          .prepare("SELECT COUNT(*) AS count FROM gmos_memories_fts")
+          .get() as { count: number }
+      ).count,
+    );
+    const missingEntryCount = Number(
+      (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM gmos_memories m
+             WHERE NOT EXISTS (
+               SELECT 1 FROM gmos_memories_fts f WHERE f.id = m.id
+             )`,
+          )
+          .get() as { count: number }
+      ).count,
+    );
+    const orphanEntryCount = Number(
+      (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM gmos_memories_fts f
+             WHERE NOT EXISTS (
+               SELECT 1 FROM gmos_memories m WHERE m.id = f.id
+             )`,
+          )
+          .get() as { count: number }
+      ).count,
+    );
+    const staleEntryCount = Number(
+      (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM gmos_memories_fts f
+             JOIN gmos_memories m ON m.id = f.id
+             WHERE f.profile_id IS NOT m.profile_id
+                OR f.kind IS NOT m.kind
+                OR f.scope IS NOT m.scope
+                OR f.status IS NOT m.status
+                OR f.content IS NOT m.content`,
+          )
+          .get() as { count: number }
+      ).count,
+    );
+    const duplicateEntryCount = Number(
+      (
+        db
+          .prepare(
+            `SELECT COALESCE(SUM(entry_count - 1), 0) AS count
+             FROM (
+               SELECT id, COUNT(*) AS entry_count
+               FROM gmos_memories_fts
+               GROUP BY id
+               HAVING COUNT(*) > 1
+             )`,
+          )
+          .get() as { count: number | null }
+      ).count ?? 0,
+    );
+    const status =
+      missingEntryCount === 0 &&
+      staleEntryCount === 0 &&
+      orphanEntryCount === 0 &&
+      duplicateEntryCount === 0
+        ? "ok"
+        : "stale";
+    return {
+      status,
+      totalMemoryCount,
+      indexedMemoryCount,
+      activeMemoryCount,
+      missingEntryCount,
+      staleEntryCount,
+      orphanEntryCount,
+      duplicateEntryCount,
+    };
+  }
+
+  function repairSearchIndex(): RepairSearchIndexResult {
+    initialize();
+    const before = searchIndexStatus();
+    if (db.readonly) throw new Error("gmOS SQLite store is readonly");
+    if (!ftsAvailable()) throw new Error("gmOS SQLite search index is missing");
+    const repairedAt = nowIso();
+    const tx = db.transaction(() => {
+      db.prepare("DELETE FROM gmos_memories_fts").run();
+      db.prepare(
+        `INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
+         SELECT id, profile_id, kind, scope, status, content
+         FROM gmos_memories`,
+      ).run();
+    });
+    tx();
+    const after = searchIndexStatus();
+    return {
+      repaired: before.status !== "ok" && after.status === "ok",
+      before,
+      after,
+      repairedAt,
+    };
   }
 
   function memoryRowsForSearch(input: MemorySearchInput): Record<string, unknown>[] {
@@ -903,5 +1048,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     recordTaskTrajectory,
     rowCounts,
     schemaVersion,
+    searchIndexStatus,
+    repairSearchIndex,
   };
 }

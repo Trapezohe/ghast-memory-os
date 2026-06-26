@@ -3,6 +3,7 @@ import type {
   FailureKind,
   ListFailuresInput,
   MemoryStore,
+  SearchIndexStatus,
 } from "../kernel/types.js";
 import {
   classifyHostCompatibility,
@@ -16,6 +17,7 @@ import { readGmosPackageInfo } from "../kernel/package-info.js";
 export interface DiagnosticsStore {
   rowCounts(): Promise<Record<string, number>> | Record<string, number>;
   schemaVersion?(): Promise<number> | number;
+  searchIndexStatus?(): Promise<SearchIndexStatus> | SearchIndexStatus;
   listFailures?(input: ListFailuresInput): Promise<FailureEventRecord[]> | FailureEventRecord[];
 }
 
@@ -41,6 +43,7 @@ export interface MemoryStorageStatus {
   status: "ok" | "unavailable";
   schemaVersion: number | null;
   rowCounts: Record<string, number>;
+  searchIndex?: SearchIndexStatus | undefined;
   error?: {
     name: string;
     code: string;
@@ -113,10 +116,12 @@ async function storageStatus(store: DiagnosticsStore): Promise<MemoryStorageStat
   try {
     const schemaVersion = store.schemaVersion ? await store.schemaVersion() : null;
     const rowCounts = await store.rowCounts();
+    const searchIndex = store.searchIndexStatus ? await store.searchIndexStatus() : undefined;
     return {
       status: "ok",
       schemaVersion,
       rowCounts,
+      ...(searchIndex !== undefined ? { searchIndex } : {}),
     };
   } catch (error) {
     return {
@@ -208,6 +213,9 @@ export function renderMemoryStatusMarkdown(report: MemoryStatusReport): string {
     `Encrypted: ${report.trustContract.encrypted ? "yes" : "no"}`,
     report.storage.error
       ? `Error: ${report.storage.error.name}: ${report.storage.error.code}`
+      : "",
+    report.storage.searchIndex
+      ? `Search index: ${report.storage.searchIndex.status} (${report.storage.searchIndex.indexedMemoryCount}/${report.storage.searchIndex.totalMemoryCount} indexed; missing=${report.storage.searchIndex.missingEntryCount}; stale=${report.storage.searchIndex.staleEntryCount}; orphan=${report.storage.searchIndex.orphanEntryCount}; duplicate=${report.storage.searchIndex.duplicateEntryCount})`
       : "",
     "",
     "### Row Counts",

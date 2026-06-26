@@ -70,6 +70,7 @@ function usage(): never {
 Usage:
   gmos init --db ./gmos.db
   gmos doctor --db ./gmos.db --host ghast
+  gmos repair --db ./gmos.db --search-index
   gmos status --db ./gmos.db --profile local --host ghast --format markdown
   gmos add --db ./gmos.db --profile local --kind preference --text "我喜欢简洁回答"
   gmos update --db ./gmos.db --profile local --id memory_xxx --text "我喜欢先讲风险"
@@ -520,7 +521,26 @@ async function main(): Promise<void> {
               version: store.schemaVersion ? await store.schemaVersion() : null,
             },
             rowCounts: await store.rowCounts(),
+            searchIndex: store.searchIndexStatus ? await store.searchIndexStatus() : null,
             hostCompatibility: hostReport(requestedHost),
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+
+    if (command === "repair") {
+      if (!has("--search-index")) usage();
+      if (!store.repairSearchIndex) {
+        throw new Error("gmOS store does not support search index repair");
+      }
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            searchIndex: await store.repairSearchIndex(),
           },
           null,
           2,

@@ -299,6 +299,124 @@ const restoredDeepHistoryMatches = await memory.search({
   limit: 5,
 });
 assert.equal(restoredDeepHistoryMatches.some((entry) => entry.id === deepHistoryMemory.id), true);
+const repairDbPath = path.join(tmp, "repair-search-index.db");
+const repairStore = createSqliteMemoryStore({ path: repairDbPath });
+const repairMemory = createMemoryOS({ profileId: "repair", store: repairStore });
+const repairFixture = await repairMemory.add({
+  profileId: "repair",
+  kind: "preference",
+  content: "Repair index fixture prefers resilient recall.",
+});
+let repairStatus = await repairStore.searchIndexStatus();
+assert.equal(repairStatus.status, "ok");
+assert.equal(repairStatus.totalMemoryCount, 1);
+assert.equal(repairStatus.indexedMemoryCount, 1);
+const corruptRepairDb = new Database(repairDbPath);
+try {
+  corruptRepairDb
+    .prepare("DELETE FROM gmos_memories_fts WHERE id = ?")
+    .run(repairFixture.id);
+} finally {
+  corruptRepairDb.close();
+}
+repairStatus = await repairStore.searchIndexStatus();
+assert.equal(repairStatus.status, "stale");
+assert.equal(repairStatus.missingEntryCount, 1);
+const repairResult = await repairStore.repairSearchIndex();
+assert.equal(repairResult.repaired, true);
+assert.equal(repairResult.before.status, "stale");
+assert.equal(repairResult.after.status, "ok");
+repairStatus = await repairStore.searchIndexStatus();
+assert.equal(repairStatus.status, "ok");
+const repairedMatches = await repairMemory.search({
+  profileId: "repair",
+  query: "resilient recall",
+});
+assert.equal(repairedMatches.some((entry) => entry.id === repairFixture.id), true);
+const duplicateRepairDb = new Database(repairDbPath);
+try {
+  duplicateRepairDb
+    .prepare(
+      `INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      repairFixture.id,
+      "repair",
+      "preference",
+      "global",
+      "active",
+      "Repair index fixture prefers resilient recall.",
+    );
+} finally {
+  duplicateRepairDb.close();
+}
+repairStatus = await repairStore.searchIndexStatus();
+assert.equal(repairStatus.status, "stale");
+assert.equal(repairStatus.duplicateEntryCount, 1);
+assert.equal((await repairStore.repairSearchIndex()).after.status, "ok");
+const staleRepairDb = new Database(repairDbPath);
+try {
+  staleRepairDb.prepare("DELETE FROM gmos_memories_fts WHERE id = ?").run(repairFixture.id);
+  staleRepairDb
+    .prepare(
+      `INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      repairFixture.id,
+      "repair",
+      "preference",
+      "global",
+      "active",
+      "stale derived search index content",
+    );
+} finally {
+  staleRepairDb.close();
+}
+repairStatus = await repairStore.searchIndexStatus();
+assert.equal(repairStatus.status, "stale");
+assert.equal(repairStatus.staleEntryCount, 1);
+assert.equal((await repairStore.repairSearchIndex()).after.status, "ok");
+const nullStaleRepairDb = new Database(repairDbPath);
+try {
+  nullStaleRepairDb.prepare("DELETE FROM gmos_memories_fts WHERE id = ?").run(repairFixture.id);
+  nullStaleRepairDb
+    .prepare(
+      `INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      repairFixture.id,
+      null,
+      "preference",
+      "global",
+      "active",
+      "Repair index fixture prefers resilient recall.",
+    );
+} finally {
+  nullStaleRepairDb.close();
+}
+repairStatus = await repairStore.searchIndexStatus();
+assert.equal(repairStatus.status, "stale");
+assert.equal(repairStatus.staleEntryCount, 1);
+assert.equal((await repairStore.repairSearchIndex()).after.status, "ok");
+const orphanRepairDb = new Database(repairDbPath);
+try {
+  orphanRepairDb
+    .prepare(
+      `INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run("memory_orphan", "repair", "fact", "global", "active", "orphan fts row");
+} finally {
+  orphanRepairDb.close();
+}
+repairStatus = await repairStore.searchIndexStatus();
+assert.equal(repairStatus.status, "stale");
+assert.equal(repairStatus.orphanEntryCount, 1);
+assert.equal((await repairStore.repairSearchIndex()).after.status, "ok");
+await repairMemory.close();
 const lowLevelExplanation = await memory.explain(lowLevelMemory.id, "test");
 assert.equal(lowLevelExplanation?.evidence[0]?.sourceType, "sdk.low_level_add");
 assert.equal(JSON.stringify(lowLevelExplanation).includes("sk-lowlevel-metadata-secret"), false);
@@ -872,6 +990,8 @@ assert.equal(statusReport.package.name, packageJson.name);
 assert.equal(statusReport.package.version, packageJson.version);
 assert.equal(statusReport.storage.status, "ok");
 assert.equal(statusReport.storage.schemaVersion, 2);
+assert.equal(statusReport.storage.searchIndex?.status, "ok");
+assert.equal(statusReport.storage.searchIndex?.missingEntryCount, 0);
 assert.equal(statusReport.storage.rowCounts.gmos_failure_events, 4);
 assert.equal(statusReport.failureSummary.status, "ok");
 assert.equal(statusReport.failureSummary.inspectedFailureCount, 3);
@@ -883,6 +1003,7 @@ assert.equal(JSON.stringify(statusReport).includes("身份证"), false);
 assert.equal(JSON.stringify(statusReport).includes("110101199001011234"), false);
 const renderedStatus = renderMemoryStatusMarkdown(statusReport);
 assert.match(renderedStatus, /gmOS Status Report/);
+assert.match(renderedStatus, /Search index: ok/);
 assert.match(renderedStatus, /gmos_failure_events/);
 assert.equal(renderedStatus.includes("身份证"), false);
 const badStatus = await createMemoryStatusReport({
@@ -2478,6 +2599,100 @@ const cliSecretAdd = spawnSync(
 );
 assert.notEqual(cliSecretAdd.status, 0);
 assert.match(cliSecretAdd.stderr, /secret-like/);
+const cliRepairSearchDb = path.join(tmp, "cli-repair-search-index.db");
+const cliRepairAdd = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "add",
+    "--db",
+    cliRepairSearchDb,
+    "--profile",
+    "cli_repair",
+    "--kind",
+    "preference",
+    "--text",
+    "CLI repair search index fixture prefers resilient recall.",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliRepairAdd.status, 0, cliRepairAdd.stderr);
+const cliRepairMemory = JSON.parse(cliRepairAdd.stdout) as { id?: string };
+assert.ok(cliRepairMemory.id);
+const corruptCliRepairDb = new Database(cliRepairSearchDb);
+try {
+  corruptCliRepairDb.prepare("DELETE FROM gmos_memories_fts WHERE id = ?").run(cliRepairMemory.id);
+} finally {
+  corruptCliRepairDb.close();
+}
+const cliRepairDoctorBefore = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "doctor",
+    "--db",
+    cliRepairSearchDb,
+    "--host",
+    "ghast",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliRepairDoctorBefore.status, 0, cliRepairDoctorBefore.stderr);
+const cliRepairDoctorBeforeJson = JSON.parse(cliRepairDoctorBefore.stdout) as {
+  searchIndex?: { status?: string; missingEntryCount?: number };
+};
+assert.equal(cliRepairDoctorBeforeJson.searchIndex?.status, "stale");
+assert.equal(cliRepairDoctorBeforeJson.searchIndex?.missingEntryCount, 1);
+const cliRepair = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "repair",
+    "--db",
+    cliRepairSearchDb,
+    "--search-index",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliRepair.status, 0, cliRepair.stderr);
+const cliRepairJson = JSON.parse(cliRepair.stdout) as {
+  ok?: boolean;
+  searchIndex?: {
+    repaired?: boolean;
+    before?: { status?: string; missingEntryCount?: number };
+    after?: { status?: string; missingEntryCount?: number };
+  };
+};
+assert.equal(cliRepairJson.ok, true);
+assert.equal(cliRepairJson.searchIndex?.repaired, true);
+assert.equal(cliRepairJson.searchIndex?.before?.status, "stale");
+assert.equal(cliRepairJson.searchIndex?.before?.missingEntryCount, 1);
+assert.equal(cliRepairJson.searchIndex?.after?.status, "ok");
+assert.equal(cliRepairJson.searchIndex?.after?.missingEntryCount, 0);
+const cliRepairSearch = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "search",
+    "--db",
+    cliRepairSearchDb,
+    "--profile",
+    "cli_repair",
+    "--query",
+    "resilient recall",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliRepairSearch.status, 0, cliRepairSearch.stderr);
+assert.match(cliRepairSearch.stdout, /resilient recall/);
 const cliStatus = spawnSync(
   process.execPath,
   [
@@ -2498,12 +2713,18 @@ const cliStatus = spawnSync(
 );
 assert.equal(cliStatus.status, 0, cliStatus.stderr);
 const cliStatusPayload = JSON.parse(cliStatus.stdout) as {
-  storage?: { schemaVersion?: number; rowCounts?: Record<string, number> };
+  storage?: {
+    schemaVersion?: number;
+    rowCounts?: Record<string, number>;
+    searchIndex?: { status?: string; missingEntryCount?: number };
+  };
   failureSummary?: { inspectedFailureCount?: number };
   hostCompatibility?: { level?: string };
 };
 assert.equal(cliStatusPayload.storage?.schemaVersion, 2);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_memories ?? 0) > 0);
+assert.equal(cliStatusPayload.storage?.searchIndex?.status, "ok");
+assert.equal(cliStatusPayload.storage?.searchIndex?.missingEntryCount, 0);
 assert.equal(cliStatusPayload.failureSummary?.inspectedFailureCount, 3);
 assert.equal(cliStatusPayload.hostCompatibility?.level, "L4");
 assert.equal(cliStatus.stdout.includes("身份证"), false);
@@ -2639,11 +2860,14 @@ for (const [host, expectedLevel] of [
     encrypted: boolean;
     schema?: { dialect?: string; version?: number };
     hostCompatibility?: { level?: string; gaps?: string[] };
+    searchIndex?: { status?: string; missingEntryCount?: number };
   };
   assert.equal(doctorJson.encrypted, false);
   assert.equal(doctorJson.schema?.dialect, "sqlite");
   assert.equal(doctorJson.schema?.version, 2);
   assert.equal(doctorJson.hostCompatibility?.level, expectedLevel);
+  assert.equal(doctorJson.searchIndex?.status, "ok");
+  assert.equal(doctorJson.searchIndex?.missingEntryCount, 0);
   if (host === "ghast") assert.deepEqual(doctorJson.hostCompatibility?.gaps, []);
 }
 const missingEvolutionDb = path.join(tmp, "evolution-missing.db");

@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 
 const root = path.resolve(import.meta.dirname, "..");
 const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-consumer-smoke-"));
@@ -206,6 +207,8 @@ try {
       assert.equal(status.package.name, installedPackage.name);
       assert.equal(status.package.version, installedPackage.version);
       assert.equal(status.storage.schemaVersion, 2);
+      assert.equal(status.storage.searchIndex.status, "ok");
+      assert.equal(status.storage.searchIndex.missingEntryCount, 0);
       assert.equal(status.hostCompatibility.level, "L4");
       assert.equal(JSON.stringify(status).includes("consumer package wrong recall"), false);
       const httpServer = createMemoryHttpServer({
@@ -263,7 +266,13 @@ try {
   writeFileSync(
     consumerTypes,
     `
-      import { createMemoryOS, type MemoryRecord, type MemoryStore } from "@ghast/memory";
+      import {
+        createMemoryOS,
+        type MemoryRecord,
+        type MemoryStore,
+        type RepairSearchIndexResult,
+        type SearchIndexStatus,
+      } from "@ghast/memory";
       import {
         createMemoryStatusReport,
         type MemoryStatusReport,
@@ -311,6 +320,12 @@ try {
         query: "fixture",
       });
       if (typedResults.length < 1) throw new Error("low-level typed search failed");
+      const typedSearchIndexStatus: SearchIndexStatus = sqliteStore.searchIndexStatus();
+      if (typedSearchIndexStatus.status !== "ok") throw new Error("typed search index status failed");
+      const typedRepairSearchIndex: RepairSearchIndexResult = sqliteStore.repairSearchIndex();
+      if (typedRepairSearchIndex.after.status !== "ok") {
+        throw new Error("typed search index repair failed");
+      }
       const listed: MemoryRecord[] = await memory.list({
         profileId: "consumer-types",
         query: "fixture",
@@ -424,6 +439,7 @@ try {
   assert.equal(doctor.encrypted, false);
   assert.equal(doctor.schema.dialect, "sqlite");
   assert.equal(doctor.schema.version, 2);
+  assert.equal(doctor.searchIndex.status, "ok");
   assert.equal(doctor.hostCompatibility.level, "L4");
   const binLowLevelDb = path.join(consumerDir, "bin-low-level.db");
   const addBin = runInstalledCli(
@@ -441,6 +457,24 @@ try {
   );
   assert.equal(addBin.status, 0, addBin.stderr);
   const addBinMemory = JSON.parse(addBin.stdout);
+  const corruptBinDb = new Database(binLowLevelDb);
+  try {
+    corruptBinDb.prepare("DELETE FROM gmos_memories_fts WHERE id = ?").run(addBinMemory.id);
+  } finally {
+    corruptBinDb.close();
+  }
+  const staleDoctorBin = runInstalledCli(["doctor", "--db", binLowLevelDb, "--host", "ghast"]);
+  assert.equal(staleDoctorBin.status, 0, staleDoctorBin.stderr);
+  const staleDoctor = JSON.parse(staleDoctorBin.stdout);
+  assert.equal(staleDoctor.searchIndex.status, "stale");
+  assert.equal(staleDoctor.searchIndex.missingEntryCount, 1);
+  const repairBin = runInstalledCli(["repair", "--db", binLowLevelDb, "--search-index"]);
+  assert.equal(repairBin.status, 0, repairBin.stderr);
+  const repair = JSON.parse(repairBin.stdout);
+  assert.equal(repair.ok, true);
+  assert.equal(repair.searchIndex.repaired, true);
+  assert.equal(repair.searchIndex.before.status, "stale");
+  assert.equal(repair.searchIndex.after.status, "ok");
   const searchBin = runInstalledCli(
     [
       "search",
@@ -572,6 +606,8 @@ try {
   assert.equal(statusBin.status, 0, statusBin.stderr);
   const status = JSON.parse(statusBin.stdout);
   assert.equal(status.storage.schemaVersion, 2);
+  assert.equal(status.storage.searchIndex.status, "ok");
+  assert.equal(status.storage.searchIndex.missingEntryCount, 0);
   assert.equal(status.hostCompatibility.level, "L4");
   const installedMcpVersionScript = path.join(consumerDir, "installed-mcp-version.mjs");
   writeFileSync(
