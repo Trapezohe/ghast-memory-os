@@ -79,14 +79,18 @@ async function httpJson(
   };
 }
 
-function postJson(url: string, body: unknown): Promise<{
+function postJson(
+  url: string,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Promise<{
   status: number;
   body: Record<string, unknown>;
   text: string;
 }> {
   return httpJson(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
 }
@@ -1408,6 +1412,59 @@ try {
   await tinyHttpServer.close();
 }
 
+assert.throws(
+  () => createMemoryHttpServer({ memory, authToken: " " }),
+  /authToken must not be empty/,
+);
+
+const authedHttpServer = createMemoryHttpServer({
+  memory,
+  profileId: "http_auth",
+  authToken: "local-test-token",
+});
+const authedHttpAddress = await authedHttpServer.listen();
+try {
+  const health = await httpJson(`${authedHttpAddress.url}/health`);
+  assert.equal(health.status, 200);
+  assert.equal(health.body.authRequired, true);
+  const toolsWithoutToken = await httpJson(`${authedHttpAddress.url}/tools`);
+  assert.equal(toolsWithoutToken.status, 401);
+  assert.equal((toolsWithoutToken.body.error as { code?: string }).code, "unauthorized");
+  assert.equal(toolsWithoutToken.text.includes("local-test-token"), false);
+  const wrongToken = await postJson(
+    `${authedHttpAddress.url}/observe`,
+    {
+      profileId: "http_auth",
+      role: "user",
+      content: "HTTP auth should reject the wrong token.",
+    },
+    { authorization: "Bearer wrong-token" },
+  );
+  assert.equal(wrongToken.status, 401);
+  const authorizedObserve = await postJson(
+    `${authedHttpAddress.url}/observe`,
+    {
+      profileId: "http_auth",
+      role: "user",
+      content: "我喜欢 HTTP auth bearer-protected local calls.",
+    },
+    { authorization: "Bearer local-test-token" },
+  );
+  assert.equal(authorizedObserve.status, 200);
+  const authorizedPrepare = await postJson(
+    `${authedHttpAddress.url}/prepare`,
+    {
+      profileId: "http_auth",
+      text: "bearer-protected local calls",
+    },
+    { authorization: "Bearer local-test-token" },
+  );
+  assert.equal(authorizedPrepare.status, 200);
+  assert.match(authorizedPrepare.text, /bearer-protected local calls/);
+} finally {
+  await authedHttpServer.close();
+}
+
 const cliHttp = spawn(
   process.execPath,
   [
@@ -1424,6 +1481,8 @@ const cliHttp = spawn(
     "0",
     "--host",
     "ghast",
+    "--auth-token",
+    "cli-local-token",
   ],
   { cwd: process.cwd(), stdio: ["pipe", "pipe", "pipe"] },
 );
@@ -1457,22 +1516,116 @@ try {
   const cliHealth = await httpJson(`${cliHttpUrl}/health`);
   assert.equal(cliHealth.status, 200);
   assert.equal(cliHealth.body.framework, "ghast-memory-os");
+  assert.equal(cliHealth.body.authRequired, true);
+  const cliUnauthedObserve = await postJson(`${cliHttpUrl}/observe`, {
+    profileId: "cli_http",
+    role: "user",
+    content: "unauthorized CLI HTTP writes should fail.",
+  });
+  assert.equal(cliUnauthedObserve.status, 401);
   const cliObserve = await postJson(`${cliHttpUrl}/observe`, {
     profileId: "cli_http",
     role: "user",
     content: "我喜欢 CLI HTTP adapter 先讲测试结果。",
-  });
+  }, { authorization: "Bearer cli-local-token" });
   assert.equal(cliObserve.status, 200);
   const cliPrepare = await postJson(`${cliHttpUrl}/prepare`, {
     profileId: "cli_http",
     text: "CLI HTTP adapter 应该先讲什么？",
-  });
+  }, { authorization: "Bearer cli-local-token" });
   assert.equal(cliPrepare.status, 200);
   assert.match(cliPrepare.text, /先讲测试结果/);
 } finally {
   cliHttp.kill("SIGTERM");
   await Promise.race([
     new Promise((resolve) => cliHttp.once("exit", resolve)),
+    new Promise((resolve) => setTimeout(resolve, 5000)),
+  ]);
+}
+
+const cliMissingAuthToken = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "http",
+    "serve",
+    "--db",
+    path.join(tmp, "cli-http-missing-auth.db"),
+    "--profile",
+    "cli_http_missing_auth",
+    "--port",
+    "0",
+    "--auth-token",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliMissingAuthToken.status, 0);
+assert.match(cliMissingAuthToken.stderr, /--auth-token requires a value/);
+
+const cliEnvHttp = spawn(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "http",
+    "serve",
+    "--db",
+    path.join(tmp, "cli-http-env.db"),
+    "--profile",
+    "cli_http_env",
+    "--port",
+    "0",
+  ],
+  {
+    cwd: process.cwd(),
+    env: { ...process.env, GMOS_HTTP_AUTH_TOKEN: "cli-env-token" },
+    stdio: ["pipe", "pipe", "pipe"],
+  },
+);
+let cliEnvHttpStdout = "";
+let cliEnvHttpStderr = "";
+cliEnvHttp.stdout.setEncoding("utf8");
+cliEnvHttp.stderr.setEncoding("utf8");
+cliEnvHttp.stdout.on("data", (chunk: string) => {
+  cliEnvHttpStdout += chunk;
+});
+cliEnvHttp.stderr.on("data", (chunk: string) => {
+  cliEnvHttpStderr += chunk;
+});
+const cliEnvHttpUrl = await Promise.race([
+  new Promise<string>((resolve) => {
+    cliEnvHttp.stdout.on("data", () => {
+      const match = cliEnvHttpStdout.match(/"url": "(http:\/\/127\.0\.0\.1:\d+)"/u);
+      if (match?.[1]) resolve(match[1]);
+    });
+  }),
+  new Promise<never>((_, reject) => {
+    cliEnvHttp.once("exit", (code, signal) => {
+      reject(new Error(`gmos env http serve exited early: code=${code} signal=${signal} stderr=${cliEnvHttpStderr}`));
+    });
+  }),
+  new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error(`gmos env http serve did not print url: ${cliEnvHttpStderr}`)), 5000),
+  ),
+]);
+try {
+  const cliEnvHealth = await httpJson(`${cliEnvHttpUrl}/health`);
+  assert.equal(cliEnvHealth.status, 200);
+  assert.equal(cliEnvHealth.body.authRequired, true);
+  const cliEnvUnauthedTools = await httpJson(`${cliEnvHttpUrl}/tools`);
+  assert.equal(cliEnvUnauthedTools.status, 401);
+  const cliEnvTools = await httpJson(`${cliEnvHttpUrl}/tools`, {
+    headers: { authorization: "Bearer cli-env-token" },
+  });
+  assert.equal(cliEnvTools.status, 200);
+  assert.match(cliEnvTools.text, /memory.prepare_context/);
+} finally {
+  cliEnvHttp.kill("SIGTERM");
+  await Promise.race([
+    new Promise((resolve) => cliEnvHttp.once("exit", resolve)),
     new Promise((resolve) => setTimeout(resolve, 5000)),
   ]);
 }

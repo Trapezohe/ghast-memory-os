@@ -50,6 +50,16 @@ function value(name: string, fallback?: string): string | undefined {
   return index === -1 ? fallback : process.argv[index + 1] ?? fallback;
 }
 
+function strictOptionValue(name: string, fallback?: string): string | undefined {
+  const index = process.argv.indexOf(name);
+  if (index === -1) return fallback;
+  const next = process.argv[index + 1];
+  if (next === undefined || next.startsWith("--")) {
+    throw new Error(`${name} requires a value`);
+  }
+  return next;
+}
+
 function has(name: string): boolean {
   return process.argv.includes(name);
 }
@@ -77,7 +87,7 @@ Usage:
   gmos mcp tools
   gmos mcp call --db ./gmos.db --tool memory.prepare_context --input '{"text":"你知道我什么偏好吗？"}'
   gmos mcp serve --db ./gmos.db --profile local
-  gmos http serve --db ./gmos.db --profile local --port 4787 --host ghast
+  gmos http serve --db ./gmos.db --profile local --port 4787 --host ghast --auth-token local-dev-token
   gmos evolution report --db ./gmos.db --profile local --format markdown
   gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
   gmos gym run --db :memory: --generated-seeds 3 --format markdown --report-file ./memory-gym.md
@@ -744,6 +754,7 @@ async function main(): Promise<void> {
     }
 
     if (command === "http" && subcommand === "serve") {
+      const authToken = strictOptionValue("--auth-token", process.env.GMOS_HTTP_AUTH_TOKEN);
       const server = await serveMemoryHttp({
         memory,
         store,
@@ -751,12 +762,14 @@ async function main(): Promise<void> {
         host: hostPreset(),
         port: nonNegativeIntegerOption("--port", 4787),
         hostname: value("--listen-host", "127.0.0.1"),
+        authToken,
       });
       console.log(
         JSON.stringify(
           {
             ok: true,
             url: server.address.url,
+            authRequired: authToken !== undefined,
             encrypted: false,
           },
           null,

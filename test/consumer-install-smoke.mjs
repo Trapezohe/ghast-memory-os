@@ -213,15 +213,23 @@ try {
         store,
         profileId: "consumer_http",
         host: "ghast",
+        authToken: "consumer-local-token",
       });
       const httpAddress = await httpServer.listen();
       try {
         const health = await fetch(httpAddress.url + "/health");
         assert.equal(health.status, 200);
-        assert.equal((await health.json()).framework, "ghast-memory-os");
+        const healthBody = await health.json();
+        assert.equal(healthBody.framework, "ghast-memory-os");
+        assert.equal(healthBody.authRequired, true);
+        const unauthenticatedTools = await fetch(httpAddress.url + "/tools");
+        assert.equal(unauthenticatedTools.status, 401);
         const httpObserve = await fetch(httpAddress.url + "/observe", {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer consumer-local-token",
+          },
           body: JSON.stringify({
             profileId: "consumer_http",
             role: "user",
@@ -231,7 +239,10 @@ try {
         assert.equal(httpObserve.status, 200);
         const httpPrepare = await fetch(httpAddress.url + "/prepare", {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer consumer-local-token",
+          },
           body: JSON.stringify({
             profileId: "consumer_http",
             text: "stable SDK boundaries",
@@ -351,7 +362,11 @@ try {
         profileId: "consumer-types",
       });
       if (status.framework !== "ghast-memory-os") throw new Error("unexpected diagnostics framework");
-      const httpServer = createMemoryHttpServer({ memory, store: sqliteStore });
+      const httpServer = createMemoryHttpServer({
+        memory,
+        store: sqliteStore,
+        authToken: "typed-local-token",
+      });
       await httpServer.close();
       if (schemaVersion < 1) throw new Error("schema version must be initialized");
       await sqliteStore.close();

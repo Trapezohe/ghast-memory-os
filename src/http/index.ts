@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -15,6 +16,7 @@ export interface MemoryHttpServerOptions {
   profileId?: string | undefined;
   host?: MemoryStatusReportInput["host"] | undefined;
   maxBodyBytes?: number | undefined;
+  authToken?: string | undefined;
 }
 
 export interface MemoryHttpListenOptions {
@@ -36,11 +38,17 @@ export interface MemoryHttpServerHandle {
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 
-function writeJson(response: ServerResponse, status: number, payload: unknown): void {
+function writeJson(
+  response: ServerResponse,
+  status: number,
+  payload: unknown,
+  headers: Record<string, string> = {},
+): void {
   const body = JSON.stringify(payload, null, 2);
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
+    ...headers,
   });
   response.end(`${body}\n`);
 }
@@ -99,6 +107,34 @@ function ok(payload: Record<string, unknown> = { ok: true }): Record<string, unk
   return payload;
 }
 
+function normalizeAuthToken(authToken: string | undefined): string | undefined {
+  if (authToken === undefined) return undefined;
+  if (authToken.trim().length === 0) {
+    throw new Error("gmOS HTTP authToken must not be empty");
+  }
+  return authToken;
+}
+
+function bearerTokenMatches(headerValue: string | undefined, expectedToken: string): boolean {
+  if (!headerValue?.startsWith("Bearer ")) return false;
+  const actualToken = headerValue.slice("Bearer ".length);
+  const actual = Buffer.from(actualToken, "utf8");
+  const expected = Buffer.from(expectedToken, "utf8");
+  if (actual.byteLength !== expected.byteLength) return false;
+  return timingSafeEqual(actual, expected);
+}
+
+function assertAuthorized(request: IncomingMessage, authToken: string | undefined): void {
+  if (!authToken) return;
+  const authorization = request.headers.authorization;
+  if (!bearerTokenMatches(
+    Array.isArray(authorization) ? authorization[0] : authorization,
+    authToken,
+  )) {
+    throw new HttpError(401, "unauthorized", "valid bearer token required");
+  }
+}
+
 class HttpError extends Error {
   constructor(
     readonly status: number,
@@ -144,6 +180,7 @@ export function createMemoryHttpServer(
 ): MemoryHttpServerHandle {
   const mcp = createMemoryMcpServer(options.memory);
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+  const authToken = normalizeAuthToken(options.authToken);
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     try {
@@ -158,9 +195,12 @@ export function createMemoryHttpServer(
           ok: true,
           framework: "ghast-memory-os",
           status: "ready",
+          authRequired: authToken !== undefined,
         });
         return;
       }
+
+      assertAuthorized(request, authToken);
 
       if (request.method === "GET" && url.pathname === "/tools") {
         writeJson(response, 200, ok({ ok: true, tools: mcp.listTools() }));
@@ -206,7 +246,12 @@ export function createMemoryHttpServer(
       writeJson(response, result.isError ? 400 : 200, result.structuredContent);
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500;
-      writeJson(response, status, errorPayload(error));
+      writeJson(
+        response,
+        status,
+        errorPayload(error),
+        status === 401 ? { "www-authenticate": 'Bearer realm="gmos-http"' } : {},
+      );
     }
   }
 

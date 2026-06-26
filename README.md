@@ -79,7 +79,7 @@ node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后�
 node dist/cli/gmos.js mcp tools
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.prepare_context --input '{"text":"你之后怎么回答我？"}'
 node dist/cli/gmos.js mcp serve --db ./gmos.db --profile local
-node dist/cli/gmos.js http serve --db ./gmos.db --profile local --port 4787 --host ghast
+node dist/cli/gmos.js http serve --db ./gmos.db --profile local --port 4787 --host ghast --auth-token local-dev-token
 node dist/cli/gmos.js evolution report --db ./gmos.db --profile local --format markdown
 node dist/cli/gmos.js gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
 node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3
@@ -277,24 +277,33 @@ Current tools are `memory.observe`, `memory.prepare_context`,
 Hosts that cannot embed the Node SDK directly can run gmOS as a local HTTP
 service. This adapter reuses the MCP tool router for memory operations, so it
 does not bypass the public safety boundary. It defaults to `127.0.0.1` and
-does not add auth, TLS, cloud sync, or database encryption.
+does not add TLS, cloud sync, or database encryption. For local service
+boundaries that cross a process boundary, pass `authToken` or
+`--auth-token`; all non-health endpoints will then require
+`Authorization: Bearer <token>`.
 
 ```ts
 import { createMemoryHttpServer } from "@ghast/memory/http";
 
-const server = createMemoryHttpServer({ memory, store, profileId: "local-user" });
+const server = createMemoryHttpServer({
+  memory,
+  store,
+  profileId: "local-user",
+  authToken: process.env.GMOS_HTTP_AUTH_TOKEN,
+});
 const { url } = await server.listen({ port: 4787 });
 ```
 
 CLI:
 
 ```bash
-gmos http serve --db ./gmos.db --profile local --port 4787 --host ghast
+GMOS_HTTP_AUTH_TOKEN=local-dev-token \
+  gmos http serve --db ./gmos.db --profile local --port 4787 --host ghast
 ```
 
 Endpoints:
 
-- `GET /health`
+- `GET /health` (always open; reports whether auth is required)
 - `GET /status?profileId=local`
 - `GET /tools`
 - `POST /observe`
@@ -304,6 +313,10 @@ Endpoints:
 - `POST /forget`
 - `POST /explain`
 - `POST /mcp/call` with `{ "tool": "memory.prepare_context", "args": {} }`
+
+When `authToken` is configured, every endpoint except `/health` returns `401`
+unless the request includes `Authorization: Bearer <token>`. The token is never
+printed in status or health responses.
 
 The HTTP adapter intentionally rejects `includeSensitive` on `/prepare` through
 the same public-tool contract as MCP. Hosts that need sensitive/admin memory
