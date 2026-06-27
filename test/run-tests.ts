@@ -593,6 +593,175 @@ try {
   speakerBeliefDb.close();
 }
 await speakerBeliefMemory.close();
+
+const projectRuleStore = createSqliteMemoryStore({
+  path: path.join(tmp, "project-rule-extractor.db"),
+});
+const projectRuleMemory = createMemoryOS({
+  profileId: "project_rule",
+  store: projectRuleStore,
+});
+const projectOwnerAlphaReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_rule",
+  role: "user",
+  content: "Project Atlas current owner is AlphaTeam.",
+});
+assert.equal(projectOwnerAlphaReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(projectOwnerAlphaReport.worldBeliefIds.length, 1);
+const projectOwnerBetaReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_rule",
+  role: "user",
+  content: "Project Atlas current owner is BetaTeam.",
+});
+assert.equal(projectOwnerBetaReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(projectOwnerBetaReport.worldBeliefIds.length, 1);
+const projectStatusReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_rule",
+  role: "user",
+  content: "Project Atlas current status is Green.",
+});
+assert.equal(projectStatusReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(projectStatusReport.worldBeliefIds.length, 1);
+const shortProjectOwnerReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_rule",
+  role: "user",
+  content: "Project X current owner is SoloTeam.",
+});
+assert.equal(shortProjectOwnerReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(shortProjectOwnerReport.worldBeliefIds.length, 1);
+const chineseProjectOwnerReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_rule",
+  role: "user",
+  content: "项目星河当前负责人是 GammaTeam。",
+});
+assert.equal(chineseProjectOwnerReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(chineseProjectOwnerReport.worldBeliefIds.length, 1);
+const shortChineseProjectOwnerReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_rule",
+  role: "user",
+  content: "项目甲当前负责人是 DeltaTeam。",
+});
+assert.equal(shortChineseProjectOwnerReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(shortChineseProjectOwnerReport.worldBeliefIds.length, 1);
+for (const transientProjectLikeStatement of [
+  "The current owner is AlphaTeam.",
+  "Our current status is blocked.",
+  "This current contact is Sam.",
+  "Atlas project current owner is GammaTeam.",
+  "X project current owner is Alice.",
+  "Project current owner is Alice.",
+  "Project New current status is blocked.",
+  "Project Current current owner is Alice.",
+  "Our project current status is blocked.",
+  "This project current contact is Sam.",
+  "Her project current owner is Alice.",
+  "His project current status is blocked.",
+  "Its project current deadline is Friday.",
+  "Some project current status is blocked.",
+  "Another project current contact is Sam.",
+  "A project current owner is Alice.",
+  "A new project current status is blocked.",
+  "New project current status is blocked.",
+  "Current project current owner is Alice.",
+  "Existing project current contact is Sam.",
+  "internal project current status is blocked.",
+  "main project current owner is Alice.",
+  "client project current contact is Sam.",
+  "我们当前状态是 blocked。",
+  "这个当前联系人是 Sam。",
+  "星河项目当前负责人是 GammaTeam。",
+  "项目当前负责人是 Sam。",
+  "项目新当前状态是 blocked。",
+  "项目当前当前负责人是 Sam。",
+  "我们项目当前状态是 blocked。",
+  "这个项目当前联系人是 Sam。",
+  "我的项目当前状态是 blocked。",
+  "我们的项目当前状态是 blocked。",
+  "你们的项目当前联系人是 Sam。",
+  "他的项目当前负责人是 Sam。",
+  "她的项目当前联系人是 Sam。",
+  "它的项目当前状态是 blocked。",
+  "一个项目当前负责人是 Sam。",
+  "某个项目当前状态是 blocked。",
+  "某项目当前联系人是 Sam。",
+  "当前项目当前负责人是 Sam。",
+  "已有项目当前联系人是 Sam。",
+  "其他项目当前状态是 blocked。",
+  "新项目当前状态是 blocked。",
+  "内部项目当前状态是 blocked。",
+  "主要项目当前负责人是 Sam。",
+  "副项目当前截止日期是 Friday。",
+]) {
+  const transientProjectLikeReport = await projectRuleMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: "project_rule",
+    role: "user",
+    content: transientProjectLikeStatement,
+  });
+  assert.equal(transientProjectLikeReport.extraction?.acceptedCandidateCount, 0);
+  assert.equal(transientProjectLikeReport.memoryIds.length, 0);
+  assert.equal(transientProjectLikeReport.worldBeliefIds.length, 0);
+}
+const projectRuleDb = new Database(path.join(tmp, "project-rule-extractor.db"), { readonly: true });
+try {
+  const projectBeliefs = projectRuleDb
+    .prepare(
+      `SELECT predicate, status, object
+       FROM gmos_world_beliefs
+       WHERE profile_id = 'project_rule' AND subject = 'project:atlas'
+       ORDER BY predicate, status, object`,
+    )
+    .all() as Array<{ predicate: string; status: string; object: string }>;
+  assert.equal(
+    projectBeliefs.filter(
+      (belief) => belief.predicate === "project.owner" && belief.status === "active",
+    ).length,
+    1,
+  );
+  assert.equal(
+    projectBeliefs.some(
+      (belief) =>
+        belief.predicate === "project.owner" &&
+        belief.status === "active" &&
+        belief.object.includes("BetaTeam"),
+    ),
+    true,
+  );
+  assert.equal(
+    projectBeliefs.some(
+      (belief) =>
+        belief.predicate === "project.owner" &&
+        belief.status === "superseded" &&
+        belief.object.includes("AlphaTeam"),
+    ),
+    true,
+  );
+  assert.equal(
+    projectBeliefs.some(
+      (belief) =>
+        belief.predicate === "project.status" &&
+        belief.status === "active" &&
+        belief.object.includes("Green"),
+    ),
+    true,
+  );
+} finally {
+  projectRuleDb.close();
+}
+const projectOwnerReconstruction = await projectRuleMemory.reconstructContext({
+  profileId: "project_rule",
+  query: "Project Atlas current owner",
+});
+assert.match(projectOwnerReconstruction.contextBlock, /BetaTeam/);
+assert.doesNotMatch(projectOwnerReconstruction.contextBlock, /AlphaTeam/);
+await projectRuleMemory.close();
+
 await extractorMemory.observe({
   type: "conversation.message",
   profileId: "extractor",

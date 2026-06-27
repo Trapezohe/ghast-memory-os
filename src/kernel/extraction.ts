@@ -298,6 +298,90 @@ function stableFirstPersonAttributeLabel(label: string): boolean {
   ) || /(?:工具|应用|编辑器|浏览器|日历|数据库|领域|职业|职位|时区|城市|国家|语言|技术栈|流程)$/u.test(label.trim());
 }
 
+function projectCurrentStateCandidate(text: string): MemoryExtractionCandidate | null {
+  const utterance = stripSpeakerPrefix(text);
+  if (isQuestionLike(utterance)) return null;
+  // Keep the built-in rule narrow: suffix forms like "X project current ..."
+  // are too ambiguous to distinguish names from generic descriptions.
+  const english = [
+    /^\s*project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+current\s+(owner|status|deadline|contact)\s+(?:is|are|=)\s+.{1,120}?\s*\.?\s*$/iu,
+  ].map((pattern) => pattern.exec(utterance)).find((match) => match !== null);
+  const chinese = [
+    /^\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(?:当前|现在)(负责人|状态|截止日期|联系人)(?:是|为|=)\s*.{1,120}?\s*。?\s*$/u,
+  ].map((pattern) => pattern.exec(utterance)).find((match) => match !== null);
+  const project = english?.[1] ?? chinese?.[1];
+  const field = english?.[2]?.toLowerCase() ?? chinese?.[2];
+  if (!project || isGenericProjectReference(project)) return null;
+  const predicate = field === "owner" || field === "负责人"
+    ? "project.owner"
+    : field === "status" || field === "状态"
+      ? "project.status"
+      : field === "deadline" || field === "截止日期"
+        ? "project.deadline"
+        : field === "contact" || field === "联系人"
+          ? "project.contact"
+          : null;
+  if (!predicate) return null;
+  return {
+    kind: "project",
+    content: text,
+    confidence: 0.78,
+    predicate,
+    subject: `project:${project.trim()}`,
+    cardinality: "single",
+    metadata: { rule: "project_current_state" },
+  };
+}
+
+function isGenericProjectReference(project: string): boolean {
+  const trimmed = project.trim();
+  const normalized = trimmed.toLowerCase();
+  return (
+    /^(?:the|this|that|our|my|your|his|her|its|their|we|us|it|a|an|some|another|any|each|every|one|new|current|existing|other|old|next|previous|prior|same)$/iu.test(
+      normalized,
+    ) ||
+    /^(?:a|an|some|another|any|each|every|one)(?:\s+(?:new|current|existing|other|old|next|previous|prior|same))*$/iu.test(
+      normalized,
+    ) ||
+    /^(?:这个|那个|我|我的|我们|我们的|你|你的|你们|你们的|您|您的|他|他的|他们|他们的|她|她的|她们|她们的|它|它的|它们|它们的|其|该|此|一个|某个|某|某些|一些|任一|任何|新|当前|已有|其他|旧|下个|上个|同一个)$/u.test(
+      trimmed,
+    ) ||
+    /^(?:一个|某个|某|某些|一些|任一|任何)(?:新|当前|已有|其他|旧|下个|上个|同一个)?$/u.test(
+      trimmed,
+    )
+  );
+}
+
+function unnamedProjectCurrentState(text: string): boolean {
+  const utterance = stripSpeakerPrefix(text);
+  return (
+    /^\s*(?:(?:the|this|that|our|my|your|his|her|its|their|a|an|some|another|any|each|every|one)(?:\s+(?:new|current|existing|other|old|next|previous|prior|same))*|new|current|existing|other|old|next|previous|prior|same)\s+project\s+current\s+(?:owner|status|deadline|contact)\s+(?:is|are|=)\s+.{1,120}/iu.test(
+      utterance,
+    ) ||
+    /^\s*[\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?\s+project\s+current\s+(?:owner|status|deadline|contact)\s+(?:is|are|=)\s+.{1,120}/iu.test(
+      utterance,
+    ) ||
+    /^\s*project\s+current\s+(?:owner|status|deadline|contact)\s+(?:is|are|=)\s+.{1,120}/iu.test(
+      utterance,
+    ) ||
+    /^\s*project\s+[\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?\s+current\s+(?:owner|status|deadline|contact)\s+(?:is|are|=)\s+.{1,120}/iu.test(
+      utterance,
+    ) ||
+    /^\s*(?:这个|那个|我|我的|我们|我们的|你|你的|你们|你们的|您|您的|他|他的|他们|他们的|她|她的|她们|她们的|它|它的|它们|它们的|其|该|此|一个|某个|某|某些|一些|任一|任何|新|当前|已有|其他|旧|下个|上个|同一个)(?:新|当前|已有|其他|旧|下个|上个|同一个)?\s*项目(?:当前|现在)(?:负责人|状态|截止日期|联系人)(?:是|为|=)\s*.{1,120}/u.test(
+      utterance,
+    ) ||
+    /^\s*[\p{Script=Han}\p{L}\p{N}_ -]{1,60}?\s*项目(?:当前|现在)(?:负责人|状态|截止日期|联系人)(?:是|为|=)\s*.{1,120}/u.test(
+      utterance,
+    ) ||
+    /^\s*项目(?:当前|现在)(?:负责人|状态|截止日期|联系人)(?:是|为|=)\s*.{1,120}/u.test(
+      utterance,
+    ) ||
+    /^\s*项目\s*[\p{Script=Han}\p{L}\p{N}_ -]{1,60}?(?:当前|现在)(?:负责人|状态|截止日期|联系人)(?:是|为|=)\s*.{1,120}/u.test(
+      utterance,
+    )
+  );
+}
+
 export function extractRuleMemoryCandidates(content: string): MemoryExtractionCandidate[] {
   const text = normalize(content);
   if (!text || isPersonRoutedMemory(text)) return [];
@@ -344,6 +428,10 @@ export function extractRuleMemoryCandidates(content: string): MemoryExtractionCa
       },
     ];
   }
+
+  const projectStateCandidate = projectCurrentStateCandidate(text);
+  if (projectStateCandidate) return [projectStateCandidate];
+  if (unnamedProjectCurrentState(text)) return [];
 
   if (/项目|project|repo|仓库|deadline|里程碑/iu.test(text)) {
     return [
