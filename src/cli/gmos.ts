@@ -97,6 +97,7 @@ Usage:
   gmos delete --db ./gmos.db --profile local --id memory_xxx --reason "manual cleanup"
   gmos clear --db ./gmos.db --profile local --scope global --reason "manual cleanup"
   gmos search --db ./gmos.db --profile local --query "简洁"
+  gmos history --db ./gmos.db --profile local --query "之前的状态"
   gmos list --db ./gmos.db --profile local --query "简洁" --status active
   gmos get --db ./gmos.db --profile local --id memory_xxx
   gmos export --db ./gmos.db --profile local --output-file ./gmos-memory-export.json
@@ -895,13 +896,13 @@ async function main(): Promise<void> {
       return;
     }
 
-    if (command === "search") {
+    if (command === "search" || command === "history") {
       const query = value("--query");
       if (!query) usage();
       const memories = await memory.search({
         profileId,
         query,
-        purpose: searchPurposeOption(),
+        purpose: command === "history" ? "history" : searchPurposeOption(),
         limit: positiveIntegerOption("--limit", 12),
         includeSensitive: has("--include-sensitive"),
         includePerson: has("--include-person"),

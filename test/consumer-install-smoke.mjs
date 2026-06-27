@@ -1043,8 +1043,30 @@ try {
   );
   assert.equal(addBin.status, 0, addBin.stderr);
   const addBinMemory = JSON.parse(addBin.stdout);
+  const addExpiredBin = runInstalledCli(
+    [
+      "add",
+      "--db",
+      binLowLevelDb,
+      "--profile",
+      "bin",
+      "--kind",
+      "fact",
+      "--text",
+      "Installed bin expired history remembers old manifest checksum.",
+    ],
+  );
+  assert.equal(addExpiredBin.status, 0, addExpiredBin.stderr);
+  const addExpiredMemory = JSON.parse(addExpiredBin.stdout);
   const corruptBinDb = new Database(binLowLevelDb);
   try {
+    const expiredMetadata = {
+      ...(addExpiredMemory.metadata ?? {}),
+      validTo: "2000-01-01T00:00:00.000Z",
+    };
+    corruptBinDb
+      .prepare("UPDATE gmos_memories SET metadata_json = ? WHERE id = ?")
+      .run(JSON.stringify(expiredMetadata), addExpiredMemory.id);
     corruptBinDb.prepare("DELETE FROM gmos_memories_fts WHERE id = ?").run(addBinMemory.id);
   } finally {
     corruptBinDb.close();
@@ -1074,7 +1096,7 @@ try {
   );
   assert.equal(searchBin.status, 0, searchBin.stderr);
   assert.match(searchBin.stdout, /Installed bin low-level add prefers stable manifests/);
-  const historySearchBin = runInstalledCli(
+  const defaultExpiredSearchBin = runInstalledCli(
     [
       "search",
       "--db",
@@ -1082,13 +1104,39 @@ try {
       "--profile",
       "bin",
       "--query",
-      "stable manifests",
+      "old manifest checksum",
+    ],
+  );
+  assert.equal(defaultExpiredSearchBin.status, 0, defaultExpiredSearchBin.stderr);
+  assert.doesNotMatch(defaultExpiredSearchBin.stdout, /old manifest checksum/);
+  const purposeHistorySearchBin = runInstalledCli(
+    [
+      "search",
+      "--db",
+      binLowLevelDb,
+      "--profile",
+      "bin",
+      "--query",
+      "old manifest checksum",
       "--purpose",
       "history",
     ],
   );
+  assert.equal(purposeHistorySearchBin.status, 0, purposeHistorySearchBin.stderr);
+  assert.match(purposeHistorySearchBin.stdout, /old manifest checksum/);
+  const historySearchBin = runInstalledCli(
+    [
+      "history",
+      "--db",
+      binLowLevelDb,
+      "--profile",
+      "bin",
+      "--query",
+      "old manifest checksum",
+    ],
+  );
   assert.equal(historySearchBin.status, 0, historySearchBin.stderr);
-  assert.match(historySearchBin.stdout, /Installed bin low-level add prefers stable manifests/);
+  assert.match(historySearchBin.stdout, /old manifest checksum/);
   const historyReconstructBin = runInstalledCli(
     [
       "reconstruct",

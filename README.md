@@ -105,6 +105,7 @@ node dist/cli/gmos.js delete --db ./gmos.db --profile local --id memory_xxx
 node dist/cli/gmos.js clear --db ./gmos.db --profile local --scope global
 node dist/cli/gmos.js search --db ./gmos.db --profile local --query "简洁"
 node dist/cli/gmos.js search --db ./gmos.db --profile local --query "之前的状态" --purpose history
+node dist/cli/gmos.js history --db ./gmos.db --profile local --query "之前的状态"
 node dist/cli/gmos.js list --db ./gmos.db --profile local --query "简洁" --status active
 node dist/cli/gmos.js get --db ./gmos.db --profile local --id memory_xxx
 node dist/cli/gmos.js export --db ./gmos.db --profile local --output-file ./gmos-memory-export.json
