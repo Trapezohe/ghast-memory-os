@@ -3921,6 +3921,7 @@ assert.deepEqual(explicitTemporalValidityMetadata("until 2026-07-01."), {
   validTo: "2026-07-01T00:00:00.000Z",
 });
 assert.equal(normalizeExplicitTemporalInstant("2026-02-31T00:00:00Z"), null);
+assert.equal(normalizeExplicitTemporalInstant("2026-07-01T10:30:00"), null);
 assert.deepEqual(
   mergeExplicitTemporalValidityMetadata("until 2026-07-01", {
     validTo: "2030-01-01T00:00:00.000Z",

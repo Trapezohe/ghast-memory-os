@@ -28,7 +28,7 @@ export function normalizeExplicitTemporalInstant(value: string): string | null {
   if (/^\d{4}-\d{2}-\d{2}$/u.test(trimmed)) {
     return new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).toISOString();
   }
-  if (!/Z|[+-]\d{2}:?\d{2}$/u.test(trimmed)) return null;
+  if (!/(?:Z|[+-]\d{2}:?\d{2})$/u.test(trimmed)) return null;
   const timestamp = Date.parse(trimmed);
   if (!Number.isFinite(timestamp)) return null;
   return new Date(timestamp).toISOString();
