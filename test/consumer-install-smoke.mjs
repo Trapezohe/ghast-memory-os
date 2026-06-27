@@ -46,6 +46,15 @@ try {
     path.join(consumerDir, "package.json"),
     JSON.stringify({ name: "host-app-should-not-leak", type: "module", private: true }, null, 2),
   );
+  writeFileSync(path.join(consumerDir, "README.md"), "host repo\n");
+  run("git", ["init"], { cwd: consumerDir });
+  run("git", ["add", "README.md", "package.json"], { cwd: consumerDir });
+  run(
+    "git",
+    ["-c", "user.name=gmOS Test", "-c", "user.email=gmos@example.test", "commit", "-m", "init"],
+    { cwd: consumerDir },
+  );
+  assert.match(run("git", ["rev-parse", "HEAD"], { cwd: consumerDir }).trim(), /^[a-f0-9]{40}$/u);
   run(npmBin, ["install", tarballPath], { cwd: consumerDir, stdio: "pipe" });
 
   const consumerScript = path.join(consumerDir, "consumer-smoke.mjs");
@@ -298,6 +307,9 @@ try {
         readFileSync(path.join(process.cwd(), "node_modules", "@ghast", "memory", "package.json"), "utf8"),
       );
       assert.equal(installedPackage.types, "./dist/index.d.ts");
+      assert.equal(consumerSuiteExecution.result.runManifest.package.name, "@ghast/memory");
+      assert.equal(consumerSuiteExecution.result.runManifest.package.version, installedPackage.version);
+      assert.deepEqual(consumerSuiteExecution.result.runManifest.git, { branch: null, sha: null, dirty: null });
       const expectedExportTypes = {
         ".": "./dist/index.d.ts",
         "./store/sqlite": "./dist/store/sqlite/index.d.ts",
@@ -977,7 +989,10 @@ try {
   assert.equal(installedExternalSuiteJson.totalCaseCount >= 2, true);
   assert.equal(installedExternalSuiteJson.scoreWeighted > 0, true);
   assert.equal(installedExternalSuiteJson.runManifest.durationMs >= 0, true);
+  assert.equal(installedExternalSuiteJson.runManifest.package.name, "@ghast/memory");
   assert.equal(typeof installedExternalSuiteJson.runManifest.package.version, "string");
+  assert.equal(installedExternalSuiteJson.runManifest.package.version, installedPackage.version);
+  assert.deepEqual(installedExternalSuiteJson.runManifest.git, { branch: null, sha: null, dirty: null });
   assert.equal(installedExternalSuiteJson.runs[0].durationMs >= 0, true);
   assert.equal(installedExternalSuiteJson.runs[0].caseGroupCount >= 1, true);
   assert.equal(existsSync(path.join(installedExternalSuiteOutputDir, "installed_pass.json")), true);
