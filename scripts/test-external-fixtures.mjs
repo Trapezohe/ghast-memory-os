@@ -36,8 +36,8 @@ const failures = [];
 if (report.pass !== true) failures.push("suite pass=false");
 if (report.benchmarkPass !== true) failures.push("benchmarkPass=false");
 if (report.runCount !== 3) failures.push(`runCount=${report.runCount}`);
-if (report.totalCaseCount !== 29) failures.push(`totalCaseCount=${report.totalCaseCount}`);
-if (report.totalPassedCount !== 29) failures.push(`totalPassedCount=${report.totalPassedCount}`);
+if (report.totalCaseCount !== 31) failures.push(`totalCaseCount=${report.totalCaseCount}`);
+if (report.totalPassedCount !== 31) failures.push(`totalPassedCount=${report.totalPassedCount}`);
 if (report.totalFailedCount !== 0) failures.push(`totalFailedCount=${report.totalFailedCount}`);
 if (report.scoreWeighted !== 1) failures.push(`scoreWeighted=${report.scoreWeighted}`);
 
@@ -46,8 +46,8 @@ const gmosRun = runs.get("curated-gmos");
 const longMemEvalRun = runs.get("longmemeval-mini");
 const locomoRun = runs.get("locomo-mini");
 
-if (!gmosRun || gmosRun.caseCount !== 24 || gmosRun.pass !== true) {
-  failures.push("curated-gmos run did not pass 24 cases");
+if (!gmosRun || gmosRun.caseCount !== 26 || gmosRun.pass !== true) {
+  failures.push("curated-gmos run did not pass 26 cases");
 }
 if (
   !longMemEvalRun ||
