@@ -485,6 +485,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         const belief = await store.addWorldBelief({
           profileId,
           subject: candidate.subject ?? "user",
+          subjectAliases: candidate.subjectAliases,
           predicate: candidate.predicate,
           object: candidate.content,
           confidence: candidate.confidence,

@@ -1329,6 +1329,7 @@ const llmExtractorMemory = createMemoryOS({
                       {
                         kind: "project",
                         subject: "Project Mira",
+                        subjectAliases: ["Mira", "Mira rollout", "StarlingAlias"],
                         content: "Mira project current blocker is rollout audit.",
                         confidence: 0.89,
                         predicate: "project.state",
@@ -1448,6 +1449,16 @@ try {
   assert.equal(llmProjectBeliefMetadata.eventTime, "2026-06-20T00:00:00.000Z");
   assert.equal(llmProjectBeliefMetadata.validFrom, "2026-06-21T00:00:00.000Z");
   assert.equal(llmProjectBeliefMetadata.validTo, "2999-07-01T10:30:00.000Z");
+  const llmProjectEntity = llmProjectBeliefMetadata.entityResolution as
+    | { aliases?: unknown }
+    | undefined;
+  assert.equal(
+    Array.isArray(llmProjectEntity?.aliases) &&
+      llmProjectEntity.aliases.includes("Mira") &&
+      llmProjectEntity.aliases.includes("Mira rollout") &&
+      llmProjectEntity.aliases.includes("StarlingAlias"),
+    true,
+  );
 } finally {
   llmExtractorDb.close();
 }
@@ -1460,6 +1471,13 @@ const llmProject = await llmExtractorMemory.reconstructContext({
 assert.match(llmProject.contextBlock, /rollout audit/);
 assert.doesNotMatch(llmProject.contextBlock, /sk-llmextractorsecret/);
 assert.doesNotMatch(llmProject.contextBlock, /Alice likes chamomile/);
+const llmProjectAliasOnly = await llmExtractorMemory.reconstructContext({
+  profileId: "llm_extractor",
+  query: "What is StarlingAlias status?",
+  maxSteps: 4,
+  maxBranch: 6,
+});
+assert.match(llmProjectAliasOnly.contextBlock, /rollout audit/);
 await llmExtractorMemory.close();
 
 const suppressRulesStore = createSqliteMemoryStore({ path: path.join(tmp, "suppress-rules.db") });
@@ -1532,6 +1550,8 @@ const invalidTemporalExtractorMemory = createMemoryOS({
       content: "Invalid temporal extractor candidate should still store content.",
       confidence: 0.9,
       predicate: "project.state",
+      subject: "Project Clean Alias",
+      subjectAliases: ["Clean Alias", { oracle: "nested custom alias oracle" } as never],
       eventTime: "2026-02-30",
       validFrom: "2026-07-01T10:30:00",
       validTo: "not-a-date",
@@ -1552,6 +1572,28 @@ const invalidTemporalMemory = await invalidTemporalExtractorMemory.get({
 assert.equal(invalidTemporalMemory?.metadata.eventTime, undefined);
 assert.equal(invalidTemporalMemory?.metadata.validFrom, undefined);
 assert.equal(invalidTemporalMemory?.metadata.validTo, undefined);
+const invalidTemporalDb = new Database(path.join(tmp, "invalid-temporal-extractor.db"), {
+  readonly: true,
+});
+try {
+  const invalidTemporalBeliefRow = invalidTemporalDb
+    .prepare(
+      `SELECT metadata_json
+       FROM gmos_world_beliefs
+       WHERE profile_id = ? AND source_memory_id = ?
+       LIMIT 1`,
+    )
+    .get("invalid_temporal_extractor", invalidTemporalMemory?.id ?? "") as
+    | { metadata_json: string }
+    | undefined;
+  const invalidTemporalBeliefMetadata = JSON.parse(
+    invalidTemporalBeliefRow?.metadata_json ?? "{}",
+  ) as Record<string, unknown>;
+  assert.equal(JSON.stringify(invalidTemporalBeliefMetadata).includes("Clean Alias"), true);
+  assert.equal(JSON.stringify(invalidTemporalBeliefMetadata).includes("nested custom alias oracle"), false);
+} finally {
+  invalidTemporalDb.close();
+}
 await invalidTemporalExtractorMemory.close();
 
 const unsafeExtractorStore = createSqliteMemoryStore({
@@ -1574,6 +1616,14 @@ const unsafeExtractorMemory = createMemoryOS({
       confidence: 0.99,
       predicate: "project.state",
       validFrom: "sk-customtemporalsecret1234567890",
+    },
+    {
+      kind: "project",
+      content: "Custom extractor leaked secret-like subject alias.",
+      confidence: 0.99,
+      predicate: "project.state",
+      subject: "Public alias project",
+      subjectAliases: ["sk-customaliassecret1234567890"],
     },
     {
       kind: "fact",
@@ -1607,11 +1657,12 @@ assert.deepEqual(
     .filter((decision) => decision.decision === "rejected")
     .map((decision) => decision.reason)
     .sort(),
-  ["invalid_kind", "person_kind", "person_routed", "secret_like", "secret_like"],
+  ["invalid_kind", "person_kind", "person_routed", "secret_like", "secret_like", "secret_like"],
 );
 assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customextractorsecret"), false);
 assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customsubjectsecret"), false);
 assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customtemporalsecret"), false);
+assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customaliassecret"), false);
 assert.equal(
   (
     await unsafeExtractorMemory.search({

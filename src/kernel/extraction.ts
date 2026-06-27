@@ -59,12 +59,27 @@ function publicString(value: string): string {
   return redactForReport(normalize(value));
 }
 
+function normalizedStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const output = value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map(normalize)
+    .filter(Boolean);
+  return output.length > 0 ? output : undefined;
+}
+
+function publicStringArray(value: unknown): string[] | undefined {
+  const output = normalizedStringArray(value)?.map(publicString);
+  return output && output.length > 0 ? output : undefined;
+}
+
 function snapshotCandidate(candidate: unknown): MemoryExtractionCandidateSnapshot {
   const record = candidate && typeof candidate === "object" && !Array.isArray(candidate)
     ? (candidate as Record<string, unknown>)
     : {};
   const content = typeof record.content === "string" ? normalize(record.content) : "";
   const confidence = Number(record.confidence);
+  const subjectAliases = publicStringArray(record.subjectAliases);
   const metadata =
     record.metadata && typeof record.metadata === "object" && !Array.isArray(record.metadata)
       ? sanitizePublicPayloadRecord(record.metadata as Record<string, unknown>)
@@ -75,6 +90,7 @@ function snapshotCandidate(candidate: unknown): MemoryExtractionCandidateSnapsho
     ...(Number.isFinite(confidence) ? { confidence } : {}),
     ...(typeof record.predicate === "string" ? { predicate: publicString(record.predicate) } : {}),
     ...(typeof record.subject === "string" ? { subject: publicString(record.subject) } : {}),
+    ...(subjectAliases ? { subjectAliases } : {}),
     ...(typeof record.eventTime === "string" ? { eventTime: publicString(record.eventTime) } : {}),
     ...(typeof record.validFrom === "string" ? { validFrom: publicString(record.validFrom) } : {}),
     ...(typeof record.validTo === "string" ? { validTo: publicString(record.validTo) } : {}),
@@ -113,6 +129,7 @@ function hasSecretLikeAuxiliaryField(candidate: MemoryExtractionCandidate): bool
   return [
     candidate.predicate,
     candidate.subject,
+    ...(normalizedStringArray((candidate as { subjectAliases?: unknown }).subjectAliases) ?? []),
     candidate.eventTime,
     candidate.validFrom,
     candidate.validTo,
@@ -155,11 +172,17 @@ function normalizeCandidate(
   if (!allowedCardinality(candidate.cardinality)) return { reason: "invalid_kind" };
   const confidence = boundedConfidence(candidate.confidence, 0);
   if (confidence < options.minConfidence) return { reason: "low_confidence" };
+  const subjectAliases = normalizedStringArray(
+    (candidate as { subjectAliases?: unknown }).subjectAliases,
+  );
+  const candidateWithoutAliases = { ...candidate };
+  delete (candidateWithoutAliases as { subjectAliases?: unknown }).subjectAliases;
   return {
     candidate: {
-      ...candidate,
+      ...candidateWithoutAliases,
       content,
       confidence,
+      ...(subjectAliases ? { subjectAliases } : {}),
       metadata: mergeExplicitTemporalValidityMetadata(
         content,
         {
