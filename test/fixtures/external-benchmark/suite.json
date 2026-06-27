@@ -16,6 +16,14 @@
       "datasetFormat": "gmos"
     },
     {
+      "id": "budget-drop-mini",
+      "inputFile": "budget-drop-mini.jsonl",
+      "datasetFormat": "gmos",
+      "mode": "prepare",
+      "maxMemories": 8,
+      "contextBudgetTokens": 80
+    },
+    {
       "id": "longmemeval-mini",
       "inputFile": "longmemeval-mini.json",
       "datasetFormat": "longmemeval"
