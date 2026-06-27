@@ -360,6 +360,14 @@ alias). Ordinary context search and active reconstruction only use memories
 whose validity window includes the current time; `validTo` and `expiresAt` are
 treated as exclusive expiries. Management and delete searches still see
 out-of-window memories so hosts can audit, repair, or forget them explicitly.
+Rule and host extractor candidates can also pick up conservative validity
+metadata from explicit ISO-date text such as `until 2026-07-01`, `expires on
+2026-07-01`, `valid from 2026-01-01`, or `从 2026-01-01 开始`. gmOS does not
+try to resolve ambiguous relative dates such as "next week" inside the rule
+extractor; hosts should pass structured metadata when they have a trusted
+calendar parser. The same validity metadata is written to the derived world
+belief when a candidate creates one, so reconstruction does not reintroduce an
+expired belief through the association graph.
 Active reconstruction can render observation time as metadata on memory,
 evidence, and reconstructed path lines when `includeTemporalMetadata: true` is
 set, for example `observed=2026-06-03`. The timestamp is not appended to stored

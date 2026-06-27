@@ -202,6 +202,32 @@ function memoryMetadataIsValidAt(metadata: Record<string, unknown>, asOfIso: str
   return true;
 }
 
+const TEMPORAL_VALIDITY_METADATA_KEYS = [
+  "validFrom",
+  "valid_from",
+  "validTo",
+  "valid_to",
+  "expiresAt",
+] as const;
+
+function hasTemporalValidityMetadata(metadata: Record<string, unknown> | undefined): boolean {
+  if (!metadata) return false;
+  return TEMPORAL_VALIDITY_METADATA_KEYS.some(
+    (key) => typeof metadata[key] === "string" && String(metadata[key]).trim().length > 0,
+  );
+}
+
+function withoutTemporalValidityMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...metadata };
+  for (const key of TEMPORAL_VALIDITY_METADATA_KEYS) {
+    delete next[key];
+  }
+  if (next.temporalValiditySource === "explicit_text") {
+    delete next.temporalValiditySource;
+  }
+  return next;
+}
+
 function normalizeMemory(row: Record<string, unknown>): MemoryRecord {
   return {
     id: String(row.id),
@@ -1763,6 +1789,9 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
             existingMetadata: sameObject.metadata,
             resolution,
           });
+          const refreshedMetadata = hasTemporalValidityMetadata(input.metadata)
+            ? metadata
+            : withoutTemporalValidityMetadata(metadata);
           db.prepare(
             `UPDATE gmos_world_beliefs
              SET subject = ?,
@@ -1775,7 +1804,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
             canonicalSubject,
             confidence,
             sourceMemoryId,
-            JSON.stringify(metadata),
+            JSON.stringify(refreshedMetadata),
             createdAt,
             sameObject.id,
           );
@@ -1923,6 +1952,31 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         .filter((row) => !memoryMetadataIsValidAt(parseJsonObject(row.metadata_json), asOfIso))
         .map((row) => row.id)
         .filter((memoryId): memoryId is string => Boolean(memoryId)),
+    );
+  }
+
+  function temporallyInvalidWorldBeliefIds(profileId: string, asOfIso: string): Set<string> {
+    if (!tableExists("gmos_world_beliefs")) return new Set();
+    const rows = db
+      .prepare(
+        `SELECT id, metadata_json
+         FROM gmos_world_beliefs
+         WHERE profile_id = ?
+           AND status = 'active'
+           AND (
+             json_type(metadata_json, '$.validFrom') IS NOT NULL
+             OR json_type(metadata_json, '$.valid_from') IS NOT NULL
+             OR json_type(metadata_json, '$.validTo') IS NOT NULL
+             OR json_type(metadata_json, '$.valid_to') IS NOT NULL
+             OR json_type(metadata_json, '$.expiresAt') IS NOT NULL
+           )`,
+      )
+      .all(profileId) as Array<{ id?: string | null; metadata_json?: string | null }>;
+    return new Set(
+      rows
+        .filter((row) => !memoryMetadataIsValidAt(parseJsonObject(row.metadata_json), asOfIso))
+        .map((row) => row.id)
+        .filter((beliefId): beliefId is string => Boolean(beliefId)),
     );
   }
 
@@ -2218,14 +2272,21 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   function searchAssociations(input: MemoryAssociationSearchInput): MemoryAssociationRecord[] {
     initialize();
     const query = input.query.trim();
-    const hiddenContextMemoryIds = contextHiddenMemoryIds(input.profileId, nowIso());
+    const asOfIso = nowIso();
+    const hiddenContextMemoryIds = contextHiddenMemoryIds(input.profileId, asOfIso);
+    const hiddenContextBeliefIds = temporallyInvalidWorldBeliefIds(input.profileId, asOfIso);
     const ranked = associationRowsForSearch(input)
       .map(normalizeAssociation)
       .filter(
         (association) =>
-          !hiddenContextMemoryIds.has(association.targetId) &&
+          (association.targetType !== "memory" ||
+            !hiddenContextMemoryIds.has(association.targetId)) &&
+          (association.targetType !== "world_belief" ||
+            !hiddenContextBeliefIds.has(association.targetId)) &&
           (association.sourceMemoryId == null ||
-            !hiddenContextMemoryIds.has(association.sourceMemoryId)),
+            !hiddenContextMemoryIds.has(association.sourceMemoryId)) &&
+          (association.sourceBeliefId == null ||
+            !hiddenContextBeliefIds.has(association.sourceBeliefId)),
       )
       .filter((association) =>
         visibleAssociation({

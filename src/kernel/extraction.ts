@@ -14,6 +14,7 @@ import {
   redactForReport,
   sanitizePublicPayloadRecord,
 } from "./safety.js";
+import { mergeExplicitTemporalValidityMetadata } from "./temporal-validity.js";
 
 interface MemoryExtractionPlan {
   report: MemoryExtractionReport;
@@ -129,7 +130,10 @@ function normalizeCandidate(
       ...candidate,
       content,
       confidence,
-      metadata: sanitizePublicPayloadRecord(candidate.metadata ?? {}),
+      metadata: mergeExplicitTemporalValidityMetadata(
+        content,
+        sanitizePublicPayloadRecord(candidate.metadata ?? {}),
+      ),
     },
   };
 }

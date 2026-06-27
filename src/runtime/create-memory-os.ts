@@ -487,6 +487,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           confidence: candidate.confidence,
           sourceMemoryId: memory.id,
           cardinality: candidate.cardinality,
+          metadata: candidate.metadata,
         });
         result.worldBeliefIds.push(belief.id);
       }

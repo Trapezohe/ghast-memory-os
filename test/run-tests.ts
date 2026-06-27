@@ -86,6 +86,11 @@ import {
   sanitizePublicPayload,
 } from "../src/kernel/safety.js";
 import { observedAtMetadata } from "../src/kernel/temporal-format.js";
+import {
+  explicitTemporalValidityMetadata,
+  mergeExplicitTemporalValidityMetadata,
+  normalizeExplicitTemporalInstant,
+} from "../src/kernel/temporal-validity.js";
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-sdk-test-"));
 const dbPath = path.join(tmp, "test.db");
@@ -866,6 +871,146 @@ const nonTemporalReconstruction = await temporalMemory.reconstructContext({
 assert.match(nonTemporalReconstruction.contextBlock, /ActiveOwner/);
 assert.doesNotMatch(nonTemporalReconstruction.contextBlock, /observed=2026-06-03/);
 assert.equal(nonTemporalReconstruction.paths.some((path) => path.createdAt !== undefined), false);
+
+const extractedTemporalPath = path.join(tmp, "temporal-validity-extraction.db");
+const extractedTemporalStore = createSqliteMemoryStore({ path: extractedTemporalPath });
+const extractedTemporalMemory = createMemoryOS({
+  profileId: "temporal-extraction",
+  store: extractedTemporalStore,
+});
+await extractedTemporalMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "temporal-extraction",
+  role: "user",
+  content: "My Atlas project owner is ExpiredOwner until 2000-01-01.",
+  createdAt: "1999-12-01T00:00:00.000Z",
+});
+await extractedTemporalMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "temporal-extraction",
+  role: "user",
+  content: "My Atlas project owner is ActiveOwner until 2999-01-01.",
+  createdAt: "2026-06-03T00:00:00.000Z",
+});
+const temporalExtractionDb = new Database(extractedTemporalPath, { readonly: true });
+try {
+  const temporalExtractionRows = temporalExtractionDb
+    .prepare(
+      `SELECT content, metadata_json
+       FROM gmos_memories
+       WHERE profile_id = ?
+       ORDER BY created_at`,
+    )
+    .all("temporal-extraction") as Array<{ content: string; metadata_json: string }>;
+  assert.equal(temporalExtractionRows.length, 2);
+  const expiredMetadata = JSON.parse(temporalExtractionRows[0]?.metadata_json ?? "{}") as Record<string, unknown>;
+  const activeMetadata = JSON.parse(temporalExtractionRows[1]?.metadata_json ?? "{}") as Record<string, unknown>;
+  assert.equal(expiredMetadata.validTo, "2000-01-01T00:00:00.000Z");
+  assert.equal(activeMetadata.validTo, "2999-01-01T00:00:00.000Z");
+  assert.equal(expiredMetadata.temporalValiditySource, "explicit_text");
+  const temporalBeliefRows = temporalExtractionDb
+    .prepare(
+      `SELECT object, metadata_json
+       FROM gmos_world_beliefs
+       WHERE profile_id = ?
+       ORDER BY created_at`,
+    )
+    .all("temporal-extraction") as Array<{ object: string; metadata_json: string }>;
+  assert.equal(temporalBeliefRows.length, 2);
+  assert.equal(
+    JSON.parse(temporalBeliefRows[0]?.metadata_json ?? "{}").validTo,
+    "2000-01-01T00:00:00.000Z",
+  );
+} finally {
+  temporalExtractionDb.close();
+}
+const temporalExtractionContext = await extractedTemporalMemory.search({
+  profileId: "temporal-extraction",
+  query: "Atlas project owner",
+  purpose: "context",
+  limit: 10,
+});
+assert.equal(temporalExtractionContext.some((entry) => entry.content.includes("ActiveOwner")), true);
+assert.equal(temporalExtractionContext.some((entry) => entry.content.includes("ExpiredOwner")), false);
+const temporalExtractionManage = await extractedTemporalMemory.search({
+  profileId: "temporal-extraction",
+  query: "Atlas project owner",
+  purpose: "manage",
+  limit: 10,
+});
+assert.equal(temporalExtractionManage.some((entry) => entry.content.includes("ExpiredOwner")), true);
+const temporalExtractionReconstruction = await extractedTemporalMemory.reconstructContext({
+  profileId: "temporal-extraction",
+  query: "Atlas project owner",
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.match(temporalExtractionReconstruction.contextBlock, /ActiveOwner/);
+assert.doesNotMatch(temporalExtractionReconstruction.contextBlock, /ExpiredOwner/);
+
+const temporalBeliefOnlyStore = createSqliteMemoryStore({ path: path.join(tmp, "temporal-belief-only.db") });
+const temporalBeliefOnlyMemory = createMemoryOS({
+  profileId: "temporal-belief-only",
+  store: temporalBeliefOnlyStore,
+  extractor: () => [],
+});
+await temporalBeliefOnlyStore.addWorldBelief({
+  profileId: "temporal-belief-only",
+  subject: "project:belief-window",
+  predicate: "project.state",
+  object: "ExpiredBeliefOnlyOwner",
+  confidence: 0.9,
+  metadata: { validTo: "2000-01-01T00:00:00.000Z" },
+});
+await temporalBeliefOnlyStore.addWorldBelief({
+  profileId: "temporal-belief-only",
+  subject: "project:belief-window",
+  predicate: "project.state",
+  object: "ActiveBeliefOnlyOwner",
+  confidence: 0.9,
+  metadata: { validTo: "2999-01-01T00:00:00.000Z" },
+});
+const temporalBeliefOnlyReconstruction = await temporalBeliefOnlyMemory.reconstructContext({
+  profileId: "temporal-belief-only",
+  query: "belief window project owner",
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.match(temporalBeliefOnlyReconstruction.contextBlock, /ActiveBeliefOnlyOwner/);
+assert.doesNotMatch(temporalBeliefOnlyReconstruction.contextBlock, /ExpiredBeliefOnlyOwner/);
+await temporalBeliefOnlyStore.addWorldBelief({
+  profileId: "temporal-belief-only",
+  subject: "project:sticky-window",
+  predicate: "project.state",
+  object: "RefreshedBeliefOnlyOwner",
+  confidence: 0.7,
+  metadata: { validTo: "2000-01-01T00:00:00.000Z" },
+});
+const expiredStickyBelief = await temporalBeliefOnlyMemory.reconstructContext({
+  profileId: "temporal-belief-only",
+  query: "sticky window project owner",
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.doesNotMatch(expiredStickyBelief.contextBlock, /RefreshedBeliefOnlyOwner/);
+await temporalBeliefOnlyStore.addWorldBelief({
+  profileId: "temporal-belief-only",
+  subject: "project:sticky-window",
+  predicate: "project.state",
+  object: "RefreshedBeliefOnlyOwner",
+  confidence: 0.95,
+});
+const refreshedStickyBelief = await temporalBeliefOnlyMemory.reconstructContext({
+  profileId: "temporal-belief-only",
+  query: "sticky window project owner",
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.match(refreshedStickyBelief.contextBlock, /RefreshedBeliefOnlyOwner/);
 
 let llmExtractorRequest: {
   url?: string;
@@ -3239,6 +3384,27 @@ for (const sensitivePersonalFixture of [
 }
 assert.equal(observedAtMetadata("2026-06-03T06:45:00.000Z"), "observed=2026-06-03; time=06:45 UTC");
 assert.equal(observedAtMetadata("not a timestamp"), "");
+assert.deepEqual(
+  explicitTemporalValidityMetadata("valid from 2026-01-01 to 2026-07-01"),
+  {
+    validFrom: "2026-01-01T00:00:00.000Z",
+    validTo: "2026-07-01T00:00:00.000Z",
+  },
+);
+assert.deepEqual(explicitTemporalValidityMetadata("valid from 2026-99-99"), {});
+assert.deepEqual(explicitTemporalValidityMetadata("until tomorrow"), {});
+assert.deepEqual(explicitTemporalValidityMetadata("直到明天"), {});
+assert.equal(normalizeExplicitTemporalInstant("2026-02-31T00:00:00Z"), null);
+assert.deepEqual(
+  mergeExplicitTemporalValidityMetadata("until 2026-07-01", {
+    validTo: "2030-01-01T00:00:00.000Z",
+    expiresAt: "2030-02-01T00:00:00.000Z",
+  }),
+  {
+    validTo: "2030-01-01T00:00:00.000Z",
+    expiresAt: "2030-02-01T00:00:00.000Z",
+  },
+);
 const sanitizedCredentialEvidence = sanitizeEvidenceForPublicOutput({
   id: "evidence_redaction_fixture",
   eventKey: "evidence_redaction_fixture?access_token=abcdefghijkl",
