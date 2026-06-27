@@ -1117,6 +1117,60 @@ assert.equal(rulesReport.extraction?.extractionSource, "rules");
 assert.equal(rulesReport.extraction?.fallbackUsed, false);
 assert.equal(rulesReport.extraction?.extractorFailed, false);
 assert.equal(rulesReport.extraction?.acceptedCandidateCount, 1);
+const durableObservationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Caroline: I went to the LGBTQ support group yesterday.",
+});
+assert.equal(durableObservationReport.extraction?.acceptedCandidateCount, 1);
+const durableObservationDecision = durableObservationReport.extraction?.decisions.find(
+  (decision) => decision.decision === "accepted",
+);
+assert.equal(durableObservationDecision?.candidate.confidence, 0.52);
+assert.equal(durableObservationDecision?.candidate.metadata?.rule, "durable_observation_fact");
+assert.equal(durableObservationReport.memoryIds.length, 1);
+assert.equal(durableObservationReport.worldBeliefIds.length, 0);
+const defaultDurableObservationMatches = await rulesReportMemory.search({
+  profileId: "rules_report",
+  query: "Caroline support group",
+});
+assert.equal(defaultDurableObservationMatches.some((entry) => entry.content.includes("support group")), false);
+const durableObservationMatches = await rulesReportMemory.search({
+  profileId: "rules_report",
+  query: "Caroline support group",
+  purpose: "manage",
+  includeSensitive: true,
+});
+assert.equal(durableObservationMatches.some((entry) => entry.content.includes("support group")), true);
+assert.equal(
+  durableObservationMatches.find((entry) => entry.content.includes("support group"))?.sensitivity,
+  "sensitive",
+);
+const durableQuestionReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Alex: Did you go to therapy yesterday?",
+});
+assert.equal(durableQuestionReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(durableQuestionReport.memoryIds.length, 0);
+const durableThirdPersonReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Alex: Blair painted a sunrise in 2022 after the charity race.",
+});
+assert.equal(durableThirdPersonReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(durableThirdPersonReport.memoryIds.length, 0);
+const durableChineseQuestionReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "小林: 我昨天去心理咨询了吗",
+});
+assert.equal(durableChineseQuestionReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(durableChineseQuestionReport.memoryIds.length, 0);
 await rulesReportMemory.close();
 
 const lowLevelMemory = await memory.add({
@@ -3158,6 +3212,14 @@ for (const [credentialFixture, leakedFragment] of [
 ] as const) {
   assert.equal(classifySensitivity(credentialFixture), "secret_like");
   assert.equal(redactForReport(credentialFixture).includes(leakedFragment), false);
+}
+for (const sensitivePersonalFixture of [
+  "I went to the LGBTQ support group yesterday.",
+  "I discussed mental health therapy last week.",
+  "我昨天去了心理支持小组。",
+] as const) {
+  assert.equal(classifySensitivity(sensitivePersonalFixture), "sensitive");
+  assert.equal(redactForReport(sensitivePersonalFixture), "[redacted_sensitive]");
 }
 const sanitizedCredentialEvidence = sanitizeEvidenceForPublicOutput({
   id: "evidence_redaction_fixture",
@@ -6176,6 +6238,13 @@ const parsedLocomoDataset = parseExternalMemoryBenchmarkDataset(locomoFixture, {
 });
 assert.equal(parsedLocomoDataset.datasetFormat, "locomo.json");
 assert.equal(parsedLocomoDataset.cases.length, 3);
+assert.equal(parsedLocomoDataset.cases[0]?.events[0]?.role, "user");
+assert.equal(parsedLocomoDataset.cases[0]?.events[1]?.role, "user");
+assert.match(parsedLocomoDataset.cases[0]?.events[0]?.content ?? "", /^Alex:/);
+assert.match(parsedLocomoDataset.cases[0]?.events[1]?.content ?? "", /^Blair:/);
+assert.equal(JSON.stringify(parsedLocomoDataset.cases[0]?.events).includes("answer"), false);
+assert.equal(JSON.stringify(parsedLocomoDataset.cases[0]?.events).includes("adversarial"), false);
+assert.equal(JSON.stringify(parsedLocomoDataset.cases[0]?.events).includes("dataset"), false);
 const locomoBenchmark = await runExternalMemoryBenchmark({
   cases: parsedLocomoDataset.cases.slice(0, 2),
   datasetFormat: parsedLocomoDataset.datasetFormat,
@@ -6191,6 +6260,41 @@ assert.equal(locomoBenchmark.runManifest.options.concurrency, 1);
 assert.equal(locomoBenchmark.runManifest.options.reuseProfiles, true);
 assert.deepEqual(locomoBenchmark.cases[0]?.expectedAnyMatched, ["先核证据链"]);
 assert.deepEqual(locomoBenchmark.cases[1]?.expectedAnyMatched, ["2022"]);
+const locomoHumanSpeakerFixture = JSON.stringify([
+  {
+    sample_id: "locomo-human-speakers",
+    conversation: {
+      speaker_a: "Alex",
+      speaker_b: "Blair",
+      session_1_date_time: "2026-06-20T09:00:00Z",
+      session_1: [
+        {
+          speaker: "Alex",
+          text: "What did you paint recently?",
+        },
+        {
+          speaker: "Blair",
+          text: "I painted a sunrise in 2022 after the charity race.",
+        },
+      ],
+    },
+    qa: [
+      {
+        question: "When did Blair paint a sunrise?",
+        answer: "2022",
+      },
+    ],
+  },
+]);
+const locomoHumanSpeakerCases = parseLocomoBenchmarkDataset(locomoHumanSpeakerFixture);
+assert.equal(locomoHumanSpeakerCases[0]?.events[1]?.role, "user");
+assert.match(locomoHumanSpeakerCases[0]?.events[1]?.content ?? "", /^Blair:/);
+const locomoHumanSpeakerBenchmark = await runExternalMemoryBenchmark({
+  cases: locomoHumanSpeakerCases,
+  datasetFormat: "locomo.json",
+});
+assert.equal(locomoHumanSpeakerBenchmark.pass, true);
+assert.deepEqual(locomoHumanSpeakerBenchmark.cases[0]?.expectedAnyMatched, ["2022"]);
 const locomoNoReuseBenchmark = await runExternalMemoryBenchmark({
   cases: parsedLocomoDataset.cases.slice(0, 2),
   datasetFormat: parsedLocomoDataset.datasetFormat,

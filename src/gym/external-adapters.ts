@@ -201,7 +201,6 @@ function locomoSessionKeys(conversation: Record<string, unknown>): string[] {
 
 function locomoEvents(row: Record<string, unknown>, sampleId: string): ExternalMemoryBenchmarkEvent[] {
   const conversation = assertRecord(row.conversation, `LoCoMo sample ${sampleId}.conversation`);
-  const speakerA = stringValue(conversation.speaker_a);
   const events: ExternalMemoryBenchmarkEvent[] = [];
   for (const sessionKey of locomoSessionKeys(conversation)) {
     const turns = conversation[sessionKey];
@@ -214,8 +213,8 @@ function locomoEvents(row: Record<string, unknown>, sampleId: string): ExternalM
       const speaker = stringValue(record.speaker);
       events.push(
         messageEvent({
-          role: speakerA && speaker === speakerA ? "user" : "assistant",
-          content,
+          role: "user",
+          content: speaker ? `${speaker}: ${content}` : content,
           createdAt,
         }),
       );

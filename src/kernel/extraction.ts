@@ -156,6 +156,45 @@ function uniqueCandidatesWithDecisions(
   return result;
 }
 
+function stripSpeakerPrefix(text: string): string {
+  const match = /^[\p{L}\p{M}' -]{2,48}\s*:\s*(.+)$/u.exec(text);
+  return match?.[1] ? (match[1] as string).trim() : text;
+}
+
+function hasFirstPersonAnchor(text: string): boolean {
+  return (
+    /\b(I|I'm|I’m|I've|I’ve|I'd|I’d|I'll|I’ll|my|mine|we|we're|we’re|we've|we’ve|our)\b/iu.test(
+      text,
+    ) || /我|我们|我的|咱们/u.test(text)
+  );
+}
+
+function isQuestionLike(text: string): boolean {
+  const utterance = text.trim();
+  return (
+    /[?？]\s*$/u.test(utterance) ||
+    /^(?:who|what|when|where|why|how|which|did|do|does|is|are|am|can|could|would|should|will|were|was|have|has|had)\b/iu.test(
+      utterance,
+    ) ||
+    /(?:吗|么|是不是|是否|有没有)\s*$/u.test(utterance)
+  );
+}
+
+function likelyDurableObservationFact(text: string): boolean {
+  const utterance = stripSpeakerPrefix(text);
+  if (isQuestionLike(utterance)) return false;
+  if (!hasFirstPersonAnchor(utterance)) return false;
+  const hasTemporalSignal =
+    /\b(?:today|tomorrow|yesterday|last|next|since|before|after|daily|weekly|monthly|monday|tuesday|wednesday|thursday|friday|saturday|sunday|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|\d{4}|\d{1,2}:\d{2})\b/iu.test(
+      utterance,
+    ) || /\d{1,2}\s*(?:分钟|小时|天|周|月|年)/u.test(utterance);
+  const hasPersonalWorldSignal =
+    /\b(?:went|ran|painted|planning|planned|researching|chose|started|finished|graduated|studying|working|commute|relationship|single|married|identity|transgender|counseling|therapy|mental health|adoption|career|family|kids|children|job|work|school|education|birthday|appointment|meeting|trip|travel|camping|race|support group)\b/iu.test(
+      utterance,
+    ) || /上学|工作|通勤|家庭|孩子|关系|单身|结婚|身份|心理|咨询|收养|旅行|露营|比赛|支持小组/u.test(utterance);
+  return hasTemporalSignal || hasPersonalWorldSignal;
+}
+
 export function extractRuleMemoryCandidates(content: string): MemoryExtractionCandidate[] {
   const text = normalize(content);
   if (!text || isPersonRoutedMemory(text)) return [];
@@ -218,6 +257,19 @@ export function extractRuleMemoryCandidates(content: string): MemoryExtractionCa
         content: text,
         confidence: 0.7,
         predicate: "user.fact",
+      },
+    ];
+  }
+
+  if (likelyDurableObservationFact(text)) {
+    return [
+      {
+        kind: "fact",
+        content: text,
+        confidence: 0.52,
+        metadata: {
+          rule: "durable_observation_fact",
+        },
       },
     ];
   }

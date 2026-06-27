@@ -51,6 +51,11 @@ const prepared = await memory.prepareTurn({
   built-in rule extractor remains the safe fallback, so hosts can add LLM
   extraction without bypassing evidence, PERSON, secret-like, incognito, or
   forgetting gates.
+- Bounded durable-observation fallback extraction. Personal world facts with a
+  first-person anchor, including speaker-prefixed first-person statements, plus
+  temporal/action signals can become low-confidence memory records; they stay
+  memory-only unless a structured predicate is present, so raw observations do
+  not flood world belief state.
 - Low-level compatibility APIs: `add` and `search` for import, admin, and
   compatibility use cases that cannot emit full host events.
 - Safety gates for secret-like content, incognito events, PERSON isolation,
@@ -176,15 +181,15 @@ The LongMemEval adapter maps each instance's `haystack_sessions` turns into
 conversation observations and uses `answer` only as the deterministic scoring
 target. The LoCoMo adapter maps each sample's `conversation.session_<n>` turns
 into observations and creates one case per `qa` annotation. It accepts `answer`
-and category-5 `adversarial_answer` as deterministic scoring targets. Adapter
+and any provided `adversarial_answer` as deterministic scoring targets. Adapter
 code does not write answer labels, evidence ids, category labels, or
 `has_answer` labels into memory; those fields are reserved for scoring and
 traceability.
 
 External benchmark dry-run snapshot, 2026-06-27:
 
-These runs were executed on `@ghast/memory@0.1.0-alpha.55`
-(`c5ad52a70f6a8b96407f0a3a0fe8660ae5b6e149`, dirty=false) with
+These runs were executed on `@ghast/memory@0.1.0-alpha.56`
+(`8e94a17fcab8221080d2a45aac619a982bda4347`, dirty=false) with
 the abbreviated invocation `gmos gym external --concurrency 2 --progress`.
 They are deterministic adapter dry-runs for finding retrieval and
 reconstruction gaps, not the official LongMemEval/LoCoMo LLM-judge score and
@@ -393,8 +398,9 @@ const memory = createMemoryOS({
 The extractor is intentionally not a raw database hook. `observe()` still
 records evidence first, rejects incognito and secret-like writes, skips PERSON
 routed candidates, bounds confidence, deduplicates candidates, and writes world
-beliefs from accepted candidates. Returning `[]` means "extract nothing";
-returning `null` or throwing falls back to the built-in rules by default. Use
+beliefs only from accepted candidates that carry a structured predicate.
+Returning `[]` means "extract nothing"; returning `null` or throwing falls back
+to the built-in rules by default. Use
 `createMemoryOS({ extraction: { fallbackToRules: false } })` when a host wants
 custom extraction failure to produce no memory instead of rule fallback.
 

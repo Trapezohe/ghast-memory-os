@@ -11,7 +11,9 @@ const SECRET_PATTERNS = [
 const SENSITIVE_PATTERNS = [
   /\bssn\b|\bsocial security\b/iu,
   /\b\d{3}-\d{2}-\d{4}\b/u,
+  /\b(?:therapy|therapist|counseling|mental health|psychiatry|depression|anxiety|ptsd|support group|lgbtq|transgender|nonbinary|gender identity|sexual orientation)\b/iu,
   /身份证|护照|银行卡|信用卡/u,
+  /心理|咨询|治疗|抑郁|焦虑|创伤|支持小组|跨性别|性取向|性别认同/u,
 ];
 
 const SENSITIVE_METADATA_KEYS =
