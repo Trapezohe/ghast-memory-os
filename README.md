@@ -188,18 +188,18 @@ traceability.
 
 External benchmark dry-run snapshot, 2026-06-27:
 
-These runs were executed on `@ghast/memory@0.1.0-alpha.56`
-(`8e94a17fcab8221080d2a45aac619a982bda4347`, dirty=false) with
-the abbreviated invocation `gmos gym external --concurrency 2 --progress`.
-They are deterministic adapter dry-runs for finding retrieval and
-reconstruction gaps, not the official LongMemEval/LoCoMo LLM-judge score and
-not a SOTA claim.
+These runs were executed on `@ghast/memory@0.1.0-alpha.58`
+(`867bb6e5ca879d43c886fbf73351c158c8ee6db8`, dirty=false) with
+the abbreviated invocation
+`gmos gym external --concurrency 2 --failure-sample-limit 20`. They are
+deterministic adapter dry-runs for finding retrieval and reconstruction gaps,
+not the official LongMemEval/LoCoMo LLM-judge score and not a SOTA claim.
 
-| Dataset file | Source format | Cases | Pass | Fail | Score | Case groups | Reused profile cases |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `longmemeval_oracle.json` | LongMemEval cleaned oracle | 470 | 79 | 391 | `0.1681` | 470 | 0 |
-| `longmemeval_s_cleaned.json` | LongMemEval cleaned S | 470 | 88 | 382 | `0.1872` | 470 | 0 |
-| `locomo10.json` | LoCoMo full history | 1986 | 64 | 1922 | `0.0322` | 10 | 1976 |
+| Dataset file | Source format | Cases | Pass | Fail | Score | Case groups | Reused profile cases | Runtime |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `longmemeval_oracle.json` | LongMemEval cleaned oracle | 470 | 131 | 339 | `0.2787` | 470 | 0 | 14.2s |
+| `longmemeval_s_cleaned.json` | LongMemEval cleaned S | 470 | 112 | 358 | `0.2383` | 470 | 0 | 509.3s |
+| `locomo10.json` | LoCoMo full history | 1986 | 95 | 1891 | `0.0478` | 10 | 1976 | 81.8s |
 
 Dataset hashes:
 
@@ -211,14 +211,21 @@ Dataset hashes:
   `sha256:79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`
 
 The runner skips official LongMemEval abstention cases by default. The dominant
-failure reason across all three runs was `expected_any_missing`. Most failed
-cases also carried medium or high uncertainty and many did not reach evidence
-convergence, which makes this a useful baseline for active reconstruction,
-hybrid retrieval, entity resolution, and temporal current-state work. The
-LoCoMo run demonstrates why alpha.55 added profile/event grouping: all 1986 QA
-cases share only 10 conversation histories, so the benchmark can reuse prepared
-profiles without writing answer labels, evidence ids, category labels, or
-`has_answer` labels into memory.
+failure reason across all three runs was `expected_any_missing`. The alpha.58
+snapshot improved over the previous alpha.56 dry-run, but the remaining failure
+shape is still clear: LongMemEval contains many temporal, numeric, and
+current-state questions that require stronger temporal/entity/belief handling,
+while LoCoMo remains weak for multi-party entity grounding and exact event
+recall. Many failed cases carried medium or high uncertainty, and many did not
+reach evidence convergence, which makes this a useful baseline for active
+reconstruction, hybrid retrieval, entity resolution, and temporal current-state
+work. The `longmemeval_s_cleaned.json` run is intentionally recorded with
+runtime because it is much larger than the oracle file: the local copy is about
+265 MB and contains roughly 246k message turns, so it is also a scale warning
+for external benchmark execution. The LoCoMo run demonstrates why alpha.55
+added profile/event grouping: all 1986 QA cases share only 10 conversation
+histories, so the benchmark can reuse prepared profiles without writing answer
+labels, evidence ids, category labels, or `has_answer` labels into memory.
 
 Dataset source pointers used for this dry-run:
 [LongMemEval cleaned](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned),
