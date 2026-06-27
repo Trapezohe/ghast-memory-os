@@ -217,6 +217,8 @@ When an expected answer is not an exact substring but is present after simple
 punctuation/spacing normalization, the report uses
 `answer_normalization_mismatch` instead of `answer_not_in_input` so adapter
 label issues stay separate from missing source evidence.
+Per-run `sliceScores` are diagnostic tag buckets, not unique-case totals or
+official benchmark scores; use them to locate weak slices, not to claim SOTA.
 
 The repository also includes a small CI-safe fixture suite at
 `test/fixtures/external-benchmark/suite.json`. `npm run test:external-fixtures`
