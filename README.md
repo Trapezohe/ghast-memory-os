@@ -154,8 +154,9 @@ node dist/cli/gmos.js repair --db ./gmos.db --associations
 ```
 
 `gate:pr` is the local and CI PR gate. It runs build/test, quickstart and host
-examples, consumer install smoke, deterministic Memory Gym smoke, external
-fixtures, the SDK release gate, scale smoke, and a pack dry run.
+examples, the core no-benchmark-special-casing scan, consumer install smoke,
+deterministic Memory Gym smoke, external fixtures, the SDK release gate, scale
+smoke, and a pack dry run.
 
 `test:consumer` packs the SDK, installs it into a temporary external project,
 then verifies package exports, plaintext SQLite use, the MCP-style router, MCP
