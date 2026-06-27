@@ -1449,6 +1449,19 @@ try {
   assert.equal(llmProjectBeliefMetadata.eventTime, "2026-06-20T00:00:00.000Z");
   assert.equal(llmProjectBeliefMetadata.validFrom, "2026-06-21T00:00:00.000Z");
   assert.equal(llmProjectBeliefMetadata.validTo, "2999-07-01T10:30:00.000Z");
+  const llmProjectSourceMetadata = llmProjectBeliefMetadata.sourceMetadata as
+    | { speaker?: unknown; speakerAliases?: unknown; participants?: unknown }
+    | undefined;
+  assert.equal(llmProjectSourceMetadata?.speaker, "MiraUser");
+  assert.deepEqual(llmProjectSourceMetadata?.speakerAliases, ["MiraAlias"]);
+  assert.deepEqual(llmProjectSourceMetadata?.participants, ["MiraUser"]);
+  const llmProjectBeliefMetadataJson = JSON.stringify(llmProjectBeliefMetadata);
+  assert.equal(llmProjectBeliefMetadataJson.includes("sk-metadatashouldnotleave"), false);
+  assert.equal(llmProjectBeliefMetadataJson.includes("nested llm alias answer"), false);
+  assert.equal(llmProjectBeliefMetadataJson.includes("nested llm participant oracle"), false);
+  assert.equal(llmProjectBeliefMetadataJson.includes("leaked llm extractor oracle"), false);
+  assert.equal(llmProjectBeliefMetadataJson.includes("leaked llm extractor adversarial"), false);
+  assert.equal(llmProjectBeliefMetadataJson.includes("leaked llm extractor label"), false);
   const llmProjectEntity = llmProjectBeliefMetadata.entityResolution as
     | { aliases?: unknown }
     | undefined;

@@ -491,7 +491,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           confidence: candidate.confidence,
           sourceMemoryId: memory.id,
           cardinality: candidate.cardinality,
-          metadata: candidate.metadata,
+          metadata: {
+            ...sanitizePublicPayloadRecord(candidate.metadata ?? {}),
+            ...(Object.keys(eventMetadata).length > 0 ? { sourceMetadata: eventMetadata } : {}),
+          },
         });
         result.worldBeliefIds.push(belief.id);
       }
