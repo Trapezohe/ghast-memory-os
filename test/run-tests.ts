@@ -7585,6 +7585,13 @@ assert.equal(externalSuiteExecution.result.totalCaseCount, externalSuiteExecutio
 assert.equal(externalSuiteExecution.result.totalPassedCount, externalSuiteExecution.reports.passing!.passedCount);
 assert.equal(externalSuiteExecution.result.totalFailedCount, externalSuiteExecution.reports.failing!.failedCount);
 assert.equal(externalSuiteExecution.result.totalWarningCount, 0);
+assert.deepEqual(externalSuiteExecution.result.totalFailureStages, [
+  { name: "answer_not_in_input", count: 1 },
+]);
+assert.deepEqual(externalSuiteExecution.result.runs[0]?.failureStages, []);
+assert.deepEqual(externalSuiteExecution.result.runs[1]?.failureStages, [
+  { name: "answer_not_in_input", count: 1 },
+]);
 assert.equal(externalSuiteExecution.result.scoreWeighted > 0 && externalSuiteExecution.result.scoreWeighted < 1, true);
 assert.equal(externalSuiteExecution.result.runManifest.durationMs >= 0, true);
 assert.equal(externalSuiteExecution.result.runManifest.package?.name, "@ghast/memory");
@@ -7600,6 +7607,7 @@ assert.equal(externalSuiteExecution.reports.failing?.summary.failureSampleLimit,
 assert.equal(externalSuiteExecution.reports.failing?.summary.failureSamples.length, 0);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /BenchmarkStatus: FAIL/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Weighted score:/);
+assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Failure stages: answer_not_in_input=1/);
 const externalBenchmarkCwd = path.join(tmp, "external-benchmark-cwd");
 mkdirSync(externalBenchmarkCwd);
 const previousCwd = process.cwd();
@@ -8839,8 +8847,15 @@ const cliExternalSuiteJson = JSON.parse(cliExternalSuite.stdout) as {
   scoreWeighted?: number;
   totalCaseCount?: number;
   totalWarningCount?: number;
+  totalFailureStages?: Array<{ name: string; count: number }>;
   runManifest?: { durationMs?: number; package?: { version?: string | null } | null };
-  runs?: Array<{ durationMs?: number; caseGroupCount?: number; reusedProfileCaseCount?: number; warningCount?: number }>;
+  runs?: Array<{
+    durationMs?: number;
+    caseGroupCount?: number;
+    reusedProfileCaseCount?: number;
+    warningCount?: number;
+    failureStages?: Array<{ name: string; count: number }>;
+  }>;
 };
 assert.equal(cliExternalSuiteJson.schema, "gmos.external_benchmark_suite.v1");
 assert.equal(cliExternalSuiteJson.pass, true);
@@ -8851,11 +8866,17 @@ assert.equal(cliExternalSuiteJson.failedRunCount, 1);
 assert.equal(cliExternalSuiteJson.totalCaseCount !== undefined && cliExternalSuiteJson.totalCaseCount >= 2, true);
 assert.equal(cliExternalSuiteJson.scoreWeighted !== undefined && cliExternalSuiteJson.scoreWeighted > 0, true);
 assert.equal(cliExternalSuiteJson.totalWarningCount, 0);
+assert.deepEqual(cliExternalSuiteJson.totalFailureStages, [
+  { name: "answer_not_in_input", count: 1 },
+]);
 assert.equal(cliExternalSuiteJson.runManifest?.durationMs !== undefined, true);
 assert.equal(typeof cliExternalSuiteJson.runManifest?.package?.version, "string");
 assert.equal(cliExternalSuiteJson.runs?.[0]?.durationMs !== undefined, true);
 assert.equal(cliExternalSuiteJson.runs?.[0]?.caseGroupCount !== undefined, true);
 assert.equal(cliExternalSuiteJson.runs?.[0]?.warningCount, 0);
+assert.deepEqual(cliExternalSuiteJson.runs?.[1]?.failureStages, [
+  { name: "answer_not_in_input", count: 1 },
+]);
 assert.equal(existsSync(path.join(cliExternalSuiteOutputDir, "passing.json")), true);
 assert.equal(existsSync(path.join(cliExternalSuiteOutputDir, "passing.md")), true);
 assert.equal(existsSync(path.join(cliExternalSuiteOutputDir, "failing.json")), true);
@@ -8863,6 +8884,7 @@ assert.equal(JSON.parse(readFileSync(cliExternalSuiteJsonFile, "utf8")).schema, 
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /gmOS External Benchmark Suite/);
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Weighted score:/);
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Duration:/);
+assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Failure stages: answer_not_in_input=1/);
 assert.match(cliExternalSuite.stderr, /\[gmos external-suite\] pass run=passing/);
 assert.match(cliExternalSuite.stderr, /\[gmos external-suite\] fail run=failing/);
 const cliExternalSuiteGate = spawnSync(

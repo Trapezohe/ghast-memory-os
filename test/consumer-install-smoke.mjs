@@ -759,6 +759,7 @@ try {
           totalPassedCount: 0,
           totalFailedCount: 0,
           totalWarningCount: 0,
+          totalFailureStages: [],
           runManifest: {
             startedAt: "",
             finishedAt: "",

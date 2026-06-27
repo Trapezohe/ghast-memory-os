@@ -6,6 +6,7 @@ import {
   parseExternalMemoryBenchmarkJsonl,
   runExternalMemoryBenchmark,
   type ExternalMemoryBenchmarkCase,
+  type ExternalMemoryBenchmarkCounter,
   type ExternalMemoryBenchmarkDatasetFormat,
   type ExternalMemoryBenchmarkMode,
   type ExternalMemoryBenchmarkResult,
@@ -58,6 +59,7 @@ export interface ExternalMemoryBenchmarkSuiteRunSummary {
   datasetHash: string | null;
   warningCount: number;
   warnings: string[];
+  failureStages: ExternalMemoryBenchmarkCounter[];
   jsonFile?: string | undefined;
   markdownFile?: string | undefined;
 }
@@ -75,6 +77,7 @@ export interface ExternalMemoryBenchmarkSuiteResult {
   totalPassedCount: number;
   totalFailedCount: number;
   totalWarningCount: number;
+  totalFailureStages: ExternalMemoryBenchmarkCounter[];
   runManifest: {
     startedAt: string;
     finishedAt: string;
@@ -318,6 +321,20 @@ function durationMs(startedAt: string, finishedAt: string): number {
   return Math.max(0, finished - started);
 }
 
+function aggregateCounters(
+  inputs: ExternalMemoryBenchmarkCounter[][],
+): ExternalMemoryBenchmarkCounter[] {
+  const counts = new Map<string, number>();
+  for (const counters of inputs) {
+    for (const counter of counters) {
+      counts.set(counter.name, (counts.get(counter.name) ?? 0) + counter.count);
+    }
+  }
+  return [...counts.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+
 export async function runExternalMemoryBenchmarkSuite(
   options: RunExternalMemoryBenchmarkSuiteOptions,
 ): Promise<ExternalMemoryBenchmarkSuiteExecution> {
@@ -356,6 +373,7 @@ export async function runExternalMemoryBenchmarkSuite(
       datasetHash: report.runManifest.dataset.hash,
       warningCount: report.runManifest.dataset.warnings.length,
       warnings: report.runManifest.dataset.warnings,
+      failureStages: report.summary.failureStages ?? [],
     };
     runs.push(summary);
     options.onRunResult?.(summary);
@@ -366,6 +384,7 @@ export async function runExternalMemoryBenchmarkSuite(
   const totalPassedCount = runs.reduce((sum, run) => sum + run.passedCount, 0);
   const totalFailedCount = runs.reduce((sum, run) => sum + run.failedCount, 0);
   const totalWarningCount = runs.reduce((sum, run) => sum + run.warningCount, 0);
+  const totalFailureStages = aggregateCounters(runs.map((run) => run.failureStages));
   const firstRunManifest = Object.values(reports)[0]?.runManifest;
   const failOnBenchmarkFail = options.failOnBenchmarkFail === true;
   const finishedAt = new Date().toISOString();
@@ -383,6 +402,7 @@ export async function runExternalMemoryBenchmarkSuite(
       totalPassedCount,
       totalFailedCount,
       totalWarningCount,
+      totalFailureStages,
       runManifest: {
         startedAt,
         finishedAt,
