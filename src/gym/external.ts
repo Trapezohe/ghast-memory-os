@@ -78,6 +78,7 @@ export interface ExternalMemoryBenchmarkCaseDiagnostics {
 
 export type ExternalMemoryBenchmarkFailureStage =
   | "answer_not_in_input"
+  | "answer_normalization_mismatch"
   | "not_extracted_or_filtered"
   | "retrieval_policy_filtered"
   | "retrieval_or_reconstruction_miss"
@@ -439,6 +440,32 @@ function includesTerm(haystack: string, term: string): boolean {
   return haystack.toLowerCase().includes(term.toLowerCase());
 }
 
+function normalizeForAnswerComparison(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\p{Letter}\p{Number}]+/gu, " ")
+    .trim()
+    .replace(/\s+/gu, " ");
+}
+
+function normalizedAnswerTokens(value: string): string[] {
+  const normalized = normalizeForAnswerComparison(value);
+  return normalized ? normalized.split(" ") : [];
+}
+
+function includesNormalizedAnswer(haystack: string, term: string): boolean {
+  const termSymbols = term.replace(/[\p{Letter}\p{Number}\s._:;,\-–—/()]/gu, "");
+  if (termSymbols) return false;
+  const needle = normalizedAnswerTokens(term);
+  if (needle.join("").length < 3) return false;
+  const haystackTokens = normalizedAnswerTokens(haystack);
+  for (let index = 0; index <= haystackTokens.length - needle.length; index += 1) {
+    if (needle.every((token, offset) => haystackTokens[index + offset] === token)) return true;
+  }
+  return false;
+}
+
 function uniqueTerms(values: string[]): string[] {
   const seen = new Set<string>();
   const terms: string[] = [];
@@ -461,6 +488,10 @@ function eventContent(event: ExternalMemoryBenchmarkEvent): string {
 
 function eventsContainTerm(events: ExternalMemoryBenchmarkEvent[], term: string): boolean {
   return events.some((event) => includesTerm(eventContent(event), term));
+}
+
+function eventsContainNormalizedAnswer(events: ExternalMemoryBenchmarkEvent[], term: string): boolean {
+  return events.some((event) => includesNormalizedAnswer(eventContent(event), term));
 }
 
 function memoriesContainTerm(memories: MemoryRecord[], term: string): boolean {
@@ -577,7 +608,13 @@ async function failureTaxonomyForCase(input: {
   const entries: ExternalMemoryBenchmarkFailureTaxonomyEntry[] = [];
   for (const term of uniqueTerms(input.missingExpectedTerms)) {
     if (!eventsContainTerm(input.benchmarkCase.events, term)) {
-      addTaxonomyEntry(entries, "answer_not_in_input", [term]);
+      addTaxonomyEntry(
+        entries,
+        eventsContainNormalizedAnswer(input.benchmarkCase.events, term)
+          ? "answer_normalization_mismatch"
+          : "answer_not_in_input",
+        [term],
+      );
       continue;
     }
     const historyHits = await input.memory.search({

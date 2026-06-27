@@ -209,6 +209,10 @@ answer-label/input mismatch, extraction/filtering, retrieval policy filtering,
 reconstruction misses, context composer or budget drops, forbidden context
 inclusion, and convergence failures. `failureStages` counts whether a stage
 appears in a failed case; the per-case taxonomy entries carry the matched terms.
+When an expected answer is not an exact substring but is present after simple
+punctuation/spacing normalization, the report uses
+`answer_normalization_mismatch` instead of `answer_not_in_input` so adapter
+label issues stay separate from missing source evidence.
 
 The repository also includes a small CI-safe fixture suite at
 `test/fixtures/external-benchmark/suite.json`. `npm run test:external-fixtures`
@@ -241,6 +245,9 @@ git SHA `79031172b9f968c9d65cef02a428a59063d71a70`, and `dirty=false`.
 
 Failure-stage taxonomy:
 
+This historical snapshot was generated with the alpha.66 taxonomy, before
+`answer_normalization_mismatch` was split out from `answer_not_in_input`.
+
 | Dataset file | `answer_not_in_input` | `not_extracted_or_filtered` | `retrieval_or_reconstruction_miss` | `context_composer_or_budget_drop` | `forbidden_context_inclusion` |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `longmemeval_oracle.json` | 224 | 110 | 5 | 0 | 0 |
@@ -268,7 +275,7 @@ moved from `0.1338` to `0.1483`: cleaned S rose from `0.2468` to `0.2787`,
 LoCoMo10 rose from `0.0545` to `0.0687`, and the oracle run moved down by one
 passing case. The taxonomy still shows three immediate work streams:
 dataset/adapter answer normalization for
-`answer_not_in_input`, stronger durable observation extraction for
+`answer_normalization_mismatch` / `answer_not_in_input`, stronger durable observation extraction for
 `not_extracted_or_filtered`, and better speaker/entity/time/event reconstruction
 for `retrieval_or_reconstruction_miss`. LoCoMo remains the clearest pressure
 test for multi-party entity grounding and exact event recall.

@@ -6782,6 +6782,42 @@ assert.equal(
 assert.deepEqual(externalFailureSummaryBenchmark.summary.failureSamples[0]?.failureTaxonomy, [
   { stage: "answer_not_in_input", terms: ["Missing Alpha"] },
 ]);
+const externalAnswerNormalizationBenchmark = await runExternalMemoryBenchmark({
+  cases: [
+    {
+      id: "normalization-dash-space",
+      events: [{ type: "memory", kind: "fact", content: "Visible answer is Alpha-Beta." }],
+      question: "What is visible?",
+      expectedAll: ["Alpha Beta"],
+    },
+    {
+      id: "normalization-keeps-symbolic-language-missing",
+      events: [{ type: "memory", kind: "fact", content: "The language answer is C." }],
+      question: "Which language?",
+      expectedAll: ["C++"],
+    },
+    {
+      id: "normalization-keeps-currency-missing",
+      events: [{ type: "memory", kind: "fact", content: "The price answer is 5 credits." }],
+      question: "What price?",
+      expectedAll: ["$5"],
+    },
+  ],
+});
+assert.equal(externalAnswerNormalizationBenchmark.pass, false);
+assert.deepEqual(externalAnswerNormalizationBenchmark.summary.failureStages, [
+  { name: "answer_not_in_input", count: 2 },
+  { name: "answer_normalization_mismatch", count: 1 },
+]);
+assert.deepEqual(externalAnswerNormalizationBenchmark.cases[0]?.failureTaxonomy, [
+  { stage: "answer_normalization_mismatch", terms: ["Alpha Beta"] },
+]);
+assert.deepEqual(externalAnswerNormalizationBenchmark.cases[1]?.failureTaxonomy, [
+  { stage: "answer_not_in_input", terms: ["C++"] },
+]);
+assert.deepEqual(externalAnswerNormalizationBenchmark.cases[2]?.failureTaxonomy, [
+  { stage: "answer_not_in_input", terms: ["$5"] },
+]);
 const rankedOutEvents = Array.from({ length: 20 }, (_, index) => ({
   type: "memory" as const,
   kind: "fact" as const,
@@ -7665,6 +7701,7 @@ assert.throws(
 );
 const externalMarkdown = renderExternalMemoryBenchmarkMarkdown(externalBenchmarkWithManifest);
 const externalFailureMarkdown = renderExternalMemoryBenchmarkMarkdown(externalFailureSummaryBenchmark);
+const externalNormalizationMarkdown = renderExternalMemoryBenchmarkMarkdown(externalAnswerNormalizationBenchmark);
 assert.match(externalMarkdown, /External Long-Memory QA/);
 assert.match(externalMarkdown, /Run Manifest/);
 assert.match(externalMarkdown, /format=gmos\.external_long_memory_qa\.jsonl/);
@@ -7674,6 +7711,7 @@ assert.match(externalMarkdown, /Failure reasons/);
 assert.match(externalMarkdown, /Failure stages/);
 assert.match(externalMarkdown, /Missing intent groups/);
 assert.match(externalFailureMarkdown, /answer_not_in_input \(Missing Alpha\)/);
+assert.match(externalNormalizationMarkdown, /answer_normalization_mismatch \(Alpha Beta\)/);
 assert.throws(
   () =>
     parseExternalMemoryBenchmarkDataset(externalBenchmarkJsonl, {
