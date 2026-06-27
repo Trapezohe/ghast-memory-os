@@ -649,6 +649,22 @@ const shortChineseProjectOwnerReport = await projectRuleMemory.observeWithReport
 });
 assert.equal(shortChineseProjectOwnerReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(shortChineseProjectOwnerReport.worldBeliefIds.length, 1);
+for (const boundaryStatement of [
+  "Do not remind me about Project Atlas.",
+  "Do not push Project Atlas updates.",
+  "Please don't remind me about invoices?",
+  "不要再提醒我项目星河。",
+  "不要再提醒我发票？",
+]) {
+  const boundaryReport = await projectRuleMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: "project_rule",
+    role: "user",
+    content: boundaryStatement,
+  });
+  assert.equal(boundaryReport.extraction?.acceptedCandidateCount, 1);
+  assert.equal(boundaryReport.memoryIds.length, 1);
+}
 for (const transientProjectLikeStatement of [
   "The current owner is AlphaTeam.",
   "Our current status is blocked.",
@@ -656,6 +672,7 @@ for (const transientProjectLikeStatement of [
   "Atlas project current owner is GammaTeam.",
   "X project current owner is Alice.",
   "Project current owner is Alice.",
+  "What is Project Atlas current owner?",
   "Project New current status is blocked.",
   "Project Current current owner is Alice.",
   "Our project current status is blocked.",
@@ -677,6 +694,7 @@ for (const transientProjectLikeStatement of [
   "这个当前联系人是 Sam。",
   "星河项目当前负责人是 GammaTeam。",
   "项目当前负责人是 Sam。",
+  "项目星河当前负责人是谁？",
   "项目新当前状态是 blocked。",
   "项目当前当前负责人是 Sam。",
   "我们项目当前状态是 blocked。",
