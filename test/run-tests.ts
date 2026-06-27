@@ -91,7 +91,7 @@ import {
   sanitizePublicPayload,
   sanitizePublicSourceMetadata,
 } from "../src/kernel/safety.js";
-import { observedAtMetadata } from "../src/kernel/temporal-format.js";
+import { observedAtMetadata, relativeEventDateMetadata } from "../src/kernel/temporal-format.js";
 import {
   explicitTemporalValidityMetadata,
   mergeExplicitTemporalValidityMetadata,
@@ -1008,6 +1008,123 @@ const nonTemporalReconstruction = await temporalMemory.reconstructContext({
 assert.match(nonTemporalReconstruction.contextBlock, /ActiveOwner/);
 assert.doesNotMatch(nonTemporalReconstruction.contextBlock, /observed=2026-06-03/);
 assert.equal(nonTemporalReconstruction.paths.some((path) => path.createdAt !== undefined), false);
+const relativeTemporalMemory = createMemoryOS({
+  profileId: "relative-temporal",
+  store: createSqliteMemoryStore({ path: path.join(tmp, "relative-temporal.db") }),
+});
+await relativeTemporalMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "relative-temporal",
+  role: "user",
+  content: "I went to the project workshop yesterday and it helped.",
+  createdAt: "2023-05-08T13:56:00.000Z",
+});
+const relativeTemporalReconstruction = await relativeTemporalMemory.reconstructContext({
+  profileId: "relative-temporal",
+  query: "When did I go to the project workshop?",
+  includeTemporalMetadata: true,
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.match(relativeTemporalReconstruction.contextBlock, /project workshop/);
+assert.match(relativeTemporalReconstruction.contextBlock, /event_date=2023-05-07/);
+assert.match(relativeTemporalReconstruction.contextBlock, /event_date_text=7 May 2023/);
+const relativeTemporalDefaultReconstruction = await relativeTemporalMemory.reconstructContext({
+  profileId: "relative-temporal",
+  query: "When did I go to the project workshop?",
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.match(relativeTemporalDefaultReconstruction.contextBlock, /project workshop/);
+assert.doesNotMatch(relativeTemporalDefaultReconstruction.contextBlock, /event_date=/);
+assert.doesNotMatch(relativeTemporalDefaultReconstruction.contextBlock, /event_date_text=/);
+const relativeTemporalPrepared = await relativeTemporalMemory.prepareTurn({
+  profileId: "relative-temporal",
+  messages: [
+    {
+      role: "user",
+      content: "When did I go to the project workshop?",
+    },
+  ],
+});
+assert.match(relativeTemporalPrepared.contextBlock, /project workshop/);
+assert.doesNotMatch(relativeTemporalPrepared.contextBlock, /event_date=/);
+assert.doesNotMatch(relativeTemporalPrepared.contextBlock, /event_date_text=/);
+await relativeTemporalMemory.close();
+const relativeTemporalNoCreatedAtMemory = createMemoryOS({
+  profileId: "relative-temporal-no-created-at",
+  store: createSqliteMemoryStore({ path: path.join(tmp, "relative-temporal-no-created-at.db") }),
+});
+const relativeTemporalNoCreatedAtReport = await relativeTemporalNoCreatedAtMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "relative-temporal-no-created-at",
+  role: "user",
+  content: "I went to the no-created-at workshop yesterday.",
+});
+const relativeTemporalNoCreatedAt = await relativeTemporalNoCreatedAtMemory.get({
+  profileId: "relative-temporal-no-created-at",
+  id: relativeTemporalNoCreatedAtReport.memoryIds[0]!,
+});
+assert.equal(relativeTemporalNoCreatedAt?.metadata.eventDate, undefined);
+const relativeTemporalNoCreatedAtReconstruction = await relativeTemporalNoCreatedAtMemory.reconstructContext({
+  profileId: "relative-temporal-no-created-at",
+  query: "When did I go to the no-created-at workshop?",
+  includeTemporalMetadata: true,
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.match(relativeTemporalNoCreatedAtReconstruction.contextBlock, /no-created-at workshop/);
+assert.doesNotMatch(relativeTemporalNoCreatedAtReconstruction.contextBlock, /event_date=/);
+assert.doesNotMatch(relativeTemporalNoCreatedAtReconstruction.contextBlock, /event_date_text=/);
+await relativeTemporalNoCreatedAtMemory.close();
+const relativeTemporalOverrideMemory = createMemoryOS({
+  profileId: "relative-temporal-override",
+  store: createSqliteMemoryStore({ path: path.join(tmp, "relative-temporal-override.db") }),
+  extractor: () => ({
+    kind: "fact",
+    content: "I went to the override workshop yesterday.",
+    confidence: 0.8,
+    metadata: {
+      eventDate: "2030-01-02",
+      eventDateText: "2 January 2030",
+    },
+  }),
+});
+const relativeTemporalOverrideReport = await relativeTemporalOverrideMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "relative-temporal-override",
+  role: "user",
+  content: "I went to the override workshop yesterday.",
+  createdAt: "2023-05-08T13:56:00.000Z",
+});
+const relativeTemporalOverride = await relativeTemporalOverrideMemory.get({
+  profileId: "relative-temporal-override",
+  id: relativeTemporalOverrideReport.memoryIds[0]!,
+});
+assert.equal(relativeTemporalOverride?.metadata.eventDate, "2030-01-02");
+assert.equal(relativeTemporalOverride?.metadata.eventDateText, "2 January 2030");
+await relativeTemporalOverrideMemory.add({
+  profileId: "relative-temporal-override",
+  kind: "fact",
+  content: "Invalid override workshop date should not render.",
+  metadata: {
+    eventDate: "31 February 2023",
+    eventDateText: "31 February 2023",
+  },
+});
+const invalidOverrideTemporalReconstruction = await relativeTemporalOverrideMemory.reconstructContext({
+  profileId: "relative-temporal-override",
+  query: "Invalid override workshop date",
+  includeTemporalMetadata: true,
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.doesNotMatch(invalidOverrideTemporalReconstruction.contextBlock, /31 February 2023/);
+await relativeTemporalOverrideMemory.close();
 
 const extractedTemporalPath = path.join(tmp, "temporal-validity-extraction.db");
 const extractedTemporalStore = createSqliteMemoryStore({ path: extractedTemporalPath });
@@ -3680,6 +3797,19 @@ for (const sensitivePersonalFixture of [
 }
 assert.equal(observedAtMetadata("2026-06-03T06:45:00.000Z"), "observed=2026-06-03; time=06:45 UTC");
 assert.equal(observedAtMetadata("not a timestamp"), "");
+assert.deepEqual(
+  relativeEventDateMetadata("I went to the archive yesterday.", "2023-05-08T13:56:00.000Z"),
+  {
+    eventDate: "2023-05-07",
+    relativeDateSource: "yesterday",
+  },
+);
+assert.deepEqual(relativeEventDateMetadata("I went to the archive yesterday.", undefined), {});
+assert.deepEqual(relativeEventDateMetadata("I went to the archive yesterday.", "2023-02-31"), {});
+assert.deepEqual(relativeEventDateMetadata("I went to the archive yesterday.", "2023-02-31T00:00:00.000Z"), {});
+assert.deepEqual(relativeEventDateMetadata("I went to the archive yesterday.", "31 February, 2023"), {});
+assert.deepEqual(relativeEventDateMetadata("I went yesterday and today.", "2023-05-08T13:56:00.000Z"), {});
+assert.deepEqual(relativeEventDateMetadata("I may go next week.", "2023-05-08T13:56:00.000Z"), {});
 assert.deepEqual(
   explicitTemporalValidityMetadata("valid from 2026-01-01 to 2026-07-01"),
   {
@@ -7214,6 +7344,75 @@ const locomoHumanSpeakerBenchmark = await runExternalMemoryBenchmark({
 });
 assert.equal(locomoHumanSpeakerBenchmark.pass, true);
 assert.deepEqual(locomoHumanSpeakerBenchmark.cases[0]?.expectedAnyMatched, ["2022"]);
+const locomoRelativeDateFixture = JSON.stringify([
+  {
+    sample_id: "locomo-relative-date",
+    conversation: {
+      speaker_a: "Caroline",
+      speaker_b: "Melanie",
+      session_1_date_time: "1:56 pm on 8 May, 2023",
+      session_1: [
+        {
+          speaker: "Caroline",
+          text: "I went to the project workshop yesterday and it helped.",
+        },
+      ],
+    },
+    qa: [
+      {
+        question: "When did Caroline go to the project workshop?",
+        answer: "7 May 2023",
+      },
+    ],
+  },
+]);
+const locomoRelativeDateCases = parseLocomoBenchmarkDataset(locomoRelativeDateFixture);
+assert.equal(locomoRelativeDateCases[0]?.events[0]?.createdAt, "2023-05-08T13:56:00.000Z");
+const locomoRelativeDateBenchmark = await runExternalMemoryBenchmark({
+  cases: locomoRelativeDateCases,
+  datasetFormat: "locomo.json",
+  includeTemporalMetadata: true,
+});
+assert.equal(locomoRelativeDateBenchmark.pass, true);
+assert.deepEqual(locomoRelativeDateBenchmark.cases[0]?.expectedAnyMatched, ["7 May 2023"]);
+const locomoInvalidDateFixture = JSON.stringify([
+  {
+    sample_id: "locomo-invalid-date",
+    conversation: {
+      speaker_a: "Caroline",
+      speaker_b: "Melanie",
+      session_1_date_time: "31 February, 2023",
+      session_1: [
+        {
+          speaker: "Caroline",
+          text: "I went to the project workshop yesterday and it helped.",
+        },
+      ],
+    },
+    qa: [
+      {
+        question: "When did Caroline go to the project workshop?",
+        answer: "7 May 2023",
+      },
+    ],
+  },
+]);
+const locomoInvalidDateCases = parseLocomoBenchmarkDataset(locomoInvalidDateFixture);
+assert.equal(locomoInvalidDateCases[0]?.events[0]?.createdAt, undefined);
+const locomoInvalidIsoDateCases = parseLocomoBenchmarkDataset(
+  locomoInvalidDateFixture.replace("31 February, 2023", "2023-02-31T00:00:00.000Z"),
+);
+assert.equal(locomoInvalidIsoDateCases[0]?.events[0]?.createdAt, undefined);
+const locomoInvalidDateBenchmark = await runExternalMemoryBenchmark({
+  cases: locomoInvalidDateCases,
+  datasetFormat: "locomo.json",
+  includeTemporalMetadata: true,
+});
+assert.equal(locomoInvalidDateBenchmark.pass, false);
+assert.doesNotMatch(
+  JSON.stringify(locomoInvalidDateBenchmark),
+  /observed=2023-03-02|event_date=2023-03-01/,
+);
 const locomoNoReuseBenchmark = await runExternalMemoryBenchmark({
   cases: parsedLocomoDataset.cases.slice(0, 2),
   datasetFormat: parsedLocomoDataset.datasetFormat,

@@ -62,6 +62,82 @@ function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function validIsoCalendarPrefix(raw: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T.*)?$/u.exec(raw);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  const parsed = new Date(Date.UTC(year, month, day));
+  return parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month &&
+    parsed.getUTCDate() === day;
+}
+
+const MONTHS: Record<string, number> = {
+  january: 0,
+  jan: 0,
+  february: 1,
+  feb: 1,
+  march: 2,
+  mar: 2,
+  april: 3,
+  apr: 3,
+  may: 4,
+  june: 5,
+  jun: 5,
+  july: 6,
+  jul: 6,
+  august: 7,
+  aug: 7,
+  september: 8,
+  sep: 8,
+  sept: 8,
+  october: 9,
+  oct: 9,
+  november: 10,
+  nov: 10,
+  december: 11,
+  dec: 11,
+};
+
+function normalizeExternalDate(value: unknown): string | undefined {
+  const raw = stringValue(value);
+  if (!raw) return undefined;
+  const dayMonthYear = /^(?:(\d{1,2}):(\d{2})\s*(am|pm)\s+on\s+)?(\d{1,2})\s+([A-Za-z]+),?\s+(\d{4})$/iu.exec(raw);
+  if (dayMonthYear) {
+    const hourRaw = dayMonthYear[1] ? Number(dayMonthYear[1]) : 0;
+    const minute = dayMonthYear[2] ? Number(dayMonthYear[2]) : 0;
+    const ampm = dayMonthYear[3]?.toLowerCase();
+    const day = Number(dayMonthYear[4]);
+    const month = MONTHS[dayMonthYear[5]?.toLowerCase() ?? ""];
+    const year = Number(dayMonthYear[6]);
+    if (
+      month !== undefined &&
+      day >= 1 &&
+      day <= 31 &&
+      (!dayMonthYear[1] || (hourRaw >= 1 && hourRaw <= 12)) &&
+      minute >= 0 &&
+      minute <= 59
+    ) {
+      const hour = ampm === "pm" && hourRaw < 12 ? hourRaw + 12 : ampm === "am" && hourRaw === 12 ? 0 : hourRaw;
+      const parsed = new Date(Date.UTC(year, month, day, hour, minute));
+      if (
+        parsed.getUTCFullYear() === year &&
+        parsed.getUTCMonth() === month &&
+        parsed.getUTCDate() === day
+      ) {
+        return parsed.toISOString();
+      }
+    }
+    return undefined;
+  }
+  const isoLike = /^\d{4}-\d{2}-\d{2}(?:T.*)?$/u.test(raw);
+  if (isoLike && !validIsoCalendarPrefix(raw)) return undefined;
+  const parsed = isoLike ? new Date(raw) : null;
+  return parsed && !Number.isNaN(parsed.getTime()) ? parsed.toISOString() : undefined;
+}
+
 function stringsFromAnswer(value: unknown): string[] {
   if (typeof value === "string" && value.trim()) return [value.trim()];
   if (typeof value === "number" && Number.isFinite(value)) return [String(value)];
@@ -209,7 +285,7 @@ function locomoEvents(row: Record<string, unknown>, sampleId: string): ExternalM
   for (const sessionKey of locomoSessionKeys(conversation)) {
     const turns = conversation[sessionKey];
     if (!Array.isArray(turns)) continue;
-    const createdAt = conversation[`${sessionKey}_date_time`];
+    const createdAt = normalizeExternalDate(conversation[`${sessionKey}_date_time`]);
     for (const turn of turns) {
       const record = assertRecord(turn, `LoCoMo sample ${sampleId} ${sessionKey} turn`);
       const content = contentFromTurn(record);

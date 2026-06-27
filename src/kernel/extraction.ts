@@ -14,6 +14,7 @@ import {
   redactForReport,
   sanitizePublicPayloadRecord,
 } from "./safety.js";
+import { relativeEventDateMetadata } from "./temporal-format.js";
 import { mergeExplicitTemporalValidityMetadata } from "./temporal-validity.js";
 
 interface MemoryExtractionPlan {
@@ -110,7 +111,7 @@ function hasSecretLikeAuxiliaryField(candidate: MemoryExtractionCandidate): bool
 
 function normalizeCandidate(
   candidate: MemoryExtractionCandidate,
-  options: { minConfidence: number },
+  options: { minConfidence: number; createdAt?: string | undefined },
 ):
   | { candidate: MemoryExtractionCandidate }
   | { reason: MemoryExtractionRejectReason } {
@@ -132,7 +133,10 @@ function normalizeCandidate(
       confidence,
       metadata: mergeExplicitTemporalValidityMetadata(
         content,
-        sanitizePublicPayloadRecord(candidate.metadata ?? {}),
+        {
+          ...relativeEventDateMetadata(content, options.createdAt),
+          ...sanitizePublicPayloadRecord(candidate.metadata ?? {}),
+        },
       ),
     },
   };
@@ -340,7 +344,10 @@ export async function extractMemoryCandidatePlan(input: {
   }> = [];
   const rejected: MemoryExtractionDecision[] = [];
   for (const rawCandidate of source) {
-    const result = normalizeCandidate(rawCandidate, { minConfidence });
+    const result = normalizeCandidate(rawCandidate, {
+      minConfidence,
+      createdAt: input.extractionInput.event.createdAt,
+    });
     if ("reason" in result) {
       rejected.push(rejectDecision(rawCandidate, result.reason));
       continue;

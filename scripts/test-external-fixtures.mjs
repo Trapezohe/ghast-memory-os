@@ -36,8 +36,8 @@ const failures = [];
 if (report.pass !== true) failures.push("suite pass=false");
 if (report.benchmarkPass !== true) failures.push("benchmarkPass=false");
 if (report.runCount !== 3) failures.push(`runCount=${report.runCount}`);
-if (report.totalCaseCount !== 23) failures.push(`totalCaseCount=${report.totalCaseCount}`);
-if (report.totalPassedCount !== 23) failures.push(`totalPassedCount=${report.totalPassedCount}`);
+if (report.totalCaseCount !== 24) failures.push(`totalCaseCount=${report.totalCaseCount}`);
+if (report.totalPassedCount !== 24) failures.push(`totalPassedCount=${report.totalPassedCount}`);
 if (report.totalFailedCount !== 0) failures.push(`totalFailedCount=${report.totalFailedCount}`);
 if (report.scoreWeighted !== 1) failures.push(`scoreWeighted=${report.scoreWeighted}`);
 
@@ -59,12 +59,12 @@ if (
 }
 if (
   !locomoRun ||
-  locomoRun.caseCount !== 2 ||
+  locomoRun.caseCount !== 3 ||
   locomoRun.pass !== true ||
   locomoRun.reusedProfileCaseCount < 1 ||
   !locomoRun.warnings?.includes("skipped_locomo_unscored_qa:locomo-mini-atlas:qa-3")
 ) {
-  failures.push("locomo-mini run did not pass with profile reuse and unscored warning");
+  failures.push("locomo-mini run did not pass 3 cases with profile reuse and unscored warning");
 }
 
 if (failures.length > 0) {

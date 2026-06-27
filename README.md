@@ -437,19 +437,23 @@ context behavior even when the query contains historical wording. History mode
 does not bypass sensitive or person-memory defaults.
 Rule and host extractor candidates can also pick up conservative validity
 metadata from explicit ISO-date text such as `until 2026-07-01`, `expires on
-2026-07-01`, `valid from 2026-01-01`, or `从 2026-01-01 开始`. gmOS does not
+2026-07-01`, `valid from 2026-01-01`, or `从 2026-01-01 开始`. When a message has
+a trusted `createdAt`, gmOS also records conservative event-date metadata for
+`today`, `yesterday`, `tomorrow`, `今天`, `昨天`, and `明天`. gmOS still does not
 try to resolve ambiguous relative dates such as "next week" inside the rule
 extractor; hosts should pass structured metadata when they have a trusted
 calendar parser. The same validity metadata is written to the derived world
 belief when a candidate creates one, so reconstruction does not reintroduce an
 expired belief through the association graph.
-Active reconstruction can render observation time as metadata on memory,
-evidence, and reconstructed path lines when `includeTemporalMetadata: true` is
-set, for example `observed=2026-06-03`. The timestamp is not appended to stored
-memory content; it is rendered at composition time so agents can reason over
-timelines without polluting the canonical memory record or the ordinary context
-path. CLI users can pass `--temporal-metadata` to `reconstruct` or
-`explain-path`.
+Active reconstruction can render observation time and resolved event dates as
+metadata on memory, evidence, and reconstructed path lines when
+`includeTemporalMetadata: true` is set, for example `observed=2026-06-03` or
+`event_date=2026-06-02; event_date_text=2 June 2026`. `event_date_text` is
+derived at render time from the stored ISO date. The timestamp is not appended
+to stored memory content; it is rendered at composition time so agents can
+reason over timelines without polluting the canonical memory record or the
+ordinary context path. CLI users can pass `--temporal-metadata` to `reconstruct`
+or `explain-path`.
 The first production mode is shadow-safe:
 `prepareTurn({ reconstruction: { mode: "shadow" } })` returns a separate
 `reconstruction` field without replacing the ordinary `contextBlock`.

@@ -1,6 +1,6 @@
 import { extractAssociationCues } from "./associations.js";
 import { sanitizeEvidenceForPublicOutput } from "./safety.js";
-import { observedAtSegment } from "./temporal-format.js";
+import { observedAtSegment, temporalMetadataSegment } from "./temporal-format.js";
 import type {
   EvidenceEvent,
   MemoryAssociationRecord,
@@ -741,7 +741,7 @@ function composeReconstructedContext(input: {
       "Memory content:",
       ...memories.map(
         (memory) =>
-          `- [${memory.kind}; confidence=${memory.confidence.toFixed(2)}${input.includeTemporalMetadata ? observedAtSegment(memory.createdAt) : ""}] ${memory.content}`,
+          `- [${memory.kind}; confidence=${memory.confidence.toFixed(2)}${input.includeTemporalMetadata ? temporalMetadataSegment(memory.createdAt, memory.metadata) : ""}] ${memory.content}`,
       ),
     ];
     if (input.includeEvidence) {

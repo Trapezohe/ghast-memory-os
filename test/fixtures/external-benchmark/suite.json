@@ -23,7 +23,8 @@
     {
       "id": "locomo-mini",
       "inputFile": "locomo-mini.json",
-      "datasetFormat": "locomo"
+      "datasetFormat": "locomo",
+      "includeTemporalMetadata": true
     }
   ]
 }
