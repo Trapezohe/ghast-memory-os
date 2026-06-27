@@ -91,6 +91,7 @@ export interface PrepareTurnInput {
     stopWhenEvidenceEnough?: boolean | undefined;
     evidenceConvergenceThreshold?: number | undefined;
     includeTemporalMetadata?: boolean | undefined;
+    temporalMode?: "auto" | "current" | "history" | undefined;
   } | undefined;
 }
 
@@ -275,6 +276,7 @@ export interface ReconstructContextInput {
   stopWhenEvidenceEnough?: boolean | undefined;
   evidenceConvergenceThreshold?: number | undefined;
   includeTemporalMetadata?: boolean | undefined;
+  temporalMode?: "auto" | "current" | "history" | undefined;
 }
 
 export interface ExplainEvidencePathInput extends ReconstructContextInput {
@@ -509,7 +511,7 @@ export interface LowLevelSearchInput {
   profileId?: string | undefined;
   query?: string | undefined;
   limit?: number | undefined;
-  purpose?: "context" | "delete" | "manage" | undefined;
+  purpose?: "context" | "history" | "delete" | "manage" | undefined;
   includeSensitive?: boolean | undefined;
   includePerson?: boolean | undefined;
 }
@@ -537,7 +539,7 @@ export interface MemorySearchInput {
   profileId: string;
   query?: string;
   limit?: number;
-  purpose?: "context" | "delete" | "manage";
+  purpose?: "context" | "history" | "delete" | "manage";
   includeSensitive?: boolean | undefined;
   includePerson?: boolean | undefined;
 }
@@ -569,6 +571,7 @@ export interface MemoryAssociationSearchInput {
   profileId: string;
   query: string;
   limit?: number | undefined;
+  purpose?: "context" | "history" | undefined;
   includeSensitive?: boolean | undefined;
   includePerson?: boolean | undefined;
 }

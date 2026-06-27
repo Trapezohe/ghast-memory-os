@@ -61,6 +61,7 @@ const searchSchema = z.object({
   profileId: z.string().optional(),
   query: z.string().optional(),
   limit: z.number().int().positive().optional(),
+  purpose: z.enum(["context", "history"]).optional(),
 }).strict();
 
 const messageSchema = z.object({
@@ -88,6 +89,7 @@ const reconstructContextSchema = z.object({
   stopWhenEvidenceEnough: z.boolean().optional(),
   evidenceConvergenceThreshold: z.number().positive().optional(),
   includeTemporalMetadata: z.boolean().optional(),
+  temporalMode: z.enum(["auto", "current", "history"]).optional(),
 }).strict();
 
 const explainEvidencePathSchema = z.object({
@@ -103,6 +105,7 @@ const explainEvidencePathSchema = z.object({
   stopWhenEvidenceEnough: z.boolean().optional(),
   evidenceConvergenceThreshold: z.number().positive().optional(),
   includeTemporalMetadata: z.boolean().optional(),
+  temporalMode: z.enum(["auto", "current", "history"]).optional(),
 }).strict();
 
 const commitOutcomeSchema = z.object({

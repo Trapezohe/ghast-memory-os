@@ -1059,6 +1059,54 @@ try {
   );
   assert.equal(searchBin.status, 0, searchBin.stderr);
   assert.match(searchBin.stdout, /Installed bin low-level add prefers stable manifests/);
+  const historySearchBin = runInstalledCli(
+    [
+      "search",
+      "--db",
+      binLowLevelDb,
+      "--profile",
+      "bin",
+      "--query",
+      "stable manifests",
+      "--purpose",
+      "history",
+    ],
+  );
+  assert.equal(historySearchBin.status, 0, historySearchBin.stderr);
+  assert.match(historySearchBin.stdout, /Installed bin low-level add prefers stable manifests/);
+  const historyReconstructBin = runInstalledCli(
+    [
+      "reconstruct",
+      "--db",
+      binLowLevelDb,
+      "--profile",
+      "bin",
+      "--text",
+      "What was the previous stable manifests preference?",
+      "--temporal-mode",
+      "history",
+    ],
+  );
+  assert.equal(historyReconstructBin.status, 0, historyReconstructBin.stderr);
+  assert.match(historyReconstructBin.stdout, /stable manifests/);
+  const historyPrepareShadowBin = runInstalledCli(
+    [
+      "prepare",
+      "--db",
+      binLowLevelDb,
+      "--profile",
+      "bin",
+      "--text",
+      "What was the previous stable manifests preference?",
+      "--reconstruct-shadow",
+      "--temporal-mode",
+      "history",
+    ],
+  );
+  assert.equal(historyPrepareShadowBin.status, 0, historyPrepareShadowBin.stderr);
+  const historyPrepareShadowPayload = JSON.parse(historyPrepareShadowBin.stdout);
+  assert.equal(typeof historyPrepareShadowPayload.reconstruction?.contextBlock, "string");
+  assert.match(historyPrepareShadowPayload.reconstruction.contextBlock, /stable manifests/);
   const explainPathBin = runInstalledCli(
     [
       "explain-path",

@@ -1992,6 +1992,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     initialize();
     const query = input.query?.trim() ?? "";
     const purpose = input.purpose ?? "context";
+    const ordinaryRecallPurpose = purpose === "context" || purpose === "history";
     const hiddenContextMemoryIds =
       purpose === "context" ? contextHiddenMemoryIds(input.profileId, nowIso()) : new Set<string>();
     return memoryRowsForSearch(input)
@@ -2003,7 +2004,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .filter((item) => !hiddenContextMemoryIds.has(item.memory.id))
       .filter(
         (item) =>
-          purpose !== "context" ||
+          !ordinaryRecallPurpose ||
           !shouldHideFromOrdinaryContext({
             sensitivity: item.memory.sensitivity,
             includeSensitive: input.includeSensitive,
@@ -2272,9 +2273,14 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   function searchAssociations(input: MemoryAssociationSearchInput): MemoryAssociationRecord[] {
     initialize();
     const query = input.query.trim();
+    const purpose = input.purpose ?? "context";
     const asOfIso = nowIso();
-    const hiddenContextMemoryIds = contextHiddenMemoryIds(input.profileId, asOfIso);
-    const hiddenContextBeliefIds = temporallyInvalidWorldBeliefIds(input.profileId, asOfIso);
+    const hiddenContextMemoryIds =
+      purpose === "context" ? contextHiddenMemoryIds(input.profileId, asOfIso) : new Set<string>();
+    const hiddenContextBeliefIds =
+      purpose === "context"
+        ? temporallyInvalidWorldBeliefIds(input.profileId, asOfIso)
+        : new Set<string>();
     const ranked = associationRowsForSearch(input)
       .map(normalizeAssociation)
       .filter(

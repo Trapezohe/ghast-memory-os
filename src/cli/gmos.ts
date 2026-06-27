@@ -323,8 +323,17 @@ function optionalMemoryKindOption(): MemoryKind | undefined {
 
 function searchPurposeOption(): LowLevelSearchInput["purpose"] {
   const raw = value("--purpose", "context");
-  if (raw !== "context" && raw !== "delete" && raw !== "manage") {
-    throw new Error("--purpose must be one of: context, delete, manage");
+  if (raw !== "context" && raw !== "history" && raw !== "delete" && raw !== "manage") {
+    throw new Error("--purpose must be one of: context, history, delete, manage");
+  }
+  return raw;
+}
+
+function temporalModeOption(): "auto" | "current" | "history" | undefined {
+  const raw = value("--temporal-mode");
+  if (!raw) return undefined;
+  if (raw !== "auto" && raw !== "current" && raw !== "history") {
+    throw new Error("--temporal-mode must be one of: auto, current, history");
   }
   return raw;
 }
@@ -1032,6 +1041,7 @@ async function main(): Promise<void> {
                 maxBranch: positiveIntegerOption("--max-branch", 4),
                 maxMemories: positiveIntegerOption("--max-memories", 8),
                 includeTemporalMetadata: has("--temporal-metadata"),
+                temporalMode: temporalModeOption(),
               },
             }
           : {}),
@@ -1053,6 +1063,7 @@ async function main(): Promise<void> {
         maxBranch: positiveIntegerOption("--max-branch", 4),
         maxMemories: positiveIntegerOption("--max-memories", 8),
         includeTemporalMetadata: has("--temporal-metadata"),
+        temporalMode: temporalModeOption(),
       });
       console.log(JSON.stringify(reconstructed, null, 2));
       return;
@@ -1072,6 +1083,7 @@ async function main(): Promise<void> {
         maxBranch: positiveIntegerOption("--max-branch", 4),
         maxMemories: positiveIntegerOption("--max-memories", 8),
         includeTemporalMetadata: has("--temporal-metadata"),
+        temporalMode: temporalModeOption(),
       });
       console.log(JSON.stringify(explanation, null, 2));
       return;

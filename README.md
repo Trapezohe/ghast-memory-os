@@ -45,6 +45,10 @@ const prepared = await memory.prepareTurn({
 - Deterministic world-entity normalization for current-state beliefs. Equivalent
   subjects such as `Atlas project`, `project:atlas`, and `Project Atlas`
   converge before single-cardinality invalidation runs.
+- Historical recall mode for temporal/current-state questions. Ordinary context
+  still suppresses superseded or out-of-window memories, while explicit
+  `history` recall can retrieve those past facts without using manage/delete
+  search or opening sensitive/person memory.
 - Runtime facade: `observe`, `prepareTurn`, `commitOutcome`, `recordFeedback`,
   `reconstructContext`, `explainEvidencePath`, `forget`, `explain`.
 - Pluggable extraction pipeline for host-provided structured extractors. The
@@ -97,6 +101,7 @@ node dist/cli/gmos.js update --db ./gmos.db --profile local --id memory_xxx --te
 node dist/cli/gmos.js delete --db ./gmos.db --profile local --id memory_xxx
 node dist/cli/gmos.js clear --db ./gmos.db --profile local --scope global
 node dist/cli/gmos.js search --db ./gmos.db --profile local --query "简洁"
+node dist/cli/gmos.js search --db ./gmos.db --profile local --query "之前的状态" --purpose history
 node dist/cli/gmos.js list --db ./gmos.db --profile local --query "简洁" --status active
 node dist/cli/gmos.js get --db ./gmos.db --profile local --id memory_xxx
 node dist/cli/gmos.js export --db ./gmos.db --profile local --output-file ./gmos-memory-export.json
@@ -106,10 +111,12 @@ node dist/cli/gmos.js restore --db ./new-gmos.db --profile local-restored --inpu
 node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "我喜欢简洁的中文回答。"
 node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
 node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？"
+node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "这个项目之前是什么状态？" --temporal-mode history
 node dist/cli/gmos.js explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --include-trace
 node dist/cli/gmos.js mcp tools
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.add --input '{"kind":"preference","content":"我喜欢先讲风险"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.search --input '{"query":"先讲风险"}'
+node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.search --input '{"query":"之前的状态","purpose":"history"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.prepare_context --input '{"text":"你之后怎么回答我？"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.reconstruct_context --input '{"text":"我之前说的项目下一步是什么？"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.explain_evidence_path --input '{"text":"我之前说的项目下一步是什么？","includePlannerTrace":true}'
@@ -380,6 +387,13 @@ alias). Ordinary context search and active reconstruction only use memories
 whose validity window includes the current time; `validTo` and `expiresAt` are
 treated as exclusive expiries. Management and delete searches still see
 out-of-window memories so hosts can audit, repair, or forget them explicitly.
+History search and reconstruction are separate from management: `purpose:
+"history"` and `temporalMode: "history"` let agents answer "what was true
+before?" without treating the request as an admin/delete operation. The default
+`temporalMode: "auto"` infers history mode from cues such as "previous",
+"before", "历史", or "之前"; `temporalMode: "current"` forces ordinary current
+context behavior even when the query contains historical wording. History mode
+does not bypass sensitive or person-memory defaults.
 Rule and host extractor candidates can also pick up conservative validity
 metadata from explicit ISO-date text such as `until 2026-07-01`, `expires on
 2026-07-01`, `valid from 2026-01-01`, or `从 2026-01-01 开始`. gmOS does not
@@ -500,9 +514,10 @@ converge to the same project entity. It then marks the previous active world
 belief for the same `profileId + canonical subject + predicate` as
 `superseded` and removes its association projection from active reconstruction.
 Ordinary context search and active reconstruction also suppress source memories
-that only support the superseded current-state value, while `purpose: "manage"`
-and `purpose: "delete"` can still find those source memories for audit,
-cleanup, or explicit forgetting. Omit `cardinality`, or set `"multi"`, for
+that only support the superseded current-state value. Use `purpose: "history"`
+or `temporalMode: "history"` when the user is asking for past state; use
+`purpose: "manage"` and `purpose: "delete"` only for audit, cleanup, or explicit
+forgetting. Omit `cardinality`, or set `"multi"`, for
 preferences, boundaries, facts, and procedures that can validly coexist.
 
 The host compatibility gym distinguishes target presets from actual host

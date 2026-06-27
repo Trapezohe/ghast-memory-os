@@ -85,6 +85,8 @@ interface ReconstructionIntent {
   reason: string;
 }
 
+type ReconstructionRecallPurpose = "context" | "history";
+
 interface FrontierCue {
   cue: string;
   priority: number;
@@ -349,6 +351,39 @@ function inferReconstructionIntent(query: string): ReconstructionIntent {
   };
 }
 
+function inferTemporalRecallPurpose(
+  query: string,
+  temporalMode: ReconstructContextInput["temporalMode"],
+): ReconstructionRecallPurpose {
+  if (temporalMode === "history") return "history";
+  if (temporalMode === "current") return "context";
+  if (
+    includesAny(query, [
+      "之前",
+      "以前",
+      "过去",
+      "历史",
+      "曾经",
+      "原来",
+      "上一个",
+      "上一版",
+      "earlier",
+      "previous",
+      "previously",
+      "prior",
+      "past",
+      "history",
+      "historical",
+      "before",
+      "old state",
+      "old status",
+    ])
+  ) {
+    return "history";
+  }
+  return "context";
+}
+
 function seedFrontier(query: string, intent: ReconstructionIntent): FrontierCue[] {
   const cues = extractAssociationCues(query, 12);
   if (cues.length === 0) return [{ cue: query, priority: 1, reason: "raw_query" }];
@@ -580,6 +615,7 @@ async function fuseDirectMemorySearch(input: {
   profileId: string;
   query: string;
   intent: ReconstructionIntent;
+  recallPurpose: ReconstructionRecallPurpose;
   includeSensitive?: boolean | undefined;
   maxMemories: number;
   memories: MemoryRecord[];
@@ -593,7 +629,7 @@ async function fuseDirectMemorySearch(input: {
   const directMemoryCandidates = await input.store.searchMemories({
     profileId: input.profileId,
     query: input.query,
-    purpose: "context",
+    purpose: input.recallPurpose,
     includeSensitive: input.includeSensitive,
     limit: Math.min(input.maxMemories * 4, 48),
   });
@@ -773,6 +809,7 @@ async function fallbackReconstruction(input: {
   store: MemoryStore;
   profileId: string;
   query: string;
+  recallPurpose: ReconstructionRecallPurpose;
   includeEvidence?: boolean | undefined;
   includeSensitive?: boolean | undefined;
   contextBudgetTokens?: number | undefined;
@@ -786,7 +823,7 @@ async function fallbackReconstruction(input: {
   const memories = await input.store.searchMemories({
     profileId: input.profileId,
     query: input.query,
-    purpose: "context",
+    purpose: input.recallPurpose,
     includeSensitive: input.includeSensitive,
     limit: input.maxMemories,
   });
@@ -896,11 +933,13 @@ export async function reconstructMemoryContext(input: {
   );
   const targetMemoryCount = Math.min(2, maxMemories);
   const intent = inferReconstructionIntent(query);
+  const recallPurpose = inferTemporalRecallPurpose(query, input.request.temporalMode);
   if (!input.store.searchAssociations) {
     return fallbackReconstruction({
       store: input.store,
       profileId,
       query,
+      recallPurpose,
       includeEvidence: input.request.includeEvidence,
       includeSensitive: input.request.includeSensitive,
       contextBudgetTokens: input.request.contextBudgetTokens,
@@ -937,6 +976,7 @@ export async function reconstructMemoryContext(input: {
     const associations = await input.store.searchAssociations({
       profileId,
       query: cue.cue,
+      purpose: recallPurpose,
       includeSensitive: input.request.includeSensitive,
       limit: Math.min(maxBranch * 4, 48),
     });
@@ -1045,6 +1085,7 @@ export async function reconstructMemoryContext(input: {
       profileId,
       query,
       intent,
+      recallPurpose,
       includeSensitive: input.request.includeSensitive,
       maxMemories,
       memories,

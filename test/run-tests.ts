@@ -661,6 +661,88 @@ assert.equal(
   manageStaleCurrentStateSearch.some((entry) => entry.content.includes("migration probe")),
   true,
 );
+const historyStaleCurrentStateSearch = await extractorMemory.search({
+  profileId: "extractor",
+  query: "Helio migration probe",
+  purpose: "history",
+  limit: 10,
+});
+assert.equal(
+  historyStaleCurrentStateSearch.some((entry) => entry.content.includes("migration probe")),
+  true,
+);
+const historicalProjectState = await extractorMemory.reconstructContext({
+  profileId: "extractor",
+  query: "What was Helio previous state?",
+});
+assert.match(historicalProjectState.contextBlock, /migration probe/);
+const forcedHistoricalProjectState = await extractorMemory.reconstructContext({
+  profileId: "extractor",
+  query: "Helio state",
+  temporalMode: "history",
+});
+assert.match(forcedHistoricalProjectState.contextBlock, /migration probe/);
+const forcedCurrentProjectState = await extractorMemory.reconstructContext({
+  profileId: "extractor",
+  query: "What was Helio previous state?",
+  temporalMode: "current",
+});
+assert.match(forcedCurrentProjectState.contextBlock, /rollout review/);
+assert.doesNotMatch(forcedCurrentProjectState.contextBlock, /migration probe/);
+const preparedHistoricalShadow = await extractorMemory.prepareTurn({
+  profileId: "extractor",
+  messages: [{ role: "user", content: "Helio state" }],
+  reconstruction: { mode: "shadow", temporalMode: "history" },
+});
+assert.doesNotMatch(preparedHistoricalShadow.contextBlock, /migration probe/);
+assert.match(preparedHistoricalShadow.reconstruction?.contextBlock ?? "", /migration probe/);
+const sensitiveHistoryMemory = await extractorMemory.add({
+  profileId: "extractor",
+  kind: "project",
+  content: "Cetus previous private plan belongs in sensitive history recall only.",
+  sensitivity: "sensitive",
+});
+await extractorMemory.add({
+  profileId: "extractor",
+  kind: "person",
+  content: "Cetus previous person-specific plan belongs in person history recall only.",
+  allowPerson: true,
+});
+const sensitiveHistorySearch = await extractorMemory.search({
+  profileId: "extractor",
+  query: "Cetus previous private plan",
+  purpose: "history",
+  limit: 10,
+});
+assert.equal(
+  sensitiveHistorySearch.some((entry) => entry.id === sensitiveHistoryMemory.id),
+  false,
+);
+const sensitiveHistorySearchOverride = await extractorMemory.search({
+  profileId: "extractor",
+  query: "Cetus previous private plan",
+  purpose: "history",
+  includeSensitive: true,
+  limit: 10,
+});
+assert.equal(
+  sensitiveHistorySearchOverride.some((entry) => entry.id === sensitiveHistoryMemory.id),
+  true,
+);
+const personHistorySearch = await extractorMemory.search({
+  profileId: "extractor",
+  query: "Cetus previous person-specific plan",
+  purpose: "history",
+  limit: 10,
+});
+assert.equal(personHistorySearch.some((entry) => entry.kind === "person"), false);
+const sensitiveHistoryReconstruction = await extractorMemory.reconstructContext({
+  profileId: "extractor",
+  query: "Cetus previous private plan",
+  temporalMode: "history",
+});
+assert.doesNotMatch(sensitiveHistoryReconstruction.contextBlock, /sensitive history recall only/);
+assert.doesNotMatch(sensitiveHistoryReconstruction.contextBlock, /person history recall only/);
 const legacyProjectState = await extractorMemory.reconstructContext({
   profileId: "extractor",
   query: "Legacy project current state",
@@ -3726,6 +3808,32 @@ const mcpSearch = await mcpServer.callTool("memory.search", {
 assert.equal(mcpSearch.isError, undefined);
 assert.match(JSON.stringify(mcpSearch.structuredContent), /MCP add 工具/);
 assert.equal(JSON.stringify(mcpSearch.structuredContent).includes("metadata"), false);
+const mcpExpiredHistoryMemory = await store.addMemory({
+  profileId: "mcp",
+  kind: "project",
+  content: "MCP history expired state was QuartzBridgeOwner.",
+  metadata: { validTo: "2000-01-01T00:00:00.000Z" },
+});
+const mcpContextHistorySearch = await mcpServer.callTool("memory.search", {
+  profileId: "mcp",
+  query: "QuartzBridgeOwner",
+});
+assert.equal(mcpContextHistorySearch.isError, undefined);
+assert.equal(JSON.stringify(mcpContextHistorySearch.structuredContent).includes("QuartzBridgeOwner"), false);
+const mcpHistorySearch = await mcpServer.callTool("memory.search", {
+  profileId: "mcp",
+  query: "QuartzBridgeOwner",
+  purpose: "history",
+});
+assert.equal(mcpHistorySearch.isError, undefined);
+assert.match(JSON.stringify(mcpHistorySearch.structuredContent), /QuartzBridgeOwner/);
+assert.match(JSON.stringify(mcpHistorySearch.structuredContent), new RegExp(mcpExpiredHistoryMemory.id));
+const mcpSearchManagePurpose = await mcpServer.callTool("memory.search", {
+  profileId: "mcp",
+  query: "QuartzBridgeOwner",
+  purpose: "manage",
+});
+assert.equal(mcpSearchManagePurpose.isError, true);
 const mcpSearchSensitiveOverride = await mcpServer.callTool("memory.search", {
   profileId: "mcp",
   query: "MCP add",
@@ -4021,6 +4129,25 @@ try {
     6,
   );
   assert.equal(status.text.includes("mcp fixture failure"), false);
+  const httpContextHistorySearch = await postJson(`${httpAddress.url}/search`, {
+    profileId: "mcp",
+    query: "QuartzBridgeOwner",
+  });
+  assert.equal(httpContextHistorySearch.status, 200);
+  assert.equal(httpContextHistorySearch.text.includes("QuartzBridgeOwner"), false);
+  const httpHistorySearch = await postJson(`${httpAddress.url}/search`, {
+    profileId: "mcp",
+    query: "QuartzBridgeOwner",
+    purpose: "history",
+  });
+  assert.equal(httpHistorySearch.status, 200);
+  assert.match(httpHistorySearch.text, /QuartzBridgeOwner/);
+  const httpManageSearch = await postJson(`${httpAddress.url}/search`, {
+    profileId: "mcp",
+    query: "QuartzBridgeOwner",
+    purpose: "manage",
+  });
+  assert.equal(httpManageSearch.status, 400);
   const observe = await postJson(`${httpAddress.url}/observe`, {
     profileId: "http",
     role: "user",

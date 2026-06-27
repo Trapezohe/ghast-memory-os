@@ -120,6 +120,30 @@ function optionalPositiveInteger(args: Record<string, unknown>, key: string): nu
   return value;
 }
 
+function optionalTemporalMode(
+  args: Record<string, unknown>,
+  key: string,
+): ReconstructContextInput["temporalMode"] {
+  const value = optionalString(args, key);
+  if (value === undefined) return undefined;
+  if (value !== "auto" && value !== "current" && value !== "history") {
+    throw new Error(`${key} must be one of: auto, current, history`);
+  }
+  return value;
+}
+
+function optionalPublicSearchPurpose(
+  args: Record<string, unknown>,
+  key: string,
+): "context" | "history" | undefined {
+  const value = optionalString(args, key);
+  if (value === undefined) return undefined;
+  if (value !== "context" && value !== "history") {
+    throw new Error(`${key} must be one of: context, history`);
+  }
+  return value;
+}
+
 function optionalMetadata(args: Record<string, unknown>): Record<string, unknown> | undefined {
   const value = args.metadata;
   if (value === undefined) return undefined;
@@ -255,7 +279,7 @@ function addInput(args: Record<string, unknown>): LowLevelAddMemoryInput {
 function searchInput(args: Record<string, unknown>): LowLevelSearchInput {
   assertAllowedKeys(
     args,
-    new Set(["profileId", "query", "limit"]),
+    new Set(["profileId", "query", "limit", "purpose"]),
     "memory.search",
   );
   const input: LowLevelSearchInput = {
@@ -264,9 +288,11 @@ function searchInput(args: Record<string, unknown>): LowLevelSearchInput {
   const profileId = optionalString(args, "profileId");
   const query = optionalString(args, "query");
   const limit = optionalPositiveInteger(args, "limit");
+  const purpose = optionalPublicSearchPurpose(args, "purpose");
   if (profileId !== undefined) input.profileId = profileId;
   if (query !== undefined) input.query = query;
   if (limit !== undefined) input.limit = limit;
+  if (purpose !== undefined) input.purpose = purpose;
   return input;
 }
 
@@ -302,6 +328,7 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
       "stopWhenEvidenceEnough",
       "evidenceConvergenceThreshold",
       "includeTemporalMetadata",
+      "temporalMode",
     ]),
     "memory.reconstruct_context",
   );
@@ -319,6 +346,7 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
   const maxMemories = optionalPositiveInteger(args, "maxMemories");
   const stopWhenEvidenceEnough = optionalBoolean(args, "stopWhenEvidenceEnough");
   const includeTemporalMetadata = optionalBoolean(args, "includeTemporalMetadata");
+  const temporalMode = optionalTemporalMode(args, "temporalMode");
   const evidenceConvergenceThreshold = optionalPositiveNumber(
     args,
     "evidenceConvergenceThreshold",
@@ -338,6 +366,7 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
   if (includeTemporalMetadata !== undefined) {
     input.includeTemporalMetadata = includeTemporalMetadata;
   }
+  if (temporalMode !== undefined) input.temporalMode = temporalMode;
   return input;
 }
 
@@ -358,6 +387,7 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
       "stopWhenEvidenceEnough",
       "evidenceConvergenceThreshold",
       "includeTemporalMetadata",
+      "temporalMode",
     ]),
     "memory.explain_evidence_path",
   );
@@ -376,6 +406,7 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
   const maxMemories = optionalPositiveInteger(args, "maxMemories");
   const stopWhenEvidenceEnough = optionalBoolean(args, "stopWhenEvidenceEnough");
   const includeTemporalMetadata = optionalBoolean(args, "includeTemporalMetadata");
+  const temporalMode = optionalTemporalMode(args, "temporalMode");
   const evidenceConvergenceThreshold = optionalPositiveNumber(
     args,
     "evidenceConvergenceThreshold",
@@ -396,6 +427,7 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
   if (includeTemporalMetadata !== undefined) {
     input.includeTemporalMetadata = includeTemporalMetadata;
   }
+  if (temporalMode !== undefined) input.temporalMode = temporalMode;
   return input;
 }
 

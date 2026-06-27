@@ -1030,6 +1030,20 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
       validTo: "2999-01-01T00:00:00.000Z",
     },
   });
+  await memory.add({
+    profileId: "gym_reconstruct",
+    kind: "project",
+    content: "Atlas history sensitive owner is SensitiveTemporalOwner.",
+    sensitivity: "sensitive",
+    confidence: 0.9,
+  });
+  await memory.add({
+    profileId: "gym_reconstruct",
+    kind: "person",
+    content: "Atlas history person owner is PersonTemporalOwner.",
+    confidence: 0.9,
+    allowPerson: true,
+  });
   if (store.rebuildAssociations) {
     await store.rebuildAssociations({ profileId: "gym_reconstruct" });
   }
@@ -1058,6 +1072,29 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     maxBranch: 8,
     maxMemories: 8,
   });
+  const historicalSourceStateReconstruction = await memory.reconstructContext({
+    profileId: "gym_reconstruct",
+    query: "what was atlas source previous state?",
+    maxSteps: 4,
+    maxBranch: 8,
+    maxMemories: 8,
+  });
+  const forcedHistoricalSourceStateReconstruction = await memory.reconstructContext({
+    profileId: "gym_reconstruct",
+    query: "atlas source state",
+    temporalMode: "history",
+    maxSteps: 4,
+    maxBranch: 8,
+    maxMemories: 8,
+  });
+  const forcedCurrentSourceStateReconstruction = await memory.reconstructContext({
+    profileId: "gym_reconstruct",
+    query: "what was atlas source previous state?",
+    temporalMode: "current",
+    maxSteps: 4,
+    maxBranch: 8,
+    maxMemories: 8,
+  });
   const temporalValidityReconstruction = await memory.reconstructContext({
     profileId: "gym_reconstruct",
     query: "atlas temporal validity owner",
@@ -1070,6 +1107,26 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     query: "atlas temporal validity owner",
     purpose: "context",
     limit: 10,
+  });
+  const temporalValidityHistorySearch = await memory.search({
+    profileId: "gym_reconstruct",
+    query: "atlas temporal validity owner",
+    purpose: "history",
+    limit: 10,
+  });
+  const historySafetySearch = await memory.search({
+    profileId: "gym_reconstruct",
+    query: "atlas history owner",
+    purpose: "history",
+    limit: 10,
+  });
+  const historySafetyReconstruction = await memory.reconstructContext({
+    profileId: "gym_reconstruct",
+    query: "atlas history previous owner",
+    temporalMode: "history",
+    maxSteps: 4,
+    maxBranch: 8,
+    maxMemories: 8,
   });
   gate(
     result,
@@ -1099,6 +1156,22 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   );
   gate(
     result,
+    "historical_recall_includes_superseded_source_memory",
+    historicalSourceStateReconstruction.contextBlock.includes("AlphaSourceOwner") &&
+      forcedHistoricalSourceStateReconstruction.contextBlock.includes("AlphaSourceOwner"),
+    "history reconstruction should be able to recall source memories behind superseded current-state beliefs",
+    "reconstruction",
+  );
+  gate(
+    result,
+    "current_temporal_mode_overrides_history_cues",
+    forcedCurrentSourceStateReconstruction.contextBlock.includes("BetaSourceOwner") &&
+      !forcedCurrentSourceStateReconstruction.contextBlock.includes("AlphaSourceOwner"),
+    "temporalMode=current should keep current-state filtering even when the query contains history cues",
+    "reconstruction",
+  );
+  gate(
+    result,
     "temporal_validity_window_context_filter",
     temporalValiditySearch.some((entry) => entry.content.includes("ActiveTemporalOwner")) &&
       !temporalValiditySearch.some((entry) => entry.content.includes("ExpiredTemporalOwner")) &&
@@ -1108,6 +1181,24 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
       !temporalValidityReconstruction.contextBlock.includes("FutureTemporalOwner"),
     "ordinary context and reconstruction should honor memory validFrom/validTo windows",
     "reconstruction",
+  );
+  gate(
+    result,
+    "temporal_validity_history_recall",
+    temporalValidityHistorySearch.some((entry) => entry.content.includes("ExpiredTemporalOwner")) &&
+      temporalValidityHistorySearch.some((entry) => entry.content.includes("FutureTemporalOwner")),
+    "history search should expose temporally out-of-window memories without using manage/delete purpose",
+    "reconstruction",
+  );
+  gate(
+    result,
+    "historical_recall_keeps_sensitive_person_filters",
+    !historySafetySearch.some((entry) => entry.content.includes("SensitiveTemporalOwner")) &&
+      !historySafetySearch.some((entry) => entry.content.includes("PersonTemporalOwner")) &&
+      !historySafetyReconstruction.contextBlock.includes("SensitiveTemporalOwner") &&
+      !historySafetyReconstruction.contextBlock.includes("PersonTemporalOwner"),
+    "history recall must not bypass ordinary sensitive or person-memory filters",
+    "safety",
   );
   scenario(result, "active_reconstruction", "dev", [
     "active_reconstruction_multihop",
@@ -1129,7 +1220,11 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "world_belief_single_cardinality_supersession",
     "entity_resolution_current_state_invalidation",
     "current_state_suppresses_superseded_source_memory",
+    "historical_recall_includes_superseded_source_memory",
+    "current_temporal_mode_overrides_history_cues",
     "temporal_validity_window_context_filter",
+    "temporal_validity_history_recall",
+    "historical_recall_keeps_sensitive_person_filters",
   ]);
 
   await memory.recordFeedback({
