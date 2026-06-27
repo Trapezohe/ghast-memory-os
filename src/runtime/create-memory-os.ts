@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  associationCueKey,
+  associationCueMatchesQuery,
   extractAssociationCues,
   sourceMetadataEntityCues,
 } from "../kernel/associations.js";
@@ -154,14 +156,14 @@ function sourceScopedMemories(memories: MemoryRecord[], query: string): MemoryRe
   const selectedSourceCues = new Set<string>();
   for (const memory of memories) {
     for (const cue of sourceMetadataEntityCues(memory.metadata)) {
-      if (queryCues.has(cue)) selectedSourceCues.add(cue);
+      if (associationCueMatchesQuery(cue, queryCues)) selectedSourceCues.add(associationCueKey(cue));
     }
   }
   if (selectedSourceCues.size === 0) return memories;
   return memories.filter((memory) => {
     const sourceCues = sourceMetadataEntityCues(memory.metadata);
     if (sourceCues.length === 0) return !sourcelessPersonalMemory(memory);
-    return sourceCues.some((cue) => selectedSourceCues.has(cue));
+    return sourceCues.some((cue) => selectedSourceCues.has(associationCueKey(cue)));
   });
 }
 

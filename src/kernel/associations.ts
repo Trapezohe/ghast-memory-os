@@ -95,6 +95,28 @@ function unique(values: string[]): string[] {
   return result;
 }
 
+export function associationCueKey(value: string): string {
+  return value
+    .toLowerCase()
+    .trim()
+    .replace(/[^\p{L}\p{N}_-]+/gu, "-")
+    .replace(/_+/gu, "-")
+    .replace(/-+/gu, "-")
+    .replace(/^-+|-+$/gu, "");
+}
+
+export function associationCueMatchesQuery(cue: string, queryCues: Iterable<string>): boolean {
+  const key = associationCueKey(cue);
+  if (!key) return false;
+  const queryKeys = new Set(
+    [...queryCues].map((queryCue) => associationCueKey(queryCue)).filter(Boolean),
+  );
+  if (queryKeys.has(key)) return true;
+  const parts = key.split("-").filter(Boolean);
+  const queryParts = new Set([...queryKeys].flatMap((queryKey) => queryKey.split("-")));
+  return parts.length > 1 && parts.every((part) => queryParts.has(part));
+}
+
 function hanFragments(text: string): string[] {
   const fragments: string[] = [];
   for (const match of text.matchAll(/\p{Script=Han}{2,}/gu)) {

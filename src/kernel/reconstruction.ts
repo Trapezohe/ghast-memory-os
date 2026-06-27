@@ -1,4 +1,9 @@
-import { extractAssociationCues, sourceMetadataEntityCues } from "./associations.js";
+import {
+  associationCueKey,
+  associationCueMatchesQuery,
+  extractAssociationCues,
+  sourceMetadataEntityCues,
+} from "./associations.js";
 import { sanitizeEvidenceForPublicOutput } from "./safety.js";
 import { observedAtSegment, temporalMetadataSegment } from "./temporal-format.js";
 import type {
@@ -111,25 +116,8 @@ function normalizedText(value: string): string {
   return value.toLowerCase();
 }
 
-function entityCueKey(value: string): string {
-  return normalizedText(value)
-    .trim()
-    .replace(/[^\p{L}\p{N}_-]+/gu, "-")
-    .replace(/_+/gu, "-")
-    .replace(/-+/gu, "-")
-    .replace(/^-+|-+$/gu, "");
-}
-
 function entityCueMatchesQuery(cue: string, intent: ReconstructionIntent): boolean {
-  const key = entityCueKey(cue);
-  if (!key) return false;
-  const queryKeys = new Set(
-    [...intent.queryCues].map((queryCue) => entityCueKey(queryCue)).filter(Boolean),
-  );
-  if (queryKeys.has(key)) return true;
-  const parts = key.split("-").filter(Boolean);
-  const queryParts = new Set([...queryKeys].flatMap((queryKey) => queryKey.split("-")));
-  return parts.length > 1 && parts.every((part) => queryParts.has(part));
+  return associationCueMatchesQuery(cue, intent.queryCues);
 }
 
 function queryCueSet(query: string): Set<string> {
@@ -196,10 +184,12 @@ function pathCoversCue(path: ReconstructedEvidencePath, cue: string): boolean {
   const normalizedCue = normalizedText(cue);
   const pathText = `${path.cue} ${path.tag} ${path.targetKind ?? ""} ${path.targetSummary}`;
   if (normalizedText(pathText).includes(normalizedCue)) return true;
-  const cueKey = entityCueKey(cue);
+  const cueKey = associationCueKey(cue);
   if (!cueKey) return false;
   const pathKeys = new Set(
-    extractAssociationCues(pathText, 64).map((pathCue) => entityCueKey(pathCue.cue)).filter(Boolean),
+    extractAssociationCues(pathText, 64)
+      .map((pathCue) => associationCueKey(pathCue.cue))
+      .filter(Boolean),
   );
   if (pathKeys.has(cueKey)) return true;
   const parts = cueKey.split("-").filter(Boolean);
@@ -483,11 +473,11 @@ function sourceScopeRejectReason(
   }
   const matchingQueryCues = sourceCues.filter((cue) => entityCueMatchesQuery(cue, intent));
   if (matchingQueryCues.length > 0) {
-    for (const cue of matchingQueryCues) selectedSourceCues.add(entityCueKey(cue));
+    for (const cue of matchingQueryCues) selectedSourceCues.add(associationCueKey(cue));
     return null;
   }
   return selectedSourceCues.size > 0 &&
-    !sourceCues.some((cue) => selectedSourceCues.has(entityCueKey(cue)))
+    !sourceCues.some((cue) => selectedSourceCues.has(associationCueKey(cue)))
     ? `source_scope_mismatch:${[...selectedSourceCues].join("|")}`
     : null;
 }
@@ -496,7 +486,7 @@ function sourceScopedFallbackMemories(memories: MemoryRecord[], intent: Reconstr
   const selectedSourceCues = new Set<string>();
   for (const memory of memories) {
     for (const cue of sourceMetadataEntityCues(memory.metadata)) {
-      if (entityCueMatchesQuery(cue, intent)) selectedSourceCues.add(entityCueKey(cue));
+      if (entityCueMatchesQuery(cue, intent)) selectedSourceCues.add(associationCueKey(cue));
     }
   }
   if (selectedSourceCues.size === 0) return memories;
@@ -512,7 +502,7 @@ function associationSourceRejectReason(
 ): string | null {
   const personCue = associationPersonCue(association);
   if (!personCue) return null;
-  const personCueKey = entityCueKey(personCue);
+  const personCueKey = associationCueKey(personCue);
   if (entityCueMatchesQuery(personCue, intent)) {
     selectedSourceCues.add(personCueKey);
     return null;
@@ -1100,7 +1090,7 @@ export async function reconstructMemoryContext(input: {
     for (const ranked of rankedAssociations) {
       const personCue = associationPersonCue(ranked.association);
       if (personCue && entityCueMatchesQuery(personCue, intent)) {
-        selectedSourceCues.add(entityCueKey(personCue));
+        selectedSourceCues.add(associationCueKey(personCue));
       }
     }
     for (const ranked of rankedAssociations) {

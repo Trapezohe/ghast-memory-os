@@ -2271,6 +2271,30 @@ const inferredSpeakerPrepared = await rulesReportMemory.prepareTurn({
 assert.match(inferredSpeakerPrepared.contextBlock, /Aster/);
 assert.doesNotMatch(inferredSpeakerPrepared.contextBlock, /Brisk/);
 assert.doesNotMatch(inferredSpeakerPrepared.contextBlock, /VectorPad/);
+await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Mary Jane: I use Helio for travel planning.",
+});
+await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Omar Stone: I use Quartz for travel planning.",
+});
+const multiwordSpeakerPrepared = await rulesReportMemory.prepareTurn({
+  profileId: "rules_report",
+  messages: [{ role: "user", content: "Which travel planning tool belongs to Mary Jane?" }],
+});
+assert.match(multiwordSpeakerPrepared.contextBlock, /Helio/);
+assert.doesNotMatch(multiwordSpeakerPrepared.contextBlock, /Quartz/);
+const underscoredSpeakerPrepared = await rulesReportMemory.prepareTurn({
+  profileId: "rules_report",
+  messages: [{ role: "user", content: "Which travel planning tool belongs to mary_jane?" }],
+});
+assert.match(underscoredSpeakerPrepared.contextBlock, /Helio/);
+assert.doesNotMatch(underscoredSpeakerPrepared.contextBlock, /Quartz/);
 await rulesReportMemory.close();
 
 const lowLevelMemory = await memory.add({
