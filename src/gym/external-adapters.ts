@@ -109,6 +109,7 @@ function messageEvent(input: {
   content: string;
   createdAt?: unknown;
   fallbackRole?: ExternalMemoryBenchmarkMessageEvent["role"] | undefined;
+  metadata?: Record<string, unknown> | undefined;
 }): ExternalMemoryBenchmarkMessageEvent {
   const createdAt = stringValue(input.createdAt);
   return {
@@ -116,6 +117,7 @@ function messageEvent(input: {
     role: normalizeRole(input.role, input.fallbackRole ?? "user"),
     content: input.content,
     ...(createdAt ? { createdAt } : {}),
+    ...(input.metadata ? { metadata: input.metadata } : {}),
   };
 }
 
@@ -202,6 +204,8 @@ function locomoSessionKeys(conversation: Record<string, unknown>): string[] {
 function locomoEvents(row: Record<string, unknown>, sampleId: string): ExternalMemoryBenchmarkEvent[] {
   const conversation = assertRecord(row.conversation, `LoCoMo sample ${sampleId}.conversation`);
   const events: ExternalMemoryBenchmarkEvent[] = [];
+  const speakerA = stringValue(conversation.speaker_a);
+  const speakerB = stringValue(conversation.speaker_b);
   for (const sessionKey of locomoSessionKeys(conversation)) {
     const turns = conversation[sessionKey];
     if (!Array.isArray(turns)) continue;
@@ -211,11 +215,20 @@ function locomoEvents(row: Record<string, unknown>, sampleId: string): ExternalM
       const content = contentFromTurn(record);
       if (!content) continue;
       const speaker = stringValue(record.speaker);
+      const participants = [speakerA, speakerB].filter(
+        (entry): entry is string => typeof entry === "string" && entry.length > 0,
+      );
       events.push(
         messageEvent({
           role: "user",
           content: speaker ? `${speaker}: ${content}` : content,
           createdAt,
+          metadata: {
+            sampleId,
+            sessionKey,
+            ...(speaker ? { speaker } : {}),
+            ...(participants.length > 0 ? { participants } : {}),
+          },
         }),
       );
     }

@@ -29,6 +29,7 @@ export interface ExternalMemoryBenchmarkMessageEvent {
   content: string;
   createdAt?: string | undefined;
   privacyMode?: PrivacyMode | undefined;
+  metadata?: Record<string, unknown> | undefined;
 }
 
 export interface ExternalMemoryBenchmarkTaskEvent {
@@ -268,6 +269,14 @@ function optionalBoolean(value: unknown, field: string): boolean | undefined {
   return value;
 }
 
+function optionalMetadata(value: unknown, field: string): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`External benchmark ${field} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
 function parseEvent(value: unknown, caseId: string): ExternalMemoryBenchmarkEvent {
   if (typeof value !== "object" || value === null) {
     throw new Error(`External benchmark case ${caseId} events must be objects`);
@@ -346,6 +355,7 @@ function parseEvent(value: unknown, caseId: string): ExternalMemoryBenchmarkEven
     content: event.content,
     ...(typeof event.createdAt === "string" ? { createdAt: event.createdAt } : {}),
     ...(privacyMode !== undefined ? { privacyMode } : {}),
+    ...(event.metadata !== undefined ? { metadata: optionalMetadata(event.metadata, `${caseId}.event.metadata`) } : {}),
   };
 }
 
@@ -885,6 +895,7 @@ async function applyBenchmarkEvent(
       role: event.role ?? "user",
       content: event.content,
       privacyMode: event.privacyMode,
+      metadata: event.metadata,
       createdAt: event.createdAt,
     });
   }

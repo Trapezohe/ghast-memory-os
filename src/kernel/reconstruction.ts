@@ -105,6 +105,8 @@ interface RankedMemoryCandidate {
   routeReason: string;
 }
 
+const GENERATED_CUE_STOP_TERMS = new Set(["fact", "memory", "after", "before"]);
+
 function normalizedText(value: string): string {
   return value.toLowerCase();
 }
@@ -1019,7 +1021,7 @@ export async function reconstructMemoryContext(input: {
       const nextCues = extractAssociationCues(
         `${association.tag} ${association.targetSummary}`,
         8,
-      );
+      ).filter((nextCue) => !GENERATED_CUE_STOP_TERMS.has(nextCue.cue));
       const generatedCues: string[] = [];
       for (const nextCue of nextCues) {
         if (explored.has(nextCue.cue)) continue;

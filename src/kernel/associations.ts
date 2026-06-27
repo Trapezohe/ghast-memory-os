@@ -26,6 +26,21 @@ const STOP_TERMS = new Set([
   "the",
   "and",
   "for",
+  "to",
+  "in",
+  "of",
+  "on",
+  "at",
+  "from",
+  "by",
+  "as",
+  "is",
+  "are",
+  "was",
+  "were",
+  "do",
+  "does",
+  "did",
   "with",
   "you",
   "your",
@@ -36,6 +51,8 @@ const STOP_TERMS = new Set([
   "this",
   "that",
   "about",
+  "mention",
+  "mentioned",
   "现在",
   "什么",
   "怎么",
@@ -63,6 +80,7 @@ const PRIORITY_TERMS = new Set([
   "发布",
   "任务",
   "目标",
+  "answer",
 ]);
 
 function unique(values: string[]): string[] {
@@ -107,7 +125,7 @@ export function extractAssociationCues(text: string, max = 32): AssociationCue[]
       if (entity !== 0) return entity;
       const priority = Number(PRIORITY_TERMS.has(b.cue)) - Number(PRIORITY_TERMS.has(a.cue));
       if (priority !== 0) return priority;
-      return a.cue.length - b.cue.length;
+      return b.cue.length - a.cue.length;
     })
     .slice(0, max);
 }
@@ -129,6 +147,18 @@ function entityAliases(metadata: Record<string, unknown>): string[] {
   return metadataStringArray(entity as Record<string, unknown>, "aliases");
 }
 
+function sourceMetadataEntityCues(metadata: Record<string, unknown>): string[] {
+  const sourceMetadata = metadata.sourceMetadata;
+  if (!sourceMetadata || typeof sourceMetadata !== "object" || Array.isArray(sourceMetadata)) {
+    return [];
+  }
+  const record = sourceMetadata as Record<string, unknown>;
+  return unique([
+    normalizedMetadataValue(record, "speaker") ?? "",
+    ...metadataStringArray(record, "speakerAliases"),
+  ]);
+}
+
 export function associationTagsForMemory(memory: MemoryRecord): string[] {
   const tags = [
     memory.kind,
@@ -142,6 +172,7 @@ export function associationTagsForMemory(memory: MemoryRecord): string[] {
 
 export function associationCuesForMemory(memory: MemoryRecord): AssociationCue[] {
   return [
+    ...sourceMetadataEntityCues(memory.metadata).map((cue) => ({ cue, cueKind: "entity" as const })),
     { cue: memory.kind, cueKind: "kind" },
     ...(memory.scope !== "global" ? [{ cue: memory.scope, cueKind: "scope" as const }] : []),
     ...extractAssociationCues(memory.content),

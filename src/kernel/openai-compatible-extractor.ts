@@ -4,7 +4,7 @@ import type {
   MemoryExtractor,
   MemoryKind,
 } from "./types.js";
-import { sanitizePublicPayloadRecord } from "./safety.js";
+import { sanitizePublicPayloadRecord, sanitizePublicSourceMetadata } from "./safety.js";
 
 type FetchLike = (
   input: string | URL | Request,
@@ -151,7 +151,7 @@ function userPrompt(input: MemoryExtractionInput, options: OpenAICompatibleExtra
       content: input.event.content,
       privacyMode: input.event.privacyMode ?? "normal",
       ...(options.includeEventMetadata
-        ? { metadata: sanitizePublicPayloadRecord(input.event.metadata ?? {}) }
+        ? { metadata: sanitizePublicSourceMetadata(input.event.metadata) }
         : {}),
     },
     evidence: {

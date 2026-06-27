@@ -95,6 +95,55 @@ export function sanitizePublicPayloadRecord(input: Record<string, unknown>): Rec
   return sanitized as Record<string, unknown>;
 }
 
+const PUBLIC_SOURCE_METADATA_KEYS = new Set([
+  "speaker",
+  "speakerId",
+  "speakerAliases",
+  "participants",
+  "sessionId",
+  "sessionKey",
+  "sourceId",
+  "sourceUri",
+]);
+
+const PUBLIC_SOURCE_STRING_METADATA_KEYS = new Set([
+  "speaker",
+  "speakerId",
+  "sessionId",
+  "sessionKey",
+  "sourceId",
+  "sourceUri",
+]);
+
+const PUBLIC_SOURCE_STRING_ARRAY_METADATA_KEYS = new Set([
+  "speakerAliases",
+  "participants",
+]);
+
+export function sanitizePublicSourceMetadata(
+  metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const output: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(metadata ?? {})) {
+    if (!PUBLIC_SOURCE_METADATA_KEYS.has(key)) continue;
+    if (PUBLIC_SOURCE_STRING_METADATA_KEYS.has(key)) {
+      const sanitized = sanitizePublicPayload(value);
+      if (typeof sanitized === "string" && sanitized.trim().length > 0) output[key] = sanitized;
+      continue;
+    }
+    if (PUBLIC_SOURCE_STRING_ARRAY_METADATA_KEYS.has(key)) {
+      if (!Array.isArray(value)) continue;
+      const values = value
+        .map((entry) => (typeof entry === "string" ? sanitizePublicPayload(entry) : null))
+        .filter(
+          (entry): entry is string => typeof entry === "string" && entry.trim().length > 0,
+        );
+      if (values.length > 0) output[key] = values;
+    }
+  }
+  return output;
+}
+
 export function payloadContainsRestrictedValue(value: unknown): boolean {
   return classifyPayloadSensitivity(value) !== "normal";
 }

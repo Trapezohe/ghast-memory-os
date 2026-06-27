@@ -22,6 +22,7 @@ import {
   createOpenAICompatibleExtractor,
   type MemoryStore,
 } from "../src/index.js";
+import { extractAssociationCues } from "../src/kernel/associations.js";
 import {
   renderHostCompatibilityGymMarkdown,
   renderExternalMemoryBenchmarkMarkdown,
@@ -87,6 +88,7 @@ import {
   redactForReport,
   sanitizeEvidenceForPublicOutput,
   sanitizePublicPayload,
+  sanitizePublicSourceMetadata,
 } from "../src/kernel/safety.js";
 import { observedAtMetadata } from "../src/kernel/temporal-format.js";
 import {
@@ -96,6 +98,30 @@ import {
 } from "../src/kernel/temporal-validity.js";
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-sdk-test-"));
+const associationCueFixture = extractAssociationCues(
+  "What did Blair mention about benchmark answer?",
+);
+assert.equal(associationCueFixture.some((cue) => cue.cue === "mention"), false);
+assert.equal(associationCueFixture[0]?.cue, "blair");
+assert.equal(
+  associationCueFixture.findIndex((cue) => cue.cue === "answer") <
+    associationCueFixture.findIndex((cue) => cue.cue === "benchmark"),
+  true,
+);
+const publicSourceMetadataFixture = sanitizePublicSourceMetadata({
+  speaker: "Blair",
+  speakerAliases: ["B", { answer: "nested alias answer" }],
+  participants: ["Alex", { oracle: "nested participant oracle" }],
+  sessionKey: "session_1",
+  answer: "top-level answer",
+  oracle: "top-level oracle",
+});
+assert.deepEqual(publicSourceMetadataFixture, {
+  speaker: "Blair",
+  speakerAliases: ["B"],
+  participants: ["Alex"],
+  sessionKey: "session_1",
+});
 const dbPath = path.join(tmp, "test.db");
 const packageJson = JSON.parse(readFileSync(path.join(process.cwd(), "package.json"), "utf8")) as {
   name: string;
@@ -1115,6 +1141,7 @@ const llmExtractorMemory = createMemoryOS({
     apiKey: "test-key",
     headers: { "x-provider-fixture": "enabled" },
     timeoutMs: 5000,
+    includeEventMetadata: true,
     fetch: async (url, init) => {
       llmExtractorRequest = {
         url: String(url),
@@ -1177,7 +1204,16 @@ const llmExtractionReport = await llmExtractorMemory.observeWithReport({
   profileId: "llm_extractor",
   role: "user",
   content: "我喜欢风险优先摘要；Mira 项目当前卡在 rollout audit。",
-  metadata: { internalTrace: "sk-metadatashouldnotleave1234567890" },
+  metadata: {
+    speaker: "MiraUser",
+    speakerAliases: ["MiraAlias", { answer: "nested llm alias answer" }],
+    participants: ["MiraUser", { oracle: "nested llm participant oracle" }],
+    internalTrace: "sk-metadatashouldnotleave1234567890",
+    answer: "leaked llm extractor answer",
+    oracle: "leaked llm extractor oracle",
+    label: "leaked llm extractor label",
+    adversarial_answer: "leaked llm extractor adversarial",
+  },
 });
 assert.equal(llmExtractionReport.extraction?.extractorName, "fixture-openai-compatible-extractor");
 assert.equal(llmExtractionReport.extraction?.acceptedCandidateCount, 2);
@@ -1197,6 +1233,17 @@ assert.equal(llmExtractorRequest.headers?.["x-provider-fixture"], "enabled");
 assert.equal(llmExtractorRequest.body?.model, "fixture-memory-model");
 assert.deepEqual(llmExtractorRequest.body?.response_format, { type: "json_object" });
 assert.equal(JSON.stringify(llmExtractorRequest.body).includes("sk-metadatashouldnotleave"), false);
+assert.equal(JSON.stringify(llmExtractorRequest.body).includes("MiraUser"), true);
+assert.equal(JSON.stringify(llmExtractorRequest.body).includes("MiraAlias"), true);
+assert.equal(JSON.stringify(llmExtractorRequest.body).includes("nested llm alias answer"), false);
+assert.equal(JSON.stringify(llmExtractorRequest.body).includes("nested llm participant oracle"), false);
+assert.equal(JSON.stringify(llmExtractorRequest.body).includes("leaked llm extractor answer"), false);
+assert.equal(JSON.stringify(llmExtractorRequest.body).includes("leaked llm extractor oracle"), false);
+assert.equal(JSON.stringify(llmExtractorRequest.body).includes("leaked llm extractor label"), false);
+assert.equal(
+  JSON.stringify(llmExtractorRequest.body).includes("leaked llm extractor adversarial"),
+  false,
+);
 const llmPreference = await llmExtractorMemory.search({
   profileId: "llm_extractor",
   query: "risk-first summaries",
@@ -1417,6 +1464,79 @@ const durableChineseQuestionReport = await rulesReportMemory.observeWithReport({
 });
 assert.equal(durableChineseQuestionReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(durableChineseQuestionReport.memoryIds.length, 0);
+const speakerMetadataReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "I painted a sunrise in 2022 after the charity race.",
+  metadata: {
+    speaker: "Blair",
+    answer: "leaked benchmark answer",
+    adversarial_answer: "leaked adversarial answer",
+    oracle: "leaked oracle label",
+    token: "sk-speakermetadata1234567890",
+  },
+});
+assert.equal(speakerMetadataReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(speakerMetadataReport.memoryIds.length, 1);
+const speakerMetadataMemory = await rulesReportMemory.get({
+  profileId: "rules_report",
+  id: speakerMetadataReport.memoryIds[0]!,
+  includeSensitive: true,
+});
+assert.equal(
+  (speakerMetadataMemory?.metadata.sourceMetadata as Record<string, unknown> | undefined)?.speaker,
+  "Blair",
+);
+assert.equal(JSON.stringify(speakerMetadataMemory?.metadata).includes("sk-speakermetadata"), false);
+assert.equal(JSON.stringify(speakerMetadataMemory?.metadata).includes("leaked benchmark answer"), false);
+assert.equal(JSON.stringify(speakerMetadataMemory?.metadata).includes("leaked oracle label"), false);
+const alexSpeakerMetadataReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "I went to the bike clinic in 2021 after the park ride.",
+  metadata: {
+    speaker: "Alex",
+    participants: ["Alex", "Blair"],
+    label: "leaked speaker fixture label",
+  },
+});
+assert.equal(alexSpeakerMetadataReport.extraction?.acceptedCandidateCount, 1);
+const speakerMetadataReconstruction = await rulesReportMemory.reconstructContext({
+  profileId: "rules_report",
+  query: "What did Blair mention?",
+  includeEvidence: true,
+  maxSteps: 3,
+  maxBranch: 3,
+  maxMemories: 4,
+});
+assert.match(speakerMetadataReconstruction.contextBlock, /sunrise/);
+assert.equal(
+  JSON.stringify(speakerMetadataReconstruction).includes("sk-speakermetadata"),
+  false,
+);
+assert.equal(JSON.stringify(speakerMetadataReconstruction).includes("leaked benchmark answer"), false);
+assert.equal(JSON.stringify(speakerMetadataReconstruction).includes("leaked adversarial answer"), false);
+assert.equal(JSON.stringify(speakerMetadataReconstruction).includes("leaked oracle label"), false);
+assert.equal(
+  JSON.stringify(speakerMetadataReconstruction.evidence).includes("\"speaker\":\"Blair\""),
+  true,
+);
+const alexSpeakerMetadataReconstruction = await rulesReportMemory.reconstructContext({
+  profileId: "rules_report",
+  query: "What did Alex mention?",
+  includeEvidence: true,
+  maxSteps: 3,
+  maxBranch: 3,
+  maxMemories: 4,
+});
+assert.match(alexSpeakerMetadataReconstruction.contextBlock, /bike clinic/);
+assert.doesNotMatch(alexSpeakerMetadataReconstruction.contextBlock, /sunrise/);
+assert.equal(
+  JSON.stringify(alexSpeakerMetadataReconstruction).includes("leaked speaker fixture label"),
+  false,
+);
 await rulesReportMemory.close();
 
 const lowLevelMemory = await memory.add({
@@ -1426,6 +1546,13 @@ const lowLevelMemory = await memory.add({
   confidence: 0.8,
   metadata: {
     source: "test",
+    speaker: "LowLevelSpeaker",
+    speakerAliases: ["LowLevelAlias", { answer: "nested low-level alias answer" }],
+    participants: ["LowLevelSpeaker", { oracle: "nested low-level participant oracle" }],
+    answer: "leaked low-level answer",
+    oracle: "leaked low-level oracle",
+    label: "leaked low-level label",
+    adversarial_answer: "leaked low-level adversarial",
     token: "sk-lowlevel-metadata-secret123456",
   },
 });
@@ -1731,12 +1858,36 @@ await repairMemory.close();
 const lowLevelExplanation = await memory.explain(lowLevelMemory.id, "test");
 assert.equal(lowLevelExplanation?.evidence[0]?.sourceType, "sdk.low_level_add");
 assert.equal(JSON.stringify(lowLevelExplanation).includes("sk-lowlevel-metadata-secret"), false);
+assert.equal(JSON.stringify(lowLevelExplanation?.evidence).includes("LowLevelSpeaker"), true);
+assert.equal(JSON.stringify(lowLevelExplanation?.evidence).includes("LowLevelAlias"), true);
+assert.equal(JSON.stringify(lowLevelExplanation?.evidence).includes("nested low-level alias answer"), false);
+assert.equal(
+  JSON.stringify(lowLevelExplanation?.evidence).includes("nested low-level participant oracle"),
+  false,
+);
+assert.equal(JSON.stringify(lowLevelExplanation?.evidence).includes("leaked low-level answer"), false);
+assert.equal(JSON.stringify(lowLevelExplanation?.evidence).includes("leaked low-level oracle"), false);
+assert.equal(JSON.stringify(lowLevelExplanation?.evidence).includes("leaked low-level label"), false);
+assert.equal(
+  JSON.stringify(lowLevelExplanation?.evidence).includes("leaked low-level adversarial"),
+  false,
+);
 const updatedLowLevelMemory = await memory.update({
   profileId: "test",
   id: lowLevelMemory.id,
   content: "Low-level compatibility now prefers risk-first SDK docs.",
   metadata: {
     source: "test-update",
+    speaker: "UpdatedLowLevelSpeaker",
+    speakerAliases: ["UpdatedLowLevelAlias", { label: "nested low-level update alias label" }],
+    participants: [
+      "UpdatedLowLevelSpeaker",
+      { adversarial_answer: "nested low-level update participant adversarial" },
+    ],
+    answer: "leaked low-level update answer",
+    oracle: "leaked low-level update oracle",
+    label: "leaked low-level update label",
+    adversarial_answer: "leaked low-level update adversarial",
     token: "sk-lowlevel-update-metadata-secret123456",
   },
 });
@@ -1746,6 +1897,40 @@ const updatedLowLevelExplanation = await memory.explain(lowLevelMemory.id, "test
 assert.equal(updatedLowLevelExplanation?.evidence[0]?.sourceType, "sdk.low_level_update");
 assert.equal(
   JSON.stringify(updatedLowLevelExplanation).includes("sk-lowlevel-update-metadata-secret"),
+  false,
+);
+assert.equal(
+  JSON.stringify(updatedLowLevelExplanation?.evidence).includes("UpdatedLowLevelSpeaker"),
+  true,
+);
+assert.equal(
+  JSON.stringify(updatedLowLevelExplanation?.evidence).includes("UpdatedLowLevelAlias"),
+  true,
+);
+assert.equal(
+  JSON.stringify(updatedLowLevelExplanation?.evidence).includes("nested low-level update alias label"),
+  false,
+);
+assert.equal(
+  JSON.stringify(updatedLowLevelExplanation?.evidence).includes(
+    "nested low-level update participant adversarial",
+  ),
+  false,
+);
+assert.equal(
+  JSON.stringify(updatedLowLevelExplanation?.evidence).includes("leaked low-level update answer"),
+  false,
+);
+assert.equal(
+  JSON.stringify(updatedLowLevelExplanation?.evidence).includes("leaked low-level update oracle"),
+  false,
+);
+assert.equal(
+  JSON.stringify(updatedLowLevelExplanation?.evidence).includes("leaked low-level update label"),
+  false,
+);
+assert.equal(
+  JSON.stringify(updatedLowLevelExplanation?.evidence).includes("leaked low-level update adversarial"),
   false,
 );
 const lowLevelBeforeSecretUpdate = await store.rowCounts();
@@ -6364,24 +6549,47 @@ const externalBenchmarkJsonl = [
     question: "Atlas 复盘以前沉淀的做法是什么？",
     expectedAny: ["证据链", "风险清单"],
   }),
+  JSON.stringify({
+    id: "speaker-metadata-source",
+    events: [
+      {
+        type: "message",
+        role: "user",
+        content: "I painted a ceramic moon in 2020 after class.",
+        metadata: {
+          speaker: "Casey",
+          answer: "leaked external answer",
+          oracle: "leaked external oracle",
+          token: "sk-externalmetadata1234567890",
+        },
+      },
+    ],
+    question: "What did Casey mention?",
+    expectedAny: ["ceramic moon"],
+    forbiddenAny: [
+      "leaked external answer",
+      "leaked external oracle",
+      "sk-externalmetadata1234567890",
+    ],
+  }),
 ].join("\n");
 const externalBenchmarkFile = path.join(tmp, "external-long-memory-qa.jsonl");
 writeFileSync(externalBenchmarkFile, externalBenchmarkJsonl);
 const externalCases = parseExternalMemoryBenchmarkJsonl(externalBenchmarkJsonl);
-assert.equal(externalCases.length, 2);
+assert.equal(externalCases.length, 3);
 const parsedGmosExternalDataset = parseExternalMemoryBenchmarkDataset(externalBenchmarkJsonl, {
   adapter: "gmos",
 });
 assert.equal(parsedGmosExternalDataset.adapter, "gmos");
 assert.equal(parsedGmosExternalDataset.datasetFormat, "gmos.external_long_memory_qa.jsonl");
-assert.equal(parsedGmosExternalDataset.cases.length, 2);
+assert.equal(parsedGmosExternalDataset.cases.length, 3);
 const externalBenchmark = await runExternalMemoryBenchmark({ cases: externalCases });
 assert.equal(externalBenchmark.pass, true);
 assert.equal(externalBenchmark.score, 1);
 assert.equal(externalBenchmark.runManifest.framework, "gmos-external-long-memory-qa");
-assert.equal(externalBenchmark.runManifest.dataset.caseCount, 2);
+assert.equal(externalBenchmark.runManifest.dataset.caseCount, 3);
 assert.equal(externalBenchmark.runManifest.dataset.hash, null);
-assert.equal(externalBenchmark.runManifest.execution.caseGroupCount, 2);
+assert.equal(externalBenchmark.runManifest.execution.caseGroupCount, 3);
 assert.equal(externalBenchmark.runManifest.execution.reusedProfileCaseCount, 0);
 assert.equal(externalBenchmark.runManifest.options.concurrency >= 1, true);
 assert.equal(externalBenchmark.runManifest.options.reuseProfiles, true);
@@ -6780,6 +6988,9 @@ assert.equal(parsedLocomoDataset.cases[0]?.events[0]?.role, "user");
 assert.equal(parsedLocomoDataset.cases[0]?.events[1]?.role, "user");
 assert.match(parsedLocomoDataset.cases[0]?.events[0]?.content ?? "", /^Alex:/);
 assert.match(parsedLocomoDataset.cases[0]?.events[1]?.content ?? "", /^Blair:/);
+assert.equal(parsedLocomoDataset.cases[0]?.events[0]?.metadata?.speaker, "Alex");
+assert.deepEqual(parsedLocomoDataset.cases[0]?.events[0]?.metadata?.participants, ["Alex", "Blair"]);
+assert.equal(parsedLocomoDataset.cases[0]?.events[1]?.metadata?.speaker, "Blair");
 assert.equal(JSON.stringify(parsedLocomoDataset.cases[0]?.events).includes("answer"), false);
 assert.equal(JSON.stringify(parsedLocomoDataset.cases[0]?.events).includes("adversarial"), false);
 assert.throws(

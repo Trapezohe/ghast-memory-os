@@ -13,6 +13,7 @@ import {
   isPersonRoutedMemory,
   sanitizeEvidenceForPublicOutput,
   sanitizePublicPayloadRecord,
+  sanitizePublicSourceMetadata,
 } from "../kernel/safety.js";
 import type {
   CommitOutcomeInput,
@@ -184,7 +185,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       payload: {
         kind,
         scope: input.scope ?? "global",
-        metadata: sanitizePublicPayloadRecord(input.metadata ?? {}),
+        metadata: sanitizePublicSourceMetadata(input.metadata),
       },
       createdAt,
     });
@@ -245,7 +246,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         previousKind: existing.kind,
         kind,
         scope: input.scope ?? existing.scope,
-        metadata,
+        metadata: sanitizePublicSourceMetadata(input.metadata),
       },
       createdAt: updatedAt,
     });
@@ -421,6 +422,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       content: event.content,
       privacyMode: event.privacyMode,
     });
+    const eventMetadata = sanitizePublicSourceMetadata(event.metadata);
     const evidence = await store.recordEvidence({
       profileId,
       eventKey: eventKey(event),
@@ -433,7 +435,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         role: event.role,
         messageId: event.messageId,
         privacyMode: event.privacyMode ?? "normal",
-        metadata: sanitizePublicPayloadRecord(event.metadata ?? {}),
+        metadata: eventMetadata,
       },
       createdAt: event.createdAt,
     });
@@ -472,6 +474,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         sourceEventId: evidence.id,
         metadata: {
           ...sanitizePublicPayloadRecord(candidate.metadata ?? {}),
+          ...(Object.keys(eventMetadata).length > 0 ? { sourceMetadata: eventMetadata } : {}),
           actionPolicyKind: candidate.actionPolicyKind,
           predicate: candidate.predicate,
         },
