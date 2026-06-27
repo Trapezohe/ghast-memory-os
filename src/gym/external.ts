@@ -13,7 +13,7 @@ import type {
   Sensitivity,
   TurnMessage,
 } from "../kernel/types.js";
-import { readGmosPackageInfo } from "../kernel/package-info.js";
+import { readGmosPackageInfo, readGmosPackageRoot } from "../kernel/package-info.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 
@@ -643,19 +643,30 @@ function warningsForCase(input: {
   return warnings;
 }
 
-function gitText(args: string[]): string | null {
+function gitText(args: string[], packageRoot: string): string | null {
+  const ceiling = path.dirname(packageRoot);
+  const existingCeiling = process.env.GIT_CEILING_DIRECTORIES;
   const result = spawnSync("git", args, {
-    cwd: process.cwd(),
+    cwd: packageRoot,
     encoding: "utf8",
+    env: {
+      ...process.env,
+      GIT_CEILING_DIRECTORIES: existingCeiling
+        ? `${ceiling}${path.delimiter}${existingCeiling}`
+        : ceiling,
+    },
   });
   return result.status === 0 ? result.stdout.trim() : null;
 }
 
-function gitInfo(): ExternalMemoryBenchmarkRunManifest["git"] {
-  const status = gitText(["status", "--porcelain"]);
+export function externalBenchmarkGitInfoForPackageRoot(
+  packageRoot: string | null = readGmosPackageRoot(),
+): ExternalMemoryBenchmarkRunManifest["git"] {
+  if (!packageRoot) return { branch: null, sha: null, dirty: null };
+  const status = gitText(["status", "--porcelain"], packageRoot);
   return {
-    branch: gitText(["rev-parse", "--abbrev-ref", "HEAD"]),
-    sha: gitText(["rev-parse", "HEAD"]),
+    branch: gitText(["rev-parse", "--abbrev-ref", "HEAD"], packageRoot),
+    sha: gitText(["rev-parse", "HEAD"], packageRoot),
     dirty: status === null ? null : status.length > 0,
   };
 }
@@ -678,7 +689,7 @@ function createRunManifest(input: {
       name: packageInfo.name,
       version: packageInfo.version,
     },
-    git: gitInfo(),
+    git: externalBenchmarkGitInfoForPackageRoot(),
     dataset: {
       format: input.options.datasetFormat ?? "gmos.external_long_memory_qa.jsonl",
       caseCount: input.caseCount,

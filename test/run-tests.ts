@@ -23,6 +23,7 @@ import {
   type MemoryStore,
 } from "../src/index.js";
 import { extractAssociationCues } from "../src/kernel/associations.js";
+import { externalBenchmarkGitInfoForPackageRoot } from "../src/gym/external.js";
 import {
   renderHostCompatibilityGymMarkdown,
   renderExternalMemoryBenchmarkMarkdown,
@@ -137,6 +138,31 @@ const expectedGit = {
   sha: gitOutput(["rev-parse", "HEAD"]),
   dirty: gitOutput(["status", "--porcelain"]).length > 0,
 };
+const hostRepo = path.join(tmp, "host-repo");
+const nestedPackageRoot = path.join(hostRepo, "node_modules", "@ghast", "memory");
+mkdirSync(nestedPackageRoot, { recursive: true });
+writeFileSync(path.join(hostRepo, "README.md"), "host repo\n");
+assert.equal(spawnSync("git", ["init"], { cwd: hostRepo }).status, 0);
+assert.equal(spawnSync("git", ["add", "README.md"], { cwd: hostRepo }).status, 0);
+assert.equal(
+  spawnSync(
+    "git",
+    ["-c", "user.name=gmOS Test", "-c", "user.email=gmos@example.test", "commit", "-m", "init"],
+    { cwd: hostRepo },
+  ).status,
+  0,
+);
+const hostRepoSha = spawnSync("git", ["rev-parse", "HEAD"], {
+  cwd: hostRepo,
+  encoding: "utf8",
+}).stdout.trim();
+assert.match(hostRepoSha, /^[a-f0-9]{40}$/);
+assert.equal(externalBenchmarkGitInfoForPackageRoot(process.cwd()).sha, expectedGit.sha);
+assert.deepEqual(externalBenchmarkGitInfoForPackageRoot(nestedPackageRoot), {
+  branch: null,
+  sha: null,
+  dirty: null,
+});
 function cloneProfileBackup(
   backup: SqliteProfileBackupDocument,
 ): SqliteProfileBackupDocument {
@@ -6823,6 +6849,8 @@ assert.equal(externalSuiteExecution.result.totalWarningCount, 0);
 assert.equal(externalSuiteExecution.result.scoreWeighted > 0 && externalSuiteExecution.result.scoreWeighted < 1, true);
 assert.equal(externalSuiteExecution.result.runManifest.durationMs >= 0, true);
 assert.equal(externalSuiteExecution.result.runManifest.package?.name, "@ghast/memory");
+assert.equal(externalSuiteExecution.result.runManifest.package?.version, packageJson.version);
+assert.equal(externalSuiteExecution.result.runManifest.git?.sha, expectedGit.sha);
 assert.equal(typeof externalSuiteExecution.result.runManifest.node, "string");
 assert.equal(externalSuiteExecution.result.runs[0]?.durationMs >= 0, true);
 assert.equal(externalSuiteExecution.result.runs[0]?.caseGroupCount >= 1, true);
@@ -6833,6 +6861,20 @@ assert.equal(externalSuiteExecution.reports.failing?.summary.failureSampleLimit,
 assert.equal(externalSuiteExecution.reports.failing?.summary.failureSamples.length, 0);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /BenchmarkStatus: FAIL/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Weighted score:/);
+const externalBenchmarkCwd = path.join(tmp, "external-benchmark-cwd");
+mkdirSync(externalBenchmarkCwd);
+const previousCwd = process.cwd();
+try {
+  process.chdir(externalBenchmarkCwd);
+  const externalSuiteOutsideRepo = await runExternalMemoryBenchmarkSuite({
+    suite: parsedExternalSuite,
+    suiteFile: externalSuiteFile,
+  });
+  assert.equal(externalSuiteOutsideRepo.result.runManifest.package?.version, packageJson.version);
+  assert.equal(externalSuiteOutsideRepo.result.runManifest.git?.sha, expectedGit.sha);
+} finally {
+  process.chdir(previousCwd);
+}
 const externalSuiteGateExecution = await runExternalMemoryBenchmarkSuite({
   suite: parsedExternalSuite,
   suiteFile: externalSuiteFile,

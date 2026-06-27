@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import path from "node:path";
 
 export interface GmosPackageInfo {
   name: string;
@@ -28,4 +29,13 @@ export function readGmosPackageInfo(): GmosPackageInfo {
     // Keep runtime adapters usable when the SDK is bundled without package.json.
   }
   return DEFAULT_GMOS_PACKAGE_INFO;
+}
+
+export function readGmosPackageRoot(): string | null {
+  try {
+    const require = createRequire(import.meta.url);
+    return path.dirname(require.resolve("../../package.json"));
+  } catch {
+    return null;
+  }
 }
