@@ -1,5 +1,6 @@
-const DATE_OR_INSTANT =
+const DATE_VALUE =
   String.raw`\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:?\d{2}))?`;
+const DATE_OR_INSTANT = `${DATE_VALUE}(?![\\p{L}\\p{N}_-])`;
 
 function isValidCalendarDate(year: number, month: number, day: number): boolean {
   const date = new Date(Date.UTC(year, month - 1, day));

@@ -3394,6 +3394,12 @@ assert.deepEqual(
 assert.deepEqual(explicitTemporalValidityMetadata("valid from 2026-99-99"), {});
 assert.deepEqual(explicitTemporalValidityMetadata("until tomorrow"), {});
 assert.deepEqual(explicitTemporalValidityMetadata("直到明天"), {});
+assert.deepEqual(explicitTemporalValidityMetadata("until 2026-07-01abc"), {});
+assert.deepEqual(explicitTemporalValidityMetadata("until 2026-07-011"), {});
+assert.deepEqual(explicitTemporalValidityMetadata("until 2026-07-01T00:00:00Zabc"), {});
+assert.deepEqual(explicitTemporalValidityMetadata("until 2026-07-01."), {
+  validTo: "2026-07-01T00:00:00.000Z",
+});
 assert.equal(normalizeExplicitTemporalInstant("2026-02-31T00:00:00Z"), null);
 assert.deepEqual(
   mergeExplicitTemporalValidityMetadata("until 2026-07-01", {
