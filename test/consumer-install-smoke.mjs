@@ -53,7 +53,7 @@ try {
     consumerScript,
     `
       import { strict as assert } from "node:assert";
-      import { readFileSync } from "node:fs";
+      import { readFileSync, writeFileSync } from "node:fs";
       import path from "node:path";
       import { createMemoryOS } from "@ghast/memory";
       import { createMemoryStatusReport } from "@ghast/memory/diagnostics";
@@ -73,11 +73,14 @@ try {
       import {
         renderHostCompatibilityGymMarkdown,
         renderExternalMemoryBenchmarkMarkdown,
+        renderExternalMemoryBenchmarkSuiteMarkdown,
         renderMemoryReleaseGateMarkdown,
         parseExternalMemoryBenchmarkDataset,
+        parseExternalMemoryBenchmarkSuite,
         parseLocomoBenchmarkDataset,
         parseLongMemEvalBenchmarkDataset,
         runExternalMemoryBenchmark,
+        runExternalMemoryBenchmarkSuite,
         runHostCompatibilityGym,
         runMemoryGym,
         runMemoryReleaseGate,
@@ -253,6 +256,18 @@ try {
       });
       assert.equal(externalGym.pass, true);
       assert.match(renderExternalMemoryBenchmarkMarkdown(externalGym), /External Long-Memory QA/);
+      writeFileSync("consumer-suite.jsonl", JSON.stringify({
+        id: "consumer-suite",
+        events: [{ type: "memory", kind: "procedure", content: "consumer suite remembers adapter rollback matrix." }],
+        question: "What should the consumer suite remember?",
+        expectedAll: ["adapter rollback matrix"],
+      }));
+      const consumerSuite = parseExternalMemoryBenchmarkSuite(JSON.stringify({
+        runs: [{ id: "consumer-suite", inputFile: "consumer-suite.jsonl" }],
+      }));
+      const consumerSuiteExecution = await runExternalMemoryBenchmarkSuite({ suite: consumerSuite });
+      assert.equal(consumerSuiteExecution.result.pass, true);
+      assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(consumerSuiteExecution.result), /External Benchmark Suite/);
       const parsedConsumerLongMemEval = parseExternalMemoryBenchmarkDataset(JSON.stringify([{
         question_id: "consumer-lme",
         question: "What should the consumer adapter remember?",
@@ -488,7 +503,9 @@ try {
         prepareStateBenchAgentLearningRun,
         summarizeStateBenchResults,
         runExternalMemoryBenchmark,
+        runExternalMemoryBenchmarkSuite,
         parseExternalMemoryBenchmarkDataset,
+        parseExternalMemoryBenchmarkSuite,
         runHostCompatibilityGym,
         runMemoryGym,
         runMemoryReleaseGate,
@@ -500,6 +517,8 @@ try {
         type ExternalMemoryBenchmarkDatasetAdapter,
         type ExternalMemoryBenchmarkDatasetFormat,
         type ExternalMemoryBenchmarkResult,
+        type ExternalMemoryBenchmarkSuiteExecution,
+        type ExternalMemoryBenchmarkSuiteResult,
         type HostCompatibilityGymResult,
         type MemoryGymResult,
         type MemoryReleaseGateResult,
@@ -708,6 +727,37 @@ try {
         }],
       });
       if (!externalResult.pass) throw new Error("typed external benchmark failed");
+      const typedSuite = parseExternalMemoryBenchmarkSuite(JSON.stringify({
+        runs: [{ id: "typed-suite", inputFile: "typed-suite.jsonl" }],
+      }));
+      void typedSuite;
+      const typedSuiteRunner: typeof runExternalMemoryBenchmarkSuite = runExternalMemoryBenchmarkSuite;
+      void typedSuiteRunner;
+      const typedSuiteExecution: ExternalMemoryBenchmarkSuiteExecution = {
+        result: {
+          schema: "gmos.external_benchmark_suite.v1",
+          pass: true,
+          benchmarkPass: true,
+          runCount: 0,
+          passedRunCount: 0,
+          failedRunCount: 0,
+          scoreMean: 0,
+          runManifest: {
+            startedAt: "",
+            finishedAt: "",
+            suiteFile: null,
+            baseDir: ".",
+            failOnBenchmarkFail: false,
+            deterministicOnly: true,
+          },
+          runs: [],
+        },
+        reports: {},
+      };
+      const typedSuiteResult: ExternalMemoryBenchmarkSuiteResult = typedSuiteExecution.result;
+      if (typedSuiteResult.schema !== "gmos.external_benchmark_suite.v1" || !typedSuiteResult.pass) {
+        throw new Error("typed external suite schema failed");
+      }
       const adapterName: ExternalMemoryBenchmarkDatasetAdapter = "longmemeval";
       const adapterFormat: ExternalMemoryBenchmarkDatasetFormat = "longmemeval.json";
       const parsedExternalDataset = parseExternalMemoryBenchmarkDataset(JSON.stringify([{
@@ -861,6 +911,76 @@ try {
       encoding: "utf8",
     });
   }
+
+  const installedExternalPassingFile = path.join(consumerDir, "installed-external-passing.jsonl");
+  const installedExternalFailingFile = path.join(consumerDir, "installed-external-failing.jsonl");
+  const installedExternalSuiteFile = path.join(consumerDir, "installed-external-suite.json");
+  const installedExternalSuiteOutputDir = path.join(consumerDir, "installed-external-suite-output");
+  writeFileSync(
+    installedExternalPassingFile,
+    JSON.stringify({
+      id: "installed-suite-pass",
+      events: [{ type: "memory", kind: "procedure", content: "installed suite remembers release rollback matrix." }],
+      question: "What should installed suite remember?",
+      expectedAll: ["release rollback matrix"],
+    }),
+  );
+  writeFileSync(
+    installedExternalFailingFile,
+    JSON.stringify({
+      id: "installed-suite-fail",
+      events: [{ type: "memory", kind: "procedure", content: "installed suite remembers visible answer." }],
+      question: "What should installed suite remember?",
+      expectedAll: ["missing answer"],
+    }),
+  );
+  writeFileSync(
+    installedExternalSuiteFile,
+    JSON.stringify({
+      schema: "gmos.external_benchmark_suite.v1",
+      defaults: { datasetFormat: "gmos", concurrency: 1, failureSampleLimit: 0 },
+      runs: [
+        { id: "installed_pass", inputFile: path.basename(installedExternalPassingFile) },
+        { id: "installed_fail", inputFile: path.basename(installedExternalFailingFile) },
+      ],
+    }),
+  );
+  const installedExternalSuite = spawnCommand(
+    gmosBin,
+    [
+      "gym",
+      "external-suite",
+      "--suite-file",
+      installedExternalSuiteFile,
+      "--output-dir",
+      installedExternalSuiteOutputDir,
+      "--format",
+      "json",
+    ],
+    { cwd: consumerDir, encoding: "utf8" },
+  );
+  assert.equal(installedExternalSuite.status, 0, installedExternalSuite.stderr);
+  const installedExternalSuiteJson = JSON.parse(installedExternalSuite.stdout);
+  assert.equal(installedExternalSuiteJson.schema, "gmos.external_benchmark_suite.v1");
+  assert.equal(installedExternalSuiteJson.pass, true);
+  assert.equal(installedExternalSuiteJson.benchmarkPass, false);
+  assert.equal(existsSync(path.join(installedExternalSuiteOutputDir, "installed_pass.json")), true);
+  assert.equal(existsSync(path.join(installedExternalSuiteOutputDir, "installed_fail.md")), true);
+  const installedExternalSuiteGate = spawnCommand(
+    gmosBin,
+    [
+      "gym",
+      "external-suite",
+      "--suite-file",
+      installedExternalSuiteFile,
+      "--format",
+      "json",
+      "--fail-on-benchmark-fail",
+    ],
+    { cwd: consumerDir, encoding: "utf8" },
+  );
+  assert.notEqual(installedExternalSuiteGate.status, 0);
+  assert.match(installedExternalSuiteGate.stdout, /"benchmarkPass": false/);
 
   const bin = runInstalledCli(["doctor", "--db", path.join(consumerDir, "doctor.db"), "--host", "ghast"]);
   assert.equal(bin.status, 0, bin.stderr);

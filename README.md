@@ -123,6 +123,7 @@ node dist/cli/gmos.js gym scale --sizes 100,1000
 node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --require-convergence
 node dist/cli/gmos.js gym external --input-file ./longmemeval_s_cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --progress
 node dist/cli/gmos.js gym external --input-file ./locomo10.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --progress
+node dist/cli/gmos.js gym external-suite --suite-file ./external-suite.json --output-dir ./external-runs --format json --markdown-file ./external-suite.md
 node dist/cli/gmos.js gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
 node dist/cli/gmos.js gym statebench write-agent --output-file ./STATE-Bench/agents/gmos_memory_agent.py
 node dist/cli/gmos.js gym statebench prepare --checkout-dir ./STATE-Bench --domain travel --agent-model-name gpt-5.1 --num-workers 2 --manifest-file outputs/gmos-learnings/travel.prepare.json
@@ -141,6 +142,7 @@ node dist/cli/gmos.js gate --generated-seeds 3 --scale-sizes 100,1000 --hosts gh
 node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3 --format json
 node dist/cli/gmos.js gym scale --sizes 100,1000 --threshold-p95-ms 250 --format json
 node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format json --require-convergence --progress
+node dist/cli/gmos.js gym external-suite --suite-file ./external-suite.json --output-dir ./external-runs --format json
 node dist/cli/gmos.js gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
 node dist/cli/gmos.js gym statebench prepare --checkout-dir ./STATE-Bench --domain travel --agent-model-name gpt-5.1 --manifest-file outputs/gmos-learnings/travel.prepare.json
 node dist/cli/gmos.js gym statebench summarize --checkout-dir ./STATE-Bench --domain travel --metrics-file outputs/travel/metrics.json --output-file outputs/gmos-learnings/travel.summary.json
@@ -181,10 +183,18 @@ The LongMemEval adapter maps each instance's `haystack_sessions` turns into
 conversation observations and uses `answer` only as the deterministic scoring
 target. The LoCoMo adapter maps each sample's `conversation.session_<n>` turns
 into observations and creates one case per `qa` annotation. It accepts `answer`
-and any provided `adversarial_answer` as deterministic scoring targets. Adapter
-code does not write answer labels, evidence ids, category labels, or
-`has_answer` labels into memory; those fields are reserved for scoring and
-traceability.
+as the deterministic scoring target and treats any provided
+`adversarial_answer` as forbidden output. Adapter code does not write answer
+labels, adversarial labels, evidence ids, category labels, or `has_answer`
+labels into memory; those fields are reserved for scoring and traceability.
+LoCoMo QA annotations without an official `answer` are skipped as unscorable
+and reported in the dataset warnings instead of being treated as correct.
+
+`gym external-suite` runs several external benchmark files from one manifest and
+writes per-run JSON/Markdown reports when `--output-dir` is provided. By default
+it is a dry-run baseline tool: failed benchmark runs set `benchmarkPass=false`
+but keep the command status successful so teams can record weak baselines. Add
+`--fail-on-benchmark-fail` when using the same suite as a release gate.
 
 External benchmark dry-run snapshot, 2026-06-27:
 

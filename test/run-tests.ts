@@ -25,6 +25,7 @@ import {
 import {
   renderHostCompatibilityGymMarkdown,
   renderExternalMemoryBenchmarkMarkdown,
+  renderExternalMemoryBenchmarkSuiteMarkdown,
   renderMemoryGymMarkdown,
   renderMemoryReleaseGateMarkdown,
   renderMemoryScaleMarkdown,
@@ -32,9 +33,11 @@ import {
   hashExternalMemoryBenchmarkInput,
   parseExternalMemoryBenchmarkDataset,
   parseExternalMemoryBenchmarkJsonl,
+  parseExternalMemoryBenchmarkSuite,
   parseLocomoBenchmarkDataset,
   parseLongMemEvalBenchmarkDataset,
   runExternalMemoryBenchmark,
+  runExternalMemoryBenchmarkSuite,
   runHostCompatibilityGym,
   runMemoryGym,
   runMemoryReleaseGate,
@@ -6322,6 +6325,68 @@ assert.equal(
   externalFailureSummaryBenchmark.summary.failureSamples[0]?.expectedAllMissing[0],
   "Missing Alpha",
 );
+const externalSuiteFailFile = path.join(tmp, "external-long-memory-qa-fail-for-suite.jsonl");
+writeFileSync(
+  externalSuiteFailFile,
+  JSON.stringify({
+    id: "suite-fail-case",
+    events: [{ type: "memory", kind: "fact", content: "Suite visible answer is Gamma." }],
+    question: "What is visible?",
+    expectedAll: ["Missing Gamma"],
+  }),
+);
+const externalSuiteFile = path.join(tmp, "external-suite.json");
+writeFileSync(
+  externalSuiteFile,
+  JSON.stringify(
+    {
+      schema: "gmos.external_benchmark_suite.v1",
+      defaults: {
+        datasetFormat: "gmos",
+        concurrency: 1,
+        failureSampleLimit: 0,
+      },
+      runs: [
+        { id: "passing", inputFile: path.basename(externalBenchmarkFile) },
+        { id: "failing", inputFile: path.basename(externalSuiteFailFile) },
+      ],
+    },
+    null,
+    2,
+  ),
+);
+const parsedExternalSuite = parseExternalMemoryBenchmarkSuite(
+  readFileSync(externalSuiteFile, "utf8"),
+);
+assert.equal(parsedExternalSuite.runs.length, 2);
+const externalSuiteExecution = await runExternalMemoryBenchmarkSuite({
+  suite: parsedExternalSuite,
+  suiteFile: externalSuiteFile,
+});
+assert.equal(externalSuiteExecution.result.schema, "gmos.external_benchmark_suite.v1");
+assert.equal(externalSuiteExecution.result.pass, true);
+assert.equal(externalSuiteExecution.result.benchmarkPass, false);
+assert.equal(externalSuiteExecution.result.runCount, 2);
+assert.equal(externalSuiteExecution.result.passedRunCount, 1);
+assert.equal(externalSuiteExecution.result.failedRunCount, 1);
+assert.equal(externalSuiteExecution.reports.passing?.pass, true);
+assert.equal(externalSuiteExecution.reports.failing?.pass, false);
+assert.equal(externalSuiteExecution.reports.failing?.summary.failureSampleLimit, 0);
+assert.equal(externalSuiteExecution.reports.failing?.summary.failureSamples.length, 0);
+assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /BenchmarkStatus: FAIL/);
+const externalSuiteGateExecution = await runExternalMemoryBenchmarkSuite({
+  suite: parsedExternalSuite,
+  suiteFile: externalSuiteFile,
+  failOnBenchmarkFail: true,
+});
+assert.equal(externalSuiteGateExecution.result.pass, false);
+assert.throws(
+  () =>
+    parseExternalMemoryBenchmarkSuite(
+      JSON.stringify({ runs: [{ id: "../bad", inputFile: "x.jsonl" }] }),
+    ),
+  /run 1\.id/,
+);
 const longMemEvalFixture = JSON.stringify([
   {
     question_id: "lme-vega-next-step",
@@ -6428,6 +6493,13 @@ const locomoFixture = JSON.stringify([
         evidence: ["d1"],
       },
       {
+        question: "Atlas 当前路线应该是什么？",
+        answer: "先核证据链",
+        adversarial_answer: "不要采用旧路线",
+        category: 5,
+        evidence: ["d1"],
+      },
+      {
         question: "Atlas 的误导答案应该是什么？",
         adversarial_answer: "不要采用旧路线",
         category: 5,
@@ -6441,7 +6513,8 @@ assert.equal(locomoCases.length, 3);
 assert.equal(locomoCases[0]?.id, "locomo-atlas:qa-1");
 assert.equal(locomoCases[0]?.events.length, 2);
 assert.equal(locomoCases[1]?.expectedAny?.[0], "2022");
-assert.equal(locomoCases[2]?.expectedAny?.[0], "不要采用旧路线");
+assert.equal(locomoCases[2]?.expectedAny?.[0], "先核证据链");
+assert.equal(locomoCases[2]?.forbiddenAny?.[0], "不要采用旧路线");
 assert.equal(JSON.stringify(locomoCases[0]?.events).includes("evidence"), false);
 assert.equal(JSON.stringify(locomoCases[0]?.events).includes("category"), false);
 const locomoJsonlCases = parseLocomoBenchmarkDataset(locomoFixture.slice(1, -1));
@@ -6451,12 +6524,30 @@ const parsedLocomoDataset = parseExternalMemoryBenchmarkDataset(locomoFixture, {
 });
 assert.equal(parsedLocomoDataset.datasetFormat, "locomo.json");
 assert.equal(parsedLocomoDataset.cases.length, 3);
+assert.deepEqual(parsedLocomoDataset.warnings, ["skipped_locomo_unscored_qa:locomo-atlas:qa-4"]);
 assert.equal(parsedLocomoDataset.cases[0]?.events[0]?.role, "user");
 assert.equal(parsedLocomoDataset.cases[0]?.events[1]?.role, "user");
 assert.match(parsedLocomoDataset.cases[0]?.events[0]?.content ?? "", /^Alex:/);
 assert.match(parsedLocomoDataset.cases[0]?.events[1]?.content ?? "", /^Blair:/);
 assert.equal(JSON.stringify(parsedLocomoDataset.cases[0]?.events).includes("answer"), false);
 assert.equal(JSON.stringify(parsedLocomoDataset.cases[0]?.events).includes("adversarial"), false);
+assert.throws(
+  () =>
+    parseLocomoBenchmarkDataset(
+      JSON.stringify([
+        {
+          sample_id: "locomo-missing-answer",
+          conversation: {
+            speaker_a: "Alex",
+            speaker_b: "Blair",
+            session_1: [{ speaker: "Alex", text: "Atlas has an answer." }],
+          },
+          qa: [{ question: "What is Atlas?", adversarial_answer: "wrong answer" }],
+        },
+      ]),
+    ),
+  /at least one scored QA case/,
+);
 assert.equal(JSON.stringify(parsedLocomoDataset.cases[0]?.events).includes("dataset"), false);
 const locomoBenchmark = await runExternalMemoryBenchmark({
   cases: parsedLocomoDataset.cases.slice(0, 2),
@@ -7372,6 +7463,71 @@ assert.equal(existsSync(cliExternalMarkdownFile), true);
 assert.equal(JSON.parse(readFileSync(cliExternalJsonFile, "utf8")).schema, "gmos.external_long_memory_qa.v1");
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /gmOS External Long-Memory QA Benchmark/);
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /Failure sample limit: 3/);
+const cliExternalSuiteOutputDir = path.join(tmp, "cli-external-suite");
+const cliExternalSuiteJsonFile = path.join(tmp, "cli-external-suite-summary.json");
+const cliExternalSuiteMarkdownFile = path.join(tmp, "cli-external-suite-summary.md");
+const cliExternalSuite = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external-suite",
+    "--suite-file",
+    externalSuiteFile,
+    "--output-dir",
+    cliExternalSuiteOutputDir,
+    "--format",
+    "json",
+    "--json-file",
+    cliExternalSuiteJsonFile,
+    "--markdown-file",
+    cliExternalSuiteMarkdownFile,
+    "--progress",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliExternalSuite.status, 0, cliExternalSuite.stderr);
+const cliExternalSuiteJson = JSON.parse(cliExternalSuite.stdout) as {
+  schema?: string;
+  pass?: boolean;
+  benchmarkPass?: boolean;
+  runCount?: number;
+  passedRunCount?: number;
+  failedRunCount?: number;
+};
+assert.equal(cliExternalSuiteJson.schema, "gmos.external_benchmark_suite.v1");
+assert.equal(cliExternalSuiteJson.pass, true);
+assert.equal(cliExternalSuiteJson.benchmarkPass, false);
+assert.equal(cliExternalSuiteJson.runCount, 2);
+assert.equal(cliExternalSuiteJson.passedRunCount, 1);
+assert.equal(cliExternalSuiteJson.failedRunCount, 1);
+assert.equal(existsSync(path.join(cliExternalSuiteOutputDir, "passing.json")), true);
+assert.equal(existsSync(path.join(cliExternalSuiteOutputDir, "passing.md")), true);
+assert.equal(existsSync(path.join(cliExternalSuiteOutputDir, "failing.json")), true);
+assert.equal(JSON.parse(readFileSync(cliExternalSuiteJsonFile, "utf8")).schema, "gmos.external_benchmark_suite.v1");
+assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /gmOS External Benchmark Suite/);
+assert.match(cliExternalSuite.stderr, /\[gmos external-suite\] pass run=passing/);
+assert.match(cliExternalSuite.stderr, /\[gmos external-suite\] fail run=failing/);
+const cliExternalSuiteGate = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external-suite",
+    "--suite-file",
+    externalSuiteFile,
+    "--format",
+    "json",
+    "--fail-on-benchmark-fail",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalSuiteGate.status, 0);
+assert.match(cliExternalSuiteGate.stdout, /"benchmarkPass": false/);
 const cliExternalMissingJsonFileValue = spawnSync(
   process.execPath,
   [

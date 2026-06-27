@@ -224,9 +224,10 @@ function locomoEvents(row: Record<string, unknown>, sampleId: string): ExternalM
   return events;
 }
 
-export function parseLocomoBenchmarkDataset(input: string): ExternalMemoryBenchmarkCase[] {
+function parseLocomoCaseSet(input: string): ParsedCaseSet {
   const samples = parseJsonArrayOrJsonl(input, "LoCoMo dataset");
   const cases: ExternalMemoryBenchmarkCase[] = [];
+  const warnings: string[] = [];
   for (const [sampleIndex, sample] of samples.entries()) {
     const row = assertRecord(sample, `LoCoMo sample ${sampleIndex + 1}`);
     const sampleId = stringValue(row.sample_id) ?? `locomo-${sampleIndex + 1}`;
@@ -237,13 +238,12 @@ export function parseLocomoBenchmarkDataset(input: string): ExternalMemoryBenchm
       const qaRecord = assertRecord(qa, `LoCoMo sample ${sampleId} qa ${qaIndex + 1}`);
       const question = stringValue(qaRecord.question);
       if (!question) throw new Error(`LoCoMo sample ${sampleId} qa ${qaIndex + 1} requires question`);
-      const expectedAny = uniqueStrings([
-        ...stringsFromAnswer(qaRecord.answer),
-        ...stringsFromAnswer(qaRecord.adversarial_answer),
-      ]);
+      const expectedAny = uniqueStrings(stringsFromAnswer(qaRecord.answer));
       if (expectedAny.length === 0) {
-        throw new Error(`LoCoMo sample ${sampleId} qa ${qaIndex + 1} requires answer`);
+        warnings.push(`skipped_locomo_unscored_qa:${sampleId}:qa-${qaIndex + 1}`);
+        continue;
       }
+      const forbiddenAny = uniqueStrings(stringsFromAnswer(qaRecord.adversarial_answer));
       cases.push({
         id: `${sampleId}:qa-${qaIndex + 1}`,
         profileId: `locomo_${sampleId}`,
@@ -251,11 +251,16 @@ export function parseLocomoBenchmarkDataset(input: string): ExternalMemoryBenchm
         events,
         question,
         expectedAny,
+        ...(forbiddenAny.length ? { forbiddenAny } : {}),
       });
     }
   }
-  if (cases.length === 0) throw new Error("LoCoMo dataset requires at least one QA case");
-  return cases;
+  if (cases.length === 0) throw new Error("LoCoMo dataset requires at least one scored QA case");
+  return { cases, warnings };
+}
+
+export function parseLocomoBenchmarkDataset(input: string): ExternalMemoryBenchmarkCase[] {
+  return parseLocomoCaseSet(input).cases;
 }
 
 export function parseExternalMemoryBenchmarkDataset(
@@ -276,11 +281,12 @@ export function parseExternalMemoryBenchmarkDataset(
     };
   }
   if (adapter === "locomo") {
+    const parsed = parseLocomoCaseSet(input);
     return {
       adapter,
       datasetFormat: "locomo.json",
-      cases: parseLocomoBenchmarkDataset(input),
-      warnings: [],
+      cases: parsed.cases,
+      warnings: parsed.warnings,
     };
   }
   return {

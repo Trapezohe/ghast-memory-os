@@ -3,6 +3,7 @@ import type { MemoryScaleBenchmarkResult } from "./scale.js";
 import type { HostCompatibilityGymResult } from "./host-compatibility.js";
 import type { MemoryReleaseGateResult } from "./types.js";
 import type { ExternalMemoryBenchmarkResult } from "./external.js";
+import type { ExternalMemoryBenchmarkSuiteResult } from "./external-suite.js";
 
 function markdownCell(value: string): string {
   return value.replace(/\r?\n/g, " ").replace(/\|/g, "\\|");
@@ -164,6 +165,38 @@ export function renderExternalMemoryBenchmarkMarkdown(
     ...report.cases.map(
       (entry) =>
         `| ${markdownCell(entry.id)} | ${entry.pass ? "PASS" : "FAIL"} | ${entry.mode}${entry.requireConvergence ? " + convergence" : ""} | ${markdownListCell(entry.failureReasons)} | ${markdownListCell(entry.warnings)} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.forbiddenMatches)} | ${markdownListCell(entry.diagnostics.missingRequiredIntentGroups)} | ${markdownNullableNumber(entry.diagnostics.evidenceConvergenceScore)}${entry.diagnostics.evidenceConvergenceReached === null ? "" : entry.diagnostics.evidenceConvergenceReached ? " reached" : " not reached"} | ${entry.diagnostics.uncertaintyLevel ?? "-"} | ${entry.promptTokenEstimate} | ${entry.reconstructedPathCount} |`,
+    ),
+    "",
+  ].join("\n");
+}
+
+export function renderExternalMemoryBenchmarkSuiteMarkdown(
+  report: ExternalMemoryBenchmarkSuiteResult,
+): string {
+  return [
+    "# gmOS External Benchmark Suite",
+    "",
+    `Status: ${report.pass ? "PASS" : "FAIL"}`,
+    `BenchmarkStatus: ${report.benchmarkPass ? "PASS" : "FAIL"}`,
+    `Runs: ${report.passedRunCount}/${report.runCount}`,
+    `Mean score: ${report.scoreMean.toFixed(4)}`,
+    "",
+    "## Run Manifest",
+    "",
+    `Started: ${report.runManifest.startedAt}`,
+    `Finished: ${report.runManifest.finishedAt}`,
+    `Suite file: ${report.runManifest.suiteFile ?? "none"}`,
+    `Base dir: ${report.runManifest.baseDir}`,
+    `Fail on benchmark fail: ${report.runManifest.failOnBenchmarkFail ? "yes" : "no"}`,
+    `Deterministic only: ${report.runManifest.deterministicOnly ? "yes" : "no"}`,
+    "",
+    "## Runs",
+    "",
+    "| Run | Status | Dataset | Cases | Score | Hash | JSON | Markdown | Warnings |",
+    "| --- | --- | --- | ---: | ---: | --- | --- | --- | --- |",
+    ...report.runs.map(
+      (run) =>
+        `| ${markdownCell(run.id)} | ${run.pass ? "PASS" : "FAIL"} | ${run.datasetFormat} | ${run.passedCount}/${run.caseCount} | ${run.score.toFixed(4)} | ${markdownCell(run.datasetHash ?? "-")} | ${markdownCell(run.jsonFile ?? "-")} | ${markdownCell(run.markdownFile ?? "-")} | ${markdownListCell(run.warnings)} |`,
     ),
     "",
   ].join("\n");

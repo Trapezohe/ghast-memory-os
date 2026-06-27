@@ -35,6 +35,16 @@ import {
   type ParseExternalMemoryBenchmarkDatasetOptions,
 } from "./external-adapters.js";
 import {
+  parseExternalMemoryBenchmarkSuite,
+  runExternalMemoryBenchmarkSuite,
+  type ExternalMemoryBenchmarkSuiteDocument,
+  type ExternalMemoryBenchmarkSuiteExecution,
+  type ExternalMemoryBenchmarkSuiteResult,
+  type ExternalMemoryBenchmarkSuiteRunConfig,
+  type ExternalMemoryBenchmarkSuiteRunSummary,
+  type RunExternalMemoryBenchmarkSuiteOptions,
+} from "./external-suite.js";
+import {
   runHostCompatibilityGym,
   type HostCompatibilityGymResult,
   type HostCompatibilityGymHostResult,
@@ -63,6 +73,7 @@ import {
 export {
   renderHostCompatibilityGymMarkdown,
   renderExternalMemoryBenchmarkMarkdown,
+  renderExternalMemoryBenchmarkSuiteMarkdown,
   renderMemoryGymMarkdown,
   renderMemoryReleaseGateMarkdown,
   renderMemoryScaleMarkdown,
@@ -70,6 +81,7 @@ export {
 export {
   parseExternalMemoryBenchmarkJsonl,
   parseExternalMemoryBenchmarkDataset,
+  parseExternalMemoryBenchmarkSuite,
   parseLocomoBenchmarkDataset,
   parseLongMemEvalBenchmarkDataset,
   hashExternalMemoryBenchmarkInput,
@@ -78,6 +90,7 @@ export {
   summarizeStateBenchResults,
   stateBenchAgentPythonTemplate,
   runExternalMemoryBenchmark,
+  runExternalMemoryBenchmarkSuite,
   runHostCompatibilityGym,
 };
 export type {
@@ -94,6 +107,11 @@ export type {
   ExternalMemoryBenchmarkResult,
   ExternalMemoryBenchmarkRunManifest,
   ExternalMemoryBenchmarkSummary,
+  ExternalMemoryBenchmarkSuiteDocument,
+  ExternalMemoryBenchmarkSuiteExecution,
+  ExternalMemoryBenchmarkSuiteResult,
+  ExternalMemoryBenchmarkSuiteRunConfig,
+  ExternalMemoryBenchmarkSuiteRunSummary,
   HostCompatibilityGymHostResult,
   HostCompatibilityGymResult,
   HostCompatibilityProbeArea,
@@ -103,6 +121,7 @@ export type {
   ParseExternalMemoryBenchmarkDatasetOptions,
   RunHostCompatibilityGymOptions,
   RunExternalMemoryBenchmarkOptions,
+  RunExternalMemoryBenchmarkSuiteOptions,
   StateBenchResultsSummary,
   StateBenchLearning,
   StateBenchLearningsArtifact,

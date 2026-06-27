@@ -16,6 +16,7 @@ import {
 import {
   renderHostCompatibilityGymMarkdown,
   renderExternalMemoryBenchmarkMarkdown,
+  renderExternalMemoryBenchmarkSuiteMarkdown,
   renderMemoryGymMarkdown,
   renderMemoryReleaseGateMarkdown,
   renderMemoryScaleMarkdown,
@@ -26,7 +27,9 @@ import {
   summarizeStateBenchResults,
   parseExternalMemoryBenchmarkDataset,
   parseExternalMemoryBenchmarkJsonl,
+  parseExternalMemoryBenchmarkSuite,
   runExternalMemoryBenchmark,
+  runExternalMemoryBenchmarkSuite,
   runMemoryGym,
   runMemoryReleaseGate,
   runMemoryScaleBenchmark,
@@ -117,6 +120,7 @@ Usage:
   gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --require-convergence
   gmos gym external --input-file ./longmemeval_s_cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --progress
   gmos gym external --input-file ./locomo10.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --progress
+  gmos gym external-suite --suite-file ./external-suite.json --output-dir ./external-runs --format markdown
   gmos gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
   gmos gym statebench write-agent --output-file ./STATE-Bench/agents/gmos_memory_agent.py
   gmos gym statebench prepare --checkout-dir ./STATE-Bench --domain travel --agent-model-name gpt-5.1 --num-workers 2 --manifest-file outputs/gmos-learnings/travel.prepare.json
@@ -151,6 +155,27 @@ function printReport(json: unknown, markdown: string): void {
   writeOutputFileIfRequested("--json-file", jsonOutput);
   writeOutputFileIfRequested("--markdown-file", markdown);
   console.log(output);
+}
+
+function writeExternalSuiteOutputs(input: {
+  outputDir: string;
+  result: Awaited<ReturnType<typeof runExternalMemoryBenchmarkSuite>>["result"];
+  reports: Awaited<ReturnType<typeof runExternalMemoryBenchmarkSuite>>["reports"];
+}): void {
+  const outputDir = path.resolve(process.cwd(), input.outputDir);
+  mkdirSync(outputDir, { recursive: true });
+  for (const run of input.result.runs) {
+    const report = input.reports[run.id];
+    if (!report) throw new Error(`External benchmark suite run ${run.id} did not produce a report`);
+    const jsonFile = `${run.id}.json`;
+    const markdownFile = `${run.id}.md`;
+    const jsonPath = path.join(outputDir, jsonFile);
+    const markdownPath = path.join(outputDir, markdownFile);
+    writeFileSync(jsonPath, JSON.stringify(report, null, 2));
+    writeFileSync(markdownPath, renderExternalMemoryBenchmarkMarkdown(report));
+    run.jsonFile = path.relative(process.cwd(), jsonPath);
+    run.markdownFile = path.relative(process.cwd(), markdownPath);
+  }
 }
 
 function parsePositiveIntegerList(raw: string, label: string): number[] {
@@ -653,6 +678,39 @@ async function main(): Promise<void> {
     });
     printReport(report, renderExternalMemoryBenchmarkMarkdown(report));
     if (!report.pass) process.exitCode = 1;
+    return;
+  }
+
+  if (command === "gym" && subcommand === "external-suite") {
+    const suiteFile = strictOptionValue("--suite-file");
+    if (!suiteFile) throw new Error("gmos gym external-suite requires --suite-file");
+    const suitePath = path.resolve(process.cwd(), suiteFile);
+    const suite = parseExternalMemoryBenchmarkSuite(readFileSync(suitePath, "utf8"));
+    const execution = await runExternalMemoryBenchmarkSuite({
+      suite,
+      suiteFile: suitePath,
+      failOnBenchmarkFail: has("--fail-on-benchmark-fail"),
+      ...(has("--progress")
+        ? {
+            onRunResult: (summary) => {
+              const status = summary.pass ? "pass" : "fail";
+              console.error(
+                `[gmos external-suite] ${status} run=${summary.id} cases=${summary.passedCount}/${summary.caseCount} score=${summary.score.toFixed(4)}`,
+              );
+            },
+          }
+        : {}),
+    });
+    const outputDir = strictOptionValue("--output-dir");
+    if (outputDir) {
+      writeExternalSuiteOutputs({
+        outputDir,
+        result: execution.result,
+        reports: execution.reports,
+      });
+    }
+    printReport(execution.result, renderExternalMemoryBenchmarkSuiteMarkdown(execution.result));
+    if (!execution.result.pass) process.exitCode = 1;
     return;
   }
 
