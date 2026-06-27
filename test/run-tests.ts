@@ -5976,6 +5976,10 @@ assert.equal(externalBenchmark.score, 1);
 assert.equal(externalBenchmark.runManifest.framework, "gmos-external-long-memory-qa");
 assert.equal(externalBenchmark.runManifest.dataset.caseCount, 2);
 assert.equal(externalBenchmark.runManifest.dataset.hash, null);
+assert.equal(externalBenchmark.runManifest.execution.caseGroupCount, 2);
+assert.equal(externalBenchmark.runManifest.execution.reusedProfileCaseCount, 0);
+assert.equal(externalBenchmark.runManifest.options.concurrency >= 1, true);
+assert.equal(externalBenchmark.runManifest.options.reuseProfiles, true);
 assert.equal(externalBenchmark.runManifest.options.requireConvergence, false);
 assert.equal(externalBenchmark.cases[0]?.failureReasons.length, 0);
 assert.equal(typeof externalBenchmark.cases[0]?.diagnostics.evidenceConvergenceScore, "number");
@@ -6143,12 +6147,89 @@ const locomoBenchmark = await runExternalMemoryBenchmark({
   cases: parsedLocomoDataset.cases.slice(0, 2),
   datasetFormat: parsedLocomoDataset.datasetFormat,
   datasetId: "locomo-fixture",
+  concurrency: 1,
 });
 assert.equal(locomoBenchmark.pass, true);
 assert.equal(locomoBenchmark.datasetFormat, "locomo.json");
 assert.equal(locomoBenchmark.runManifest.dataset.format, "locomo.json");
+assert.equal(locomoBenchmark.runManifest.execution.caseGroupCount, 1);
+assert.equal(locomoBenchmark.runManifest.execution.reusedProfileCaseCount, 1);
+assert.equal(locomoBenchmark.runManifest.options.concurrency, 1);
+assert.equal(locomoBenchmark.runManifest.options.reuseProfiles, true);
 assert.deepEqual(locomoBenchmark.cases[0]?.expectedAnyMatched, ["先核证据链"]);
 assert.deepEqual(locomoBenchmark.cases[1]?.expectedAnyMatched, ["2022"]);
+const locomoNoReuseBenchmark = await runExternalMemoryBenchmark({
+  cases: parsedLocomoDataset.cases.slice(0, 2),
+  datasetFormat: parsedLocomoDataset.datasetFormat,
+  datasetId: "locomo-fixture",
+  reuseProfiles: false,
+});
+assert.equal(locomoNoReuseBenchmark.pass, true);
+assert.equal(locomoNoReuseBenchmark.runManifest.execution.caseGroupCount, 2);
+assert.equal(locomoNoReuseBenchmark.runManifest.execution.reusedProfileCaseCount, 0);
+const locomoProgressEvents: string[] = [];
+const locomoProgressBenchmark = await runExternalMemoryBenchmark({
+  cases: parsedLocomoDataset.cases.slice(0, 2),
+  onCaseResult: (progress) => {
+    locomoProgressEvents.push(`${progress.completedCount}/${progress.totalCount}:${progress.caseId}`);
+  },
+});
+assert.equal(locomoProgressBenchmark.pass, true);
+assert.deepEqual(locomoProgressEvents, [
+  "1/2:locomo-atlas:qa-1",
+  "2/2:locomo-atlas:qa-2",
+]);
+const sameProfileDifferentEventsBenchmark = await runExternalMemoryBenchmark({
+  cases: [
+    {
+      id: "shared-profile-alpha",
+      profileId: "shared-profile",
+      events: [{ type: "memory", kind: "fact", content: "Shared profile answer is Alpha route." }],
+      question: "What is the shared profile answer?",
+      expectedAny: ["Alpha route"],
+      forbiddenAny: ["Beta route"],
+    },
+    {
+      id: "shared-profile-beta",
+      profileId: "shared-profile",
+      events: [{ type: "memory", kind: "fact", content: "Shared profile answer is Beta route." }],
+      question: "What is the shared profile answer?",
+      expectedAny: ["Beta route"],
+      forbiddenAny: ["Alpha route"],
+    },
+  ],
+});
+assert.equal(sameProfileDifferentEventsBenchmark.pass, true);
+assert.equal(sameProfileDifferentEventsBenchmark.runManifest.execution.caseGroupCount, 2);
+assert.equal(sameProfileDifferentEventsBenchmark.runManifest.execution.reusedProfileCaseCount, 0);
+const concurrentOrderBenchmark = await runExternalMemoryBenchmark({
+  concurrency: 2,
+  cases: [
+    {
+      id: "order-slower-first",
+      events: Array.from({ length: 25 }, (_, index) => ({
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: `Order benchmark filler ${index}.`,
+      })).concat([
+        { type: "memory" as const, kind: "fact" as const, content: "Order benchmark answer is first." },
+      ]),
+      question: "What is the order benchmark answer?",
+      expectedAny: ["first"],
+    },
+    {
+      id: "order-fast-second",
+      events: [{ type: "memory", kind: "fact", content: "Order benchmark answer is second." }],
+      question: "What is the order benchmark answer?",
+      expectedAny: ["second"],
+    },
+  ],
+});
+assert.equal(concurrentOrderBenchmark.pass, true);
+assert.deepEqual(concurrentOrderBenchmark.cases.map((entry) => entry.id), [
+  "order-slower-first",
+  "order-fast-second",
+]);
 const stateBenchTrainDir = path.join(tmp, "statebench-train", "travel");
 mkdirSync(stateBenchTrainDir, { recursive: true });
 writeFileSync(
@@ -6984,6 +7065,9 @@ const cliLocomoExternal = spawnSync(
     locomoFixtureFile,
     "--dataset-format",
     "locomo",
+    "--concurrency",
+    "2",
+    "--progress",
     "--format",
     "json",
   ],
@@ -6993,12 +7077,21 @@ assert.equal(cliLocomoExternal.status, 0, cliLocomoExternal.stderr);
 const cliLocomoJson = JSON.parse(cliLocomoExternal.stdout) as {
   pass?: boolean;
   datasetFormat?: string;
-  runManifest?: { dataset?: { format?: string; id?: string | null } };
+  runManifest?: {
+    dataset?: { format?: string; id?: string | null };
+    execution?: { caseGroupCount?: number; reusedProfileCaseCount?: number };
+    options?: { concurrency?: number; reuseProfiles?: boolean };
+  };
 };
 assert.equal(cliLocomoJson.pass, true);
 assert.equal(cliLocomoJson.datasetFormat, "locomo.json");
 assert.equal(cliLocomoJson.runManifest?.dataset?.format, "locomo.json");
 assert.equal(cliLocomoJson.runManifest?.dataset?.id, path.basename(locomoFixtureFile));
+assert.equal(cliLocomoJson.runManifest?.execution?.caseGroupCount, 1);
+assert.equal(cliLocomoJson.runManifest?.execution?.reusedProfileCaseCount, 0);
+assert.equal(cliLocomoJson.runManifest?.options?.concurrency, 2);
+assert.equal(cliLocomoJson.runManifest?.options?.reuseProfiles, true);
+assert.match(cliLocomoExternal.stderr, /\[gmos external\] 1\/1 pass case=locomo-cli-atlas:qa-1/);
 const stateBenchArtifactFile = path.join(tmp, "statebench-learnings.json");
 const cliStateBenchBuild = spawnSync(
   process.execPath,

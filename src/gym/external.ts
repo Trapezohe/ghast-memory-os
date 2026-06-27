@@ -6,6 +6,7 @@ import path from "node:path";
 
 import type {
   MemoryKind,
+  MemoryOS,
   PrivacyMode,
   ReconstructedContext,
   Sensitivity,
@@ -112,6 +113,10 @@ export interface ExternalMemoryBenchmarkRunManifest {
     id: string | null;
     warnings: string[];
   };
+  execution: {
+    caseGroupCount: number;
+    reusedProfileCaseCount: number;
+  };
   options: {
     mode: ExternalMemoryBenchmarkMode | null;
     maxSteps: number | null;
@@ -119,6 +124,8 @@ export interface ExternalMemoryBenchmarkRunManifest {
     maxMemories: number | null;
     contextBudgetTokens: number | null;
     requireConvergence: boolean;
+    concurrency: number;
+    reuseProfiles: boolean;
   };
   deterministicOnly: true;
 }
@@ -147,6 +154,31 @@ export interface RunExternalMemoryBenchmarkOptions {
   maxMemories?: number | undefined;
   contextBudgetTokens?: number | undefined;
   requireConvergence?: boolean | undefined;
+  concurrency?: number | undefined;
+  reuseProfiles?: boolean | undefined;
+  onCaseResult?: ((progress: ExternalMemoryBenchmarkProgress) => void) | undefined;
+}
+
+export interface ExternalMemoryBenchmarkProgress {
+  completedCount: number;
+  totalCount: number;
+  passedCount: number;
+  failedCount: number;
+  caseId: string;
+  caseIndex: number;
+  pass: boolean;
+}
+
+interface NormalizedCaseInput {
+  benchmarkCase: ExternalMemoryBenchmarkCase;
+  index: number;
+}
+
+interface CaseGroup {
+  key: string;
+  profileId: string;
+  events: ExternalMemoryBenchmarkEvent[];
+  items: NormalizedCaseInput[];
 }
 
 export function hashExternalMemoryBenchmarkInput(input: string): string {
@@ -256,7 +288,11 @@ function parseEvent(value: unknown, caseId: string): ExternalMemoryBenchmarkEven
   };
 }
 
-function normalizeCase(value: unknown, index: number): ExternalMemoryBenchmarkCase {
+function normalizeCase(
+  value: unknown,
+  index: number,
+  eventCache?: WeakMap<object, ExternalMemoryBenchmarkEvent[]>,
+): ExternalMemoryBenchmarkCase {
   if (typeof value !== "object" || value === null) {
     throw new Error(`External benchmark case ${index + 1} must be an object`);
   }
@@ -283,11 +319,16 @@ function normalizeCase(value: unknown, index: number): ExternalMemoryBenchmarkCa
   ) {
     throw new Error(`External benchmark case ${id} requires at least one expected or forbidden assertion`);
   }
+  let events = eventCache?.get(row.events);
+  if (!events) {
+    events = row.events.map((event) => parseEvent(event, id));
+    eventCache?.set(row.events, events);
+  }
   return {
     id,
     ...(typeof row.profileId === "string" && row.profileId.trim() ? { profileId: row.profileId.trim() } : {}),
     ...(mode ? { mode } : {}),
-    events: row.events.map((event) => parseEvent(event, id)),
+    events,
     question: row.question,
     ...(expectedAny ? { expectedAny } : {}),
     ...(expectedAll ? { expectedAll } : {}),
@@ -298,6 +339,7 @@ function normalizeCase(value: unknown, index: number): ExternalMemoryBenchmarkCa
 
 export function parseExternalMemoryBenchmarkJsonl(input: string): ExternalMemoryBenchmarkCase[] {
   const cases: ExternalMemoryBenchmarkCase[] = [];
+  const eventCache = new WeakMap<object, ExternalMemoryBenchmarkEvent[]>();
   for (const [index, rawLine] of input.split(/\r?\n/).entries()) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) continue;
@@ -310,7 +352,7 @@ export function parseExternalMemoryBenchmarkJsonl(input: string): ExternalMemory
     if (typeof parsed !== "object" || parsed === null) {
       throw new Error(`External benchmark JSONL line ${index + 1} must be an object`);
     }
-    cases.push(normalizeCase(parsed, cases.length));
+    cases.push(normalizeCase(parsed, cases.length, eventCache));
   }
   if (cases.length === 0) {
     throw new Error("External benchmark JSONL requires at least one case");
@@ -394,6 +436,7 @@ function createRunManifest(input: {
   startedAt: string;
   finishedAt: string;
   caseCount: number;
+  caseGroupCount: number;
   options: RunExternalMemoryBenchmarkOptions;
 }): ExternalMemoryBenchmarkRunManifest {
   const packageInfo = readGmosPackageInfo();
@@ -415,6 +458,10 @@ function createRunManifest(input: {
       id: input.options.datasetId ?? null,
       warnings: input.options.datasetWarnings ?? [],
     },
+    execution: {
+      caseGroupCount: input.caseGroupCount,
+      reusedProfileCaseCount: Math.max(0, input.caseCount - input.caseGroupCount),
+    },
     options: {
       mode: input.options.mode ?? null,
       maxSteps: input.options.maxSteps ?? null,
@@ -422,115 +469,226 @@ function createRunManifest(input: {
       maxMemories: input.options.maxMemories ?? null,
       contextBudgetTokens: input.options.contextBudgetTokens ?? null,
       requireConvergence: input.options.requireConvergence ?? false,
+      concurrency: normalizedConcurrency(input.options.concurrency),
+      reuseProfiles: input.options.reuseProfiles ?? true,
     },
     deterministicOnly: true,
   };
 }
 
-async function runCase(input: {
+function normalizedConcurrency(value: number | undefined): number {
+  if (value === undefined) return Math.max(1, Math.min(os.cpus().length || 1, 4));
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error("External benchmark concurrency must be a positive integer");
+  }
+  return value;
+}
+
+function profileIdForCase(benchmarkCase: ExternalMemoryBenchmarkCase): string {
+  const id = benchmarkCase.id ?? "case";
+  return benchmarkCase.profileId ?? `external_${id}`;
+}
+
+function eventHash(
+  events: ExternalMemoryBenchmarkEvent[],
+  cache: WeakMap<ExternalMemoryBenchmarkEvent[], string>,
+): string {
+  const cached = cache.get(events);
+  if (cached) return cached;
+  const hash = createHash("sha256").update(JSON.stringify(events)).digest("hex");
+  cache.set(events, hash);
+  return hash;
+}
+
+function groupCases(
+  cases: ExternalMemoryBenchmarkCase[],
+  options: RunExternalMemoryBenchmarkOptions,
+): CaseGroup[] {
+  if (options.reuseProfiles === false) {
+    return cases.map((benchmarkCase, index) => ({
+      key: `case:${index}`,
+      profileId: profileIdForCase(benchmarkCase),
+      events: benchmarkCase.events,
+      items: [{ benchmarkCase, index }],
+    }));
+  }
+  const profileCounts = new Map<string, number>();
+  for (const benchmarkCase of cases) {
+    const profileId = profileIdForCase(benchmarkCase);
+    profileCounts.set(profileId, (profileCounts.get(profileId) ?? 0) + 1);
+  }
+  const groupsByKey = new Map<string, CaseGroup>();
+  const hashCache = new WeakMap<ExternalMemoryBenchmarkEvent[], string>();
+  for (const [index, benchmarkCase] of cases.entries()) {
+    const profileId = profileIdForCase(benchmarkCase);
+    const key =
+      (profileCounts.get(profileId) ?? 0) > 1
+        ? `profile:${profileId}:events:${eventHash(benchmarkCase.events, hashCache)}`
+        : `case:${index}`;
+    const existing = groupsByKey.get(key);
+    if (existing) {
+      existing.items.push({ benchmarkCase, index });
+    } else {
+      groupsByKey.set(key, {
+        key,
+        profileId,
+        events: benchmarkCase.events,
+        items: [{ benchmarkCase, index }],
+      });
+    }
+  }
+  return [...groupsByKey.values()];
+}
+
+async function applyBenchmarkEvent(
+  memory: MemoryOS,
+  profileId: string,
+  event: ExternalMemoryBenchmarkEvent,
+): Promise<void> {
+  if (event.type === "task") {
+    await memory.commitOutcome({
+      profileId,
+      taskId: event.taskId,
+      objective: event.objective,
+      status: event.status,
+      summary: event.summary,
+      createdAt: event.createdAt,
+    });
+  } else if (event.type === "memory") {
+    await memory.add({
+      profileId,
+      kind: event.kind,
+      content: event.content,
+      confidence: event.confidence,
+      sensitivity: event.sensitivity,
+      createdAt: event.createdAt,
+    });
+  } else {
+    await memory.observe({
+      type: "conversation.message",
+      profileId,
+      role: event.role ?? "user",
+      content: event.content,
+      privacyMode: event.privacyMode,
+      createdAt: event.createdAt,
+    });
+  }
+}
+
+async function scoreCase(input: {
+  memory: MemoryOS;
+  profileId: string;
   benchmarkCase: ExternalMemoryBenchmarkCase;
   index: number;
   options: RunExternalMemoryBenchmarkOptions;
 }): Promise<ExternalMemoryBenchmarkCaseResult> {
-  const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-external-benchmark-"));
-  const store = createSqliteMemoryStore({ path: path.join(tmp, "case.db") });
-  const memory = createMemoryOS({ profileId: "external", store });
   const id = input.benchmarkCase.id ?? `case-${input.index + 1}`;
-  const profileId = input.benchmarkCase.profileId ?? `external_${id}`;
+  const profileId = input.profileId;
   const mode = input.benchmarkCase.mode ?? input.options.mode ?? "reconstruct";
   const requireConvergence =
     input.benchmarkCase.requireConvergence ?? input.options.requireConvergence ?? false;
+  const prepared =
+    mode === "prepare"
+      ? await input.memory.prepareTurn({
+          profileId,
+          messages: [{ role: "user", content: input.benchmarkCase.question }],
+          contextBudgetTokens: input.options.contextBudgetTokens,
+        })
+      : null;
+  const reconstructed =
+    mode === "reconstruct"
+      ? await input.memory.reconstructContext({
+          profileId,
+          query: input.benchmarkCase.question,
+          maxSteps: input.options.maxSteps,
+          maxBranch: input.options.maxBranch,
+          maxMemories: input.options.maxMemories,
+          contextBudgetTokens: input.options.contextBudgetTokens,
+        })
+      : null;
+  const context = prepared?.contextBlock ?? reconstructed?.contextBlock ?? "";
+  const expectedAny = input.benchmarkCase.expectedAny ?? [];
+  const expectedAll = input.benchmarkCase.expectedAll ?? [];
+  const forbiddenAny = input.benchmarkCase.forbiddenAny ?? [];
+  const expectedAnyMatched = expectedAny.filter((term) => includesTerm(context, term));
+  const expectedAllMissing = expectedAll.filter((term) => !includesTerm(context, term));
+  const forbiddenMatches = forbiddenAny.filter((term) => includesTerm(context, term));
+  const expectedAnyMissing =
+    expectedAny.length > 0 && expectedAnyMatched.length === 0 ? expectedAny : [];
+  const diagnostics = reconstructionDiagnostics(reconstructed);
+  const failureReasons = failureReasonsForCase({
+    expectedAnyMissing,
+    expectedAllMissing,
+    forbiddenMatches,
+    requireConvergence: mode === "reconstruct" && requireConvergence,
+    diagnostics,
+  });
+  const warnings = warningsForCase({ mode, diagnostics });
+  return {
+    id,
+    pass: failureReasons.length === 0,
+    mode,
+    requireConvergence: mode === "reconstruct" && requireConvergence,
+    expectedAnyMatched,
+    expectedAnyMissing,
+    expectedAllMissing,
+    forbiddenMatches,
+    failureReasons,
+    warnings,
+    diagnostics,
+    promptTokenEstimate:
+      prepared?.stats.promptTokenEstimate ?? reconstructed?.stats.promptTokenEstimate ?? 0,
+    retrievedMemoryCount:
+      prepared?.stats.retrievedMemoryCount ?? reconstructed?.stats.retrievedMemoryCount ?? 0,
+    reconstructedPathCount: reconstructed?.paths.length ?? 0,
+  };
+}
+
+async function runCaseGroup(input: {
+  group: CaseGroup;
+  options: RunExternalMemoryBenchmarkOptions;
+  recordResult: (index: number, result: ExternalMemoryBenchmarkCaseResult) => void;
+}): Promise<void> {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-external-benchmark-"));
+  const store = createSqliteMemoryStore({ path: path.join(tmp, "group.db") });
+  const memory = createMemoryOS({ profileId: "external", store });
   try {
     await store.initialize();
-    for (const event of input.benchmarkCase.events) {
-      if (event.type === "task") {
-        await memory.commitOutcome({
-          profileId,
-          taskId: event.taskId,
-          objective: event.objective,
-          status: event.status,
-          summary: event.summary,
-          createdAt: event.createdAt,
-        });
-      } else if (event.type === "memory") {
-        await memory.add({
-          profileId,
-          kind: event.kind,
-          content: event.content,
-          confidence: event.confidence,
-          sensitivity: event.sensitivity,
-          createdAt: event.createdAt,
-        });
-      } else {
-        await memory.observe({
-          type: "conversation.message",
-          profileId,
-          role: event.role ?? "user",
-          content: event.content,
-          privacyMode: event.privacyMode,
-          createdAt: event.createdAt,
-        });
-      }
+    for (const event of input.group.events) {
+      await applyBenchmarkEvent(memory, input.group.profileId, event);
     }
-    const prepared =
-      mode === "prepare"
-        ? await memory.prepareTurn({
-            profileId,
-            messages: [{ role: "user", content: input.benchmarkCase.question }],
-            contextBudgetTokens: input.options.contextBudgetTokens,
-          })
-        : null;
-    const reconstructed =
-      mode === "reconstruct"
-        ? await memory.reconstructContext({
-            profileId,
-            query: input.benchmarkCase.question,
-            maxSteps: input.options.maxSteps,
-            maxBranch: input.options.maxBranch,
-            maxMemories: input.options.maxMemories,
-            contextBudgetTokens: input.options.contextBudgetTokens,
-          })
-        : null;
-    const context = prepared?.contextBlock ?? reconstructed?.contextBlock ?? "";
-    const expectedAny = input.benchmarkCase.expectedAny ?? [];
-    const expectedAll = input.benchmarkCase.expectedAll ?? [];
-    const forbiddenAny = input.benchmarkCase.forbiddenAny ?? [];
-    const expectedAnyMatched = expectedAny.filter((term) => includesTerm(context, term));
-    const expectedAllMissing = expectedAll.filter((term) => !includesTerm(context, term));
-    const forbiddenMatches = forbiddenAny.filter((term) => includesTerm(context, term));
-    const expectedAnyMissing =
-      expectedAny.length > 0 && expectedAnyMatched.length === 0 ? expectedAny : [];
-    const diagnostics = reconstructionDiagnostics(reconstructed);
-    const failureReasons = failureReasonsForCase({
-      expectedAnyMissing,
-      expectedAllMissing,
-      forbiddenMatches,
-      requireConvergence: mode === "reconstruct" && requireConvergence,
-      diagnostics,
-    });
-    const warnings = warningsForCase({ mode, diagnostics });
-    return {
-      id,
-      pass: failureReasons.length === 0,
-      mode,
-      requireConvergence: mode === "reconstruct" && requireConvergence,
-      expectedAnyMatched,
-      expectedAnyMissing,
-      expectedAllMissing,
-      forbiddenMatches,
-      failureReasons,
-      warnings,
-      diagnostics,
-      promptTokenEstimate:
-        prepared?.stats.promptTokenEstimate ?? reconstructed?.stats.promptTokenEstimate ?? 0,
-      retrievedMemoryCount:
-        prepared?.stats.retrievedMemoryCount ?? reconstructed?.stats.retrievedMemoryCount ?? 0,
-      reconstructedPathCount: reconstructed?.paths.length ?? 0,
-    };
+    for (const item of input.group.items) {
+      const result = await scoreCase({
+        memory,
+        profileId: input.group.profileId,
+        benchmarkCase: item.benchmarkCase,
+        index: item.index,
+        options: input.options,
+      });
+      input.recordResult(item.index, result);
+    }
   } finally {
     await memory.close();
     rmSync(tmp, { recursive: true, force: true });
   }
+}
+
+async function runGroupsWithConcurrency(
+  groups: CaseGroup[],
+  concurrency: number,
+  worker: (group: CaseGroup) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  const workerCount = Math.min(concurrency, groups.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (next < groups.length) {
+        const group = groups[next];
+        next += 1;
+        if (group) await worker(group);
+      }
+    }),
+  );
 }
 
 export async function runExternalMemoryBenchmark(
@@ -541,35 +699,62 @@ export async function runExternalMemoryBenchmark(
     throw new Error("External benchmark requires at least one case");
   }
   const defaultMode = normalizeMode(options.mode);
+  const eventCache = new WeakMap<object, ExternalMemoryBenchmarkEvent[]>();
   const normalizedCases = options.cases.map((benchmarkCase, index) =>
-    normalizeCase(benchmarkCase, index),
+    normalizeCase(benchmarkCase, index, eventCache),
   );
+  const concurrency = normalizedConcurrency(options.concurrency);
   const normalizedOptions: RunExternalMemoryBenchmarkOptions = {
     ...options,
     cases: normalizedCases,
     ...(defaultMode ? { mode: defaultMode } : {}),
+    concurrency,
+    reuseProfiles: options.reuseProfiles ?? true,
   };
-  const cases = await Promise.all(
-    normalizedCases.map((benchmarkCase, index) =>
-      runCase({ benchmarkCase, index, options: normalizedOptions }),
-    ),
+  const groups = groupCases(normalizedCases, normalizedOptions);
+  const cases: Array<ExternalMemoryBenchmarkCaseResult | undefined> = new Array(
+    normalizedCases.length,
   );
-  const passedCount = cases.filter((entry) => entry.pass).length;
+  let completedCount = 0;
+  let passedCount = 0;
+  const recordResult = (index: number, result: ExternalMemoryBenchmarkCaseResult): void => {
+    cases[index] = result;
+    completedCount += 1;
+    if (result.pass) passedCount += 1;
+    normalizedOptions.onCaseResult?.({
+      completedCount,
+      totalCount: normalizedCases.length,
+      passedCount,
+      failedCount: completedCount - passedCount,
+      caseId: result.id,
+      caseIndex: index,
+      pass: result.pass,
+    });
+  };
+  await runGroupsWithConcurrency(groups, concurrency, (group) =>
+    runCaseGroup({ group, options: normalizedOptions, recordResult }),
+  );
+  const completedCases = cases.map((entry, index) => {
+    if (!entry) throw new Error(`External benchmark case ${index + 1} did not produce a result`);
+    return entry;
+  });
+  const finalPassedCount = completedCases.filter((entry) => entry.pass).length;
   const finishedAt = new Date().toISOString();
   return {
     schema: "gmos.external_long_memory_qa.v1",
-    pass: passedCount === cases.length,
+    pass: finalPassedCount === completedCases.length,
     datasetFormat: normalizedOptions.datasetFormat ?? "gmos.external_long_memory_qa.jsonl",
-    caseCount: cases.length,
-    passedCount,
-    failedCount: cases.length - passedCount,
-    score: cases.length === 0 ? 0 : passedCount / cases.length,
+    caseCount: completedCases.length,
+    passedCount: finalPassedCount,
+    failedCount: completedCases.length - finalPassedCount,
+    score: completedCases.length === 0 ? 0 : finalPassedCount / completedCases.length,
     runManifest: createRunManifest({
       startedAt,
       finishedAt,
-      caseCount: cases.length,
+      caseCount: completedCases.length,
+      caseGroupCount: groups.length,
       options: normalizedOptions,
     }),
-    cases,
+    cases: completedCases,
   };
 }

@@ -135,7 +135,7 @@ npm run test:consumer
 node dist/cli/gmos.js gate --generated-seeds 3 --scale-sizes 100,1000 --hosts ghast,mcp,mock_l3,search_only --format json
 node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3 --format json
 node dist/cli/gmos.js gym scale --sizes 100,1000 --threshold-p95-ms 250 --format json
-node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format json --require-convergence
+node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format json --require-convergence --progress
 node dist/cli/gmos.js gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
 node dist/cli/gmos.js gym statebench prepare --checkout-dir ./STATE-Bench --domain travel --agent-model-name gpt-5.1 --manifest-file outputs/gmos-learnings/travel.prepare.json
 node dist/cli/gmos.js gym statebench summarize --checkout-dir ./STATE-Bench --domain travel --metrics-file outputs/travel/metrics.json --output-file outputs/gmos-learnings/travel.summary.json
@@ -183,7 +183,7 @@ traceability.
 
 External benchmark dry-run snapshot, 2026-06-27:
 
-- LongMemEval cleaned oracle, official Hugging Face file
+- Historical alpha.54 baseline: LongMemEval cleaned oracle, official Hugging Face file
   `longmemeval_oracle.json`, was run with
   `gmos gym external --dataset-format longmemeval` on
   `@ghast/memory@0.1.0-alpha.54`
@@ -197,13 +197,9 @@ External benchmark dry-run snapshot, 2026-06-27:
   uncertainty, and only 43 reached evidence convergence. This is a useful
   baseline for retrieval/reconstruction work, not a publishable SOTA claim and
   not the official LongMemEval LLM-judge QA metric.
-- LongMemEval cleaned S and LoCoMo full QA were attempted as internal dry-runs
-  on the same SDK build. `longmemeval_s_cleaned.json` was interrupted after more
-  than five minutes without JSON output, and LoCoMo `data/locomo10.json`
-  expanded to 1986 QA cases and was interrupted after more than eleven minutes
-  without JSON output. Treat this as a current runner throughput finding:
-  external benchmark execution needs batched profile reuse or streaming
-  partial-result output before these full-history datasets should be reported.
+- Alpha.55 adds bounded concurrency, profile/event grouping, and stderr
+  progress for external benchmark runs. Rerun full-history datasets with those
+  controls before publishing any larger LongMemEval S or LoCoMo numbers.
 
 Official source pointers used for this dry-run:
 [LongMemEval cleaned](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned),
@@ -250,7 +246,15 @@ bounded `reconstructContext`, and scores context evidence by `expectedAny`,
 not call an LLM judge. Results include a run manifest, dataset format, dataset
 SHA-256 hash, deterministic failure reasons, warnings, evidence-convergence
 diagnostics, missing intent groups, uncertainty, token estimates, and
-reconstructed path counts. Add `"requireConvergence": true` to a case, or pass
+reconstructed path counts. Cases with the same profile id and identical event
+history are grouped by default, so multi-QA datasets such as LoCoMo build the
+conversation memory once and run multiple questions against the same temporary
+profile. Pass `--no-reuse-profiles` when a debugging run needs strict
+case-by-case isolation. `--concurrency <n>` limits how many independent case
+groups run at once; the default is bounded to avoid opening hundreds of SQLite
+stores for long-history datasets. `--progress` writes content-free case progress
+to stderr, which keeps large redirected JSON runs observable without mixing
+progress lines into stdout. Add `"requireConvergence": true` to a case, or pass
 `--require-convergence` for the whole run, when the benchmark should fail unless
 active reconstruction converges; this is useful for multi-hop or multi-intent
 cases where a plain text hit is not strong enough evidence. `--require-convergence`
