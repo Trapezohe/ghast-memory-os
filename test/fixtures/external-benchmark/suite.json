@@ -1,0 +1,29 @@
+{
+  "schema": "gmos.external_benchmark_suite.v1",
+  "defaults": {
+    "maxSteps": 4,
+    "maxBranch": 3,
+    "maxMemories": 8,
+    "contextBudgetTokens": 1600,
+    "concurrency": 2,
+    "reuseProfiles": true,
+    "failureSampleLimit": 5
+  },
+  "runs": [
+    {
+      "id": "curated-gmos",
+      "inputFile": "curated-gmos.jsonl",
+      "datasetFormat": "gmos"
+    },
+    {
+      "id": "longmemeval-mini",
+      "inputFile": "longmemeval-mini.json",
+      "datasetFormat": "longmemeval"
+    },
+    {
+      "id": "locomo-mini",
+      "inputFile": "locomo-mini.json",
+      "datasetFormat": "locomo"
+    }
+  ]
+}

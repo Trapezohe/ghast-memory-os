@@ -145,6 +145,7 @@ node dist/cli/gmos.js gym host --hosts ghast --actual-report ./ghast-memory-stat
 ```bash
 npm run check
 npm run test:consumer
+npm run test:external-fixtures
 node dist/cli/gmos.js gate --generated-seeds 3 --scale-sizes 100,1000 --hosts ghast,mcp,mock_l3,search_only --format json
 node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3 --format json
 node dist/cli/gmos.js gym scale --sizes 100,1000 --threshold-p95-ms 250 --format json
@@ -202,6 +203,14 @@ writes per-run JSON/Markdown reports when `--output-dir` is provided. By default
 it is a dry-run baseline tool: failed benchmark runs set `benchmarkPass=false`
 but keep the command status successful so teams can record weak baselines. Add
 `--fail-on-benchmark-fail` when using the same suite as a release gate.
+
+The repository also includes a small CI-safe fixture suite at
+`test/fixtures/external-benchmark/suite.json`. `npm run test:external-fixtures`
+runs it with `--fail-on-benchmark-fail` and covers gmOS native JSONL,
+LongMemEval adapter abstention handling, LoCoMo adapter unscored-QA handling,
+profile reuse, incognito filtering, history recall, task trajectory reuse, and
+boundary-aware prepare mode. Full LongMemEval/LoCoMo datasets remain manual or
+nightly baselines because they are too large and slow for ordinary PR CI.
 
 External benchmark dry-run snapshot, 2026-06-27:
 

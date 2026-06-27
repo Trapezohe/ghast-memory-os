@@ -1,0 +1,39 @@
+[
+  {
+    "question_id": "lme-mini-vega-next-step",
+    "question_type": "multi-session",
+    "question": "What should Lantern Run do next?",
+    "answer": "rollback matrix",
+    "question_date": "2026-06-24",
+    "haystack_session_ids": ["session-1", "session-2"],
+    "haystack_dates": ["2026-06-20", "2026-06-21"],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "Project Vega is called Lantern Run."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Lantern Run workflow starts with rollback matrix verification before implementation."
+        }
+      ]
+    ],
+    "answer_session_ids": ["session-2"]
+  },
+  {
+    "question_id": "lme-mini-abstention_abs",
+    "question": "What was never mentioned?",
+    "answer": "unknown",
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "This row should be skipped by abstention handling."
+        }
+      ]
+    ]
+  }
+]

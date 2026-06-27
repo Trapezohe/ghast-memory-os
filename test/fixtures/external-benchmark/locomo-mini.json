@@ -1,0 +1,40 @@
+[
+  {
+    "sample_id": "locomo-mini-atlas",
+    "conversation": {
+      "speaker_a": "Alex",
+      "speaker_b": "Blair",
+      "session_1_date_time": "2026-06-20T09:00:00Z",
+      "session_1": [
+        {
+          "speaker": "Alex",
+          "dia_id": "d1",
+          "text": "Atlas workflow starts by verifying the evidence chain. Atlas key year is 2022."
+        },
+        {
+          "speaker": "Blair",
+          "dia_id": "d2",
+          "text": "I will remember the Atlas workflow."
+        }
+      ]
+    },
+    "qa": [
+      {
+        "question": "What does the Atlas workflow start by verifying?",
+        "answer": "evidence chain",
+        "adversarial_answer": "push immediately",
+        "evidence": ["d1"]
+      },
+      {
+        "question": "What is the Atlas key year?",
+        "answer": "2022",
+        "evidence": ["d1"]
+      },
+      {
+        "question": "What is the unscored Atlas distractor?",
+        "adversarial_answer": "push immediately",
+        "evidence": ["d2"]
+      }
+    ]
+  }
+]
