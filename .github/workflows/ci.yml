@@ -45,23 +45,5 @@ jobs:
       - name: Install
         run: npm ci
 
-      - name: Check
-        run: npm run check
-
-      - name: Consumer install smoke
-        run: npm run test:consumer
-
-      - name: Memory Gym
-        run: "node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3 --format json"
-
-      - name: External benchmark fixtures
-        run: npm run test:external-fixtures
-
-      - name: Release gate
-        run: "node dist/cli/gmos.js gate --generated-seeds 3 --scale-sizes 100,1000 --hosts ghast,mcp,mock_l3,search_only --threshold-p95-ms 250 --format json"
-
-      - name: Scale smoke
-        run: "node dist/cli/gmos.js gym scale --sizes 100,1000 --threshold-p95-ms 250 --format json"
-
-      - name: Pack dry run
-        run: npm pack --dry-run
+      - name: PR gate
+        run: npm run gate:pr

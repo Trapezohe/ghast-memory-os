@@ -143,12 +143,7 @@ node dist/cli/gmos.js gym host --hosts ghast --actual-report ./ghast-memory-stat
 ## QA Gates
 
 ```bash
-npm run check
-npm run test:consumer
-npm run test:external-fixtures
-node dist/cli/gmos.js gate --generated-seeds 3 --scale-sizes 100,1000 --hosts ghast,mcp,mock_l3,search_only --format json
-node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3 --format json
-node dist/cli/gmos.js gym scale --sizes 100,1000 --threshold-p95-ms 250 --format json
+npm run gate:pr
 node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format json --require-convergence --progress
 node dist/cli/gmos.js gym external-suite --suite-file ./external-suite.json --output-dir ./external-runs --format json
 node dist/cli/gmos.js gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
@@ -156,8 +151,11 @@ node dist/cli/gmos.js gym statebench prepare --checkout-dir ./STATE-Bench --doma
 node dist/cli/gmos.js gym statebench summarize --checkout-dir ./STATE-Bench --domain travel --metrics-file outputs/travel/metrics.json --output-file outputs/gmos-learnings/travel.summary.json
 node dist/cli/gmos.js repair --db ./gmos.db --search-index
 node dist/cli/gmos.js repair --db ./gmos.db --associations
-npm pack --dry-run
 ```
+
+`gate:pr` is the local and CI PR gate. It runs build/test, quickstart and host
+examples, consumer install smoke, deterministic Memory Gym smoke, external
+fixtures, the SDK release gate, scale smoke, and a pack dry run.
 
 `test:consumer` packs the SDK, installs it into a temporary external project,
 then verifies package exports, plaintext SQLite use, the MCP-style router, MCP

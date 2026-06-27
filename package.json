@@ -83,6 +83,7 @@
     "test": "node --import tsx test/run-tests.ts",
     "test:consumer": "node test/consumer-install-smoke.mjs",
     "test:external-fixtures": "node scripts/test-external-fixtures.mjs",
+    "gate:pr": "npm run check && npm run test:consumer && node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3 --format json && npm run test:external-fixtures && node dist/cli/gmos.js gate --generated-seeds 3 --scale-sizes 100,1000 --hosts ghast,mcp,mock_l3,search_only --threshold-p95-ms 250 --format json && node dist/cli/gmos.js gym scale --sizes 100,1000 --threshold-p95-ms 250 --format json && npm pack --dry-run",
     "examples:quickstart": "node examples/quickstart.mjs",
     "examples:host-adapter": "node examples/host-adapter.mjs",
     "check": "npm run build && npm test && npm run examples:quickstart && npm run examples:host-adapter",
