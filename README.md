@@ -183,25 +183,39 @@ traceability.
 
 External benchmark dry-run snapshot, 2026-06-27:
 
-- Historical alpha.54 baseline: LongMemEval cleaned oracle, official Hugging Face file
-  `longmemeval_oracle.json`, was run with
-  `gmos gym external --dataset-format longmemeval` on
-  `@ghast/memory@0.1.0-alpha.54`
-  (`747b8d81d16b8e387d19c09f8c789da644b2661a`, dirty=false).
-  Dataset hash:
-  `sha256:821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c`.
-  Result: 470 scored non-abstention cases, 79 passed, 391 failed,
-  deterministic score `0.1681`. The runner skipped the 30 official abstention
-  cases by default. The dominant failure reason was `expected_any_missing`;
-  427 cases did not reach evidence convergence, 326 ended with high
-  uncertainty, and only 43 reached evidence convergence. This is a useful
-  baseline for retrieval/reconstruction work, not a publishable SOTA claim and
-  not the official LongMemEval LLM-judge QA metric.
-- Alpha.55 adds bounded concurrency, profile/event grouping, and stderr
-  progress for external benchmark runs. Rerun full-history datasets with those
-  controls before publishing any larger LongMemEval S or LoCoMo numbers.
+These runs were executed on `@ghast/memory@0.1.0-alpha.55`
+(`c5ad52a70f6a8b96407f0a3a0fe8660ae5b6e149`, dirty=false) with
+the abbreviated invocation `gmos gym external --concurrency 2 --progress`.
+They are deterministic adapter dry-runs for finding retrieval and
+reconstruction gaps, not the official LongMemEval/LoCoMo LLM-judge score and
+not a SOTA claim.
 
-Official source pointers used for this dry-run:
+| Dataset file | Source format | Cases | Pass | Fail | Score | Case groups | Reused profile cases |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `longmemeval_oracle.json` | LongMemEval cleaned oracle | 470 | 79 | 391 | `0.1681` | 470 | 0 |
+| `longmemeval_s_cleaned.json` | LongMemEval cleaned S | 470 | 88 | 382 | `0.1872` | 470 | 0 |
+| `locomo10.json` | LoCoMo full history | 1986 | 64 | 1922 | `0.0322` | 10 | 1976 |
+
+Dataset hashes:
+
+- `longmemeval_oracle.json`:
+  `sha256:821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c`
+- `longmemeval_s_cleaned.json`:
+  `sha256:d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442`
+- `locomo10.json`:
+  `sha256:79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`
+
+The runner skips official LongMemEval abstention cases by default. The dominant
+failure reason across all three runs was `expected_any_missing`. Most failed
+cases also carried medium or high uncertainty and many did not reach evidence
+convergence, which makes this a useful baseline for active reconstruction,
+hybrid retrieval, entity resolution, and temporal current-state work. The
+LoCoMo run demonstrates why alpha.55 added profile/event grouping: all 1986 QA
+cases share only 10 conversation histories, so the benchmark can reuse prepared
+profiles without writing answer labels, evidence ids, category labels, or
+`has_answer` labels into memory.
+
+Dataset source pointers used for this dry-run:
 [LongMemEval cleaned](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned),
 [LongMemEval GitHub](https://github.com/xiaowu0162/longmemeval), and
 [LoCoMo GitHub](https://github.com/snap-research/locomo). The datasets are not
