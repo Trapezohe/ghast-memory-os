@@ -5981,6 +5981,10 @@ assert.equal(externalBenchmark.runManifest.execution.reusedProfileCaseCount, 0);
 assert.equal(externalBenchmark.runManifest.options.concurrency >= 1, true);
 assert.equal(externalBenchmark.runManifest.options.reuseProfiles, true);
 assert.equal(externalBenchmark.runManifest.options.requireConvergence, false);
+assert.equal(externalBenchmark.runManifest.options.failureSampleLimit, 20);
+assert.deepEqual(externalBenchmark.summary.failureReasons, []);
+assert.equal(externalBenchmark.summary.warnings.length > 0, true);
+assert.equal(externalBenchmark.summary.failureSamples.length, 0);
 assert.equal(externalBenchmark.cases[0]?.failureReasons.length, 0);
 assert.equal(typeof externalBenchmark.cases[0]?.diagnostics.evidenceConvergenceScore, "number");
 const externalHash = hashExternalMemoryBenchmarkInput(externalBenchmarkJsonl);
@@ -6014,6 +6018,35 @@ const sparseExternalConvergence = await runExternalMemoryBenchmark({
 });
 assert.equal(sparseExternalConvergence.pass, true);
 assert.equal(sparseExternalConvergence.cases[0]?.diagnostics.evidenceConvergenceReached, true);
+const externalFailureSummaryBenchmark = await runExternalMemoryBenchmark({
+  failureSampleLimit: 1,
+  cases: [
+    {
+      id: "missing-one",
+      events: [{ type: "memory", kind: "fact", content: "Visible answer is Alpha." }],
+      question: "What is visible?",
+      expectedAll: ["Missing Alpha"],
+    },
+    {
+      id: "missing-two",
+      events: [{ type: "memory", kind: "fact", content: "Visible answer is Beta." }],
+      question: "What is visible?",
+      expectedAny: ["Missing Beta"],
+    },
+  ],
+});
+assert.equal(externalFailureSummaryBenchmark.pass, false);
+assert.equal(externalFailureSummaryBenchmark.runManifest.options.failureSampleLimit, 1);
+assert.deepEqual(externalFailureSummaryBenchmark.summary.failureReasons, [
+  { name: "expected_all_missing", count: 1 },
+  { name: "expected_any_missing", count: 1 },
+]);
+assert.equal(externalFailureSummaryBenchmark.summary.failureSamples.length, 1);
+assert.equal(externalFailureSummaryBenchmark.summary.failureSamples[0]?.id, "missing-one");
+assert.equal(
+  externalFailureSummaryBenchmark.summary.failureSamples[0]?.expectedAllMissing[0],
+  "Missing Alpha",
+);
 const longMemEvalFixture = JSON.stringify([
   {
     question_id: "lme-vega-next-step",
@@ -6647,6 +6680,8 @@ const externalMarkdown = renderExternalMemoryBenchmarkMarkdown(externalBenchmark
 assert.match(externalMarkdown, /External Long-Memory QA/);
 assert.match(externalMarkdown, /Run Manifest/);
 assert.match(externalMarkdown, /format=gmos\.external_long_memory_qa\.jsonl/);
+assert.match(externalMarkdown, /## Summary/);
+assert.match(externalMarkdown, /## Failure Samples/);
 assert.match(externalMarkdown, /Failure reasons/);
 assert.match(externalMarkdown, /Missing intent groups/);
 assert.throws(
@@ -6974,6 +7009,8 @@ const cliScaleFail = spawnSync(
 );
 assert.notEqual(cliScaleFail.status, 0);
 assert.match(cliScaleFail.stdout, /Status: FAIL/);
+const cliExternalJsonFile = path.join(tmp, "cli-external-report.json");
+const cliExternalMarkdownFile = path.join(tmp, "cli-external-report.md");
 const cliExternal = spawnSync(
   process.execPath,
   [
@@ -6986,6 +7023,12 @@ const cliExternal = spawnSync(
     externalBenchmarkFile,
     "--format",
     "json",
+    "--json-file",
+    cliExternalJsonFile,
+    "--markdown-file",
+    cliExternalMarkdownFile,
+    "--failure-sample-limit",
+    "3",
   ],
   { cwd: process.cwd(), encoding: "utf8" },
 );
@@ -6995,8 +7038,9 @@ const cliExternalJson = JSON.parse(cliExternal.stdout) as {
   pass?: boolean;
   runManifest?: {
     dataset?: { format?: string; hash?: string | null; id?: string | null };
-    options?: { requireConvergence?: boolean };
+    options?: { requireConvergence?: boolean; failureSampleLimit?: number };
   };
+  summary?: { failureSampleLimit?: number };
 };
 assert.equal(cliExternalJson.schema, "gmos.external_long_memory_qa.v1");
 assert.equal(cliExternalJson.pass, true);
@@ -7004,6 +7048,31 @@ assert.equal(cliExternalJson.runManifest?.dataset?.format, "gmos.external_long_m
 assert.match(cliExternalJson.runManifest?.dataset?.hash ?? "", /^sha256:[a-f0-9]{64}$/);
 assert.equal(cliExternalJson.runManifest?.dataset?.id, path.basename(externalBenchmarkFile));
 assert.equal(cliExternalJson.runManifest?.options?.requireConvergence, false);
+assert.equal(cliExternalJson.runManifest?.options?.failureSampleLimit, 3);
+assert.equal(cliExternalJson.summary?.failureSampleLimit, 3);
+assert.equal(existsSync(cliExternalJsonFile), true);
+assert.equal(existsSync(cliExternalMarkdownFile), true);
+assert.equal(JSON.parse(readFileSync(cliExternalJsonFile, "utf8")).schema, "gmos.external_long_memory_qa.v1");
+assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /gmOS External Long-Memory QA Benchmark/);
+assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /Failure sample limit: 3/);
+const cliExternalMissingJsonFileValue = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--json-file",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalMissingJsonFileValue.status, 0);
+assert.match(cliExternalMissingJsonFileValue.stderr, /--json-file requires a value/);
 const longMemEvalFixtureFile = path.join(tmp, "longmemeval-fixture.json");
 writeFileSync(longMemEvalFixtureFile, longMemEvalFixture);
 const cliLongMemEvalExternal = spawnSync(

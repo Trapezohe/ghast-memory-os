@@ -16,6 +16,12 @@ function markdownNullableNumber(value: number | null): string {
   return value === null ? "-" : value.toFixed(2);
 }
 
+function markdownCounters(values: { name: string; count: number }[]): string {
+  return values.length
+    ? values.map((entry) => `${markdownCell(entry.name)}=${entry.count}`).join(", ")
+    : "none";
+}
+
 export function renderMemoryGymMarkdown(report: MemoryGymResult): string {
   return [
     "# gmOS Memory Gym Report",
@@ -128,7 +134,28 @@ export function renderExternalMemoryBenchmarkMarkdown(
     `Dataset warnings: ${report.runManifest.dataset.warnings.length ? report.runManifest.dataset.warnings.map(markdownCell).join("; ") : "none"}`,
     `Execution: caseGroups=${report.runManifest.execution.caseGroupCount} reusedProfileCases=${report.runManifest.execution.reusedProfileCaseCount}`,
     `Options: mode=${report.runManifest.options.mode ?? "case/default"} maxSteps=${report.runManifest.options.maxSteps ?? "default"} maxBranch=${report.runManifest.options.maxBranch ?? "default"} maxMemories=${report.runManifest.options.maxMemories ?? "default"} contextBudgetTokens=${report.runManifest.options.contextBudgetTokens ?? "default"} requireConvergence=${report.runManifest.options.requireConvergence} concurrency=${report.runManifest.options.concurrency} reuseProfiles=${report.runManifest.options.reuseProfiles}`,
+    `Failure sample limit: ${report.runManifest.options.failureSampleLimit}`,
     `Deterministic only: ${report.runManifest.deterministicOnly ? "yes" : "no"}`,
+    "",
+    "## Summary",
+    "",
+    `Failure reasons: ${markdownCounters(report.summary.failureReasons)}`,
+    `Warnings: ${markdownCounters(report.summary.warnings)}`,
+    `Uncertainty: low=${report.summary.uncertaintyLevels.low}, medium=${report.summary.uncertaintyLevels.medium}, high=${report.summary.uncertaintyLevels.high}, unknown=${report.summary.uncertaintyLevels.unknown}`,
+    `Evidence convergence: reached=${report.summary.evidenceConvergence.reached}, notReached=${report.summary.evidenceConvergence.notReached}, unknown=${report.summary.evidenceConvergence.unknown}`,
+    "",
+    "## Failure Samples",
+    "",
+    ...(report.summary.failureSamples.length === 0
+      ? ["None"]
+      : [
+          "| Case | Failure reasons | Warnings | Missing expectedAny | Missing expectedAll | Forbidden matches | Missing intent groups | Convergence | Uncertainty | Tokens | Paths |",
+          "| --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: |",
+          ...report.summary.failureSamples.map(
+            (entry) =>
+              `| ${markdownCell(entry.id)} | ${markdownListCell(entry.failureReasons)} | ${markdownListCell(entry.warnings)} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.forbiddenMatches)} | ${markdownListCell(entry.missingRequiredIntentGroups)} | ${markdownNullableNumber(entry.evidenceConvergenceScore)}${entry.evidenceConvergenceReached === null ? "" : entry.evidenceConvergenceReached ? " reached" : " not reached"} | ${entry.uncertaintyLevel ?? "-"} | ${entry.promptTokenEstimate} | ${entry.reconstructedPathCount} |`,
+          ),
+        ]),
     "",
     "## Cases",
     "",

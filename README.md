@@ -116,8 +116,8 @@ node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3
 node dist/cli/gmos.js gym run --generated-seeds 10 --format markdown --report-file ./memory-gym.md
 node dist/cli/gmos.js gym scale --sizes 100,1000
 node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --require-convergence
-node dist/cli/gmos.js gym external --input-file ./longmemeval_s_cleaned.json --dataset-format longmemeval --format markdown
-node dist/cli/gmos.js gym external --input-file ./locomo10.json --dataset-format locomo --format markdown
+node dist/cli/gmos.js gym external --input-file ./longmemeval_s_cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --progress
+node dist/cli/gmos.js gym external --input-file ./locomo10.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --progress
 node dist/cli/gmos.js gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
 node dist/cli/gmos.js gym statebench write-agent --output-file ./STATE-Bench/agents/gmos_memory_agent.py
 node dist/cli/gmos.js gym statebench prepare --checkout-dir ./STATE-Bench --domain travel --agent-model-name gpt-5.1 --num-workers 2 --manifest-file outputs/gmos-learnings/travel.prepare.json
@@ -259,23 +259,27 @@ bounded `reconstructContext`, and scores context evidence by `expectedAny`,
 `expectedAll`, and `forbiddenAny`. It is deterministic and local-first; it does
 not call an LLM judge. Results include a run manifest, dataset format, dataset
 SHA-256 hash, deterministic failure reasons, warnings, evidence-convergence
-diagnostics, missing intent groups, uncertainty, token estimates, and
-reconstructed path counts. Cases with the same profile id and identical event
-history are grouped by default, so multi-QA datasets such as LoCoMo build the
-conversation memory once and run multiple questions against the same temporary
-profile. Pass `--no-reuse-profiles` when a debugging run needs strict
-case-by-case isolation. `--concurrency <n>` limits how many independent case
-groups run at once; the default is bounded to avoid opening hundreds of SQLite
-stores for long-history datasets. `--progress` writes content-free case progress
-to stderr, which keeps large redirected JSON runs observable without mixing
-progress lines into stdout. Add `"requireConvergence": true` to a case, or pass
+diagnostics, missing intent groups, uncertainty, token estimates, reconstructed
+path counts, aggregate failure summaries, and bounded failure samples. Cases
+with the same profile id and identical event history are grouped by default, so
+multi-QA datasets such as LoCoMo build the conversation memory once and run
+multiple questions against the same temporary profile. Pass `--no-reuse-profiles`
+when a debugging run needs strict case-by-case isolation. `--concurrency <n>`
+limits how many independent case groups run at once; the default is bounded to
+avoid opening hundreds of SQLite stores for long-history datasets. `--progress`
+writes content-free case progress to stderr, which keeps large redirected JSON
+runs observable without mixing progress lines into stdout. `--json-file` and
+`--markdown-file` can be used together to create a reproducibility bundle from
+one run; `--failure-sample-limit <n>` controls how many failed cases are copied
+into the summary section. Add `"requireConvergence": true` to a case, or pass
 `--require-convergence` for the whole run, when the benchmark should fail unless
 active reconstruction converges; this is useful for multi-hop or multi-intent
 cases where a plain text hit is not strong enough evidence. `--require-convergence`
 is only valid for reconstruct mode and forces every case in that run to require
 convergence. The manifest does not include dataset contents or absolute local
-paths, but public reports can still reveal repository branch names and dataset
-file names; redact those fields before publishing if needed.
+paths, but public reports can still reveal repository branch names, dataset file
+names, expected answer strings, and deterministic scoring labels in failure
+samples; redact those fields before publishing if needed.
 
 `gmos gate` is the SDK release-candidate gate. It runs deterministic Memory Gym,
 the host compatibility gym, the local SQLite scale benchmark, and diagnostics

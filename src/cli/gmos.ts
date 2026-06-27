@@ -115,8 +115,8 @@ Usage:
   gmos gym run --db :memory: --generated-seeds 3 --format markdown --report-file ./memory-gym.md
   gmos gym scale --sizes 100,1000 --threshold-p95-ms 250
   gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --require-convergence
-  gmos gym external --input-file ./longmemeval_s_cleaned.json --dataset-format longmemeval --format markdown --concurrency 4 --progress
-  gmos gym external --input-file ./locomo10.json --dataset-format locomo --format markdown --concurrency 2 --progress
+  gmos gym external --input-file ./longmemeval_s_cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --progress
+  gmos gym external --input-file ./locomo10.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --progress
   gmos gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
   gmos gym statebench write-agent --output-file ./STATE-Bench/agents/gmos_memory_agent.py
   gmos gym statebench prepare --checkout-dir ./STATE-Bench --domain travel --agent-model-name gpt-5.1 --num-workers 2 --manifest-file outputs/gmos-learnings/travel.prepare.json
@@ -128,17 +128,28 @@ Usage:
 }
 
 function writeReportIfRequested(content: string): void {
-  const reportFile = value("--report-file");
+  const reportFile = strictOptionValue("--report-file");
   if (!reportFile) return;
   const resolved = path.resolve(process.cwd(), reportFile);
   mkdirSync(path.dirname(resolved), { recursive: true });
   writeFileSync(resolved, content);
 }
 
+function writeOutputFileIfRequested(optionName: string, content: string): void {
+  const outputFile = strictOptionValue(optionName);
+  if (!outputFile) return;
+  const resolved = path.resolve(process.cwd(), outputFile);
+  mkdirSync(path.dirname(resolved), { recursive: true });
+  writeFileSync(resolved, content);
+}
+
 function printReport(json: unknown, markdown: string): void {
   const format = value("--format", "json");
-  const output = format === "markdown" ? markdown : JSON.stringify(json, null, 2);
+  const jsonOutput = JSON.stringify(json, null, 2);
+  const output = format === "markdown" ? markdown : jsonOutput;
   writeReportIfRequested(output);
+  writeOutputFileIfRequested("--json-file", jsonOutput);
+  writeOutputFileIfRequested("--markdown-file", markdown);
   console.log(output);
 }
 
@@ -627,6 +638,7 @@ async function main(): Promise<void> {
       contextBudgetTokens: positiveIntegerOption("--context-budget-tokens", 1600),
       concurrency: positiveIntegerOption("--concurrency", 4),
       reuseProfiles: !has("--no-reuse-profiles"),
+      failureSampleLimit: nonNegativeIntegerOption("--failure-sample-limit", 20),
       ...(has("--progress")
         ? {
             onCaseResult: (progress) => {

@@ -91,6 +91,46 @@ export interface ExternalMemoryBenchmarkCaseResult {
   reconstructedPathCount: number;
 }
 
+export interface ExternalMemoryBenchmarkCounter {
+  name: string;
+  count: number;
+}
+
+export interface ExternalMemoryBenchmarkFailureSample {
+  id: string;
+  mode: ExternalMemoryBenchmarkMode;
+  failureReasons: string[];
+  warnings: string[];
+  expectedAnyMissing: string[];
+  expectedAllMissing: string[];
+  forbiddenMatches: string[];
+  missingRequiredIntentGroups: string[];
+  evidenceConvergenceScore: number | null;
+  evidenceConvergenceReached: boolean | null;
+  uncertaintyLevel: "low" | "medium" | "high" | null;
+  promptTokenEstimate: number;
+  retrievedMemoryCount: number;
+  reconstructedPathCount: number;
+}
+
+export interface ExternalMemoryBenchmarkSummary {
+  failureReasons: ExternalMemoryBenchmarkCounter[];
+  warnings: ExternalMemoryBenchmarkCounter[];
+  uncertaintyLevels: {
+    low: number;
+    medium: number;
+    high: number;
+    unknown: number;
+  };
+  evidenceConvergence: {
+    reached: number;
+    notReached: number;
+    unknown: number;
+  };
+  failureSampleLimit: number;
+  failureSamples: ExternalMemoryBenchmarkFailureSample[];
+}
+
 export interface ExternalMemoryBenchmarkRunManifest {
   framework: "gmos-external-long-memory-qa";
   startedAt: string;
@@ -126,6 +166,7 @@ export interface ExternalMemoryBenchmarkRunManifest {
     requireConvergence: boolean;
     concurrency: number;
     reuseProfiles: boolean;
+    failureSampleLimit: number;
   };
   deterministicOnly: true;
 }
@@ -138,6 +179,7 @@ export interface ExternalMemoryBenchmarkResult {
   passedCount: number;
   failedCount: number;
   score: number;
+  summary: ExternalMemoryBenchmarkSummary;
   runManifest: ExternalMemoryBenchmarkRunManifest;
   cases: ExternalMemoryBenchmarkCaseResult[];
 }
@@ -156,6 +198,7 @@ export interface RunExternalMemoryBenchmarkOptions {
   requireConvergence?: boolean | undefined;
   concurrency?: number | undefined;
   reuseProfiles?: boolean | undefined;
+  failureSampleLimit?: number | undefined;
   onCaseResult?: ((progress: ExternalMemoryBenchmarkProgress) => void) | undefined;
 }
 
@@ -471,6 +514,7 @@ function createRunManifest(input: {
       requireConvergence: input.options.requireConvergence ?? false,
       concurrency: normalizedConcurrency(input.options.concurrency),
       reuseProfiles: input.options.reuseProfiles ?? true,
+      failureSampleLimit: normalizedFailureSampleLimit(input.options.failureSampleLimit),
     },
     deterministicOnly: true,
   };
@@ -482,6 +526,96 @@ function normalizedConcurrency(value: number | undefined): number {
     throw new Error("External benchmark concurrency must be a positive integer");
   }
   return value;
+}
+
+function normalizedFailureSampleLimit(value: number | undefined): number {
+  if (value === undefined) return 20;
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error("External benchmark failure sample limit must be a non-negative integer");
+  }
+  return value;
+}
+
+function incrementCounter(map: Map<string, number>, name: string): void {
+  map.set(name, (map.get(name) ?? 0) + 1);
+}
+
+function sortedCounters(map: Map<string, number>): ExternalMemoryBenchmarkCounter[] {
+  return [...map.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name));
+}
+
+function failureSampleForCase(
+  entry: ExternalMemoryBenchmarkCaseResult,
+): ExternalMemoryBenchmarkFailureSample {
+  return {
+    id: entry.id,
+    mode: entry.mode,
+    failureReasons: entry.failureReasons,
+    warnings: entry.warnings,
+    expectedAnyMissing: entry.expectedAnyMissing,
+    expectedAllMissing: entry.expectedAllMissing,
+    forbiddenMatches: entry.forbiddenMatches,
+    missingRequiredIntentGroups: entry.diagnostics.missingRequiredIntentGroups,
+    evidenceConvergenceScore: entry.diagnostics.evidenceConvergenceScore,
+    evidenceConvergenceReached: entry.diagnostics.evidenceConvergenceReached,
+    uncertaintyLevel: entry.diagnostics.uncertaintyLevel,
+    promptTokenEstimate: entry.promptTokenEstimate,
+    retrievedMemoryCount: entry.retrievedMemoryCount,
+    reconstructedPathCount: entry.reconstructedPathCount,
+  };
+}
+
+function buildExternalMemoryBenchmarkSummary(
+  cases: ExternalMemoryBenchmarkCaseResult[],
+  failureSampleLimit: number,
+): ExternalMemoryBenchmarkSummary {
+  const failureReasonCounts = new Map<string, number>();
+  const warningCounts = new Map<string, number>();
+  const uncertaintyLevels = {
+    low: 0,
+    medium: 0,
+    high: 0,
+    unknown: 0,
+  };
+  const evidenceConvergence = {
+    reached: 0,
+    notReached: 0,
+    unknown: 0,
+  };
+  const failureSamples: ExternalMemoryBenchmarkFailureSample[] = [];
+  for (const entry of cases) {
+    for (const reason of entry.failureReasons) incrementCounter(failureReasonCounts, reason);
+    for (const warning of entry.warnings) incrementCounter(warningCounts, warning);
+    if (entry.diagnostics.uncertaintyLevel === "low") {
+      uncertaintyLevels.low += 1;
+    } else if (entry.diagnostics.uncertaintyLevel === "medium") {
+      uncertaintyLevels.medium += 1;
+    } else if (entry.diagnostics.uncertaintyLevel === "high") {
+      uncertaintyLevels.high += 1;
+    } else {
+      uncertaintyLevels.unknown += 1;
+    }
+    if (entry.diagnostics.evidenceConvergenceReached === true) {
+      evidenceConvergence.reached += 1;
+    } else if (entry.diagnostics.evidenceConvergenceReached === false) {
+      evidenceConvergence.notReached += 1;
+    } else {
+      evidenceConvergence.unknown += 1;
+    }
+    if (!entry.pass && failureSamples.length < failureSampleLimit) {
+      failureSamples.push(failureSampleForCase(entry));
+    }
+  }
+  return {
+    failureReasons: sortedCounters(failureReasonCounts),
+    warnings: sortedCounters(warningCounts),
+    uncertaintyLevels,
+    evidenceConvergence,
+    failureSampleLimit,
+    failureSamples,
+  };
 }
 
 function profileIdForCase(benchmarkCase: ExternalMemoryBenchmarkCase): string {
@@ -704,12 +838,14 @@ export async function runExternalMemoryBenchmark(
     normalizeCase(benchmarkCase, index, eventCache),
   );
   const concurrency = normalizedConcurrency(options.concurrency);
+  const failureSampleLimit = normalizedFailureSampleLimit(options.failureSampleLimit);
   const normalizedOptions: RunExternalMemoryBenchmarkOptions = {
     ...options,
     cases: normalizedCases,
     ...(defaultMode ? { mode: defaultMode } : {}),
     concurrency,
     reuseProfiles: options.reuseProfiles ?? true,
+    failureSampleLimit,
   };
   const groups = groupCases(normalizedCases, normalizedOptions);
   const cases: Array<ExternalMemoryBenchmarkCaseResult | undefined> = new Array(
@@ -740,6 +876,7 @@ export async function runExternalMemoryBenchmark(
   });
   const finalPassedCount = completedCases.filter((entry) => entry.pass).length;
   const finishedAt = new Date().toISOString();
+  const summary = buildExternalMemoryBenchmarkSummary(completedCases, failureSampleLimit);
   return {
     schema: "gmos.external_long_memory_qa.v1",
     pass: finalPassedCount === completedCases.length,
@@ -748,6 +885,7 @@ export async function runExternalMemoryBenchmark(
     passedCount: finalPassedCount,
     failedCount: completedCases.length - finalPassedCount,
     score: completedCases.length === 0 ? 0 : finalPassedCount / completedCases.length,
+    summary,
     runManifest: createRunManifest({
       startedAt,
       finishedAt,
