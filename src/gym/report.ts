@@ -211,7 +211,7 @@ export function renderMemoryReleaseGateMarkdown(
     `| Memory Gym | ${report.components.memoryGym.pass ? "PASS" : "FAIL"} | score=${report.components.memoryGym.score.toFixed(4)} hardGates=${report.components.memoryGym.hardGateCount} |`,
     `| Host Compatibility | ${report.components.hostCompatibility.pass ? "PASS" : "FAIL"} | hosts=${report.components.hostCompatibility.hostCount} |`,
     `| Scale | ${report.components.scale.pass ? "PASS" : "FAIL"} | sizes=${report.components.scale.sizes.join(", ")} threshold=${report.components.scale.thresholdP95Ms}ms failedOperations=${scaleFailedOperations.length} |`,
-    `| Diagnostics | ${report.components.diagnostics.pass ? "PASS" : "FAIL"} | schema=${report.components.diagnostics.schemaVersion ?? "unknown"} plaintext SQLite encrypted=${report.components.diagnostics.encrypted ? "true" : "false"} |`,
+    `| Diagnostics | ${report.components.diagnostics.pass ? "PASS" : "FAIL"} | schema=${report.components.diagnostics.schemaVersion ?? "unknown"} plaintext SQLite encrypted=${report.components.diagnostics.encrypted ? "true" : "false"} readAudit=${report.components.diagnostics.readAuditStatus} tables=${report.components.diagnostics.readAuditTableCount} readSideEffectsChecked=${report.components.diagnostics.readPathSideEffectsChecked ? "true" : "false"} |`,
     "",
     "## Failures",
     "",

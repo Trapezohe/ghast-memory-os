@@ -802,6 +802,10 @@ try {
         profileId: "consumer-types",
       });
       if (status.framework !== "ghast-memory-os") throw new Error("unexpected diagnostics framework");
+      if (status.storage.readAudit.status !== "ok") throw new Error("typed read audit diagnostics failed");
+      if (!status.trustContract.readPathSideEffectsChecked) {
+        throw new Error("typed read path trust contract failed");
+      }
       const httpServer = createMemoryHttpServer({
         memory,
         store: sqliteStore,
@@ -864,6 +868,11 @@ try {
   assert.equal(doctor.encrypted, false);
   assert.equal(doctor.schema.dialect, "sqlite");
   assert.equal(doctor.schema.version, 6);
+  assert.equal(doctor.readAudit.status, "ok");
+  assert.equal(doctor.readAudit.schema, "gmos.read_audit_snapshot.v1");
+  assert.equal(doctor.readAudit.tableCount >= 10, true);
+  assert.equal(doctor.readAudit.hashesAvailable, true);
+  assert.equal(Object.prototype.hasOwnProperty.call(doctor.readAudit, "stateHash"), false);
   assert.equal(doctor.searchIndex.status, "ok");
   assert.equal(doctor.searchIndex.vectorIndex.status, "ok");
   assert.equal(doctor.hostCompatibility.level, "L4");

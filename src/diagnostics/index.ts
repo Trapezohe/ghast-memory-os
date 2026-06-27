@@ -3,6 +3,7 @@ import type {
   FailureKind,
   ListFailuresInput,
   MemoryStore,
+  ReadAuditSnapshot,
   SearchIndexStatus,
 } from "../kernel/types.js";
 import {
@@ -16,6 +17,7 @@ import { readGmosPackageInfo } from "../kernel/package-info.js";
 
 export interface DiagnosticsStore {
   rowCounts(): Promise<Record<string, number>> | Record<string, number>;
+  readAuditSnapshot?(): Promise<ReadAuditSnapshot> | ReadAuditSnapshot;
   schemaVersion?(): Promise<number> | number;
   searchIndexStatus?(): Promise<SearchIndexStatus> | SearchIndexStatus;
   listFailures?(input: ListFailuresInput): Promise<FailureEventRecord[]> | FailureEventRecord[];
@@ -43,7 +45,22 @@ export interface MemoryStorageStatus {
   status: "ok" | "unavailable";
   schemaVersion: number | null;
   rowCounts: Record<string, number>;
+  readAudit: MemoryReadAuditStatus;
   searchIndex?: SearchIndexStatus | undefined;
+  error?: {
+    name: string;
+    code: string;
+  } | undefined;
+}
+
+export interface MemoryReadAuditStatus {
+  status: "ok" | "unsupported" | "unavailable";
+  schema: "gmos.read_audit_snapshot.v1" | null;
+  tableCount: number;
+  rowCountTotal: number;
+  auditedTables: string[];
+  missingTables: string[];
+  hashesAvailable: boolean;
   error?: {
     name: string;
     code: string;
@@ -75,7 +92,7 @@ export interface MemoryStatusReport {
   trustContract: {
     encrypted: false;
     reportContainsMemoryContent: false;
-    readPathSideEffectsChecked: false;
+    readPathSideEffectsChecked: boolean;
   };
 }
 
@@ -112,15 +129,67 @@ function summarizeFailures(events: FailureEventRecord[]): MemoryFailureSummary {
   };
 }
 
+function summarizeReadAuditSnapshot(snapshot: ReadAuditSnapshot): MemoryReadAuditStatus {
+  const auditedTables = Object.keys(snapshot.tables).sort();
+  const entries = auditedTables
+    .map((table) => [table, snapshot.tables[table]] as const)
+    .filter(
+      (entry): entry is readonly [string, NonNullable<(typeof entry)[1]>] =>
+        entry[1] !== undefined,
+    );
+  const missingTables = entries
+    .filter(([, table]) => table.stateHash === "missing")
+    .map(([table]) => table);
+  return {
+    status: "ok",
+    schema: snapshot.schema,
+    tableCount: auditedTables.length,
+    rowCountTotal: entries.reduce((sum, [, table]) => sum + table.rowCount, 0),
+    auditedTables,
+    missingTables,
+    hashesAvailable: entries.every(([, table]) => typeof table.stateHash === "string"),
+  };
+}
+
+async function readAuditStatus(store: DiagnosticsStore): Promise<MemoryReadAuditStatus> {
+  if (!store.readAuditSnapshot) {
+    return {
+      status: "unsupported",
+      schema: null,
+      tableCount: 0,
+      rowCountTotal: 0,
+      auditedTables: [],
+      missingTables: [],
+      hashesAvailable: false,
+    };
+  }
+  try {
+    return summarizeReadAuditSnapshot(await store.readAuditSnapshot());
+  } catch (error) {
+    return {
+      status: "unavailable",
+      schema: null,
+      tableCount: 0,
+      rowCountTotal: 0,
+      auditedTables: [],
+      missingTables: [],
+      hashesAvailable: false,
+      error: errorInfo(error),
+    };
+  }
+}
+
 async function storageStatus(store: DiagnosticsStore): Promise<MemoryStorageStatus> {
   try {
     const schemaVersion = store.schemaVersion ? await store.schemaVersion() : null;
     const rowCounts = await store.rowCounts();
+    const readAudit = await readAuditStatus(store);
     const searchIndex = store.searchIndexStatus ? await store.searchIndexStatus() : undefined;
     return {
       status: "ok",
       schemaVersion,
       rowCounts,
+      readAudit,
       ...(searchIndex !== undefined ? { searchIndex } : {}),
     };
   } catch (error) {
@@ -128,6 +197,16 @@ async function storageStatus(store: DiagnosticsStore): Promise<MemoryStorageStat
       status: "unavailable",
       schemaVersion: null,
       rowCounts: {},
+      readAudit: {
+        status: "unavailable",
+        schema: null,
+        tableCount: 0,
+        rowCountTotal: 0,
+        auditedTables: [],
+        missingTables: [],
+        hashesAvailable: false,
+        error: errorInfo(error),
+      },
       error: errorInfo(error),
     };
   }
@@ -192,7 +271,7 @@ export async function createMemoryStatusReport(
     trustContract: {
       encrypted: false,
       reportContainsMemoryContent: false,
-      readPathSideEffectsChecked: false,
+      readPathSideEffectsChecked: storage.readAudit.status === "ok",
     },
   };
 }
@@ -212,8 +291,12 @@ export function renderMemoryStatusMarkdown(report: MemoryStatusReport): string {
     `Status: ${report.storage.status}`,
     `Schema version: ${report.storage.schemaVersion ?? "unknown"}`,
     `Encrypted: ${report.trustContract.encrypted ? "yes" : "no"}`,
+    `Read audit: ${report.storage.readAudit.status} (${report.storage.readAudit.tableCount} tables; rows=${report.storage.readAudit.rowCountTotal}; missing=${report.storage.readAudit.missingTables.length})`,
     report.storage.error
       ? `Error: ${report.storage.error.name}: ${report.storage.error.code}`
+      : "",
+    report.storage.readAudit.error
+      ? `Read audit error: ${report.storage.readAudit.error.name}: ${report.storage.readAudit.error.code}`
       : "",
     report.storage.searchIndex
       ? `Search index: ${report.storage.searchIndex.status} (${report.storage.searchIndex.indexedMemoryCount}/${report.storage.searchIndex.totalMemoryCount} indexed; missing=${report.storage.searchIndex.missingEntryCount}; stale=${report.storage.searchIndex.staleEntryCount}; orphan=${report.storage.searchIndex.orphanEntryCount}; duplicate=${report.storage.searchIndex.duplicateEntryCount})`

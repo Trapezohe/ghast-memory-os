@@ -243,13 +243,15 @@ gate means the SDK's local runtime contract is healthy;
 it is still not an external long-term agent benchmark or a proof of mature
 digital-twin capability.
 
-`doctor` and `status` include a content-free search index health summary for
-SQLite stores: indexed row count, missing FTS rows, stale rows, orphan rows,
-duplicates, and the local vector side index. Context search uses a deterministic
-local vector projection with FTS/BM25 and LIKE fallback; delete and management
-search stay lexical so fuzzy recall cannot archive the wrong memory. The vector
-index is derived from `gmos_memories`, stored in plaintext SQLite, and never
-calls a network embedding service. If the index drifts from the canonical table,
+`doctor` and `status` include content-free SQLite health summaries: indexed row
+count, missing FTS rows, stale rows, orphan rows, duplicates, local vector side
+index status, and read-audit coverage. The read-audit summary reports table
+counts and whether hashes are available; it does not print table state hashes or
+memory content. Context search uses a deterministic local vector projection with
+FTS/BM25 and LIKE fallback; delete and management search stay lexical so fuzzy
+recall cannot archive the wrong memory. The vector index is derived from
+`gmos_memories`, stored in plaintext SQLite, and never calls a network embedding
+service. If the index drifts from the canonical table,
 run `gmos repair --db ./gmos.db --search-index` to rebuild both FTS and vector
 rows from the stored memories. Repair does not create or delete memories; it
 only rebuilds derived search indexes.
@@ -606,8 +608,9 @@ The stdio server reports the installed `@ghast/memory` package version during
 MCP initialization unless the host passes an explicit `version` override.
 
 Current tools are `memory.add`, `memory.search`, `memory.observe`,
-`memory.prepare_context`, `memory.commit_outcome`, `memory.record_feedback`,
-`memory.forget`, and `memory.explain_belief`.
+`memory.prepare_context`, `memory.reconstruct_context`,
+`memory.explain_evidence_path`, `memory.commit_outcome`,
+`memory.record_feedback`, `memory.forget`, and `memory.explain_belief`.
 
 Hosts can gate this public tool surface explicitly:
 
@@ -669,6 +672,8 @@ Endpoints:
 - `POST /search`
 - `POST /observe`
 - `POST /prepare`
+- `POST /reconstruct`
+- `POST /explain-path`
 - `POST /commit-outcome`
 - `POST /feedback`
 - `POST /forget`
@@ -685,10 +690,10 @@ The route list is also exported for host package-contract tests:
 import { PUBLIC_MEMORY_HTTP_ROUTES } from "@ghast/memory/http";
 ```
 
-The HTTP adapter intentionally rejects `includeSensitive` on `/prepare` and
-`/search` through the same public-tool contract as MCP. Hosts that need
-sensitive/admin memory access should use the in-process SDK with an explicit
-internal trust boundary.
+The HTTP adapter intentionally rejects `includeSensitive` on `/prepare`,
+`/reconstruct`, `/explain-path`, and `/search` through the same public-tool
+contract as MCP. Hosts that need sensitive/admin memory access should use the
+in-process SDK with an explicit internal trust boundary.
 
 Profile backup/restore is intentionally not exposed as an MCP tool or HTTP
 route. It remains an in-process SQLite store API and CLI operation for trusted
@@ -721,8 +726,8 @@ Every proposal in this alpha path is explicitly marked `autoApply=false` and
 
 Hosts can generate a read-only status report for integration checks and support
 bundles. The report includes package version, SQLite schema version, row counts,
-failure counts by kind, and optional host compatibility. It does not include
-memory content or failure samples.
+read-audit coverage, failure counts by kind, and optional host compatibility. It
+does not include memory content, failure samples, or table state hashes.
 
 ```ts
 import { createMemoryStatusReport } from "@ghast/memory/diagnostics";

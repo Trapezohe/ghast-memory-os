@@ -1293,7 +1293,8 @@ export async function runMemoryReleaseGate(
     const diagnosticsPass =
       diagnostics.storage.status === "ok" &&
       diagnostics.storage.schemaVersion !== null &&
-      diagnostics.trustContract.encrypted === false;
+      diagnostics.trustContract.encrypted === false &&
+      diagnostics.trustContract.readPathSideEffectsChecked === true;
     const pass =
       memoryGym.pass &&
       hostCompatibility.pass &&
@@ -1342,6 +1343,9 @@ export async function runMemoryReleaseGate(
           schemaVersion: diagnostics.storage.schemaVersion,
           storageStatus: diagnostics.storage.status,
           encrypted: diagnostics.trustContract.encrypted,
+          readAuditStatus: diagnostics.storage.readAudit.status,
+          readAuditTableCount: diagnostics.storage.readAudit.tableCount,
+          readPathSideEffectsChecked: diagnostics.trustContract.readPathSideEffectsChecked,
         },
       },
       reports: {

@@ -3067,17 +3067,26 @@ assert.equal(statusReport.storage.schemaVersion, 6);
 assert.equal(statusReport.storage.searchIndex?.status, "ok");
 assert.equal(statusReport.storage.searchIndex?.missingEntryCount, 0);
 assert.equal(statusReport.storage.rowCounts.gmos_failure_events >= testProfileFailures.length, true);
+assert.equal(statusReport.storage.readAudit.status, "ok");
+assert.equal(statusReport.storage.readAudit.schema, "gmos.read_audit_snapshot.v1");
+assert.equal(statusReport.storage.readAudit.tableCount >= 10, true);
+assert.equal(statusReport.storage.readAudit.auditedTables.includes("gmos_memories_fts"), true);
+assert.equal(statusReport.storage.readAudit.hashesAvailable, true);
+assert.equal(statusReport.storage.readAudit.missingTables.length, 0);
 assert.equal(statusReport.failureSummary.status, "ok");
 assert.equal(statusReport.failureSummary.inspectedFailureCount, 3);
 assert.equal(statusReport.failureSummary.byKind.wrong_recall, 1);
 assert.equal(statusReport.failureSummary.byKind.privacy_leak, 1);
 assert.equal(statusReport.failureSummary.byKind.task_failure, 1);
 assert.equal(statusReport.hostCompatibility?.level, "L4");
+assert.equal(statusReport.trustContract.readPathSideEffectsChecked, true);
 assert.equal(JSON.stringify(statusReport).includes("身份证"), false);
 assert.equal(JSON.stringify(statusReport).includes("110101199001011234"), false);
+assert.equal(JSON.stringify(statusReport).includes("stateHash"), false);
 const renderedStatus = renderMemoryStatusMarkdown(statusReport);
 assert.match(renderedStatus, /gmOS Status Report/);
 assert.match(renderedStatus, /Search index: ok/);
+assert.match(renderedStatus, /Read audit: ok/);
 assert.match(renderedStatus, /gmos_failure_events/);
 assert.equal(renderedStatus.includes("身份证"), false);
 const badStatus = await createMemoryStatusReport({
@@ -6691,9 +6700,15 @@ assert.deepEqual(releaseGate.components.scale.failedSizes, []);
 assert.deepEqual(releaseGate.components.scale.failedOperations, []);
 assert.equal(releaseGate.components.diagnostics.pass, true);
 assert.equal(releaseGate.components.diagnostics.encrypted, false);
+assert.equal(releaseGate.components.diagnostics.readAuditStatus, "ok");
+assert.equal(releaseGate.components.diagnostics.readAuditTableCount >= 10, true);
+assert.equal(releaseGate.components.diagnostics.readPathSideEffectsChecked, true);
 assert.equal(releaseGate.reports.diagnostics.trustContract.encrypted, false);
+assert.equal(releaseGate.reports.diagnostics.trustContract.readPathSideEffectsChecked, true);
 assert.equal(releaseGate.inputs.actualHostReports, 0);
-assert.match(renderMemoryReleaseGateMarkdown(releaseGate), /gmOS Release Gate Report/);
+const releaseGateMarkdown = renderMemoryReleaseGateMarkdown(releaseGate);
+assert.match(releaseGateMarkdown, /gmOS Release Gate Report/);
+assert.match(releaseGateMarkdown, /readAudit=ok/);
 const failedReleaseGate = await runMemoryReleaseGate({
   generatedSeeds: 1,
   scaleSizes: [10],
@@ -6746,12 +6761,26 @@ for (const [host, expectedLevel] of [
   const doctorJson = JSON.parse(doctor.stdout) as {
     encrypted: boolean;
     schema?: { dialect?: string; version?: number };
+    readAudit?: {
+      status?: string;
+      schema?: string;
+      tableCount?: number;
+      rowCountTotal?: number;
+      missingTables?: string[];
+      hashesAvailable?: boolean;
+      stateHash?: string;
+    };
     hostCompatibility?: { level?: string; gaps?: string[] };
     searchIndex?: { status?: string; missingEntryCount?: number; vectorIndex?: { status?: string } };
   };
   assert.equal(doctorJson.encrypted, false);
   assert.equal(doctorJson.schema?.dialect, "sqlite");
   assert.equal(doctorJson.schema?.version, 6);
+  assert.equal(doctorJson.readAudit?.status, "ok");
+  assert.equal(doctorJson.readAudit?.schema, "gmos.read_audit_snapshot.v1");
+  assert.equal((doctorJson.readAudit?.tableCount ?? 0) >= 10, true);
+  assert.equal(doctorJson.readAudit?.hashesAvailable, true);
+  assert.equal(doctorJson.readAudit?.stateHash, undefined);
   assert.equal(doctorJson.hostCompatibility?.level, expectedLevel);
   assert.equal(doctorJson.searchIndex?.status, "ok");
   assert.equal(doctorJson.searchIndex?.missingEntryCount, 0);

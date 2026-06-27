@@ -126,6 +126,9 @@ export interface MemoryReleaseGateResult {
       schemaVersion: number | null;
       storageStatus: "ok" | "unavailable";
       encrypted: false;
+      readAuditStatus: "ok" | "unsupported" | "unavailable";
+      readAuditTableCount: number;
+      readPathSideEffectsChecked: boolean;
     };
   };
   reports: {

@@ -58,6 +58,7 @@ import type {
   LowLevelListMemoriesInput,
   LowLevelSearchInput,
   MemoryKind,
+  ReadAuditSnapshot,
 } from "../kernel/types.js";
 
 function value(name: string, fallback?: string): string | undefined {
@@ -221,6 +222,31 @@ function hostPresetList(raw: string | undefined): HostPreset[] {
 function hostReport(preset: HostPreset | undefined) {
   if (!preset) return undefined;
   return createPresetHostAdapter(preset).compatibility;
+}
+
+function doctorReadAudit(snapshot: ReadAuditSnapshot | null) {
+  if (!snapshot) {
+    return {
+      status: "unsupported",
+      schema: null,
+      tableCount: 0,
+      rowCountTotal: 0,
+      missingTables: [],
+      hashesAvailable: false,
+    };
+  }
+  const entries = Object.entries(snapshot.tables);
+  return {
+    status: "ok",
+    schema: snapshot.schema,
+    tableCount: entries.length,
+    rowCountTotal: entries.reduce((sum, [, table]) => sum + table.rowCount, 0),
+    missingTables: entries
+      .filter(([, table]) => table.stateHash === "missing")
+      .map(([table]) => table)
+      .sort(),
+    hashesAvailable: entries.every(([, table]) => typeof table.stateHash === "string"),
+  };
 }
 
 function actualHostReportsFromOption(): HostActualCompatibilityReport[] | undefined {
@@ -653,6 +679,9 @@ async function main(): Promise<void> {
               version: store.schemaVersion ? await store.schemaVersion() : null,
             },
             rowCounts: await store.rowCounts(),
+            readAudit: doctorReadAudit(
+              store.readAuditSnapshot ? await store.readAuditSnapshot() : null,
+            ),
             searchIndex: store.searchIndexStatus ? await store.searchIndexStatus() : null,
             hostCompatibility: hostReport(requestedHost),
           },
