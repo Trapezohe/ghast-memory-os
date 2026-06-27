@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import process from "node:process";
@@ -19,23 +20,23 @@ function jsonlIds(fileName) {
   );
 }
 
-const result = spawnSync(
-  process.execPath,
-  [
-    cliFile,
-    "gym",
-    "external-suite",
-    "--suite-file",
-    suiteFile,
-    "--fail-on-benchmark-fail",
-    "--format",
-    "json",
-  ],
-  {
+function runCli(args, options = {}) {
+  return spawnSync(process.execPath, [cliFile, ...args], {
     cwd: root,
     encoding: "utf8",
-  },
-);
+    ...options,
+  });
+}
+
+const result = runCli([
+  "gym",
+  "external-suite",
+  "--suite-file",
+  suiteFile,
+  "--fail-on-benchmark-fail",
+  "--format",
+  "json",
+]);
 
 if (result.status !== 0) {
   process.stderr.write(result.stderr);
@@ -114,6 +115,77 @@ if (
   !locomoRun.warnings?.includes("skipped_locomo_unscored_qa:locomo-mini-atlas:qa-3")
 ) {
   failures.push("locomo-mini run did not pass 4 cases with profile reuse and unscored warning");
+}
+
+if (failures.length > 0) {
+  process.stderr.write(`External fixture gate failed: ${failures.join("; ")}\n`);
+  process.stderr.write(`${JSON.stringify(report, null, 2)}\n`);
+  process.exit(1);
+}
+
+const failureTmp = mkdtempSync(path.join(os.tmpdir(), "gmos-external-failure-"));
+try {
+  const failingJsonl = path.join(failureTmp, "failing.jsonl");
+  const failingSuite = path.join(failureTmp, "suite.json");
+  const outputDir = path.join(failureTmp, "reports");
+  const suiteJson = path.join(failureTmp, "suite-summary.json");
+  const suiteMarkdown = path.join(failureTmp, "suite-summary.md");
+  writeFileSync(
+    failingJsonl,
+    `${JSON.stringify({
+      id: "fixture-failure-report",
+      events: [{ type: "memory", kind: "fact", content: "Visible fixture answer is Alpha." }],
+      question: "What is visible?",
+      expectedAll: ["Missing Alpha"],
+    })}\n`,
+  );
+  writeFileSync(
+    failingSuite,
+    JSON.stringify({
+      schema: "gmos.external_benchmark_suite.v1",
+      defaults: { failureSampleLimit: 2 },
+      runs: [{ id: "failing-report", inputFile: path.basename(failingJsonl), datasetFormat: "gmos" }],
+    }),
+  );
+  const failingResult = runCli([
+    "gym",
+    "external-suite",
+    "--suite-file",
+    failingSuite,
+    "--output-dir",
+    outputDir,
+    "--json-file",
+    suiteJson,
+    "--markdown-file",
+    suiteMarkdown,
+    "--format",
+    "json",
+  ]);
+  if (failingResult.status !== 0) {
+    process.stderr.write(failingResult.stderr);
+    process.stderr.write(failingResult.stdout);
+    failures.push(`failure smoke command exited ${failingResult.status ?? 1}`);
+  } else {
+    const failingReport = JSON.parse(failingResult.stdout);
+    const perRunReport = JSON.parse(readFileSync(path.join(outputDir, "failing-report.json"), "utf8"));
+    const markdown = readFileSync(path.join(outputDir, "failing-report.md"), "utf8");
+    const suiteMarkdownText = readFileSync(suiteMarkdown, "utf8");
+    if (failingReport.benchmarkPass !== false) failures.push("failure smoke benchmarkPass was not false");
+    if (!failingReport.totalFailureStages?.some((entry) => entry.name === "answer_not_in_input" && entry.count === 1)) {
+      failures.push("failure smoke missing answer_not_in_input stage");
+    }
+    if (perRunReport.summary?.failureSamples?.[0]?.id !== "fixture-failure-report") {
+      failures.push("failure smoke missing per-run failure sample");
+    }
+    if (!/## Failure Samples/.test(markdown) || !/answer_not_in_input/.test(markdown)) {
+      failures.push("failure smoke markdown missing failure sample details");
+    }
+    if (!/BenchmarkStatus: FAIL/.test(suiteMarkdownText)) {
+      failures.push("failure smoke suite markdown missing failed benchmark status");
+    }
+  }
+} finally {
+  rmSync(failureTmp, { recursive: true, force: true });
 }
 
 if (failures.length > 0) {
