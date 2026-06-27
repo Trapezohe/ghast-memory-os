@@ -62,12 +62,15 @@ const NON_SPEAKER_PREFIXES = new Set([
   "action",
   "assistant",
   "context",
+  "example",
+  "fact",
   "input",
   "memory",
   "message",
   "note",
   "output",
   "plan",
+  "preference",
   "project",
   "prompt",
   "question",
@@ -92,6 +95,10 @@ const NON_SPEAKER_PREFIXES = new Set([
   "输出",
   "问题",
   "项目",
+  "偏好",
+  "事实",
+  "示例",
+  "说明",
 ]);
 
 function inferSpeakerPrefix(content: string): string | null {

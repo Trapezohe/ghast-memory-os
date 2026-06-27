@@ -2003,21 +2003,23 @@ assert.equal(
   (inferredNoraMemory?.metadata.sourceMetadata as Record<string, unknown> | undefined)?.speaker,
   "Nora",
 );
-const nonSpeakerPrefixReport = await rulesReportMemory.observeWithReport({
-  type: "conversation.message",
-  profileId: "rules_report",
-  role: "user",
-  content: "Note: I use VectorPad for travel planning.",
-});
-assert.equal(nonSpeakerPrefixReport.extraction?.acceptedCandidateCount, 1);
-const nonSpeakerPrefixMemory = await rulesReportMemory.get({
-  profileId: "rules_report",
-  id: nonSpeakerPrefixReport.memoryIds[0]!,
-});
-assert.equal(
-  (nonSpeakerPrefixMemory?.metadata.sourceMetadata as Record<string, unknown> | undefined)?.speaker,
-  undefined,
-);
+for (const prefix of ["Note", "Preference", "Fact", "Example"]) {
+  const nonSpeakerPrefixReport = await rulesReportMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: "rules_report",
+    role: "user",
+    content: `${prefix}: I use VectorPad for travel planning.`,
+  });
+  assert.equal(nonSpeakerPrefixReport.extraction?.acceptedCandidateCount, 1);
+  const nonSpeakerPrefixMemory = await rulesReportMemory.get({
+    profileId: "rules_report",
+    id: nonSpeakerPrefixReport.memoryIds[0]!,
+  });
+  assert.equal(
+    (nonSpeakerPrefixMemory?.metadata.sourceMetadata as Record<string, unknown> | undefined)?.speaker,
+    undefined,
+  );
+}
 await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
