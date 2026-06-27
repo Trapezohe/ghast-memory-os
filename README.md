@@ -181,6 +181,36 @@ code does not write answer labels, evidence ids, category labels, or
 `has_answer` labels into memory; those fields are reserved for scoring and
 traceability.
 
+External benchmark dry-run snapshot, 2026-06-27:
+
+- LongMemEval cleaned oracle, official Hugging Face file
+  `longmemeval_oracle.json`, was run with
+  `gmos gym external --dataset-format longmemeval` on
+  `@ghast/memory@0.1.0-alpha.54`
+  (`747b8d81d16b8e387d19c09f8c789da644b2661a`, dirty=false).
+  Dataset hash:
+  `sha256:821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c`.
+  Result: 470 scored non-abstention cases, 79 passed, 391 failed,
+  deterministic score `0.1681`. The runner skipped the 30 official abstention
+  cases by default. The dominant failure reason was `expected_any_missing`;
+  427 cases did not reach evidence convergence, 326 ended with high
+  uncertainty, and only 43 reached evidence convergence. This is a useful
+  baseline for retrieval/reconstruction work, not a publishable SOTA claim and
+  not the official LongMemEval LLM-judge QA metric.
+- LongMemEval cleaned S and LoCoMo full QA were attempted as internal dry-runs
+  on the same SDK build. `longmemeval_s_cleaned.json` was interrupted after more
+  than five minutes without JSON output, and LoCoMo `data/locomo10.json`
+  expanded to 1986 QA cases and was interrupted after more than eleven minutes
+  without JSON output. Treat this as a current runner throughput finding:
+  external benchmark execution needs batched profile reuse or streaming
+  partial-result output before these full-history datasets should be reported.
+
+Official source pointers used for this dry-run:
+[LongMemEval cleaned](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned),
+[LongMemEval GitHub](https://github.com/xiaowu0162/longmemeval), and
+[LoCoMo GitHub](https://github.com/snap-research/locomo). The datasets are not
+vendored in this repository.
+
 `gym statebench` is a protocol bridge for the STATE-Bench Agent Learning Track,
 not a replacement for the official runner. `build-learnings` reads only
 `datasets/train_task_trajectories/<domain>` style JSON files, extracts compact
