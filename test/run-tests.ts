@@ -518,6 +518,81 @@ assert.equal(
   ),
   true,
 );
+const speakerBeliefStore = createSqliteMemoryStore({
+  path: path.join(tmp, "speaker-belief-extractor.db"),
+});
+const speakerBeliefMemory = createMemoryOS({
+  profileId: "speaker_belief",
+  store: speakerBeliefStore,
+  extractor: (input) => {
+    const speaker = typeof input.event.metadata?.speaker === "string" ? input.event.metadata.speaker : "Unknown";
+    const style = speaker === "Alex" ? "concise planning" : "visual planning";
+    return {
+      kind: "preference",
+      content: `${speaker} prefers ${style}.`,
+      confidence: 0.9,
+      predicate: "user.preference",
+      cardinality: "single",
+      actionPolicyKind: "prefer",
+    };
+  },
+});
+await speakerBeliefMemory.observe({
+  type: "conversation.message",
+  profileId: "speaker_belief",
+  role: "user",
+  content: "I prefer concise planning.",
+  metadata: { speaker: "Alex", speakerAliases: ["A"], participants: ["Alex", "Blair"] },
+});
+await speakerBeliefMemory.observe({
+  type: "conversation.message",
+  profileId: "speaker_belief",
+  role: "user",
+  content: "I prefer visual planning.",
+  metadata: { speaker: "Blair", speakerAliases: ["B"], participants: ["Alex", "Blair"] },
+});
+await speakerBeliefMemory.observe({
+  type: "conversation.message",
+  profileId: "speaker_belief",
+  role: "user",
+  content: "I prefer quiet planning.",
+  metadata: { speaker: "CurrentUser", speakerAliases: ["CU"], participants: ["CurrentUser", " currentuser "] },
+});
+await speakerBeliefMemory.observe({
+  type: "conversation.message",
+  profileId: "speaker_belief",
+  role: "user",
+  content: "Alex: I prefer direct planning.",
+  metadata: { speaker: "alex", speakerAliases: ["A"] },
+});
+const speakerBeliefDb = new Database(path.join(tmp, "speaker-belief-extractor.db"), {
+  readonly: true,
+});
+try {
+  const speakerBeliefs = speakerBeliefDb
+    .prepare(
+      `SELECT subject, status, metadata_json AS metadataJson
+       FROM gmos_world_beliefs
+       WHERE profile_id = 'speaker_belief' AND predicate = 'user.preference' AND status = 'active'
+       ORDER BY subject`,
+    )
+    .all() as Array<{ subject: string; status: string; metadataJson: string }>;
+  assert.deepEqual(
+    speakerBeliefs.map((entry) => `${entry.subject}:${entry.status}`),
+    ["person:alex:active", "person:blair:active", "user:active"],
+  );
+  assert.equal(
+    JSON.stringify(speakerBeliefs.map((entry) => JSON.parse(entry.metadataJson))).includes("\"A\""),
+    true,
+  );
+  assert.equal(
+    JSON.stringify(speakerBeliefs.map((entry) => JSON.parse(entry.metadataJson))).includes("\"B\""),
+    true,
+  );
+} finally {
+  speakerBeliefDb.close();
+}
+await speakerBeliefMemory.close();
 await extractorMemory.observe({
   type: "conversation.message",
   profileId: "extractor",

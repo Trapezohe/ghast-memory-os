@@ -37,6 +37,7 @@ import type {
   LowLevelRestoreArchivedMemoryInput,
   LowLevelSearchInput,
   LowLevelUpdateMemoryInput,
+  MemoryExtractionCandidate,
   MemoryKind,
   MemoryRecord,
   MemoryOS,
@@ -124,6 +125,70 @@ function sourceMetadataForEvent(event: Extract<HostEvent, { type: "conversation.
   const inferredSpeaker = inferSpeakerPrefix(event.content);
   if (!inferredSpeaker) return explicit;
   return { ...explicit, speaker: inferredSpeaker };
+}
+
+function publicSpeaker(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const speaker = value.trim();
+  if (!speaker || speaker.startsWith("[redacted_")) return undefined;
+  return classifySensitivity(speaker) === "normal" ? speaker : undefined;
+}
+
+function publicStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.flatMap((entry) => {
+        const speaker = publicSpeaker(entry);
+        return speaker ? [speaker] : [];
+      })
+    : [];
+}
+
+function speakerKey(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function shouldRouteBeliefToSpeaker(input: {
+  eventContent: string;
+  eventMetadata: Record<string, unknown>;
+  speaker: string;
+}): boolean {
+  if (speakerKey(inferSpeakerPrefix(input.eventContent) ?? "") === speakerKey(input.speaker)) return true;
+  return new Set(publicStringArray(input.eventMetadata.participants).map(speakerKey)).size > 1;
+}
+
+function worldBeliefSubjectForCandidate(input: {
+  candidate: MemoryExtractionCandidate;
+  eventContent: string;
+  eventMetadata: Record<string, unknown>;
+}): string {
+  const { candidate, eventContent, eventMetadata } = input;
+  if (candidate.subject) return candidate.subject;
+  const predicatePrefix = candidate.predicate?.split(".")[0]?.toLowerCase();
+  if (predicatePrefix !== "user" && predicatePrefix !== "person") return "user";
+  const speaker = publicSpeaker(eventMetadata.speaker);
+  return speaker && shouldRouteBeliefToSpeaker({ eventContent, eventMetadata, speaker })
+    ? `person:${speaker}`
+    : "user";
+}
+
+function worldBeliefSubjectAliasesForCandidate(input: {
+  candidate: MemoryExtractionCandidate;
+  subject: string;
+  eventMetadata: Record<string, unknown>;
+}): string[] | undefined {
+  const { candidate, subject, eventMetadata } = input;
+  const aliases = [...(candidate.subjectAliases ?? [])];
+  if (!candidate.subject && subject !== "user") {
+    aliases.push(...publicStringArray(eventMetadata.speakerAliases));
+  }
+  const seen = new Set<string>();
+  const uniqueAliases = aliases.filter((alias) => {
+    const key = alias.trim().toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return uniqueAliases.length > 0 ? uniqueAliases : undefined;
 }
 
 function sourceScopedMemories(memories: MemoryRecord[], query: string): MemoryRecord[] {
@@ -572,10 +637,19 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       });
       result.memoryIds.push(memory.id);
       if (candidate.predicate) {
+        const subject = worldBeliefSubjectForCandidate({
+          candidate,
+          eventContent: event.content,
+          eventMetadata,
+        });
         const belief = await store.addWorldBelief({
           profileId,
-          subject: candidate.subject ?? "user",
-          subjectAliases: candidate.subjectAliases,
+          subject,
+          subjectAliases: worldBeliefSubjectAliasesForCandidate({
+            candidate,
+            subject,
+            eventMetadata,
+          }),
           predicate: candidate.predicate,
           object: candidate.content,
           confidence: candidate.confidence,
