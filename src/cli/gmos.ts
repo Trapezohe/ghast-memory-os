@@ -973,6 +973,7 @@ async function main(): Promise<void> {
                 maxSteps: positiveIntegerOption("--max-steps", 3),
                 maxBranch: positiveIntegerOption("--max-branch", 4),
                 maxMemories: positiveIntegerOption("--max-memories", 8),
+                includeTemporalMetadata: has("--temporal-metadata"),
               },
             }
           : {}),
@@ -993,6 +994,7 @@ async function main(): Promise<void> {
         maxSteps: positiveIntegerOption("--max-steps", 3),
         maxBranch: positiveIntegerOption("--max-branch", 4),
         maxMemories: positiveIntegerOption("--max-memories", 8),
+        includeTemporalMetadata: has("--temporal-metadata"),
       });
       console.log(JSON.stringify(reconstructed, null, 2));
       return;
@@ -1011,6 +1013,7 @@ async function main(): Promise<void> {
         maxSteps: positiveIntegerOption("--max-steps", 3),
         maxBranch: positiveIntegerOption("--max-branch", 4),
         maxMemories: positiveIntegerOption("--max-memories", 8),
+        includeTemporalMetadata: has("--temporal-metadata"),
       });
       console.log(JSON.stringify(explanation, null, 2));
       return;

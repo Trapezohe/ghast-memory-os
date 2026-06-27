@@ -85,6 +85,7 @@ import {
   sanitizeEvidenceForPublicOutput,
   sanitizePublicPayload,
 } from "../src/kernel/safety.js";
+import { observedAtMetadata } from "../src/kernel/temporal-format.js";
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-sdk-test-"));
 const dbPath = path.join(tmp, "test.db");
@@ -818,6 +819,7 @@ const activeTemporalMemory = await temporalMemory.add({
   kind: "project",
   content: "Temporal window says Atlas owner is ActiveOwner.",
   confidence: 0.9,
+  createdAt: "2026-06-03T06:45:00.000Z",
   metadata: {
     validFrom: "2000-01-01T00:00:00.000Z",
     validTo: "2999-01-01T00:00:00.000Z",
@@ -842,14 +844,28 @@ assert.equal(manageTemporalSearch.some((entry) => entry.id === expiredTemporalMe
 assert.equal(manageTemporalSearch.some((entry) => entry.id === futureTemporalMemory.id), true);
 const temporalReconstruction = await temporalMemory.reconstructContext({
   profileId: "temporal",
-  query: "Temporal window Atlas owner",
+  query: "When was the Temporal window Atlas owner observed?",
+  includeTemporalMetadata: true,
   maxSteps: 4,
   maxBranch: 8,
   maxMemories: 8,
 });
 assert.match(temporalReconstruction.contextBlock, /ActiveOwner/);
+assert.match(temporalReconstruction.contextBlock, /observed=2026-06-03/);
+assert.match(temporalReconstruction.contextBlock, /time=06:45 UTC/);
+assert.equal(temporalReconstruction.paths.some((path) => path.createdAt === "2026-06-03T06:45:00.000Z"), true);
 assert.doesNotMatch(temporalReconstruction.contextBlock, /ExpiredOwner/);
 assert.doesNotMatch(temporalReconstruction.contextBlock, /FutureOwner/);
+const nonTemporalReconstruction = await temporalMemory.reconstructContext({
+  profileId: "temporal",
+  query: "When was the Temporal window Atlas owner observed?",
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.match(nonTemporalReconstruction.contextBlock, /ActiveOwner/);
+assert.doesNotMatch(nonTemporalReconstruction.contextBlock, /observed=2026-06-03/);
+assert.equal(nonTemporalReconstruction.paths.some((path) => path.createdAt !== undefined), false);
 
 let llmExtractorRequest: {
   url?: string;
@@ -3221,6 +3237,8 @@ for (const sensitivePersonalFixture of [
   assert.equal(classifySensitivity(sensitivePersonalFixture), "sensitive");
   assert.equal(redactForReport(sensitivePersonalFixture), "[redacted_sensitive]");
 }
+assert.equal(observedAtMetadata("2026-06-03T06:45:00.000Z"), "observed=2026-06-03; time=06:45 UTC");
+assert.equal(observedAtMetadata("not a timestamp"), "");
 const sanitizedCredentialEvidence = sanitizeEvidenceForPublicOutput({
   id: "evidence_redaction_fixture",
   eventKey: "evidence_redaction_fixture?access_token=abcdefghijkl",
@@ -5583,9 +5601,16 @@ const reconstructedRowsBefore = await reconstructionStore.rowCounts();
 const preparedWithShadow = await reconstructionMemory.prepareTurn({
   profileId: "recon",
   messages: [{ role: "user", content: "我之前说的那个计划，先做什么？" }],
-  reconstruction: { mode: "shadow", maxSteps: 4, maxBranch: 6, maxMemories: 6 },
+  reconstruction: {
+    mode: "shadow",
+    maxSteps: 4,
+    maxBranch: 6,
+    maxMemories: 6,
+    includeTemporalMetadata: true,
+  },
 });
 assert.match(preparedWithShadow.reconstruction?.contextBlock ?? "", /Helio 项目推进时先写复现报告/);
+assert.match(preparedWithShadow.reconstruction?.contextBlock ?? "", /observed=/);
 assert.equal(
   JSON.stringify(reconstructedRowsBefore),
   JSON.stringify(await reconstructionStore.rowCounts()),
@@ -5596,6 +5621,7 @@ const mcpReconstruct = await createMemoryMcpServer(reconstructionMemory).callToo
     profileId: "recon",
     text: "我之前说的那个计划，先做什么？",
     includeEvidence: true,
+    includeTemporalMetadata: true,
     maxSteps: 4,
     stopWhenEvidenceEnough: false,
     evidenceConvergenceThreshold: 0.8,
@@ -5605,6 +5631,21 @@ assert.equal(mcpReconstruct.isError, undefined);
 assert.match(JSON.stringify(mcpReconstruct.structuredContent), /Helio 项目推进时先写复现报告/);
 assert.match(JSON.stringify(mcpReconstruct.structuredContent), /stopWhenEvidenceEnough/);
 assert.match(JSON.stringify(mcpReconstruct.structuredContent), /false/);
+assert.match(JSON.stringify(mcpReconstruct.structuredContent), /observed=/);
+const mcpDefaultReconstruct = await createMemoryMcpServer(reconstructionMemory).callTool(
+  "memory.reconstruct_context",
+  {
+    profileId: "recon",
+    text: "我之前说的那个计划，先做什么？",
+    maxSteps: 4,
+  },
+);
+assert.equal(mcpDefaultReconstruct.isError, undefined);
+assert.equal(JSON.stringify(mcpDefaultReconstruct.structuredContent).includes("observed="), false);
+const mcpDefaultReconstructed = (
+  mcpDefaultReconstruct.structuredContent as { reconstructed?: { paths?: unknown[] } }
+).reconstructed;
+assert.equal(JSON.stringify(mcpDefaultReconstructed?.paths ?? []).includes("createdAt"), false);
 const mcpExplainEvidencePath = await createMemoryMcpServer(reconstructionMemory).callTool(
   "memory.explain_evidence_path",
   {

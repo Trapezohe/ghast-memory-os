@@ -550,6 +550,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
               maxMemories: input.reconstruction.maxMemories,
               stopWhenEvidenceEnough: input.reconstruction.stopWhenEvidenceEnough,
               evidenceConvergenceThreshold: input.reconstruction.evidenceConvergenceThreshold,
+              includeTemporalMetadata: input.reconstruction.includeTemporalMetadata,
             },
           })
         : undefined;

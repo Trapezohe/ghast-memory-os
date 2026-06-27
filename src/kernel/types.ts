@@ -90,6 +90,7 @@ export interface PrepareTurnInput {
     maxMemories?: number | undefined;
     stopWhenEvidenceEnough?: boolean | undefined;
     evidenceConvergenceThreshold?: number | undefined;
+    includeTemporalMetadata?: boolean | undefined;
   } | undefined;
 }
 
@@ -273,6 +274,7 @@ export interface ReconstructContextInput {
   maxMemories?: number | undefined;
   stopWhenEvidenceEnough?: boolean | undefined;
   evidenceConvergenceThreshold?: number | undefined;
+  includeTemporalMetadata?: boolean | undefined;
 }
 
 export interface ExplainEvidencePathInput extends ReconstructContextInput {
@@ -294,6 +296,7 @@ export interface ReconstructedEvidencePath {
   informationGain?: number | undefined;
   sourceMemoryId?: string | null | undefined;
   sourceEvidenceId?: string | null | undefined;
+  createdAt?: string | undefined;
 }
 
 export interface ReconstructedPlannerBranch {

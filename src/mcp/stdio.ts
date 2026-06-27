@@ -87,6 +87,7 @@ const reconstructContextSchema = z.object({
   maxMemories: z.number().int().positive().optional(),
   stopWhenEvidenceEnough: z.boolean().optional(),
   evidenceConvergenceThreshold: z.number().positive().optional(),
+  includeTemporalMetadata: z.boolean().optional(),
 }).strict();
 
 const explainEvidencePathSchema = z.object({
@@ -101,6 +102,7 @@ const explainEvidencePathSchema = z.object({
   maxMemories: z.number().int().positive().optional(),
   stopWhenEvidenceEnough: z.boolean().optional(),
   evidenceConvergenceThreshold: z.number().positive().optional(),
+  includeTemporalMetadata: z.boolean().optional(),
 }).strict();
 
 const commitOutcomeSchema = z.object({

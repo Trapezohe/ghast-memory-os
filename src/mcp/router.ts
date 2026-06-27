@@ -301,6 +301,7 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
       "maxMemories",
       "stopWhenEvidenceEnough",
       "evidenceConvergenceThreshold",
+      "includeTemporalMetadata",
     ]),
     "memory.reconstruct_context",
   );
@@ -317,6 +318,7 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
   const maxBranch = optionalPositiveInteger(args, "maxBranch");
   const maxMemories = optionalPositiveInteger(args, "maxMemories");
   const stopWhenEvidenceEnough = optionalBoolean(args, "stopWhenEvidenceEnough");
+  const includeTemporalMetadata = optionalBoolean(args, "includeTemporalMetadata");
   const evidenceConvergenceThreshold = optionalPositiveNumber(
     args,
     "evidenceConvergenceThreshold",
@@ -332,6 +334,9 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
   }
   if (evidenceConvergenceThreshold !== undefined) {
     input.evidenceConvergenceThreshold = evidenceConvergenceThreshold;
+  }
+  if (includeTemporalMetadata !== undefined) {
+    input.includeTemporalMetadata = includeTemporalMetadata;
   }
   return input;
 }
@@ -352,6 +357,7 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
       "maxMemories",
       "stopWhenEvidenceEnough",
       "evidenceConvergenceThreshold",
+      "includeTemporalMetadata",
     ]),
     "memory.explain_evidence_path",
   );
@@ -369,6 +375,7 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
   const maxBranch = optionalPositiveInteger(args, "maxBranch");
   const maxMemories = optionalPositiveInteger(args, "maxMemories");
   const stopWhenEvidenceEnough = optionalBoolean(args, "stopWhenEvidenceEnough");
+  const includeTemporalMetadata = optionalBoolean(args, "includeTemporalMetadata");
   const evidenceConvergenceThreshold = optionalPositiveNumber(
     args,
     "evidenceConvergenceThreshold",
@@ -385,6 +392,9 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
   }
   if (evidenceConvergenceThreshold !== undefined) {
     input.evidenceConvergenceThreshold = evidenceConvergenceThreshold;
+  }
+  if (includeTemporalMetadata !== undefined) {
+    input.includeTemporalMetadata = includeTemporalMetadata;
   }
   return input;
 }

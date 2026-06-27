@@ -1,5 +1,6 @@
 import { extractAssociationCues } from "./associations.js";
 import { sanitizeEvidenceForPublicOutput } from "./safety.js";
+import { observedAtSegment } from "./temporal-format.js";
 import type {
   EvidenceEvent,
   MemoryAssociationRecord,
@@ -52,15 +53,26 @@ function pathFromAssociation(
     routeReason,
     sourceMemoryId: association.sourceMemoryId,
     sourceEvidenceId: association.sourceEvidenceId,
+    createdAt: association.createdAt,
   };
 }
 
-function formatPathLine(path: ReconstructedEvidencePath): string {
+function formatPathLine(path: ReconstructedEvidencePath, includeTemporalMetadata: boolean): string {
   const routeScore = path.routeScore !== undefined ? `; routeScore=${path.routeScore.toFixed(2)}` : "";
   const routeReason = path.routeReason ? `; reason=${path.routeReason}` : "";
   const informationGain =
     path.informationGain !== undefined ? `; gain=${path.informationGain.toFixed(2)}` : "";
-  return `- [step=${path.step}; cue=${path.cue}; tag=${path.tag}; kind=${path.targetKind ?? path.targetType}; confidence=${path.confidence.toFixed(2)}${routeScore}${informationGain}${routeReason}] ${path.targetSummary}`;
+  const temporalMetadata = includeTemporalMetadata ? observedAtSegment(path.createdAt) : "";
+  return `- [step=${path.step}; cue=${path.cue}; tag=${path.tag}; kind=${path.targetKind ?? path.targetType}; confidence=${path.confidence.toFixed(2)}${routeScore}${informationGain}${temporalMetadata}${routeReason}] ${path.targetSummary}`;
+}
+
+function publicPath(
+  path: ReconstructedEvidencePath,
+  includeTemporalMetadata: boolean,
+): ReconstructedEvidencePath {
+  if (includeTemporalMetadata || path.createdAt === undefined) return path;
+  const { createdAt: _createdAt, ...publicPathWithoutTemporalMetadata } = path;
+  return publicPathWithoutTemporalMetadata;
 }
 
 interface ReconstructionIntent {
@@ -501,6 +513,7 @@ function pathFromDirectMemory(
     informationGain: Math.max(0.1, candidate.memory.confidence),
     sourceMemoryId: candidate.memory.id,
     sourceEvidenceId: candidate.memory.sourceEventId,
+    createdAt: candidate.memory.createdAt,
   };
 }
 
@@ -633,6 +646,7 @@ function composeReconstructedContext(input: {
   evidenceConvergenceThreshold: number;
   targetMemoryCount: number;
   stopReason: ReconstructedContext["stats"]["stopReason"];
+  includeTemporalMetadata: boolean;
   plannerTrace?: ReconstructedPlannerTrace | undefined;
 }): ReconstructedContext {
   const publicEvidence = input.includeEvidence
@@ -685,11 +699,11 @@ function composeReconstructedContext(input: {
       `Evidence convergence: score=${evidenceConvergence.score.toFixed(2)}; reached=${evidenceConvergence.reached}; threshold=${evidenceConvergence.threshold.toFixed(2)}; pruned=${evidenceConvergence.prunedBranchCount}; frontier=${evidenceConvergence.frontierRemaining}; stopWhenEvidenceEnough=${evidenceConvergence.stopWhenEvidenceEnough}`,
       `Reconstruction uncertainty: ${uncertainty.level}${uncertainty.reasons.length ? ` (${uncertainty.reasons.join(", ")})` : ""}`,
       "Reconstructed evidence paths:",
-      ...paths.map(formatPathLine),
+      ...paths.map((path) => formatPathLine(path, input.includeTemporalMetadata)),
       "Memory content:",
       ...memories.map(
         (memory) =>
-          `- [${memory.kind}; confidence=${memory.confidence.toFixed(2)}] ${memory.content}`,
+          `- [${memory.kind}; confidence=${memory.confidence.toFixed(2)}${input.includeTemporalMetadata ? observedAtSegment(memory.createdAt) : ""}] ${memory.content}`,
       ),
     ];
     if (input.includeEvidence) {
@@ -697,7 +711,7 @@ function composeReconstructedContext(input: {
       lines.push(
         ...evidence.map(
           (event) =>
-            `- [${event.sourceType}; ${event.sensitivity}; eligible=${event.eligibleForLongTermMemory}] ${event.content}`,
+            `- [${event.sourceType}; ${event.sensitivity}; eligible=${event.eligibleForLongTermMemory}${input.includeTemporalMetadata ? observedAtSegment(event.createdAt) : ""}] ${event.content}`,
         ),
       );
     }
@@ -713,13 +727,15 @@ function composeReconstructedContext(input: {
     contextBlock = render();
   }
 
+  const outputPaths = paths.map((path) => publicPath(path, input.includeTemporalMetadata));
+
   return {
     profileId: input.profileId,
     query: input.query,
     contextBlock,
     memories,
     evidence,
-    paths,
+    paths: outputPaths,
     plannerTrace: input.plannerTrace
       ? { ...input.plannerTrace, stopReason: input.stopReason }
       : undefined,
@@ -765,6 +781,7 @@ async function fallbackReconstruction(input: {
   stopWhenEvidenceEnough: boolean;
   evidenceConvergenceThreshold: number;
   targetMemoryCount: number;
+  includeTemporalMetadata?: boolean | undefined;
 }): Promise<ReconstructedContext> {
   const memories = await input.store.searchMemories({
     profileId: input.profileId,
@@ -786,6 +803,7 @@ async function fallbackReconstruction(input: {
     informationGain: Math.max(0.1, memory.confidence),
     sourceMemoryId: memory.id,
     sourceEvidenceId: memory.sourceEventId,
+    createdAt: memory.createdAt,
   }));
   const fallbackCoverage = evidenceCoverageForPaths(input.query, paths);
   const fallbackConvergence = evidenceConvergenceForPaths({
@@ -851,6 +869,7 @@ async function fallbackReconstruction(input: {
     evidenceConvergenceThreshold: input.evidenceConvergenceThreshold,
     targetMemoryCount: input.targetMemoryCount,
     stopReason,
+    includeTemporalMetadata: input.includeTemporalMetadata === true,
     plannerTrace,
   });
 }
@@ -868,6 +887,7 @@ export async function reconstructMemoryContext(input: {
   const maxBranch = boundedInteger(input.request.maxBranch, 4, 1, 12);
   const maxMemories = boundedInteger(input.request.maxMemories, 8, 1, 24);
   const stopWhenEvidenceEnough = input.request.stopWhenEvidenceEnough !== false;
+  const includeTemporalMetadata = input.request.includeTemporalMetadata === true;
   const evidenceConvergenceThreshold = boundedNumber(
     input.request.evidenceConvergenceThreshold,
     0.72,
@@ -889,6 +909,7 @@ export async function reconstructMemoryContext(input: {
       stopWhenEvidenceEnough,
       evidenceConvergenceThreshold,
       targetMemoryCount,
+      includeTemporalMetadata,
     });
   }
 
@@ -1103,6 +1124,7 @@ export async function reconstructMemoryContext(input: {
     evidenceConvergenceThreshold,
     targetMemoryCount,
     stopReason,
+    includeTemporalMetadata,
     plannerTrace: {
       mode: "associative",
       intentReason: intent.reason,

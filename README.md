@@ -353,6 +353,13 @@ alias). Ordinary context search and active reconstruction only use memories
 whose validity window includes the current time; `validTo` and `expiresAt` are
 treated as exclusive expiries. Management and delete searches still see
 out-of-window memories so hosts can audit, repair, or forget them explicitly.
+Active reconstruction can render observation time as metadata on memory,
+evidence, and reconstructed path lines when `includeTemporalMetadata: true` is
+set, for example `observed=2026-06-03`. The timestamp is not appended to stored
+memory content; it is rendered at composition time so agents can reason over
+timelines without polluting the canonical memory record or the ordinary context
+path. CLI users can pass `--temporal-metadata` to `reconstruct` or
+`explain-path`.
 The first production mode is shadow-safe:
 `prepareTurn({ reconstruction: { mode: "shadow" } })` returns a separate
 `reconstruction` field without replacing the ordinary `contextBlock`.
