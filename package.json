@@ -33,6 +33,7 @@
     "README.md",
     "CONTRIBUTING.md",
     "SECURITY.md",
+    "RELEASE_CHECKLIST.md",
     "examples"
   ],
   "publishConfig": {
