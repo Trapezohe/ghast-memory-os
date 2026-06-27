@@ -6,6 +6,7 @@ import path from "node:path";
 
 import type {
   MemoryKind,
+  MemoryRecord,
   MemoryOS,
   PrivacyMode,
   ReconstructedContext,
@@ -74,6 +75,20 @@ export interface ExternalMemoryBenchmarkCaseDiagnostics {
   uncertaintyReasons: string[];
 }
 
+export type ExternalMemoryBenchmarkFailureStage =
+  | "answer_not_in_input"
+  | "not_extracted_or_filtered"
+  | "retrieval_policy_filtered"
+  | "retrieval_or_reconstruction_miss"
+  | "context_composer_or_budget_drop"
+  | "forbidden_context_inclusion"
+  | "reconstruction_convergence_failure";
+
+export interface ExternalMemoryBenchmarkFailureTaxonomyEntry {
+  stage: ExternalMemoryBenchmarkFailureStage;
+  terms: string[];
+}
+
 export interface ExternalMemoryBenchmarkCaseResult {
   id: string;
   pass: boolean;
@@ -84,6 +99,7 @@ export interface ExternalMemoryBenchmarkCaseResult {
   expectedAllMissing: string[];
   forbiddenMatches: string[];
   failureReasons: string[];
+  failureTaxonomy?: ExternalMemoryBenchmarkFailureTaxonomyEntry[] | undefined;
   warnings: string[];
   diagnostics: ExternalMemoryBenchmarkCaseDiagnostics;
   promptTokenEstimate: number;
@@ -100,6 +116,7 @@ export interface ExternalMemoryBenchmarkFailureSample {
   id: string;
   mode: ExternalMemoryBenchmarkMode;
   failureReasons: string[];
+  failureTaxonomy?: ExternalMemoryBenchmarkFailureTaxonomyEntry[] | undefined;
   warnings: string[];
   expectedAnyMissing: string[];
   expectedAllMissing: string[];
@@ -115,6 +132,7 @@ export interface ExternalMemoryBenchmarkFailureSample {
 
 export interface ExternalMemoryBenchmarkSummary {
   failureReasons: ExternalMemoryBenchmarkCounter[];
+  failureStages?: ExternalMemoryBenchmarkCounter[] | undefined;
   warnings: ExternalMemoryBenchmarkCounter[];
   uncertaintyLevels: {
     low: number;
@@ -407,6 +425,94 @@ function includesTerm(haystack: string, term: string): boolean {
   return haystack.toLowerCase().includes(term.toLowerCase());
 }
 
+function uniqueTerms(values: string[]): string[] {
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const value of values) {
+    const normalized = value.trim();
+    const key = normalized.toLowerCase();
+    if (!normalized || seen.has(key)) continue;
+    seen.add(key);
+    terms.push(normalized);
+  }
+  return terms;
+}
+
+function eventContent(event: ExternalMemoryBenchmarkEvent): string {
+  if (event.type === "task") {
+    return [event.objective, event.summary ?? ""].filter(Boolean).join("\n");
+  }
+  return event.content;
+}
+
+function eventsContainTerm(events: ExternalMemoryBenchmarkEvent[], term: string): boolean {
+  return events.some((event) => includesTerm(eventContent(event), term));
+}
+
+function memoriesContainTerm(memories: MemoryRecord[], term: string): boolean {
+  return memories.some((memory) => includesTerm(memory.content, term));
+}
+
+function reconstructedPathsContainTerm(reconstructed: ReconstructedContext | null, term: string): boolean {
+  return reconstructed?.paths.some((pathEntry) => includesTerm(pathEntry.targetSummary, term)) ?? false;
+}
+
+function addTaxonomyEntry(
+  entries: ExternalMemoryBenchmarkFailureTaxonomyEntry[],
+  stage: ExternalMemoryBenchmarkFailureStage,
+  terms: string[],
+): void {
+  const normalizedTerms = uniqueTerms(terms);
+  if (normalizedTerms.length === 0) return;
+  const existing = entries.find((entry) => entry.stage === stage);
+  if (existing) {
+    existing.terms = uniqueTerms(existing.terms.concat(normalizedTerms));
+  } else {
+    entries.push({ stage, terms: normalizedTerms });
+  }
+}
+
+function diagnosticContextBudgetTokens(value: number | undefined): number {
+  return Math.max(20_000, (value ?? 1800) * 10);
+}
+
+function reconstructedContainsTerm(reconstructed: ReconstructedContext | null, term: string): boolean {
+  if (!reconstructed) return false;
+  return (
+    includesTerm(reconstructed.contextBlock, term) ||
+    memoriesContainTerm(reconstructed.memories, term) ||
+    reconstructedPathsContainTerm(reconstructed, term)
+  );
+}
+
+async function wideBudgetRunContainsTerm(input: {
+  memory: MemoryOS;
+  profileId: string;
+  benchmarkCase: ExternalMemoryBenchmarkCase;
+  mode: ExternalMemoryBenchmarkMode;
+  options: RunExternalMemoryBenchmarkOptions;
+  term: string;
+}): Promise<boolean> {
+  const contextBudgetTokens = diagnosticContextBudgetTokens(input.options.contextBudgetTokens);
+  if (input.mode === "prepare") {
+    const prepared = await input.memory.prepareTurn({
+      profileId: input.profileId,
+      messages: [{ role: "user", content: input.benchmarkCase.question }],
+      contextBudgetTokens,
+    });
+    return includesTerm(prepared.contextBlock, input.term) || memoriesContainTerm(prepared.memories, input.term);
+  }
+  const reconstructed = await input.memory.reconstructContext({
+    profileId: input.profileId,
+    query: input.benchmarkCase.question,
+    maxSteps: input.options.maxSteps,
+    maxBranch: input.options.maxBranch,
+    maxMemories: input.options.maxMemories,
+    contextBudgetTokens,
+  });
+  return reconstructedContainsTerm(reconstructed, input.term);
+}
+
 function reconstructionDiagnostics(
   reconstructed: ReconstructedContext | null,
 ): ExternalMemoryBenchmarkCaseDiagnostics {
@@ -436,6 +542,75 @@ function failureReasonsForCase(input: {
     reasons.push("convergence_not_reached");
   }
   return reasons;
+}
+
+async function failureTaxonomyForCase(input: {
+  memory: MemoryOS;
+  profileId: string;
+  benchmarkCase: ExternalMemoryBenchmarkCase;
+  missingExpectedTerms: string[];
+  forbiddenMatches: string[];
+  requireConvergence: boolean;
+  mode: ExternalMemoryBenchmarkMode;
+  options: RunExternalMemoryBenchmarkOptions;
+  diagnostics: ExternalMemoryBenchmarkCaseDiagnostics;
+  prepared: Awaited<ReturnType<MemoryOS["prepareTurn"]>> | null;
+  reconstructed: ReconstructedContext | null;
+}): Promise<ExternalMemoryBenchmarkFailureTaxonomyEntry[]> {
+  const entries: ExternalMemoryBenchmarkFailureTaxonomyEntry[] = [];
+  for (const term of uniqueTerms(input.missingExpectedTerms)) {
+    if (!eventsContainTerm(input.benchmarkCase.events, term)) {
+      addTaxonomyEntry(entries, "answer_not_in_input", [term]);
+      continue;
+    }
+    const historyHits = await input.memory.search({
+      profileId: input.profileId,
+      query: term,
+      limit: 10,
+      purpose: "history",
+    });
+    if (!memoriesContainTerm(historyHits, term)) {
+      addTaxonomyEntry(entries, "not_extracted_or_filtered", [term]);
+      continue;
+    }
+    const contextHits = await input.memory.search({
+      profileId: input.profileId,
+      query: term,
+      limit: 10,
+      purpose: "context",
+    });
+    if (!memoriesContainTerm(contextHits, term)) {
+      addTaxonomyEntry(entries, "retrieval_policy_filtered", [term]);
+      continue;
+    }
+    const retrievedTermPresent =
+      includesTerm(input.prepared?.contextBlock ?? "", term) ||
+      reconstructedContainsTerm(input.reconstructed, term) ||
+      memoriesContainTerm(input.prepared?.memories ?? [], term) ||
+      memoriesContainTerm(input.reconstructed?.memories ?? [], term);
+    if (retrievedTermPresent) {
+      addTaxonomyEntry(entries, "context_composer_or_budget_drop", [term]);
+      continue;
+    }
+    const wideBudgetCanRecover = await wideBudgetRunContainsTerm({
+      memory: input.memory,
+      profileId: input.profileId,
+      benchmarkCase: input.benchmarkCase,
+      mode: input.mode,
+      options: input.options,
+      term,
+    });
+    addTaxonomyEntry(
+      entries,
+      wideBudgetCanRecover ? "context_composer_or_budget_drop" : "retrieval_or_reconstruction_miss",
+      [term],
+    );
+  }
+  addTaxonomyEntry(entries, "forbidden_context_inclusion", input.forbiddenMatches);
+  if (input.mode === "reconstruct" && input.requireConvergence && input.diagnostics.evidenceConvergenceReached !== true) {
+    addTaxonomyEntry(entries, "reconstruction_convergence_failure", ["evidence_convergence"]);
+  }
+  return entries;
 }
 
 function warningsForCase(input: {
@@ -553,6 +728,7 @@ function failureSampleForCase(
     id: entry.id,
     mode: entry.mode,
     failureReasons: entry.failureReasons,
+    failureTaxonomy: entry.failureTaxonomy,
     warnings: entry.warnings,
     expectedAnyMissing: entry.expectedAnyMissing,
     expectedAllMissing: entry.expectedAllMissing,
@@ -572,6 +748,7 @@ function buildExternalMemoryBenchmarkSummary(
   failureSampleLimit: number,
 ): ExternalMemoryBenchmarkSummary {
   const failureReasonCounts = new Map<string, number>();
+  const failureStageCounts = new Map<string, number>();
   const warningCounts = new Map<string, number>();
   const uncertaintyLevels = {
     low: 0,
@@ -587,6 +764,9 @@ function buildExternalMemoryBenchmarkSummary(
   const failureSamples: ExternalMemoryBenchmarkFailureSample[] = [];
   for (const entry of cases) {
     for (const reason of entry.failureReasons) incrementCounter(failureReasonCounts, reason);
+    for (const taxonomyEntry of entry.failureTaxonomy ?? []) {
+      incrementCounter(failureStageCounts, taxonomyEntry.stage);
+    }
     for (const warning of entry.warnings) incrementCounter(warningCounts, warning);
     if (entry.diagnostics.uncertaintyLevel === "low") {
       uncertaintyLevels.low += 1;
@@ -610,6 +790,7 @@ function buildExternalMemoryBenchmarkSummary(
   }
   return {
     failureReasons: sortedCounters(failureReasonCounts),
+    failureStages: sortedCounters(failureStageCounts),
     warnings: sortedCounters(warningCounts),
     uncertaintyLevels,
     evidenceConvergence,
@@ -750,24 +931,41 @@ async function scoreCase(input: {
   const expectedAnyMissing =
     expectedAny.length > 0 && expectedAnyMatched.length === 0 ? expectedAny : [];
   const diagnostics = reconstructionDiagnostics(reconstructed);
+  const requireConvergenceForCase = mode === "reconstruct" && requireConvergence;
   const failureReasons = failureReasonsForCase({
     expectedAnyMissing,
     expectedAllMissing,
     forbiddenMatches,
-    requireConvergence: mode === "reconstruct" && requireConvergence,
+    requireConvergence: requireConvergenceForCase,
     diagnostics,
   });
+  const failureTaxonomy = failureReasons.length
+    ? await failureTaxonomyForCase({
+        memory: input.memory,
+        profileId,
+        benchmarkCase: input.benchmarkCase,
+        missingExpectedTerms: expectedAnyMissing.concat(expectedAllMissing),
+        forbiddenMatches,
+        requireConvergence: requireConvergenceForCase,
+        mode,
+        options: input.options,
+        diagnostics,
+        prepared,
+        reconstructed,
+      })
+    : [];
   const warnings = warningsForCase({ mode, diagnostics });
   return {
     id,
     pass: failureReasons.length === 0,
     mode,
-    requireConvergence: mode === "reconstruct" && requireConvergence,
+    requireConvergence: requireConvergenceForCase,
     expectedAnyMatched,
     expectedAnyMissing,
     expectedAllMissing,
     forbiddenMatches,
     failureReasons,
+    failureTaxonomy,
     warnings,
     diagnostics,
     promptTokenEstimate:

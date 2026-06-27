@@ -13,6 +13,16 @@ function markdownListCell(values: string[]): string {
   return values.length ? values.map(markdownCell).join(", ") : "-";
 }
 
+function markdownTaxonomyCell(values: Array<{ stage: string; terms?: string[] | undefined }>): string {
+  if (values.length === 0) return "-";
+  return values
+    .map((entry) => {
+      const terms = entry.terms?.length ? ` (${entry.terms.join(", ")})` : "";
+      return markdownCell(`${entry.stage}${terms}`);
+    })
+    .join(", ");
+}
+
 function markdownNullableNumber(value: number | null): string {
   return value === null ? "-" : value.toFixed(2);
 }
@@ -141,6 +151,7 @@ export function renderExternalMemoryBenchmarkMarkdown(
     "## Summary",
     "",
     `Failure reasons: ${markdownCounters(report.summary.failureReasons)}`,
+    `Failure stages: ${markdownCounters(report.summary.failureStages ?? [])}`,
     `Warnings: ${markdownCounters(report.summary.warnings)}`,
     `Uncertainty: low=${report.summary.uncertaintyLevels.low}, medium=${report.summary.uncertaintyLevels.medium}, high=${report.summary.uncertaintyLevels.high}, unknown=${report.summary.uncertaintyLevels.unknown}`,
     `Evidence convergence: reached=${report.summary.evidenceConvergence.reached}, notReached=${report.summary.evidenceConvergence.notReached}, unknown=${report.summary.evidenceConvergence.unknown}`,
@@ -150,21 +161,21 @@ export function renderExternalMemoryBenchmarkMarkdown(
     ...(report.summary.failureSamples.length === 0
       ? ["None"]
       : [
-          "| Case | Failure reasons | Warnings | Missing expectedAny | Missing expectedAll | Forbidden matches | Missing intent groups | Convergence | Uncertainty | Tokens | Paths |",
-          "| --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: |",
+          "| Case | Failure reasons | Failure stages | Warnings | Missing expectedAny | Missing expectedAll | Forbidden matches | Missing intent groups | Convergence | Uncertainty | Tokens | Paths |",
+          "| --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: |",
           ...report.summary.failureSamples.map(
             (entry) =>
-              `| ${markdownCell(entry.id)} | ${markdownListCell(entry.failureReasons)} | ${markdownListCell(entry.warnings)} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.forbiddenMatches)} | ${markdownListCell(entry.missingRequiredIntentGroups)} | ${markdownNullableNumber(entry.evidenceConvergenceScore)}${entry.evidenceConvergenceReached === null ? "" : entry.evidenceConvergenceReached ? " reached" : " not reached"} | ${entry.uncertaintyLevel ?? "-"} | ${entry.promptTokenEstimate} | ${entry.reconstructedPathCount} |`,
+              `| ${markdownCell(entry.id)} | ${markdownListCell(entry.failureReasons)} | ${markdownTaxonomyCell(entry.failureTaxonomy ?? [])} | ${markdownListCell(entry.warnings)} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.forbiddenMatches)} | ${markdownListCell(entry.missingRequiredIntentGroups)} | ${markdownNullableNumber(entry.evidenceConvergenceScore)}${entry.evidenceConvergenceReached === null ? "" : entry.evidenceConvergenceReached ? " reached" : " not reached"} | ${entry.uncertaintyLevel ?? "-"} | ${entry.promptTokenEstimate} | ${entry.reconstructedPathCount} |`,
           ),
         ]),
     "",
     "## Cases",
     "",
-    "| Case | Status | Mode | Failure reasons | Warnings | Missing expectedAny | Missing expectedAll | Forbidden matches | Missing intent groups | Convergence | Uncertainty | Tokens | Paths |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: |",
+    "| Case | Status | Mode | Failure reasons | Failure stages | Warnings | Missing expectedAny | Missing expectedAll | Forbidden matches | Missing intent groups | Convergence | Uncertainty | Tokens | Paths |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: |",
     ...report.cases.map(
       (entry) =>
-        `| ${markdownCell(entry.id)} | ${entry.pass ? "PASS" : "FAIL"} | ${entry.mode}${entry.requireConvergence ? " + convergence" : ""} | ${markdownListCell(entry.failureReasons)} | ${markdownListCell(entry.warnings)} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.forbiddenMatches)} | ${markdownListCell(entry.diagnostics.missingRequiredIntentGroups)} | ${markdownNullableNumber(entry.diagnostics.evidenceConvergenceScore)}${entry.diagnostics.evidenceConvergenceReached === null ? "" : entry.diagnostics.evidenceConvergenceReached ? " reached" : " not reached"} | ${entry.diagnostics.uncertaintyLevel ?? "-"} | ${entry.promptTokenEstimate} | ${entry.reconstructedPathCount} |`,
+        `| ${markdownCell(entry.id)} | ${entry.pass ? "PASS" : "FAIL"} | ${entry.mode}${entry.requireConvergence ? " + convergence" : ""} | ${markdownListCell(entry.failureReasons)} | ${markdownTaxonomyCell(entry.failureTaxonomy ?? [])} | ${markdownListCell(entry.warnings)} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.forbiddenMatches)} | ${markdownListCell(entry.diagnostics.missingRequiredIntentGroups)} | ${markdownNullableNumber(entry.diagnostics.evidenceConvergenceScore)}${entry.diagnostics.evidenceConvergenceReached === null ? "" : entry.diagnostics.evidenceConvergenceReached ? " reached" : " not reached"} | ${entry.diagnostics.uncertaintyLevel ?? "-"} | ${entry.promptTokenEstimate} | ${entry.reconstructedPathCount} |`,
     ),
     "",
   ].join("\n");

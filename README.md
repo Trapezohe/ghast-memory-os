@@ -203,6 +203,12 @@ writes per-run JSON/Markdown reports when `--output-dir` is provided. By default
 it is a dry-run baseline tool: failed benchmark runs set `benchmarkPass=false`
 but keep the command status successful so teams can record weak baselines. Add
 `--fail-on-benchmark-fail` when using the same suite as a release gate.
+External benchmark reports include both deterministic failure reasons and a
+coarser failure-stage taxonomy so low external scores can be separated into
+answer-label/input mismatch, extraction/filtering, retrieval policy filtering,
+reconstruction misses, context composer or budget drops, forbidden context
+inclusion, and convergence failures. `failureStages` counts whether a stage
+appears in a failed case; the per-case taxonomy entries carry the matched terms.
 
 The repository also includes a small CI-safe fixture suite at
 `test/fixtures/external-benchmark/suite.json`. `npm run test:external-fixtures`

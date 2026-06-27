@@ -6438,20 +6438,132 @@ const externalFailureSummaryBenchmark = await runExternalMemoryBenchmark({
       question: "What is visible?",
       expectedAny: ["Missing Beta"],
     },
+    {
+      id: "filtered-one",
+      events: [
+        {
+          type: "message",
+          content: "Incognito expected answer is Phantom.",
+          privacyMode: "incognito",
+        },
+      ],
+      question: "What is the expected answer?",
+      expectedAll: ["Phantom"],
+    },
   ],
 });
 assert.equal(externalFailureSummaryBenchmark.pass, false);
 assert.equal(externalFailureSummaryBenchmark.runManifest.options.failureSampleLimit, 1);
 assert.deepEqual(externalFailureSummaryBenchmark.summary.failureReasons, [
-  { name: "expected_all_missing", count: 1 },
+  { name: "expected_all_missing", count: 2 },
   { name: "expected_any_missing", count: 1 },
 ]);
+assert.deepEqual(externalFailureSummaryBenchmark.summary.failureStages, [
+  { name: "answer_not_in_input", count: 2 },
+  { name: "not_extracted_or_filtered", count: 1 },
+]);
+assert.deepEqual(
+  externalFailureSummaryBenchmark.cases.find((entry) => entry.id === "missing-one")?.failureTaxonomy,
+  [{ stage: "answer_not_in_input", terms: ["Missing Alpha"] }],
+);
+assert.deepEqual(
+  externalFailureSummaryBenchmark.cases.find((entry) => entry.id === "filtered-one")?.failureTaxonomy,
+  [{ stage: "not_extracted_or_filtered", terms: ["Phantom"] }],
+);
 assert.equal(externalFailureSummaryBenchmark.summary.failureSamples.length, 1);
 assert.equal(externalFailureSummaryBenchmark.summary.failureSamples[0]?.id, "missing-one");
 assert.equal(
   externalFailureSummaryBenchmark.summary.failureSamples[0]?.expectedAllMissing[0],
   "Missing Alpha",
 );
+assert.deepEqual(externalFailureSummaryBenchmark.summary.failureSamples[0]?.failureTaxonomy, [
+  { stage: "answer_not_in_input", terms: ["Missing Alpha"] },
+]);
+const rankedOutEvents = Array.from({ length: 20 }, (_, index) => ({
+  type: "memory" as const,
+  kind: "fact" as const,
+  content: `Alpine status distractor ${index}: routine update only.`,
+})).concat([
+  {
+    type: "memory" as const,
+    kind: "fact" as const,
+    content: "The Delta build answer token is NeedleFlag.",
+  },
+]);
+const externalTaxonomyBenchmark = await runExternalMemoryBenchmark({
+  failureSampleLimit: 10,
+  cases: [
+    {
+      id: "policy-filtered-expired",
+      events: [{ type: "message", content: "I used PolicyFlag until 2000-01-01." }],
+      question: "What flag do I use now?",
+      expectedAll: ["PolicyFlag"],
+    },
+    {
+      id: "retrieval-miss-ranked-out",
+      mode: "prepare",
+      events: rankedOutEvents,
+      question: "What is the Alpine status?",
+      expectedAll: ["NeedleFlag"],
+    },
+    {
+      id: "forbidden-inclusion",
+      events: [
+        {
+          type: "memory",
+          kind: "fact",
+          content: "The public route is SafeRoute. The forbidden route is WrongRoute.",
+        },
+      ],
+      question: "What is the public route?",
+      expectedAny: ["SafeRoute"],
+      forbiddenAny: ["WrongRoute"],
+    },
+  ],
+});
+assert.equal(externalTaxonomyBenchmark.pass, false);
+assert.deepEqual(
+  externalTaxonomyBenchmark.cases.find((entry) => entry.id === "policy-filtered-expired")?.failureTaxonomy,
+  [{ stage: "retrieval_policy_filtered", terms: ["PolicyFlag"] }],
+);
+assert.deepEqual(
+  externalTaxonomyBenchmark.cases.find((entry) => entry.id === "retrieval-miss-ranked-out")?.failureTaxonomy,
+  [{ stage: "retrieval_or_reconstruction_miss", terms: ["NeedleFlag"] }],
+);
+assert.deepEqual(
+  externalTaxonomyBenchmark.cases.find((entry) => entry.id === "forbidden-inclusion")?.failureTaxonomy,
+  [{ stage: "forbidden_context_inclusion", terms: ["WrongRoute"] }],
+);
+assert.deepEqual(
+  externalTaxonomyBenchmark.summary.failureStages.map((entry) => entry.name).sort(),
+  [
+    "forbidden_context_inclusion",
+    "retrieval_or_reconstruction_miss",
+    "retrieval_policy_filtered",
+  ],
+);
+const externalBudgetTaxonomyBenchmark = await runExternalMemoryBenchmark({
+  contextBudgetTokens: 8,
+  cases: [
+    {
+      id: "budget-drop-alpha",
+      events: [
+        {
+          type: "memory",
+          kind: "fact",
+          content:
+            "The Alpha marker is BudgetFlag and it should be recovered only when enough context budget is available.",
+        },
+      ],
+      question: "What is the Alpha marker?",
+      expectedAll: ["BudgetFlag"],
+    },
+  ],
+});
+assert.equal(externalBudgetTaxonomyBenchmark.pass, false);
+assert.deepEqual(externalBudgetTaxonomyBenchmark.cases[0]?.failureTaxonomy, [
+  { stage: "context_composer_or_budget_drop", terms: ["BudgetFlag"] },
+]);
 const externalSuiteFailFile = path.join(tmp, "external-long-memory-qa-fail-for-suite.jsonl");
 writeFileSync(
   externalSuiteFailFile,
@@ -7224,13 +7336,16 @@ assert.throws(
   /train trajectory directory does not exist/,
 );
 const externalMarkdown = renderExternalMemoryBenchmarkMarkdown(externalBenchmarkWithManifest);
+const externalFailureMarkdown = renderExternalMemoryBenchmarkMarkdown(externalFailureSummaryBenchmark);
 assert.match(externalMarkdown, /External Long-Memory QA/);
 assert.match(externalMarkdown, /Run Manifest/);
 assert.match(externalMarkdown, /format=gmos\.external_long_memory_qa\.jsonl/);
 assert.match(externalMarkdown, /## Summary/);
 assert.match(externalMarkdown, /## Failure Samples/);
 assert.match(externalMarkdown, /Failure reasons/);
+assert.match(externalMarkdown, /Failure stages/);
 assert.match(externalMarkdown, /Missing intent groups/);
+assert.match(externalFailureMarkdown, /answer_not_in_input \(Missing Alpha\)/);
 assert.throws(
   () =>
     parseExternalMemoryBenchmarkDataset(externalBenchmarkJsonl, {
@@ -7259,6 +7374,9 @@ const externalConvergenceFailure = await runExternalMemoryBenchmark({
 assert.equal(externalConvergenceFailure.pass, false);
 assert.deepEqual(externalConvergenceFailure.cases[0]?.failureReasons, [
   "convergence_not_reached",
+]);
+assert.deepEqual(externalConvergenceFailure.cases[0]?.failureTaxonomy, [
+  { stage: "reconstruction_convergence_failure", terms: ["evidence_convergence"] },
 ]);
 assert.equal(
   externalConvergenceFailure.cases[0]?.diagnostics.missingRequiredIntentGroups.includes(
