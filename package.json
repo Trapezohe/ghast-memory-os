@@ -31,6 +31,8 @@
   "files": [
     "dist",
     "README.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
     "examples"
   ],
   "publishConfig": {

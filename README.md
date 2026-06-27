@@ -6,6 +6,8 @@ for personal agents.
 This repository is the SDK/runtime extraction target for Ghast's memory system.
 It is not a vector-memory CRUD wrapper. The public path is:
 
+Project docs: [contributing](./CONTRIBUTING.md), [security and privacy](./SECURITY.md).
+
 ```ts
 import { createMemoryOS } from "@ghast/memory";
 import { createSqliteMemoryStore } from "@ghast/memory/store/sqlite";
