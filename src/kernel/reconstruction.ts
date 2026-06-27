@@ -1,4 +1,4 @@
-import { extractAssociationCues } from "./associations.js";
+import { extractAssociationCues, sourceMetadataEntityCues } from "./associations.js";
 import { sanitizeEvidenceForPublicOutput } from "./safety.js";
 import { observedAtSegment, temporalMetadataSegment } from "./temporal-format.js";
 import type {
@@ -438,6 +438,23 @@ function memoryMatchesIntent(memory: MemoryRecord, intent: ReconstructionIntent)
   );
 }
 
+function sourceScopeRejectReason(
+  memory: MemoryRecord,
+  intent: ReconstructionIntent,
+  selectedSourceCues: Set<string>,
+): string | null {
+  const sourceCues = sourceMetadataEntityCues(memory.metadata);
+  if (sourceCues.length === 0) return null;
+  const matchingQueryCues = sourceCues.filter((cue) => intent.queryCues.has(cue));
+  if (matchingQueryCues.length > 0) {
+    for (const cue of matchingQueryCues) selectedSourceCues.add(cue);
+    return null;
+  }
+  return selectedSourceCues.size > 0 && !sourceCues.some((cue) => selectedSourceCues.has(cue))
+    ? `source_scope_mismatch:${[...selectedSourceCues].join("|")}`
+    : null;
+}
+
 function pathMatchesIntent(path: ReconstructedEvidencePath, intent: ReconstructionIntent): boolean {
   return (
     intent.expectedTags.has(path.tag) ||
@@ -623,6 +640,7 @@ async function fuseDirectMemorySearch(input: {
   memories: MemoryRecord[];
   paths: ReconstructedEvidencePath[];
   seenMemoryIds: Set<string>;
+  selectedSourceCues: Set<string>;
 }): Promise<{
   candidateCount: number;
   reinforcedPaths: ReconstructedEvidencePath[];
@@ -657,6 +675,12 @@ async function fuseDirectMemorySearch(input: {
   for (const candidate of rankedCandidates) {
     if (input.memories.length >= input.maxMemories) break;
     if (input.seenMemoryIds.has(candidate.memory.id)) continue;
+    const sourceRejectReason = sourceScopeRejectReason(
+      candidate.memory,
+      input.intent,
+      input.selectedSourceCues,
+    );
+    if (sourceRejectReason) continue;
     input.seenMemoryIds.add(candidate.memory.id);
     input.memories.push(candidate.memory);
     const path = pathFromDirectMemory(candidate, directStep, input.query);
@@ -959,6 +983,7 @@ export async function reconstructMemoryContext(input: {
   const explored = new Set<string>();
   const seenAssociationIds = new Set<string>();
   const seenMemoryIds = new Set<string>();
+  const selectedSourceCues = new Set<string>();
   const memories: MemoryRecord[] = [];
   const paths: ReconstructedEvidencePath[] = [];
   const plannerSteps: ReconstructedPlannerStep[] = [];
@@ -1017,31 +1042,50 @@ export async function reconstructMemoryContext(input: {
         );
         continue;
       }
-      paths.push(path);
-      const nextCues = extractAssociationCues(
-        `${association.tag} ${association.targetSummary}`,
-        8,
-      ).filter((nextCue) => !GENERATED_CUE_STOP_TERMS.has(nextCue.cue));
       const generatedCues: string[] = [];
-      for (const nextCue of nextCues) {
-        if (explored.has(nextCue.cue)) continue;
-        enqueueFrontierCue(frontier, {
-          cue: nextCue.cue,
-          priority: ranked.routeScore * 0.7 + (nextCue.cueKind === "entity" ? 4 : 0),
-          reason: `from:${association.tag}`,
-        });
-        stepGeneratedCues.add(nextCue.cue);
-        generatedCues.push(nextCue.cue);
+      const enqueueGeneratedCues = (): void => {
+        const nextCues = extractAssociationCues(
+          `${association.tag} ${association.targetSummary}`,
+          8,
+        ).filter((nextCue) => !GENERATED_CUE_STOP_TERMS.has(nextCue.cue));
+        for (const nextCue of nextCues) {
+          if (explored.has(nextCue.cue)) continue;
+          enqueueFrontierCue(frontier, {
+            cue: nextCue.cue,
+            priority: ranked.routeScore * 0.7 + (nextCue.cueKind === "entity" ? 4 : 0),
+            reason: `from:${association.tag}`,
+          });
+          stepGeneratedCues.add(nextCue.cue);
+          generatedCues.push(nextCue.cue);
+        }
+      };
+      if (association.targetType !== "memory") {
+        enqueueGeneratedCues();
+        paths.push(path);
+        stepTrace.selectedBranchCount += 1;
+        stepTrace.branches.push(
+          traceBranchFromPath(path, "selected", path.routeReason ?? ranked.routeReason, generatedCues),
+        );
+        continue;
       }
-      stepTrace.selectedBranchCount += 1;
-      stepTrace.branches.push(
-        traceBranchFromPath(path, "selected", path.routeReason ?? ranked.routeReason, generatedCues),
-      );
-      if (association.targetType !== "memory" || seenMemoryIds.has(association.targetId)) continue;
+      if (seenMemoryIds.has(association.targetId)) continue;
       const memory = await input.store.getMemoryById(profileId, association.targetId, {
         includeSensitive: input.request.includeSensitive,
       });
       if (!memory) continue;
+      const sourceRejectReason = sourceScopeRejectReason(memory, intent, selectedSourceCues);
+      if (sourceRejectReason) {
+        prunedBranchCount += 1;
+        stepTrace.prunedBranchCount += 1;
+        stepTrace.branches.push(traceBranchFromPath(path, "pruned", sourceRejectReason));
+        continue;
+      }
+      enqueueGeneratedCues();
+      paths.push(path);
+      stepTrace.selectedBranchCount += 1;
+      stepTrace.branches.push(
+        traceBranchFromPath(path, "selected", path.routeReason ?? ranked.routeReason, generatedCues),
+      );
       seenMemoryIds.add(memory.id);
       memories.push(memory);
       if (memories.length >= maxMemories) {
@@ -1093,6 +1137,7 @@ export async function reconstructMemoryContext(input: {
       memories,
       paths,
       seenMemoryIds,
+      selectedSourceCues,
     });
     if (hybridTrace.candidateCount > 0) {
       const hybridPaths = [

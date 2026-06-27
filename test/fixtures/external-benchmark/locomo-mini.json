@@ -58,5 +58,33 @@
         "evidence": ["r1"]
       }
     ]
+  },
+  {
+    "sample_id": "locomo-mini-speaker-grounding",
+    "conversation": {
+      "speaker_a": "Alex",
+      "speaker_b": "Blair",
+      "session_1_date_time": "2026-06-21T10:00:00Z",
+      "session_1": [
+        {
+          "speaker": "Alex",
+          "dia_id": "s1",
+          "text": "My travel planning tool is Chronos."
+        },
+        {
+          "speaker": "Blair",
+          "dia_id": "s2",
+          "text": "My travel planning tool is Meridian."
+        }
+      ]
+    },
+    "qa": [
+      {
+        "question": "Which travel planning tool belongs to Blair?",
+        "answer": "Meridian",
+        "adversarial_answer": "Chronos",
+        "evidence": ["s2"]
+      }
+    ]
   }
 ]

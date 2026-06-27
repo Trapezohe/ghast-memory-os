@@ -147,7 +147,7 @@ function entityAliases(metadata: Record<string, unknown>): string[] {
   return metadataStringArray(entity as Record<string, unknown>, "aliases");
 }
 
-function sourceMetadataEntityCues(metadata: Record<string, unknown>): string[] {
+export function sourceMetadataEntityCues(metadata: Record<string, unknown>): string[] {
   const sourceMetadata = metadata.sourceMetadata;
   if (!sourceMetadata || typeof sourceMetadata !== "object" || Array.isArray(sourceMetadata)) {
     return [];

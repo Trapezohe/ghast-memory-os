@@ -1831,6 +1831,7 @@ const speakerMetadataReconstruction = await rulesReportMemory.reconstructContext
   maxMemories: 4,
 });
 assert.match(speakerMetadataReconstruction.contextBlock, /sunrise/);
+assert.doesNotMatch(speakerMetadataReconstruction.contextBlock, /bike clinic/);
 assert.equal(
   JSON.stringify(speakerMetadataReconstruction).includes("sk-speakermetadata"),
   false,
