@@ -742,12 +742,22 @@ try {
           passedRunCount: 0,
           failedRunCount: 0,
           scoreMean: 0,
+          scoreWeighted: 0,
+          totalCaseCount: 0,
+          totalPassedCount: 0,
+          totalFailedCount: 0,
+          totalWarningCount: 0,
           runManifest: {
             startedAt: "",
             finishedAt: "",
+            durationMs: 0,
             suiteFile: null,
             baseDir: ".",
             failOnBenchmarkFail: false,
+            node: null,
+            platform: null,
+            package: null,
+            git: null,
             deterministicOnly: true,
           },
           runs: [],
@@ -964,6 +974,12 @@ try {
   assert.equal(installedExternalSuiteJson.schema, "gmos.external_benchmark_suite.v1");
   assert.equal(installedExternalSuiteJson.pass, true);
   assert.equal(installedExternalSuiteJson.benchmarkPass, false);
+  assert.equal(installedExternalSuiteJson.totalCaseCount >= 2, true);
+  assert.equal(installedExternalSuiteJson.scoreWeighted > 0, true);
+  assert.equal(installedExternalSuiteJson.runManifest.durationMs >= 0, true);
+  assert.equal(typeof installedExternalSuiteJson.runManifest.package.version, "string");
+  assert.equal(installedExternalSuiteJson.runs[0].durationMs >= 0, true);
+  assert.equal(installedExternalSuiteJson.runs[0].caseGroupCount >= 1, true);
   assert.equal(existsSync(path.join(installedExternalSuiteOutputDir, "installed_pass.json")), true);
   assert.equal(existsSync(path.join(installedExternalSuiteOutputDir, "installed_fail.md")), true);
   const installedExternalSuiteGate = spawnCommand(

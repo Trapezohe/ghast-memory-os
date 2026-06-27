@@ -44,11 +44,17 @@ export interface ExternalMemoryBenchmarkSuiteRunSummary {
   inputFile: string;
   datasetFormat: ExternalMemoryBenchmarkDatasetFormat;
   pass: boolean;
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
   caseCount: number;
   passedCount: number;
   failedCount: number;
   score: number;
+  caseGroupCount: number;
+  reusedProfileCaseCount: number;
   datasetHash: string | null;
+  warningCount: number;
   warnings: string[];
   jsonFile?: string | undefined;
   markdownFile?: string | undefined;
@@ -62,12 +68,22 @@ export interface ExternalMemoryBenchmarkSuiteResult {
   passedRunCount: number;
   failedRunCount: number;
   scoreMean: number;
+  scoreWeighted: number;
+  totalCaseCount: number;
+  totalPassedCount: number;
+  totalFailedCount: number;
+  totalWarningCount: number;
   runManifest: {
     startedAt: string;
     finishedAt: string;
+    durationMs: number;
     suiteFile: string | null;
     baseDir: string;
     failOnBenchmarkFail: boolean;
+    node: string | null;
+    platform: string | null;
+    package: ExternalMemoryBenchmarkResult["runManifest"]["package"] | null;
+    git: ExternalMemoryBenchmarkResult["runManifest"]["git"] | null;
     deterministicOnly: true;
   };
   runs: ExternalMemoryBenchmarkSuiteRunSummary[];
@@ -282,6 +298,13 @@ function reportOptions(input: {
   };
 }
 
+function durationMs(startedAt: string, finishedAt: string): number {
+  const started = Date.parse(startedAt);
+  const finished = Date.parse(finishedAt);
+  if (!Number.isFinite(started) || !Number.isFinite(finished)) return 0;
+  return Math.max(0, finished - started);
+}
+
 export async function runExternalMemoryBenchmarkSuite(
   options: RunExternalMemoryBenchmarkSuiteOptions,
 ): Promise<ExternalMemoryBenchmarkSuiteExecution> {
@@ -308,11 +331,17 @@ export async function runExternalMemoryBenchmarkSuite(
       inputFile: run.inputFile,
       datasetFormat: report.datasetFormat,
       pass: report.pass,
+      startedAt: report.runManifest.startedAt,
+      finishedAt: report.runManifest.finishedAt,
+      durationMs: durationMs(report.runManifest.startedAt, report.runManifest.finishedAt),
       caseCount: report.caseCount,
       passedCount: report.passedCount,
       failedCount: report.failedCount,
       score: report.score,
+      caseGroupCount: report.runManifest.execution.caseGroupCount,
+      reusedProfileCaseCount: report.runManifest.execution.reusedProfileCaseCount,
       datasetHash: report.runManifest.dataset.hash,
+      warningCount: report.runManifest.dataset.warnings.length,
       warnings: report.runManifest.dataset.warnings,
     };
     runs.push(summary);
@@ -320,7 +349,13 @@ export async function runExternalMemoryBenchmarkSuite(
   }
   const benchmarkPass = runs.every((run) => run.pass);
   const scoreMean = runs.length ? runs.reduce((sum, run) => sum + run.score, 0) / runs.length : 0;
+  const totalCaseCount = runs.reduce((sum, run) => sum + run.caseCount, 0);
+  const totalPassedCount = runs.reduce((sum, run) => sum + run.passedCount, 0);
+  const totalFailedCount = runs.reduce((sum, run) => sum + run.failedCount, 0);
+  const totalWarningCount = runs.reduce((sum, run) => sum + run.warningCount, 0);
+  const firstRunManifest = Object.values(reports)[0]?.runManifest;
   const failOnBenchmarkFail = options.failOnBenchmarkFail === true;
+  const finishedAt = new Date().toISOString();
   return {
     result: {
       schema: "gmos.external_benchmark_suite.v1",
@@ -330,12 +365,22 @@ export async function runExternalMemoryBenchmarkSuite(
       passedRunCount: runs.filter((run) => run.pass).length,
       failedRunCount: runs.filter((run) => !run.pass).length,
       scoreMean,
+      scoreWeighted: totalCaseCount ? totalPassedCount / totalCaseCount : 0,
+      totalCaseCount,
+      totalPassedCount,
+      totalFailedCount,
+      totalWarningCount,
       runManifest: {
         startedAt,
-        finishedAt: new Date().toISOString(),
+        finishedAt,
+        durationMs: durationMs(startedAt, finishedAt),
         suiteFile: options.suiteFile ? path.resolve(options.suiteFile) : null,
         baseDir,
         failOnBenchmarkFail,
+        node: firstRunManifest?.node ?? null,
+        platform: firstRunManifest?.platform ?? null,
+        package: firstRunManifest?.package ?? null,
+        git: firstRunManifest?.git ?? null,
         deterministicOnly: true,
       },
       runs,
