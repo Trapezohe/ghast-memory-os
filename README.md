@@ -133,7 +133,7 @@ node dist/cli/gmos.js gym scale --sizes 100,1000
 node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --require-convergence
 node dist/cli/gmos.js gym external --input-file ./longmemeval_s_cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --progress
 node dist/cli/gmos.js gym external --input-file ./locomo10.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --progress
-node dist/cli/gmos.js gym external-suite --suite-file ./external-suite.json --output-dir ./external-runs --format json --markdown-file ./external-suite.md
+node dist/cli/gmos.js gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format json --markdown-file ./external-suite.md
 node dist/cli/gmos.js gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
 node dist/cli/gmos.js gym statebench write-agent --output-file ./STATE-Bench/agents/gmos_memory_agent.py
 node dist/cli/gmos.js gym statebench prepare --checkout-dir ./STATE-Bench --domain travel --agent-model-name gpt-5.1 --num-workers 2 --manifest-file outputs/gmos-learnings/travel.prepare.json
@@ -148,7 +148,7 @@ node dist/cli/gmos.js gym host --hosts ghast --actual-report ./ghast-memory-stat
 ```bash
 npm run gate:pr
 node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format json --require-convergence --progress
-node dist/cli/gmos.js gym external-suite --suite-file ./external-suite.json --output-dir ./external-runs --format json
+node dist/cli/gmos.js gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format json
 node dist/cli/gmos.js gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
 node dist/cli/gmos.js gym statebench prepare --checkout-dir ./STATE-Bench --domain travel --agent-model-name gpt-5.1 --manifest-file outputs/gmos-learnings/travel.prepare.json
 node dist/cli/gmos.js gym statebench summarize --checkout-dir ./STATE-Bench --domain travel --metrics-file outputs/travel/metrics.json --output-file outputs/gmos-learnings/travel.summary.json

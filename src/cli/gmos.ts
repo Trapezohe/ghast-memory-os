@@ -120,7 +120,7 @@ Usage:
   gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --require-convergence --include-sensitive --temporal-metadata
   gmos gym external --input-file ./longmemeval_s_cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --progress
   gmos gym external --input-file ./locomo10.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --progress
-  gmos gym external-suite --suite-file ./external-suite.json --output-dir ./external-runs --format markdown
+  gmos gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format markdown
   gmos gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
   gmos gym statebench write-agent --output-file ./STATE-Bench/agents/gmos_memory_agent.py
   gmos gym statebench prepare --checkout-dir ./STATE-Bench --domain travel --agent-model-name gpt-5.1 --num-workers 2 --manifest-file outputs/gmos-learnings/travel.prepare.json
