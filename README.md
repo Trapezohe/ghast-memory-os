@@ -132,7 +132,7 @@ node dist/cli/gmos.js gate --generated-seeds 3 --scale-sizes 100,1000 --format m
 node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3
 node dist/cli/gmos.js gym run --generated-seeds 10 --format markdown --report-file ./memory-gym.md
 node dist/cli/gmos.js gym scale --sizes 100,1000
-node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --require-convergence
+node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --require-convergence --temporal-mode current
 node dist/cli/gmos.js gym external --input-file ./longmemeval_s_cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --progress
 node dist/cli/gmos.js gym external --input-file ./locomo10.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --progress
 node dist/cli/gmos.js gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format json --markdown-file ./external-suite.md
@@ -359,7 +359,9 @@ into the summary section. Add `"requireConvergence": true` to a case, or pass
 active reconstruction converges; this is useful for multi-hop or multi-intent
 cases where a plain text hit is not strong enough evidence. `--require-convergence`
 is only valid for reconstruct mode and forces every case in that run to require
-convergence. Pass `--temporal-metadata`, or set `"includeTemporalMetadata":
+convergence. Pass `--temporal-mode current|history`, or set `"temporalMode"` on
+a case or external suite run, when a benchmark must force current-state or
+historical recall instead of relying on query cues. Pass `--temporal-metadata`, or set `"includeTemporalMetadata":
 true` in an external suite manifest, when session-date answers should be scored
 from evidence metadata. Sensitive memories remain excluded unless the run passes
 `--include-sensitive` or sets `"includeSensitive": true` in an external suite

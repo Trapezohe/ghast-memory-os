@@ -7370,6 +7370,7 @@ const externalFailureSummaryBenchmark = await runExternalMemoryBenchmark({
   cases: [
     {
       id: "missing-one",
+      temporalMode: "history",
       events: [{ type: "memory", kind: "fact", content: "Visible answer is Alpha." }],
       question: "What is visible?",
       expectedAll: ["Missing Alpha"],
@@ -7414,6 +7415,7 @@ assert.deepEqual(
 );
 assert.equal(externalFailureSummaryBenchmark.summary.failureSamples.length, 1);
 assert.equal(externalFailureSummaryBenchmark.summary.failureSamples[0]?.id, "missing-one");
+assert.equal(externalFailureSummaryBenchmark.summary.failureSamples[0]?.temporalMode, "history");
 assert.equal(
   externalFailureSummaryBenchmark.summary.failureSamples[0]?.expectedAllMissing[0],
   "Missing Alpha",
@@ -7542,6 +7544,52 @@ assert.equal(externalBudgetTaxonomyBenchmark.pass, false);
 assert.deepEqual(externalBudgetTaxonomyBenchmark.cases[0]?.failureTaxonomy, [
   { stage: "context_composer_or_budget_drop", terms: ["BudgetFlag"] },
 ]);
+const externalTemporalEvents = [
+  {
+    type: "memory" as const,
+    kind: "project" as const,
+    content: "Project Delta owner was Old Harbor.",
+    metadata: { validTo: "2000-01-01T00:00:00.000Z" },
+  },
+  {
+    type: "memory" as const,
+    kind: "project" as const,
+    content: "Project Delta current owner is New Harbor.",
+    metadata: { validTo: "2999-01-01T00:00:00.000Z" },
+  },
+];
+const externalTemporalModeBenchmark = await runExternalMemoryBenchmark({
+  cases: [
+    {
+      id: "external-temporal-current",
+      profileId: "external-temporal",
+      temporalMode: "current",
+      events: externalTemporalEvents,
+      question: "What was Project Delta's previous owner?",
+      expectedAny: ["New Harbor"],
+      forbiddenAny: ["Old Harbor"],
+    },
+    {
+      id: "external-temporal-history",
+      profileId: "external-temporal",
+      temporalMode: "history",
+      events: externalTemporalEvents,
+      question: "What was Project Delta's previous owner?",
+      expectedAny: ["Old Harbor"],
+    },
+  ],
+});
+assert.equal(externalTemporalModeBenchmark.pass, true);
+assert.equal(externalTemporalModeBenchmark.runManifest.options.temporalMode, null);
+assert.equal(externalTemporalModeBenchmark.cases[0]?.temporalMode, "current");
+assert.equal(externalTemporalModeBenchmark.cases[1]?.temporalMode, "history");
+assert.deepEqual(externalTemporalModeBenchmark.cases[0]?.expectedAnyMatched, ["New Harbor"]);
+assert.deepEqual(externalTemporalModeBenchmark.cases[0]?.forbiddenMatches, []);
+assert.deepEqual(externalTemporalModeBenchmark.cases[1]?.expectedAnyMatched, ["Old Harbor"]);
+assert.match(
+  renderExternalMemoryBenchmarkMarkdown(externalTemporalModeBenchmark),
+  /external-temporal-current \| PASS \| reconstruct \| current/,
+);
 const externalSuiteFailFile = path.join(tmp, "external-long-memory-qa-fail-for-suite.jsonl");
 writeFileSync(
   externalSuiteFailFile,
@@ -7566,7 +7614,7 @@ writeFileSync(
         includeTemporalMetadata: false,
       },
       runs: [
-        { id: "passing", inputFile: path.basename(externalBenchmarkFile) },
+        { id: "passing", inputFile: path.basename(externalBenchmarkFile), temporalMode: "history" },
         { id: "failing", inputFile: path.basename(externalSuiteFailFile) },
       ],
     },
@@ -7580,6 +7628,7 @@ const parsedExternalSuite = parseExternalMemoryBenchmarkSuite(
 assert.equal(parsedExternalSuite.runs.length, 2);
 assert.equal(parsedExternalSuite.defaults?.includeSensitive, true);
 assert.equal(parsedExternalSuite.defaults?.includeTemporalMetadata, false);
+assert.equal(parsedExternalSuite.runs[0]?.temporalMode, "history");
 const externalSuiteExecution = await runExternalMemoryBenchmarkSuite({
   suite: parsedExternalSuite,
   suiteFile: externalSuiteFile,
@@ -7592,6 +7641,7 @@ assert.equal(externalSuiteExecution.result.passedRunCount, 1);
 assert.equal(externalSuiteExecution.result.failedRunCount, 1);
 assert.equal(externalSuiteExecution.reports.passing?.runManifest.options.includeSensitive, true);
 assert.equal(externalSuiteExecution.reports.passing?.runManifest.options.includeTemporalMetadata, false);
+assert.equal(externalSuiteExecution.reports.passing?.runManifest.options.temporalMode, "history");
 assert.deepEqual(externalSuiteExecution.result.runs[0]?.sliceScores, [
   {
     name: "gmos:project_procedure",
@@ -8871,6 +8921,8 @@ const cliExternal = spawnSync(
     cliExternalJsonFile,
     "--markdown-file",
     cliExternalMarkdownFile,
+    "--temporal-mode",
+    "history",
     "--failure-sample-limit",
     "3",
   ],
@@ -8886,6 +8938,7 @@ const cliExternalJson = JSON.parse(cliExternal.stdout) as {
       requireConvergence?: boolean;
       includeSensitive?: boolean;
       includeTemporalMetadata?: boolean;
+      temporalMode?: string | null;
       failureSampleLimit?: number;
     };
   };
@@ -8899,6 +8952,7 @@ assert.equal(cliExternalJson.runManifest?.dataset?.id, path.basename(externalBen
 assert.equal(cliExternalJson.runManifest?.options?.requireConvergence, false);
 assert.equal(cliExternalJson.runManifest?.options?.includeSensitive, false);
 assert.equal(cliExternalJson.runManifest?.options?.includeTemporalMetadata, false);
+assert.equal(cliExternalJson.runManifest?.options?.temporalMode, "history");
 assert.equal(cliExternalJson.runManifest?.options?.failureSampleLimit, 3);
 assert.equal(cliExternalJson.summary?.failureSampleLimit, 3);
 assert.equal(existsSync(cliExternalJsonFile), true);
@@ -8906,7 +8960,7 @@ assert.equal(existsSync(cliExternalMarkdownFile), true);
 assert.equal(JSON.parse(readFileSync(cliExternalJsonFile, "utf8")).schema, "gmos.external_long_memory_qa.v1");
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /gmOS External Long-Memory QA Benchmark/);
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /Failure sample limit: 3/);
-assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /includeSensitive=false includeTemporalMetadata=false/);
+assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /temporalMode=history includeSensitive=false includeTemporalMetadata=false/);
 const cliExternalSuiteOutputDir = path.join(tmp, "cli-external-suite");
 const cliExternalSuiteJsonFile = path.join(tmp, "cli-external-suite-summary.json");
 const cliExternalSuiteMarkdownFile = path.join(tmp, "cli-external-suite-summary.md");

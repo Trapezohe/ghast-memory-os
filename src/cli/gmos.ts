@@ -672,6 +672,7 @@ async function main(): Promise<void> {
       maxBranch: positiveIntegerOption("--max-branch", 6),
       maxMemories: positiveIntegerOption("--max-memories", 6),
       contextBudgetTokens: positiveIntegerOption("--context-budget-tokens", 1600),
+      temporalMode: temporalModeOption(),
       ...(has("--temporal-metadata") ? { includeTemporalMetadata: true } : {}),
       ...(has("--include-sensitive") ? { includeSensitive: true } : {}),
       concurrency: positiveIntegerOption("--concurrency", 4),

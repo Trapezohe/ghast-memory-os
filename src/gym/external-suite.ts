@@ -11,6 +11,7 @@ import {
   type ExternalMemoryBenchmarkMode,
   type ExternalMemoryBenchmarkResult,
   type ExternalMemoryBenchmarkSliceScore,
+  type ExternalMemoryBenchmarkTemporalMode,
   type RunExternalMemoryBenchmarkOptions,
 } from "./external.js";
 import {
@@ -28,6 +29,7 @@ export interface ExternalMemoryBenchmarkSuiteRunConfig {
   maxBranch?: number | undefined;
   maxMemories?: number | undefined;
   contextBudgetTokens?: number | undefined;
+  temporalMode?: ExternalMemoryBenchmarkTemporalMode | undefined;
   includeSensitive?: boolean | undefined;
   includeTemporalMetadata?: boolean | undefined;
   concurrency?: number | undefined;
@@ -155,6 +157,12 @@ function modeValue(value: unknown, label: string): ExternalMemoryBenchmarkMode |
   throw new Error(`${label} must be prepare or reconstruct`);
 }
 
+function temporalModeValue(value: unknown, label: string): ExternalMemoryBenchmarkTemporalMode | undefined {
+  if (value === undefined) return undefined;
+  if (value === "auto" || value === "current" || value === "history") return value;
+  throw new Error(`${label} must be auto, current, or history`);
+}
+
 function runId(value: unknown, label: string): string {
   const id = stringValue(value, label);
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(id)) {
@@ -175,6 +183,7 @@ function parseRunConfig(value: unknown, label: string): ExternalMemoryBenchmarkS
     maxBranch: optionalPositiveInteger(record.maxBranch, `${label}.maxBranch`),
     maxMemories: optionalPositiveInteger(record.maxMemories, `${label}.maxMemories`),
     contextBudgetTokens: optionalPositiveInteger(record.contextBudgetTokens, `${label}.contextBudgetTokens`),
+    temporalMode: temporalModeValue(record.temporalMode, `${label}.temporalMode`),
     includeSensitive: optionalBoolean(record.includeSensitive, `${label}.includeSensitive`),
     includeTemporalMetadata: optionalBoolean(record.includeTemporalMetadata, `${label}.includeTemporalMetadata`),
     concurrency: optionalPositiveInteger(record.concurrency, `${label}.concurrency`),
@@ -197,6 +206,7 @@ function parseDefaults(value: unknown): ExternalMemoryBenchmarkSuiteDocument["de
       record.contextBudgetTokens,
       "External benchmark suite defaults.contextBudgetTokens",
     ),
+    temporalMode: temporalModeValue(record.temporalMode, "External benchmark suite defaults.temporalMode"),
     includeTemporalMetadata: optionalBoolean(
       record.includeTemporalMetadata,
       "External benchmark suite defaults.includeTemporalMetadata",
@@ -257,6 +267,7 @@ function effectiveRun(
     maxBranch: run.maxBranch ?? defaults?.maxBranch,
     maxMemories: run.maxMemories ?? defaults?.maxMemories,
     contextBudgetTokens: run.contextBudgetTokens ?? defaults?.contextBudgetTokens,
+    temporalMode: run.temporalMode ?? defaults?.temporalMode,
     includeSensitive: run.includeSensitive ?? defaults?.includeSensitive,
     includeTemporalMetadata: run.includeTemporalMetadata ?? defaults?.includeTemporalMetadata,
     concurrency: run.concurrency ?? defaults?.concurrency,
@@ -307,6 +318,7 @@ function reportOptions(input: {
     ...(input.run.maxBranch !== undefined ? { maxBranch: input.run.maxBranch } : {}),
     ...(input.run.maxMemories !== undefined ? { maxMemories: input.run.maxMemories } : {}),
     ...(input.run.contextBudgetTokens !== undefined ? { contextBudgetTokens: input.run.contextBudgetTokens } : {}),
+    ...(input.run.temporalMode !== undefined ? { temporalMode: input.run.temporalMode } : {}),
     ...(input.run.includeSensitive !== undefined ? { includeSensitive: input.run.includeSensitive } : {}),
     ...(input.run.includeTemporalMetadata !== undefined ? { includeTemporalMetadata: input.run.includeTemporalMetadata } : {}),
     ...(input.run.concurrency !== undefined ? { concurrency: input.run.concurrency } : {}),

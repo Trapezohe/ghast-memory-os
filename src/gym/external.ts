@@ -18,6 +18,7 @@ import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 
 export type ExternalMemoryBenchmarkMode = "prepare" | "reconstruct";
+export type ExternalMemoryBenchmarkTemporalMode = "auto" | "current" | "history";
 export type ExternalMemoryBenchmarkDatasetFormat =
   | "gmos.external_long_memory_qa.jsonl"
   | "longmemeval.json"
@@ -54,6 +55,7 @@ export interface ExternalMemoryBenchmarkMemoryEvent {
   confidence?: number | undefined;
   sensitivity?: Sensitivity | undefined;
   createdAt?: string | undefined;
+  metadata?: Record<string, unknown> | undefined;
 }
 
 export type ExternalMemoryBenchmarkEvent =
@@ -69,6 +71,7 @@ export interface ExternalMemoryBenchmarkCase {
   slices?: string[] | undefined;
   events: ExternalMemoryBenchmarkEvent[];
   question: string;
+  temporalMode?: ExternalMemoryBenchmarkTemporalMode | undefined;
   expectedAny?: string[] | undefined;
   expectedAll?: string[] | undefined;
   forbiddenAny?: string[] | undefined;
@@ -103,6 +106,7 @@ export interface ExternalMemoryBenchmarkCaseResult {
   id: string;
   pass: boolean;
   mode: ExternalMemoryBenchmarkMode;
+  temporalMode: ExternalMemoryBenchmarkTemporalMode | null;
   slices?: string[] | undefined;
   requireConvergence: boolean;
   expectedAnyMatched: string[];
@@ -134,6 +138,7 @@ export interface ExternalMemoryBenchmarkSliceScore {
 export interface ExternalMemoryBenchmarkFailureSample {
   id: string;
   mode: ExternalMemoryBenchmarkMode;
+  temporalMode: ExternalMemoryBenchmarkTemporalMode | null;
   slices?: string[] | undefined;
   failureReasons: string[];
   failureTaxonomy?: ExternalMemoryBenchmarkFailureTaxonomyEntry[] | undefined;
@@ -202,6 +207,7 @@ export interface ExternalMemoryBenchmarkRunManifest {
     maxBranch: number | null;
     maxMemories: number | null;
     contextBudgetTokens: number | null;
+    temporalMode: ExternalMemoryBenchmarkTemporalMode | null;
     includeSensitive: boolean;
     includeTemporalMetadata: boolean;
     requireConvergence: boolean;
@@ -236,6 +242,7 @@ export interface RunExternalMemoryBenchmarkOptions {
   maxBranch?: number | undefined;
   maxMemories?: number | undefined;
   contextBudgetTokens?: number | undefined;
+  temporalMode?: ExternalMemoryBenchmarkTemporalMode | undefined;
   includeSensitive?: boolean | undefined;
   includeTemporalMetadata?: boolean | undefined;
   requireConvergence?: boolean | undefined;
@@ -296,6 +303,14 @@ function normalizeMode(value: unknown): ExternalMemoryBenchmarkMode | undefined 
   return value;
 }
 
+function normalizeTemporalMode(value: unknown, field: string): ExternalMemoryBenchmarkTemporalMode | undefined {
+  if (value === undefined) return undefined;
+  if (value !== "auto" && value !== "current" && value !== "history") {
+    throw new Error(`External benchmark ${field} must be auto, current, or history`);
+  }
+  return value;
+}
+
 function optionalBoolean(value: unknown, field: string): boolean | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "boolean") throw new Error(`External benchmark ${field} must be a boolean`);
@@ -350,6 +365,7 @@ function parseEvent(value: unknown, caseId: string): ExternalMemoryBenchmarkEven
       ...(typeof confidence === "number" ? { confidence } : {}),
       ...(memorySensitivity !== undefined ? { sensitivity: memorySensitivity } : {}),
       ...(typeof event.createdAt === "string" ? { createdAt: event.createdAt } : {}),
+      ...(event.metadata !== undefined ? { metadata: optionalMetadata(event.metadata, `${caseId}.event.metadata`) } : {}),
     };
   }
   if (event.type === "task") {
@@ -426,6 +442,7 @@ function normalizeCase(
   const expectedAll = stringArray(row.expectedAll, `${id}.expectedAll`);
   const forbiddenAny = stringArray(row.forbiddenAny, `${id}.forbiddenAny`);
   const slices = stringArray(row.slices, `${id}.slices`);
+  const temporalMode = normalizeTemporalMode(row.temporalMode, `${id}.temporalMode`);
   const requireConvergence = optionalBoolean(row.requireConvergence, `${id}.requireConvergence`);
   if (
     (expectedAny?.length ?? 0) === 0 &&
@@ -446,6 +463,7 @@ function normalizeCase(
     ...(slices && slices.length > 0 ? { slices } : {}),
     events,
     question: row.question,
+    ...(temporalMode ? { temporalMode } : {}),
     ...(expectedAny ? { expectedAny } : {}),
     ...(expectedAll ? { expectedAll } : {}),
     ...(forbiddenAny ? { forbiddenAny } : {}),
@@ -588,6 +606,16 @@ function reconstructedContainsTerm(reconstructed: ReconstructedContext | null, t
   );
 }
 
+function effectiveTemporalMode(input: {
+  benchmarkCase: ExternalMemoryBenchmarkCase;
+  mode: ExternalMemoryBenchmarkMode;
+  options: RunExternalMemoryBenchmarkOptions;
+}): ExternalMemoryBenchmarkTemporalMode | null {
+  return input.mode === "reconstruct"
+    ? input.benchmarkCase.temporalMode ?? input.options.temporalMode ?? "auto"
+    : null;
+}
+
 async function wideBudgetRunContainsTerm(input: {
   memory: MemoryOS;
   profileId: string;
@@ -606,6 +634,7 @@ async function wideBudgetRunContainsTerm(input: {
     });
     return includesTerm(prepared.contextBlock, input.term) || memoriesContainTerm(prepared.memories, input.term);
   }
+  const temporalMode = effectiveTemporalMode(input);
   const reconstructed = await input.memory.reconstructContext({
     profileId: input.profileId,
     query: input.benchmarkCase.question,
@@ -613,6 +642,7 @@ async function wideBudgetRunContainsTerm(input: {
     maxBranch: input.options.maxBranch,
     maxMemories: input.options.maxMemories,
     contextBudgetTokens,
+    ...(temporalMode !== null ? { temporalMode } : {}),
     includeTemporalMetadata: input.options.includeTemporalMetadata ?? false,
     ...(input.options.includeSensitive === true ? { includeSensitive: true } : {}),
   });
@@ -809,6 +839,7 @@ function createRunManifest(input: {
       maxBranch: input.options.maxBranch ?? null,
       maxMemories: input.options.maxMemories ?? null,
       contextBudgetTokens: input.options.contextBudgetTokens ?? null,
+      temporalMode: input.options.temporalMode ?? null,
       includeSensitive: input.options.includeSensitive ?? false,
       includeTemporalMetadata: input.options.includeTemporalMetadata ?? false,
       requireConvergence: input.options.requireConvergence ?? false,
@@ -866,6 +897,7 @@ function failureSampleForCase(
   return {
     id: entry.id,
     mode: entry.mode,
+    temporalMode: entry.temporalMode,
     ...(entry.slices !== undefined ? { slices: entry.slices } : {}),
     failureReasons: entry.failureReasons,
     failureTaxonomy: entry.failureTaxonomy,
@@ -1031,6 +1063,7 @@ async function applyBenchmarkEvent(
       confidence: event.confidence,
       sensitivity: event.sensitivity,
       createdAt: event.createdAt,
+      ...(event.metadata !== undefined ? { metadata: event.metadata } : {}),
     });
   } else {
     await memory.observe({
@@ -1055,6 +1088,11 @@ async function scoreCase(input: {
   const id = input.benchmarkCase.id ?? `case-${input.index + 1}`;
   const profileId = input.profileId;
   const mode = input.benchmarkCase.mode ?? input.options.mode ?? "reconstruct";
+  const temporalMode = effectiveTemporalMode({
+    benchmarkCase: input.benchmarkCase,
+    mode,
+    options: input.options,
+  });
   const requireConvergence =
     input.benchmarkCase.requireConvergence ?? input.options.requireConvergence ?? false;
   const prepared =
@@ -1075,6 +1113,7 @@ async function scoreCase(input: {
           maxBranch: input.options.maxBranch,
           maxMemories: input.options.maxMemories,
           contextBudgetTokens: input.options.contextBudgetTokens,
+          ...(temporalMode !== null ? { temporalMode } : {}),
           includeTemporalMetadata: input.options.includeTemporalMetadata ?? false,
           ...(input.options.includeSensitive === true ? { includeSensitive: true } : {}),
         })
@@ -1117,6 +1156,7 @@ async function scoreCase(input: {
     id,
     pass: failureReasons.length === 0,
     mode,
+    temporalMode,
     slices: input.benchmarkCase.slices ?? [],
     requireConvergence: requireConvergenceForCase,
     expectedAnyMatched,
