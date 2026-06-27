@@ -185,6 +185,7 @@ export function associationTagsForBelief(belief: WorldBeliefRecord): string[] {
 
 export function associationCuesForBelief(belief: WorldBeliefRecord): AssociationCue[] {
   return [
+    ...sourceMetadataEntityCues(belief.metadata).map((cue) => ({ cue, cueKind: "entity" as const })),
     { cue: belief.predicate, cueKind: "predicate" },
     ...extractAssociationCues(
       [belief.subject, ...entityAliases(belief.metadata), belief.object].join(" "),

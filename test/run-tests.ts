@@ -22,7 +22,7 @@ import {
   createOpenAICompatibleExtractor,
   type MemoryStore,
 } from "../src/index.js";
-import { extractAssociationCues } from "../src/kernel/associations.js";
+import { associationCuesForBelief, extractAssociationCues } from "../src/kernel/associations.js";
 import { externalBenchmarkGitInfoForPackageRoot } from "../src/gym/external.js";
 import {
   renderHostCompatibilityGymMarkdown,
@@ -109,6 +109,27 @@ assert.equal(
     associationCueFixture.findIndex((cue) => cue.cue === "benchmark"),
   true,
 );
+const beliefAssociationCueFixture = associationCuesForBelief({
+  id: "belief-association-fixture",
+  profileId: "test",
+  subject: "project:atlas",
+  predicate: "project.status",
+  object: "active",
+  confidence: 0.8,
+  status: "active",
+  metadata: {
+    sourceMetadata: {
+      speaker: "Blair",
+      speakerAliases: ["B"],
+      participants: ["Alex"],
+    },
+  },
+  createdAt: "2026-06-20T00:00:00.000Z",
+  updatedAt: "2026-06-20T00:00:00.000Z",
+});
+assert.equal(beliefAssociationCueFixture.some((cue) => cue.cue === "blair"), true);
+assert.equal(beliefAssociationCueFixture.some((cue) => cue.cue === "b"), false);
+assert.equal(beliefAssociationCueFixture.some((cue) => cue.cue === "alex"), false);
 const publicSourceMetadataFixture = sanitizePublicSourceMetadata({
   speaker: "Blair",
   speakerAliases: ["B", { answer: "nested alias answer" }],
