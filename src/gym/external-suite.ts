@@ -26,6 +26,8 @@ export interface ExternalMemoryBenchmarkSuiteRunConfig {
   maxBranch?: number | undefined;
   maxMemories?: number | undefined;
   contextBudgetTokens?: number | undefined;
+  includeSensitive?: boolean | undefined;
+  includeTemporalMetadata?: boolean | undefined;
   concurrency?: number | undefined;
   reuseProfiles?: boolean | undefined;
   failureSampleLimit?: number | undefined;
@@ -168,6 +170,8 @@ function parseRunConfig(value: unknown, label: string): ExternalMemoryBenchmarkS
     maxBranch: optionalPositiveInteger(record.maxBranch, `${label}.maxBranch`),
     maxMemories: optionalPositiveInteger(record.maxMemories, `${label}.maxMemories`),
     contextBudgetTokens: optionalPositiveInteger(record.contextBudgetTokens, `${label}.contextBudgetTokens`),
+    includeSensitive: optionalBoolean(record.includeSensitive, `${label}.includeSensitive`),
+    includeTemporalMetadata: optionalBoolean(record.includeTemporalMetadata, `${label}.includeTemporalMetadata`),
     concurrency: optionalPositiveInteger(record.concurrency, `${label}.concurrency`),
     reuseProfiles: optionalBoolean(record.reuseProfiles, `${label}.reuseProfiles`),
     failureSampleLimit: optionalNonNegativeInteger(record.failureSampleLimit, `${label}.failureSampleLimit`),
@@ -188,6 +192,11 @@ function parseDefaults(value: unknown): ExternalMemoryBenchmarkSuiteDocument["de
       record.contextBudgetTokens,
       "External benchmark suite defaults.contextBudgetTokens",
     ),
+    includeTemporalMetadata: optionalBoolean(
+      record.includeTemporalMetadata,
+      "External benchmark suite defaults.includeTemporalMetadata",
+    ),
+    includeSensitive: optionalBoolean(record.includeSensitive, "External benchmark suite defaults.includeSensitive"),
     concurrency: optionalPositiveInteger(record.concurrency, "External benchmark suite defaults.concurrency"),
     reuseProfiles: optionalBoolean(record.reuseProfiles, "External benchmark suite defaults.reuseProfiles"),
     failureSampleLimit: optionalNonNegativeInteger(
@@ -243,6 +252,8 @@ function effectiveRun(
     maxBranch: run.maxBranch ?? defaults?.maxBranch,
     maxMemories: run.maxMemories ?? defaults?.maxMemories,
     contextBudgetTokens: run.contextBudgetTokens ?? defaults?.contextBudgetTokens,
+    includeSensitive: run.includeSensitive ?? defaults?.includeSensitive,
+    includeTemporalMetadata: run.includeTemporalMetadata ?? defaults?.includeTemporalMetadata,
     concurrency: run.concurrency ?? defaults?.concurrency,
     reuseProfiles: run.reuseProfiles ?? defaults?.reuseProfiles,
     failureSampleLimit: run.failureSampleLimit ?? defaults?.failureSampleLimit,
@@ -291,6 +302,8 @@ function reportOptions(input: {
     ...(input.run.maxBranch !== undefined ? { maxBranch: input.run.maxBranch } : {}),
     ...(input.run.maxMemories !== undefined ? { maxMemories: input.run.maxMemories } : {}),
     ...(input.run.contextBudgetTokens !== undefined ? { contextBudgetTokens: input.run.contextBudgetTokens } : {}),
+    ...(input.run.includeSensitive !== undefined ? { includeSensitive: input.run.includeSensitive } : {}),
+    ...(input.run.includeTemporalMetadata !== undefined ? { includeTemporalMetadata: input.run.includeTemporalMetadata } : {}),
     ...(input.run.concurrency !== undefined ? { concurrency: input.run.concurrency } : {}),
     ...(input.run.reuseProfiles !== undefined ? { reuseProfiles: input.run.reuseProfiles } : {}),
     ...(input.run.failureSampleLimit !== undefined ? { failureSampleLimit: input.run.failureSampleLimit } : {}),

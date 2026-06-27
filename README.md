@@ -341,7 +341,12 @@ into the summary section. Add `"requireConvergence": true` to a case, or pass
 active reconstruction converges; this is useful for multi-hop or multi-intent
 cases where a plain text hit is not strong enough evidence. `--require-convergence`
 is only valid for reconstruct mode and forces every case in that run to require
-convergence. The manifest does not include dataset contents or absolute local
+convergence. Pass `--temporal-metadata`, or set `"includeTemporalMetadata":
+true` in an external suite manifest, when session-date answers should be scored
+from evidence metadata. Sensitive memories remain excluded unless the run passes
+`--include-sensitive` or sets `"includeSensitive": true` in an external suite
+manifest. The manifest does not
+include dataset contents or absolute local
 paths, but public reports can still reveal repository branch names, dataset file
 names, expected answer strings, and deterministic scoring labels in failure
 samples; redact those fields before publishing if needed.

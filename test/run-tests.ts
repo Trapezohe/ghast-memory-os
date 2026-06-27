@@ -6620,6 +6620,8 @@ assert.equal(externalBenchmark.runManifest.execution.reusedProfileCaseCount, 0);
 assert.equal(externalBenchmark.runManifest.options.concurrency >= 1, true);
 assert.equal(externalBenchmark.runManifest.options.reuseProfiles, true);
 assert.equal(externalBenchmark.runManifest.options.requireConvergence, false);
+assert.equal(externalBenchmark.runManifest.options.includeSensitive, false);
+assert.equal(externalBenchmark.runManifest.options.includeTemporalMetadata, false);
 assert.equal(externalBenchmark.runManifest.options.failureSampleLimit, 20);
 assert.deepEqual(externalBenchmark.summary.failureReasons, []);
 assert.equal(externalBenchmark.summary.warnings.length > 0, true);
@@ -6636,6 +6638,73 @@ const externalBenchmarkWithManifest = await runExternalMemoryBenchmark({
 });
 assert.equal(externalBenchmarkWithManifest.runManifest.dataset.hash, externalHash);
 assert.equal(externalBenchmarkWithManifest.runManifest.dataset.id, "unit-fixture");
+const externalObservedDateBenchmark = await runExternalMemoryBenchmark({
+  includeTemporalMetadata: true,
+  cases: [
+    {
+      id: "observed-date",
+      events: [{
+        type: "message",
+        role: "user",
+        content: "I went to the project workshop yesterday and it helped.",
+        createdAt: "2023-05-07T00:00:00.000Z",
+      }],
+      question: "When did I go to the project workshop?",
+      expectedAll: ["observed=2023-05-07"],
+    },
+  ],
+});
+assert.equal(externalObservedDateBenchmark.pass, true);
+assert.equal(externalObservedDateBenchmark.runManifest.options.includeSensitive, false);
+assert.equal(externalObservedDateBenchmark.runManifest.options.includeTemporalMetadata, true);
+const externalObservedDateWithoutTemporal = await runExternalMemoryBenchmark({
+  includeTemporalMetadata: false,
+  cases: [{
+    id: "observed-date-no-temporal",
+    events: [{
+      type: "message",
+      role: "user",
+      content: "I went to the project workshop yesterday and it helped.",
+      createdAt: "2023-05-07T00:00:00.000Z",
+    }],
+    question: "When did I go to the project workshop?",
+    expectedAll: ["observed=2023-05-07"],
+  }],
+});
+assert.equal(externalObservedDateWithoutTemporal.pass, false);
+assert.equal(externalObservedDateWithoutTemporal.runManifest.options.includeSensitive, false);
+assert.equal(externalObservedDateWithoutTemporal.runManifest.options.includeTemporalMetadata, false);
+const externalSensitiveDefaultBenchmark = await runExternalMemoryBenchmark({
+  cases: [{
+    id: "sensitive-default-filtered",
+    events: [{
+      type: "message",
+      role: "user",
+      content: "I went to a LGBTQ support group yesterday and it was powerful.",
+      createdAt: "2023-05-07T00:00:00.000Z",
+    }],
+    question: "What group did I go to?",
+    expectedAll: ["support group"],
+  }],
+});
+assert.equal(externalSensitiveDefaultBenchmark.pass, false);
+assert.equal(externalSensitiveDefaultBenchmark.runManifest.options.includeSensitive, false);
+const externalSensitiveBenchmark = await runExternalMemoryBenchmark({
+  includeSensitive: true,
+  cases: [{
+    id: "sensitive-recall",
+    events: [{
+      type: "message",
+      role: "user",
+      content: "I went to a LGBTQ support group yesterday and it was powerful.",
+      createdAt: "2023-05-07T00:00:00.000Z",
+    }],
+    question: "What group did I go to?",
+    expectedAll: ["support group"],
+  }],
+});
+assert.equal(externalSensitiveBenchmark.pass, true);
+assert.equal(externalSensitiveBenchmark.runManifest.options.includeSensitive, true);
 const sparseExternalConvergence = await runExternalMemoryBenchmark({
   requireConvergence: true,
   cases: [
@@ -6818,6 +6887,8 @@ writeFileSync(
         datasetFormat: "gmos",
         concurrency: 1,
         failureSampleLimit: 0,
+        includeSensitive: true,
+        includeTemporalMetadata: false,
       },
       runs: [
         { id: "passing", inputFile: path.basename(externalBenchmarkFile) },
@@ -6832,6 +6903,8 @@ const parsedExternalSuite = parseExternalMemoryBenchmarkSuite(
   readFileSync(externalSuiteFile, "utf8"),
 );
 assert.equal(parsedExternalSuite.runs.length, 2);
+assert.equal(parsedExternalSuite.defaults?.includeSensitive, true);
+assert.equal(parsedExternalSuite.defaults?.includeTemporalMetadata, false);
 const externalSuiteExecution = await runExternalMemoryBenchmarkSuite({
   suite: parsedExternalSuite,
   suiteFile: externalSuiteFile,
@@ -6842,6 +6915,8 @@ assert.equal(externalSuiteExecution.result.benchmarkPass, false);
 assert.equal(externalSuiteExecution.result.runCount, 2);
 assert.equal(externalSuiteExecution.result.passedRunCount, 1);
 assert.equal(externalSuiteExecution.result.failedRunCount, 1);
+assert.equal(externalSuiteExecution.reports.passing?.runManifest.options.includeSensitive, true);
+assert.equal(externalSuiteExecution.reports.passing?.runManifest.options.includeTemporalMetadata, false);
 assert.equal(externalSuiteExecution.result.totalCaseCount, externalSuiteExecution.reports.passing!.caseCount + externalSuiteExecution.reports.failing!.caseCount);
 assert.equal(externalSuiteExecution.result.totalPassedCount, externalSuiteExecution.reports.passing!.passedCount);
 assert.equal(externalSuiteExecution.result.totalFailedCount, externalSuiteExecution.reports.failing!.failedCount);
@@ -7956,7 +8031,12 @@ const cliExternalJson = JSON.parse(cliExternal.stdout) as {
   pass?: boolean;
   runManifest?: {
     dataset?: { format?: string; hash?: string | null; id?: string | null };
-    options?: { requireConvergence?: boolean; failureSampleLimit?: number };
+    options?: {
+      requireConvergence?: boolean;
+      includeSensitive?: boolean;
+      includeTemporalMetadata?: boolean;
+      failureSampleLimit?: number;
+    };
   };
   summary?: { failureSampleLimit?: number };
 };
@@ -7966,6 +8046,8 @@ assert.equal(cliExternalJson.runManifest?.dataset?.format, "gmos.external_long_m
 assert.match(cliExternalJson.runManifest?.dataset?.hash ?? "", /^sha256:[a-f0-9]{64}$/);
 assert.equal(cliExternalJson.runManifest?.dataset?.id, path.basename(externalBenchmarkFile));
 assert.equal(cliExternalJson.runManifest?.options?.requireConvergence, false);
+assert.equal(cliExternalJson.runManifest?.options?.includeSensitive, false);
+assert.equal(cliExternalJson.runManifest?.options?.includeTemporalMetadata, false);
 assert.equal(cliExternalJson.runManifest?.options?.failureSampleLimit, 3);
 assert.equal(cliExternalJson.summary?.failureSampleLimit, 3);
 assert.equal(existsSync(cliExternalJsonFile), true);
@@ -7973,6 +8055,7 @@ assert.equal(existsSync(cliExternalMarkdownFile), true);
 assert.equal(JSON.parse(readFileSync(cliExternalJsonFile, "utf8")).schema, "gmos.external_long_memory_qa.v1");
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /gmOS External Long-Memory QA Benchmark/);
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /Failure sample limit: 3/);
+assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /includeSensitive=false includeTemporalMetadata=false/);
 const cliExternalSuiteOutputDir = path.join(tmp, "cli-external-suite");
 const cliExternalSuiteJsonFile = path.join(tmp, "cli-external-suite-summary.json");
 const cliExternalSuiteMarkdownFile = path.join(tmp, "cli-external-suite-summary.md");

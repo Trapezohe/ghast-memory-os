@@ -182,6 +182,8 @@ export interface ExternalMemoryBenchmarkRunManifest {
     maxBranch: number | null;
     maxMemories: number | null;
     contextBudgetTokens: number | null;
+    includeSensitive: boolean;
+    includeTemporalMetadata: boolean;
     requireConvergence: boolean;
     concurrency: number;
     reuseProfiles: boolean;
@@ -214,6 +216,8 @@ export interface RunExternalMemoryBenchmarkOptions {
   maxBranch?: number | undefined;
   maxMemories?: number | undefined;
   contextBudgetTokens?: number | undefined;
+  includeSensitive?: boolean | undefined;
+  includeTemporalMetadata?: boolean | undefined;
   requireConvergence?: boolean | undefined;
   concurrency?: number | undefined;
   reuseProfiles?: boolean | undefined;
@@ -509,6 +513,7 @@ async function wideBudgetRunContainsTerm(input: {
       profileId: input.profileId,
       messages: [{ role: "user", content: input.benchmarkCase.question }],
       contextBudgetTokens,
+      ...(input.options.includeSensitive === true ? { includeSensitive: true } : {}),
     });
     return includesTerm(prepared.contextBlock, input.term) || memoriesContainTerm(prepared.memories, input.term);
   }
@@ -519,6 +524,8 @@ async function wideBudgetRunContainsTerm(input: {
     maxBranch: input.options.maxBranch,
     maxMemories: input.options.maxMemories,
     contextBudgetTokens,
+    includeTemporalMetadata: input.options.includeTemporalMetadata ?? false,
+    ...(input.options.includeSensitive === true ? { includeSensitive: true } : {}),
   });
   return reconstructedContainsTerm(reconstructed, input.term);
 }
@@ -707,6 +714,8 @@ function createRunManifest(input: {
       maxBranch: input.options.maxBranch ?? null,
       maxMemories: input.options.maxMemories ?? null,
       contextBudgetTokens: input.options.contextBudgetTokens ?? null,
+      includeSensitive: input.options.includeSensitive ?? false,
+      includeTemporalMetadata: input.options.includeTemporalMetadata ?? false,
       requireConvergence: input.options.requireConvergence ?? false,
       concurrency: normalizedConcurrency(input.options.concurrency),
       reuseProfiles: input.options.reuseProfiles ?? true,
@@ -930,6 +939,7 @@ async function scoreCase(input: {
           profileId,
           messages: [{ role: "user", content: input.benchmarkCase.question }],
           contextBudgetTokens: input.options.contextBudgetTokens,
+          ...(input.options.includeSensitive === true ? { includeSensitive: true } : {}),
         })
       : null;
   const reconstructed =
@@ -941,6 +951,8 @@ async function scoreCase(input: {
           maxBranch: input.options.maxBranch,
           maxMemories: input.options.maxMemories,
           contextBudgetTokens: input.options.contextBudgetTokens,
+          includeTemporalMetadata: input.options.includeTemporalMetadata ?? false,
+          ...(input.options.includeSensitive === true ? { includeSensitive: true } : {}),
         })
       : null;
   const context = prepared?.contextBlock ?? reconstructed?.contextBlock ?? "";
