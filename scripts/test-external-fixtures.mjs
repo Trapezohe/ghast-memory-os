@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import process from "node:process";
@@ -6,6 +7,17 @@ import process from "node:process";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const suiteFile = path.join(root, "test", "fixtures", "external-benchmark", "suite.json");
 const cliFile = path.join(root, "dist", "cli", "gmos.js");
+const fixturesDir = path.dirname(suiteFile);
+
+function jsonlIds(fileName) {
+  return new Set(
+    readFileSync(path.join(fixturesDir, fileName), "utf8")
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#"))
+      .map((line) => JSON.parse(line).id),
+  );
+}
 
 const result = spawnSync(
   process.execPath,
@@ -46,6 +58,33 @@ const gmosRun = runs.get("curated-gmos");
 const budgetRun = runs.get("budget-drop-mini");
 const longMemEvalRun = runs.get("longmemeval-mini");
 const locomoRun = runs.get("locomo-mini");
+const curatedIds = jsonlIds("curated-gmos.jsonl");
+const budgetIds = jsonlIds("budget-drop-mini.jsonl");
+
+for (const id of [
+  "native-history-recall",
+  "native-current-status",
+  "native-historical-status",
+  "native-speaker-alex-tool",
+  "native-speaker-blair-tool",
+  "native-temporal-current-deadline",
+  "native-temporal-history-deadline",
+  "native-incognito-filter",
+  "native-secret-like-message-filter",
+  "native-sensitive-memory-filter",
+  "native-sensitive-memory-prepare-filter",
+  "native-task-trajectory-reuse",
+  "native-forbidden-action-boundary",
+  "native-forget-residue",
+  "native-forget-natural-language",
+  "native-forget-token-boundary",
+  "native-forget-chinese-compact",
+]) {
+  if (!curatedIds.has(id)) failures.push(`missing curated fixture ${id}`);
+}
+if (!budgetIds.has("native-budget-drop-critical-retention")) {
+  failures.push("missing budget-drop fixture native-budget-drop-critical-retention");
+}
 
 if (!gmosRun || gmosRun.caseCount !== 26 || gmosRun.pass !== true) {
   failures.push("curated-gmos run did not pass 26 cases");

@@ -221,11 +221,13 @@ The repository also includes a small CI-safe fixture suite at
 runs it with `--fail-on-benchmark-fail` and covers gmOS native JSONL,
 LongMemEval adapter abstention handling, LoCoMo adapter unscored-QA handling,
 profile reuse, incognito filtering, history recall, task trajectory reuse, and
-boundary-aware prepare mode. The native fixture set has 20 cases covering
-current/history recall, speaker grounding, temporal recall, secret-like
-filtering, project aliases, procedures, task trajectories, and forbidden action
-boundaries. Full LongMemEval/LoCoMo datasets remain manual or nightly baselines
-because they are too large and slow for ordinary PR CI.
+boundary-aware prepare mode. The curated native fixture set has 26 cases
+covering current/history recall, speaker grounding, temporal recall, secret-like
+and sensitive filtering, project aliases, procedures, task trajectories,
+forgetting, and forbidden action boundaries. A separate low-budget native run
+covers critical fact retention under context pressure. Full LongMemEval/LoCoMo
+datasets remain manual or nightly baselines because they are too large and slow
+for ordinary PR CI.
 
 External benchmark dry-run snapshot, 2026-06-27:
 
