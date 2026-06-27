@@ -220,19 +220,27 @@ nightly baselines because they are too large and slow for ordinary PR CI.
 
 External benchmark dry-run snapshot, 2026-06-27:
 
-These runs were executed on `@ghast/memory@0.1.0-alpha.61`
-(`0938a0cd069657ab119a33d039e9cdf21d2614f8`, dirty=false) with
+These runs were executed on the `@ghast/memory@0.1.0-alpha.64` release artifact
+from commit `b77a093d7587aac7abc7e815256705da49869b76` with
 the suite invocation
-`gmos gym external-suite --suite-file external-suite-alpha61.json --output-dir alpha61-clean-external-suite`
+`gmos gym external-suite --suite-file external-suite-alpha64.json --output-dir alpha64-external-suite`
 with `concurrency: 2` and `failureSampleLimit: 20` in the suite manifest. They are
 deterministic adapter dry-runs for finding retrieval and reconstruction gaps,
 not the official LongMemEval/LoCoMo LLM-judge score and not a SOTA claim.
 
 | Dataset file | Source format | Scored cases | Pass | Fail | Score | Case groups | Reused profile cases | Warnings | Runtime |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `longmemeval_oracle.json` | LongMemEval cleaned oracle | 470 | 132 | 338 | `0.2809` | 470 | 0 | 30 | 15.9s |
-| `longmemeval_s_cleaned.json` | LongMemEval cleaned S | 470 | 116 | 354 | `0.2468` | 470 | 0 | 30 | 585.4s |
-| `locomo10.json` | LoCoMo full history | 1542 | 84 | 1458 | `0.0545` | 10 | 1532 | 444 | 80.5s |
+| `longmemeval_oracle.json` | LongMemEval cleaned oracle | 470 | 132 | 338 | `0.2809` | 470 | 0 | 30 | 18.6s |
+| `longmemeval_s_cleaned.json` | LongMemEval cleaned S | 470 | 116 | 354 | `0.2468` | 470 | 0 | 30 | 627.1s |
+| `locomo10.json` | LoCoMo full history | 1542 | 84 | 1458 | `0.0545` | 10 | 1532 | 444 | 90.1s |
+
+Failure-stage taxonomy:
+
+| Dataset file | `answer_not_in_input` | `not_extracted_or_filtered` | `retrieval_or_reconstruction_miss` | `context_composer_or_budget_drop` | `forbidden_context_inclusion` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `longmemeval_oracle.json` | 224 | 110 | 4 | 0 | 0 |
+| `longmemeval_s_cleaned.json` | 197 | 109 | 43 | 5 | 0 |
+| `locomo10.json` | 949 | 267 | 240 | 1 | 1 |
 
 Dataset hashes:
 
@@ -248,18 +256,16 @@ alpha baseline, while the dry-run command itself stayed successful so the weak
 baseline can be recorded and compared over time. The runner skips official
 LongMemEval abstention cases by default. The LoCoMo adapter also skips QA
 annotations that lack an official `answer`; in this run, 444 such annotations
-were reported as warnings and not counted as scored cases. The dominant failure
-reason across all three runs remained `expected_any_missing`. On the two
-LongMemEval runs, alpha.61 slightly improves the deterministic adapter score
-over alpha.58 under the same scored-case count. The LoCoMo alpha.61 score should
-be read as a new clean scored-case baseline rather than a strict alpha.58
-comparison, because 444 QA annotations without official `answer` fields are now
-excluded from scoring instead of being forced into the benchmark. The failure
-shape is still clear: LongMemEval contains many temporal, numeric, and
-current-state questions that require stronger temporal/entity/belief handling,
-while LoCoMo remains weak for multi-party entity grounding and exact event
-recall. Many failed cases carried medium or high uncertainty, and many did not
-reach evidence convergence, which makes this a useful baseline for active
+were reported as warnings and not counted as scored cases. Scores are unchanged
+from the alpha.61 snapshot under the same scored-case counts, but alpha.64 adds
+failure-stage taxonomy so `expected_any_missing` no longer hides the stage that
+failed. The taxonomy shows three immediate work streams: dataset/adapter answer
+normalization for `answer_not_in_input`, stronger durable observation extraction
+for `not_extracted_or_filtered`, and better speaker/entity/time/event
+reconstruction for `retrieval_or_reconstruction_miss`. LoCoMo remains the
+clearest pressure test for multi-party entity grounding and exact event recall.
+Many failed cases carried medium or high uncertainty, and many did not reach
+evidence convergence, which makes this a useful baseline for active
 reconstruction, hybrid retrieval, entity resolution, and temporal current-state
 work. The `longmemeval_s_cleaned.json` run is intentionally recorded with
 runtime because it is much larger than the oracle file: the local copy is about
