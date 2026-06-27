@@ -7120,6 +7120,7 @@ assert.match(renderedGym, /SQLite schema: 6/);
 const externalBenchmarkJsonl = [
   JSON.stringify({
     id: "project-next-step",
+    slices: ["gmos:project_procedure", "gmos:project_procedure"],
     events: [
       { type: "memory", kind: "project", content: "代号 Vega 的发布计划叫做 Lantern Run。" },
       {
@@ -7230,6 +7231,7 @@ const externalBenchmarkFile = path.join(tmp, "external-long-memory-qa.jsonl");
 writeFileSync(externalBenchmarkFile, externalBenchmarkJsonl);
 const externalCases = parseExternalMemoryBenchmarkJsonl(externalBenchmarkJsonl);
 assert.equal(externalCases.length, 8);
+assert.deepEqual(externalCases[0]?.slices, ["gmos:project_procedure"]);
 assert.equal(externalCases[3]?.events[2]?.type, "forget");
 const parsedGmosExternalDataset = parseExternalMemoryBenchmarkDataset(externalBenchmarkJsonl, {
   adapter: "gmos",
@@ -7252,6 +7254,15 @@ assert.equal(externalBenchmark.runManifest.options.includeSensitive, false);
 assert.equal(externalBenchmark.runManifest.options.includeTemporalMetadata, false);
 assert.equal(externalBenchmark.runManifest.options.failureSampleLimit, 20);
 assert.deepEqual(externalBenchmark.summary.failureReasons, []);
+assert.deepEqual(externalBenchmark.summary.sliceScores, [
+  {
+    name: "gmos:project_procedure",
+    caseCount: 1,
+    passedCount: 1,
+    failedCount: 0,
+    score: 1,
+  },
+]);
 assert.equal(externalBenchmark.summary.warnings.length > 0, true);
 assert.equal(externalBenchmark.summary.failureSamples.length, 0);
 assert.equal(externalBenchmark.cases[0]?.failureReasons.length, 0);
@@ -7581,6 +7592,15 @@ assert.equal(externalSuiteExecution.result.passedRunCount, 1);
 assert.equal(externalSuiteExecution.result.failedRunCount, 1);
 assert.equal(externalSuiteExecution.reports.passing?.runManifest.options.includeSensitive, true);
 assert.equal(externalSuiteExecution.reports.passing?.runManifest.options.includeTemporalMetadata, false);
+assert.deepEqual(externalSuiteExecution.result.runs[0]?.sliceScores, [
+  {
+    name: "gmos:project_procedure",
+    caseCount: 1,
+    passedCount: 1,
+    failedCount: 0,
+    score: 1,
+  },
+]);
 assert.equal(externalSuiteExecution.result.totalCaseCount, externalSuiteExecution.reports.passing!.caseCount + externalSuiteExecution.reports.failing!.caseCount);
 assert.equal(externalSuiteExecution.result.totalPassedCount, externalSuiteExecution.reports.passing!.passedCount);
 assert.equal(externalSuiteExecution.result.totalFailedCount, externalSuiteExecution.reports.failing!.failedCount);
@@ -7608,6 +7628,8 @@ assert.equal(externalSuiteExecution.reports.failing?.summary.failureSamples.leng
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /BenchmarkStatus: FAIL/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Weighted score:/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Failure stages: answer_not_in_input=1/);
+assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Slice scores/);
+assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /gmos:project_procedure=1\/1 score=1\.0000/);
 const externalBenchmarkCwd = path.join(tmp, "external-benchmark-cwd");
 mkdirSync(externalBenchmarkCwd);
 const previousCwd = process.cwd();
@@ -7638,7 +7660,7 @@ assert.throws(
 const longMemEvalFixture = JSON.stringify([
   {
     question_id: "lme-vega-next-step",
-    question_type: "multi-session",
+    question_type: "current-state",
     question: "Vega 这个发布计划下一步先做什么？",
     answer: "rollback matrix",
     question_date: "2026-06-24",
@@ -7665,6 +7687,11 @@ const longMemEvalFixture = JSON.stringify([
 const longMemEvalCases = parseLongMemEvalBenchmarkDataset(longMemEvalFixture);
 assert.equal(longMemEvalCases.length, 1);
 assert.equal(longMemEvalCases[0]?.id, "lme-vega-next-step");
+assert.deepEqual(longMemEvalCases[0]?.slices, [
+  "longmemeval:current_state",
+  "longmemeval:multi_session",
+  "longmemeval:has_question_date",
+]);
 assert.equal(longMemEvalCases[0]?.events.length, 2);
 assert.equal(JSON.stringify(longMemEvalCases[0]?.events).includes("has_answer"), false);
 assert.equal(JSON.stringify(longMemEvalCases[0]?.events).includes("answer_session_ids"), false);
@@ -7707,6 +7734,29 @@ assert.equal(longMemEvalBenchmark.pass, true);
 assert.equal(longMemEvalBenchmark.datasetFormat, "longmemeval.json");
 assert.equal(longMemEvalBenchmark.runManifest.dataset.format, "longmemeval.json");
 assert.deepEqual(longMemEvalBenchmark.cases[0]?.expectedAnyMatched, ["rollback matrix"]);
+assert.deepEqual(longMemEvalBenchmark.summary.sliceScores, [
+  {
+    name: "longmemeval:current_state",
+    caseCount: 1,
+    passedCount: 1,
+    failedCount: 0,
+    score: 1,
+  },
+  {
+    name: "longmemeval:has_question_date",
+    caseCount: 1,
+    passedCount: 1,
+    failedCount: 0,
+    score: 1,
+  },
+  {
+    name: "longmemeval:multi_session",
+    caseCount: 1,
+    passedCount: 1,
+    failedCount: 0,
+    score: 1,
+  },
+]);
 const locomoFixture = JSON.stringify([
   {
     sample_id: "locomo-atlas",
@@ -7760,9 +7810,18 @@ const locomoCases = parseLocomoBenchmarkDataset(locomoFixture);
 assert.equal(locomoCases.length, 3);
 assert.equal(locomoCases[0]?.id, "locomo-atlas:qa-1");
 assert.equal(locomoCases[0]?.events.length, 2);
+assert.deepEqual(locomoCases[0]?.slices, [
+  "locomo:category:3",
+  "locomo:evidence_backed",
+]);
 assert.equal(locomoCases[1]?.expectedAny?.[0], "2022");
 assert.equal(locomoCases[2]?.expectedAny?.[0], "先核证据链");
 assert.equal(locomoCases[2]?.forbiddenAny?.[0], "不要采用旧路线");
+assert.deepEqual(locomoCases[2]?.slices, [
+  "locomo:category:5",
+  "locomo:evidence_backed",
+  "locomo:has_adversarial_answer",
+]);
 assert.equal(JSON.stringify(locomoCases[0]?.events).includes("evidence"), false);
 assert.equal(JSON.stringify(locomoCases[0]?.events).includes("category"), false);
 const locomoJsonlCases = parseLocomoBenchmarkDataset(locomoFixture.slice(1, -1));
@@ -7815,6 +7874,29 @@ assert.equal(locomoBenchmark.runManifest.options.concurrency, 1);
 assert.equal(locomoBenchmark.runManifest.options.reuseProfiles, true);
 assert.deepEqual(locomoBenchmark.cases[0]?.expectedAnyMatched, ["先核证据链"]);
 assert.deepEqual(locomoBenchmark.cases[1]?.expectedAnyMatched, ["2022"]);
+assert.deepEqual(locomoBenchmark.summary.sliceScores, [
+  {
+    name: "locomo:evidence_backed",
+    caseCount: 2,
+    passedCount: 2,
+    failedCount: 0,
+    score: 1,
+  },
+  {
+    name: "locomo:category:2",
+    caseCount: 1,
+    passedCount: 1,
+    failedCount: 0,
+    score: 1,
+  },
+  {
+    name: "locomo:category:3",
+    caseCount: 1,
+    passedCount: 1,
+    failedCount: 0,
+    score: 1,
+  },
+]);
 const locomoHumanSpeakerFixture = JSON.stringify([
   {
     sample_id: "locomo-human-speakers",
@@ -7844,6 +7926,7 @@ const locomoHumanSpeakerFixture = JSON.stringify([
 const locomoHumanSpeakerCases = parseLocomoBenchmarkDataset(locomoHumanSpeakerFixture);
 assert.equal(locomoHumanSpeakerCases[0]?.events[1]?.role, "user");
 assert.match(locomoHumanSpeakerCases[0]?.events[1]?.content ?? "", /^Blair:/);
+assert.deepEqual(locomoHumanSpeakerCases[0]?.slices, ["locomo:speaker_grounding"]);
 const locomoHumanSpeakerBenchmark = await runExternalMemoryBenchmark({
   cases: locomoHumanSpeakerCases,
   datasetFormat: "locomo.json",
@@ -8407,6 +8490,17 @@ assert.throws(
 const externalMarkdown = renderExternalMemoryBenchmarkMarkdown(externalBenchmarkWithManifest);
 const externalFailureMarkdown = renderExternalMemoryBenchmarkMarkdown(externalFailureSummaryBenchmark);
 const externalNormalizationMarkdown = renderExternalMemoryBenchmarkMarkdown(externalAnswerNormalizationBenchmark);
+const legacyExternalReportWithoutSlices = JSON.parse(
+  JSON.stringify(externalBenchmarkWithManifest),
+) as typeof externalBenchmarkWithManifest;
+delete legacyExternalReportWithoutSlices.summary.sliceScores;
+delete legacyExternalReportWithoutSlices.cases[0]?.slices;
+assert.match(renderExternalMemoryBenchmarkMarkdown(legacyExternalReportWithoutSlices), /Slice scores: none/);
+const legacyExternalSuiteWithoutSlices = JSON.parse(
+  JSON.stringify(externalSuiteExecution.result),
+) as typeof externalSuiteExecution.result;
+delete legacyExternalSuiteWithoutSlices.runs[0]?.sliceScores;
+assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(legacyExternalSuiteWithoutSlices), /Slice scores/);
 assert.match(externalMarkdown, /External Long-Memory QA/);
 assert.match(externalMarkdown, /Run Manifest/);
 assert.match(externalMarkdown, /format=gmos\.external_long_memory_qa\.jsonl/);
@@ -8414,6 +8508,8 @@ assert.match(externalMarkdown, /## Summary/);
 assert.match(externalMarkdown, /## Failure Samples/);
 assert.match(externalMarkdown, /Failure reasons/);
 assert.match(externalMarkdown, /Failure stages/);
+assert.match(externalMarkdown, /Slice scores/);
+assert.match(externalMarkdown, /gmos:project_procedure=1\/1 score=1\.0000/);
 assert.match(externalMarkdown, /Missing intent groups/);
 assert.match(externalFailureMarkdown, /answer_not_in_input \(Missing Alpha\)/);
 assert.match(externalNormalizationMarkdown, /answer_normalization_mismatch \(Alpha Beta\)/);
@@ -8855,6 +8951,7 @@ const cliExternalSuiteJson = JSON.parse(cliExternalSuite.stdout) as {
     reusedProfileCaseCount?: number;
     warningCount?: number;
     failureStages?: Array<{ name: string; count: number }>;
+    sliceScores?: Array<{ name: string; caseCount: number; passedCount: number; failedCount: number; score: number }>;
   }>;
 };
 assert.equal(cliExternalSuiteJson.schema, "gmos.external_benchmark_suite.v1");
@@ -8874,6 +8971,15 @@ assert.equal(typeof cliExternalSuiteJson.runManifest?.package?.version, "string"
 assert.equal(cliExternalSuiteJson.runs?.[0]?.durationMs !== undefined, true);
 assert.equal(cliExternalSuiteJson.runs?.[0]?.caseGroupCount !== undefined, true);
 assert.equal(cliExternalSuiteJson.runs?.[0]?.warningCount, 0);
+assert.deepEqual(cliExternalSuiteJson.runs?.[0]?.sliceScores, [
+  {
+    name: "gmos:project_procedure",
+    caseCount: 1,
+    passedCount: 1,
+    failedCount: 0,
+    score: 1,
+  },
+]);
 assert.deepEqual(cliExternalSuiteJson.runs?.[1]?.failureStages, [
   { name: "answer_not_in_input", count: 1 },
 ]);
@@ -8885,6 +8991,7 @@ assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /gmOS External 
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Weighted score:/);
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Duration:/);
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Failure stages: answer_not_in_input=1/);
+assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /gmos:project_procedure=1\/1 score=1\.0000/);
 assert.match(cliExternalSuite.stderr, /\[gmos external-suite\] pass run=passing/);
 assert.match(cliExternalSuite.stderr, /\[gmos external-suite\] fail run=failing/);
 const cliExternalSuiteGate = spawnSync(

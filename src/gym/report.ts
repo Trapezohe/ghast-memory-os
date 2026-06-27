@@ -33,6 +33,16 @@ function markdownCounters(values: { name: string; count: number }[]): string {
     : "none";
 }
 
+function markdownSliceScores(
+  values?: Array<{ name: string; caseCount: number; passedCount: number; score: number }> | undefined,
+): string {
+  return values?.length
+    ? values
+        .map((entry) => `${markdownCell(entry.name)}=${entry.passedCount}/${entry.caseCount} score=${entry.score.toFixed(4)}`)
+        .join(", ")
+    : "none";
+}
+
 export function renderMemoryGymMarkdown(report: MemoryGymResult): string {
   return [
     "# gmOS Memory Gym Report",
@@ -152,6 +162,7 @@ export function renderExternalMemoryBenchmarkMarkdown(
     "",
     `Failure reasons: ${markdownCounters(report.summary.failureReasons)}`,
     `Failure stages: ${markdownCounters(report.summary.failureStages ?? [])}`,
+    `Slice scores: ${markdownSliceScores(report.summary.sliceScores)}`,
     `Warnings: ${markdownCounters(report.summary.warnings)}`,
     `Uncertainty: low=${report.summary.uncertaintyLevels.low}, medium=${report.summary.uncertaintyLevels.medium}, high=${report.summary.uncertaintyLevels.high}, unknown=${report.summary.uncertaintyLevels.unknown}`,
     `Evidence convergence: reached=${report.summary.evidenceConvergence.reached}, notReached=${report.summary.evidenceConvergence.notReached}, unknown=${report.summary.evidenceConvergence.unknown}`,
@@ -211,11 +222,11 @@ export function renderExternalMemoryBenchmarkSuiteMarkdown(
     "",
     "## Runs",
     "",
-    "| Run | Status | Dataset | Cases | Score | Duration | Groups | Reused | Failure stages | Hash | JSON | Markdown | Warnings |",
-    "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- |",
+    "| Run | Status | Dataset | Cases | Score | Duration | Groups | Reused | Failure stages | Slice scores | Hash | JSON | Markdown | Warnings |",
+    "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- |",
     ...report.runs.map(
       (run) =>
-        `| ${markdownCell(run.id)} | ${run.pass ? "PASS" : "FAIL"} | ${run.datasetFormat} | ${run.passedCount}/${run.caseCount} | ${run.score.toFixed(4)} | ${(run.durationMs / 1000).toFixed(1)}s | ${run.caseGroupCount} | ${run.reusedProfileCaseCount} | ${markdownCounters(run.failureStages)} | ${markdownCell(run.datasetHash ?? "-")} | ${markdownCell(run.jsonFile ?? "-")} | ${markdownCell(run.markdownFile ?? "-")} | ${run.warningCount}${run.warnings.length ? `: ${markdownListCell(run.warnings)}` : ""} |`,
+        `| ${markdownCell(run.id)} | ${run.pass ? "PASS" : "FAIL"} | ${run.datasetFormat} | ${run.passedCount}/${run.caseCount} | ${run.score.toFixed(4)} | ${(run.durationMs / 1000).toFixed(1)}s | ${run.caseGroupCount} | ${run.reusedProfileCaseCount} | ${markdownCounters(run.failureStages)} | ${markdownSliceScores(run.sliceScores)} | ${markdownCell(run.datasetHash ?? "-")} | ${markdownCell(run.jsonFile ?? "-")} | ${markdownCell(run.markdownFile ?? "-")} | ${run.warningCount}${run.warnings.length ? `: ${markdownListCell(run.warnings)}` : ""} |`,
     ),
     "",
   ].join("\n");

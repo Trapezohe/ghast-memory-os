@@ -173,6 +173,65 @@ function uniqueStrings(values: string[]): string[] {
   return result;
 }
 
+function sliceSlug(value: string): string | null {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/giu, "_")
+    .replace(/^_+|_+$/gu, "");
+  return slug || null;
+}
+
+function prefixedSlice(prefix: string, value: unknown): string | null {
+  const raw =
+    typeof value === "number" && Number.isFinite(value) ? String(value) : stringValue(value);
+  if (!raw) return null;
+  const slug = sliceSlug(raw);
+  return slug ? `${prefix}:${slug}` : null;
+}
+
+function longMemEvalSlices(row: Record<string, unknown>): string[] {
+  const slices = [
+    prefixedSlice("longmemeval", row.question_type),
+    Array.isArray(row.haystack_session_ids) && row.haystack_session_ids.length > 1
+      ? "longmemeval:multi_session"
+      : null,
+    stringValue(row.question_date) ? "longmemeval:has_question_date" : null,
+    Array.isArray(row.answer_session_ids) && row.answer_session_ids.length > 1
+      ? "longmemeval:answer_multi_session"
+      : null,
+  ];
+  return uniqueStrings(slices.filter((entry): entry is string => entry !== null));
+}
+
+function valueIncludesName(value: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}([^\\p{L}\\p{N}]|$)`, "iu").test(value);
+}
+
+function locomoSlices(input: {
+  conversation: Record<string, unknown>;
+  qaRecord: Record<string, unknown>;
+  question: string;
+  forbiddenAny: string[];
+}): string[] {
+  const sessionKeys = locomoSessionKeys(input.conversation);
+  const category = prefixedSlice("locomo:category", input.qaRecord.category);
+  const speakerA = stringValue(input.conversation.speaker_a);
+  const speakerB = stringValue(input.conversation.speaker_b);
+  const names = [speakerA, speakerB].filter((entry): entry is string => entry !== null);
+  const namesSpeaker = names.some((name) => valueIncludesName(input.question, name));
+  const evidence = input.qaRecord.evidence;
+  const slices = [
+    category,
+    namesSpeaker ? "locomo:speaker_grounding" : null,
+    sessionKeys.length > 1 ? "locomo:multi_session" : null,
+    Array.isArray(evidence) && evidence.length > 0 ? "locomo:evidence_backed" : null,
+    input.forbiddenAny.length > 0 ? "locomo:has_adversarial_answer" : null,
+  ];
+  return uniqueStrings(slices.filter((entry): entry is string => entry !== null));
+}
+
 function normalizeRole(value: unknown, fallback: ExternalMemoryBenchmarkMessageEvent["role"]): ExternalMemoryBenchmarkMessageEvent["role"] {
   if (value === "system" || value === "user" || value === "assistant" || value === "tool") {
     return value;
@@ -256,6 +315,7 @@ function parseLongMemEvalCaseSet(
       id: caseId,
       profileId: `longmemeval_${caseId}`,
       mode: "reconstruct",
+      slices: longMemEvalSlices(row),
       events: longMemEvalEvents(row, caseId),
       question,
       expectedAny,
@@ -320,6 +380,7 @@ function parseLocomoCaseSet(input: string): ParsedCaseSet {
   for (const [sampleIndex, sample] of samples.entries()) {
     const row = assertRecord(sample, `LoCoMo sample ${sampleIndex + 1}`);
     const sampleId = stringValue(row.sample_id) ?? `locomo-${sampleIndex + 1}`;
+    const conversation = assertRecord(row.conversation, `LoCoMo sample ${sampleId}.conversation`);
     const events = locomoEvents(row, sampleId);
     const qaRows = Array.isArray(row.qa) ? row.qa : [];
     if (qaRows.length === 0) throw new Error(`LoCoMo sample ${sampleId} requires qa annotations`);
@@ -340,6 +401,7 @@ function parseLocomoCaseSet(input: string): ParsedCaseSet {
         events,
         question,
         expectedAny,
+        slices: locomoSlices({ conversation, qaRecord, question, forbiddenAny }),
         ...(forbiddenAny.length ? { forbiddenAny } : {}),
       });
     }

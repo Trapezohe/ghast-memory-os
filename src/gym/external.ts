@@ -66,6 +66,7 @@ export interface ExternalMemoryBenchmarkCase {
   id?: string | undefined;
   profileId?: string | undefined;
   mode?: ExternalMemoryBenchmarkMode | undefined;
+  slices?: string[] | undefined;
   events: ExternalMemoryBenchmarkEvent[];
   question: string;
   expectedAny?: string[] | undefined;
@@ -102,6 +103,7 @@ export interface ExternalMemoryBenchmarkCaseResult {
   id: string;
   pass: boolean;
   mode: ExternalMemoryBenchmarkMode;
+  slices?: string[] | undefined;
   requireConvergence: boolean;
   expectedAnyMatched: string[];
   expectedAnyMissing: string[];
@@ -121,9 +123,18 @@ export interface ExternalMemoryBenchmarkCounter {
   count: number;
 }
 
+export interface ExternalMemoryBenchmarkSliceScore {
+  name: string;
+  caseCount: number;
+  passedCount: number;
+  failedCount: number;
+  score: number;
+}
+
 export interface ExternalMemoryBenchmarkFailureSample {
   id: string;
   mode: ExternalMemoryBenchmarkMode;
+  slices?: string[] | undefined;
   failureReasons: string[];
   failureTaxonomy?: ExternalMemoryBenchmarkFailureTaxonomyEntry[] | undefined;
   warnings: string[];
@@ -142,6 +153,7 @@ export interface ExternalMemoryBenchmarkFailureSample {
 export interface ExternalMemoryBenchmarkSummary {
   failureReasons: ExternalMemoryBenchmarkCounter[];
   failureStages?: ExternalMemoryBenchmarkCounter[] | undefined;
+  sliceScores?: ExternalMemoryBenchmarkSliceScore[] | undefined;
   warnings: ExternalMemoryBenchmarkCounter[];
   uncertaintyLevels: {
     low: number;
@@ -264,7 +276,16 @@ function stringArray(value: unknown, field: string): string[] | undefined {
   if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
     throw new Error(`External benchmark ${field} must be an array of strings`);
   }
-  return value.map((entry) => entry.trim()).filter(Boolean);
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const entry of value) {
+    const normalized = entry.trim();
+    const key = normalized.toLowerCase();
+    if (!normalized || seen.has(key)) continue;
+    seen.add(key);
+    result.push(normalized);
+  }
+  return result;
 }
 
 function normalizeMode(value: unknown): ExternalMemoryBenchmarkMode | undefined {
@@ -404,6 +425,7 @@ function normalizeCase(
   const expectedAny = stringArray(row.expectedAny, `${id}.expectedAny`);
   const expectedAll = stringArray(row.expectedAll, `${id}.expectedAll`);
   const forbiddenAny = stringArray(row.forbiddenAny, `${id}.forbiddenAny`);
+  const slices = stringArray(row.slices, `${id}.slices`);
   const requireConvergence = optionalBoolean(row.requireConvergence, `${id}.requireConvergence`);
   if (
     (expectedAny?.length ?? 0) === 0 &&
@@ -421,6 +443,7 @@ function normalizeCase(
     id,
     ...(typeof row.profileId === "string" && row.profileId.trim() ? { profileId: row.profileId.trim() } : {}),
     ...(mode ? { mode } : {}),
+    ...(slices && slices.length > 0 ? { slices } : {}),
     events,
     question: row.question,
     ...(expectedAny ? { expectedAny } : {}),
@@ -823,12 +846,27 @@ function sortedCounters(map: Map<string, number>): ExternalMemoryBenchmarkCounte
     .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name));
 }
 
+function sortedSliceScores(
+  map: Map<string, { caseCount: number; passedCount: number }>,
+): ExternalMemoryBenchmarkSliceScore[] {
+  return [...map.entries()]
+    .map(([name, stats]) => ({
+      name,
+      caseCount: stats.caseCount,
+      passedCount: stats.passedCount,
+      failedCount: stats.caseCount - stats.passedCount,
+      score: stats.caseCount ? stats.passedCount / stats.caseCount : 0,
+    }))
+    .sort((left, right) => right.caseCount - left.caseCount || left.name.localeCompare(right.name));
+}
+
 function failureSampleForCase(
   entry: ExternalMemoryBenchmarkCaseResult,
 ): ExternalMemoryBenchmarkFailureSample {
   return {
     id: entry.id,
     mode: entry.mode,
+    ...(entry.slices !== undefined ? { slices: entry.slices } : {}),
     failureReasons: entry.failureReasons,
     failureTaxonomy: entry.failureTaxonomy,
     warnings: entry.warnings,
@@ -851,6 +889,7 @@ function buildExternalMemoryBenchmarkSummary(
 ): ExternalMemoryBenchmarkSummary {
   const failureReasonCounts = new Map<string, number>();
   const failureStageCounts = new Map<string, number>();
+  const sliceScoreCounts = new Map<string, { caseCount: number; passedCount: number }>();
   const warningCounts = new Map<string, number>();
   const uncertaintyLevels = {
     low: 0,
@@ -868,6 +907,12 @@ function buildExternalMemoryBenchmarkSummary(
     for (const reason of entry.failureReasons) incrementCounter(failureReasonCounts, reason);
     for (const taxonomyEntry of entry.failureTaxonomy ?? []) {
       incrementCounter(failureStageCounts, taxonomyEntry.stage);
+    }
+    for (const slice of entry.slices ?? []) {
+      const stats = sliceScoreCounts.get(slice) ?? { caseCount: 0, passedCount: 0 };
+      stats.caseCount += 1;
+      if (entry.pass) stats.passedCount += 1;
+      sliceScoreCounts.set(slice, stats);
     }
     for (const warning of entry.warnings) incrementCounter(warningCounts, warning);
     if (entry.diagnostics.uncertaintyLevel === "low") {
@@ -893,6 +938,7 @@ function buildExternalMemoryBenchmarkSummary(
   return {
     failureReasons: sortedCounters(failureReasonCounts),
     failureStages: sortedCounters(failureStageCounts),
+    sliceScores: sortedSliceScores(sliceScoreCounts),
     warnings: sortedCounters(warningCounts),
     uncertaintyLevels,
     evidenceConvergence,
@@ -1071,6 +1117,7 @@ async function scoreCase(input: {
     id,
     pass: failureReasons.length === 0,
     mode,
+    slices: input.benchmarkCase.slices ?? [],
     requireConvergence: requireConvergenceForCase,
     expectedAnyMatched,
     expectedAnyMissing,

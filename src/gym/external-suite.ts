@@ -10,6 +10,7 @@ import {
   type ExternalMemoryBenchmarkDatasetFormat,
   type ExternalMemoryBenchmarkMode,
   type ExternalMemoryBenchmarkResult,
+  type ExternalMemoryBenchmarkSliceScore,
   type RunExternalMemoryBenchmarkOptions,
 } from "./external.js";
 import {
@@ -60,6 +61,7 @@ export interface ExternalMemoryBenchmarkSuiteRunSummary {
   warningCount: number;
   warnings: string[];
   failureStages: ExternalMemoryBenchmarkCounter[];
+  sliceScores?: ExternalMemoryBenchmarkSliceScore[] | undefined;
   jsonFile?: string | undefined;
   markdownFile?: string | undefined;
 }
@@ -374,6 +376,7 @@ export async function runExternalMemoryBenchmarkSuite(
       warningCount: report.runManifest.dataset.warnings.length,
       warnings: report.runManifest.dataset.warnings,
       failureStages: report.summary.failureStages ?? [],
+      sliceScores: report.summary.sliceScores,
     };
     runs.push(summary);
     options.onRunResult?.(summary);
