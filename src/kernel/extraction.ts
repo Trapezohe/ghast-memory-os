@@ -15,7 +15,10 @@ import {
   sanitizePublicPayloadRecord,
 } from "./safety.js";
 import { relativeEventDateMetadata } from "./temporal-format.js";
-import { mergeExplicitTemporalValidityMetadata } from "./temporal-validity.js";
+import {
+  mergeExplicitTemporalValidityMetadata,
+  normalizeExplicitTemporalInstant,
+} from "./temporal-validity.js";
 
 interface MemoryExtractionPlan {
   report: MemoryExtractionReport;
@@ -72,6 +75,9 @@ function snapshotCandidate(candidate: unknown): MemoryExtractionCandidateSnapsho
     ...(Number.isFinite(confidence) ? { confidence } : {}),
     ...(typeof record.predicate === "string" ? { predicate: publicString(record.predicate) } : {}),
     ...(typeof record.subject === "string" ? { subject: publicString(record.subject) } : {}),
+    ...(typeof record.eventTime === "string" ? { eventTime: publicString(record.eventTime) } : {}),
+    ...(typeof record.validFrom === "string" ? { validFrom: publicString(record.validFrom) } : {}),
+    ...(typeof record.validTo === "string" ? { validTo: publicString(record.validTo) } : {}),
     ...(typeof record.cardinality === "string" ? { cardinality: publicString(record.cardinality) } : {}),
     ...(typeof record.actionPolicyKind === "string"
       ? { actionPolicyKind: publicString(record.actionPolicyKind) }
@@ -104,9 +110,32 @@ function allowedCardinality(
 }
 
 function hasSecretLikeAuxiliaryField(candidate: MemoryExtractionCandidate): boolean {
-  return [candidate.predicate, candidate.subject, candidate.cardinality, candidate.actionPolicyKind]
+  return [
+    candidate.predicate,
+    candidate.subject,
+    candidate.eventTime,
+    candidate.validFrom,
+    candidate.validTo,
+    candidate.cardinality,
+    candidate.actionPolicyKind,
+  ]
     .filter((value): value is string => typeof value === "string")
     .some((value) => classifySensitivity(value) === "secret_like");
+}
+
+function structuredTemporalMetadata(candidate: MemoryExtractionCandidate): Record<string, string> {
+  const entries = [
+    ["eventTime", candidate.eventTime],
+    ["validFrom", candidate.validFrom],
+    ["validTo", candidate.validTo],
+  ] as const;
+  const metadata: Record<string, string> = {};
+  for (const [key, value] of entries) {
+    if (!value) continue;
+    const normalized = normalizeExplicitTemporalInstant(value);
+    if (normalized) metadata[key] = normalized;
+  }
+  return metadata;
 }
 
 function normalizeCandidate(
@@ -136,6 +165,7 @@ function normalizeCandidate(
         {
           ...relativeEventDateMetadata(content, options.createdAt),
           ...sanitizePublicPayloadRecord(candidate.metadata ?? {}),
+          ...structuredTemporalMetadata(candidate),
         },
       ),
     },

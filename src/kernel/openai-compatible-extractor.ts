@@ -121,6 +121,9 @@ function normalizeCandidate(value: unknown): MemoryExtractionCandidate | null {
     confidence,
     ...(optionalString(record.predicate) ? { predicate: optionalString(record.predicate) } : {}),
     ...(optionalString(record.subject) ? { subject: optionalString(record.subject) } : {}),
+    ...(optionalString(record.eventTime) ? { eventTime: optionalString(record.eventTime) } : {}),
+    ...(optionalString(record.validFrom) ? { validFrom: optionalString(record.validFrom) } : {}),
+    ...(optionalString(record.validTo) ? { validTo: optionalString(record.validTo) } : {}),
     ...(optionalCardinality(record.cardinality)
       ? { cardinality: optionalCardinality(record.cardinality) }
       : {}),
@@ -141,6 +144,7 @@ function systemPrompt(maxCandidates: number): string {
     "Do not emit API keys, passwords, tokens, private keys, SSNs, or other secret-like content.",
     "Only extract durable user-world information that is useful in future turns.",
     "Use confidence from 0 to 1. Use cardinality='single' only for current-state beliefs.",
+    "Use subject and predicate for world-state facts. Use eventTime, validFrom, and validTo as ISO dates or instants when the text gives time bounds.",
   ].join("\n");
 }
 

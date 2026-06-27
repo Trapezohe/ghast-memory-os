@@ -114,6 +114,9 @@ export interface MemoryExtractionCandidate {
   confidence: number;
   predicate?: string | undefined;
   subject?: string | undefined;
+  eventTime?: string | undefined;
+  validFrom?: string | undefined;
+  validTo?: string | undefined;
   cardinality?: "single" | "multi" | undefined;
   actionPolicyKind?: "do_not_push" | "prefer" | "procedure" | undefined;
   metadata?: Record<string, unknown> | undefined;
@@ -158,6 +161,9 @@ export interface MemoryExtractionCandidateSnapshot {
   confidence?: number | undefined;
   predicate?: string | undefined;
   subject?: string | undefined;
+  eventTime?: string | undefined;
+  validFrom?: string | undefined;
+  validTo?: string | undefined;
   cardinality?: string | undefined;
   actionPolicyKind?: string | undefined;
   metadata?: Record<string, unknown> | undefined;

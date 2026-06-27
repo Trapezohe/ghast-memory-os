@@ -1332,6 +1332,9 @@ const llmExtractorMemory = createMemoryOS({
                         content: "Mira project current blocker is rollout audit.",
                         confidence: 0.89,
                         predicate: "project.state",
+                        eventTime: "2026-06-20",
+                        validFrom: "2026-06-21",
+                        validTo: "2999-07-01T10:30:00Z",
                         cardinality: "single",
                       },
                       {
@@ -1419,6 +1422,35 @@ assert.equal(
   ),
   true,
 );
+const llmProjectMemoryRecords = await Promise.all(
+  llmExtractionReport.memoryIds.map((id) =>
+    llmExtractorMemory.get({ profileId: "llm_extractor", id }),
+  ),
+);
+const llmProjectMemory = llmProjectMemoryRecords.find((entry) => entry?.kind === "project");
+assert.equal(llmProjectMemory?.metadata.eventTime, "2026-06-20T00:00:00.000Z");
+assert.equal(llmProjectMemory?.metadata.validFrom, "2026-06-21T00:00:00.000Z");
+assert.equal(llmProjectMemory?.metadata.validTo, "2999-07-01T10:30:00.000Z");
+const llmExtractorDb = new Database(path.join(tmp, "llm-extractor.db"), { readonly: true });
+try {
+  const llmProjectBeliefRow = llmExtractorDb
+    .prepare(
+      `SELECT metadata_json
+       FROM gmos_world_beliefs
+       WHERE profile_id = ? AND source_memory_id = ?
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    )
+    .get("llm_extractor", llmProjectMemory?.id ?? "") as { metadata_json: string } | undefined;
+  const llmProjectBeliefMetadata = JSON.parse(
+    llmProjectBeliefRow?.metadata_json ?? "{}",
+  ) as Record<string, unknown>;
+  assert.equal(llmProjectBeliefMetadata.eventTime, "2026-06-20T00:00:00.000Z");
+  assert.equal(llmProjectBeliefMetadata.validFrom, "2026-06-21T00:00:00.000Z");
+  assert.equal(llmProjectBeliefMetadata.validTo, "2999-07-01T10:30:00.000Z");
+} finally {
+  llmExtractorDb.close();
+}
 const llmProject = await llmExtractorMemory.reconstructContext({
   profileId: "llm_extractor",
   query: "Mira project current blocker",
@@ -1488,6 +1520,40 @@ assert.equal(fallbackMatches.length, 1);
 assert.equal(fallbackMatches[0]?.metadata.extractionSource, "rules");
 assert.equal(fallbackMatches[0]?.metadata.extractorFallback, true);
 
+const invalidTemporalExtractorStore = createSqliteMemoryStore({
+  path: path.join(tmp, "invalid-temporal-extractor.db"),
+});
+const invalidTemporalExtractorMemory = createMemoryOS({
+  profileId: "invalid_temporal_extractor",
+  store: invalidTemporalExtractorStore,
+  extractor: () => [
+    {
+      kind: "project",
+      content: "Invalid temporal extractor candidate should still store content.",
+      confidence: 0.9,
+      predicate: "project.state",
+      eventTime: "2026-02-30",
+      validFrom: "2026-07-01T10:30:00",
+      validTo: "not-a-date",
+    },
+  ],
+});
+const invalidTemporalReport = await invalidTemporalExtractorMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "invalid_temporal_extractor",
+  role: "user",
+  content: "Invalid temporal fields should not enter metadata.",
+});
+assert.equal(invalidTemporalReport.extraction?.acceptedCandidateCount, 1);
+const invalidTemporalMemory = await invalidTemporalExtractorMemory.get({
+  profileId: "invalid_temporal_extractor",
+  id: invalidTemporalReport.memoryIds[0] ?? "",
+});
+assert.equal(invalidTemporalMemory?.metadata.eventTime, undefined);
+assert.equal(invalidTemporalMemory?.metadata.validFrom, undefined);
+assert.equal(invalidTemporalMemory?.metadata.validTo, undefined);
+await invalidTemporalExtractorMemory.close();
+
 const unsafeExtractorStore = createSqliteMemoryStore({
   path: path.join(tmp, "unsafe-extractor.db"),
 });
@@ -1501,6 +1567,13 @@ const unsafeExtractorMemory = createMemoryOS({
       confidence: 0.99,
       predicate: "user.preference",
       subject: "sk-customsubjectsecret1234567890",
+    },
+    {
+      kind: "project",
+      content: "Custom extractor leaked secret-like temporal field.",
+      confidence: 0.99,
+      predicate: "project.state",
+      validFrom: "sk-customtemporalsecret1234567890",
     },
     {
       kind: "fact",
@@ -1534,10 +1607,11 @@ assert.deepEqual(
     .filter((decision) => decision.decision === "rejected")
     .map((decision) => decision.reason)
     .sort(),
-  ["invalid_kind", "person_kind", "person_routed", "secret_like"],
+  ["invalid_kind", "person_kind", "person_routed", "secret_like", "secret_like"],
 );
 assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customextractorsecret"), false);
 assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customsubjectsecret"), false);
+assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customtemporalsecret"), false);
 assert.equal(
   (
     await unsafeExtractorMemory.search({
