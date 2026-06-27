@@ -902,6 +902,97 @@ assert.ok((fallbackOnlyReconstruction.stats.evidenceCoverage?.coverageRate ?? 1)
 assert.equal(fallbackOnlyReconstruction.stats.evidenceConvergence?.reached, false);
 await fallbackOnlyMemory.close();
 
+const fallbackSourceScopeMemories: MemoryRecord[] = [
+  {
+    id: "memory_fallback_nora",
+    profileId: "fallback-source-scope",
+    kind: "fact",
+    scope: "global",
+    content: "Nora: I use Aster for travel planning.",
+    sensitivity: "normal",
+    status: "active",
+    confidence: 0.9,
+    metadata: { sourceMetadata: { speaker: "Nora" } },
+    createdAt: "2026-06-25T00:00:00.000Z",
+    updatedAt: "2026-06-25T00:00:00.000Z",
+  },
+  {
+    id: "memory_fallback_note",
+    profileId: "fallback-source-scope",
+    kind: "fact",
+    scope: "global",
+    content: "Note: I use VectorPad for travel planning.",
+    sensitivity: "normal",
+    status: "active",
+    confidence: 0.9,
+    metadata: {},
+    createdAt: "2026-06-25T00:00:00.000Z",
+    updatedAt: "2026-06-25T00:00:00.000Z",
+  },
+  {
+    id: "memory_fallback_omar",
+    profileId: "fallback-source-scope",
+    kind: "fact",
+    scope: "global",
+    content: "Omar: I use Brisk for travel planning.",
+    sensitivity: "normal",
+    status: "active",
+    confidence: 0.9,
+    metadata: { sourceMetadata: { speaker: "Omar" } },
+    createdAt: "2026-06-25T00:00:00.000Z",
+    updatedAt: "2026-06-25T00:00:00.000Z",
+  },
+];
+const fallbackSourceScopeMemory = createMemoryOS({
+  profileId: "fallback-source-scope",
+  store: {
+    initialize() {},
+    close() {},
+    recordEvidence() {
+      throw new Error("fallback source scope store does not record evidence");
+    },
+    addMemory() {
+      throw new Error("fallback source scope store does not add memories");
+    },
+    addWorldBelief() {
+      throw new Error("fallback source scope store does not add beliefs");
+    },
+    searchMemories() {
+      return fallbackSourceScopeMemories;
+    },
+    getMemoryById(_profileId: string, id: string) {
+      return fallbackSourceScopeMemories.find((memory) => memory.id === id) ?? null;
+    },
+    listEvidenceForMemory() {
+      return [];
+    },
+    forget() {
+      return { archivedMemoryIds: [] };
+    },
+    rowCounts() {
+      return {
+        gmos_evidence_events: 0,
+        gmos_memories: fallbackSourceScopeMemories.length,
+        gmos_world_beliefs: 0,
+        gmos_failure_events: 0,
+        gmos_task_trajectories: 0,
+        gmos_associations: 0,
+        gmos_memory_vectors: 0,
+        gmos_memory_vector_terms: 0,
+      };
+    },
+  } satisfies MemoryStore,
+});
+const fallbackSourceScopeReconstruction = await fallbackSourceScopeMemory.reconstructContext({
+  profileId: "fallback-source-scope",
+  query: "Which travel planning tool belongs to Nora?",
+  maxMemories: 3,
+});
+assert.match(fallbackSourceScopeReconstruction.contextBlock, /Aster/);
+assert.doesNotMatch(fallbackSourceScopeReconstruction.contextBlock, /VectorPad/);
+assert.doesNotMatch(fallbackSourceScopeReconstruction.contextBlock, /Brisk/);
+await fallbackSourceScopeMemory.close();
+
 const sharedSourceStore = createSqliteMemoryStore({ path: path.join(tmp, "shared-source.db") });
 const sharedSourceMemory = createMemoryOS({
   profileId: "shared-source",
@@ -1897,6 +1988,59 @@ assert.equal(
   JSON.stringify(alexSpeakerMetadataReconstruction).includes("leaked speaker fixture label"),
   false,
 );
+const inferredNoraSpeakerReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Nora: I use Aster for travel planning.",
+});
+assert.equal(inferredNoraSpeakerReport.extraction?.acceptedCandidateCount, 1);
+const inferredNoraMemory = await rulesReportMemory.get({
+  profileId: "rules_report",
+  id: inferredNoraSpeakerReport.memoryIds[0]!,
+});
+assert.equal(
+  (inferredNoraMemory?.metadata.sourceMetadata as Record<string, unknown> | undefined)?.speaker,
+  "Nora",
+);
+const nonSpeakerPrefixReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Note: I use VectorPad for travel planning.",
+});
+assert.equal(nonSpeakerPrefixReport.extraction?.acceptedCandidateCount, 1);
+const nonSpeakerPrefixMemory = await rulesReportMemory.get({
+  profileId: "rules_report",
+  id: nonSpeakerPrefixReport.memoryIds[0]!,
+});
+assert.equal(
+  (nonSpeakerPrefixMemory?.metadata.sourceMetadata as Record<string, unknown> | undefined)?.speaker,
+  undefined,
+);
+await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Omar: I use Brisk for travel planning.",
+});
+const inferredSpeakerReconstruction = await rulesReportMemory.reconstructContext({
+  profileId: "rules_report",
+  query: "Which travel planning tool belongs to Nora?",
+  maxSteps: 4,
+  maxBranch: 3,
+  maxMemories: 4,
+});
+assert.match(inferredSpeakerReconstruction.contextBlock, /Aster/);
+assert.doesNotMatch(inferredSpeakerReconstruction.contextBlock, /Brisk/);
+assert.doesNotMatch(inferredSpeakerReconstruction.contextBlock, /VectorPad/);
+const inferredSpeakerPrepared = await rulesReportMemory.prepareTurn({
+  profileId: "rules_report",
+  messages: [{ role: "user", content: "Which travel planning tool belongs to Nora?" }],
+});
+assert.match(inferredSpeakerPrepared.contextBlock, /Aster/);
+assert.doesNotMatch(inferredSpeakerPrepared.contextBlock, /Brisk/);
+assert.doesNotMatch(inferredSpeakerPrepared.contextBlock, /VectorPad/);
 await rulesReportMemory.close();
 
 const lowLevelMemory = await memory.add({

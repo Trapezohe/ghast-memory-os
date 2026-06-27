@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
 
+import {
+  extractAssociationCues,
+  sourceMetadataEntityCues,
+} from "../kernel/associations.js";
 import { composeTurnContext } from "../kernel/context-composer.js";
 import { buildEvidencePathExplanation } from "../kernel/evidence-path.js";
 import {
@@ -52,6 +56,83 @@ function nowIso(): string {
 
 function profileIdFor(defaultProfileId: string, profileId?: string): string {
   return profileId ?? defaultProfileId;
+}
+
+const NON_SPEAKER_PREFIXES = new Set([
+  "action",
+  "assistant",
+  "context",
+  "input",
+  "memory",
+  "message",
+  "note",
+  "output",
+  "plan",
+  "project",
+  "prompt",
+  "question",
+  "status",
+  "summary",
+  "system",
+  "task",
+  "todo",
+  "update",
+  "user",
+  "上下文",
+  "任务",
+  "助手",
+  "备注",
+  "摘要",
+  "更新",
+  "状态",
+  "用户",
+  "系统",
+  "计划",
+  "输入",
+  "输出",
+  "问题",
+  "项目",
+]);
+
+function inferSpeakerPrefix(content: string): string | null {
+  const match = /^\s*([\p{L}\p{M}' -]{2,48})\s*:\s*(.+)$/u.exec(content);
+  if (!match?.[1] || !match[2]) return null;
+  const prefix = match[1].trim();
+  if (NON_SPEAKER_PREFIXES.has(prefix.toLowerCase())) return null;
+  if (!hasFirstPersonAnchor(match[2])) return null;
+  return prefix;
+}
+
+function hasFirstPersonAnchor(content: string): boolean {
+  return /\b(I|I'm|I’m|I've|I’ve|I'd|I’d|I'll|I’ll|my|mine|we|we're|we’re|we've|we’ve|our)\b|我|我们|我的|咱们/iu.test(content);
+}
+
+function sourcelessPersonalMemory(memory: MemoryRecord): boolean {
+  return sourceMetadataEntityCues(memory.metadata).length === 0 && hasFirstPersonAnchor(memory.content);
+}
+
+function sourceMetadataForEvent(event: Extract<HostEvent, { type: "conversation.message" }>): Record<string, unknown> {
+  const explicit = sanitizePublicSourceMetadata(event.metadata);
+  if (typeof explicit.speaker === "string") return explicit;
+  const inferredSpeaker = inferSpeakerPrefix(event.content);
+  if (!inferredSpeaker) return explicit;
+  return { ...explicit, speaker: inferredSpeaker };
+}
+
+function sourceScopedMemories(memories: MemoryRecord[], query: string): MemoryRecord[] {
+  const queryCues = new Set(extractAssociationCues(query, 48).map((cue) => cue.cue));
+  const selectedSourceCues = new Set<string>();
+  for (const memory of memories) {
+    for (const cue of sourceMetadataEntityCues(memory.metadata)) {
+      if (queryCues.has(cue)) selectedSourceCues.add(cue);
+    }
+  }
+  if (selectedSourceCues.size === 0) return memories;
+  return memories.filter((memory) => {
+    const sourceCues = sourceMetadataEntityCues(memory.metadata);
+    if (sourceCues.length === 0) return !sourcelessPersonalMemory(memory);
+    return sourceCues.some((cue) => selectedSourceCues.has(cue));
+  });
 }
 
 function eventKey(event: HostEvent): string {
@@ -426,7 +507,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
 
     if (!eligible) return { ...result, skippedReason: "not_eligible_for_long_term_memory" };
 
-    const eventMetadata = sanitizePublicSourceMetadata(event.metadata);
+    const eventMetadata = sourceMetadataForEvent(event);
     const evidence = await store.recordEvidence({
       profileId,
       eventKey: eventKey(event),
@@ -509,13 +590,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const profileId = profileIdFor(defaultProfileId, input.profileId);
     const query = latestUserText(input);
     const before = await readAuditSnapshot(store);
-    const memories = await store.searchMemories({
+    const memories = sourceScopedMemories(await store.searchMemories({
       profileId,
       query,
       limit: 12,
       purpose: "context",
       includeSensitive: input.includeSensitive,
-    });
+    }), query);
     const actionPolicies = await store.listActionPolicies(profileId, {
       includeSensitive: input.includeSensitive,
     });

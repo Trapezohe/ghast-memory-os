@@ -438,13 +438,21 @@ function memoryMatchesIntent(memory: MemoryRecord, intent: ReconstructionIntent)
   );
 }
 
+function hasFirstPersonAnchor(content: string): boolean {
+  return /\b(I|I'm|I’m|I've|I’ve|I'd|I’d|I'll|I’ll|my|mine|we|we're|we’re|we've|we’ve|our)\b|我|我们|我的|咱们/iu.test(content);
+}
+
 function sourceScopeRejectReason(
   memory: MemoryRecord,
   intent: ReconstructionIntent,
   selectedSourceCues: Set<string>,
 ): string | null {
   const sourceCues = sourceMetadataEntityCues(memory.metadata);
-  if (sourceCues.length === 0) return null;
+  if (sourceCues.length === 0) {
+    return selectedSourceCues.size > 0 && hasFirstPersonAnchor(memory.content)
+      ? `source_scope_mismatch:${[...selectedSourceCues].join("|")}`
+      : null;
+  }
   const matchingQueryCues = sourceCues.filter((cue) => intent.queryCues.has(cue));
   if (matchingQueryCues.length > 0) {
     for (const cue of matchingQueryCues) selectedSourceCues.add(cue);
@@ -453,6 +461,19 @@ function sourceScopeRejectReason(
   return selectedSourceCues.size > 0 && !sourceCues.some((cue) => selectedSourceCues.has(cue))
     ? `source_scope_mismatch:${[...selectedSourceCues].join("|")}`
     : null;
+}
+
+function sourceScopedFallbackMemories(memories: MemoryRecord[], intent: ReconstructionIntent): MemoryRecord[] {
+  const selectedSourceCues = new Set<string>();
+  for (const memory of memories) {
+    for (const cue of sourceMetadataEntityCues(memory.metadata)) {
+      if (intent.queryCues.has(cue)) selectedSourceCues.add(cue);
+    }
+  }
+  if (selectedSourceCues.size === 0) return memories;
+  return memories.filter(
+    (memory) => sourceScopeRejectReason(memory, intent, selectedSourceCues) === null,
+  );
 }
 
 function pathMatchesIntent(path: ReconstructedEvidencePath, intent: ReconstructionIntent): boolean {
@@ -846,13 +867,14 @@ async function fallbackReconstruction(input: {
   targetMemoryCount: number;
   includeTemporalMetadata?: boolean | undefined;
 }): Promise<ReconstructedContext> {
-  const memories = await input.store.searchMemories({
+  const memories = sourceScopedFallbackMemories(await input.store.searchMemories({
     profileId: input.profileId,
     query: input.query,
     purpose: input.recallPurpose,
     includeSensitive: input.includeSensitive,
     limit: input.maxMemories,
-  });
+  }), input.intent);
+  const targetMemoryCount = Math.min(input.targetMemoryCount, Math.max(1, memories.length));
   const paths = memories.map((memory, index) => ({
     id: `fallback:${memory.id}`,
     step: 1,
@@ -875,7 +897,7 @@ async function fallbackReconstruction(input: {
     paths,
     intent: input.intent,
     threshold: input.evidenceConvergenceThreshold,
-    targetMemoryCount: input.targetMemoryCount,
+    targetMemoryCount,
     stopWhenEvidenceEnough: input.stopWhenEvidenceEnough,
     prunedBranchCount: 0,
     frontierRemaining: 0,
@@ -930,7 +952,7 @@ async function fallbackReconstruction(input: {
     frontierRemaining: 0,
     stopWhenEvidenceEnough: input.stopWhenEvidenceEnough,
     evidenceConvergenceThreshold: input.evidenceConvergenceThreshold,
-    targetMemoryCount: input.targetMemoryCount,
+    targetMemoryCount,
     stopReason,
     includeTemporalMetadata: input.includeTemporalMetadata === true,
     plannerTrace,
