@@ -113,6 +113,7 @@ node dist/cli/gmos.js import --db ./gmos.db --profile local --input-file ./gmos-
 node dist/cli/gmos.js backup --db ./gmos.db --profile local --mode safe --output-file ./gmos-profile-backup.json
 node dist/cli/gmos.js restore --db ./new-gmos.db --profile local-restored --input-file ./gmos-profile-backup.json
 node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "我喜欢简洁的中文回答。"
+node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "我喜欢简洁的中文回答。" --report
 node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
 node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？"
 node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "这个项目之前是什么状态？" --temporal-mode history
@@ -502,7 +503,7 @@ const memory = createMemoryOS({
 ```
 
 The extractor is intentionally not a raw database hook. `observe()` still
-records evidence first, rejects incognito and secret-like writes, skips PERSON
+rejects incognito and secret-like writes before evidence persistence, skips PERSON
 routed candidates, bounds confidence, deduplicates candidates, and writes world
 beliefs only from accepted candidates that carry a structured predicate.
 Returning `[]` means "extract nothing"; returning `null` or throwing falls back

@@ -422,6 +422,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       content: event.content,
       privacyMode: event.privacyMode,
     });
+    result.eligibleForLongTermMemory = eligible;
+
+    if (!eligible) return { ...result, skippedReason: "not_eligible_for_long_term_memory" };
+
     const eventMetadata = sanitizePublicSourceMetadata(event.metadata);
     const evidence = await store.recordEvidence({
       profileId,
@@ -440,9 +444,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       createdAt: event.createdAt,
     });
     result.evidenceId = evidence.id;
-    result.eligibleForLongTermMemory = eligible;
 
-    if (!eligible) return { ...result, skippedReason: "not_eligible_for_long_term_memory" };
     if (isPersonRoutedMemory(event.content)) return { ...result, skippedReason: "person_routed" };
     const extraction = await extractMemoryCandidatePlan({
       extractor: options.extractor,

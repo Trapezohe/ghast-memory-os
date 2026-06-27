@@ -105,6 +105,7 @@ Usage:
   gmos backup --db ./gmos.db --profile local --mode safe --output-file ./gmos-profile-backup.json
   gmos restore --db ./gmos.db --input-file ./gmos-profile-backup.json --on-conflict skip
   gmos observe --db ./gmos.db --profile local --text "我喜欢简洁回答"
+  gmos observe --db ./gmos.db --profile local --text "我喜欢简洁回答" --report
   gmos prepare --db ./gmos.db --profile local --text "你知道我什么偏好吗？"
   gmos reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？"
   gmos explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？"
@@ -1016,14 +1017,19 @@ async function main(): Promise<void> {
     if (command === "observe") {
       const text = value("--text");
       if (!text) usage();
-      await memory.observe({
+      const event = {
         type: "conversation.message",
         profileId,
         role: "user",
         content: text,
         privacyMode: has("--incognito") ? "incognito" : "normal",
         createdAt: new Date().toISOString(),
-      });
+      } as const;
+      if (has("--report")) {
+        console.log(JSON.stringify(await memory.observeWithReport(event), null, 2));
+        return;
+      }
+      await memory.observe(event);
       console.log(JSON.stringify({ ok: true }, null, 2));
       return;
     }

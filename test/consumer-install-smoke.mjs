@@ -1170,6 +1170,88 @@ try {
   const historyPrepareShadowPayload = JSON.parse(historyPrepareShadowBin.stdout);
   assert.equal(typeof historyPrepareShadowPayload.reconstruction?.contextBlock, "string");
   assert.match(historyPrepareShadowPayload.reconstruction.contextBlock, /stable manifests/);
+  const observeReportBin = runInstalledCli(
+    [
+      "observe",
+      "--db",
+      binLowLevelDb,
+      "--profile",
+      "bin",
+      "--text",
+      "I prefer concise extraction reports.",
+      "--report",
+    ],
+  );
+  assert.equal(observeReportBin.status, 0, observeReportBin.stderr);
+  const observeReportPayload = JSON.parse(observeReportBin.stdout);
+  assert.equal(observeReportPayload.extraction?.acceptedCandidateCount, 1);
+  assert.equal(observeReportPayload.extraction?.decisions[0]?.decision, "accepted");
+  const secretObserveReportBin = runInstalledCli(
+    [
+      "observe",
+      "--db",
+      binLowLevelDb,
+      "--profile",
+      "bin",
+      "--text",
+      "My API key is sk-observesecretreport1234567890.",
+      "--report",
+    ],
+  );
+  assert.equal(secretObserveReportBin.status, 0, secretObserveReportBin.stderr);
+  const secretObserveReportPayload = JSON.parse(secretObserveReportBin.stdout);
+  assert.equal(secretObserveReportPayload.eligibleForLongTermMemory, false);
+  assert.equal(secretObserveReportPayload.skippedReason, "not_eligible_for_long_term_memory");
+  assert.equal(JSON.stringify(secretObserveReportPayload).includes("sk-observesecretreport"), false);
+  const incognitoObserveReportBin = runInstalledCli(
+    [
+      "observe",
+      "--db",
+      binLowLevelDb,
+      "--profile",
+      "bin",
+      "--text",
+      "Incognito report should not persist HiddenObserveReportFlag.",
+      "--incognito",
+      "--report",
+    ],
+  );
+  assert.equal(incognitoObserveReportBin.status, 0, incognitoObserveReportBin.stderr);
+  const incognitoObserveReportPayload = JSON.parse(incognitoObserveReportBin.stdout);
+  assert.equal(incognitoObserveReportPayload.eligibleForLongTermMemory, false);
+  assert.equal(incognitoObserveReportPayload.skippedReason, "not_eligible_for_long_term_memory");
+  assert.equal(JSON.stringify(incognitoObserveReportPayload).includes("HiddenObserveReportFlag"), false);
+  const afterUnsafeObserveReportPrepare = runInstalledCli(
+    [
+      "prepare",
+      "--db",
+      binLowLevelDb,
+      "--profile",
+      "bin",
+      "--text",
+      "API key HiddenObserveReportFlag",
+    ],
+  );
+  assert.equal(afterUnsafeObserveReportPrepare.status, 0, afterUnsafeObserveReportPrepare.stderr);
+  assert.equal(
+    afterUnsafeObserveReportPrepare.stdout.includes("sk-observesecretreport") ||
+      afterUnsafeObserveReportPrepare.stdout.includes("HiddenObserveReportFlag"),
+    false,
+  );
+  const unsafeObserveReportDb = new Database(binLowLevelDb, { readonly: true });
+  try {
+    const unsafeEvidenceRows = unsafeObserveReportDb
+      .prepare(
+        `SELECT content
+           FROM gmos_evidence_events
+          WHERE content LIKE ?
+             OR content LIKE ?`,
+      )
+      .all("%sk-observesecretreport%", "%HiddenObserveReportFlag%");
+    assert.equal(unsafeEvidenceRows.length, 0);
+  } finally {
+    unsafeObserveReportDb.close();
+  }
   const explainPathBin = runInstalledCli(
     [
       "explain-path",

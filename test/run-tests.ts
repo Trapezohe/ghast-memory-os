@@ -1714,6 +1714,46 @@ await fallbackExtractorMemory.close();
 await suppressRulesMemory.close();
 await extractorMemory.close();
 
+const unsafeObservePath = path.join(tmp, "unsafe-observe-report.db");
+const unsafeObserveMemory = createMemoryOS({
+  profileId: "unsafe_observe",
+  store: createSqliteMemoryStore({ path: unsafeObservePath }),
+});
+const secretObserveReport = await unsafeObserveMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "unsafe_observe",
+  role: "user",
+  content: "My API key is sk-sdkobservesecretreport1234567890.",
+});
+assert.equal(secretObserveReport.eligibleForLongTermMemory, false);
+assert.equal(secretObserveReport.skippedReason, "not_eligible_for_long_term_memory");
+assert.equal(secretObserveReport.evidenceId, undefined);
+const incognitoObserveReport = await unsafeObserveMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "unsafe_observe",
+  role: "user",
+  content: "Incognito SDK report should not persist HiddenSdkObserveReportFlag.",
+  privacyMode: "incognito",
+});
+assert.equal(incognitoObserveReport.eligibleForLongTermMemory, false);
+assert.equal(incognitoObserveReport.skippedReason, "not_eligible_for_long_term_memory");
+assert.equal(incognitoObserveReport.evidenceId, undefined);
+await unsafeObserveMemory.close();
+const unsafeObserveDb = new Database(unsafeObservePath, { readonly: true });
+try {
+  const unsafeObserveRows = unsafeObserveDb
+    .prepare(
+      `SELECT content
+         FROM gmos_evidence_events
+        WHERE content LIKE ?
+           OR content LIKE ?`,
+    )
+    .all("%sk-sdkobservesecretreport%", "%HiddenSdkObserveReportFlag%");
+  assert.equal(unsafeObserveRows.length, 0);
+} finally {
+  unsafeObserveDb.close();
+}
+
 const rulesReportStore = createSqliteMemoryStore({ path: path.join(tmp, "rules-report.db") });
 const rulesReportMemory = createMemoryOS({
   profileId: "rules_report",
