@@ -25,6 +25,7 @@ import {
   type ExternalMemoryBenchmarkMode,
   type ExternalMemoryBenchmarkResult,
   type ExternalMemoryBenchmarkRunManifest,
+  type ExternalMemoryBenchmarkSliceScore,
   type ExternalMemoryBenchmarkSummary,
   type RunExternalMemoryBenchmarkOptions,
 } from "./external.js";
@@ -110,6 +111,7 @@ export type {
   ExternalMemoryBenchmarkMode,
   ExternalMemoryBenchmarkResult,
   ExternalMemoryBenchmarkRunManifest,
+  ExternalMemoryBenchmarkSliceScore,
   ExternalMemoryBenchmarkSummary,
   ExternalMemoryBenchmarkSuiteDocument,
   ExternalMemoryBenchmarkSuiteExecution,

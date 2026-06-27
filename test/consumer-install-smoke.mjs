@@ -529,6 +529,7 @@ try {
         type ExternalMemoryBenchmarkDatasetAdapter,
         type ExternalMemoryBenchmarkDatasetFormat,
         type ExternalMemoryBenchmarkResult,
+        type ExternalMemoryBenchmarkSliceScore,
         type ExternalMemoryBenchmarkSuiteExecution,
         type ExternalMemoryBenchmarkSuiteResult,
         type HostCompatibilityGymResult,
@@ -729,6 +730,7 @@ try {
       const externalResult: ExternalMemoryBenchmarkResult = await runExternalMemoryBenchmark({
         cases: [{
           id: "typed-external",
+          slices: ["consumer:typed"],
           events: [{
             type: "memory",
             kind: "procedure",
@@ -739,6 +741,10 @@ try {
         }],
       });
       if (!externalResult.pass) throw new Error("typed external benchmark failed");
+      const typedSliceScore: ExternalMemoryBenchmarkSliceScore | undefined = externalResult.summary.sliceScores?.[0];
+      if (typedSliceScore?.name !== "consumer:typed") {
+        throw new Error("typed external slice score failed");
+      }
       const typedSuite = parseExternalMemoryBenchmarkSuite(JSON.stringify({
         runs: [{ id: "typed-suite", inputFile: "typed-suite.jsonl" }],
       }));
