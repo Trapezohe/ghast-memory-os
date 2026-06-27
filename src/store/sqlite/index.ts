@@ -388,14 +388,57 @@ function normalizeTaskTrajectory(row: Record<string, unknown>): TaskTrajectoryAs
 }
 
 function scoreMemory(memory: MemoryRecord, query: string): number {
-  const terms = query
-    .toLowerCase()
-    .split(/[^\p{L}\p{N}_-]+/u)
-    .filter(Boolean);
+  const terms = queryTerms(query);
   if (terms.length === 0) return memory.confidence;
   const lower = memory.content.toLowerCase();
   const hits = terms.filter((term) => lower.includes(term)).length;
   return hits + memory.confidence;
+}
+
+const FORGET_COMMAND_TERMS = new Set([
+  "forget",
+  "forgot",
+  "remove",
+  "delete",
+  "memory",
+  "about",
+  "please",
+  "my",
+  "the",
+  "a",
+  "an",
+  "what",
+  "i",
+  "said",
+  "that",
+  "is",
+  "was",
+  "记",
+  "忘记",
+  "删除",
+  "移除",
+  "关于",
+  "请",
+  "我",
+  "说",
+  "说过",
+]);
+
+const HAN_FORGET_COMMAND_PATTERN = /忘记|删除|移除|关于/gu;
+
+function forgetMatchTerms(query: string): string[] {
+  return queryTerms(query.replace(HAN_FORGET_COMMAND_PATTERN, " ")).filter(
+    (term) => !FORGET_COMMAND_TERMS.has(term),
+  );
+}
+
+function memoryMatchesForgetQuery(memory: MemoryRecord, terms: string[]): boolean {
+  if (terms.length === 0) return true;
+  const lower = memory.content.toLowerCase();
+  const tokens = new Set(queryTerms(memory.content));
+  return terms.every((term) =>
+    /\p{Script=Han}/u.test(term) ? lower.includes(term) : tokens.has(term),
+  );
 }
 
 function scoreAssociation(association: MemoryAssociationRecord, query: string): number {
@@ -2177,14 +2220,16 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
 
   function forget(input: ForgetInput & { profileId: string }): ForgetResult {
     initialize();
+    const terms = forgetMatchTerms(input.query);
+    const searchQuery = terms.length > 0 ? terms.join(" ") : input.query;
     const matches = searchMemories({
       profileId: input.profileId,
-      query: input.query,
+      query: searchQuery,
       purpose: "delete",
       includeSensitive: true,
       includePerson: true,
       limit: 100,
-    });
+    }).filter((memory) => memoryMatchesForgetQuery(memory, terms));
     const archivedMemoryIds = matches.map((memory) => memory.id);
     if (archivedMemoryIds.length > 0) {
       const stmt = db.prepare(

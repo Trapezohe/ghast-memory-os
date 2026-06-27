@@ -6909,24 +6909,80 @@ const externalBenchmarkJsonl = [
       "sk-externalmetadata1234567890",
     ],
   }),
+  JSON.stringify({
+    id: "forget-event",
+    events: [
+      { type: "memory", kind: "project", content: "Project Solace obsolete contact is Old Harbor." },
+      { type: "memory", kind: "project", content: "Project Solace current contact is New Harbor." },
+      { type: "forget", query: "Old Harbor", reason: "obsolete contact removed" },
+    ],
+    question: "What is Project Solace's current contact?",
+    expectedAny: ["New Harbor"],
+    forbiddenAny: ["Old Harbor"],
+  }),
+  JSON.stringify({
+    id: "forget-natural-language-event",
+    events: [
+      { type: "memory", kind: "project", content: "Project Echo obsolete contact is West Pier." },
+      { type: "memory", kind: "project", content: "Project Echo current contact is East Pier." },
+      { type: "forget", query: "forget what I said about West Pier" },
+    ],
+    question: "What is Project Echo's current contact?",
+    expectedAny: ["East Pier"],
+    forbiddenAny: ["West Pier"],
+  }),
+  JSON.stringify({
+    id: "forget-chinese-event",
+    events: [
+      { type: "memory", kind: "project", content: "Project Harbor obsolete contact is North Dock." },
+      { type: "memory", kind: "project", content: "Project Harbor current contact is South Dock." },
+      { type: "forget", query: "忘记 North Dock" },
+    ],
+    question: "What is Project Harbor's current contact?",
+    expectedAny: ["South Dock"],
+    forbiddenAny: ["North Dock"],
+  }),
+  JSON.stringify({
+    id: "forget-token-boundary-event",
+    events: [
+      { type: "memory", kind: "project", content: "Project Tide obsolete contact is Old Harbor." },
+      { type: "memory", kind: "project", content: "Project Tide active contact is Gold Harbor." },
+      { type: "forget", query: "Old Harbor" },
+    ],
+    question: "What is Project Tide's active contact?",
+    expectedAny: ["Gold Harbor"],
+    forbiddenAny: ["Old Harbor"],
+  }),
+  JSON.stringify({
+    id: "forget-chinese-compact-event",
+    events: [
+      { type: "memory", kind: "project", content: "Project Dock obsolete contact is 东码头." },
+      { type: "memory", kind: "project", content: "Project Dock current contact is 西码头." },
+      { type: "forget", query: "忘记东码头" },
+    ],
+    question: "What is Project Dock's current contact?",
+    expectedAny: ["西码头"],
+    forbiddenAny: ["东码头"],
+  }),
 ].join("\n");
 const externalBenchmarkFile = path.join(tmp, "external-long-memory-qa.jsonl");
 writeFileSync(externalBenchmarkFile, externalBenchmarkJsonl);
 const externalCases = parseExternalMemoryBenchmarkJsonl(externalBenchmarkJsonl);
-assert.equal(externalCases.length, 3);
+assert.equal(externalCases.length, 8);
+assert.equal(externalCases[3]?.events[2]?.type, "forget");
 const parsedGmosExternalDataset = parseExternalMemoryBenchmarkDataset(externalBenchmarkJsonl, {
   adapter: "gmos",
 });
 assert.equal(parsedGmosExternalDataset.adapter, "gmos");
 assert.equal(parsedGmosExternalDataset.datasetFormat, "gmos.external_long_memory_qa.jsonl");
-assert.equal(parsedGmosExternalDataset.cases.length, 3);
+assert.equal(parsedGmosExternalDataset.cases.length, 8);
 const externalBenchmark = await runExternalMemoryBenchmark({ cases: externalCases });
 assert.equal(externalBenchmark.pass, true);
 assert.equal(externalBenchmark.score, 1);
 assert.equal(externalBenchmark.runManifest.framework, "gmos-external-long-memory-qa");
-assert.equal(externalBenchmark.runManifest.dataset.caseCount, 3);
+assert.equal(externalBenchmark.runManifest.dataset.caseCount, 8);
 assert.equal(externalBenchmark.runManifest.dataset.hash, null);
-assert.equal(externalBenchmark.runManifest.execution.caseGroupCount, 3);
+assert.equal(externalBenchmark.runManifest.execution.caseGroupCount, 8);
 assert.equal(externalBenchmark.runManifest.execution.reusedProfileCaseCount, 0);
 assert.equal(externalBenchmark.runManifest.options.concurrency >= 1, true);
 assert.equal(externalBenchmark.runManifest.options.reuseProfiles, true);
@@ -8167,6 +8223,18 @@ assert.throws(
       }),
     ),
   /mode must be prepare or reconstruct/,
+);
+assert.throws(
+  () =>
+    parseExternalMemoryBenchmarkJsonl(
+      JSON.stringify({
+        id: "invalid-forget",
+        events: [{ type: "forget", query: "" }],
+        question: "What was forgotten?",
+        expectedAny: ["nothing"],
+      }),
+    ),
+  /forget event requires query/,
 );
 const escapedExternalMarkdown = renderExternalMemoryBenchmarkMarkdown({
   ...externalBenchmark,

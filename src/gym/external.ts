@@ -41,6 +41,12 @@ export interface ExternalMemoryBenchmarkTaskEvent {
   createdAt?: string | undefined;
 }
 
+export interface ExternalMemoryBenchmarkForgetEvent {
+  type: "forget";
+  query: string;
+  reason?: string | undefined;
+}
+
 export interface ExternalMemoryBenchmarkMemoryEvent {
   type: "memory";
   kind: MemoryKind;
@@ -53,7 +59,8 @@ export interface ExternalMemoryBenchmarkMemoryEvent {
 export type ExternalMemoryBenchmarkEvent =
   | ExternalMemoryBenchmarkMessageEvent
   | ExternalMemoryBenchmarkMemoryEvent
-  | ExternalMemoryBenchmarkTaskEvent;
+  | ExternalMemoryBenchmarkTaskEvent
+  | ExternalMemoryBenchmarkForgetEvent;
 
 export interface ExternalMemoryBenchmarkCase {
   id?: string | undefined;
@@ -340,8 +347,18 @@ function parseEvent(value: unknown, caseId: string): ExternalMemoryBenchmarkEven
       ...(typeof event.createdAt === "string" ? { createdAt: event.createdAt } : {}),
     };
   }
+  if (event.type === "forget") {
+    if (typeof event.query !== "string" || event.query.trim().length === 0) {
+      throw new Error(`External benchmark case ${caseId} forget event requires query`);
+    }
+    return {
+      type: "forget",
+      query: event.query.trim(),
+      ...(typeof event.reason === "string" && event.reason.trim() ? { reason: event.reason.trim() } : {}),
+    };
+  }
   if (event.type !== undefined && event.type !== "message") {
-    throw new Error(`External benchmark case ${caseId} event type must be message, memory, or task`);
+    throw new Error(`External benchmark case ${caseId} event type must be message, memory, task, or forget`);
   }
   if (typeof event.content !== "string" || event.content.trim().length === 0) {
     throw new Error(`External benchmark case ${caseId} message event requires content`);
@@ -437,7 +454,22 @@ export function parseExternalMemoryBenchmarkJsonl(input: string): ExternalMemory
 }
 
 function includesTerm(haystack: string, term: string): boolean {
-  return haystack.toLowerCase().includes(term.toLowerCase());
+  if (/\p{Script=Han}/u.test(term)) {
+    return haystack.toLowerCase().includes(term.toLowerCase());
+  }
+  if (/[^\p{Letter}\p{Number}\s]/u.test(term)) {
+    return haystack.toLowerCase().includes(term.toLowerCase());
+  }
+  const normalizedTerm = term.trim().replace(/\s+/gu, " ");
+  if (!normalizedTerm) return false;
+  const pattern = normalizedTerm
+    .split(" ")
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"))
+    .join("\\s+");
+  return new RegExp(
+    `(^|[^\\p{Letter}\\p{Number}])${pattern}($|[^\\p{Letter}\\p{Number}])`,
+    "iu",
+  ).test(haystack);
 }
 
 function normalizeForAnswerComparison(value: string): string {
@@ -482,6 +514,9 @@ function uniqueTerms(values: string[]): string[] {
 function eventContent(event: ExternalMemoryBenchmarkEvent): string {
   if (event.type === "task") {
     return [event.objective, event.summary ?? ""].filter(Boolean).join("\n");
+  }
+  if (event.type === "forget") {
+    return [event.query, event.reason ?? ""].filter(Boolean).join("\n");
   }
   return event.content;
 }
@@ -935,6 +970,12 @@ async function applyBenchmarkEvent(
       status: event.status,
       summary: event.summary,
       createdAt: event.createdAt,
+    });
+  } else if (event.type === "forget") {
+    await memory.forget({
+      profileId,
+      query: event.query,
+      reason: event.reason,
     });
   } else if (event.type === "memory") {
     await memory.add({
