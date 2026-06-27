@@ -967,6 +967,13 @@ const activeTemporalMemory = await temporalMemory.add({
     validTo: "2999-01-01T00:00:00.000Z",
   },
 });
+await temporalMemory.add({
+  profileId: "temporal",
+  kind: "fact",
+  content: "Invalid observed marker came from an invalid timestamp.",
+  confidence: 0.9,
+  createdAt: "2023-02-31T00:00:00.000Z",
+});
 const contextTemporalSearch = await temporalMemory.search({
   profileId: "temporal",
   query: "Temporal window Atlas owner",
@@ -1008,6 +1015,16 @@ const nonTemporalReconstruction = await temporalMemory.reconstructContext({
 assert.match(nonTemporalReconstruction.contextBlock, /ActiveOwner/);
 assert.doesNotMatch(nonTemporalReconstruction.contextBlock, /observed=2026-06-03/);
 assert.equal(nonTemporalReconstruction.paths.some((path) => path.createdAt !== undefined), false);
+const invalidObservedReconstruction = await temporalMemory.reconstructContext({
+  profileId: "temporal",
+  query: "Invalid observed marker",
+  includeTemporalMetadata: true,
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.match(invalidObservedReconstruction.contextBlock, /Invalid observed marker/);
+assert.doesNotMatch(invalidObservedReconstruction.contextBlock, /observed=/);
 const relativeTemporalMemory = createMemoryOS({
   profileId: "relative-temporal",
   store: createSqliteMemoryStore({ path: path.join(tmp, "relative-temporal.db") }),
@@ -3797,6 +3814,9 @@ for (const sensitivePersonalFixture of [
 }
 assert.equal(observedAtMetadata("2026-06-03T06:45:00.000Z"), "observed=2026-06-03; time=06:45 UTC");
 assert.equal(observedAtMetadata("not a timestamp"), "");
+assert.equal(observedAtMetadata("2023-02-31"), "");
+assert.equal(observedAtMetadata("2023-02-31T00:00:00.000Z"), "");
+assert.equal(observedAtMetadata("31 February, 2023"), "");
 assert.deepEqual(
   relativeEventDateMetadata("I went to the archive yesterday.", "2023-05-08T13:56:00.000Z"),
   {

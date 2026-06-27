@@ -438,9 +438,9 @@ does not bypass sensitive or person-memory defaults.
 Rule and host extractor candidates can also pick up conservative validity
 metadata from explicit ISO-date text such as `until 2026-07-01`, `expires on
 2026-07-01`, `valid from 2026-01-01`, or `从 2026-01-01 开始`. When a message has
-a trusted `createdAt`, gmOS also records conservative event-date metadata for
-`today`, `yesterday`, `tomorrow`, `今天`, `昨天`, and `明天`. gmOS still does not
-try to resolve ambiguous relative dates such as "next week" inside the rule
+a trusted ISO `createdAt`, gmOS also records conservative event-date metadata
+for `today`, `yesterday`, `tomorrow`, `今天`, `昨天`, and `明天`. gmOS still does
+not try to resolve ambiguous relative dates such as "next week" inside the rule
 extractor; hosts should pass structured metadata when they have a trusted
 calendar parser. The same validity metadata is written to the derived world
 belief when a candidate creates one, so reconstruction does not reintroduce an

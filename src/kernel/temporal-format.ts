@@ -1,24 +1,3 @@
-export function observedAtMetadata(createdAt: string | undefined): string {
-  const raw = createdAt?.trim();
-  if (!raw) return "";
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return "";
-  const isoDate = parsed.toISOString().slice(0, 10);
-  const hours = parsed.getUTCHours();
-  const minutes = parsed.getUTCMinutes();
-  const seconds = parsed.getUTCSeconds();
-  const time =
-    hours === 0 && minutes === 0 && seconds === 0
-      ? ""
-      : `; time=${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")} UTC`;
-  return `observed=${isoDate}${time}`;
-}
-
-export function observedAtSegment(createdAt: string | undefined): string {
-  const metadata = observedAtMetadata(createdAt);
-  return metadata ? `; ${metadata}` : "";
-}
-
 const MONTH_NAMES = [
   "January",
   "February",
@@ -56,13 +35,37 @@ function dateFromCalendarValue(value: string): Date | null {
     : null;
 }
 
-function shiftedUtcDate(createdAt: string | undefined, dayOffset: number): Date | null {
+function dateFromCreatedAt(createdAt: string | undefined): Date | null {
   const raw = createdAt?.trim();
   if (!raw) return null;
   const calendarMatch = /^(\d{4}-\d{2}-\d{2})(?:T.*)?$/u.exec(raw);
   if (!calendarMatch || !dateFromCalendarValue(calendarMatch[1]!)) return null;
   const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return null;
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+export function observedAtMetadata(createdAt: string | undefined): string {
+  const parsed = dateFromCreatedAt(createdAt);
+  if (!parsed) return "";
+  const isoDate = parsed.toISOString().slice(0, 10);
+  const hours = parsed.getUTCHours();
+  const minutes = parsed.getUTCMinutes();
+  const seconds = parsed.getUTCSeconds();
+  const time =
+    hours === 0 && minutes === 0 && seconds === 0
+      ? ""
+      : `; time=${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")} UTC`;
+  return `observed=${isoDate}${time}`;
+}
+
+export function observedAtSegment(createdAt: string | undefined): string {
+  const metadata = observedAtMetadata(createdAt);
+  return metadata ? `; ${metadata}` : "";
+}
+
+function shiftedUtcDate(createdAt: string | undefined, dayOffset: number): Date | null {
+  const parsed = dateFromCreatedAt(createdAt);
+  if (!parsed) return null;
   const shifted = new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate() + dayOffset));
   return shifted;
 }
