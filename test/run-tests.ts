@@ -1017,6 +1017,32 @@ const fallbackSourceScopeMemories: MemoryRecord[] = [
     createdAt: "2026-06-25T00:00:00.000Z",
     updatedAt: "2026-06-25T00:00:00.000Z",
   },
+  {
+    id: "memory_fallback_mary_jane",
+    profileId: "fallback-source-scope",
+    kind: "fact",
+    scope: "global",
+    content: "Mary Jane: I use Helio for travel planning.",
+    sensitivity: "normal",
+    status: "active",
+    confidence: 0.9,
+    metadata: { sourceMetadata: { speaker: "Mary Jane" } },
+    createdAt: "2026-06-25T00:00:00.000Z",
+    updatedAt: "2026-06-25T00:00:00.000Z",
+  },
+  {
+    id: "memory_fallback_omar_stone",
+    profileId: "fallback-source-scope",
+    kind: "fact",
+    scope: "global",
+    content: "Omar Stone: I use Quartz for travel planning.",
+    sensitivity: "normal",
+    status: "active",
+    confidence: 0.9,
+    metadata: { sourceMetadata: { speaker: "Omar Stone" } },
+    createdAt: "2026-06-25T00:00:00.000Z",
+    updatedAt: "2026-06-25T00:00:00.000Z",
+  },
 ];
 const fallbackSourceScopeMemory = createMemoryOS({
   profileId: "fallback-source-scope",
@@ -1066,7 +1092,89 @@ const fallbackSourceScopeReconstruction = await fallbackSourceScopeMemory.recons
 assert.match(fallbackSourceScopeReconstruction.contextBlock, /Aster/);
 assert.doesNotMatch(fallbackSourceScopeReconstruction.contextBlock, /VectorPad/);
 assert.doesNotMatch(fallbackSourceScopeReconstruction.contextBlock, /Brisk/);
+const multiwordFallbackSourceScopeReconstruction = await fallbackSourceScopeMemory.reconstructContext({
+  profileId: "fallback-source-scope",
+  query: "Which travel planning tool belongs to Mary Jane?",
+  maxMemories: 3,
+});
+assert.match(multiwordFallbackSourceScopeReconstruction.contextBlock, /Helio/);
+assert.doesNotMatch(multiwordFallbackSourceScopeReconstruction.contextBlock, /Quartz/);
+assert.doesNotMatch(multiwordFallbackSourceScopeReconstruction.contextBlock, /VectorPad/);
+const underscoredFallbackSourceScopeReconstruction = await fallbackSourceScopeMemory.reconstructContext({
+  profileId: "fallback-source-scope",
+  query: "Which travel planning tool belongs to mary_jane?",
+  maxMemories: 3,
+});
+assert.match(underscoredFallbackSourceScopeReconstruction.contextBlock, /Helio/);
+assert.doesNotMatch(underscoredFallbackSourceScopeReconstruction.contextBlock, /Quartz/);
 await fallbackSourceScopeMemory.close();
+
+const beliefOnlyPersonStore = createSqliteMemoryStore({ path: path.join(tmp, "belief-only-person.db") });
+const beliefOnlyPersonMemory = createMemoryOS({
+  profileId: "belief-only-person",
+  store: beliefOnlyPersonStore,
+  extractor: () => [],
+});
+await beliefOnlyPersonStore.addWorldBelief({
+  profileId: "belief-only-person",
+  subject: "person:nora",
+  predicate: "user.tool",
+  object: "Aster for travel planning",
+  confidence: 0.82,
+});
+await beliefOnlyPersonStore.addWorldBelief({
+  profileId: "belief-only-person",
+  subject: "person:omar",
+  predicate: "user.tool",
+  object: "Brisk for travel planning",
+  confidence: 0.82,
+});
+await beliefOnlyPersonStore.addWorldBelief({
+  profileId: "belief-only-person",
+  subject: "person:mary-jane",
+  predicate: "user.tool",
+  object: "Helio for travel planning",
+  confidence: 0.82,
+});
+await beliefOnlyPersonStore.addWorldBelief({
+  profileId: "belief-only-person",
+  subject: "person:omar-stone",
+  predicate: "user.tool",
+  object: "Quartz for travel planning",
+  confidence: 0.82,
+});
+const beliefOnlyGenericReconstruction = await beliefOnlyPersonMemory.reconstructContext({
+  profileId: "belief-only-person",
+  query: "travel planning tool",
+  maxSteps: 4,
+  maxBranch: 8,
+});
+assert.match(beliefOnlyGenericReconstruction.contextBlock, /Aster|Brisk/);
+const beliefOnlyNoraReconstruction = await beliefOnlyPersonMemory.reconstructContext({
+  profileId: "belief-only-person",
+  query: "Which travel planning tool belongs to Nora?",
+  maxSteps: 4,
+  maxBranch: 8,
+});
+assert.match(beliefOnlyNoraReconstruction.contextBlock, /Aster/);
+assert.doesNotMatch(beliefOnlyNoraReconstruction.contextBlock, /Brisk/);
+const beliefOnlyMaryJaneReconstruction = await beliefOnlyPersonMemory.reconstructContext({
+  profileId: "belief-only-person",
+  query: "Which travel planning tool belongs to Mary Jane?",
+  maxSteps: 4,
+  maxBranch: 8,
+});
+assert.match(beliefOnlyMaryJaneReconstruction.contextBlock, /Helio/);
+assert.doesNotMatch(beliefOnlyMaryJaneReconstruction.contextBlock, /Quartz/);
+const beliefOnlyUnderscoredMaryJaneReconstruction = await beliefOnlyPersonMemory.reconstructContext({
+  profileId: "belief-only-person",
+  query: "Which travel planning tool belongs to mary_jane?",
+  maxSteps: 4,
+  maxBranch: 8,
+});
+assert.match(beliefOnlyUnderscoredMaryJaneReconstruction.contextBlock, /Helio/);
+assert.doesNotMatch(beliefOnlyUnderscoredMaryJaneReconstruction.contextBlock, /Quartz/);
+await beliefOnlyPersonMemory.close();
 
 const sharedSourceStore = createSqliteMemoryStore({ path: path.join(tmp, "shared-source.db") });
 const sharedSourceMemory = createMemoryOS({
@@ -1920,7 +2028,8 @@ try {
   unsafeObserveDb.close();
 }
 
-const rulesReportStore = createSqliteMemoryStore({ path: path.join(tmp, "rules-report.db") });
+const rulesReportPath = path.join(tmp, "rules-report.db");
+const rulesReportStore = createSqliteMemoryStore({ path: rulesReportPath });
 const rulesReportMemory = createMemoryOS({
   profileId: "rules_report",
   store: rulesReportStore,
@@ -1949,6 +2058,50 @@ assert.equal(durableObservationDecision?.candidate.confidence, 0.52);
 assert.equal(durableObservationDecision?.candidate.metadata?.rule, "durable_observation_fact");
 assert.equal(durableObservationReport.memoryIds.length, 1);
 assert.equal(durableObservationReport.worldBeliefIds.length, 0);
+const speakerAttributeReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Blair: My travel planning tool is Meridian.",
+  metadata: {
+    speaker: "Blair",
+    participants: ["Alex", "Blair"],
+  },
+});
+assert.equal(speakerAttributeReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(speakerAttributeReport.memoryIds.length, 1);
+assert.equal(speakerAttributeReport.worldBeliefIds.length, 1);
+const speakerAttributeDb = new Database(rulesReportPath, { readonly: true });
+try {
+  const speakerAttributeBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(speakerAttributeReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string }
+    | undefined;
+  assert.equal(speakerAttributeBelief?.subject, "person:blair");
+  assert.equal(speakerAttributeBelief?.predicate, "user.attribute");
+} finally {
+  speakerAttributeDb.close();
+}
+for (const transientStatement of [
+  "My question is how to deploy the app.",
+  "My guess is that the API is down.",
+  "My current concern is whether tests pass.",
+]) {
+  const transientReport = await rulesReportMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: "rules_report",
+    role: "user",
+    content: transientStatement,
+  });
+  assert.equal(transientReport.extraction?.acceptedCandidateCount, 0);
+  assert.equal(transientReport.memoryIds.length, 0);
+  assert.equal(transientReport.worldBeliefIds.length, 0);
+}
 const defaultDurableObservationMatches = await rulesReportMemory.search({
   profileId: "rules_report",
   query: "Caroline support group",

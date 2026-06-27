@@ -10,6 +10,7 @@ import type {
 } from "./types.js";
 import {
   classifySensitivity,
+  isNonSpeakerPrefix,
   isPersonRoutedMemory,
   redactForReport,
   sanitizePublicPayloadRecord,
@@ -218,8 +219,10 @@ function uniqueCandidatesWithDecisions(
 }
 
 function stripSpeakerPrefix(text: string): string {
-  const match = /^[\p{L}\p{M}' -]{2,48}\s*:\s*(.+)$/u.exec(text);
-  return match?.[1] ? (match[1] as string).trim() : text;
+  const match = /^([\p{L}\p{M}' -]{2,48})\s*:\s*(.+)$/u.exec(text);
+  const prefix = match?.[1]?.trim();
+  if (!prefix || !match?.[2] || isNonSpeakerPrefix(prefix)) return text;
+  return match[2].trim();
 }
 
 function hasFirstPersonAnchor(text: string): boolean {
@@ -256,6 +259,45 @@ function likelyDurableObservationFact(text: string): boolean {
   return hasTemporalSignal || hasPersonalWorldSignal;
 }
 
+function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate | null {
+  const utterance = stripSpeakerPrefix(text);
+  if (isQuestionLike(utterance)) return null;
+  if (/^\s*I\s+use\s+.{2,80}?\s+for\s+.{2,80}/iu.test(utterance) || /^我用\s*.+\s*(?:做|处理|管理|进行)\s*.+/u.test(utterance)) {
+    return {
+      kind: "fact",
+      content: text,
+      confidence: 0.64,
+      predicate: "user.tool",
+      metadata: { rule: "first_person_attribute" },
+    };
+  }
+  const englishAttribute = /^\s*my\s+([\p{L}\p{N} _-]{2,80}?)\s+(?:is|are)\s+.{1,80}/iu.exec(
+    utterance,
+  );
+  const chineseAttribute = /^我的\s*(.+?)\s*(?:是|为)\s*.+/u.exec(utterance);
+  if (
+    (englishAttribute && stableFirstPersonAttributeLabel(englishAttribute[1] ?? "")) ||
+    (chineseAttribute && stableFirstPersonAttributeLabel(chineseAttribute[1] ?? ""))
+  ) {
+    return {
+      kind: "fact",
+      content: text,
+      confidence: 0.64,
+      predicate: "user.attribute",
+      metadata: { rule: "first_person_attribute" },
+    };
+  }
+  return null;
+}
+
+function stableFirstPersonAttributeLabel(label: string): boolean {
+  const normalized = label.trim().toLowerCase();
+  if (!normalized) return false;
+  return /(?:^|\b)(?:tool|app|application|editor|ide|browser|calendar|notebook|database|crm|field|role|job|profession|title|timezone|location|city|country|language|stack|workflow|process)$/iu.test(
+    normalized,
+  ) || /(?:工具|应用|编辑器|浏览器|日历|数据库|领域|职业|职位|时区|城市|国家|语言|技术栈|流程)$/u.test(label.trim());
+}
+
 export function extractRuleMemoryCandidates(content: string): MemoryExtractionCandidate[] {
   const text = normalize(content);
   if (!text || isPersonRoutedMemory(text)) return [];
@@ -287,6 +329,9 @@ export function extractRuleMemoryCandidates(content: string): MemoryExtractionCa
       },
     ];
   }
+
+  const attributeCandidate = firstPersonAttributeCandidate(text);
+  if (attributeCandidate) return [attributeCandidate];
 
   if (/步骤|流程|procedure|workflow|when .* do|每次.*先/u.test(text)) {
     return [

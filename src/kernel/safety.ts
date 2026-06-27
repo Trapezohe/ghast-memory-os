@@ -20,6 +20,48 @@ const SENSITIVE_METADATA_KEYS =
   /(^|[\s_.-])(api[\s_.-]?key|access[\s_.-]?token|refresh[\s_.-]?token|token|password|secret|authorization|authentication|auth(?:entication)?(?:[\s_.-]?token)?|cookie|credential(?:[\s_.-]?id)?|session(?:[\s_.-]?id)?|ssn|social[\s_.-]?security)($|[\s_.-])/iu;
 
 const REDACTED_METADATA = "[redacted_sensitive_metadata]";
+const NON_SPEAKER_PREFIXES = new Set([
+  "action",
+  "assistant",
+  "context",
+  "example",
+  "fact",
+  "input",
+  "memory",
+  "message",
+  "note",
+  "output",
+  "plan",
+  "preference",
+  "project",
+  "prompt",
+  "question",
+  "status",
+  "summary",
+  "system",
+  "task",
+  "todo",
+  "update",
+  "user",
+  "上下文",
+  "任务",
+  "助手",
+  "备注",
+  "摘要",
+  "更新",
+  "状态",
+  "用户",
+  "系统",
+  "计划",
+  "输入",
+  "输出",
+  "问题",
+  "项目",
+  "偏好",
+  "事实",
+  "示例",
+  "说明",
+]);
 const CREDENTIAL_KEY_PATTERN =
   "api[\\s_.-]?key|access[\\s_.-]?token|refresh[\\s_.-]?token|id[\\s_.-]?token|client[\\s_.-]?secret|token|password|secret|auth(?:entication)?(?:[\\s_.-]?token)?|authorization|cookies?|credentials?(?:[\\s_.-]?id)?|session(?:[\\s_.-]?(?:id|token))?";
 const DOUBLE_QUOTED_CREDENTIAL_ASSIGNMENT_PATTERN = new RegExp(
@@ -55,6 +97,10 @@ export function eligibleForLongTermMemory(input: {
 
 export function isPersonRoutedMemory(content: string): boolean {
   return /^\s*PERSON\s*:/iu.test(content);
+}
+
+export function isNonSpeakerPrefix(value: string): boolean {
+  return NON_SPEAKER_PREFIXES.has(value.trim().toLowerCase());
 }
 
 export function shouldHideFromOrdinaryContext(input: {

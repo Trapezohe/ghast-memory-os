@@ -111,6 +111,27 @@ function normalizedText(value: string): string {
   return value.toLowerCase();
 }
 
+function entityCueKey(value: string): string {
+  return normalizedText(value)
+    .trim()
+    .replace(/[^\p{L}\p{N}_-]+/gu, "-")
+    .replace(/_+/gu, "-")
+    .replace(/-+/gu, "-")
+    .replace(/^-+|-+$/gu, "");
+}
+
+function entityCueMatchesQuery(cue: string, intent: ReconstructionIntent): boolean {
+  const key = entityCueKey(cue);
+  if (!key) return false;
+  const queryKeys = new Set(
+    [...intent.queryCues].map((queryCue) => entityCueKey(queryCue)).filter(Boolean),
+  );
+  if (queryKeys.has(key)) return true;
+  const parts = key.split("-").filter(Boolean);
+  const queryParts = new Set([...queryKeys].flatMap((queryKey) => queryKey.split("-")));
+  return parts.length > 1 && parts.every((part) => queryParts.has(part));
+}
+
 function queryCueSet(query: string): Set<string> {
   return new Set(extractAssociationCues(query, 48).map((cue) => cue.cue));
 }
@@ -173,9 +194,16 @@ function coverageCues(query: string): string[] {
 
 function pathCoversCue(path: ReconstructedEvidencePath, cue: string): boolean {
   const normalizedCue = normalizedText(cue);
-  return normalizedText(
-    `${path.cue} ${path.tag} ${path.targetKind ?? ""} ${path.targetSummary}`,
-  ).includes(normalizedCue);
+  const pathText = `${path.cue} ${path.tag} ${path.targetKind ?? ""} ${path.targetSummary}`;
+  if (normalizedText(pathText).includes(normalizedCue)) return true;
+  const cueKey = entityCueKey(cue);
+  if (!cueKey) return false;
+  const pathKeys = new Set(
+    extractAssociationCues(pathText, 64).map((pathCue) => entityCueKey(pathCue.cue)).filter(Boolean),
+  );
+  if (pathKeys.has(cueKey)) return true;
+  const parts = cueKey.split("-").filter(Boolean);
+  return parts.length > 1 && parts.every((part) => pathKeys.has(part));
 }
 
 function evidenceCoverageForPaths(
@@ -453,12 +481,13 @@ function sourceScopeRejectReason(
       ? `source_scope_mismatch:${[...selectedSourceCues].join("|")}`
       : null;
   }
-  const matchingQueryCues = sourceCues.filter((cue) => intent.queryCues.has(cue));
+  const matchingQueryCues = sourceCues.filter((cue) => entityCueMatchesQuery(cue, intent));
   if (matchingQueryCues.length > 0) {
-    for (const cue of matchingQueryCues) selectedSourceCues.add(cue);
+    for (const cue of matchingQueryCues) selectedSourceCues.add(entityCueKey(cue));
     return null;
   }
-  return selectedSourceCues.size > 0 && !sourceCues.some((cue) => selectedSourceCues.has(cue))
+  return selectedSourceCues.size > 0 &&
+    !sourceCues.some((cue) => selectedSourceCues.has(entityCueKey(cue)))
     ? `source_scope_mismatch:${[...selectedSourceCues].join("|")}`
     : null;
 }
@@ -467,13 +496,35 @@ function sourceScopedFallbackMemories(memories: MemoryRecord[], intent: Reconstr
   const selectedSourceCues = new Set<string>();
   for (const memory of memories) {
     for (const cue of sourceMetadataEntityCues(memory.metadata)) {
-      if (intent.queryCues.has(cue)) selectedSourceCues.add(cue);
+      if (entityCueMatchesQuery(cue, intent)) selectedSourceCues.add(entityCueKey(cue));
     }
   }
   if (selectedSourceCues.size === 0) return memories;
   return memories.filter(
     (memory) => sourceScopeRejectReason(memory, intent, selectedSourceCues) === null,
   );
+}
+
+function associationSourceRejectReason(
+  association: MemoryAssociationRecord,
+  intent: ReconstructionIntent,
+  selectedSourceCues: Set<string>,
+): string | null {
+  const personCue = associationPersonCue(association);
+  if (!personCue) return null;
+  const personCueKey = entityCueKey(personCue);
+  if (entityCueMatchesQuery(personCue, intent)) {
+    selectedSourceCues.add(personCueKey);
+    return null;
+  }
+  return selectedSourceCues.size > 0 && !selectedSourceCues.has(personCueKey)
+    ? `source_scope_mismatch:${[...selectedSourceCues].join("|")}`
+    : null;
+}
+
+function associationPersonCue(association: MemoryAssociationRecord): string | null {
+  const personMatch = /^person:([^\s]+)/iu.exec(association.targetSummary);
+  return personMatch?.[1]?.trim().toLowerCase() ?? null;
 }
 
 function pathMatchesIntent(path: ReconstructedEvidencePath, intent: ReconstructionIntent): boolean {
@@ -1047,10 +1098,27 @@ export async function reconstructMemoryContext(input: {
       .sort((a, b) => b.routeScore - a.routeScore)
       .slice(0, maxBranch);
     for (const ranked of rankedAssociations) {
+      const personCue = associationPersonCue(ranked.association);
+      if (personCue && entityCueMatchesQuery(personCue, intent)) {
+        selectedSourceCues.add(entityCueKey(personCue));
+      }
+    }
+    for (const ranked of rankedAssociations) {
       const { association } = ranked;
       if (seenAssociationIds.has(association.id)) continue;
       seenAssociationIds.add(association.id);
       const path = pathFromAssociation(association, step, ranked.routeScore, ranked.routeReason);
+      const associationRejectReason = associationSourceRejectReason(
+        association,
+        intent,
+        selectedSourceCues,
+      );
+      if (associationRejectReason) {
+        prunedBranchCount += 1;
+        stepTrace.prunedBranchCount += 1;
+        stepTrace.branches.push(traceBranchFromPath(path, "pruned", associationRejectReason));
+        continue;
+      }
       const gain = informationGainForPath({ query, paths, path, intent });
       path.informationGain = gain.gain;
       path.routeReason = path.routeReason

@@ -14,6 +14,7 @@ import { reconstructMemoryContext } from "../kernel/reconstruction.js";
 import {
   classifySensitivity,
   eligibleForLongTermMemory,
+  isNonSpeakerPrefix,
   isPersonRoutedMemory,
   sanitizeEvidenceForPublicOutput,
   sanitizePublicPayloadRecord,
@@ -59,54 +60,11 @@ function profileIdFor(defaultProfileId: string, profileId?: string): string {
   return profileId ?? defaultProfileId;
 }
 
-const NON_SPEAKER_PREFIXES = new Set([
-  "action",
-  "assistant",
-  "context",
-  "example",
-  "fact",
-  "input",
-  "memory",
-  "message",
-  "note",
-  "output",
-  "plan",
-  "preference",
-  "project",
-  "prompt",
-  "question",
-  "status",
-  "summary",
-  "system",
-  "task",
-  "todo",
-  "update",
-  "user",
-  "上下文",
-  "任务",
-  "助手",
-  "备注",
-  "摘要",
-  "更新",
-  "状态",
-  "用户",
-  "系统",
-  "计划",
-  "输入",
-  "输出",
-  "问题",
-  "项目",
-  "偏好",
-  "事实",
-  "示例",
-  "说明",
-]);
-
 function inferSpeakerPrefix(content: string): string | null {
   const match = /^\s*([\p{L}\p{M}' -]{2,48})\s*:\s*(.+)$/u.exec(content);
   if (!match?.[1] || !match[2]) return null;
   const prefix = match[1].trim();
-  if (NON_SPEAKER_PREFIXES.has(prefix.toLowerCase())) return null;
+  if (isNonSpeakerPrefix(prefix)) return null;
   if (!hasFirstPersonAnchor(match[2])) return null;
   return prefix;
 }
