@@ -28,11 +28,50 @@ function runCli(args, options = {}) {
   });
 }
 
+function runSlicePassed(run, name, caseCount) {
+  return run?.sliceScores?.some(
+    (slice) =>
+      slice.name === name &&
+      slice.caseCount === caseCount &&
+      slice.passedCount === caseCount &&
+      slice.failedCount === 0 &&
+      slice.score === 1,
+  );
+}
+
+function readJsonFile(filePath) {
+  return JSON.parse(readFileSync(filePath, "utf8"));
+}
+
+function caseById(runReport, id) {
+  return runReport?.cases?.find((entry) => entry.id === id);
+}
+
+function matched(caseReport, value) {
+  return caseReport?.expectedAnyMatched?.includes(value) || caseReport?.expectedAllMatched?.includes(value);
+}
+
+function hasDiagnostics(caseReport) {
+  const diagnostics = caseReport?.diagnostics;
+  return (
+    diagnostics &&
+    typeof diagnostics.evidenceCoverageRate === "number" &&
+    typeof diagnostics.evidenceConvergenceScore === "number" &&
+    typeof diagnostics.evidenceConvergenceReached === "boolean" &&
+    typeof diagnostics.uncertaintyLevel === "string"
+  );
+}
+
+const mainTmp = mkdtempSync(path.join(os.tmpdir(), "gmos-external-main-"));
+process.on("exit", () => rmSync(mainTmp, { recursive: true, force: true }));
+const mainOutputDir = path.join(mainTmp, "reports");
 const result = runCli([
   "gym",
   "external-suite",
   "--suite-file",
   suiteFile,
+  "--output-dir",
+  mainOutputDir,
   "--fail-on-benchmark-fail",
   "--format",
   "json",
@@ -59,6 +98,8 @@ const gmosRun = runs.get("curated-gmos");
 const budgetRun = runs.get("budget-drop-mini");
 const longMemEvalRun = runs.get("longmemeval-mini");
 const locomoRun = runs.get("locomo-mini");
+const longMemEvalReport = readJsonFile(path.join(mainOutputDir, "longmemeval-mini.json"));
+const locomoReport = readJsonFile(path.join(mainOutputDir, "locomo-mini.json"));
 const curatedIds = jsonlIds("curated-gmos.jsonl");
 const budgetIds = jsonlIds("budget-drop-mini.jsonl");
 
@@ -110,6 +151,22 @@ if (
   failures.push("longmemeval-mini run did not pass with abstention warning");
 }
 if (
+  !runSlicePassed(longMemEvalRun, "longmemeval:has_question_date", 1) ||
+  !runSlicePassed(longMemEvalRun, "longmemeval:multi_session", 1)
+) {
+  failures.push("longmemeval-mini missing required slice scores");
+}
+const longMemEvalCase = caseById(longMemEvalReport, "lme-mini-vega-next-step");
+if (
+  !longMemEvalCase?.pass ||
+  !matched(longMemEvalCase, "rollback matrix") ||
+  !hasDiagnostics(longMemEvalCase) ||
+  longMemEvalCase.diagnostics.evidenceConvergenceReached !== true ||
+  longMemEvalCase.forbiddenMatches?.length !== 0
+) {
+  failures.push("longmemeval-mini missing per-case match or diagnostics");
+}
+if (
   !locomoRun ||
   locomoRun.caseCount !== 4 ||
   locomoRun.pass !== true ||
@@ -117,6 +174,37 @@ if (
   !locomoRun.warnings?.includes("skipped_locomo_unscored_qa:locomo-mini-atlas:qa-3")
 ) {
   failures.push("locomo-mini run did not pass 4 cases with profile reuse and unscored warning");
+}
+if (
+  !runSlicePassed(locomoRun, "locomo:evidence_backed", 4) ||
+  !runSlicePassed(locomoRun, "locomo:has_adversarial_answer", 2) ||
+  !runSlicePassed(locomoRun, "locomo:speaker_grounding", 2)
+) {
+  failures.push("locomo-mini missing required slice scores");
+}
+if (
+  locomoReport.summary?.uncertaintyLevels?.low !== 2 ||
+  locomoReport.summary?.uncertaintyLevels?.medium !== 2 ||
+  locomoReport.summary?.evidenceConvergence?.reached !== 2 ||
+  locomoReport.summary?.evidenceConvergence?.notReached !== 2
+) {
+  failures.push("locomo-mini missing summary diagnostics");
+}
+for (const [id, expected] of [
+  ["locomo-mini-atlas:qa-1", "evidence chain"],
+  ["locomo-mini-atlas:qa-2", "2022"],
+  ["locomo-mini-relative-date:qa-1", "7 May 2023"],
+  ["locomo-mini-speaker-grounding:qa-1", "Meridian"],
+]) {
+  const locomoCase = caseById(locomoReport, id);
+  if (
+    !locomoCase?.pass ||
+    !matched(locomoCase, expected) ||
+    !hasDiagnostics(locomoCase) ||
+    locomoCase.forbiddenMatches?.length !== 0
+  ) {
+    failures.push(`locomo-mini missing per-case match or diagnostics for ${id}`);
+  }
 }
 
 if (failures.length > 0) {
