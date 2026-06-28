@@ -489,6 +489,61 @@ function namedPersonToolCandidate(
   };
 }
 
+function personCurrentAttributePredicate(field: string | undefined): string | null {
+  const normalized = field?.trim().toLowerCase().replace(/[-_]+/gu, " ").replace(/\s+/gu, " ");
+  return normalized === "city"
+    ? "person.city"
+    : normalized === "location"
+      ? "person.location"
+      : normalized === "timezone" || normalized === "time zone"
+        ? "person.timezone"
+        : normalized === "role"
+          ? "person.role"
+          : normalized === "title"
+            ? "person.title"
+            : normalized === "language"
+              ? "person.language"
+              : null;
+}
+
+function namedPersonCurrentAttributeCandidate(
+  text: string,
+  metadata?: Record<string, unknown> | undefined,
+): MemoryExtractionCandidate | null {
+  const utterance = stripSpeakerPrefix(text);
+  if (isQuestionLike(utterance)) return null;
+  const namePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}`;
+  const fieldPattern = String.raw`city|location|time\s+zone|timezone|role|title|language`;
+  const match = [
+    new RegExp(
+      String.raw`^\s*(${namePattern})\s+current\s+(${fieldPattern})\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$`,
+      "iu",
+    ),
+    new RegExp(
+      String.raw`^\s*(${namePattern})[’']s\s+current\s+(${fieldPattern})\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$`,
+      "iu",
+    ),
+  ].map((pattern) => pattern.exec(utterance)).find((entry) => entry !== null);
+  const name = match?.[1]?.trim();
+  if (!name || !stableNamedPersonSubject(name) || !metadataConfirmsNamedPerson(name, metadata)) {
+    return null;
+  }
+  const predicate = personCurrentAttributePredicate(match?.[2]);
+  const object = projectBeliefObject(match?.[3]);
+  if (!predicate || !object || /^(?:not|unknown|none|n\/a)\b/iu.test(object)) return null;
+  return {
+    kind: "fact",
+    content: text,
+    confidence: 0.66,
+    predicate,
+    subject: `person:${name}`,
+    subjectAliases: [name],
+    object,
+    cardinality: "single",
+    metadata: { rule: "named_person_current_attribute" },
+  };
+}
+
 function firstPersonNamedRelation(text: string): boolean {
   const englishNameCore = String.raw`\p{Lu}[\p{L}0-9_-]{0,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{0,30}){0,2}`;
   const englishName = String.raw`(?:${englishNameCore}|"${englishNameCore}"|'${englishNameCore}')`;
@@ -772,6 +827,8 @@ export function extractRuleMemoryCandidates(
   if (nonNameCalledRelation(stripSpeakerPrefix(text))) return [];
   const personToolCandidate = namedPersonToolCandidate(text, metadata);
   if (personToolCandidate) return [personToolCandidate];
+  const personCurrentAttributeCandidate = namedPersonCurrentAttributeCandidate(text, metadata);
+  if (personCurrentAttributeCandidate) return [personCurrentAttributeCandidate];
 
   if (/步骤|流程|procedure|workflow|when .* do|每次.*先/u.test(text)) {
     return [

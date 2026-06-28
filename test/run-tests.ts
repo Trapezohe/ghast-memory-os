@@ -2839,6 +2839,35 @@ const possessiveNamedPersonToolReport = await rulesReportMemory.observeWithRepor
 assert.equal(possessiveNamedPersonToolReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(possessiveNamedPersonToolReport.memoryIds.length, 1);
 assert.equal(possessiveNamedPersonToolReport.worldBeliefIds.length, 1);
+const namedPersonCityParisReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Priya current city is Paris.",
+  metadata: {
+    participants: ["Priya", "Blair"],
+  },
+});
+assert.equal(namedPersonCityParisReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(namedPersonCityParisReport.memoryIds.length, 1);
+assert.equal(namedPersonCityParisReport.worldBeliefIds.length, 1);
+const namedPersonCityBerlinReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Priya's current city is Berlin.",
+  metadata: {
+    participants: ["Priya", "Blair"],
+  },
+});
+assert.equal(namedPersonCityBerlinReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(namedPersonCityBerlinReport.memoryIds.length, 1);
+assert.equal(namedPersonCityBerlinReport.worldBeliefIds.length, 1);
+assert.equal(
+  namedPersonCityBerlinReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.metadata?.rule,
+  "named_person_current_attribute",
+);
 for (const content of [
   "Blair's travel planning tool is broken.",
   "Blair's preferred tool is unavailable.",
@@ -2911,6 +2940,18 @@ const nonPersonSpeakerMetadataOnlyReport = await rulesReportMemory.observeWithRe
 assert.equal(nonPersonSpeakerMetadataOnlyReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(nonPersonSpeakerMetadataOnlyReport.memoryIds.length, 0);
 assert.equal(nonPersonSpeakerMetadataOnlyReport.worldBeliefIds.length, 0);
+const nonPersonCurrentAttributeReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "OpenAI current city is Seattle.",
+  metadata: {
+    participants: ["OpenAI", "Priya"],
+  },
+});
+assert.equal(nonPersonCurrentAttributeReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(nonPersonCurrentAttributeReport.memoryIds.length, 0);
+assert.equal(nonPersonCurrentAttributeReport.worldBeliefIds.length, 0);
 for (const metadata of [
   { speaker: "OpenAI" },
   { speaker: "OpenAI", participants: ["OpenAI"] },
@@ -3068,6 +3109,29 @@ try {
   assert.equal(possessiveNamedPersonToolBelief?.subject, "person:blair");
   assert.equal(possessiveNamedPersonToolBelief?.predicate, "person.tool");
   assert.equal(possessiveNamedPersonToolBelief?.object, "Meridian");
+  const personCityBeliefs = speakerAttributeDb
+    .prepare(
+      `SELECT status, object
+         FROM gmos_world_beliefs
+        WHERE profile_id = 'rules_report'
+          AND subject = 'person:priya'
+          AND predicate = 'person.city'
+        ORDER BY status, object`,
+    )
+    .all() as Array<{ status: string; object: string }>;
+  assert.equal(personCityBeliefs.filter((belief) => belief.status === "active").length, 1);
+  assert.equal(
+    personCityBeliefs.some(
+      (belief) => belief.status === "active" && belief.object === "Berlin",
+    ),
+    true,
+  );
+  assert.equal(
+    personCityBeliefs.some(
+      (belief) => belief.status === "superseded" && belief.object === "Paris",
+    ),
+    true,
+  );
   const favoritePreferenceBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate
@@ -3170,6 +3234,15 @@ const namedPersonToolReconstruction = await rulesReportMemory.reconstructContext
 assert.match(namedPersonToolReconstruction.contextBlock, /Chronos/);
 assert.doesNotMatch(namedPersonToolReconstruction.contextBlock, /Helio/);
 assert.doesNotMatch(namedPersonToolReconstruction.contextBlock, /Meridian/);
+const namedPersonCityReconstruction = await rulesReportMemory.reconstructContext({
+  profileId: "rules_report",
+  query: "What is Priya's current city?",
+  maxSteps: 4,
+  maxBranch: 4,
+  maxMemories: 4,
+});
+assert.match(namedPersonCityReconstruction.contextBlock, /Berlin/);
+assert.doesNotMatch(namedPersonCityReconstruction.contextBlock, /Paris/);
 const multiwordNamedPersonPrepared = await rulesReportMemory.prepareTurn({
   profileId: "rules_report",
   messages: [{ role: "user", content: "Which travel planning tool belongs to Mary Jane?" }],
