@@ -2231,6 +2231,51 @@ assert.equal(rulesReport.extraction?.extractionSource, "rules");
 assert.equal(rulesReport.extraction?.fallbackUsed, false);
 assert.equal(rulesReport.extraction?.extractorFailed, false);
 assert.equal(rulesReport.extraction?.acceptedCandidateCount, 1);
+const favoritePreferenceReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Casey: My favorite restaurant is Noma.",
+  metadata: {
+    speaker: "Casey",
+    participants: ["Casey", "Drew"],
+  },
+});
+assert.equal(favoritePreferenceReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(favoritePreferenceReport.memoryIds.length, 1);
+assert.equal(favoritePreferenceReport.worldBeliefIds.length, 1);
+assert.equal(
+  favoritePreferenceReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.predicate,
+  "user.preference",
+);
+const chineseFavoritePreferenceReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "我最喜欢蓝色主题。",
+});
+assert.equal(chineseFavoritePreferenceReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(chineseFavoritePreferenceReport.memoryIds.length, 1);
+assert.equal(chineseFavoritePreferenceReport.worldBeliefIds.length, 1);
+for (const secretLikeFavoriteStatement of [
+  "My favorite password is correcthorsebatterystaple.",
+  "My favorite password is letmeinplease.",
+  "我最喜欢的密码是 correcthorsebatterystaple。",
+  "我最喜欢的密码是 letmeinplease。",
+]) {
+  const secretLikeFavoriteReport = await rulesReportMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: "rules_report",
+    role: "user",
+    content: secretLikeFavoriteStatement,
+  });
+  assert.equal(secretLikeFavoriteReport.eligibleForLongTermMemory, false);
+  assert.equal(secretLikeFavoriteReport.skippedReason, "not_eligible_for_long_term_memory");
+  assert.equal(secretLikeFavoriteReport.evidenceId, undefined);
+  assert.equal(secretLikeFavoriteReport.memoryIds.length, 0);
+  assert.equal(secretLikeFavoriteReport.worldBeliefIds.length, 0);
+}
 const durableObservationReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -2271,6 +2316,17 @@ try {
     | undefined;
   assert.equal(speakerAttributeBelief?.subject, "person:blair");
   assert.equal(speakerAttributeBelief?.predicate, "user.attribute");
+  const favoritePreferenceBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(favoritePreferenceReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string }
+    | undefined;
+  assert.equal(favoritePreferenceBelief?.subject, "person:casey");
+  assert.equal(favoritePreferenceBelief?.predicate, "user.preference");
 } finally {
   speakerAttributeDb.close();
 }
@@ -2278,6 +2334,7 @@ for (const transientStatement of [
   "My question is how to deploy the app.",
   "My guess is that the API is down.",
   "My current concern is whether tests pass.",
+  "What is my favorite restaurant?",
 ]) {
   const transientReport = await rulesReportMemory.observeWithReport({
     type: "conversation.message",
@@ -4569,6 +4626,13 @@ for (const [credentialFixture, leakedFragment] of [
   ["{\"session.id\":\"abcdefghijkl\"}", "abcdefghijkl"],
   ["access_token=abc%2Fdefgh", "abc%2Fdefgh"],
   ["password=p@ssw0rd!", "p@ssw0rd!"],
+  ["password is correcthorsebatterystaple", "correcthorsebatterystaple"],
+  ["password is letmeinplease", "letmeinplease"],
+  ["My favorite password is correcthorsebatterystaple.", "correcthorsebatterystaple"],
+  ["My favorite password is letmeinplease.", "letmeinplease"],
+  ["我最喜欢的密码是 correcthorsebatterystaple。", "correcthorsebatterystaple"],
+  ["我最喜欢的密码是 letmeinplease。", "letmeinplease"],
+  ["token is abcdefghijklmnop", "abcdefghijklmnop"],
   ["secret=abc:defgh", "abc:defgh"],
   ["api_key=abc&defgh", "abc&defgh"],
   ["clientSecret=abcdefghijkl", "abcdefghijkl"],
@@ -4597,6 +4661,7 @@ for (const sensitivePersonalFixture of [
   assert.equal(classifySensitivity(sensitivePersonalFixture), "sensitive");
   assert.equal(redactForReport(sensitivePersonalFixture), "[redacted_sensitive]");
 }
+assert.equal(classifySensitivity("The Delta build answer token is NeedleFlag."), "normal");
 assert.equal(observedAtMetadata("2026-06-03T06:45:00.000Z"), "observed=2026-06-03; time=06:45 UTC");
 assert.equal(observedAtMetadata("not a timestamp"), "");
 assert.equal(observedAtMetadata("2023-02-31"), "");

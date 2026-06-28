@@ -3,7 +3,12 @@ import type { EvidenceEvent, PrivacyMode, Sensitivity } from "./types.js";
 const SECRET_PATTERNS = [
   /\bsk-[A-Za-z0-9_-]{16,}\b/u,
   /\b(api[\s_.-]?key|token|password|secret)\b\s*["']?\s*[:=]\s*["']?\S{8,}/iu,
+  /\b(password|secret)\b\s*(?:is|are|was|were|equals?|called)\s+\S{4,}/iu,
+  /\b(api[\s_.-]?key|token)\b\s*(?:is|are|was|were|equals?|called)\s+(?:[A-Za-z0-9._~+/=@!#$%^&*?%-]{16,}|(?=[A-Za-z0-9._~+/=@!#$%^&*?%-]*\d)[A-Za-z0-9._~+/=@!#$%^&*?%-]{8,})/iu,
   /\b(access[\s_.-]?token|refresh[\s_.-]?token|id[\s_.-]?token|client[\s_.-]?secret|auth(?:entication)?(?:[\s_.-]?token)?|authorization|cookies?|credentials?(?:[\s_.-]?id)?|session(?:[\s_.-]?(?:id|token))?)\b\s*["']?\s*[:=]\s*["']?\S{8,}/iu,
+  /\b(access[\s_.-]?token|refresh[\s_.-]?token|id[\s_.-]?token|client[\s_.-]?secret|auth(?:entication)?(?:[\s_.-]?token)?|authorization|cookies?|credentials?(?:[\s_.-]?id)?|session(?:[\s_.-]?(?:id|token))?)\b\s*(?:is|are|was|were|equals?|called)\s+(?:[A-Za-z0-9._~+/=@!#$%^&*?%-]{16,}|(?=[A-Za-z0-9._~+/=@!#$%^&*?%-]*\d)[A-Za-z0-9._~+/=@!#$%^&*?%-]{8,})/iu,
+  /(?:密码|密钥|秘钥|secret)\s*(?:是|为|叫|等于)\s*\S{4,}/iu,
+  /(?:api\s*key|token|令牌)\s*(?:是|为|叫|等于)\s*(?:[A-Za-z0-9._~+/=@!#$%^&*?%-]{16,}|(?=[A-Za-z0-9._~+/=@!#$%^&*?%-]*\d)[A-Za-z0-9._~+/=@!#$%^&*?%-]{8,})/iu,
   /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/iu,
   /\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/u,
 ];

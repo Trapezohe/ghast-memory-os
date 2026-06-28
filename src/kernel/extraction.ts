@@ -404,7 +404,7 @@ export function extractRuleMemoryCandidates(content: string): MemoryExtractionCa
 
   if (isQuestionLike(stripSpeakerPrefix(text))) return [];
 
-  if (/我喜欢|我偏好|我更喜欢|I prefer|I like|my preference is/iu.test(text)) {
+  if (/我喜欢|我最喜欢|我偏好|我更喜欢|I prefer|I like|my favorite|my preference is/iu.test(text)) {
     return [
       {
         kind: "preference",
