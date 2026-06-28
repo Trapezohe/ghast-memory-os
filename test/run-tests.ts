@@ -3083,6 +3083,7 @@ assert.equal(extractRuleMemoryCandidates("Note: I prefer compact implementation 
 for (const nonPersonSpeakerContent of [
   "OpenAI: Do not push Project Atlas updates.",
   "OpenAI: My workflow is to draft first.",
+  "OpenAI: I was born in Seattle.",
   "OpenAI: Project Atlas status is green.",
 ]) {
   const report = await rulesReportMemory.observeWithReport({
@@ -3203,6 +3204,24 @@ assert.equal(
   speakerCurrentCityBerlinReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
     ?.candidate.metadata?.rule,
   "first_person_current_attribute",
+);
+const speakerBirthplaceReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Rowan: I was born in Seattle.",
+  metadata: {
+    speaker: "Rowan",
+    participants: ["Rowan", "Blair"],
+  },
+});
+assert.equal(speakerBirthplaceReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(speakerBirthplaceReport.memoryIds.length, 1);
+assert.equal(speakerBirthplaceReport.worldBeliefIds.length, 1);
+assert.equal(
+  speakerBirthplaceReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.predicate,
+  "user.fact",
 );
 const namedRelationReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
@@ -3366,6 +3385,18 @@ try {
     ),
     true,
   );
+  const speakerBirthplaceBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(speakerBirthplaceReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string }
+    | undefined;
+  assert.equal(speakerBirthplaceBelief?.subject, "person:rowan");
+  assert.equal(speakerBirthplaceBelief?.predicate, "user.fact");
+  assert.match(speakerBirthplaceBelief?.object ?? "", /Seattle/);
   const favoritePreferenceBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate
@@ -3495,6 +3526,14 @@ const speakerHistoricalCityReconstruction = await rulesReportMemory.reconstructC
   maxMemories: 4,
 });
 assert.match(speakerHistoricalCityReconstruction.contextBlock, /Paris/);
+const speakerBirthplaceReconstruction = await rulesReportMemory.reconstructContext({
+  profileId: "rules_report",
+  query: "Where was Rowan born?",
+  maxSteps: 4,
+  maxBranch: 4,
+  maxMemories: 4,
+});
+assert.match(speakerBirthplaceReconstruction.contextBlock, /Seattle/);
 const multiwordNamedPersonPrepared = await rulesReportMemory.prepareTurn({
   profileId: "rules_report",
   messages: [{ role: "user", content: "Which travel planning tool belongs to Mary Jane?" }],

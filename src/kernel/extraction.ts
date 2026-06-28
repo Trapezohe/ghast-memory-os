@@ -922,7 +922,7 @@ export function extractRuleMemoryCandidates(
     ];
   }
 
-  if (/^我(是|在|有)|我的|my name is|I am|I work|I live/iu.test(text)) {
+  if (/^我(是|在|有)|我的|my name is|I am|I work|I live|I was born/iu.test(text)) {
     return [
       {
         kind: "fact",
