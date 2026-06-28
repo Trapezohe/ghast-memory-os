@@ -205,6 +205,7 @@ export function renderExternalMemoryBenchmarkSuiteMarkdown(
     `Weighted score: ${report.scoreWeighted.toFixed(4)}`,
     `Cases: ${report.totalPassedCount}/${report.totalCaseCount}`,
     `Warnings: ${report.totalWarningCount}`,
+    `Failure reasons: ${markdownCounters(report.totalFailureReasons)}`,
     `Failure stages: ${markdownCounters(report.totalFailureStages)}`,
     "",
     "## Run Manifest",
@@ -222,11 +223,11 @@ export function renderExternalMemoryBenchmarkSuiteMarkdown(
     "",
     "## Runs",
     "",
-    "| Run | Status | Dataset | Cases | Score | Duration | Groups | Reused | Failure stages | Slice scores | Hash | JSON | Markdown | Warnings |",
-    "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- |",
+    "| Run | Status | Dataset | Cases | Score | Duration | Groups | Reused | Failure reasons | Failure stages | Slice scores | Hash | JSON | Markdown | Warnings |",
+    "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- |",
     ...report.runs.map(
       (run) =>
-        `| ${markdownCell(run.id)} | ${run.pass ? "PASS" : "FAIL"} | ${run.datasetFormat} | ${run.passedCount}/${run.caseCount} | ${run.score.toFixed(4)} | ${(run.durationMs / 1000).toFixed(1)}s | ${run.caseGroupCount} | ${run.reusedProfileCaseCount} | ${markdownCounters(run.failureStages)} | ${markdownSliceScores(run.sliceScores)} | ${markdownCell(run.datasetHash ?? "-")} | ${markdownCell(run.jsonFile ?? "-")} | ${markdownCell(run.markdownFile ?? "-")} | ${run.warningCount}${run.warnings.length ? `: ${markdownListCell(run.warnings)}` : ""} |`,
+        `| ${markdownCell(run.id)} | ${run.pass ? "PASS" : "FAIL"} | ${run.datasetFormat} | ${run.passedCount}/${run.caseCount} | ${run.score.toFixed(4)} | ${(run.durationMs / 1000).toFixed(1)}s | ${run.caseGroupCount} | ${run.reusedProfileCaseCount} | ${markdownCounters(run.failureReasons)} | ${markdownCounters(run.failureStages)} | ${markdownSliceScores(run.sliceScores)} | ${markdownCell(run.datasetHash ?? "-")} | ${markdownCell(run.jsonFile ?? "-")} | ${markdownCell(run.markdownFile ?? "-")} | ${run.warningCount}${run.warnings.length ? `: ${markdownListCell(run.warnings)}` : ""} |`,
     ),
     "",
   ].join("\n");

@@ -62,6 +62,7 @@ export interface ExternalMemoryBenchmarkSuiteRunSummary {
   datasetHash: string | null;
   warningCount: number;
   warnings: string[];
+  failureReasons: ExternalMemoryBenchmarkCounter[];
   failureStages: ExternalMemoryBenchmarkCounter[];
   sliceScores?: ExternalMemoryBenchmarkSliceScore[] | undefined;
   jsonFile?: string | undefined;
@@ -81,6 +82,7 @@ export interface ExternalMemoryBenchmarkSuiteResult {
   totalPassedCount: number;
   totalFailedCount: number;
   totalWarningCount: number;
+  totalFailureReasons: ExternalMemoryBenchmarkCounter[];
   totalFailureStages: ExternalMemoryBenchmarkCounter[];
   runManifest: {
     startedAt: string;
@@ -387,6 +389,7 @@ export async function runExternalMemoryBenchmarkSuite(
       datasetHash: report.runManifest.dataset.hash,
       warningCount: report.runManifest.dataset.warnings.length,
       warnings: report.runManifest.dataset.warnings,
+      failureReasons: report.summary.failureReasons,
       failureStages: report.summary.failureStages ?? [],
       sliceScores: report.summary.sliceScores,
     };
@@ -399,6 +402,7 @@ export async function runExternalMemoryBenchmarkSuite(
   const totalPassedCount = runs.reduce((sum, run) => sum + run.passedCount, 0);
   const totalFailedCount = runs.reduce((sum, run) => sum + run.failedCount, 0);
   const totalWarningCount = runs.reduce((sum, run) => sum + run.warningCount, 0);
+  const totalFailureReasons = aggregateCounters(runs.map((run) => run.failureReasons));
   const totalFailureStages = aggregateCounters(runs.map((run) => run.failureStages));
   const firstRunManifest = Object.values(reports)[0]?.runManifest;
   const failOnBenchmarkFail = options.failOnBenchmarkFail === true;
@@ -417,6 +421,7 @@ export async function runExternalMemoryBenchmarkSuite(
       totalPassedCount,
       totalFailedCount,
       totalWarningCount,
+      totalFailureReasons,
       totalFailureStages,
       runManifest: {
         startedAt,

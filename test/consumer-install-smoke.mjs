@@ -838,6 +838,7 @@ try {
           totalPassedCount: 0,
           totalFailedCount: 0,
           totalWarningCount: 0,
+          totalFailureReasons: [],
           totalFailureStages: [],
           runManifest: {
             startedAt: "",

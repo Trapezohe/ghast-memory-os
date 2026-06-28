@@ -10638,10 +10638,17 @@ assert.equal(externalSuiteExecution.result.totalCaseCount, externalSuiteExecutio
 assert.equal(externalSuiteExecution.result.totalPassedCount, externalSuiteExecution.reports.passing!.passedCount);
 assert.equal(externalSuiteExecution.result.totalFailedCount, externalSuiteExecution.reports.failing!.failedCount);
 assert.equal(externalSuiteExecution.result.totalWarningCount, 0);
+assert.deepEqual(externalSuiteExecution.result.totalFailureReasons, [
+  { name: "expected_all_missing", count: 1 },
+]);
 assert.deepEqual(externalSuiteExecution.result.totalFailureStages, [
   { name: "answer_not_in_input", count: 1 },
 ]);
+assert.deepEqual(externalSuiteExecution.result.runs[0]?.failureReasons, []);
 assert.deepEqual(externalSuiteExecution.result.runs[0]?.failureStages, []);
+assert.deepEqual(externalSuiteExecution.result.runs[1]?.failureReasons, [
+  { name: "expected_all_missing", count: 1 },
+]);
 assert.deepEqual(externalSuiteExecution.result.runs[1]?.failureStages, [
   { name: "answer_not_in_input", count: 1 },
 ]);
@@ -10660,6 +10667,7 @@ assert.equal(externalSuiteExecution.reports.failing?.summary.failureSampleLimit,
 assert.equal(externalSuiteExecution.reports.failing?.summary.failureSamples.length, 0);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /BenchmarkStatus: FAIL/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Weighted score:/);
+assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Failure reasons: expected_all_missing=1/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Failure stages: answer_not_in_input=1/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Slice scores/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /gmos:project_procedure=1\/1 score=1\.0000/);
