@@ -560,6 +560,10 @@ guards as every other extractor: incognito events are skipped before extraction,
 secret-like and PERSON-routed candidates are rejected, confidence is bounded,
 and rule fallback is used when the provider call fails unless disabled. Event
 metadata is not sent to the provider unless `includeEventMetadata: true` is set.
+Structured candidates may include `subject`, `predicate`, `object`, `source`,
+`eventTime`, `validFrom`, `validTo`, and `cardinality`; `source` is only a short
+public label for the extracted candidate, while evidence `sourceType/sourceUri`
+remain the provenance source of truth.
 
 Use `cardinality: "single"` only for current-state beliefs where one active
 value should replace the previous one, such as a project's current owner,

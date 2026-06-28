@@ -2180,6 +2180,7 @@ const llmProjectMemory = llmProjectMemoryRecords.find((entry) => entry?.kind ===
 assert.equal(llmProjectMemory?.metadata.eventTime, "2026-06-20T00:00:00.000Z");
 assert.equal(llmProjectMemory?.metadata.validFrom, "2026-06-21T00:00:00.000Z");
 assert.equal(llmProjectMemory?.metadata.validTo, "2999-07-01T10:30:00.000Z");
+assert.equal(llmProjectMemory?.metadata.source, "dialogue:project-status");
 const llmExtractorDb = new Database(path.join(tmp, "llm-extractor.db"), { readonly: true });
 try {
   const llmProjectBeliefRow = llmExtractorDb
