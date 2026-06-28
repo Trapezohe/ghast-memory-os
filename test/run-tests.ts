@@ -3313,6 +3313,11 @@ const firstPersonCurrentTool = extractRuleMemoryCandidates("My current travel pl
 assert.equal(firstPersonCurrentTool?.predicate, "person.tool");
 assert.equal(firstPersonCurrentTool?.object, "Chronos");
 assert.equal(firstPersonCurrentTool?.cardinality, "single");
+const firstPersonTool = extractRuleMemoryCandidates("My travel planning tool is Chronos.")[0];
+assert.equal(firstPersonTool?.predicate, "person.tool");
+assert.equal(firstPersonTool?.object, "Chronos");
+assert.equal(firstPersonTool?.cardinality, "single");
+assert.equal(firstPersonTool?.metadata?.rule, "first_person_tool");
 assert.equal(extractRuleMemoryCandidates("My current browser is Chrome.")[0]?.object, "Chrome");
 for (const invalidWorkAs of [
   "I work as unknown.",
@@ -3332,10 +3337,22 @@ for (const invalidRoleAttribute of [
   "My title is the n/a.",
   "My current travel planning tool is unknown.",
   "My current travel planning tool is unavailable.",
+  "My default browser is slow.",
+  "My work calendar is full.",
+  "My main editor is buggy.",
   "My current travel planning tool is Chronos. My hometown is Boston.",
   "My current travel planning tool is Chronos and I use Meridian.",
+  "My travel planning tool is unknown.",
+  "My travel planning tool is unavailable.",
+  "My travel planning tool is Chronos. My hometown is Boston.",
+  "My travel planning tool is Chronos. My travel planning tool is Meridian.",
+  "My travel planning tool is Chronos, my hometown is Boston.",
+  "My travel planning tool is Chronos and I use Meridian.",
 ]) {
   assert.equal(extractRuleMemoryCandidates(invalidRoleAttribute).length, 0);
+}
+for (const bareToolState of ["My calendar is full.", "My browser is slow.", "My editor is buggy."]) {
+  assert.notEqual(extractRuleMemoryCandidates(bareToolState)[0]?.predicate, "person.tool");
 }
 assert.equal(extractRuleMemoryCandidates("I live in Berlin.")[0]?.predicate, "person.location");
 assert.equal(extractRuleMemoryCandidates("I currently live in Berlin.")[0]?.predicate, "person.location");
@@ -4031,6 +4048,11 @@ assert.equal(
     ?.candidate.metadata?.rule,
   "first_person_current_tool",
 );
+assert.equal(
+  speakerAttributeReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.metadata?.rule,
+  "first_person_tool",
+);
 const speakerBirthplaceReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -4118,15 +4140,16 @@ const speakerAttributeDb = new Database(rulesReportPath, { readonly: true });
 try {
   const speakerAttributeBelief = speakerAttributeDb
     .prepare(
-      `SELECT subject, predicate
+      `SELECT subject, predicate, object
          FROM gmos_world_beliefs
         WHERE id = ?`,
     )
     .get(speakerAttributeReport.worldBeliefIds[0]!) as
-    | { subject: string; predicate: string }
+    | { subject: string; predicate: string; object: string }
     | undefined;
   assert.equal(speakerAttributeBelief?.subject, "person:blair");
-  assert.equal(speakerAttributeBelief?.predicate, "user.attribute");
+  assert.equal(speakerAttributeBelief?.predicate, "person.tool");
+  assert.equal(speakerAttributeBelief?.object, "Meridian");
   const speakerMajorBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate, object

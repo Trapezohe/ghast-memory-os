@@ -349,6 +349,25 @@ function firstPersonAttributeCandidate(
     }
     return null;
   }
+  const stableTool = /^\s*my\s+(?!current\b)(?:[\p{L}\p{N}_-]+\s+){1,8}(?:tool|app|application|editor|ide|browser|calendar|database)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
+    utterance,
+  );
+  if (stableTool) {
+    const object = stableToolObject(stableTool[1]);
+    if (object) {
+      return {
+        kind: "fact",
+        content: text,
+        confidence: 0.66,
+        predicate: "person.tool",
+        object,
+        cardinality: "single",
+        ...personSubject,
+        metadata: { rule: "first_person_tool" },
+      };
+    }
+    return null;
+  }
   if (/^\s*I\s+use\s+.{2,80}?\s+for\s+.{2,80}/iu.test(utterance) || /^我用\s*.+\s*(?:做|处理|管理|进行)\s*.+/u.test(utterance)) {
     return {
       kind: "fact",
@@ -678,6 +697,7 @@ function stableToolObject(value: string | undefined): string | undefined {
     /^(?:not\s+|currently\s+)?(?:broken|unavailable|offline|down|missing|disabled|deprecated|obsolete|unsupported)\b/iu.test(
       object,
     ) ||
+    /^(?:slow|full|buggy|busy|empty)\b/iu.test(object) ||
     /^(?:not|currently\s+not)\s+\S+/iu.test(object)
   ) {
     return undefined;
@@ -810,6 +830,10 @@ function malformedFirstPersonStructuredAttribute(text: string): boolean {
     utterance,
   );
   if (currentTool && !stableToolObject(currentTool[1])) return true;
+  const stableTool = /^\s*my\s+(?!current\b)(?:[\p{L}\p{N}_-]+\s+){1,8}(?:tool|app|application|editor|ide|browser|calendar|database)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
+    utterance,
+  );
+  if (stableTool && !stableToolObject(stableTool[1])) return true;
   const currentAttribute = /^\s*my\s+current\s+(city|location|time\s+zone|timezone|role|job|profession|title|language)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
     utterance,
   );
@@ -974,9 +998,10 @@ function unsafeDirectAttributeObject(field: string, object: string): boolean {
   const namedPersonVerb = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}\s+(?:currently\s+)?(?:lives|works|was|is|comes)\b`;
   const namedPersonPossessive = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}[’']s\s+[\p{L}\p{N}_ -]{1,60}\s+(?:is|=)\b`;
   const firstPersonContinuation = String.raw`[Ii]\s+(?:(?:currently\s+)?live|work\s+as|was\s+born|use)\b|[Ii](?:'m|’m| am)\s+from\b`;
-  const myAttributeContinuation = String.raw`[Mm]y\s+(?:current\s+)?(?:city|location|time\s+zone|timezone|role|job|profession|title|language|full\s+name|name|college\s+major|major|home\s+town|hometown|birth\s+date|birthdate|birthday|date\s+of\s+birth|birth\s+place|birthplace)\s+(?:is|=)\b`;
+  const myToolContinuation = String.raw`[Mm]y\s+(?:current\s+)?(?:[\p{L}\p{N}_-]+\s+){0,8}(?:tool|app|application|editor|ide|browser|calendar|database)\s+(?:is|=)\b`;
+  const myAttributeContinuation = String.raw`(?:${myToolContinuation}|[Mm]y\s+(?:current\s+)?(?:city|location|time\s+zone|timezone|role|job|profession|title|language|full\s+name|name|college\s+major|major|home\s+town|hometown|birth\s+date|birthdate|birthday|date\s+of\s+birth|birth\s+place|birthplace)\s+(?:is|=)\b)`;
   const continuation = String.raw`(?:${namedPersonVerb}|${namedPersonPossessive}|${firstPersonContinuation}|${myAttributeContinuation})`;
-  if (new RegExp(String.raw`[.]\s+${continuation}`, "u").test(object)) return true;
+  if (new RegExp(String.raw`[.,]\s+${continuation}`, "u").test(object)) return true;
   if (new RegExp(String.raw`\b(?:and|but)\s+${continuation}`, "u").test(object)) return true;
   if (/\bnot\s+(?:an?|the)?\b/iu.test(object)) return true;
   return field === "birthplace" && /\bin\s+\d{3,4}\b/iu.test(object);
