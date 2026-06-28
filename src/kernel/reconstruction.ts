@@ -28,6 +28,10 @@ function latestUserText(messages: TurnMessage[] | undefined): string {
   return [...(messages ?? [])].reverse().find((message) => message.role === "user")?.content ?? "";
 }
 
+type ReconstructMemoryContextRequest = ReconstructContextInput & {
+  retrievalQuery?: string | undefined;
+};
+
 function boundedInteger(input: number | undefined, fallback: number, min: number, max: number): number {
   if (input === undefined) return fallback;
   return Math.max(min, Math.min(Math.trunc(input), max));
@@ -74,10 +78,35 @@ function formatPathLine(path: ReconstructedEvidencePath, includeTemporalMetadata
 function publicPath(
   path: ReconstructedEvidencePath,
   includeTemporalMetadata: boolean,
+  hideRouteSignals = false,
 ): ReconstructedEvidencePath {
-  if (includeTemporalMetadata || path.createdAt === undefined) return path;
-  const { createdAt: _createdAt, ...publicPathWithoutTemporalMetadata } = path;
+  const routeSafePath = hideRouteSignals
+    ? {
+        ...path,
+        cue: "retrieval_hint",
+        tag: path.targetKind ?? path.targetType,
+      }
+    : path;
+  if (includeTemporalMetadata || routeSafePath.createdAt === undefined) return routeSafePath;
+  const { createdAt: _createdAt, ...publicPathWithoutTemporalMetadata } = routeSafePath;
   return publicPathWithoutTemporalMetadata;
+}
+
+function publicMemory(memory: MemoryRecord, hideRouteSignals: boolean): MemoryRecord {
+  if (!hideRouteSignals) return memory;
+  return {
+    ...memory,
+    scope: "global",
+    metadata: {},
+  };
+}
+
+function publicEvidenceEvent(event: EvidenceEvent, hideRouteSignals: boolean): EvidenceEvent {
+  if (!hideRouteSignals) return event;
+  return {
+    ...event,
+    payload: {},
+  };
 }
 
 interface ReconstructionIntent {
@@ -771,15 +800,21 @@ function composeReconstructedContext(input: {
   targetMemoryCount: number;
   stopReason: ReconstructedContext["stats"]["stopReason"];
   includeTemporalMetadata: boolean;
+  displayQuery?: string | undefined;
   plannerTrace?: ReconstructedPlannerTrace | undefined;
 }): ReconstructedContext {
-  const publicEvidence = input.includeEvidence
-    ? input.evidence.map(sanitizeEvidenceForPublicOutput)
-    : [];
   let memories = [...input.memories];
   let paths = [...input.paths];
+  const publicQuery = input.displayQuery ?? input.query;
+  const hideInternalRouteSignals =
+    input.displayQuery !== undefined && input.displayQuery !== input.query;
+  const publicEvidence = input.includeEvidence
+    ? input.evidence
+        .map(sanitizeEvidenceForPublicOutput)
+        .map((event) => publicEvidenceEvent(event, hideInternalRouteSignals))
+    : [];
   let evidence = [...publicEvidence];
-  let coverage = evidenceCoverageForPaths(input.query, paths);
+  let coverage = evidenceCoverageForPaths(publicQuery, paths);
   let uncertainty = uncertaintyForReconstruction({
     coverage,
     memories,
@@ -798,7 +833,7 @@ function composeReconstructedContext(input: {
     frontierRemaining: input.frontierRemaining,
   });
   const render = (): string => {
-    coverage = evidenceCoverageForPaths(input.query, paths);
+    coverage = evidenceCoverageForPaths(publicQuery, paths);
     uncertainty = uncertaintyForReconstruction({
       coverage,
       memories,
@@ -818,12 +853,14 @@ function composeReconstructedContext(input: {
     });
     const lines = [
       "<gmos-reconstructed-context>",
-      `Query: ${input.query}`,
+      `Query: ${publicQuery}`,
       `Evidence coverage: ${coverage.coveredCueCount}/${coverage.queryCueCount} cues (${coverage.coverageRate.toFixed(2)}); uncovered=${coverage.uncoveredCues.join(", ") || "none"}`,
       `Evidence convergence: score=${evidenceConvergence.score.toFixed(2)}; reached=${evidenceConvergence.reached}; threshold=${evidenceConvergence.threshold.toFixed(2)}; pruned=${evidenceConvergence.prunedBranchCount}; frontier=${evidenceConvergence.frontierRemaining}; stopWhenEvidenceEnough=${evidenceConvergence.stopWhenEvidenceEnough}`,
       `Reconstruction uncertainty: ${uncertainty.level}${uncertainty.reasons.length ? ` (${uncertainty.reasons.join(", ")})` : ""}`,
       "Reconstructed evidence paths:",
-      ...paths.map((path) => formatPathLine(path, input.includeTemporalMetadata)),
+      ...paths
+        .map((path) => publicPath(path, input.includeTemporalMetadata, hideInternalRouteSignals))
+        .map((path) => formatPathLine(path, input.includeTemporalMetadata)),
       "Memory content:",
       ...memories.map(
         (memory) =>
@@ -851,16 +888,28 @@ function composeReconstructedContext(input: {
     contextBlock = render();
   }
 
-  const outputPaths = paths.map((path) => publicPath(path, input.includeTemporalMetadata));
+  const outputPaths = paths.map((path) =>
+    publicPath(path, input.includeTemporalMetadata, hideInternalRouteSignals),
+  );
+  const outputMemories = memories.map((memory) =>
+    publicMemory(memory, hideInternalRouteSignals),
+  );
+  const outputEvidenceConvergence = hideInternalRouteSignals
+    ? {
+        ...evidenceConvergence,
+        selectedTags: uniqueStrings(outputPaths.map((path) => path.tag)).slice(0, 12),
+      }
+    : evidenceConvergence;
+  const exposePlannerTrace = input.displayQuery === undefined || input.displayQuery === input.query;
 
   return {
     profileId: input.profileId,
-    query: input.query,
+    query: input.displayQuery ?? input.query,
     contextBlock,
-    memories,
+    memories: outputMemories,
     evidence,
     paths: outputPaths,
-    plannerTrace: input.plannerTrace
+    plannerTrace: exposePlannerTrace && input.plannerTrace
       ? { ...input.plannerTrace, stopReason: input.stopReason }
       : undefined,
     stats: {
@@ -872,7 +921,7 @@ function composeReconstructedContext(input: {
       stopReason: input.stopReason,
       evidenceCoverage: coverage,
       uncertainty,
-      evidenceConvergence,
+      evidenceConvergence: outputEvidenceConvergence,
     },
   };
 }
@@ -903,6 +952,7 @@ async function fallbackReconstruction(input: {
   contextBudgetTokens?: number | undefined;
   maxMemories: number;
   intent: ReconstructionIntent;
+  displayQuery?: string | undefined;
   stopWhenEvidenceEnough: boolean;
   evidenceConvergenceThreshold: number;
   targetMemoryCount: number;
@@ -980,6 +1030,7 @@ async function fallbackReconstruction(input: {
   return composeReconstructedContext({
     profileId: input.profileId,
     query: input.query,
+    displayQuery: input.displayQuery,
     memories: safeMemories,
     evidence: input.includeEvidence ? await evidenceForMemories(input.store, safeMemories) : [],
     paths: safePaths,
@@ -1003,11 +1054,13 @@ async function fallbackReconstruction(input: {
 export async function reconstructMemoryContext(input: {
   store: MemoryStore;
   defaultProfileId: string;
-  request: ReconstructContextInput;
+  request: ReconstructMemoryContextRequest;
 }): Promise<ReconstructedContext> {
   const profileId = input.request.profileId ?? input.defaultProfileId;
-  const query = (input.request.query ?? latestUserText(input.request.messages)).trim();
+  const displayQuery = (input.request.query ?? latestUserText(input.request.messages)).trim();
+  const query = (input.request.retrievalQuery ?? displayQuery).trim();
   if (!query) throw new Error("gmOS reconstructContext requires query or messages");
+  const publicQuery = displayQuery || "task context";
 
   const maxSteps = boundedInteger(input.request.maxSteps, 3, 1, 8);
   const maxBranch = boundedInteger(input.request.maxBranch, 4, 1, 12);
@@ -1028,6 +1081,7 @@ export async function reconstructMemoryContext(input: {
       store: input.store,
       profileId,
       query,
+      displayQuery: publicQuery,
       recallPurpose,
       includeEvidence: input.request.includeEvidence,
       includeSensitive: input.request.includeSensitive,
@@ -1277,6 +1331,7 @@ export async function reconstructMemoryContext(input: {
   return composeReconstructedContext({
     profileId,
     query,
+    displayQuery: publicQuery,
     memories,
     evidence: input.request.includeEvidence ? await evidenceForMemories(input.store, memories) : [],
     paths,

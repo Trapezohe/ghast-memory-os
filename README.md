@@ -630,6 +630,9 @@ the context/action runtime without replacing storage in one step.
 The primary gmOS integration path is still `observe()` plus `prepareTurn()`.
 That path gives the runtime conversation events, privacy mode, task state, and
 feedback signals.
+`prepareTurn().task` intent, project id, and topic are used as retrieval hints
+alongside the latest user message. They are not rendered into reconstructed
+context blocks or route metadata returned to callers.
 
 `add()`, `update()`, `archive()`, `clear()`, `search()`, `list()`, and `get()`
 exist for lower-level compatibility cases: importing a known memory from another

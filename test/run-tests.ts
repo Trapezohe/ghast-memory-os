@@ -7892,6 +7892,74 @@ assert.equal(
   JSON.stringify(reconstructedRowsBefore),
   JSON.stringify(await reconstructionStore.rowCounts()),
 );
+await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "project",
+  scope: "host-private-helio-id",
+  content: "Helio scoped project context still points to the复现报告 first step.",
+  metadata: {
+    speaker: "host-private-helio-id",
+  },
+});
+await reconstructionMemory.commitOutcome({
+  profileId: "recon",
+  taskId: "host-private-helio-id",
+  objective: "Helio scoped task routing",
+  status: "completed",
+  summary: "Helio scoped task also points to the复现报告 first step.",
+});
+const taskHintRowsBefore = await reconstructionStore.rowCounts();
+const preparedWithTaskHints = await reconstructionMemory.prepareTurn({
+  profileId: "recon",
+  messages: [{ role: "user", content: "下一步先做什么？" }],
+  task: {
+    intent: "host-private-next-step-hint",
+    projectId: "host-private-helio-id",
+    topic: "Helio",
+  },
+  includeEvidence: true,
+  reconstruction: {
+    mode: "shadow",
+    maxSteps: 4,
+    maxBranch: 6,
+    maxMemories: 6,
+  },
+});
+assert.match(preparedWithTaskHints.contextBlock, /Helio 项目推进时先写复现报告/);
+assert.match(preparedWithTaskHints.reconstruction?.contextBlock ?? "", /Helio 项目推进时先写复现报告/);
+assert.doesNotMatch(preparedWithTaskHints.reconstruction?.contextBlock ?? "", /host-private-next-step-hint/);
+assert.doesNotMatch(preparedWithTaskHints.reconstruction?.contextBlock ?? "", /host-private-helio-id/);
+assert.equal(preparedWithTaskHints.reconstruction?.plannerTrace, undefined);
+assert.doesNotMatch(JSON.stringify(preparedWithTaskHints), /host-private-next-step-hint/);
+assert.doesNotMatch(JSON.stringify(preparedWithTaskHints), /host-private-helio-id/);
+assert.doesNotMatch(JSON.stringify(preparedWithTaskHints.reconstruction ?? {}), /host-private-next-step-hint/);
+assert.doesNotMatch(JSON.stringify(preparedWithTaskHints.reconstruction ?? {}), /host-private-helio-id/);
+assert.equal(
+  JSON.stringify(taskHintRowsBefore),
+  JSON.stringify(await reconstructionStore.rowCounts()),
+);
+await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "project",
+  content: "Sensitive task marker SafeguardOnly belongs to a private Helio note.",
+  sensitivity: "sensitive",
+});
+const preparedWithSensitiveTaskHint = await reconstructionMemory.prepareTurn({
+  profileId: "recon",
+  messages: [{ role: "user", content: "下一步先做什么？" }],
+  task: {
+    topic: "SafeguardOnly",
+  },
+  reconstruction: {
+    mode: "shadow",
+    maxSteps: 2,
+    maxBranch: 4,
+    maxMemories: 4,
+  },
+});
+assert.doesNotMatch(preparedWithSensitiveTaskHint.contextBlock, /SafeguardOnly/);
+assert.doesNotMatch(preparedWithSensitiveTaskHint.reconstruction?.contextBlock ?? "", /SafeguardOnly/);
+assert.equal(preparedWithSensitiveTaskHint.reconstruction?.plannerTrace, undefined);
 const mcpReconstruct = await createMemoryMcpServer(reconstructionMemory).callTool(
   "memory.reconstruct_context",
   {

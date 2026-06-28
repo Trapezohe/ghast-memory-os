@@ -183,8 +183,34 @@ function eventKey(event: HostEvent): string {
   return [event.type, event.profileId ?? "default", event.createdAt ?? nowIso(), randomUUID()].join(":");
 }
 
-function latestUserText(input: PrepareTurnInput): string {
+function prepareTurnDisplayQuery(input: PrepareTurnInput): string {
   return [...input.messages].reverse().find((message) => message.role === "user")?.content ?? "";
+}
+
+function prepareTurnQuery(input: PrepareTurnInput): string {
+  return [
+    prepareTurnDisplayQuery(input),
+    input.task?.intent,
+    input.task?.projectId,
+    input.task?.topic,
+  ]
+    .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    .join("\n");
+}
+
+function hideRouteMemoryMetadata(memory: MemoryRecord): MemoryRecord {
+  return {
+    ...memory,
+    scope: "global",
+    metadata: {},
+  };
+}
+
+function hideEvidencePayload(event: EvidenceEvent): EvidenceEvent {
+  return {
+    ...event,
+    payload: {},
+  };
 }
 
 function lowLevelKind(input: LowLevelAddMemoryInput): MemoryKind {
@@ -634,7 +660,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   async function prepareTurn(input: PrepareTurnInput) {
     await initialize();
     const profileId = profileIdFor(defaultProfileId, input.profileId);
-    const query = latestUserText(input);
+    const displayQuery = prepareTurnDisplayQuery(input);
+    const query = prepareTurnQuery(input);
+    const hideTaskRetrievalHints = displayQuery !== query;
     const before = await readAuditSnapshot(store);
     const memories = sourceScopedMemories(await store.searchMemories({
       profileId,
@@ -652,7 +680,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       for (const event of await store.listEvidenceForMemory(memoryId)) {
         if (seenEvidenceIds.has(event.id)) continue;
         seenEvidenceIds.add(event.id);
-        evidence.push(sanitizeEvidenceForPublicOutput(event));
+        const publicEvidence = sanitizeEvidenceForPublicOutput(event);
+        evidence.push(hideTaskRetrievalHints ? hideEvidencePayload(publicEvidence) : publicEvidence);
       }
     }
     if (input.includeEvidence) {
@@ -665,7 +694,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     }
     const prepared = composeTurnContext({
       profileId,
-      memories,
+      memories: hideTaskRetrievalHints ? memories.map(hideRouteMemoryMetadata) : memories,
       actionPolicies,
       evidence,
       includeEvidence: input.includeEvidence,
@@ -678,7 +707,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
             defaultProfileId,
             request: {
               profileId,
-              query,
+              query: displayQuery,
+              retrievalQuery: query,
               includeEvidence: input.includeEvidence,
               includeSensitive: input.includeSensitive,
               contextBudgetTokens: input.contextBudgetTokens,
