@@ -14,6 +14,7 @@ import type {
   TurnMessage,
 } from "../kernel/types.js";
 import { readGmosPackageInfo, readGmosPackageRoot } from "../kernel/package-info.js";
+import { eligibleForLongTermMemory } from "../kernel/safety.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 
@@ -90,6 +91,7 @@ export interface ExternalMemoryBenchmarkCaseDiagnostics {
 export type ExternalMemoryBenchmarkFailureStage =
   | "answer_not_in_input"
   | "answer_normalization_mismatch"
+  | "source_event_filtered"
   | "not_extracted_or_filtered"
   | "retrieval_policy_filtered"
   | "retrieval_or_reconstruction_miss"
@@ -570,6 +572,21 @@ function eventsContainNormalizedAnswer(events: ExternalMemoryBenchmarkEvent[], t
   return events.some((event) => includesNormalizedAnswer(eventContent(event), term));
 }
 
+function eventEligibleForLongTermMemory(event: ExternalMemoryBenchmarkEvent): boolean {
+  if (event.type === "message" || event.type === undefined) {
+    return eligibleForLongTermMemory({ content: event.content, privacyMode: event.privacyMode });
+  }
+  if (event.type === "memory") {
+    return event.sensitivity !== "secret_like" && eligibleForLongTermMemory({ content: event.content });
+  }
+  return true;
+}
+
+function sourceEventsFilterTerm(events: ExternalMemoryBenchmarkEvent[], term: string): boolean {
+  const containingEvents = events.filter((event) => includesTerm(eventContent(event), term));
+  return containingEvents.length > 0 && containingEvents.every((event) => !eventEligibleForLongTermMemory(event));
+}
+
 function memoriesContainTerm(memories: MemoryRecord[], term: string): boolean {
   return memories.some((memory) => includesTerm(memory.content, term));
 }
@@ -712,7 +729,13 @@ async function failureTaxonomyForCase(input: {
       purpose: "history",
     });
     if (!memoriesContainTerm(historyHits, term)) {
-      addTaxonomyEntry(entries, "not_extracted_or_filtered", [term]);
+      addTaxonomyEntry(
+        entries,
+        sourceEventsFilterTerm(input.benchmarkCase.events, term)
+          ? "source_event_filtered"
+          : "not_extracted_or_filtered",
+        [term],
+      );
       continue;
     }
     const contextHits = await input.memory.search({

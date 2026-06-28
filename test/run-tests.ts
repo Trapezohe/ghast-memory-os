@@ -10386,7 +10386,7 @@ assert.deepEqual(externalFailureSummaryBenchmark.summary.failureReasons, [
 ]);
 assert.deepEqual(externalFailureSummaryBenchmark.summary.failureStages, [
   { name: "answer_not_in_input", count: 2 },
-  { name: "not_extracted_or_filtered", count: 1 },
+  { name: "source_event_filtered", count: 1 },
 ]);
 assert.deepEqual(
   externalFailureSummaryBenchmark.cases.find((entry) => entry.id === "missing-one")?.failureTaxonomy,
@@ -10394,7 +10394,7 @@ assert.deepEqual(
 );
 assert.deepEqual(
   externalFailureSummaryBenchmark.cases.find((entry) => entry.id === "filtered-one")?.failureTaxonomy,
-  [{ stage: "not_extracted_or_filtered", terms: ["Phantom"] }],
+  [{ stage: "source_event_filtered", terms: ["Phantom"] }],
 );
 assert.equal(externalFailureSummaryBenchmark.summary.failureSamples.length, 1);
 assert.equal(externalFailureSummaryBenchmark.summary.failureSamples[0]?.id, "missing-one");
@@ -10470,6 +10470,21 @@ const externalTaxonomyBenchmark = await runExternalMemoryBenchmark({
       expectedAll: ["NeedleFlag"],
     },
     {
+      id: "not-extracted-ordinary-message",
+      events: [{ type: "message", content: "Random note: LooseToken." }],
+      question: "What token was in the random note?",
+      expectedAll: ["LooseToken"],
+    },
+    {
+      id: "not-extracted-mixed-filtered-and-eligible",
+      events: [
+        { type: "message", content: "Incognito expected answer is MixedPhantom.", privacyMode: "incognito" },
+        { type: "message", content: "Random note: MixedPhantom." },
+      ],
+      question: "What mixed token was in the note?",
+      expectedAll: ["MixedPhantom"],
+    },
+    {
       id: "forbidden-inclusion",
       events: [
         {
@@ -10494,6 +10509,15 @@ assert.deepEqual(
   [{ stage: "retrieval_or_reconstruction_miss", terms: ["NeedleFlag"] }],
 );
 assert.deepEqual(
+  externalTaxonomyBenchmark.cases.find((entry) => entry.id === "not-extracted-ordinary-message")?.failureTaxonomy,
+  [{ stage: "not_extracted_or_filtered", terms: ["LooseToken"] }],
+);
+assert.deepEqual(
+  externalTaxonomyBenchmark.cases.find((entry) => entry.id === "not-extracted-mixed-filtered-and-eligible")
+    ?.failureTaxonomy,
+  [{ stage: "not_extracted_or_filtered", terms: ["MixedPhantom"] }],
+);
+assert.deepEqual(
   externalTaxonomyBenchmark.cases.find((entry) => entry.id === "forbidden-inclusion")?.failureTaxonomy,
   [{ stage: "forbidden_context_inclusion", terms: ["WrongRoute"] }],
 );
@@ -10501,6 +10525,7 @@ assert.deepEqual(
   externalTaxonomyBenchmark.summary.failureStages.map((entry) => entry.name).sort(),
   [
     "forbidden_context_inclusion",
+    "not_extracted_or_filtered",
     "retrieval_or_reconstruction_miss",
     "retrieval_policy_filtered",
   ],
