@@ -1596,6 +1596,16 @@ const relativeTemporalReconstruction = await relativeTemporalMemory.reconstructC
 assert.match(relativeTemporalReconstruction.contextBlock, /project workshop/);
 assert.match(relativeTemporalReconstruction.contextBlock, /event_date=2023-05-07/);
 assert.match(relativeTemporalReconstruction.contextBlock, /event_date_text=7 May 2023/);
+const relativeTemporalDateCueReconstruction = await relativeTemporalMemory.reconstructContext({
+  profileId: "relative-temporal",
+  query: "What happened on 2023-05-07?",
+  includeTemporalMetadata: true,
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.match(relativeTemporalDateCueReconstruction.contextBlock, /project workshop/);
+assert.match(relativeTemporalDateCueReconstruction.contextBlock, /event_date=2023-05-07/);
 const relativeTemporalDefaultReconstruction = await relativeTemporalMemory.reconstructContext({
   profileId: "relative-temporal",
   query: "When did I go to the project workshop?",
@@ -1619,6 +1629,55 @@ assert.match(relativeTemporalPrepared.contextBlock, /project workshop/);
 assert.doesNotMatch(relativeTemporalPrepared.contextBlock, /event_date=/);
 assert.doesNotMatch(relativeTemporalPrepared.contextBlock, /event_date_text=/);
 await relativeTemporalMemory.close();
+const directTemporalCueStore = createSqliteMemoryStore({
+  path: path.join(tmp, "direct-temporal-cue.db"),
+});
+await directTemporalCueStore.addMemory({
+  profileId: "direct-temporal-cue",
+  kind: "fact",
+  content: "Direct store temporal metadata should be searchable by date.",
+  metadata: { eventDate: "2023-05-07" },
+});
+await directTemporalCueStore.addMemory({
+  profileId: "direct-temporal-cue",
+  kind: "fact",
+  content: "Direct store invalid temporal metadata should not become an association cue.",
+  metadata: {
+    eventDate: "31 February 2023",
+    eventTime: "2026-02-30T00:00:00Z",
+    validFrom: "sk-directstoresecret1234567890",
+    validTo: "2026-06-31T10:30:00Z",
+  },
+});
+const directTemporalCueRows = await directTemporalCueStore.searchAssociations({
+  profileId: "direct-temporal-cue",
+  query: "2023-05-07",
+  limit: 10,
+});
+assert.equal(
+  directTemporalCueRows.some(
+    (association) => association.cue === "2023-05-07" && association.cueKind === "temporal",
+  ),
+  true,
+);
+const directSecretTemporalCueRows = await directTemporalCueStore.searchAssociations({
+  profileId: "direct-temporal-cue",
+  query: "sk-directstoresecret1234567890",
+  includeSensitive: true,
+  includePerson: true,
+  limit: 10,
+});
+assert.equal(JSON.stringify(directSecretTemporalCueRows).includes("sk-directstoresecret"), false);
+const directInvalidTemporalCueRows = await directTemporalCueStore.searchAssociations({
+  profileId: "direct-temporal-cue",
+  query: "2026-03-02 2026-07-01",
+  includeSensitive: true,
+  includePerson: true,
+  limit: 10,
+});
+assert.equal(JSON.stringify(directInvalidTemporalCueRows).includes("2026-03-02"), false);
+assert.equal(JSON.stringify(directInvalidTemporalCueRows).includes("2026-07-01"), false);
+await directTemporalCueStore.close();
 const relativeTemporalNoCreatedAtMemory = createMemoryOS({
   profileId: "relative-temporal-no-created-at",
   store: createSqliteMemoryStore({ path: path.join(tmp, "relative-temporal-no-created-at.db") }),

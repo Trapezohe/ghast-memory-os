@@ -4,6 +4,7 @@ import type {
   MemoryRecord,
   WorldBeliefRecord,
 } from "./types.js";
+import { normalizeExplicitTemporalInstant } from "./temporal-validity.js";
 
 export type AssociationCueKind = MemoryAssociationRecord["cueKind"];
 
@@ -169,6 +170,50 @@ function entityAliases(metadata: Record<string, unknown>): string[] {
   return metadataStringArray(entity as Record<string, unknown>, "aliases");
 }
 
+function calendarDateCue(value: string): string | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(value.trim());
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day
+    ? match[0]
+    : null;
+}
+
+function temporalInstantCue(value: string): string | null {
+  const trimmed = value.trim();
+  return normalizeExplicitTemporalInstant(trimmed);
+}
+
+function clockTimeCue(value: string): string | null {
+  const match = /^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?(?:\s*UTC)?$/iu.exec(value.trim());
+  if (!match) return null;
+  return match[3] ? `${match[1]}:${match[2]}:${match[3]}` : `${match[1]}:${match[2]}`;
+}
+
+function temporalMetadataCue(metadata: Record<string, unknown>, key: string): string | null {
+  const value = metadata[key];
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  if (key === "eventDate") return calendarDateCue(value);
+  if (key === "eventTime" || key === "validFrom" || key === "validTo") {
+    return temporalInstantCue(value) ?? (key === "eventTime" ? clockTimeCue(value) : null);
+  }
+  return null;
+}
+
+function metadataTemporalCues(metadata: Record<string, unknown>): string[] {
+  return unique([
+    temporalMetadataCue(metadata, "eventDate") ?? "",
+    temporalMetadataCue(metadata, "eventTime") ?? "",
+    temporalMetadataCue(metadata, "validFrom") ?? "",
+    temporalMetadataCue(metadata, "validTo") ?? "",
+  ]);
+}
+
 export function sourceMetadataEntityCues(metadata: Record<string, unknown>): string[] {
   const sourceMetadata = metadata.sourceMetadata;
   if (!sourceMetadata || typeof sourceMetadata !== "object" || Array.isArray(sourceMetadata)) {
@@ -195,6 +240,7 @@ export function associationTagsForMemory(memory: MemoryRecord): string[] {
 export function associationCuesForMemory(memory: MemoryRecord): AssociationCue[] {
   return [
     ...sourceMetadataEntityCues(memory.metadata).map((cue) => ({ cue, cueKind: "entity" as const })),
+    ...metadataTemporalCues(memory.metadata).map((cue) => ({ cue, cueKind: "temporal" as const })),
     { cue: memory.kind, cueKind: "kind" },
     ...(memory.scope !== "global" ? [{ cue: memory.scope, cueKind: "scope" as const }] : []),
     ...extractAssociationCues(memory.content),
@@ -208,6 +254,7 @@ export function associationTagsForBelief(belief: WorldBeliefRecord): string[] {
 export function associationCuesForBelief(belief: WorldBeliefRecord): AssociationCue[] {
   return [
     ...sourceMetadataEntityCues(belief.metadata).map((cue) => ({ cue, cueKind: "entity" as const })),
+    ...metadataTemporalCues(belief.metadata).map((cue) => ({ cue, cueKind: "temporal" as const })),
     { cue: belief.predicate, cueKind: "predicate" },
     ...extractAssociationCues(
       [belief.subject, ...entityAliases(belief.metadata), belief.object].join(" "),

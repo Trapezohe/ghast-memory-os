@@ -558,7 +558,7 @@ export interface MemoryAssociationRecord {
   id: string;
   profileId: string;
   cue: string;
-  cueKind: "lexical" | "kind" | "scope" | "predicate" | "task" | "entity";
+  cueKind: "lexical" | "kind" | "scope" | "predicate" | "task" | "entity" | "temporal";
   tag: string;
   targetType: MemoryAssociationTargetType;
   targetId: string;
