@@ -116,6 +116,7 @@ export interface MemoryExtractionCandidate {
   subject?: string | undefined;
   subjectAliases?: string[] | undefined;
   object?: string | undefined;
+  source?: string | undefined;
   eventTime?: string | undefined;
   validFrom?: string | undefined;
   validTo?: string | undefined;
@@ -166,6 +167,7 @@ export interface MemoryExtractionCandidateSnapshot {
   subject?: string | undefined;
   subjectAliases?: string[] | undefined;
   object?: string | undefined;
+  source?: string | undefined;
   eventTime?: string | undefined;
   validFrom?: string | undefined;
   validTo?: string | undefined;

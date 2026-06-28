@@ -93,6 +93,7 @@ function snapshotCandidate(candidate: unknown): MemoryExtractionCandidateSnapsho
     ...(typeof record.subject === "string" ? { subject: publicString(record.subject) } : {}),
     ...(subjectAliases ? { subjectAliases } : {}),
     ...(typeof record.object === "string" ? { object: publicString(record.object) } : {}),
+    ...(typeof record.source === "string" ? { source: publicString(record.source) } : {}),
     ...(typeof record.eventTime === "string" ? { eventTime: publicString(record.eventTime) } : {}),
     ...(typeof record.validFrom === "string" ? { validFrom: publicString(record.validFrom) } : {}),
     ...(typeof record.validTo === "string" ? { validTo: publicString(record.validTo) } : {}),
@@ -133,6 +134,7 @@ function hasSecretLikeAuxiliaryField(candidate: MemoryExtractionCandidate): bool
     candidate.subject,
     ...(normalizedStringArray((candidate as { subjectAliases?: unknown }).subjectAliases) ?? []),
     candidate.object,
+    candidate.source,
     candidate.eventTime,
     candidate.validFrom,
     candidate.validTo,
@@ -176,24 +178,30 @@ function normalizeCandidate(
   const confidence = boundedConfidence(candidate.confidence, 0);
   if (confidence < options.minConfidence) return { reason: "low_confidence" };
   const object = typeof candidate.object === "string" ? normalize(candidate.object) : undefined;
+  const source = typeof candidate.source === "string" ? normalize(candidate.source) : undefined;
   const subjectAliases = normalizedStringArray(
     (candidate as { subjectAliases?: unknown }).subjectAliases,
   );
   const candidateWithoutAliases = { ...candidate };
   delete (candidateWithoutAliases as { subjectAliases?: unknown }).subjectAliases;
   delete (candidateWithoutAliases as { object?: unknown }).object;
+  delete (candidateWithoutAliases as { source?: unknown }).source;
   return {
     candidate: {
       ...candidateWithoutAliases,
       content,
       confidence,
       ...(object ? { object } : {}),
+      ...(source ? { source } : {}),
       ...(subjectAliases ? { subjectAliases } : {}),
       metadata: mergeExplicitTemporalValidityMetadata(
         content,
         {
           ...relativeEventDateMetadata(content, options.createdAt),
-          ...sanitizePublicPayloadRecord(candidate.metadata ?? {}),
+          ...sanitizePublicPayloadRecord({
+            ...(candidate.metadata ?? {}),
+            ...(source ? { source } : {}),
+          }),
           ...structuredTemporalMetadata(candidate),
         },
       ),

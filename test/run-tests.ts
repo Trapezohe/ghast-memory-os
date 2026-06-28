@@ -2078,6 +2078,7 @@ const llmExtractorMemory = createMemoryOS({
                         subjectAliases: ["Mira", "Mira rollout", "StarlingAlias"],
                         content: "Mira project current blocker is rollout audit.",
                         object: "rollout audit",
+                        source: "dialogue:project-status",
                         confidence: 0.89,
                         predicate: "project.state",
                         eventTime: "2026-06-20",
@@ -2199,6 +2200,7 @@ try {
   assert.equal(llmProjectBeliefMetadata.eventTime, "2026-06-20T00:00:00.000Z");
   assert.equal(llmProjectBeliefMetadata.validFrom, "2026-06-21T00:00:00.000Z");
   assert.equal(llmProjectBeliefMetadata.validTo, "2999-07-01T10:30:00.000Z");
+  assert.equal(llmProjectBeliefMetadata.source, "dialogue:project-status");
   const llmProjectSourceMetadata = llmProjectBeliefMetadata.sourceMetadata as
     | { speaker?: unknown; speakerAliases?: unknown; participants?: unknown }
     | undefined;
@@ -2520,6 +2522,14 @@ const unsafeExtractorMemory = createMemoryOS({
       object: "sk-customobjectsecret1234567890",
     },
     {
+      kind: "project",
+      content: "Custom extractor leaked secret-like source field.",
+      confidence: 0.99,
+      predicate: "project.state",
+      subject: "Public source project",
+      source: "sk-customsourcesecret1234567890",
+    },
+    {
       kind: "fact",
       content: "PERSON:Alice: likes private side-channel memory.",
       confidence: 0.99,
@@ -2559,6 +2569,7 @@ assert.deepEqual(
     "secret_like",
     "secret_like",
     "secret_like",
+    "secret_like",
   ],
 );
 assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customextractorsecret"), false);
@@ -2566,6 +2577,7 @@ assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customsubjectse
 assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customtemporalsecret"), false);
 assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customaliassecret"), false);
 assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customobjectsecret"), false);
+assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customsourcesecret"), false);
 assert.equal(
   (
     await unsafeExtractorMemory.search({

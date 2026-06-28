@@ -132,6 +132,7 @@ function normalizeCandidate(value: unknown): MemoryExtractionCandidate | null {
     ...(optionalString(record.subject) ? { subject: optionalString(record.subject) } : {}),
     ...(subjectAliases ? { subjectAliases } : {}),
     ...(optionalString(record.object) ? { object: optionalString(record.object) } : {}),
+    ...(optionalString(record.source) ? { source: optionalString(record.source) } : {}),
     ...(optionalString(record.eventTime) ? { eventTime: optionalString(record.eventTime) } : {}),
     ...(optionalString(record.validFrom) ? { validFrom: optionalString(record.validFrom) } : {}),
     ...(optionalString(record.validTo) ? { validTo: optionalString(record.validTo) } : {}),
@@ -155,7 +156,7 @@ function systemPrompt(maxCandidates: number): string {
     "Do not emit API keys, passwords, tokens, private keys, SSNs, or other secret-like content.",
     "Only extract durable user-world information that is useful in future turns.",
     "Use confidence from 0 to 1. Use cardinality='single' only for current-state beliefs.",
-    "Use subject, subjectAliases, predicate, and object for world-state facts; object should be the concise current value. Use eventTime, validFrom, and validTo as ISO dates or instants when the text gives time bounds.",
+    "Use subject, subjectAliases, predicate, and object for world-state facts; object should be the concise current value. Use source only for a concise public source label. Use eventTime, validFrom, and validTo as ISO dates or instants when the text gives time bounds.",
   ].join("\n");
 }
 
