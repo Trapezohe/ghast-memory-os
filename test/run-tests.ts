@@ -10415,10 +10415,28 @@ const externalAnswerNormalizationBenchmark = await runExternalMemoryBenchmark({
       expectedAll: ["Alpha Beta"],
     },
     {
+      id: "normalization-date-order",
+      events: [{ type: "memory", kind: "fact", content: "The workshop date was May 7, 2023." }],
+      question: "When was the workshop?",
+      expectedAll: ["7 May 2023"],
+    },
+    {
+      id: "normalization-date-extra-token-missing",
+      events: [{ type: "memory", kind: "fact", content: "The workshop date was May 7, 2023." }],
+      question: "What was scheduled?",
+      expectedAll: ["Lantern on 7 May 2023"],
+    },
+    {
       id: "normalization-keeps-symbolic-language-missing",
       events: [{ type: "memory", kind: "fact", content: "The language answer is C." }],
       question: "Which language?",
       expectedAll: ["C++"],
+    },
+    {
+      id: "normalization-keeps-symbolic-language-with-date-missing",
+      events: [{ type: "memory", kind: "fact", content: "C is used on May 7, 2023." }],
+      question: "Which language and date?",
+      expectedAll: ["C++ on 7 May 2023"],
     },
     {
       id: "normalization-keeps-currency-missing",
@@ -10426,21 +10444,39 @@ const externalAnswerNormalizationBenchmark = await runExternalMemoryBenchmark({
       question: "What price?",
       expectedAll: ["$5"],
     },
+    {
+      id: "normalization-keeps-currency-with-date-missing",
+      events: [{ type: "memory", kind: "fact", content: "The price was 5 credits on May 7, 2023." }],
+      question: "What price and date?",
+      expectedAll: ["$5 on 7 May 2023"],
+    },
   ],
 });
 assert.equal(externalAnswerNormalizationBenchmark.pass, false);
 assert.deepEqual(externalAnswerNormalizationBenchmark.summary.failureStages, [
-  { name: "answer_not_in_input", count: 2 },
-  { name: "answer_normalization_mismatch", count: 1 },
+  { name: "answer_not_in_input", count: 5 },
+  { name: "answer_normalization_mismatch", count: 2 },
 ]);
 assert.deepEqual(externalAnswerNormalizationBenchmark.cases[0]?.failureTaxonomy, [
   { stage: "answer_normalization_mismatch", terms: ["Alpha Beta"] },
 ]);
 assert.deepEqual(externalAnswerNormalizationBenchmark.cases[1]?.failureTaxonomy, [
-  { stage: "answer_not_in_input", terms: ["C++"] },
+  { stage: "answer_normalization_mismatch", terms: ["7 May 2023"] },
 ]);
 assert.deepEqual(externalAnswerNormalizationBenchmark.cases[2]?.failureTaxonomy, [
+  { stage: "answer_not_in_input", terms: ["Lantern on 7 May 2023"] },
+]);
+assert.deepEqual(externalAnswerNormalizationBenchmark.cases[3]?.failureTaxonomy, [
+  { stage: "answer_not_in_input", terms: ["C++"] },
+]);
+assert.deepEqual(externalAnswerNormalizationBenchmark.cases[4]?.failureTaxonomy, [
+  { stage: "answer_not_in_input", terms: ["C++ on 7 May 2023"] },
+]);
+assert.deepEqual(externalAnswerNormalizationBenchmark.cases[5]?.failureTaxonomy, [
   { stage: "answer_not_in_input", terms: ["$5"] },
+]);
+assert.deepEqual(externalAnswerNormalizationBenchmark.cases[6]?.failureTaxonomy, [
+  { stage: "answer_not_in_input", terms: ["$5 on 7 May 2023"] },
 ]);
 const rankedOutEvents = Array.from({ length: 20 }, (_, index) => ({
   type: "memory" as const,

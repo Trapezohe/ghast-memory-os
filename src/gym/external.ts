@@ -524,14 +524,116 @@ function normalizeForAnswerComparison(value: string): string {
     .replace(/\s+/gu, " ");
 }
 
+const ANSWER_MONTHS: Record<string, string> = {
+  jan: "01",
+  january: "01",
+  feb: "02",
+  february: "02",
+  mar: "03",
+  march: "03",
+  apr: "04",
+  april: "04",
+  may: "05",
+  jun: "06",
+  june: "06",
+  jul: "07",
+  july: "07",
+  aug: "08",
+  august: "08",
+  sep: "09",
+  sept: "09",
+  september: "09",
+  oct: "10",
+  october: "10",
+  nov: "11",
+  november: "11",
+  dec: "12",
+  december: "12",
+};
+
+function calendarDateKey(year: string, month: string, day: string): string | null {
+  const yearNumber = Number(year);
+  const monthNumber = Number(month);
+  const dayNumber = Number(day);
+  const parsed = new Date(Date.UTC(yearNumber, monthNumber - 1, dayNumber));
+  if (
+    parsed.getUTCFullYear() !== yearNumber ||
+    parsed.getUTCMonth() !== monthNumber - 1 ||
+    parsed.getUTCDate() !== dayNumber
+  ) {
+    return null;
+  }
+  return `${year.padStart(4, "0")}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+}
+
+type DateAnswerMatch = {
+  key: string;
+  start: number;
+  end: number;
+};
+
+function dateAnswerMatches(value: string): DateAnswerMatch[] {
+  const matches: DateAnswerMatch[] = [];
+  for (const match of value.matchAll(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/gu)) {
+    const key = calendarDateKey(match[1]!, match[2]!, match[3]!);
+    if (key && match.index !== undefined) {
+      matches.push({ key, start: match.index, end: match.index + match[0].length });
+    }
+  }
+  for (const match of value.matchAll(/\b(\d{1,2})\s+([A-Za-z]+),?\s+(\d{4})\b/gu)) {
+    const month = ANSWER_MONTHS[match[2]!.toLowerCase()];
+    const key = month ? calendarDateKey(match[3]!, month, match[1]!) : null;
+    if (key && match.index !== undefined) {
+      matches.push({ key, start: match.index, end: match.index + match[0].length });
+    }
+  }
+  for (const match of value.matchAll(/\b([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})\b/gu)) {
+    const month = ANSWER_MONTHS[match[1]!.toLowerCase()];
+    const key = month ? calendarDateKey(match[3]!, month, match[2]!) : null;
+    if (key && match.index !== undefined) {
+      matches.push({ key, start: match.index, end: match.index + match[0].length });
+    }
+  }
+  return matches;
+}
+
+function dateAnswerKeys(value: string): string[] {
+  return [...new Set(dateAnswerMatches(value).map((match) => match.key))];
+}
+
 function normalizedAnswerTokens(value: string): string[] {
   const normalized = normalizeForAnswerComparison(value);
   return normalized ? normalized.split(" ") : [];
 }
 
+const ANSWER_DATE_REMAINDER_STOPWORDS = new Set(["a", "an", "the", "on", "at", "in", "of"]);
+
+function nonDateAnswerTokens(value: string, matches: DateAnswerMatch[]): string[] {
+  let withoutDates = value;
+  for (const match of [...matches].sort((left, right) => right.start - left.start)) {
+    withoutDates =
+      withoutDates.slice(0, match.start) +
+      " ".repeat(match.end - match.start) +
+      withoutDates.slice(match.end);
+  }
+  return normalizedAnswerTokens(withoutDates).filter(
+    (token) => !ANSWER_DATE_REMAINDER_STOPWORDS.has(token),
+  );
+}
+
 function includesNormalizedAnswer(haystack: string, term: string): boolean {
   const termSymbols = term.replace(/[\p{Letter}\p{Number}\s._:;,\-–—/()]/gu, "");
   if (termSymbols) return false;
+  const termDateMatches = dateAnswerMatches(term);
+  if (termDateMatches.length > 0) {
+    const termDateKeys = [...new Set(termDateMatches.map((match) => match.key))];
+    const haystackDateKeys = new Set(dateAnswerKeys(haystack));
+    if (termDateKeys.some((key) => haystackDateKeys.has(key))) {
+      const haystackTokens = new Set(normalizedAnswerTokens(haystack));
+      const requiredTokens = nonDateAnswerTokens(term, termDateMatches);
+      if (requiredTokens.every((token) => haystackTokens.has(token))) return true;
+    }
+  }
   const needle = normalizedAnswerTokens(term);
   if (needle.join("").length < 3) return false;
   const haystackTokens = normalizedAnswerTokens(haystack);
