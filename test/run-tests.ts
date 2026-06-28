@@ -3466,8 +3466,27 @@ assert.equal(
   extractRuleMemoryCandidates("Alex works as an architect.", namedPersonAttributeMeta)[0]?.object,
   "architect",
 );
+assert.equal(
+  extractRuleMemoryCandidates("Alex is an architect.", namedPersonAttributeMeta)[0]?.object,
+  "architect",
+);
 assert.equal(extractRuleMemoryCandidates("Alex's job is an unknown.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Alex works as an unknown.", namedPersonAttributeMeta).length, 0);
+assert.equal(extractRuleMemoryCandidates("Alex is an unknown.", namedPersonAttributeMeta).length, 0);
+assert.equal(extractRuleMemoryCandidates("Alex is happy.", namedPersonAttributeMeta).length, 0);
+for (const nonRoleArticleFact of [
+  "Alex is a happy person.",
+  "Alex is a minor.",
+  "Alex is a Democrat.",
+  "Alex is an introvert.",
+  "Alex is a diabetic.",
+  "Alex is a friend.",
+  "Alex is a vegetarian.",
+  "Alex is an only child.",
+  "Alex is a member of the board.",
+]) {
+  assert.equal(extractRuleMemoryCandidates(nonRoleArticleFact, namedPersonAttributeMeta).length, 0);
+}
 assert.equal(extractRuleMemoryCandidates("Alex lives in an unknown.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Alex is from an unknown.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Alex's birthday is unknown.", namedPersonAttributeMeta).length, 0);
@@ -3489,6 +3508,10 @@ assert.equal(
   extractRuleMemoryCandidates("Alex works as an architect, not a designer.", namedPersonAttributeMeta).length,
   0,
 );
+assert.equal(
+  extractRuleMemoryCandidates("Alex is an architect, not a designer.", namedPersonAttributeMeta).length,
+  0,
+);
 assert.equal(extractRuleMemoryCandidates("Alex was born in Seattle in 1990.", namedPersonAttributeMeta).length, 0);
 assert.equal(
   extractRuleMemoryCandidates("Alex was born on July 10. Blair was born on July 11.", namedPersonAttributeMeta).length,
@@ -3498,6 +3521,7 @@ assert.equal(extractRuleMemoryCandidates("Siri lives in Boston.", namedPersonAtt
 assert.equal(extractRuleMemoryCandidates("Siri is from Boston.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Siri currently lives in St. Louis.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Siri works as an architect.", namedPersonAttributeMeta).length, 0);
+assert.equal(extractRuleMemoryCandidates("Siri is an architect.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Siri was born in Seattle.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Siri was born on July 10.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Casey's job is an architect.", namedPersonAttributeMeta).length, 0);
@@ -3581,6 +3605,18 @@ const namedPersonDirectRoleReport = await rulesReportMemory.observeWithReport({
 assert.equal(namedPersonDirectRoleReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(namedPersonDirectRoleReport.memoryIds.length, 1);
 assert.equal(namedPersonDirectRoleReport.worldBeliefIds.length, 1);
+const namedPersonDirectIsRoleReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_named_person_attribute",
+  role: "user",
+  content: "Alex is an engineer.",
+  metadata: {
+    participants: ["Alex", "Blair", "Mary Jane"],
+  },
+});
+assert.equal(namedPersonDirectIsRoleReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(namedPersonDirectIsRoleReport.memoryIds.length, 1);
+assert.equal(namedPersonDirectIsRoleReport.worldBeliefIds.length, 1);
 const namedPersonDirectBirthplaceReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report_named_person_attribute",
@@ -4235,6 +4271,18 @@ try {
   assert.equal(namedPersonDirectRoleBelief?.subject, "person:blair");
   assert.equal(namedPersonDirectRoleBelief?.predicate, "person.role");
   assert.equal(namedPersonDirectRoleBelief?.object, "architect");
+  const namedPersonDirectIsRoleBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(namedPersonDirectIsRoleReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string }
+    | undefined;
+  assert.equal(namedPersonDirectIsRoleBelief?.subject, "person:alex");
+  assert.equal(namedPersonDirectIsRoleBelief?.predicate, "person.role");
+  assert.equal(namedPersonDirectIsRoleBelief?.object, "engineer");
   const namedPersonDirectBirthplaceBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate, object

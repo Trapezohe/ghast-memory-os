@@ -788,6 +788,14 @@ function personAttributeObject(field: string | undefined, value: string | undefi
     : object;
 }
 
+function directPersonRoleObject(value: string | undefined): string | undefined {
+  const object = personAttributeObject("role", value);
+  if (!object) return undefined;
+  return /\b(?:accountant|analyst|architect|artist|attorney|consultant|designer|developer|doctor|editor|engineer|founder|lawyer|manager|musician|nurse|physician|professor|programmer|researcher|scientist|teacher|technician|writer)\b$/iu.test(object)
+    ? object
+    : undefined;
+}
+
 function invalidPersonAttributeObject(object: string): boolean {
   return /^(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(object);
 }
@@ -932,6 +940,11 @@ function namedPersonDirectAttributeCandidate(
       field: "role",
       match: new RegExp(String.raw`^\s*(${namePattern})\s+works\s+as\s+(?:(?:an?|the)\s+)?(.{1,80}?)\s*\.?\s*$`, "u").exec(utterance),
     },
+    {
+      field: "role",
+      match: new RegExp(String.raw`^\s*(${namePattern})\s+is\s+(?:(?:an?|the)\s+)(.{1,80}?)\s*\.?\s*$`, "u").exec(utterance),
+      directRole: true,
+    },
   ].find((entry) => entry.match !== null);
   if (!entry?.match) return null;
   const name = entry.match[1]?.trim();
@@ -939,7 +952,7 @@ function namedPersonDirectAttributeCandidate(
     return null;
   }
   const predicate = personCurrentAttributePredicate(entry.field);
-  const object = personAttributeObject(entry.field, entry.match[2]);
+  const object = entry.directRole ? directPersonRoleObject(entry.match[2]) : personAttributeObject(entry.field, entry.match[2]);
   if (!predicate || !object || unsafePersonAttributeObject(entry.field, object)) {
     return null;
   }

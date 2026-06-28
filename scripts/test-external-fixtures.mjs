@@ -88,8 +88,8 @@ const failures = [];
 if (report.pass !== true) failures.push("suite pass=false");
 if (report.benchmarkPass !== true) failures.push("benchmarkPass=false");
 if (report.runCount !== 4) failures.push(`runCount=${report.runCount}`);
-if (report.totalCaseCount !== 46) failures.push(`totalCaseCount=${report.totalCaseCount}`);
-if (report.totalPassedCount !== 46) failures.push(`totalPassedCount=${report.totalPassedCount}`);
+if (report.totalCaseCount !== 47) failures.push(`totalCaseCount=${report.totalCaseCount}`);
+if (report.totalPassedCount !== 47) failures.push(`totalPassedCount=${report.totalPassedCount}`);
 if (report.totalFailedCount !== 0) failures.push(`totalFailedCount=${report.totalFailedCount}`);
 if (report.scoreWeighted !== 1) failures.push(`scoreWeighted=${report.scoreWeighted}`);
 
@@ -174,25 +174,25 @@ if (
 }
 if (
   !locomoRun ||
-  locomoRun.caseCount !== 4 ||
+  locomoRun.caseCount !== 5 ||
   locomoRun.pass !== true ||
   locomoRun.reusedProfileCaseCount < 1 ||
   !locomoRun.warnings?.includes("skipped_locomo_unscored_qa:locomo-mini-atlas:qa-3")
 ) {
-  failures.push("locomo-mini run did not pass 4 cases with profile reuse and unscored warning");
+  failures.push("locomo-mini run did not pass 5 cases with profile reuse and unscored warning");
 }
 if (
-  !runSlicePassed(locomoRun, "locomo:evidence_backed", 4) ||
-  !runSlicePassed(locomoRun, "locomo:has_adversarial_answer", 2) ||
-  !runSlicePassed(locomoRun, "locomo:speaker_grounding", 2)
+  !runSlicePassed(locomoRun, "locomo:evidence_backed", 5) ||
+  !runSlicePassed(locomoRun, "locomo:has_adversarial_answer", 3) ||
+  !runSlicePassed(locomoRun, "locomo:speaker_grounding", 3)
 ) {
   failures.push("locomo-mini missing required slice scores");
 }
 if (
   locomoReport.summary?.uncertaintyLevels?.low !== 2 ||
-  locomoReport.summary?.uncertaintyLevels?.medium !== 2 ||
-  locomoReport.summary?.evidenceConvergence?.reached !== 2 ||
-  locomoReport.summary?.evidenceConvergence?.notReached !== 2
+  locomoReport.summary?.uncertaintyLevels?.medium !== 3 ||
+  locomoReport.summary?.evidenceConvergence?.reached !== 4 ||
+  locomoReport.summary?.evidenceConvergence?.notReached !== 1
 ) {
   failures.push("locomo-mini missing summary diagnostics");
 }
@@ -201,6 +201,7 @@ for (const [id, expected] of [
   ["locomo-mini-atlas:qa-2", "2022"],
   ["locomo-mini-relative-date:qa-1", "7 May 2023"],
   ["locomo-mini-speaker-grounding:qa-1", "Meridian"],
+  ["locomo-mini-speaker-grounding:qa-2", "architect"],
 ]) {
   const locomoCase = caseById(locomoReport, id);
   if (

@@ -75,6 +75,11 @@
           "speaker": "Blair",
           "dia_id": "s2",
           "text": "My travel planning tool is Meridian."
+        },
+        {
+          "speaker": "Blair",
+          "dia_id": "s3",
+          "text": "Alex is an architect."
         }
       ]
     },
@@ -84,6 +89,12 @@
         "answer": "Meridian",
         "adversarial_answer": "Chronos",
         "evidence": ["s2"]
+      },
+      {
+        "question": "What is Alex's profession?",
+        "answer": "architect",
+        "adversarial_answer": "designer",
+        "evidence": ["s3"]
       }
     ]
   }
