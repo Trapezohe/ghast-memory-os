@@ -353,7 +353,7 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
     }
     return null;
   }
-  const stableAttribute = /^\s*my\s+(college\s+major|major)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
+  const stableAttribute = /^\s*my\s+(college\s+major|major|home\s+town|hometown)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
     utterance,
   );
   if (stableAttribute) {
@@ -626,7 +626,9 @@ function personCurrentAttributePredicate(field: string | undefined): string | nu
               ? "person.language"
               : normalized === "major" || normalized === "college major"
                 ? "person.major"
-              : null;
+                : normalized === "hometown" || normalized === "home town"
+                  ? "person.hometown"
+                  : null;
 }
 
 function namedPersonCurrentAttributeCandidate(
