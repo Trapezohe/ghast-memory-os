@@ -249,6 +249,32 @@ function speakerPrefixMatch(text: string): { prefix: string; rest: string } | nu
   return prefix && rest ? { prefix, rest } : null;
 }
 
+function personSubjectFieldsForFirstPerson(
+  text: string,
+  metadata: Record<string, unknown> | undefined,
+): Pick<MemoryExtractionCandidate, "subject" | "subjectAliases"> {
+  const prefix = speakerPrefixMatch(text)?.prefix;
+  const validPrefix =
+    prefix && !isNonSpeakerPrefix(prefix) && stableNamedPersonSubject(prefix) ? prefix : "";
+  const metadataSpeaker =
+    typeof metadata?.speaker === "string" &&
+    !/^(?:current[-_ ]?user|user|self|me)$/iu.test(metadata.speaker.trim()) &&
+    stableNamedPersonSubject(metadata.speaker)
+      ? metadata.speaker.trim()
+      : "";
+  const participantKeys = new Set(
+    (Array.isArray(metadata?.participants) ? metadata.participants : [])
+      .filter((entry): entry is string => typeof entry === "string" && stableNamedPersonSubject(entry))
+      .map(entityKey),
+  );
+  const speaker =
+    metadataSpeaker &&
+    ((validPrefix && entityKey(validPrefix) === entityKey(metadataSpeaker)) || participantKeys.size > 1)
+      ? metadataSpeaker
+      : validPrefix;
+  return speaker ? { subject: `person:${speaker}`, subjectAliases: [speaker] } : {};
+}
+
 function hasFirstPersonAnchor(text: string): boolean {
   return (
     /\b(I|I'm|I’m|I've|I’ve|I'd|I’d|I'll|I’ll|my|mine|we|we're|we’re|we've|we’ve|our)\b/iu.test(
@@ -297,9 +323,13 @@ function likelyDurableObservationFact(text: string): boolean {
   return hasDurableTemporalSignal(utterance) || hasPersonalWorldEventSignal(utterance);
 }
 
-function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate | null {
+function firstPersonAttributeCandidate(
+  text: string,
+  metadata?: Record<string, unknown> | undefined,
+): MemoryExtractionCandidate | null {
   const utterance = stripSpeakerPrefix(text);
   if (isQuestionLike(utterance)) return null;
+  const personSubject = personSubjectFieldsForFirstPerson(text, metadata);
   const currentTool = /^\s*my\s+current\s+(?:[\p{L}\p{N}_ -]{0,60}\s+)?(?:tool|app|application|editor|ide|browser|calendar|database)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
     utterance,
   );
@@ -313,6 +343,7 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
         predicate: "person.tool",
         object,
         cardinality: "single",
+        ...personSubject,
         metadata: { rule: "first_person_current_tool" },
       };
     }
@@ -347,6 +378,7 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
         predicate: "person.location",
         object,
         cardinality: "single",
+        ...personSubject,
         metadata: { rule: "first_person_live_in" },
       };
     }
@@ -363,6 +395,7 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
         predicate: "person.hometown",
         object,
         cardinality: "single",
+        ...personSubject,
         metadata: { rule: "first_person_from_place" },
       };
     }
@@ -379,6 +412,7 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
         predicate: "person.role",
         object,
         cardinality: "single",
+        ...personSubject,
         metadata: { rule: "first_person_work_as" },
       };
     }
@@ -395,6 +429,7 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
         predicate: "person.birthplace",
         object,
         cardinality: "single",
+        ...personSubject,
         metadata: { rule: "first_person_birthplace" },
       };
     }
@@ -411,6 +446,7 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
         predicate: "person.birthdate",
         object,
         cardinality: "single",
+        ...personSubject,
         metadata: { rule: "first_person_birthdate" },
       };
     }
@@ -430,6 +466,7 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
         predicate,
         object,
         cardinality: "single",
+        ...personSubject,
         metadata: { rule: "first_person_current_attribute" },
       };
     }
@@ -449,6 +486,7 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
         predicate,
         object,
         cardinality: "single",
+        ...personSubject,
         metadata: { rule: "first_person_structured_attribute" },
       };
     }
@@ -511,7 +549,7 @@ function explicitNonPersonSubject(name: string): boolean {
   if (!normalized) return false;
   if (NON_PERSON_SINGLE_NAMES.has(normalized)) return true;
   if (
-    /^(?:project|team|company|org|organization|group|support|note|fact|example|preference|task|ticket|repo|repository|service|system|app|tool|product|model|agent|inc|corp|llc|ltd|labs|research|foundation|university|school|department|committee|platform|cloud)$/iu.test(
+    /^(?:project|team|company|org|organization|group|support|note|reminder|fact|example|preference|task|ticket|repo|repository|service|system|app|tool|product|model|agent|inc|corp|llc|ltd|labs|research|foundation|university|school|department|committee|platform|cloud)$/iu.test(
       normalized,
     )
   ) {
@@ -1285,7 +1323,7 @@ export function extractRuleMemoryCandidates(
     ];
   }
 
-  const attributeCandidate = firstPersonAttributeCandidate(text);
+  const attributeCandidate = firstPersonAttributeCandidate(text, metadata);
   if (attributeCandidate) return [attributeCandidate];
   if (malformedFirstPersonStructuredAttribute(text)) return [];
   if (/^\s*my\s+(?:current\s+)?(?:role|job|profession|title)\s+(?:is|=)\s+(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];

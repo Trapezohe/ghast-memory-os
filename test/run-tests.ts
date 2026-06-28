@@ -3146,6 +3146,11 @@ const speakerMajorReport = await rulesReportMemory.observeWithReport({
 assert.equal(speakerMajorReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(speakerMajorReport.memoryIds.length, 1);
 assert.equal(speakerMajorReport.worldBeliefIds.length, 1);
+const speakerMajorCandidate = speakerMajorReport.extraction?.decisions.find(
+  (decision) => decision.decision === "accepted",
+)?.candidate;
+assert.equal(speakerMajorCandidate?.subject, "person:Alex");
+assert.deepEqual(speakerMajorCandidate?.subjectAliases, ["Alex"]);
 const competingSpeakerMajorReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -3812,11 +3817,13 @@ assert.equal(nonPersonSpeakerPrefixReport.memoryIds.length, 0);
 assert.equal(nonPersonSpeakerPrefixReport.worldBeliefIds.length, 0);
 assert.equal(extractRuleMemoryCandidates("OpenAI: I prefer Azure for some workloads.").length, 0);
 assert.equal(extractRuleMemoryCandidates("Note: I prefer compact implementation notes.").length, 1);
+assert.equal(extractRuleMemoryCandidates("Reminder: My birthday is July 10.").length, 0);
 for (const nonPersonSpeakerContent of [
   "OpenAI: Do not push Project Atlas updates.",
   "OpenAI: My workflow is to draft first.",
   "OpenAI: I was born in Seattle.",
   "OpenAI: Project Atlas status is green.",
+  "Reminder: My current city is Paris.",
   "Robot: I work as a designer.",
   "Robot: My job is an architect.",
   "Assistant: My job is an architect.",
@@ -3910,6 +3917,22 @@ const hostAliasSpeakerOnlyReport = await rulesReportMemory.observeWithReport({
 assert.equal(hostAliasSpeakerOnlyReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(hostAliasSpeakerOnlyReport.memoryIds.length, 1);
 assert.equal(hostAliasSpeakerOnlyReport.worldBeliefIds.length, 1);
+const metadataOnlySpeakerCityReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "My current city is Rome.",
+  metadata: {
+    speaker: "Jordan",
+    participants: ["Jordan", "Alex"],
+  },
+});
+assert.equal(metadataOnlySpeakerCityReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(
+  metadataOnlySpeakerCityReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.subject,
+  "person:Jordan",
+);
 const speakerCurrentCityParisReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
