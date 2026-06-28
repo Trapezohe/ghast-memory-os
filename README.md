@@ -214,7 +214,7 @@ reconstruction misses, context composer or budget drops, forbidden context
 inclusion, and convergence failures. `failureStages` counts whether a stage
 appears in a failed case; the per-case taxonomy entries carry the matched terms.
 When an expected answer is not an exact substring but is present after simple
-punctuation/spacing/date-order normalization, the report uses
+punctuation/spacing/date-order/number-grouping normalization, the report uses
 `answer_normalization_mismatch` instead of `answer_not_in_input` so adapter
 label issues stay separate from missing source evidence.
 Per-run `sliceScores` are diagnostic tag buckets, not unique-case totals or

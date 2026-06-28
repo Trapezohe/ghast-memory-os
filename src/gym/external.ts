@@ -517,6 +517,11 @@ function includesTerm(haystack: string, term: string): boolean {
 
 function normalizeForAnswerComparison(value: string): string {
   return value
+    .replace(/\b\d{1,3}(?:,\d{3})+\b/gu, (match, offset: number, full: string) =>
+      /[$€£¥]\s*$/u.test(full.slice(Math.max(0, offset - 2), offset))
+        ? match
+        : match.replace(/,/gu, ""),
+    )
     .normalize("NFKC")
     .toLowerCase()
     .replace(/[^\p{Letter}\p{Number}]+/gu, " ")
