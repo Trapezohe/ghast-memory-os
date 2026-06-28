@@ -613,6 +613,8 @@ function projectFieldPredicate(field: string | undefined): string | null {
         ? "project.deadline"
         : normalized === "contact" || field === "联系人"
           ? "project.contact"
+          : normalized === "plan" || field === "计划"
+            ? "project.plan"
         : null;
 }
 
@@ -627,12 +629,12 @@ function projectCurrentStateCandidate(text: string): MemoryExtractionCandidate |
   // Keep the built-in rule narrow: suffix forms like "X project current ..."
   // are too ambiguous to distinguish names from generic descriptions.
   const english = [
-    /^\s*project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+current\s+(owner|status|deadline|contact)\s+(?:is|are|=)\s+(.{1,120}?)\s*\.?\s*$/iu,
-    /^\s*project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+(owner|status|deadline|contact)\s+(?:is|are|=)\s+(.{1,120}?)\s*\.?\s*$/iu,
+    /^\s*project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+current\s+(owner|status|deadline|contact|plan)\s+(?:is|are|=)\s+(.{1,120}?)\s*\.?\s*$/iu,
+    /^\s*project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+(owner|status|deadline|contact|plan)\s+(?:is|are|=)\s+(.{1,120}?)\s*\.?\s*$/iu,
   ].map((pattern) => pattern.exec(utterance)).find((match) => match !== null);
   const chinese = [
-    /^\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(?:当前|现在)(负责人|状态|截止日期|联系人)(?:是|为|=)\s*(.{1,120}?)\s*。?\s*$/u,
-    /^\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(负责人|状态|截止日期|联系人)(?:是|为|=)\s*(.{1,120}?)\s*。?\s*$/u,
+    /^\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(?:当前|现在)(负责人|状态|截止日期|联系人|计划)(?:是|为|=)\s*(.{1,120}?)\s*。?\s*$/u,
+    /^\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(负责人|状态|截止日期|联系人|计划)(?:是|为|=)\s*(.{1,120}?)\s*。?\s*$/u,
   ].map((pattern) => pattern.exec(utterance)).find((match) => match !== null);
   const project = english?.[1] ?? chinese?.[1];
   const field = english?.[2]?.toLowerCase() ?? chinese?.[2];
@@ -656,12 +658,12 @@ function projectStateChangeCandidate(text: string): MemoryExtractionCandidate | 
   const utterance = stripSpeakerPrefix(text);
   if (isQuestionLike(utterance)) return null;
   const english = [
-    /^\s*(?:on\s+[^,]{4,40},\s*)?(?:(?:i|we|[A-Z][\p{L}\p{N}_-]{0,30})\s+)?(?:moved|changed|updated|set)\s+(?:the\s+)?project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+(?:current\s+)?(owner|status|deadline|contact)\s+(?:to|as|=)\s+(.{1,120}?)\s*\.?\s*$/iu,
-    /^\s*project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+(?:current\s+)?(owner|status|deadline|contact)\s+(?:changed|moved|updated|set)\s+(?:to|as|=)\s+(.{1,120}?)\s*\.?\s*$/iu,
+    /^\s*(?:on\s+[^,]{4,40},\s*)?(?:(?:i|we|[A-Z][\p{L}\p{N}_-]{0,30})\s+)?(?:moved|changed|updated|set)\s+(?:the\s+)?project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+(?:current\s+)?(owner|status|deadline|contact|plan)\s+(?:to|as|=)\s+(.{1,120}?)\s*\.?\s*$/iu,
+    /^\s*project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+(?:current\s+)?(owner|status|deadline|contact|plan)\s+(?:changed|moved|updated|set)\s+(?:to|as|=)\s+(.{1,120}?)\s*\.?\s*$/iu,
   ].map((pattern) => pattern.exec(utterance)).find((match) => match !== null);
   const chinese = [
-    /^\s*(?:(?:我|我们)\s*)?(?:把|将)\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(?:当前|现在)?(负责人|状态|截止日期|联系人)(?:改为|改成|更新为|设为|设置为|=)\s*(.{1,120}?)\s*。?\s*$/u,
-    /^\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(?:当前|现在)?(负责人|状态|截止日期|联系人)(?:改为|改成|更新为|设为|设置为|=)\s*(.{1,120}?)\s*。?\s*$/u,
+    /^\s*(?:(?:我|我们)\s*)?(?:把|将)\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(?:当前|现在)?(负责人|状态|截止日期|联系人|计划)(?:改为|改成|更新为|设为|设置为|=)\s*(.{1,120}?)\s*。?\s*$/u,
+    /^\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(?:当前|现在)?(负责人|状态|截止日期|联系人|计划)(?:改为|改成|更新为|设为|设置为|=)\s*(.{1,120}?)\s*。?\s*$/u,
   ].map((pattern) => pattern.exec(utterance)).find((match) => match !== null);
   const project = english?.[1] ?? chinese?.[1];
   const predicate = projectFieldPredicate(english?.[2] ?? chinese?.[2]);
@@ -682,10 +684,25 @@ function projectStateChangeCandidate(text: string): MemoryExtractionCandidate | 
 function projectHistoricalStateCandidate(text: string): MemoryExtractionCandidate | null {
   const utterance = stripSpeakerPrefix(text);
   if (isQuestionLike(utterance)) return null;
-  const english = /^\s*project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+(?:(?:previous|previously|prior|old|former)\s+)?(owner|status|deadline|contact)\s+was\s+(.{1,120}?)\s*\.?\s*$/iu.exec(
+  const previousPlan = /^\s*project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+(?:(?:previously|formerly)\s+used|used\s+to\s+use)\s+(?:the\s+)?(.{1,80}?)\s+plan\s*\.?\s*$/iu.exec(
     utterance,
   );
-  const chinese = /^\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(负责人|状态|截止日期|联系人)曾经是\s*(.{1,120}?)\s*。?\s*$/u.exec(
+  if (previousPlan?.[1] && previousPlan[2] && !isGenericProjectReference(previousPlan[1])) {
+    return {
+      kind: "project",
+      content: text,
+      confidence: 0.72,
+      predicate: "project.plan",
+      subject: `project:${previousPlan[1].trim()}`,
+      object: projectBeliefObject(previousPlan[2]),
+      cardinality: "single",
+      metadata: { rule: "project_historical_plan" },
+    };
+  }
+  const english = /^\s*project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+(?:(?:previous|previously|prior|old|former)\s+)?(owner|status|deadline|contact|plan)\s+was\s+(.{1,120}?)\s*\.?\s*$/iu.exec(
+    utterance,
+  );
+  const chinese = /^\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(负责人|状态|截止日期|联系人|计划)曾经是\s*(.{1,120}?)\s*。?\s*$/u.exec(
     utterance,
   );
   const project = english?.[1] ?? chinese?.[1];
@@ -726,79 +743,79 @@ function isGenericProjectReference(project: string): boolean {
 function unnamedProjectCurrentState(text: string): boolean {
   const utterance = stripSpeakerPrefix(text);
   return (
-    /^\s*(?:moved|changed|updated|set)\s+(?:the\s+)?project\s+(?:(?:the|this|that|our|my|your|his|her|its|their|a|an|some|another|any|each|every|one|new|current|existing|other|old|next|previous|prior|same)\s+)?(?:current\s+)?(?:owner|status|deadline|contact)\s+(?:to|as|=)\s+.{1,120}/iu.test(
+    /^\s*(?:moved|changed|updated|set)\s+(?:the\s+)?project\s+(?:(?:the|this|that|our|my|your|his|her|its|their|a|an|some|another|any|each|every|one|new|current|existing|other|old|next|previous|prior|same)\s+)?(?:current\s+)?(?:owner|status|deadline|contact|plan)\s+(?:to|as|=)\s+.{1,120}/iu.test(
       utterance,
     ) ||
-    /^\s*(?:(?:the|this|that|our|my|your|his|her|its|their|a|an|some|another|any|each|every|one)(?:\s+(?:new|current|existing|other|old|next|previous|prior|same))*|new|current|existing|other|old|next|previous|prior|same)\s+project\s+(?:current\s+)?(?:owner|status|deadline|contact)\s+(?:changed|moved|updated|set)\s+(?:to|as|=)\s+.{1,120}/iu.test(
+    /^\s*(?:(?:the|this|that|our|my|your|his|her|its|their|a|an|some|another|any|each|every|one)(?:\s+(?:new|current|existing|other|old|next|previous|prior|same))*|new|current|existing|other|old|next|previous|prior|same)\s+project\s+(?:current\s+)?(?:owner|status|deadline|contact|plan)\s+(?:changed|moved|updated|set)\s+(?:to|as|=)\s+.{1,120}/iu.test(
       utterance,
     ) ||
-    /^\s*[\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?\s+project\s+(?:current\s+)?(?:owner|status|deadline|contact)\s+(?:changed|moved|updated|set)\s+(?:to|as|=)\s+.{1,120}/iu.test(
+    /^\s*[\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?\s+project\s+(?:current\s+)?(?:owner|status|deadline|contact|plan)\s+(?:changed|moved|updated|set)\s+(?:to|as|=)\s+.{1,120}/iu.test(
       utterance,
     ) ||
-    /^\s*project\s+(?:current\s+)?(?:owner|status|deadline|contact)\s+(?:changed|moved|updated|set)\s+(?:to|as|=)\s+.{1,120}/iu.test(
+    /^\s*project\s+(?:current\s+)?(?:owner|status|deadline|contact|plan)\s+(?:changed|moved|updated|set)\s+(?:to|as|=)\s+.{1,120}/iu.test(
       utterance,
     ) ||
-    /^\s*project\s+(?:the|this|that|our|my|your|his|her|its|their|a|an|some|another|any|each|every|one|new|current|existing|other|old|next|previous|prior|same)\s+(?:current\s+)?(?:owner|status|deadline|contact)\s+(?:changed|moved|updated|set)\s+(?:to|as|=)\s+.{1,120}/iu.test(
+    /^\s*project\s+(?:the|this|that|our|my|your|his|her|its|their|a|an|some|another|any|each|every|one|new|current|existing|other|old|next|previous|prior|same)\s+(?:current\s+)?(?:owner|status|deadline|contact|plan)\s+(?:changed|moved|updated|set)\s+(?:to|as|=)\s+.{1,120}/iu.test(
       utterance,
     ) ||
-    /^\s*(?:(?:the|this|that|our|my|your|his|her|its|their|a|an|some|another|any|each|every|one)(?:\s+(?:new|current|existing|other|old|next|previous|prior|same))*|new|current|existing|other|old|next|previous|prior|same)\s+project\s+current\s+(?:owner|status|deadline|contact)\s+(?:is|are|=)\s+.{1,120}/iu.test(
+    /^\s*(?:(?:the|this|that|our|my|your|his|her|its|their|a|an|some|another|any|each|every|one)(?:\s+(?:new|current|existing|other|old|next|previous|prior|same))*|new|current|existing|other|old|next|previous|prior|same)\s+project\s+current\s+(?:owner|status|deadline|contact|plan)\s+(?:is|are|=)\s+.{1,120}/iu.test(
       utterance,
     ) ||
-    /^\s*[\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?\s+project\s+current\s+(?:owner|status|deadline|contact)\s+(?:is|are|=)\s+.{1,120}/iu.test(
+    /^\s*[\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?\s+project\s+current\s+(?:owner|status|deadline|contact|plan)\s+(?:is|are|=)\s+.{1,120}/iu.test(
       utterance,
     ) ||
-    /^\s*project\s+current\s+(?:owner|status|deadline|contact)\s+(?:is|are|=)\s+.{1,120}/iu.test(
+    /^\s*project\s+current\s+(?:owner|status|deadline|contact|plan)\s+(?:is|are|=)\s+.{1,120}/iu.test(
       utterance,
     ) ||
-    /^\s*project\s+[\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?\s+current\s+(?:owner|status|deadline|contact)\s+(?:is|are|=)\s+.{1,120}/iu.test(
+    /^\s*project\s+[\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?\s+current\s+(?:owner|status|deadline|contact|plan)\s+(?:is|are|=)\s+.{1,120}/iu.test(
       utterance,
     ) ||
-    /^\s*project\s+[\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?\s+(?:owner|status|deadline|contact)\s+(?:is|are|=)\s+.{1,120}/iu.test(
+    /^\s*project\s+[\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?\s+(?:owner|status|deadline|contact|plan)\s+(?:is|are|=)\s+.{1,120}/iu.test(
       utterance,
     ) ||
-    /^\s*(?:(?:the|this|that|our|my|your|his|her|its|their|a|an|some|another|any|each|every|one)(?:\s+(?:new|current|existing|other|old|next|previous|prior|same))*|new|current|existing|other|old|next|previous|prior|same)\s+project\s+(?:owner|status|deadline|contact)\s+(?:is|are|=)\s+.{1,120}/iu.test(
+    /^\s*(?:(?:the|this|that|our|my|your|his|her|its|their|a|an|some|another|any|each|every|one)(?:\s+(?:new|current|existing|other|old|next|previous|prior|same))*|new|current|existing|other|old|next|previous|prior|same)\s+project\s+(?:owner|status|deadline|contact|plan)\s+(?:is|are|=)\s+.{1,120}/iu.test(
       utterance,
     ) ||
-    /^(?!\s*(?:my|our|mine|ours)\s)\s*[\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?\s+project\s+(?:owner|status|deadline|contact)\s+(?:is|are|=)\s+.{1,120}/iu.test(
+    /^(?!\s*(?:my|our|mine|ours)\s)\s*[\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?\s+project\s+(?:owner|status|deadline|contact|plan)\s+(?:is|are|=)\s+.{1,120}/iu.test(
       utterance,
     ) ||
-    /^\s*project\s+(?:owner|status|deadline|contact)\s+(?:is|are|=)\s+.{1,120}/iu.test(
+    /^\s*project\s+(?:owner|status|deadline|contact|plan)\s+(?:is|are|=)\s+.{1,120}/iu.test(
       utterance,
     ) ||
-    /^\s*(?:这个|那个|我|我的|我们|我们的|你|你的|你们|你们的|您|您的|他|他的|他们|他们的|她|她的|她们|她们的|它|它的|它们|它们的|其|该|此|一个|某个|某|某些|一些|任一|任何|新|当前|已有|其他|旧|下个|上个|同一个)(?:新|当前|已有|其他|旧|下个|上个|同一个)?\s*项目(?:当前|现在)(?:负责人|状态|截止日期|联系人)(?:是|为|=)\s*.{1,120}/u.test(
+    /^\s*(?:这个|那个|我|我的|我们|我们的|你|你的|你们|你们的|您|您的|他|他的|他们|他们的|她|她的|她们|她们的|它|它的|它们|它们的|其|该|此|一个|某个|某|某些|一些|任一|任何|新|当前|已有|其他|旧|下个|上个|同一个)(?:新|当前|已有|其他|旧|下个|上个|同一个)?\s*项目(?:当前|现在)(?:负责人|状态|截止日期|联系人|计划)(?:是|为|=)\s*.{1,120}/u.test(
       utterance,
     ) ||
-    /^\s*[\p{Script=Han}\p{L}\p{N}_ -]{1,60}?\s*项目(?:当前|现在)(?:负责人|状态|截止日期|联系人)(?:是|为|=)\s*.{1,120}/u.test(
+    /^\s*[\p{Script=Han}\p{L}\p{N}_ -]{1,60}?\s*项目(?:当前|现在)(?:负责人|状态|截止日期|联系人|计划)(?:是|为|=)\s*.{1,120}/u.test(
       utterance,
     ) ||
-    /^\s*项目(?:当前|现在)(?:负责人|状态|截止日期|联系人)(?:是|为|=)\s*.{1,120}/u.test(
+    /^\s*项目(?:当前|现在)(?:负责人|状态|截止日期|联系人|计划)(?:是|为|=)\s*.{1,120}/u.test(
       utterance,
     ) ||
-    /^\s*项目\s*[\p{Script=Han}\p{L}\p{N}_ -]{1,60}?(?:当前|现在)(?:负责人|状态|截止日期|联系人)(?:是|为|=)\s*.{1,120}/u.test(
+    /^\s*项目\s*[\p{Script=Han}\p{L}\p{N}_ -]{1,60}?(?:当前|现在)(?:负责人|状态|截止日期|联系人|计划)(?:是|为|=)\s*.{1,120}/u.test(
       utterance,
     ) ||
-    /^\s*项目\s*[\p{Script=Han}\p{L}\p{N}_ -]{1,60}?(?:负责人|状态|截止日期|联系人)(?:是|为|=)\s*.{1,120}/u.test(
+    /^\s*项目\s*[\p{Script=Han}\p{L}\p{N}_ -]{1,60}?(?:负责人|状态|截止日期|联系人|计划)(?:是|为|=)\s*.{1,120}/u.test(
       utterance,
     ) ||
-    /^\s*(?:这个|那个|我|我的|我们|我们的|你|你的|你们|你们的|您|您的|他|他的|他们|他们的|她|她的|她们|她们的|它|它的|它们|它们的|其|该|此|一个|某个|某|某些|一些|任一|任何|新|当前|已有|其他|旧|下个|上个|同一个)(?:新|当前|已有|其他|旧|下个|上个|同一个)?\s*项目(?:负责人|状态|截止日期|联系人)(?:是|为|=)\s*.{1,120}/u.test(
+    /^\s*(?:这个|那个|我|我的|我们|我们的|你|你的|你们|你们的|您|您的|他|他的|他们|他们的|她|她的|她们|她们的|它|它的|它们|它们的|其|该|此|一个|某个|某|某些|一些|任一|任何|新|当前|已有|其他|旧|下个|上个|同一个)(?:新|当前|已有|其他|旧|下个|上个|同一个)?\s*项目(?:负责人|状态|截止日期|联系人|计划)(?:是|为|=)\s*.{1,120}/u.test(
       utterance,
     ) ||
-    /^(?!\s*(?:我的|我们|我们的|咱们)\s*)\s*[\p{Script=Han}\p{L}\p{N}_ -]{1,60}?\s*项目(?:负责人|状态|截止日期|联系人)(?:是|为|=)\s*.{1,120}/u.test(
+    /^(?!\s*(?:我的|我们|我们的|咱们)\s*)\s*[\p{Script=Han}\p{L}\p{N}_ -]{1,60}?\s*项目(?:负责人|状态|截止日期|联系人|计划)(?:是|为|=)\s*.{1,120}/u.test(
       utterance,
     ) ||
-    /^\s*项目(?:负责人|状态|截止日期|联系人)(?:是|为|=)\s*.{1,120}/u.test(
+    /^\s*项目(?:负责人|状态|截止日期|联系人|计划)(?:是|为|=)\s*.{1,120}/u.test(
       utterance,
     ) ||
-    /^\s*(?:这个|那个|我|我的|我们|我们的|你|你的|你们|你们的|您|您的|他|他的|他们|他们的|她|她的|她们|她们的|它|它的|它们|它们的|其|该|此|一个|某个|某|某些|一些|任一|任何|新|当前|已有|其他|旧|下个|上个|同一个)(?:新|当前|已有|其他|旧|下个|上个|同一个)?\s*项目(?:当前|现在)?(?:负责人|状态|截止日期|联系人)(?:改为|改成|更新为|设为|设置为|=)\s*.{1,120}/u.test(
+    /^\s*(?:这个|那个|我|我的|我们|我们的|你|你的|你们|你们的|您|您的|他|他的|他们|他们的|她|她的|她们|她们的|它|它的|它们|它们的|其|该|此|一个|某个|某|某些|一些|任一|任何|新|当前|已有|其他|旧|下个|上个|同一个)(?:新|当前|已有|其他|旧|下个|上个|同一个)?\s*项目(?:当前|现在)?(?:负责人|状态|截止日期|联系人|计划)(?:改为|改成|更新为|设为|设置为|=)\s*.{1,120}/u.test(
       utterance,
     ) ||
-    /^\s*[\p{Script=Han}\p{L}\p{N}_ -]{1,60}?\s*项目(?:当前|现在)?(?:负责人|状态|截止日期|联系人)(?:改为|改成|更新为|设为|设置为|=)\s*.{1,120}/u.test(
+    /^\s*[\p{Script=Han}\p{L}\p{N}_ -]{1,60}?\s*项目(?:当前|现在)?(?:负责人|状态|截止日期|联系人|计划)(?:改为|改成|更新为|设为|设置为|=)\s*.{1,120}/u.test(
       utterance,
     ) ||
-    /^\s*项目(?:当前|现在)?(?:负责人|状态|截止日期|联系人)(?:改为|改成|更新为|设为|设置为|=)\s*.{1,120}/u.test(
+    /^\s*项目(?:当前|现在)?(?:负责人|状态|截止日期|联系人|计划)(?:改为|改成|更新为|设为|设置为|=)\s*.{1,120}/u.test(
       utterance,
     ) ||
-    /^\s*项目\s*[\p{Script=Han}\p{L}\p{N}_ -]{1,60}?(?:当前|现在)?(?:负责人|状态|截止日期|联系人)(?:改为|改成|更新为|设为|设置为|=)\s*.{1,120}/u.test(
+    /^\s*项目\s*[\p{Script=Han}\p{L}\p{N}_ -]{1,60}?(?:当前|现在)?(?:负责人|状态|截止日期|联系人|计划)(?:改为|改成|更新为|设为|设置为|=)\s*.{1,120}/u.test(
       utterance,
     )
   );
@@ -807,19 +824,19 @@ function unnamedProjectCurrentState(text: string): boolean {
 function incompleteProjectFieldFragment(text: string): boolean {
   const utterance = stripSpeakerPrefix(text);
   return (
-    /^\s*project\s+[\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?\s+(?:owner|status|deadline|contact)\s+(?:changed|moved|updated|set)\s*\.?\s*$/iu.test(
+    /^\s*project\s+[\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?\s+(?:owner|status|deadline|contact|plan)\s+(?:changed|moved|updated|set)\s*\.?\s*$/iu.test(
       utterance,
     ) ||
-    /^\s*project(?:\s+[\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)?\s+(?:owner|status|deadline|contact)(?:\s+(?:until|before|after|since))?\s*\.?\s*$/iu.test(
+    /^\s*project(?:\s+[\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)?\s+(?:owner|status|deadline|contact|plan)(?:\s+(?:until|before|after|since))?\s*\.?\s*$/iu.test(
       utterance,
     ) ||
-    /^\s*[\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?\s+project\s+(?:owner|status|deadline|contact)(?:\s+(?:until|before|after|since))?\s*\.?\s*$/iu.test(
+    /^\s*[\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?\s+project\s+(?:owner|status|deadline|contact|plan)(?:\s+(?:until|before|after|since))?\s*\.?\s*$/iu.test(
       utterance,
     ) ||
-    /^\s*项目(?:\s*[\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)?(?:负责人|状态|截止日期|联系人)\s*。?\s*$/u.test(
+    /^\s*项目(?:\s*[\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)?(?:负责人|状态|截止日期|联系人|计划)\s*。?\s*$/u.test(
       utterance,
     ) ||
-    /^\s*[\p{Script=Han}\p{L}\p{N}_ -]{1,60}?\s*项目(?:负责人|状态|截止日期|联系人)\s*。?\s*$/u.test(
+    /^\s*[\p{Script=Han}\p{L}\p{N}_ -]{1,60}?\s*项目(?:负责人|状态|截止日期|联系人|计划)\s*。?\s*$/u.test(
       utterance,
     )
   );

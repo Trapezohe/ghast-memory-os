@@ -704,6 +704,27 @@ const projectCurrentOwnerReport = await projectRuleMemory.observeWithReport({
 });
 assert.equal(projectCurrentOwnerReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(projectCurrentOwnerReport.worldBeliefIds.length, 1);
+const projectPreviousPlanReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_history_rule",
+  role: "user",
+  content: "Project Iris previously used the Bluepath plan.",
+});
+assert.equal(projectPreviousPlanReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(projectPreviousPlanReport.worldBeliefIds.length, 1);
+assert.equal(
+  projectPreviousPlanReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.metadata?.rule,
+  "project_historical_plan",
+);
+const projectCurrentPlanReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_history_rule",
+  role: "user",
+  content: "Project Iris current plan is Greenline after the June review.",
+});
+assert.equal(projectCurrentPlanReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(projectCurrentPlanReport.worldBeliefIds.length, 1);
 const shortProjectOwnerReport = await projectRuleMemory.observeWithReport({
   type: "conversation.message",
   profileId: "project_rule",
@@ -785,15 +806,20 @@ for (const transientProjectLikeStatement of [
   "Project Current status is blocked.",
   "Atlas project owner changed to GammaTeam.",
   "Project owner changed to Alice.",
+  "Project plan is Bluepath.",
   "Set Project owner to Alice.",
+  "Set Project plan to Bluepath.",
   "Set Project Current owner to Alice.",
   "Our project status changed to blocked.",
+  "Our project plan changed to Bluepath.",
   "Project Current owner changed to Alice.",
   "Project Atlas owner changed.",
   "What did Project Atlas owner change to?",
   "Project New owner",
+  "Project plan",
   "Project owner",
   "Atlas project owner",
+  "Iris project plan",
   "My Atlas project owner until",
   "Another project current contact is Sam.",
   "A project current owner is Alice.",
@@ -1007,6 +1033,33 @@ try {
     ),
     true,
   );
+  const irisBeliefs = projectRuleDb
+    .prepare(
+      `SELECT predicate, status, object
+       FROM gmos_world_beliefs
+       WHERE profile_id = 'project_history_rule' AND subject = 'project:iris'
+       ORDER BY status, object`,
+    )
+    .all() as Array<{ predicate: string; status: string; object: string }>;
+  assert.equal(irisBeliefs.filter((belief) => belief.status === "active").length, 1);
+  assert.equal(
+    irisBeliefs.some(
+      (belief) =>
+        belief.predicate === "project.plan" &&
+        belief.status === "active" &&
+        belief.object === "Greenline after the June review",
+    ),
+    true,
+  );
+  assert.equal(
+    irisBeliefs.some(
+      (belief) =>
+        belief.predicate === "project.plan" &&
+        belief.status === "superseded" &&
+        belief.object === "Bluepath",
+    ),
+    true,
+  );
   const chineseProjectBeliefs = projectRuleDb
     .prepare(
       `SELECT predicate, status, object
@@ -1077,6 +1130,18 @@ const projectHistoricalOwnerReconstruction = await projectRuleMemory.reconstruct
   temporalMode: "history",
 });
 assert.match(projectHistoricalOwnerReconstruction.contextBlock, /Alice/);
+const projectCurrentPlanReconstruction = await projectRuleMemory.reconstructContext({
+  profileId: "project_history_rule",
+  query: "What is Project Iris's current plan?",
+});
+assert.match(projectCurrentPlanReconstruction.contextBlock, /Greenline/);
+assert.doesNotMatch(projectCurrentPlanReconstruction.contextBlock, /Bluepath/);
+const projectHistoricalPlanReconstruction = await projectRuleMemory.reconstructContext({
+  profileId: "project_history_rule",
+  query: "What plan did Project Iris previously use?",
+  temporalMode: "history",
+});
+assert.match(projectHistoricalPlanReconstruction.contextBlock, /Bluepath/);
 await projectRuleMemory.close();
 
 await extractorMemory.observe({
