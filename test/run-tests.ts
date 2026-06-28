@@ -3189,13 +3189,49 @@ const invalidSpeakerHometownReport = await rulesReportMemory.observeWithReport({
 assert.equal(invalidSpeakerHometownReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(invalidSpeakerHometownReport.memoryIds.length, 0);
 assert.equal(invalidSpeakerHometownReport.worldBeliefIds.length, 0);
+const speakerNameReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Dana: My full name is Dana Park.",
+  metadata: {
+    speaker: "Dana",
+    participants: ["Dana", "Blair"],
+  },
+});
+assert.equal(speakerNameReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(speakerNameReport.memoryIds.length, 1);
+assert.equal(speakerNameReport.worldBeliefIds.length, 1);
+const invalidSpeakerNameReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_name_invalid",
+  role: "user",
+  content: "Dana: My name is unknown.",
+  metadata: {
+    speaker: "Dana",
+    participants: ["Dana", "Blair"],
+  },
+});
+assert.equal(invalidSpeakerNameReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(invalidSpeakerNameReport.memoryIds.length, 0);
+assert.equal(invalidSpeakerNameReport.worldBeliefIds.length, 0);
 assert.equal(
   speakerMajorReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
     ?.candidate.metadata?.rule,
   "first_person_structured_attribute",
 );
+assert.equal(extractRuleMemoryCandidates("My name is Dana Park.")[0]?.predicate, "person.name");
+assert.equal(extractRuleMemoryCandidates("My full name is Dana Park.")[0]?.predicate, "person.name");
 assert.equal(extractRuleMemoryCandidates("My hometown is Boston.")[0]?.predicate, "person.hometown");
 assert.equal(extractRuleMemoryCandidates("My major is unknown.").length, 0);
+for (const invalidName of [
+  "My name is unknown.",
+  "My full name is not Dana.",
+  "My name is none.",
+  "My name is n/a.",
+]) {
+  assert.equal(extractRuleMemoryCandidates(invalidName).length, 0);
+}
 for (const invalidHometown of [
   "My hometown is unknown.",
   "My hometown is not Boston.",
@@ -3651,6 +3687,18 @@ try {
   assert.equal(speakerHomeTownBelief?.subject, "person:quinn");
   assert.equal(speakerHomeTownBelief?.predicate, "person.hometown");
   assert.equal(speakerHomeTownBelief?.object, "Lisbon");
+  const speakerNameBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(speakerNameReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string }
+    | undefined;
+  assert.equal(speakerNameBelief?.subject, "person:dana");
+  assert.equal(speakerNameBelief?.predicate, "person.name");
+  assert.equal(speakerNameBelief?.object, "Dana Park");
   const namedPersonToolBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate
