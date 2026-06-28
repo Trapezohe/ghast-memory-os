@@ -628,7 +628,7 @@ function includesNormalizedAnswer(haystack: string, term: string): boolean {
   if (termDateMatches.length > 0) {
     const termDateKeys = [...new Set(termDateMatches.map((match) => match.key))];
     const haystackDateKeys = new Set(dateAnswerKeys(haystack));
-    if (termDateKeys.some((key) => haystackDateKeys.has(key))) {
+    if (termDateKeys.every((key) => haystackDateKeys.has(key))) {
       const haystackTokens = new Set(normalizedAnswerTokens(haystack));
       const requiredTokens = nonDateAnswerTokens(term, termDateMatches);
       if (requiredTokens.every((token) => haystackTokens.has(token))) return true;

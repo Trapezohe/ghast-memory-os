@@ -10427,6 +10427,12 @@ const externalAnswerNormalizationBenchmark = await runExternalMemoryBenchmark({
       expectedAll: ["Lantern on 7 May 2023"],
     },
     {
+      id: "normalization-date-missing-second-date",
+      events: [{ type: "memory", kind: "fact", content: "The workshop started on May 7, 2023." }],
+      question: "What was the workshop range?",
+      expectedAll: ["7 May 2023 to 8 May 2023"],
+    },
+    {
       id: "normalization-keeps-symbolic-language-missing",
       events: [{ type: "memory", kind: "fact", content: "The language answer is C." }],
       question: "Which language?",
@@ -10454,7 +10460,7 @@ const externalAnswerNormalizationBenchmark = await runExternalMemoryBenchmark({
 });
 assert.equal(externalAnswerNormalizationBenchmark.pass, false);
 assert.deepEqual(externalAnswerNormalizationBenchmark.summary.failureStages, [
-  { name: "answer_not_in_input", count: 5 },
+  { name: "answer_not_in_input", count: 6 },
   { name: "answer_normalization_mismatch", count: 2 },
 ]);
 assert.deepEqual(externalAnswerNormalizationBenchmark.cases[0]?.failureTaxonomy, [
@@ -10467,15 +10473,18 @@ assert.deepEqual(externalAnswerNormalizationBenchmark.cases[2]?.failureTaxonomy,
   { stage: "answer_not_in_input", terms: ["Lantern on 7 May 2023"] },
 ]);
 assert.deepEqual(externalAnswerNormalizationBenchmark.cases[3]?.failureTaxonomy, [
-  { stage: "answer_not_in_input", terms: ["C++"] },
+  { stage: "answer_not_in_input", terms: ["7 May 2023 to 8 May 2023"] },
 ]);
 assert.deepEqual(externalAnswerNormalizationBenchmark.cases[4]?.failureTaxonomy, [
-  { stage: "answer_not_in_input", terms: ["C++ on 7 May 2023"] },
+  { stage: "answer_not_in_input", terms: ["C++"] },
 ]);
 assert.deepEqual(externalAnswerNormalizationBenchmark.cases[5]?.failureTaxonomy, [
-  { stage: "answer_not_in_input", terms: ["$5"] },
+  { stage: "answer_not_in_input", terms: ["C++ on 7 May 2023"] },
 ]);
 assert.deepEqual(externalAnswerNormalizationBenchmark.cases[6]?.failureTaxonomy, [
+  { stage: "answer_not_in_input", terms: ["$5"] },
+]);
+assert.deepEqual(externalAnswerNormalizationBenchmark.cases[7]?.failureTaxonomy, [
   { stage: "answer_not_in_input", terms: ["$5 on 7 May 2023"] },
 ]);
 const rankedOutEvents = Array.from({ length: 20 }, (_, index) => ({
