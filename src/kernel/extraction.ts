@@ -442,6 +442,20 @@ function metadataConfirmsNamedPerson(
   return metadataPersonNames(metadata).has(entityKey(name));
 }
 
+function stableToolObject(value: string | undefined): string | undefined {
+  const object = projectBeliefObject(value);
+  if (!object) return undefined;
+  if (
+    /^(?:not\s+|currently\s+)?(?:broken|unavailable|offline|down|missing|disabled|deprecated|obsolete|unsupported)\b/iu.test(
+      object,
+    ) ||
+    /^(?:not|currently\s+not)\s+\S+/iu.test(object)
+  ) {
+    return undefined;
+  }
+  return object;
+}
+
 function namedPersonToolCandidate(
   text: string,
   metadata?: Record<string, unknown> | undefined,
@@ -449,13 +463,19 @@ function namedPersonToolCandidate(
   const utterance = stripSpeakerPrefix(text);
   if (isQuestionLike(utterance)) return null;
   const namePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}`;
-  const match = new RegExp(
-    String.raw`^\s*(${namePattern})\s+uses\s+.{2,80}?\s+for\s+.{2,80}?\s*\.?\s*$`,
+  const usesMatch = new RegExp(
+    String.raw`^\s*(${namePattern})\s+uses\s+(.{2,80}?)\s+for\s+.{2,80}?\s*\.?\s*$`,
     "u",
   ).exec(utterance);
-  const name = match?.[1]?.trim();
+  const possessiveMatch = new RegExp(
+    String.raw`^\s*(${namePattern})[’']s\s+(?:preferred\s+)?(?:[\p{L}\p{N}_ -]{0,60}\s+)?tool\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$`,
+    "iu",
+  ).exec(utterance);
+  const name = (usesMatch?.[1] ?? possessiveMatch?.[1])?.trim();
   if (!name || !stableNamedPersonSubject(name)) return null;
   if (!metadataConfirmsNamedPerson(name, metadata)) return null;
+  const object = stableToolObject(usesMatch?.[2] ?? possessiveMatch?.[2]);
+  if (!object) return null;
   return {
     kind: "fact",
     content: text,
@@ -463,6 +483,7 @@ function namedPersonToolCandidate(
     predicate: "person.tool",
     subject: `person:${name}`,
     subjectAliases: [name],
+    ...(object ? { object } : {}),
     cardinality: "single",
     metadata: { rule: "named_person_tool" },
   };

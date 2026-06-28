@@ -2753,6 +2753,39 @@ const secondNamedPersonToolReport = await rulesReportMemory.observeWithReport({
 assert.equal(secondNamedPersonToolReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(secondNamedPersonToolReport.memoryIds.length, 1);
 assert.equal(secondNamedPersonToolReport.worldBeliefIds.length, 1);
+const possessiveNamedPersonToolReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_possessive",
+  role: "user",
+  content: "Blair's travel planning tool is Meridian.",
+  metadata: {
+    participants: ["Alex", "Blair", "Mary Jane"],
+  },
+});
+assert.equal(possessiveNamedPersonToolReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(possessiveNamedPersonToolReport.memoryIds.length, 1);
+assert.equal(possessiveNamedPersonToolReport.worldBeliefIds.length, 1);
+for (const content of [
+  "Blair's travel planning tool is broken.",
+  "Blair's preferred tool is unavailable.",
+  "Blair's travel planning tool is not Meridian.",
+  "Blair's travel planning tool is currently unavailable.",
+  "Blair's travel planning tool is currently not Meridian.",
+  "OpenAI's deployment tool is Azure.",
+]) {
+  const report = await rulesReportMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: "rules_report_possessive_negative",
+    role: "user",
+    content,
+    metadata: {
+      participants: ["Alex", "Blair", "OpenAI"],
+    },
+  });
+  assert.equal(report.extraction?.acceptedCandidateCount, 0);
+  assert.equal(report.memoryIds.length, 0);
+  assert.equal(report.worldBeliefIds.length, 0);
+}
 const nonPersonSpeakerPrefixReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -2939,15 +2972,28 @@ try {
   assert.equal(namedPersonToolMemory?.kind, "fact");
   const secondNamedPersonToolBelief = speakerAttributeDb
     .prepare(
-      `SELECT subject, predicate
+      `SELECT subject, predicate, object
          FROM gmos_world_beliefs
         WHERE id = ?`,
     )
     .get(secondNamedPersonToolReport.worldBeliefIds[0]!) as
-    | { subject: string; predicate: string }
+    | { subject: string; predicate: string; object: string }
     | undefined;
   assert.equal(secondNamedPersonToolBelief?.subject, "person:mary-jane");
   assert.equal(secondNamedPersonToolBelief?.predicate, "person.tool");
+  assert.equal(secondNamedPersonToolBelief?.object, "Helio");
+  const possessiveNamedPersonToolBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(possessiveNamedPersonToolReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string }
+    | undefined;
+  assert.equal(possessiveNamedPersonToolBelief?.subject, "person:blair");
+  assert.equal(possessiveNamedPersonToolBelief?.predicate, "person.tool");
+  assert.equal(possessiveNamedPersonToolBelief?.object, "Meridian");
   const favoritePreferenceBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate
