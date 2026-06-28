@@ -299,6 +299,79 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
   return null;
 }
 
+function stableNamedPersonSubject(name: string): boolean {
+  const normalized = name.trim().toLowerCase();
+  if (!normalized) return false;
+  if (
+    /^(?:project|team|company|org|organization|group|support|note|fact|example|preference|task|ticket|repo|repository|service|system|app|tool|product|model|agent)$/iu.test(
+      normalized,
+    )
+  ) {
+    return false;
+  }
+  return !/\b(?:project|team|company|org|organization|group|support|repo|repository|service|system|app|tool|product|model|agent)\b/iu.test(
+    normalized,
+  );
+}
+
+function entityKey(input: string): string {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}_-]+/gu, "-")
+    .replace(/_+/gu, "-")
+    .replace(/-+/gu, "-")
+    .replace(/^-+|-+$/gu, "");
+}
+
+function metadataPersonNames(metadata: Record<string, unknown> | undefined): Set<string> {
+  const names = new Set<string>();
+  if (!metadata) return names;
+  for (const value of [
+    metadata.speaker,
+    ...(Array.isArray(metadata.participants) ? metadata.participants : []),
+    ...(Array.isArray(metadata.speakerAliases) ? metadata.speakerAliases : []),
+  ]) {
+    if (typeof value !== "string") continue;
+    const key = entityKey(value);
+    if (key) names.add(key);
+  }
+  return names;
+}
+
+function metadataConfirmsNamedPerson(
+  name: string,
+  metadata: Record<string, unknown> | undefined,
+): boolean {
+  return metadataPersonNames(metadata).has(entityKey(name));
+}
+
+function namedPersonToolCandidate(
+  text: string,
+  metadata?: Record<string, unknown> | undefined,
+): MemoryExtractionCandidate | null {
+  const utterance = stripSpeakerPrefix(text);
+  if (isQuestionLike(utterance)) return null;
+  const namePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}`;
+  const match = new RegExp(
+    String.raw`^\s*(${namePattern})\s+uses\s+.{2,80}?\s+for\s+.{2,80}?\s*\.?\s*$`,
+    "u",
+  ).exec(utterance);
+  const name = match?.[1]?.trim();
+  if (!name || !stableNamedPersonSubject(name)) return null;
+  if (!metadataConfirmsNamedPerson(name, metadata)) return null;
+  return {
+    kind: "fact",
+    content: text,
+    confidence: 0.64,
+    predicate: "person.tool",
+    subject: `person:${name}`,
+    subjectAliases: [name],
+    cardinality: "single",
+    metadata: { rule: "named_person_tool" },
+  };
+}
+
 function firstPersonNamedRelation(text: string): boolean {
   const englishNameCore = String.raw`\p{Lu}[\p{L}0-9_-]{0,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{0,30}){0,2}`;
   const englishName = String.raw`(?:${englishNameCore}|"${englishNameCore}"|'${englishNameCore}')`;
@@ -528,7 +601,10 @@ function incompleteProjectFieldFragment(text: string): boolean {
   );
 }
 
-export function extractRuleMemoryCandidates(content: string): MemoryExtractionCandidate[] {
+export function extractRuleMemoryCandidates(
+  content: string,
+  metadata?: Record<string, unknown> | undefined,
+): MemoryExtractionCandidate[] {
   const text = normalize(content);
   if (!text || isPersonRoutedMemory(text)) return [];
 
@@ -565,6 +641,8 @@ export function extractRuleMemoryCandidates(content: string): MemoryExtractionCa
   const attributeCandidate = firstPersonAttributeCandidate(text);
   if (attributeCandidate) return [attributeCandidate];
   if (nonNameCalledRelation(stripSpeakerPrefix(text))) return [];
+  const personToolCandidate = namedPersonToolCandidate(text, metadata);
+  if (personToolCandidate) return [personToolCandidate];
 
   if (/步骤|流程|procedure|workflow|when .* do|每次.*先/u.test(text)) {
     return [

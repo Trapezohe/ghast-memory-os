@@ -2547,6 +2547,35 @@ const speakerAttributeReport = await rulesReportMemory.observeWithReport({
 assert.equal(speakerAttributeReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(speakerAttributeReport.memoryIds.length, 1);
 assert.equal(speakerAttributeReport.worldBeliefIds.length, 1);
+const namedPersonToolReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Alex uses Chronos for travel planning.",
+  metadata: {
+    participants: ["Alex", "Blair", "Mary Jane"],
+  },
+});
+assert.equal(namedPersonToolReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(namedPersonToolReport.memoryIds.length, 1);
+assert.equal(namedPersonToolReport.worldBeliefIds.length, 1);
+assert.equal(
+  namedPersonToolReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.metadata?.rule,
+  "named_person_tool",
+);
+const secondNamedPersonToolReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Mary Jane uses Helio for travel planning.",
+  metadata: {
+    participants: ["Alex", "Blair", "Mary Jane"],
+  },
+});
+assert.equal(secondNamedPersonToolReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(secondNamedPersonToolReport.memoryIds.length, 1);
+assert.equal(secondNamedPersonToolReport.worldBeliefIds.length, 1);
 const namedRelationReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -2620,6 +2649,36 @@ try {
     | undefined;
   assert.equal(speakerAttributeBelief?.subject, "person:blair");
   assert.equal(speakerAttributeBelief?.predicate, "user.attribute");
+  const namedPersonToolBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(namedPersonToolReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string }
+    | undefined;
+  assert.equal(namedPersonToolBelief?.subject, "person:alex");
+  assert.equal(namedPersonToolBelief?.predicate, "person.tool");
+  const namedPersonToolMemory = speakerAttributeDb
+    .prepare(
+      `SELECT kind
+         FROM gmos_memories
+        WHERE id = ?`,
+    )
+    .get(namedPersonToolReport.memoryIds[0]!) as { kind: string } | undefined;
+  assert.equal(namedPersonToolMemory?.kind, "fact");
+  const secondNamedPersonToolBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(secondNamedPersonToolReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string }
+    | undefined;
+  assert.equal(secondNamedPersonToolBelief?.subject, "person:mary-jane");
+  assert.equal(secondNamedPersonToolBelief?.predicate, "person.tool");
   const favoritePreferenceBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate
@@ -2673,6 +2732,14 @@ for (const transientStatement of [
   "我的孩子叫小明去学校。",
   "我的儿子叫小明写作业。",
   "我的宠物叫小黑去洗澡。",
+  "Team Atlas uses Chronos for travel planning.",
+  "Support Group uses Chronos for travel planning.",
+  "Note uses VectorPad for travel planning.",
+  "Who uses Chronos for travel planning?",
+  "Nora uses Aster for travel planning.",
+  "Chrome uses Keychain for credential storage.",
+  "OpenAI uses Azure for some workloads.",
+  "GitHub uses Actions for CI.",
 ]) {
   const transientReport = await rulesReportMemory.observeWithReport({
     type: "conversation.message",
@@ -2684,6 +2751,22 @@ for (const transientStatement of [
   assert.equal(transientReport.memoryIds.length, 0);
   assert.equal(transientReport.worldBeliefIds.length, 0);
 }
+const namedPersonToolReconstruction = await rulesReportMemory.reconstructContext({
+  profileId: "rules_report",
+  query: "Which travel planning tool belongs to Alex?",
+  maxSteps: 4,
+  maxBranch: 3,
+  maxMemories: 4,
+});
+assert.match(namedPersonToolReconstruction.contextBlock, /Chronos/);
+assert.doesNotMatch(namedPersonToolReconstruction.contextBlock, /Helio/);
+assert.doesNotMatch(namedPersonToolReconstruction.contextBlock, /Meridian/);
+const multiwordNamedPersonPrepared = await rulesReportMemory.prepareTurn({
+  profileId: "rules_report",
+  messages: [{ role: "user", content: "Which travel planning tool belongs to Mary Jane?" }],
+});
+assert.match(multiwordNamedPersonPrepared.contextBlock, /Helio/);
+assert.doesNotMatch(multiwordNamedPersonPrepared.contextBlock, /Chronos/);
 const defaultDurableObservationMatches = await rulesReportMemory.search({
   profileId: "rules_report",
   query: "Caroline support group",

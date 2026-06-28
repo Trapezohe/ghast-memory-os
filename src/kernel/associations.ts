@@ -170,6 +170,14 @@ function entityAliases(metadata: Record<string, unknown>): string[] {
   return metadataStringArray(entity as Record<string, unknown>, "aliases");
 }
 
+function entitySubjectCues(metadata: Record<string, unknown>): string[] {
+  const predicate = normalizedMetadataValue(metadata, "predicate") ?? "";
+  if (!predicate.startsWith("person.")) return [];
+  const subject = normalizedMetadataValue(metadata, "subject");
+  const subjectValue = subject?.match(/^person\s*[:/]\s*(.+)$/iu)?.[1] ?? subject ?? "";
+  return unique([subjectValue, ...metadataStringArray(metadata, "subjectAliases")]);
+}
+
 function calendarDateCue(value: string): string | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(value.trim());
   if (!match) return null;
@@ -216,11 +224,11 @@ function metadataTemporalCues(metadata: Record<string, unknown>): string[] {
 
 export function sourceMetadataEntityCues(metadata: Record<string, unknown>): string[] {
   const sourceMetadata = metadata.sourceMetadata;
-  if (!sourceMetadata || typeof sourceMetadata !== "object" || Array.isArray(sourceMetadata)) {
-    return [];
-  }
+  const subjectCues = entitySubjectCues(metadata);
+  if (!sourceMetadata || typeof sourceMetadata !== "object" || Array.isArray(sourceMetadata)) return subjectCues;
   const record = sourceMetadata as Record<string, unknown>;
   return unique([
+    ...subjectCues,
     normalizedMetadataValue(record, "speaker") ?? "",
     ...metadataStringArray(record, "speakerAliases"),
   ]);

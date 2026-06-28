@@ -565,7 +565,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         profileId,
         event,
         evidence,
-        ruleCandidates: extractRuleMemoryCandidates(event.content),
+        ruleCandidates: extractRuleMemoryCandidates(event.content, eventMetadata),
       },
       fallbackToRules: options.extraction?.fallbackToRules,
       minConfidence: options.extraction?.minConfidence,
@@ -592,6 +592,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           ...(Object.keys(eventMetadata).length > 0 ? { sourceMetadata: eventMetadata } : {}),
           actionPolicyKind: candidate.actionPolicyKind,
           predicate: candidate.predicate,
+          ...(candidate.subject ? { subject: candidate.subject } : {}),
+          ...(candidate.subjectAliases ? { subjectAliases: candidate.subjectAliases } : {}),
         },
         createdAt: event.createdAt,
       });
