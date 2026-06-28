@@ -842,6 +842,12 @@ try {
     true,
   );
   assert.equal(
+    projectBeliefs.find(
+      (belief) => belief.predicate === "project.owner" && belief.status === "active",
+    )?.object,
+    "DeltaTeam",
+  );
+  assert.equal(
     projectBeliefs.some(
       (belief) =>
         belief.predicate === "project.owner" &&
@@ -876,6 +882,12 @@ try {
         belief.object.includes("Yellow"),
     ),
     true,
+  );
+  assert.equal(
+    projectBeliefs.find(
+      (belief) => belief.predicate === "project.status" && belief.status === "active",
+    )?.object,
+    "Yellow",
   );
   assert.equal(
     projectBeliefs.some(
@@ -920,6 +932,12 @@ try {
         belief.object.includes("SigmaTeam"),
     ),
     true,
+  );
+  assert.equal(
+    chineseProjectBeliefs.find(
+      (belief) => belief.predicate === "project.owner" && belief.status === "active",
+    )?.object,
+    "SigmaTeam",
   );
   assert.equal(
     chineseProjectBeliefs.some(
@@ -2059,6 +2077,7 @@ const llmExtractorMemory = createMemoryOS({
                         subject: "Project Mira",
                         subjectAliases: ["Mira", "Mira rollout", "StarlingAlias"],
                         content: "Mira project current blocker is rollout audit.",
+                        object: "rollout audit",
                         confidence: 0.89,
                         predicate: "project.state",
                         eventTime: "2026-06-20",
@@ -2164,13 +2183,16 @@ const llmExtractorDb = new Database(path.join(tmp, "llm-extractor.db"), { readon
 try {
   const llmProjectBeliefRow = llmExtractorDb
     .prepare(
-      `SELECT metadata_json
+      `SELECT object, metadata_json
        FROM gmos_world_beliefs
        WHERE profile_id = ? AND source_memory_id = ?
        ORDER BY created_at DESC
        LIMIT 1`,
     )
-    .get("llm_extractor", llmProjectMemory?.id ?? "") as { metadata_json: string } | undefined;
+    .get("llm_extractor", llmProjectMemory?.id ?? "") as
+    | { object: string; metadata_json: string }
+    | undefined;
+  assert.equal(llmProjectBeliefRow?.object, "rollout audit");
   const llmProjectBeliefMetadata = JSON.parse(
     llmProjectBeliefRow?.metadata_json ?? "{}",
   ) as Record<string, unknown>;
@@ -2490,6 +2512,14 @@ const unsafeExtractorMemory = createMemoryOS({
       subjectAliases: ["sk-customaliassecret1234567890"],
     },
     {
+      kind: "project",
+      content: "Custom extractor leaked secret-like object field.",
+      confidence: 0.99,
+      predicate: "project.state",
+      subject: "Public object project",
+      object: "sk-customobjectsecret1234567890",
+    },
+    {
       kind: "fact",
       content: "PERSON:Alice: likes private side-channel memory.",
       confidence: 0.99,
@@ -2521,12 +2551,21 @@ assert.deepEqual(
     .filter((decision) => decision.decision === "rejected")
     .map((decision) => decision.reason)
     .sort(),
-  ["invalid_kind", "person_kind", "person_routed", "secret_like", "secret_like", "secret_like"],
+  [
+    "invalid_kind",
+    "person_kind",
+    "person_routed",
+    "secret_like",
+    "secret_like",
+    "secret_like",
+    "secret_like",
+  ],
 );
 assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customextractorsecret"), false);
 assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customsubjectsecret"), false);
 assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customtemporalsecret"), false);
 assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customaliassecret"), false);
+assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customobjectsecret"), false);
 assert.equal(
   (
     await unsafeExtractorMemory.search({

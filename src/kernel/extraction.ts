@@ -92,6 +92,7 @@ function snapshotCandidate(candidate: unknown): MemoryExtractionCandidateSnapsho
     ...(typeof record.predicate === "string" ? { predicate: publicString(record.predicate) } : {}),
     ...(typeof record.subject === "string" ? { subject: publicString(record.subject) } : {}),
     ...(subjectAliases ? { subjectAliases } : {}),
+    ...(typeof record.object === "string" ? { object: publicString(record.object) } : {}),
     ...(typeof record.eventTime === "string" ? { eventTime: publicString(record.eventTime) } : {}),
     ...(typeof record.validFrom === "string" ? { validFrom: publicString(record.validFrom) } : {}),
     ...(typeof record.validTo === "string" ? { validTo: publicString(record.validTo) } : {}),
@@ -131,6 +132,7 @@ function hasSecretLikeAuxiliaryField(candidate: MemoryExtractionCandidate): bool
     candidate.predicate,
     candidate.subject,
     ...(normalizedStringArray((candidate as { subjectAliases?: unknown }).subjectAliases) ?? []),
+    candidate.object,
     candidate.eventTime,
     candidate.validFrom,
     candidate.validTo,
@@ -173,16 +175,19 @@ function normalizeCandidate(
   if (!allowedCardinality(candidate.cardinality)) return { reason: "invalid_kind" };
   const confidence = boundedConfidence(candidate.confidence, 0);
   if (confidence < options.minConfidence) return { reason: "low_confidence" };
+  const object = typeof candidate.object === "string" ? normalize(candidate.object) : undefined;
   const subjectAliases = normalizedStringArray(
     (candidate as { subjectAliases?: unknown }).subjectAliases,
   );
   const candidateWithoutAliases = { ...candidate };
   delete (candidateWithoutAliases as { subjectAliases?: unknown }).subjectAliases;
+  delete (candidateWithoutAliases as { object?: unknown }).object;
   return {
     candidate: {
       ...candidateWithoutAliases,
       content,
       confidence,
+      ...(object ? { object } : {}),
       ...(subjectAliases ? { subjectAliases } : {}),
       metadata: mergeExplicitTemporalValidityMetadata(
         content,
@@ -506,7 +511,12 @@ function projectFieldPredicate(field: string | undefined): string | null {
         ? "project.deadline"
         : normalized === "contact" || field === "联系人"
           ? "project.contact"
-          : null;
+        : null;
+}
+
+function projectBeliefObject(value: string | undefined): string | undefined {
+  const object = normalize(value ?? "").replace(/[。.!?]+$/u, "").trim();
+  return object || undefined;
 }
 
 function projectCurrentStateCandidate(text: string): MemoryExtractionCandidate | null {
@@ -515,15 +525,16 @@ function projectCurrentStateCandidate(text: string): MemoryExtractionCandidate |
   // Keep the built-in rule narrow: suffix forms like "X project current ..."
   // are too ambiguous to distinguish names from generic descriptions.
   const english = [
-    /^\s*project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+current\s+(owner|status|deadline|contact)\s+(?:is|are|=)\s+.{1,120}?\s*\.?\s*$/iu,
-    /^\s*project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+(owner|status|deadline|contact)\s+(?:is|are|=)\s+.{1,120}?\s*\.?\s*$/iu,
+    /^\s*project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+current\s+(owner|status|deadline|contact)\s+(?:is|are|=)\s+(.{1,120}?)\s*\.?\s*$/iu,
+    /^\s*project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+(owner|status|deadline|contact)\s+(?:is|are|=)\s+(.{1,120}?)\s*\.?\s*$/iu,
   ].map((pattern) => pattern.exec(utterance)).find((match) => match !== null);
   const chinese = [
-    /^\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(?:当前|现在)(负责人|状态|截止日期|联系人)(?:是|为|=)\s*.{1,120}?\s*。?\s*$/u,
-    /^\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(负责人|状态|截止日期|联系人)(?:是|为|=)\s*.{1,120}?\s*。?\s*$/u,
+    /^\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(?:当前|现在)(负责人|状态|截止日期|联系人)(?:是|为|=)\s*(.{1,120}?)\s*。?\s*$/u,
+    /^\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(负责人|状态|截止日期|联系人)(?:是|为|=)\s*(.{1,120}?)\s*。?\s*$/u,
   ].map((pattern) => pattern.exec(utterance)).find((match) => match !== null);
   const project = english?.[1] ?? chinese?.[1];
   const field = english?.[2]?.toLowerCase() ?? chinese?.[2];
+  const object = projectBeliefObject(english?.[3] ?? chinese?.[3]);
   if (!project || isGenericProjectReference(project)) return null;
   const predicate = projectFieldPredicate(field);
   if (!predicate) return null;
@@ -533,6 +544,7 @@ function projectCurrentStateCandidate(text: string): MemoryExtractionCandidate |
     confidence: 0.78,
     predicate,
     subject: `project:${project.trim()}`,
+    ...(object ? { object } : {}),
     cardinality: "single",
     metadata: { rule: "project_current_state" },
   };
@@ -542,15 +554,16 @@ function projectStateChangeCandidate(text: string): MemoryExtractionCandidate | 
   const utterance = stripSpeakerPrefix(text);
   if (isQuestionLike(utterance)) return null;
   const english = [
-    /^\s*(?:on\s+[^,]{4,40},\s*)?(?:(?:i|we|[A-Z][\p{L}\p{N}_-]{0,30})\s+)?(?:moved|changed|updated|set)\s+(?:the\s+)?project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+(?:current\s+)?(owner|status|deadline|contact)\s+(?:to|as|=)\s+.{1,120}?\s*\.?\s*$/iu,
-    /^\s*project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+(?:current\s+)?(owner|status|deadline|contact)\s+(?:changed|moved|updated|set)\s+(?:to|as|=)\s+.{1,120}?\s*\.?\s*$/iu,
+    /^\s*(?:on\s+[^,]{4,40},\s*)?(?:(?:i|we|[A-Z][\p{L}\p{N}_-]{0,30})\s+)?(?:moved|changed|updated|set)\s+(?:the\s+)?project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+(?:current\s+)?(owner|status|deadline|contact)\s+(?:to|as|=)\s+(.{1,120}?)\s*\.?\s*$/iu,
+    /^\s*project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+(?:current\s+)?(owner|status|deadline|contact)\s+(?:changed|moved|updated|set)\s+(?:to|as|=)\s+(.{1,120}?)\s*\.?\s*$/iu,
   ].map((pattern) => pattern.exec(utterance)).find((match) => match !== null);
   const chinese = [
-    /^\s*(?:(?:我|我们)\s*)?(?:把|将)\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(?:当前|现在)?(负责人|状态|截止日期|联系人)(?:改为|改成|更新为|设为|设置为|=)\s*.{1,120}?\s*。?\s*$/u,
-    /^\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(?:当前|现在)?(负责人|状态|截止日期|联系人)(?:改为|改成|更新为|设为|设置为|=)\s*.{1,120}?\s*。?\s*$/u,
+    /^\s*(?:(?:我|我们)\s*)?(?:把|将)\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(?:当前|现在)?(负责人|状态|截止日期|联系人)(?:改为|改成|更新为|设为|设置为|=)\s*(.{1,120}?)\s*。?\s*$/u,
+    /^\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(?:当前|现在)?(负责人|状态|截止日期|联系人)(?:改为|改成|更新为|设为|设置为|=)\s*(.{1,120}?)\s*。?\s*$/u,
   ].map((pattern) => pattern.exec(utterance)).find((match) => match !== null);
   const project = english?.[1] ?? chinese?.[1];
   const predicate = projectFieldPredicate(english?.[2] ?? chinese?.[2]);
+  const object = projectBeliefObject(english?.[3] ?? chinese?.[3]);
   if (!project || !predicate || isGenericProjectReference(project)) return null;
   return {
     kind: "project",
@@ -558,6 +571,7 @@ function projectStateChangeCandidate(text: string): MemoryExtractionCandidate | 
     confidence: 0.78,
     predicate,
     subject: `project:${project.trim()}`,
+    ...(object ? { object } : {}),
     cardinality: "single",
     metadata: { rule: "project_state_change" },
   };

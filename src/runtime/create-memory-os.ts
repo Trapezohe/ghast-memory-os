@@ -616,7 +616,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
             eventMetadata,
           }),
           predicate: candidate.predicate,
-          object: candidate.content,
+          object: candidate.object ?? candidate.content,
           confidence: candidate.confidence,
           sourceMemoryId: memory.id,
           cardinality: candidate.cardinality,
