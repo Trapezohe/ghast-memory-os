@@ -540,6 +540,40 @@ function namedPersonToolCandidate(
   };
 }
 
+function namedPersonPreferenceCandidate(
+  text: string,
+  metadata?: Record<string, unknown> | undefined,
+): MemoryExtractionCandidate | null {
+  const utterance = stripSpeakerPrefix(text);
+  if (isQuestionLike(utterance)) return null;
+  const namePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}`;
+  const directMatch = new RegExp(
+    String.raw`^\s*(${namePattern})\s+(?:prefers?|likes?)\s+(.{1,120}?)\s*\.?\s*$`,
+    "iu",
+  ).exec(utterance);
+  const favoriteMatch = new RegExp(
+    String.raw`^\s*(${namePattern})[’']s\s+(?:favorite|preferred)\s+[\p{L}\p{N}_ -]{1,60}\s+(?:is|=)\s+(.{1,120}?)\s*\.?\s*$`,
+    "iu",
+  ).exec(utterance);
+  const name = (directMatch?.[1] ?? favoriteMatch?.[1])?.trim();
+  if (!name || !stableNamedPersonSubject(name) || !metadataConfirmsNamedPerson(name, metadata)) {
+    return null;
+  }
+  const object = stableToolObject(directMatch?.[2] ?? favoriteMatch?.[2]);
+  if (!object) return null;
+  return {
+    kind: "fact",
+    content: text,
+    confidence: 0.62,
+    predicate: "person.preference",
+    subject: `person:${name}`,
+    subjectAliases: [name],
+    object,
+    cardinality: "multi",
+    metadata: { rule: "named_person_preference" },
+  };
+}
+
 function personCurrentAttributePredicate(field: string | undefined): string | null {
   const normalized = field?.trim().toLowerCase().replace(/[-_]+/gu, " ").replace(/\s+/gu, " ");
   return normalized === "city"
@@ -933,7 +967,11 @@ export function extractRuleMemoryCandidates(
 
   if (isQuestionLike(stripSpeakerPrefix(text))) return [];
 
-  if (/我喜欢|我最喜欢|我偏好|我更喜欢|I prefer|I like|my favorite|my preference is/iu.test(text)) {
+  const preferenceUtterance = stripSpeakerPrefix(text);
+  if (
+    /我喜欢|我最喜欢|我偏好|我更喜欢/u.test(preferenceUtterance) ||
+    /\b(?:I prefer|I like|my favorite|my preference is)\b/iu.test(preferenceUtterance)
+  ) {
     return [
       {
         kind: "preference",
@@ -950,6 +988,8 @@ export function extractRuleMemoryCandidates(
   if (nonNameCalledRelation(stripSpeakerPrefix(text))) return [];
   const personToolCandidate = namedPersonToolCandidate(text, metadata);
   if (personToolCandidate) return [personToolCandidate];
+  const personPreferenceCandidate = namedPersonPreferenceCandidate(text, metadata);
+  if (personPreferenceCandidate) return [personPreferenceCandidate];
   const personCurrentAttributeCandidate = namedPersonCurrentAttributeCandidate(text, metadata);
   if (personCurrentAttributeCandidate) return [personCurrentAttributeCandidate];
   const personEventCandidate = namedPersonEventCandidate(text, metadata);

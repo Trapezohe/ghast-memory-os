@@ -3192,6 +3192,73 @@ const possessiveNamedPersonToolReport = await rulesReportMemory.observeWithRepor
 assert.equal(possessiveNamedPersonToolReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(possessiveNamedPersonToolReport.memoryIds.length, 1);
 assert.equal(possessiveNamedPersonToolReport.worldBeliefIds.length, 1);
+const namedPersonPreferenceReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_person_preference",
+  role: "user",
+  content: "Blair prefers green tea.",
+  metadata: {
+    participants: ["Alex", "Blair", "Mary Jane"],
+  },
+});
+assert.equal(namedPersonPreferenceReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(namedPersonPreferenceReport.memoryIds.length, 1);
+assert.equal(namedPersonPreferenceReport.worldBeliefIds.length, 1);
+assert.equal(
+  namedPersonPreferenceReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.metadata?.rule,
+  "named_person_preference",
+);
+const possessiveNamedPersonPreferenceReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_person_preference",
+  role: "user",
+  content: "Blair's favorite restaurant is Noma.",
+  metadata: {
+    participants: ["Alex", "Blair", "Mary Jane"],
+  },
+});
+assert.equal(possessiveNamedPersonPreferenceReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(possessiveNamedPersonPreferenceReport.memoryIds.length, 1);
+assert.equal(possessiveNamedPersonPreferenceReport.worldBeliefIds.length, 1);
+const unconfirmedNamedPersonPreferenceReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_person_preference",
+  role: "user",
+  content: "Alice prefers chamomile tea.",
+});
+assert.equal(unconfirmedNamedPersonPreferenceReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(unconfirmedNamedPersonPreferenceReport.memoryIds.length, 0);
+assert.equal(unconfirmedNamedPersonPreferenceReport.worldBeliefIds.length, 0);
+for (const content of [
+  "OpenAI prefers Azure for deployments.",
+  "GitHub's favorite deployment target is Actions.",
+  "Blair likes broken.",
+  "Blair prefers unavailable.",
+  "Blair likes not tea.",
+]) {
+  const report = await rulesReportMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: "rules_report_person_preference_negative",
+    role: "user",
+    content,
+    metadata: {
+      participants: ["OpenAI", "GitHub", "Blair"],
+    },
+  });
+  assert.equal(report.extraction?.acceptedCandidateCount, 0);
+  assert.equal(report.memoryIds.length, 0);
+  assert.equal(report.worldBeliefIds.length, 0);
+}
+const namedPersonPreferenceReconstruction = await rulesReportMemory.reconstructContext({
+  profileId: "rules_report_person_preference",
+  query: "What does Blair prefer?",
+  maxSteps: 3,
+  maxBranch: 3,
+  maxMemories: 3,
+});
+assert.match(namedPersonPreferenceReconstruction.contextBlock, /green tea/);
+assert.match(namedPersonPreferenceReconstruction.contextBlock, /Noma/);
 const namedPersonCityParisReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -3523,6 +3590,44 @@ try {
   assert.equal(possessiveNamedPersonToolBelief?.subject, "person:blair");
   assert.equal(possessiveNamedPersonToolBelief?.predicate, "person.tool");
   assert.equal(possessiveNamedPersonToolBelief?.object, "Meridian");
+  const namedPersonPreferenceBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(namedPersonPreferenceReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string }
+    | undefined;
+  assert.equal(namedPersonPreferenceBelief?.subject, "person:blair");
+  assert.equal(namedPersonPreferenceBelief?.predicate, "person.preference");
+  assert.equal(namedPersonPreferenceBelief?.object, "green tea");
+  const possessiveNamedPersonPreferenceBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(possessiveNamedPersonPreferenceReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string }
+    | undefined;
+  assert.equal(possessiveNamedPersonPreferenceBelief?.subject, "person:blair");
+  assert.equal(possessiveNamedPersonPreferenceBelief?.predicate, "person.preference");
+  assert.equal(possessiveNamedPersonPreferenceBelief?.object, "Noma");
+  const namedPersonPreferenceMemory = speakerAttributeDb
+    .prepare(
+      `SELECT kind, metadata_json
+         FROM gmos_memories
+        WHERE id = ?`,
+    )
+    .get(namedPersonPreferenceReport.memoryIds[0]!) as
+    | { kind: string; metadata_json: string }
+    | undefined;
+  assert.equal(namedPersonPreferenceMemory?.kind, "fact");
+  assert.equal(
+    JSON.parse(namedPersonPreferenceMemory?.metadata_json ?? "{}").actionPolicyKind,
+    undefined,
+  );
   const personCityBeliefs = speakerAttributeDb
     .prepare(
       `SELECT status, object
