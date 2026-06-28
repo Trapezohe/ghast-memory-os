@@ -95,6 +95,7 @@ import {
 } from "../src/kernel/safety.js";
 import { observedAtMetadata, relativeEventDateMetadata } from "../src/kernel/temporal-format.js";
 import {
+  explicitEventTimeMetadata,
   explicitTemporalValidityMetadata,
   mergeExplicitTemporalValidityMetadata,
   normalizeExplicitTemporalInstant,
@@ -3101,6 +3102,15 @@ const normalDurableObservationReport = await rulesReportMemory.observeWithReport
 assert.equal(normalDurableObservationReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(normalDurableObservationReport.memoryIds.length, 1);
 assert.equal(normalDurableObservationReport.worldBeliefIds.length, 1);
+const explicitEventTimeObservationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Caroline: I went camping on 2024-06-05.",
+});
+assert.equal(explicitEventTimeObservationReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(explicitEventTimeObservationReport.memoryIds.length, 1);
+assert.equal(explicitEventTimeObservationReport.worldBeliefIds.length, 1);
 const speakerAttributeReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -3595,6 +3605,35 @@ try {
   assert.equal(normalDurableObservationBelief?.subject, "person:caroline");
   assert.equal(normalDurableObservationBelief?.predicate, "user.fact");
   assert.match(normalDurableObservationBelief?.object ?? "", /camping/);
+  const explicitEventTimeMemory = speakerAttributeDb
+    .prepare(
+      `SELECT metadata_json
+         FROM gmos_memories
+        WHERE id = ?`,
+    )
+    .get(explicitEventTimeObservationReport.memoryIds[0]!) as
+    | { metadata_json: string }
+    | undefined;
+  const explicitEventTimeMemoryMetadata = JSON.parse(
+    explicitEventTimeMemory?.metadata_json ?? "{}",
+  ) as Record<string, unknown>;
+  assert.equal(explicitEventTimeMemoryMetadata.eventTime, "2024-06-05T00:00:00.000Z");
+  const explicitEventTimeAssociation = speakerAttributeDb
+    .prepare(
+      `SELECT cue_kind
+         FROM gmos_associations
+        WHERE profile_id = ?
+          AND target_id = ?
+          AND cue = ?`,
+    )
+    .get(
+      "rules_report",
+      explicitEventTimeObservationReport.memoryIds[0]!,
+      "2024-06-05t00:00:00.000z",
+    ) as
+    | { cue_kind: string }
+    | undefined;
+  assert.equal(explicitEventTimeAssociation?.cue_kind, "temporal");
   const favoritePreferenceBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate
@@ -3753,6 +3792,14 @@ assert.equal(
   normalDurableObservationReconstruction.paths.some((path) => path.targetType === "world_belief"),
   true,
 );
+const explicitEventTimeReconstruction = await rulesReportMemory.reconstructContext({
+  profileId: "rules_report",
+  query: "What happened on 2024-06-05?",
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 6,
+});
+assert.match(explicitEventTimeReconstruction.contextBlock, /camping/);
 const multiwordNamedPersonPrepared = await rulesReportMemory.prepareTurn({
   profileId: "rules_report",
   messages: [{ role: "user", content: "Which travel planning tool belongs to Mary Jane?" }],
@@ -6222,6 +6269,18 @@ assert.deepEqual(relativeEventDateMetadata("I went to the archive yesterday.", "
 assert.deepEqual(relativeEventDateMetadata("I went to the archive yesterday.", "31 February, 2023"), {});
 assert.deepEqual(relativeEventDateMetadata("I went yesterday and today.", "2023-05-08T13:56:00.000Z"), {});
 assert.deepEqual(relativeEventDateMetadata("I may go next week.", "2023-05-08T13:56:00.000Z"), {});
+assert.deepEqual(explicitEventTimeMetadata("On 2024-06-05, I went camping."), {
+  eventTime: "2024-06-05T00:00:00.000Z",
+});
+assert.deepEqual(explicitEventTimeMetadata("I went camping on 2024-06-05."), {
+  eventTime: "2024-06-05T00:00:00.000Z",
+});
+assert.deepEqual(explicitEventTimeMetadata("我在2024-06-05去了露营。"), {
+  eventTime: "2024-06-05T00:00:00.000Z",
+});
+assert.deepEqual(explicitEventTimeMetadata("valid from 2024-06-05 to 2024-07-01"), {});
+assert.deepEqual(explicitEventTimeMetadata("until 2024-06-05"), {});
+assert.deepEqual(explicitEventTimeMetadata("on 2024-02-31 I went camping"), {});
 assert.deepEqual(
   explicitTemporalValidityMetadata("valid from 2026-01-01 to 2026-07-01"),
   {

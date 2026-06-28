@@ -17,6 +17,7 @@ import {
 } from "./safety.js";
 import { relativeEventDateMetadata } from "./temporal-format.js";
 import {
+  explicitEventTimeMetadata,
   mergeExplicitTemporalValidityMetadata,
   normalizeExplicitTemporalInstant,
 } from "./temporal-validity.js";
@@ -198,6 +199,7 @@ function normalizeCandidate(
         content,
         {
           ...relativeEventDateMetadata(content, options.createdAt),
+          ...explicitEventTimeMetadata(content),
           ...sanitizePublicPayloadRecord({
             ...(candidate.metadata ?? {}),
             ...(source ? { source } : {}),

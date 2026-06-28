@@ -1,6 +1,7 @@
 const DATE_VALUE =
   String.raw`\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:?\d{2}))?`;
 const DATE_OR_INSTANT = `${DATE_VALUE}(?![\\p{L}\\p{N}_-])`;
+const DATE_OR_INSTANT_BEFORE_HAN = `${DATE_VALUE}(?=\\p{Script=Han}|[,.，。:：;；]|\\s|$)`;
 
 function isValidCalendarDate(year: number, month: number, day: number): boolean {
   const date = new Date(Date.UTC(year, month - 1, day));
@@ -47,6 +48,29 @@ function firstMatch(text: string, patterns: RegExp[]): string | null {
 
 function hasAny(metadata: Record<string, unknown>, keys: string[]): boolean {
   return keys.some((key) => typeof metadata[key] === "string" && String(metadata[key]).trim());
+}
+
+function explicitEventTimeContextIsValidity(text: string, index: number, length: number): boolean {
+  const window = text.slice(Math.max(0, index - 28), Math.min(text.length, index + length + 28));
+  return /\b(?:valid|active|effective|expires?|until|through|validity)\b|(?:有效|到期|截止|直到)/iu.test(
+    window,
+  );
+}
+
+export function explicitEventTimeMetadata(content: string): Record<string, string> {
+  const patterns = [
+    new RegExp(String.raw`^\s*(?:on|at)\s+(${DATE_OR_INSTANT})(?:[,.，。:：;；]|\s|$)`, "iu"),
+    new RegExp(String.raw`\b(?:on|at)\s+(${DATE_OR_INSTANT})(?:[,.，。:：;；]|\s|$)`, "iu"),
+    new RegExp(String.raw`(?:在|于)\s*(${DATE_OR_INSTANT_BEFORE_HAN})`, "u"),
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(content);
+    const value = match?.[1];
+    if (!value || explicitEventTimeContextIsValidity(content, match.index, match[0].length)) continue;
+    const eventTime = normalizeExplicitTemporalInstant(value);
+    if (eventTime) return { eventTime };
+  }
+  return {};
 }
 
 export function explicitTemporalValidityMetadata(content: string): Record<string, string> {
