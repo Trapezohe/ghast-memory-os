@@ -6278,8 +6278,14 @@ assert.deepEqual(explicitEventTimeMetadata("I went camping on 2024-06-05."), {
 assert.deepEqual(explicitEventTimeMetadata("我在2024-06-05去了露营。"), {
   eventTime: "2024-06-05T00:00:00.000Z",
 });
+assert.deepEqual(explicitEventTimeMetadata("I renewed the expired token on 2024-06-05."), {
+  eventTime: "2024-06-05T00:00:00.000Z",
+});
 assert.deepEqual(explicitEventTimeMetadata("valid from 2024-06-05 to 2024-07-01"), {});
 assert.deepEqual(explicitEventTimeMetadata("until 2024-06-05"), {});
+assert.deepEqual(explicitEventTimeMetadata("expires on 2024-06-05"), {});
+assert.deepEqual(explicitEventTimeMetadata("expired on 2024-06-05"), {});
+assert.deepEqual(explicitEventTimeMetadata("expiration date on 2024-06-05"), {});
 assert.deepEqual(explicitEventTimeMetadata("on 2024-02-31 I went camping"), {});
 assert.deepEqual(
   explicitTemporalValidityMetadata("valid from 2026-01-01 to 2026-07-01"),
@@ -6296,6 +6302,12 @@ assert.deepEqual(explicitTemporalValidityMetadata("until 2026-07-011"), {});
 assert.deepEqual(explicitTemporalValidityMetadata("until 2026-07-01T00:00:00Zabc"), {});
 assert.deepEqual(explicitTemporalValidityMetadata("until 2026-07-01."), {
   validTo: "2026-07-01T00:00:00.000Z",
+});
+assert.deepEqual(explicitTemporalValidityMetadata("expired on 2024-06-05"), {
+  validTo: "2024-06-05T00:00:00.000Z",
+});
+assert.deepEqual(explicitTemporalValidityMetadata("expiration date on 2024-06-05"), {
+  validTo: "2024-06-05T00:00:00.000Z",
 });
 assert.equal(normalizeExplicitTemporalInstant("2026-02-31T00:00:00Z"), null);
 assert.equal(normalizeExplicitTemporalInstant("2026-07-01T10:30:00"), null);
