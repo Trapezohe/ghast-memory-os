@@ -2751,6 +2751,24 @@ for (const transientStatement of [
   assert.equal(transientReport.memoryIds.length, 0);
   assert.equal(transientReport.worldBeliefIds.length, 0);
 }
+for (const nonPersonParticipantStatement of [
+  "Chrome uses Keychain for credential storage.",
+  "OpenAI uses Azure for some workloads.",
+  "GitHub uses Actions for CI.",
+]) {
+  const nonPersonParticipantReport = await rulesReportMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: "rules_report",
+    role: "user",
+    content: nonPersonParticipantStatement,
+    metadata: {
+      participants: ["Chrome", "OpenAI", "GitHub"],
+    },
+  });
+  assert.equal(nonPersonParticipantReport.extraction?.acceptedCandidateCount, 0);
+  assert.equal(nonPersonParticipantReport.memoryIds.length, 0);
+  assert.equal(nonPersonParticipantReport.worldBeliefIds.length, 0);
+}
 const namedPersonToolReconstruction = await rulesReportMemory.reconstructContext({
   profileId: "rules_report",
   query: "Which travel planning tool belongs to Alex?",

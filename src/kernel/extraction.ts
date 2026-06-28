@@ -300,8 +300,36 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
 }
 
 function stableNamedPersonSubject(name: string): boolean {
-  const normalized = name.trim().toLowerCase();
+  const trimmed = name.trim();
+  const normalized = trimmed.toLowerCase();
   if (!normalized) return false;
+  const nonPersonSingleNames = new Set([
+    "amazon",
+    "anthropic",
+    "apple",
+    "azure",
+    "chrome",
+    "docker",
+    "facebook",
+    "figma",
+    "github",
+    "google",
+    "jira",
+    "kubernetes",
+    "linear",
+    "linux",
+    "meta",
+    "microsoft",
+    "notion",
+    "openai",
+    "postgres",
+    "redis",
+    "slack",
+    "sqlite",
+    "windows",
+  ]);
+  if (nonPersonSingleNames.has(normalized)) return false;
+  if (!/\s/u.test(trimmed) && /\p{Ll}\p{Lu}/u.test(trimmed)) return false;
   if (
     /^(?:project|team|company|org|organization|group|support|note|fact|example|preference|task|ticket|repo|repository|service|system|app|tool|product|model|agent)$/iu.test(
       normalized,
@@ -333,6 +361,7 @@ function metadataPersonNames(metadata: Record<string, unknown> | undefined): Set
     ...(Array.isArray(metadata.speakerAliases) ? metadata.speakerAliases : []),
   ]) {
     if (typeof value !== "string") continue;
+    if (!stableNamedPersonSubject(value)) continue;
     const key = entityKey(value);
     if (key) names.add(key);
   }
