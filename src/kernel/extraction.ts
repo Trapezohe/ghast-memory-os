@@ -271,6 +271,15 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
       metadata: { rule: "first_person_attribute" },
     };
   }
+  if (firstPersonNamedRelation(utterance)) {
+    return {
+      kind: "fact",
+      content: text,
+      confidence: 0.66,
+      predicate: "user.attribute",
+      metadata: { rule: "first_person_named_relation" },
+    };
+  }
   const englishAttribute = /^\s*my\s+([\p{L}\p{N} _-]{2,80}?)\s+(?:is|are)\s+.{1,80}/iu.exec(
     utterance,
   );
@@ -288,6 +297,39 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
     };
   }
   return null;
+}
+
+function firstPersonNamedRelation(text: string): boolean {
+  const englishNameCore = String.raw`\p{Lu}[\p{L}0-9_-]{0,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{0,30}){0,2}`;
+  const englishName = String.raw`(?:${englishNameCore}|"${englishNameCore}"|'${englishNameCore}')`;
+  const chineseExplicitName = String.raw`(?:[\p{Script=Han}]{1,6}|[A-Z][A-Za-z0-9_-]{0,30})`;
+  const latinName = String.raw`[A-Z][A-Za-z0-9_-]{0,30}`;
+  return (
+    new RegExp(
+      String.raw`^\s*[Mm]y\s+(?:dog|cat|pet|daughter|son|child|kid|partner|spouse|wife|husband)(?:'s)?\s+(?:[Nn]ame\s+[Ii]s|[Ii]s\s+[Nn]amed|[Ii]s\s+[Cc]alled)\s+${englishName}\s*[.!?]?\s*$`,
+      "u",
+    ).test(text) ||
+    new RegExp(
+      String.raw`^\s*我的\s*(?:狗|猫|宠物|女儿|儿子|孩子|伴侣|配偶|妻子|丈夫)\s*(?:名叫|名字是|姓名是)\s*${chineseExplicitName}\s*[。.!?]?\s*$`,
+      "u",
+    ).test(text) ||
+    new RegExp(
+      String.raw`^\s*我的\s*(?:狗|猫|宠物|女儿|儿子|孩子|伴侣|配偶|妻子|丈夫)\s*叫\s*${latinName}\s*[。.!?]?\s*$`,
+      "u",
+    ).test(
+      text,
+    )
+  );
+}
+
+function nonNameCalledRelation(text: string): boolean {
+  if (firstPersonNamedRelation(text)) return false;
+  return (
+    /^\s*my\s+(?:dog|cat|pet|daughter|son|child|kid|partner|spouse|wife|husband)(?:'s)?\s+is\s+called\b/iu.test(
+      text,
+    ) ||
+    /^\s*我的\s*(?:狗|猫|宠物|女儿|儿子|孩子|伴侣|配偶|妻子|丈夫)\s*叫/u.test(text)
+  );
 }
 
 function stableFirstPersonAttributeLabel(label: string): boolean {
@@ -418,6 +460,7 @@ export function extractRuleMemoryCandidates(content: string): MemoryExtractionCa
 
   const attributeCandidate = firstPersonAttributeCandidate(text);
   if (attributeCandidate) return [attributeCandidate];
+  if (nonNameCalledRelation(stripSpeakerPrefix(text))) return [];
 
   if (/步骤|流程|procedure|workflow|when .* do|每次.*先/u.test(text)) {
     return [

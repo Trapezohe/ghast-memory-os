@@ -2303,6 +2303,66 @@ const speakerAttributeReport = await rulesReportMemory.observeWithReport({
 assert.equal(speakerAttributeReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(speakerAttributeReport.memoryIds.length, 1);
 assert.equal(speakerAttributeReport.worldBeliefIds.length, 1);
+const namedRelationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Casey: My cat is named Luna.",
+  metadata: {
+    speaker: "Casey",
+    participants: ["Casey", "Drew"],
+  },
+});
+assert.equal(namedRelationReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(namedRelationReport.memoryIds.length, 1);
+assert.equal(namedRelationReport.worldBeliefIds.length, 1);
+assert.equal(
+  namedRelationReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.metadata?.rule,
+  "first_person_named_relation",
+);
+const quotedNamedRelationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "My cat is called \"Luna\".",
+});
+assert.equal(quotedNamedRelationReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(quotedNamedRelationReport.memoryIds.length, 1);
+assert.equal(quotedNamedRelationReport.worldBeliefIds.length, 1);
+assert.equal(
+  quotedNamedRelationReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.metadata?.rule,
+  "first_person_named_relation",
+);
+const chineseNamedRelationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "我的狗叫Max。",
+});
+assert.equal(chineseNamedRelationReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(chineseNamedRelationReport.memoryIds.length, 1);
+assert.equal(chineseNamedRelationReport.worldBeliefIds.length, 1);
+assert.equal(
+  chineseNamedRelationReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.metadata?.rule,
+  "first_person_named_relation",
+);
+const chineseExplicitNamedRelationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "我的猫名叫小白。",
+});
+assert.equal(chineseExplicitNamedRelationReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(chineseExplicitNamedRelationReport.memoryIds.length, 1);
+assert.equal(chineseExplicitNamedRelationReport.worldBeliefIds.length, 1);
+assert.equal(
+  chineseExplicitNamedRelationReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.metadata?.rule,
+  "first_person_named_relation",
+);
 const speakerAttributeDb = new Database(rulesReportPath, { readonly: true });
 try {
   const speakerAttributeBelief = speakerAttributeDb
@@ -2327,6 +2387,27 @@ try {
     | undefined;
   assert.equal(favoritePreferenceBelief?.subject, "person:casey");
   assert.equal(favoritePreferenceBelief?.predicate, "user.preference");
+  const namedRelationBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(namedRelationReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string }
+    | undefined;
+  assert.equal(namedRelationBelief?.subject, "person:casey");
+  assert.equal(namedRelationBelief?.predicate, "user.attribute");
+  const chineseNamedRelationBelief = speakerAttributeDb
+    .prepare(
+      `SELECT predicate
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(chineseNamedRelationReport.worldBeliefIds[0]!) as
+    | { predicate: string }
+    | undefined;
+  assert.equal(chineseNamedRelationBelief?.predicate, "user.attribute");
 } finally {
   speakerAttributeDb.close();
 }
@@ -2335,6 +2416,19 @@ for (const transientStatement of [
   "My guess is that the API is down.",
   "My current concern is whether tests pass.",
   "What is my favorite restaurant?",
+  "What is my cat named?",
+  "My cat is hungry.",
+  "My cat is called \"happy\".",
+  "My wife is called into meetings often.",
+  "My child is called lazy at school.",
+  "我的狗叫得很大声。",
+  "我的丈夫叫我别担心。",
+  "我的狗叫了。",
+  "我的孩子叫疼。",
+  "我的妻子叫医生。",
+  "我的孩子叫小明去学校。",
+  "我的儿子叫小明写作业。",
+  "我的宠物叫小黑去洗澡。",
 ]) {
   const transientReport = await rulesReportMemory.observeWithReport({
     type: "conversation.message",
