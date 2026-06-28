@@ -556,6 +556,37 @@ const ANSWER_MONTHS: Record<string, string> = {
   december: "12",
 };
 
+const ANSWER_FULL_MONTHS: Record<string, string> = {
+  january: "01",
+  february: "02",
+  march: "03",
+  april: "04",
+  may: "05",
+  june: "06",
+  july: "07",
+  august: "08",
+  september: "09",
+  october: "10",
+  november: "11",
+  december: "12",
+};
+
+function ordinalSuffixMatchesDay(day: string, suffix: string): boolean {
+  const dayNumber = Number(day);
+  const teen = dayNumber % 100;
+  const expected =
+    teen >= 11 && teen <= 13
+      ? "th"
+      : dayNumber % 10 === 1
+        ? "st"
+        : dayNumber % 10 === 2
+          ? "nd"
+          : dayNumber % 10 === 3
+            ? "rd"
+            : "th";
+  return suffix.toLowerCase() === expected;
+}
+
 function calendarDateKey(year: string, month: string, day: string): string | null {
   const yearNumber = Number(year);
   const monthNumber = Number(month);
@@ -595,6 +626,26 @@ function dateAnswerMatches(value: string): DateAnswerMatch[] {
   for (const match of value.matchAll(/\b([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})\b/gu)) {
     const month = ANSWER_MONTHS[match[1]!.toLowerCase()];
     const key = month ? calendarDateKey(match[3]!, month, match[2]!) : null;
+    if (key && match.index !== undefined) {
+      matches.push({ key, start: match.index, end: match.index + match[0].length });
+    }
+  }
+  for (const match of value.matchAll(/\b(\d{1,2})(st|nd|rd|th)\s+([A-Za-z]+),?\s+(\d{4})\b/giu)) {
+    const month = ANSWER_FULL_MONTHS[match[3]!.toLowerCase()];
+    const key =
+      month && ordinalSuffixMatchesDay(match[1]!, match[2]!)
+        ? calendarDateKey(match[4]!, month, match[1]!)
+        : null;
+    if (key && match.index !== undefined) {
+      matches.push({ key, start: match.index, end: match.index + match[0].length });
+    }
+  }
+  for (const match of value.matchAll(/\b([A-Za-z]+)\s+(\d{1,2})(st|nd|rd|th),?\s+(\d{4})\b/giu)) {
+    const month = ANSWER_FULL_MONTHS[match[1]!.toLowerCase()];
+    const key =
+      month && ordinalSuffixMatchesDay(match[2]!, match[3]!)
+        ? calendarDateKey(match[4]!, month, match[2]!)
+        : null;
     if (key && match.index !== undefined) {
       matches.push({ key, start: match.index, end: match.index + match[0].length });
     }
