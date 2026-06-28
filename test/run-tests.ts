@@ -617,6 +617,14 @@ const projectOwnerBetaReport = await projectRuleMemory.observeWithReport({
 });
 assert.equal(projectOwnerBetaReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(projectOwnerBetaReport.worldBeliefIds.length, 1);
+const projectOwnerGammaReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_rule",
+  role: "user",
+  content: "Project Atlas owner is GammaTeam.",
+});
+assert.equal(projectOwnerGammaReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(projectOwnerGammaReport.worldBeliefIds.length, 1);
 const projectStatusReport = await projectRuleMemory.observeWithReport({
   type: "conversation.message",
   profileId: "project_rule",
@@ -641,6 +649,14 @@ const chineseProjectOwnerReport = await projectRuleMemory.observeWithReport({
 });
 assert.equal(chineseProjectOwnerReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(chineseProjectOwnerReport.worldBeliefIds.length, 1);
+const chineseProjectOwnerShorthandReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_rule",
+  role: "user",
+  content: "项目星河负责人是 OmegaTeam。",
+});
+assert.equal(chineseProjectOwnerShorthandReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(chineseProjectOwnerShorthandReport.worldBeliefIds.length, 1);
 const shortChineseProjectOwnerReport = await projectRuleMemory.observeWithReport({
   type: "conversation.message",
   profileId: "project_rule",
@@ -681,6 +697,17 @@ for (const transientProjectLikeStatement of [
   "His project current status is blocked.",
   "Its project current deadline is Friday.",
   "Some project current status is blocked.",
+  "The project owner is AlphaTeam.",
+  "Our project status is blocked.",
+  "Atlas project owner is GammaTeam.",
+  "X project owner is Alice.",
+  "Project owner is Alice.",
+  "Project New owner is Alice.",
+  "Project Current status is blocked.",
+  "Project New owner",
+  "Project owner",
+  "Atlas project owner",
+  "My Atlas project owner until",
   "Another project current contact is Sam.",
   "A project current owner is Alice.",
   "A new project current status is blocked.",
@@ -708,6 +735,16 @@ for (const transientProjectLikeStatement of [
   "一个项目当前负责人是 Sam。",
   "某个项目当前状态是 blocked。",
   "某项目当前联系人是 Sam。",
+  "这个项目负责人是 Sam。",
+  "我们的项目状态是 blocked。",
+  "星河项目负责人是 GammaTeam。",
+  "甲项目负责人是 Sam。",
+  "项目负责人是 Sam。",
+  "项目新负责人是 Sam。",
+  "项目当前状态是 blocked。",
+  "项目新负责人",
+  "项目负责人",
+  "星河项目负责人",
   "当前项目当前负责人是 Sam。",
   "已有项目当前联系人是 Sam。",
   "其他项目当前状态是 blocked。",
@@ -747,7 +784,7 @@ try {
       (belief) =>
         belief.predicate === "project.owner" &&
         belief.status === "active" &&
-        belief.object.includes("BetaTeam"),
+        belief.object.includes("GammaTeam"),
     ),
     true,
   );
@@ -757,6 +794,15 @@ try {
         belief.predicate === "project.owner" &&
         belief.status === "superseded" &&
         belief.object.includes("AlphaTeam"),
+    ),
+    true,
+  );
+  assert.equal(
+    projectBeliefs.some(
+      (belief) =>
+        belief.predicate === "project.owner" &&
+        belief.status === "superseded" &&
+        belief.object.includes("BetaTeam"),
     ),
     true,
   );
@@ -776,8 +822,8 @@ const projectOwnerReconstruction = await projectRuleMemory.reconstructContext({
   profileId: "project_rule",
   query: "Project Atlas current owner",
 });
-assert.match(projectOwnerReconstruction.contextBlock, /BetaTeam/);
-assert.doesNotMatch(projectOwnerReconstruction.contextBlock, /AlphaTeam/);
+assert.match(projectOwnerReconstruction.contextBlock, /GammaTeam/);
+assert.doesNotMatch(projectOwnerReconstruction.contextBlock, /AlphaTeam|BetaTeam/);
 await projectRuleMemory.close();
 
 await extractorMemory.observe({
