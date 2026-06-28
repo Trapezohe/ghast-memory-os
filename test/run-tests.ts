@@ -10974,6 +10974,46 @@ const locomoHumanSpeakerBenchmark = await runExternalMemoryBenchmark({
 });
 assert.equal(locomoHumanSpeakerBenchmark.pass, true);
 assert.deepEqual(locomoHumanSpeakerBenchmark.cases[0]?.expectedAnyMatched, ["2022"]);
+const locomoSpeakerLabelFixture = JSON.stringify([
+  {
+    sample_id: "locomo-speaker-labels",
+    conversation: {
+      speaker_a: "Alex",
+      speaker_b: "Blair",
+      session_1_date_time: "2026-06-20T09:00:00Z",
+      session_1: [
+        {
+          speaker: "A",
+          text: "Which tool did you choose?",
+        },
+        {
+          speaker: "B",
+          text: "My travel planning tool is Meridian.",
+        },
+      ],
+    },
+    qa: [
+      {
+        question: "Which travel planning tool belongs to Blair?",
+        answer: "Meridian",
+        adversarial_answer: "Alex",
+      },
+    ],
+  },
+]);
+const locomoSpeakerLabelCases = parseLocomoBenchmarkDataset(locomoSpeakerLabelFixture);
+assert.match(locomoSpeakerLabelCases[0]?.events[0]?.content ?? "", /^Alex:/);
+assert.equal(locomoSpeakerLabelCases[0]?.events[0]?.metadata?.speaker, "Alex");
+assert.equal(locomoSpeakerLabelCases[0]?.events[0]?.metadata?.rawSpeakerLabel, "A");
+assert.match(locomoSpeakerLabelCases[0]?.events[1]?.content ?? "", /^Blair:/);
+assert.equal(locomoSpeakerLabelCases[0]?.events[1]?.metadata?.speaker, "Blair");
+assert.equal(locomoSpeakerLabelCases[0]?.events[1]?.metadata?.rawSpeakerLabel, "B");
+const locomoSpeakerLabelBenchmark = await runExternalMemoryBenchmark({
+  cases: locomoSpeakerLabelCases,
+  datasetFormat: "locomo.json",
+});
+assert.equal(locomoSpeakerLabelBenchmark.pass, true);
+assert.deepEqual(locomoSpeakerLabelBenchmark.cases[0]?.expectedAnyMatched, ["Meridian"]);
 const locomoRelativeDateFixture = JSON.stringify([
   {
     sample_id: "locomo-relative-date",

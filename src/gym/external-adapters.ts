@@ -337,6 +337,14 @@ function locomoSessionKeys(conversation: Record<string, unknown>): string[] {
     .sort((a, b) => Number(a.slice("session_".length)) - Number(b.slice("session_".length)));
 }
 
+function locomoSpeakerName(rawSpeaker: string | null, speakerA: string | null, speakerB: string | null): string | null {
+  const raw = rawSpeaker?.trim();
+  if (!raw) return null;
+  if (/^(?:a|speaker[_\s-]*a)$/iu.test(raw)) return speakerA ?? raw;
+  if (/^(?:b|speaker[_\s-]*b)$/iu.test(raw)) return speakerB ?? raw;
+  return raw;
+}
+
 function locomoEvents(row: Record<string, unknown>, sampleId: string): ExternalMemoryBenchmarkEvent[] {
   const conversation = assertRecord(row.conversation, `LoCoMo sample ${sampleId}.conversation`);
   const events: ExternalMemoryBenchmarkEvent[] = [];
@@ -350,7 +358,8 @@ function locomoEvents(row: Record<string, unknown>, sampleId: string): ExternalM
       const record = assertRecord(turn, `LoCoMo sample ${sampleId} ${sessionKey} turn`);
       const content = contentFromTurn(record);
       if (!content) continue;
-      const speaker = stringValue(record.speaker);
+      const rawSpeaker = stringValue(record.speaker);
+      const speaker = locomoSpeakerName(rawSpeaker, speakerA, speakerB);
       const participants = [speakerA, speakerB].filter(
         (entry): entry is string => typeof entry === "string" && entry.length > 0,
       );
@@ -363,6 +372,7 @@ function locomoEvents(row: Record<string, unknown>, sampleId: string): ExternalM
             sampleId,
             sessionKey,
             ...(speaker ? { speaker } : {}),
+            ...(rawSpeaker && rawSpeaker !== speaker ? { rawSpeakerLabel: rawSpeaker } : {}),
             ...(participants.length > 0 ? { participants } : {}),
           },
         }),
