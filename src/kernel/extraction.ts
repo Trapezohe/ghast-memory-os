@@ -318,6 +318,22 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
       metadata: { rule: "first_person_named_relation" },
     };
   }
+  const birthplace = /^\s*I\s+was\s+born\s+in\s+(.{1,80}?)\s*\.?\s*$/iu.exec(utterance);
+  if (birthplace) {
+    const object = projectBeliefObject(birthplace[1]);
+    if (object && !/^(?:not|unknown|none|n\/a)\b/iu.test(object)) {
+      return {
+        kind: "fact",
+        content: text,
+        confidence: 0.66,
+        predicate: "person.birthplace",
+        object,
+        cardinality: "single",
+        metadata: { rule: "first_person_birthplace" },
+      };
+    }
+    return null;
+  }
   const currentAttribute = /^\s*my\s+current\s+(city|location|time\s+zone|timezone|role|title|language)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
     utterance,
   );
@@ -1007,6 +1023,7 @@ export function extractRuleMemoryCandidates(
 
   const attributeCandidate = firstPersonAttributeCandidate(text);
   if (attributeCandidate) return [attributeCandidate];
+  if (/^\s*I\s+was\s+born\s+in\s+(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
   if (nonNameCalledRelation(stripSpeakerPrefix(text))) return [];
   const personToolCandidate = namedPersonToolCandidate(text, metadata);
   if (personToolCandidate) return [personToolCandidate];

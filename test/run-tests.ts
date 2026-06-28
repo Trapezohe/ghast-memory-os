@@ -3158,6 +3158,14 @@ assert.equal(
 assert.equal(extractRuleMemoryCandidates("My hometown is Boston.")[0]?.predicate, "user.attribute");
 assert.equal(extractRuleMemoryCandidates("My major is unknown.").length, 0);
 assert.equal(extractRuleMemoryCandidates("My current city is unknown.").length, 0);
+for (const invalidBirthplace of [
+  "I was born in unknown.",
+  "I was born in not Seattle.",
+  "I was born in none.",
+  "I was born in n/a.",
+]) {
+  assert.equal(extractRuleMemoryCandidates(invalidBirthplace).length, 0);
+}
 const namedPersonToolReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -3468,7 +3476,12 @@ assert.equal(speakerBirthplaceReport.worldBeliefIds.length, 1);
 assert.equal(
   speakerBirthplaceReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
     ?.candidate.predicate,
-  "user.fact",
+  "person.birthplace",
+);
+assert.equal(
+  speakerBirthplaceReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.metadata?.rule,
+  "first_person_birthplace",
 );
 const namedRelationReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
@@ -3704,8 +3717,8 @@ try {
     | { subject: string; predicate: string; object: string }
     | undefined;
   assert.equal(speakerBirthplaceBelief?.subject, "person:rowan");
-  assert.equal(speakerBirthplaceBelief?.predicate, "user.fact");
-  assert.match(speakerBirthplaceBelief?.object ?? "", /Seattle/);
+  assert.equal(speakerBirthplaceBelief?.predicate, "person.birthplace");
+  assert.equal(speakerBirthplaceBelief?.object, "Seattle");
   const durableObservationBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate, object
