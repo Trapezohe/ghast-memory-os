@@ -49,8 +49,8 @@ const failures = [];
 if (report.pass !== true) failures.push("suite pass=false");
 if (report.benchmarkPass !== true) failures.push("benchmarkPass=false");
 if (report.runCount !== 4) failures.push(`runCount=${report.runCount}`);
-if (report.totalCaseCount !== 39) failures.push(`totalCaseCount=${report.totalCaseCount}`);
-if (report.totalPassedCount !== 39) failures.push(`totalPassedCount=${report.totalPassedCount}`);
+if (report.totalCaseCount !== 40) failures.push(`totalCaseCount=${report.totalCaseCount}`);
+if (report.totalPassedCount !== 40) failures.push(`totalPassedCount=${report.totalPassedCount}`);
 if (report.totalFailedCount !== 0) failures.push(`totalFailedCount=${report.totalFailedCount}`);
 if (report.scoreWeighted !== 1) failures.push(`scoreWeighted=${report.scoreWeighted}`);
 
@@ -66,6 +66,7 @@ for (const id of [
   "native-history-recall",
   "native-current-status",
   "native-historical-status",
+  "native-current-contact-suppresses-history",
   "native-speaker-alex-tool",
   "native-speaker-blair-tool",
   "native-speaker-prefixed-first-person-alex",
@@ -94,8 +95,8 @@ if (!budgetIds.has("native-budget-drop-critical-retention")) {
   failures.push("missing budget-drop fixture native-budget-drop-critical-retention");
 }
 
-if (!gmosRun || gmosRun.caseCount !== 33 || gmosRun.pass !== true) {
-  failures.push("curated-gmos run did not pass 33 cases");
+if (!gmosRun || gmosRun.caseCount !== 34 || gmosRun.pass !== true) {
+  failures.push("curated-gmos run did not pass 34 cases");
 }
 if (!budgetRun || budgetRun.caseCount !== 1 || budgetRun.pass !== true) {
   failures.push("budget-drop-mini run did not pass 1 case");

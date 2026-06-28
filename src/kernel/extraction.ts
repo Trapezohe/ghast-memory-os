@@ -661,6 +661,31 @@ function projectStateChangeCandidate(text: string): MemoryExtractionCandidate | 
   };
 }
 
+function projectHistoricalStateCandidate(text: string): MemoryExtractionCandidate | null {
+  const utterance = stripSpeakerPrefix(text);
+  if (isQuestionLike(utterance)) return null;
+  const english = /^\s*project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+(owner|status|deadline|contact)\s+was\s+(.{1,120}?)\s*\.?\s*$/iu.exec(
+    utterance,
+  );
+  const chinese = /^\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(负责人|状态|截止日期|联系人)曾经是\s*(.{1,120}?)\s*。?\s*$/u.exec(
+    utterance,
+  );
+  const project = english?.[1] ?? chinese?.[1];
+  const predicate = projectFieldPredicate(english?.[2] ?? chinese?.[2]);
+  const object = projectBeliefObject(english?.[3] ?? chinese?.[3]);
+  if (!project || !predicate || !object || isGenericProjectReference(project)) return null;
+  return {
+    kind: "project",
+    content: text,
+    confidence: 0.72,
+    predicate,
+    subject: `project:${project.trim()}`,
+    object,
+    cardinality: "single",
+    metadata: { rule: "project_historical_state" },
+  };
+}
+
 function isGenericProjectReference(project: string): boolean {
   const trimmed = project.trim();
   const normalized = trimmed.toLowerCase();
@@ -846,6 +871,8 @@ export function extractRuleMemoryCandidates(
   if (projectStateCandidate) return [projectStateCandidate];
   const projectChangeCandidate = projectStateChangeCandidate(text);
   if (projectChangeCandidate) return [projectChangeCandidate];
+  const projectHistoricalState = projectHistoricalStateCandidate(text);
+  if (projectHistoricalState) return [projectHistoricalState];
   if (unnamedProjectCurrentState(text)) return [];
   if (incompleteProjectFieldFragment(text)) return [];
 

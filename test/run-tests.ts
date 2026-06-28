@@ -667,6 +667,27 @@ const projectContactChangedReport = await projectRuleMemory.observeWithReport({
 });
 assert.equal(projectContactChangedReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(projectContactChangedReport.worldBeliefIds.length, 1);
+const projectHistoricalContactReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_history_rule",
+  role: "user",
+  content: "Project Willow contact was Red Desk.",
+});
+assert.equal(projectHistoricalContactReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(projectHistoricalContactReport.worldBeliefIds.length, 1);
+assert.equal(
+  projectHistoricalContactReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.metadata?.rule,
+  "project_historical_state",
+);
+const projectCurrentContactReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_history_rule",
+  role: "user",
+  content: "Project Willow current contact is Blue Desk.",
+});
+assert.equal(projectCurrentContactReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(projectCurrentContactReport.worldBeliefIds.length, 1);
 const shortProjectOwnerReport = await projectRuleMemory.observeWithReport({
   type: "conversation.message",
   profileId: "project_rule",
@@ -916,6 +937,33 @@ try {
     ),
     true,
   );
+  const willowBeliefs = projectRuleDb
+    .prepare(
+      `SELECT predicate, status, object
+       FROM gmos_world_beliefs
+       WHERE profile_id = 'project_history_rule' AND subject = 'project:willow'
+       ORDER BY status, object`,
+    )
+    .all() as Array<{ predicate: string; status: string; object: string }>;
+  assert.equal(willowBeliefs.filter((belief) => belief.status === "active").length, 1);
+  assert.equal(
+    willowBeliefs.some(
+      (belief) =>
+        belief.predicate === "project.contact" &&
+        belief.status === "active" &&
+        belief.object === "Blue Desk",
+    ),
+    true,
+  );
+  assert.equal(
+    willowBeliefs.some(
+      (belief) =>
+        belief.predicate === "project.contact" &&
+        belief.status === "superseded" &&
+        belief.object === "Red Desk",
+    ),
+    true,
+  );
   const chineseProjectBeliefs = projectRuleDb
     .prepare(
       `SELECT predicate, status, object
@@ -962,6 +1010,18 @@ const projectDeadlineReconstruction = await projectRuleMemory.reconstructContext
   query: "Project Atlas current deadline",
 });
 assert.match(projectDeadlineReconstruction.contextBlock, /Friday/);
+const projectCurrentContactReconstruction = await projectRuleMemory.reconstructContext({
+  profileId: "project_history_rule",
+  query: "What is Project Willow's current contact?",
+});
+assert.match(projectCurrentContactReconstruction.contextBlock, /Blue Desk/);
+assert.doesNotMatch(projectCurrentContactReconstruction.contextBlock, /Red Desk/);
+const projectHistoricalContactReconstruction = await projectRuleMemory.reconstructContext({
+  profileId: "project_history_rule",
+  query: "What was Project Willow's previous contact?",
+  temporalMode: "history",
+});
+assert.match(projectHistoricalContactReconstruction.contextBlock, /Red Desk/);
 await projectRuleMemory.close();
 
 await extractorMemory.observe({
