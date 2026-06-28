@@ -9,6 +9,7 @@ const root = path.resolve(import.meta.dirname, "..");
 const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-consumer-smoke-"));
 const packDir = path.join(tmp, "pack");
 const consumerDir = path.join(tmp, "consumer");
+const npmCacheDir = process.env.npm_config_cache || path.join(os.homedir(), ".npm");
 const isWindows = process.platform === "win32";
 const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
 
@@ -21,7 +22,7 @@ function run(command, args, options = {}) {
     cwd: options.cwd ?? root,
     encoding: "utf8",
     stdio: options.stdio ?? "pipe",
-    env: { ...process.env, npm_config_cache: path.join(tmp, "npm-cache"), ...options.env },
+    env: { ...process.env, npm_config_cache: npmCacheDir, npm_config_prefer_offline: "true", ...options.env },
     shell: options.shell ?? needsWindowsCommandShell(command),
   });
 }

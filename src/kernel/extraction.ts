@@ -712,10 +712,7 @@ export function extractRuleMemoryCandidates(
 
   if (isQuestionLike(stripSpeakerPrefix(text))) return [];
 
-  if (
-    !nonPersonSpeaker &&
-    /我喜欢|我最喜欢|我偏好|我更喜欢|I prefer|I like|my favorite|my preference is/iu.test(text)
-  ) {
+  if (/我喜欢|我最喜欢|我偏好|我更喜欢|I prefer|I like|my favorite|my preference is/iu.test(text)) {
     return [
       {
         kind: "preference",
@@ -727,7 +724,7 @@ export function extractRuleMemoryCandidates(
     ];
   }
 
-  const attributeCandidate = nonPersonSpeaker ? null : firstPersonAttributeCandidate(text);
+  const attributeCandidate = firstPersonAttributeCandidate(text);
   if (attributeCandidate) return [attributeCandidate];
   if (nonNameCalledRelation(stripSpeakerPrefix(text))) return [];
   const personToolCandidate = namedPersonToolCandidate(text, metadata);
@@ -763,7 +760,7 @@ export function extractRuleMemoryCandidates(
     ];
   }
 
-  if (!nonPersonSpeaker && /^我(是|在|有)|我的|my name is|I am|I work|I live/iu.test(text)) {
+  if (/^我(是|在|有)|我的|my name is|I am|I work|I live/iu.test(text)) {
     return [
       {
         kind: "fact",
@@ -774,7 +771,7 @@ export function extractRuleMemoryCandidates(
     ];
   }
 
-  if (!nonPersonSpeaker && likelyDurableObservationFact(text)) {
+  if (likelyDurableObservationFact(text)) {
     return [
       {
         kind: "fact",

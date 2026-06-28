@@ -49,6 +49,7 @@ import {
   summarizeStateBenchResults,
   stateBenchAgentPythonTemplate,
 } from "../src/gym/index.js";
+import { summarizeMemoryScaleLatenciesForTest } from "../src/gym/scale.js";
 import {
   createSqliteMemoryStore,
   parseSqliteProfileBackup,
@@ -2218,6 +2219,22 @@ const llmProjectAliasOnly = await llmExtractorMemory.reconstructContext({
   maxBranch: 6,
 });
 assert.match(llmProjectAliasOnly.contextBlock, /rollout audit/);
+const llmNonPersonSpeakerReport = await llmExtractorMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "llm_extractor",
+  role: "user",
+  content: "OpenAI: I prefer Azure for model routing.",
+});
+assert.equal(llmNonPersonSpeakerReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(llmNonPersonSpeakerReport.extraction?.rejectedCandidateCount, 3);
+assert.equal(
+  llmNonPersonSpeakerReport.extraction?.decisions.filter(
+    (decision) => decision.decision === "rejected" && decision.reason === "non_person_speaker",
+  ).length,
+  2,
+);
+assert.equal(llmNonPersonSpeakerReport.memoryIds.length, 0);
+assert.equal(llmNonPersonSpeakerReport.worldBeliefIds.length, 0);
 await llmExtractorMemory.close();
 
 const suppressRulesStore = createSqliteMemoryStore({ path: path.join(tmp, "suppress-rules.db") });
@@ -9761,6 +9778,19 @@ assert.ok((scale.results[0]?.reconstructedPathCount.p95 ?? 0) > 0);
 assert.match(renderMemoryScaleMarkdown(scale), /gmOS Memory Scale Benchmark/);
 assert.match(renderMemoryScaleMarkdown(scale), /reconstructContext/);
 assert.match(renderMemoryScaleMarkdown(scale), /contextNoHitSearch/);
+const scaleOutlierSummary = summarizeMemoryScaleLatenciesForTest([
+  ...Array.from({ length: 15 }, () => 100),
+  400,
+]);
+assert.equal(scaleOutlierSummary.samples, 16);
+assert.equal(scaleOutlierSummary.p50Ms, 100);
+assert.equal(scaleOutlierSummary.p95Ms, 175);
+assert.equal(scaleOutlierSummary.maxMs, 400);
+const scaleSevereOutlierSummary = summarizeMemoryScaleLatenciesForTest([
+  ...Array.from({ length: 15 }, () => 100),
+  1000,
+]);
+assert.equal(scaleSevereOutlierSummary.p95Ms, 325);
 await assert.rejects(
   () => runMemoryScaleBenchmark({ sizes: [], iterations: 3 }),
   /positive integer size/,

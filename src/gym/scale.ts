@@ -59,11 +59,17 @@ export interface MemoryScaleBenchmarkResult {
 function percentile(values: number[], rate: number): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
-  const index = Math.min(sorted.length - 1, Math.ceil(sorted.length * rate) - 1);
-  return sorted[index] ?? 0;
+  if (sorted.length === 1) return sorted[0] ?? 0;
+  const boundedRate = Math.min(1, Math.max(0, rate));
+  const rank = (sorted.length - 1) * boundedRate;
+  const lowerIndex = Math.floor(rank);
+  const upperIndex = Math.ceil(rank);
+  const lower = sorted[lowerIndex] ?? 0;
+  const upper = sorted[upperIndex] ?? lower;
+  return lower + (upper - lower) * (rank - lowerIndex);
 }
 
-function summarize(values: number[]): LatencySummary {
+export function summarizeMemoryScaleLatenciesForTest(values: number[]): LatencySummary {
   const sum = values.reduce((total, value) => total + value, 0);
   return {
     samples: values.length,
@@ -83,7 +89,7 @@ export async function runMemoryScaleBenchmark(
   } = {},
 ): Promise<MemoryScaleBenchmarkResult> {
   const sizes = options.sizes ?? [100, 1000];
-  const iterations = options.iterations ?? 12;
+  const iterations = options.iterations ?? 16;
   const thresholdP95Ms = options.thresholdP95Ms ?? 250;
   if (
     sizes.length === 0 ||
@@ -170,9 +176,9 @@ export async function runMemoryScaleBenchmark(
     results.push({
       size,
       seedMs,
-      prepareTurn: summarize(prepareTurnLatencies),
-      reconstructContext: summarize(reconstructContextLatencies),
-      contextNoHitSearch: summarize(contextNoHitSearchLatencies),
+      prepareTurn: summarizeMemoryScaleLatenciesForTest(prepareTurnLatencies),
+      reconstructContext: summarizeMemoryScaleLatenciesForTest(reconstructContextLatencies),
+      contextNoHitSearch: summarizeMemoryScaleLatenciesForTest(contextNoHitSearchLatencies),
       promptTokenEstimate: {
         p50: percentile(tokens, 0.5),
         p95: percentile(tokens, 0.95),
