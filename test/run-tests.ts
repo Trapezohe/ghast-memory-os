@@ -688,6 +688,22 @@ const projectCurrentContactReport = await projectRuleMemory.observeWithReport({
 });
 assert.equal(projectCurrentContactReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(projectCurrentContactReport.worldBeliefIds.length, 1);
+const projectPreviousOwnerReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_history_rule",
+  role: "user",
+  content: "Project Cedar previous owner was Alice.",
+});
+assert.equal(projectPreviousOwnerReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(projectPreviousOwnerReport.worldBeliefIds.length, 1);
+const projectCurrentOwnerReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_history_rule",
+  role: "user",
+  content: "Project Cedar current owner is Bob.",
+});
+assert.equal(projectCurrentOwnerReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(projectCurrentOwnerReport.worldBeliefIds.length, 1);
 const shortProjectOwnerReport = await projectRuleMemory.observeWithReport({
   type: "conversation.message",
   profileId: "project_rule",
@@ -964,6 +980,33 @@ try {
     ),
     true,
   );
+  const cedarBeliefs = projectRuleDb
+    .prepare(
+      `SELECT predicate, status, object
+       FROM gmos_world_beliefs
+       WHERE profile_id = 'project_history_rule' AND subject = 'project:cedar'
+       ORDER BY status, object`,
+    )
+    .all() as Array<{ predicate: string; status: string; object: string }>;
+  assert.equal(cedarBeliefs.filter((belief) => belief.status === "active").length, 1);
+  assert.equal(
+    cedarBeliefs.some(
+      (belief) =>
+        belief.predicate === "project.owner" &&
+        belief.status === "active" &&
+        belief.object === "Bob",
+    ),
+    true,
+  );
+  assert.equal(
+    cedarBeliefs.some(
+      (belief) =>
+        belief.predicate === "project.owner" &&
+        belief.status === "superseded" &&
+        belief.object === "Alice",
+    ),
+    true,
+  );
   const chineseProjectBeliefs = projectRuleDb
     .prepare(
       `SELECT predicate, status, object
@@ -1022,6 +1065,18 @@ const projectHistoricalContactReconstruction = await projectRuleMemory.reconstru
   temporalMode: "history",
 });
 assert.match(projectHistoricalContactReconstruction.contextBlock, /Red Desk/);
+const projectCurrentOwnerReconstruction = await projectRuleMemory.reconstructContext({
+  profileId: "project_history_rule",
+  query: "Who is Project Cedar's current owner?",
+});
+assert.match(projectCurrentOwnerReconstruction.contextBlock, /Bob/);
+assert.doesNotMatch(projectCurrentOwnerReconstruction.contextBlock, /Alice/);
+const projectHistoricalOwnerReconstruction = await projectRuleMemory.reconstructContext({
+  profileId: "project_history_rule",
+  query: "Who was Project Cedar's previous owner?",
+  temporalMode: "history",
+});
+assert.match(projectHistoricalOwnerReconstruction.contextBlock, /Alice/);
 await projectRuleMemory.close();
 
 await extractorMemory.observe({

@@ -664,7 +664,7 @@ function projectStateChangeCandidate(text: string): MemoryExtractionCandidate | 
 function projectHistoricalStateCandidate(text: string): MemoryExtractionCandidate | null {
   const utterance = stripSpeakerPrefix(text);
   if (isQuestionLike(utterance)) return null;
-  const english = /^\s*project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+(owner|status|deadline|contact)\s+was\s+(.{1,120}?)\s*\.?\s*$/iu.exec(
+  const english = /^\s*project\s+([\p{L}\p{N}_-][\p{L}\p{N}_ -]{0,80}?)\s+(?:(?:previous|previously|prior|old|former)\s+)?(owner|status|deadline|contact)\s+was\s+(.{1,120}?)\s*\.?\s*$/iu.exec(
     utterance,
   );
   const chinese = /^\s*项目\s*([\p{Script=Han}\p{L}\p{N}_ -]{1,60}?)(负责人|状态|截止日期|联系人)曾经是\s*(.{1,120}?)\s*。?\s*$/u.exec(
