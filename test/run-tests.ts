@@ -633,6 +633,38 @@ const projectStatusReport = await projectRuleMemory.observeWithReport({
 });
 assert.equal(projectStatusReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(projectStatusReport.worldBeliefIds.length, 1);
+const projectOwnerChangedReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_rule",
+  role: "user",
+  content: "Project Atlas owner changed to DeltaTeam.",
+});
+assert.equal(projectOwnerChangedReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(projectOwnerChangedReport.worldBeliefIds.length, 1);
+const projectStatusSetReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_rule",
+  role: "user",
+  content: "Set Project Atlas status to Yellow.",
+});
+assert.equal(projectStatusSetReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(projectStatusSetReport.worldBeliefIds.length, 1);
+const projectDeadlineMovedReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_rule",
+  role: "user",
+  content: "Project Atlas deadline moved to Friday.",
+});
+assert.equal(projectDeadlineMovedReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(projectDeadlineMovedReport.worldBeliefIds.length, 1);
+const projectContactChangedReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_rule",
+  role: "user",
+  content: "Changed Project Atlas contact to Sam.",
+});
+assert.equal(projectContactChangedReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(projectContactChangedReport.worldBeliefIds.length, 1);
 const shortProjectOwnerReport = await projectRuleMemory.observeWithReport({
   type: "conversation.message",
   profileId: "project_rule",
@@ -657,6 +689,14 @@ const chineseProjectOwnerShorthandReport = await projectRuleMemory.observeWithRe
 });
 assert.equal(chineseProjectOwnerShorthandReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(chineseProjectOwnerShorthandReport.worldBeliefIds.length, 1);
+const chineseProjectOwnerChangedReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_rule",
+  role: "user",
+  content: "项目星河负责人改为 SigmaTeam。",
+});
+assert.equal(chineseProjectOwnerChangedReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(chineseProjectOwnerChangedReport.worldBeliefIds.length, 1);
 const shortChineseProjectOwnerReport = await projectRuleMemory.observeWithReport({
   type: "conversation.message",
   profileId: "project_rule",
@@ -704,6 +744,14 @@ for (const transientProjectLikeStatement of [
   "Project owner is Alice.",
   "Project New owner is Alice.",
   "Project Current status is blocked.",
+  "Atlas project owner changed to GammaTeam.",
+  "Project owner changed to Alice.",
+  "Set Project owner to Alice.",
+  "Set Project Current owner to Alice.",
+  "Our project status changed to blocked.",
+  "Project Current owner changed to Alice.",
+  "Project Atlas owner changed.",
+  "What did Project Atlas owner change to?",
   "Project New owner",
   "Project owner",
   "Atlas project owner",
@@ -738,8 +786,11 @@ for (const transientProjectLikeStatement of [
   "这个项目负责人是 Sam。",
   "我们的项目状态是 blocked。",
   "星河项目负责人是 GammaTeam。",
+  "星河项目负责人改为 GammaTeam。",
   "甲项目负责人是 Sam。",
   "项目负责人是 Sam。",
+  "项目负责人改为 Sam。",
+  "项目新负责人改为 Sam。",
   "项目新负责人是 Sam。",
   "项目当前状态是 blocked。",
   "项目新负责人",
@@ -784,7 +835,7 @@ try {
       (belief) =>
         belief.predicate === "project.owner" &&
         belief.status === "active" &&
-        belief.object.includes("GammaTeam"),
+        belief.object.includes("DeltaTeam"),
     ),
     true,
   );
@@ -809,9 +860,71 @@ try {
   assert.equal(
     projectBeliefs.some(
       (belief) =>
+        belief.predicate === "project.owner" &&
+        belief.status === "superseded" &&
+        belief.object.includes("GammaTeam"),
+    ),
+    true,
+  );
+  assert.equal(
+    projectBeliefs.some(
+      (belief) =>
         belief.predicate === "project.status" &&
         belief.status === "active" &&
+        belief.object.includes("Yellow"),
+    ),
+    true,
+  );
+  assert.equal(
+    projectBeliefs.some(
+      (belief) =>
+        belief.predicate === "project.status" &&
+        belief.status === "superseded" &&
         belief.object.includes("Green"),
+    ),
+    true,
+  );
+  assert.equal(
+    projectBeliefs.some(
+      (belief) =>
+        belief.predicate === "project.deadline" &&
+        belief.status === "active" &&
+        belief.object.includes("Friday"),
+    ),
+    true,
+  );
+  assert.equal(
+    projectBeliefs.some(
+      (belief) =>
+        belief.predicate === "project.contact" &&
+        belief.status === "active" &&
+        belief.object.includes("Sam"),
+    ),
+    true,
+  );
+  const chineseProjectBeliefs = projectRuleDb
+    .prepare(
+      `SELECT predicate, status, object
+       FROM gmos_world_beliefs
+       WHERE profile_id = 'project_rule' AND subject = 'project:星河'
+       ORDER BY predicate, status, object`,
+    )
+    .all() as Array<{ predicate: string; status: string; object: string }>;
+  assert.equal(
+    chineseProjectBeliefs.some(
+      (belief) =>
+        belief.predicate === "project.owner" &&
+        belief.status === "active" &&
+        belief.object.includes("SigmaTeam"),
+    ),
+    true,
+  );
+  assert.equal(
+    chineseProjectBeliefs.some(
+      (belief) =>
+        belief.predicate === "project.owner" &&
+        belief.status === "superseded" &&
+        belief.object.includes("OmegaTeam"),
     ),
     true,
   );
@@ -822,8 +935,13 @@ const projectOwnerReconstruction = await projectRuleMemory.reconstructContext({
   profileId: "project_rule",
   query: "Project Atlas current owner",
 });
-assert.match(projectOwnerReconstruction.contextBlock, /GammaTeam/);
-assert.doesNotMatch(projectOwnerReconstruction.contextBlock, /AlphaTeam|BetaTeam/);
+assert.match(projectOwnerReconstruction.contextBlock, /DeltaTeam/);
+assert.doesNotMatch(projectOwnerReconstruction.contextBlock, /AlphaTeam|BetaTeam|GammaTeam/);
+const projectDeadlineReconstruction = await projectRuleMemory.reconstructContext({
+  profileId: "project_rule",
+  query: "Project Atlas current deadline",
+});
+assert.match(projectDeadlineReconstruction.contextBlock, /Friday/);
 await projectRuleMemory.close();
 
 await extractorMemory.observe({
