@@ -302,6 +302,24 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
       metadata: { rule: "first_person_named_relation" },
     };
   }
+  const currentAttribute = /^\s*my\s+current\s+(city|location|time\s+zone|timezone|role|title|language)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
+    utterance,
+  );
+  if (currentAttribute) {
+    const predicate = personCurrentAttributePredicate(currentAttribute[1]);
+    const object = projectBeliefObject(currentAttribute[2]);
+    if (predicate && object && !/^(?:not|unknown|none|n\/a)\b/iu.test(object)) {
+      return {
+        kind: "fact",
+        content: text,
+        confidence: 0.66,
+        predicate,
+        object,
+        cardinality: "single",
+        metadata: { rule: "first_person_current_attribute" },
+      };
+    }
+  }
   const englishAttribute = /^\s*my\s+([\p{L}\p{N} _-]{2,80}?)\s+(?:is|are)\s+.{1,80}/iu.exec(
     utterance,
   );

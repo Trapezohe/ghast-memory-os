@@ -3108,6 +3108,37 @@ const hostAliasSpeakerOnlyReport = await rulesReportMemory.observeWithReport({
 assert.equal(hostAliasSpeakerOnlyReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(hostAliasSpeakerOnlyReport.memoryIds.length, 1);
 assert.equal(hostAliasSpeakerOnlyReport.worldBeliefIds.length, 1);
+const speakerCurrentCityParisReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Casey: My current city is Paris.",
+  metadata: {
+    speaker: "Casey",
+    participants: ["Casey", "Drew"],
+  },
+});
+assert.equal(speakerCurrentCityParisReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(speakerCurrentCityParisReport.memoryIds.length, 1);
+assert.equal(speakerCurrentCityParisReport.worldBeliefIds.length, 1);
+const speakerCurrentCityBerlinReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Casey: My current city is Berlin.",
+  metadata: {
+    speaker: "Casey",
+    participants: ["Casey", "Drew"],
+  },
+});
+assert.equal(speakerCurrentCityBerlinReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(speakerCurrentCityBerlinReport.memoryIds.length, 1);
+assert.equal(speakerCurrentCityBerlinReport.worldBeliefIds.length, 1);
+assert.equal(
+  speakerCurrentCityBerlinReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.metadata?.rule,
+  "first_person_current_attribute",
+);
 const namedRelationReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -3247,6 +3278,29 @@ try {
     ),
     true,
   );
+  const speakerCurrentCityBeliefs = speakerAttributeDb
+    .prepare(
+      `SELECT status, object
+         FROM gmos_world_beliefs
+        WHERE profile_id = 'rules_report'
+          AND subject = 'person:casey'
+          AND predicate = 'person.city'
+        ORDER BY status, object`,
+    )
+    .all() as Array<{ status: string; object: string }>;
+  assert.equal(speakerCurrentCityBeliefs.filter((belief) => belief.status === "active").length, 1);
+  assert.equal(
+    speakerCurrentCityBeliefs.some(
+      (belief) => belief.status === "active" && belief.object === "Berlin",
+    ),
+    true,
+  );
+  assert.equal(
+    speakerCurrentCityBeliefs.some(
+      (belief) => belief.status === "superseded" && belief.object === "Paris",
+    ),
+    true,
+  );
   const favoritePreferenceBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate
@@ -3358,6 +3412,24 @@ const namedPersonCityReconstruction = await rulesReportMemory.reconstructContext
 });
 assert.match(namedPersonCityReconstruction.contextBlock, /Berlin/);
 assert.doesNotMatch(namedPersonCityReconstruction.contextBlock, /Paris/);
+const speakerCurrentCityReconstruction = await rulesReportMemory.reconstructContext({
+  profileId: "rules_report",
+  query: "What is Casey's current city?",
+  maxSteps: 4,
+  maxBranch: 4,
+  maxMemories: 4,
+});
+assert.match(speakerCurrentCityReconstruction.contextBlock, /Berlin/);
+assert.doesNotMatch(speakerCurrentCityReconstruction.contextBlock, /Paris/);
+const speakerHistoricalCityReconstruction = await rulesReportMemory.reconstructContext({
+  profileId: "rules_report",
+  query: "What was Casey's previous city?",
+  temporalMode: "history",
+  maxSteps: 4,
+  maxBranch: 4,
+  maxMemories: 4,
+});
+assert.match(speakerHistoricalCityReconstruction.contextBlock, /Paris/);
 const multiwordNamedPersonPrepared = await rulesReportMemory.prepareTurn({
   profileId: "rules_report",
   messages: [{ role: "user", content: "Which travel planning tool belongs to Mary Jane?" }],
