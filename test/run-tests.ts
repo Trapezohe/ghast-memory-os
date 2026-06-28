@@ -3383,6 +3383,22 @@ for (const invalidBirthplace of [
 ]) {
   assert.equal(extractRuleMemoryCandidates(invalidBirthplace).length, 0);
 }
+assert.equal(extractRuleMemoryCandidates("I was born on July 10.")[0]?.predicate, "person.birthdate");
+assert.equal(extractRuleMemoryCandidates("My birthday is July 10.")[0]?.predicate, "person.birthdate");
+assert.equal(extractRuleMemoryCandidates("My date of birth is July 10.")[0]?.object, "July 10");
+for (const invalidBirthdate of [
+  "I was born on unknown.",
+  "I was born on not July 10.",
+  "My birthday is unknown.",
+  "My birth date is none.",
+  "My date of birth is n/a.",
+  "I was born on July 10. i live in Boston.",
+  "I was born on July 10. My hometown is Boston.",
+  "My birthday is July 10. My hometown is Boston.",
+  "My birthday is July 10 and I live in Boston.",
+]) {
+  assert.equal(extractRuleMemoryCandidates(invalidBirthdate).length, 0);
+}
 const namedPersonAttributeMeta = { participants: ["Alex", "Blair"] };
 assert.equal(
   extractRuleMemoryCandidates("Alex's hometown is Boston.", namedPersonAttributeMeta)[0]?.predicate,
@@ -3399,6 +3415,10 @@ assert.equal(
 assert.equal(
   extractRuleMemoryCandidates("Alex's birthplace is Seattle.", namedPersonAttributeMeta)[0]?.predicate,
   "person.birthplace",
+);
+assert.equal(
+  extractRuleMemoryCandidates("Alex's birthday is July 10.", namedPersonAttributeMeta)[0]?.predicate,
+  "person.birthdate",
 );
 assert.equal(
   extractRuleMemoryCandidates("Alex's job is an architect.", namedPersonAttributeMeta)[0]?.object,
@@ -3425,6 +3445,10 @@ assert.equal(
   "person.birthplace",
 );
 assert.equal(
+  extractRuleMemoryCandidates("Alex was born on July 10.", namedPersonAttributeMeta)[0]?.predicate,
+  "person.birthdate",
+);
+assert.equal(
   extractRuleMemoryCandidates("Alex works as an architect.", namedPersonAttributeMeta)[0]?.object,
   "architect",
 );
@@ -3432,6 +3456,8 @@ assert.equal(extractRuleMemoryCandidates("Alex's job is an unknown.", namedPerso
 assert.equal(extractRuleMemoryCandidates("Alex works as an unknown.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Alex lives in an unknown.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Alex is from an unknown.", namedPersonAttributeMeta).length, 0);
+assert.equal(extractRuleMemoryCandidates("Alex's birthday is unknown.", namedPersonAttributeMeta).length, 0);
+assert.equal(extractRuleMemoryCandidates("Alex was born on unknown.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Alex was born in an unknown place.", namedPersonAttributeMeta).length, 0);
 assert.equal(
   extractRuleMemoryCandidates("Alex lives in Boston and Blair lives in Seattle.", namedPersonAttributeMeta).length,
@@ -3450,11 +3476,16 @@ assert.equal(
   0,
 );
 assert.equal(extractRuleMemoryCandidates("Alex was born in Seattle in 1990.", namedPersonAttributeMeta).length, 0);
+assert.equal(
+  extractRuleMemoryCandidates("Alex was born on July 10. Blair was born on July 11.", namedPersonAttributeMeta).length,
+  0,
+);
 assert.equal(extractRuleMemoryCandidates("Siri lives in Boston.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Siri is from Boston.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Siri currently lives in St. Louis.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Siri works as an architect.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Siri was born in Seattle.", namedPersonAttributeMeta).length, 0);
+assert.equal(extractRuleMemoryCandidates("Siri was born on July 10.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Casey's job is an architect.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Casey lives in Boston.", namedPersonAttributeMeta).length, 0);
 assert.equal(
@@ -3548,6 +3579,18 @@ const namedPersonDirectBirthplaceReport = await rulesReportMemory.observeWithRep
 assert.equal(namedPersonDirectBirthplaceReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(namedPersonDirectBirthplaceReport.memoryIds.length, 1);
 assert.equal(namedPersonDirectBirthplaceReport.worldBeliefIds.length, 1);
+const namedPersonDirectBirthdateReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_named_person_attribute",
+  role: "user",
+  content: "Alex was born on July 10.",
+  metadata: {
+    participants: ["Alex", "Blair", "Mary Jane"],
+  },
+});
+assert.equal(namedPersonDirectBirthdateReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(namedPersonDirectBirthdateReport.memoryIds.length, 1);
+assert.equal(namedPersonDirectBirthdateReport.worldBeliefIds.length, 1);
 const namedPersonDirectHometownReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report_named_person_attribute",
@@ -4141,6 +4184,18 @@ try {
   assert.equal(namedPersonDirectBirthplaceBelief?.subject, "person:alex");
   assert.equal(namedPersonDirectBirthplaceBelief?.predicate, "person.birthplace");
   assert.equal(namedPersonDirectBirthplaceBelief?.object, "Seattle");
+  const namedPersonDirectBirthdateBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(namedPersonDirectBirthdateReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string }
+    | undefined;
+  assert.equal(namedPersonDirectBirthdateBelief?.subject, "person:alex");
+  assert.equal(namedPersonDirectBirthdateBelief?.predicate, "person.birthdate");
+  assert.equal(namedPersonDirectBirthdateBelief?.object, "July 10");
   const namedPersonDirectHometownBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate, object

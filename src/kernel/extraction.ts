@@ -382,6 +382,22 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
     }
     return null;
   }
+  const birthdate = /^\s*I\s+was\s+born\s+on\s+(.{1,80}?)\s*\.?\s*$/iu.exec(utterance);
+  if (birthdate) {
+    const object = projectBeliefObject(birthdate[1]);
+    if (object && !unsafePersonAttributeObject("birthdate", object)) {
+      return {
+        kind: "fact",
+        content: text,
+        confidence: 0.66,
+        predicate: "person.birthdate",
+        object,
+        cardinality: "single",
+        metadata: { rule: "first_person_birthdate" },
+      };
+    }
+    return null;
+  }
   const currentAttribute = /^\s*my\s+current\s+(city|location|time\s+zone|timezone|role|job|profession|title|language)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
     utterance,
   );
@@ -401,7 +417,7 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
     }
     return null;
   }
-  const stableAttribute = /^\s*my\s+(full\s+name|name|college\s+major|major|home\s+town|hometown|role|job|profession|title)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
+  const stableAttribute = /^\s*my\s+(full\s+name|name|college\s+major|major|home\s+town|hometown|birth\s+date|birthdate|birthday|date\s+of\s+birth|role|job|profession|title)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
     utterance,
   );
   if (stableAttribute) {
@@ -694,6 +710,8 @@ function personCurrentAttributePredicate(field: string | undefined): string | nu
               ? "person.language"
               : normalized === "birthplace" || normalized === "birth place"
                 ? "person.birthplace"
+                : normalized === "birthdate" || normalized === "birth date" || normalized === "birthday" || normalized === "date of birth"
+                  ? "person.birthdate"
               : normalized === "major" || normalized === "college major"
                 ? "person.major"
                 : normalized === "name" || normalized === "full name"
@@ -722,11 +740,30 @@ function unsafePersonAttributeObject(field: string | undefined, object: string):
 
 function malformedFirstPersonStructuredAttribute(text: string): boolean {
   const utterance = stripSpeakerPrefix(text);
+  const currentAttribute = /^\s*my\s+current\s+(city|location|time\s+zone|timezone|role|job|profession|title|language)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
+    utterance,
+  );
+  if (
+    currentAttribute &&
+    unsafePersonAttributeObject(currentAttribute[1], projectBeliefObject(currentAttribute[2]) ?? "")
+  ) {
+    return true;
+  }
+  const stableAttribute = /^\s*my\s+(full\s+name|name|college\s+major|major|home\s+town|hometown|birth\s+date|birthdate|birthday|date\s+of\s+birth|birth\s+place|birthplace|role|job|profession|title)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
+    utterance,
+  );
+  if (
+    stableAttribute &&
+    unsafePersonAttributeObject(stableAttribute[1], projectBeliefObject(stableAttribute[2]) ?? "")
+  ) {
+    return true;
+  }
   const entries: Array<{ field: string; match: RegExpMatchArray | null }> = [
     { field: "location", match: /^\s*I\s+(?:currently\s+)?live\s+in\s+(.{1,80}?)\s*\.?\s*$/iu.exec(utterance) },
     { field: "hometown", match: /^\s*I(?:'m|’m| am)\s+from\s+(.{1,80}?)\s*\.?\s*$/iu.exec(utterance) },
     { field: "role", match: /^\s*I\s+work\s+as\s+(?:(?:an?|the)\s+)?(.{1,80}?)\s*\.?\s*$/iu.exec(utterance) },
     { field: "birthplace", match: /^\s*I\s+was\s+born\s+in\s+(.{1,80}?)\s*\.?\s*$/iu.exec(utterance) },
+    { field: "birthdate", match: /^\s*I\s+was\s+born\s+on\s+(.{1,80}?)\s*\.?\s*$/iu.exec(utterance) },
   ];
   for (const entry of entries) {
     const object = projectBeliefObject(entry.match?.[1]);
@@ -780,7 +817,7 @@ function namedPersonStableAttributeCandidate(
   const utterance = stripSpeakerPrefix(text);
   if (isQuestionLike(utterance)) return null;
   const namePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}`;
-  const fieldPattern = String.raw`full\s+name|name|college\s+major|major|home\s+town|hometown|birth\s+place|birthplace|role|job|profession|title`;
+  const fieldPattern = String.raw`full\s+name|name|college\s+major|major|home\s+town|hometown|birth\s+date|birthdate|birthday|date\s+of\s+birth|birth\s+place|birthplace|role|job|profession|title`;
   const match = new RegExp(
     String.raw`^\s*(${namePattern})[’']s\s+(${fieldPattern})\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$`,
     "iu",
@@ -826,6 +863,10 @@ function namedPersonDirectAttributeCandidate(
       match: new RegExp(String.raw`^\s*(${namePattern})\s+was\s+born\s+in\s+(.{1,80}?)\s*\.?\s*$`, "u").exec(utterance),
     },
     {
+      field: "birthdate",
+      match: new RegExp(String.raw`^\s*(${namePattern})\s+was\s+born\s+on\s+(.{1,80}?)\s*\.?\s*$`, "u").exec(utterance),
+    },
+    {
       field: "role",
       match: new RegExp(String.raw`^\s*(${namePattern})\s+works\s+as\s+(?:(?:an?|the)\s+)?(.{1,80}?)\s*\.?\s*$`, "u").exec(utterance),
     },
@@ -858,7 +899,8 @@ function unsafeDirectAttributeObject(field: string, object: string): boolean {
   const namedPersonVerb = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}\s+(?:currently\s+)?(?:lives|works|was|is|comes)\b`;
   const namedPersonPossessive = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}[’']s\s+[\p{L}\p{N}_ -]{1,60}\s+(?:is|=)\b`;
   const firstPersonContinuation = String.raw`[Ii]\s+(?:(?:currently\s+)?live|work\s+as|was\s+born)\b|[Ii](?:'m|’m| am)\s+from\b`;
-  const continuation = String.raw`(?:${namedPersonVerb}|${namedPersonPossessive}|${firstPersonContinuation})`;
+  const myAttributeContinuation = String.raw`[Mm]y\s+(?:current\s+)?(?:city|location|time\s+zone|timezone|role|job|profession|title|language|full\s+name|name|college\s+major|major|home\s+town|hometown|birth\s+date|birthdate|birthday|date\s+of\s+birth|birth\s+place|birthplace)\s+(?:is|=)\b`;
+  const continuation = String.raw`(?:${namedPersonVerb}|${namedPersonPossessive}|${firstPersonContinuation}|${myAttributeContinuation})`;
   if (new RegExp(String.raw`[.]\s+${continuation}`, "u").test(object)) return true;
   if (new RegExp(String.raw`\b(?:and|but)\s+${continuation}`, "u").test(object)) return true;
   if (/\bnot\s+(?:an?|the)?\b/iu.test(object)) return true;
@@ -1226,6 +1268,7 @@ export function extractRuleMemoryCandidates(
   if (/^\s*I\s+work\s+as\s+(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
   if (/^\s*I\s+(?:currently\s+)?live\s+in\s+(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
   if (/^\s*I(?:'m|’m| am)\s+from\s+(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
+  if (/^\s*my\s+(?:birth\s+date|birthdate|birthday|date\s+of\s+birth)\s+(?:is|=)\s+(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
   if (/^\s*my\s+(?:full\s+)?name\s+(?:is|=)\s+(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
   if (/^\s*I\s+was\s+born\s+in\s+(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
   if (nonNameCalledRelation(stripSpeakerPrefix(text))) return [];
