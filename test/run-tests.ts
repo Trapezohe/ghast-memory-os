@@ -3114,6 +3114,33 @@ const speakerAttributeReport = await rulesReportMemory.observeWithReport({
 assert.equal(speakerAttributeReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(speakerAttributeReport.memoryIds.length, 1);
 assert.equal(speakerAttributeReport.worldBeliefIds.length, 1);
+const speakerMajorReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Alex: My college major is physics.",
+  metadata: {
+    speaker: "Alex",
+    participants: ["Alex", "Blair"],
+  },
+});
+assert.equal(speakerMajorReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(speakerMajorReport.memoryIds.length, 1);
+assert.equal(speakerMajorReport.worldBeliefIds.length, 1);
+const competingSpeakerMajorReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Blair: My college major is chemistry.",
+  metadata: {
+    speaker: "Blair",
+    participants: ["Alex", "Blair"],
+  },
+});
+assert.equal(competingSpeakerMajorReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(competingSpeakerMajorReport.memoryIds.length, 1);
+assert.equal(competingSpeakerMajorReport.worldBeliefIds.length, 1);
+assert.equal(extractRuleMemoryCandidates("My hometown is Boston.")[0]?.predicate, "user.attribute");
 const namedPersonToolReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -3432,6 +3459,17 @@ try {
     | undefined;
   assert.equal(speakerAttributeBelief?.subject, "person:blair");
   assert.equal(speakerAttributeBelief?.predicate, "user.attribute");
+  const speakerMajorBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(speakerMajorReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string }
+    | undefined;
+  assert.equal(speakerMajorBelief?.subject, "person:alex");
+  assert.equal(speakerMajorBelief?.predicate, "user.attribute");
   const namedPersonToolBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate
@@ -3659,6 +3697,15 @@ const namedPersonToolReconstruction = await rulesReportMemory.reconstructContext
 assert.match(namedPersonToolReconstruction.contextBlock, /Chronos/);
 assert.doesNotMatch(namedPersonToolReconstruction.contextBlock, /Helio/);
 assert.doesNotMatch(namedPersonToolReconstruction.contextBlock, /Meridian/);
+const speakerMajorReconstruction = await rulesReportMemory.reconstructContext({
+  profileId: "rules_report",
+  query: "What is Alex's college major?",
+  maxSteps: 4,
+  maxBranch: 4,
+  maxMemories: 4,
+});
+assert.match(speakerMajorReconstruction.contextBlock, /physics/);
+assert.doesNotMatch(speakerMajorReconstruction.contextBlock, /chemistry/);
 const namedPersonCityReconstruction = await rulesReportMemory.reconstructContext({
   profileId: "rules_report",
   query: "What is Priya's current city?",

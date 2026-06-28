@@ -659,7 +659,7 @@ function nonNameCalledRelation(text: string): boolean {
 function stableFirstPersonAttributeLabel(label: string): boolean {
   const normalized = label.trim().toLowerCase();
   if (!normalized) return false;
-  return /(?:^|\b)(?:tool|app|application|editor|ide|browser|calendar|notebook|database|crm|field|role|job|profession|title|timezone|location|city|country|language|stack|workflow|process)$/iu.test(
+  return /(?:^|\b)(?:tool|app|application|editor|ide|browser|calendar|notebook|database|crm|field|role|job|profession|title|timezone|location|city|country|language|stack|workflow|process|major|degree|hometown|birthplace|birth place|college|university)$/iu.test(
     normalized,
   ) || /(?:工具|应用|编辑器|浏览器|日历|数据库|领域|职业|职位|时区|城市|国家|语言|技术栈|流程)$/u.test(label.trim());
 }
