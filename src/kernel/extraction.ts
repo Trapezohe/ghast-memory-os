@@ -321,7 +321,7 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
   const liveIn = /^\s*I\s+live\s+in\s+(.{1,80}?)\s*\.?\s*$/iu.exec(utterance);
   if (liveIn) {
     const object = projectBeliefObject(liveIn[1]);
-    if (object && !/^(?:not|unknown|none|n\/a)\b/iu.test(object)) {
+    if (object && !invalidPersonAttributeObject(object)) {
       return {
         kind: "fact",
         content: text,
@@ -337,7 +337,7 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
   const workAs = /^\s*I\s+work\s+as\s+(?:(?:an?|the)\s+)?(.{1,80}?)\s*\.?\s*$/iu.exec(utterance);
   if (workAs) {
     const object = projectBeliefObject(workAs[1]);
-    if (object && !/^(?:not|unknown|none|n\/a)\b/iu.test(object)) {
+    if (object && !invalidPersonAttributeObject(object)) {
       return {
         kind: "fact",
         content: text,
@@ -353,7 +353,7 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
   const birthplace = /^\s*I\s+was\s+born\s+in\s+(.{1,80}?)\s*\.?\s*$/iu.exec(utterance);
   if (birthplace) {
     const object = projectBeliefObject(birthplace[1]);
-    if (object && !/^(?:not|unknown|none|n\/a)\b/iu.test(object)) {
+    if (object && !invalidPersonAttributeObject(object)) {
       return {
         kind: "fact",
         content: text,
@@ -372,7 +372,7 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
   if (currentAttribute) {
     const predicate = personCurrentAttributePredicate(currentAttribute[1]);
     const object = personAttributeObject(currentAttribute[1], currentAttribute[2]);
-    if (predicate && object && !/^(?:not|unknown|none|n\/a)\b/iu.test(object)) {
+    if (predicate && object && !invalidPersonAttributeObject(object)) {
       return {
         kind: "fact",
         content: text,
@@ -391,7 +391,7 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
   if (stableAttribute) {
     const predicate = personCurrentAttributePredicate(stableAttribute[1]);
     const object = personAttributeObject(stableAttribute[1], stableAttribute[2]);
-    if (predicate && object && !/^(?:not|unknown|none|n\/a)\b/iu.test(object)) {
+    if (predicate && object && !invalidPersonAttributeObject(object)) {
       return {
         kind: "fact",
         content: text,
@@ -696,6 +696,10 @@ function personAttributeObject(field: string | undefined, value: string | undefi
     : object;
 }
 
+function invalidPersonAttributeObject(object: string): boolean {
+  return /^(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(object);
+}
+
 function namedPersonCurrentAttributeCandidate(
   text: string,
   metadata?: Record<string, unknown> | undefined,
@@ -720,7 +724,7 @@ function namedPersonCurrentAttributeCandidate(
   }
   const predicate = personCurrentAttributePredicate(match?.[2]);
   const object = personAttributeObject(match?.[2], match?.[3]);
-  if (!predicate || !object || /^(?:not|unknown|none|n\/a)\b/iu.test(object)) return null;
+  if (!predicate || !object || invalidPersonAttributeObject(object)) return null;
   return {
     kind: "fact",
     content: text,
@@ -752,7 +756,7 @@ function namedPersonStableAttributeCandidate(
   }
   const predicate = personCurrentAttributePredicate(match?.[2]);
   const object = personAttributeObject(match?.[2], match?.[3]);
-  if (!predicate || !object || /^(?:not|unknown|none|n\/a)\b/iu.test(object)) return null;
+  if (!predicate || !object || invalidPersonAttributeObject(object)) return null;
   return {
     kind: "fact",
     content: text,
@@ -764,6 +768,57 @@ function namedPersonStableAttributeCandidate(
     cardinality: "single",
     metadata: { rule: "named_person_stable_attribute" },
   };
+}
+
+function namedPersonDirectAttributeCandidate(
+  text: string,
+  metadata?: Record<string, unknown> | undefined,
+): MemoryExtractionCandidate | null {
+  const utterance = stripSpeakerPrefix(text);
+  if (isQuestionLike(utterance)) return null;
+  const namePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}`;
+  const entry = [
+    {
+      field: "location",
+      match: new RegExp(String.raw`^\s*(${namePattern})\s+lives\s+in\s+(.{1,80}?)\s*\.?\s*$`, "iu").exec(utterance),
+    },
+    {
+      field: "birthplace",
+      match: new RegExp(String.raw`^\s*(${namePattern})\s+was\s+born\s+in\s+(.{1,80}?)\s*\.?\s*$`, "iu").exec(utterance),
+    },
+    {
+      field: "role",
+      match: new RegExp(String.raw`^\s*(${namePattern})\s+works\s+as\s+(?:(?:an?|the)\s+)?(.{1,80}?)\s*\.?\s*$`, "iu").exec(utterance),
+    },
+  ].find((entry) => entry.match !== null);
+  if (!entry?.match) return null;
+  const name = entry.match[1]?.trim();
+  if (!name || !stableNamedPersonSubject(name) || !metadataParticipantsConfirmNamedPerson(name, metadata)) {
+    return null;
+  }
+  const predicate = personCurrentAttributePredicate(entry.field);
+  const object = personAttributeObject(entry.field, entry.match[2]);
+  if (!predicate || !object || invalidPersonAttributeObject(object) || unsafeDirectAttributeObject(entry.field, object)) {
+    return null;
+  }
+  return {
+    kind: "fact",
+    content: text,
+    confidence: 0.66,
+    predicate,
+    subject: `person:${name}`,
+    subjectAliases: [name],
+    object,
+    cardinality: "single",
+    metadata: { rule: "named_person_direct_attribute" },
+  };
+}
+
+function unsafeDirectAttributeObject(field: string, object: string): boolean {
+  if (/[;.]/u.test(object)) return true;
+  if (/\b(?:and|but)\s+\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}\s+(?:lives|works|was)\b/iu.test(object)) return true;
+  if (/\bnot\s+(?:an?|the)?\b/iu.test(object)) return true;
+  return field === "birthplace" && /\bin\s+\d{3,4}\b/iu.test(object);
 }
 
 function namedPersonEventCandidate(
@@ -1124,9 +1179,9 @@ export function extractRuleMemoryCandidates(
   if (attributeCandidate) return [attributeCandidate];
   if (/^\s*my\s+(?:current\s+)?(?:role|job|profession|title)\s+(?:is|=)\s+(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
   if (/^\s*I\s+work\s+as\s+(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
-  if (/^\s*I\s+live\s+in\s+(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
+  if (/^\s*I\s+live\s+in\s+(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
   if (/^\s*my\s+(?:full\s+)?name\s+(?:is|=)\s+(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
-  if (/^\s*I\s+was\s+born\s+in\s+(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
+  if (/^\s*I\s+was\s+born\s+in\s+(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
   if (nonNameCalledRelation(stripSpeakerPrefix(text))) return [];
   const personToolCandidate = namedPersonToolCandidate(text, metadata);
   if (personToolCandidate) return [personToolCandidate];
@@ -1136,6 +1191,8 @@ export function extractRuleMemoryCandidates(
   if (personCurrentAttributeCandidate) return [personCurrentAttributeCandidate];
   const personStableAttributeCandidate = namedPersonStableAttributeCandidate(text, metadata);
   if (personStableAttributeCandidate) return [personStableAttributeCandidate];
+  const personDirectAttributeCandidate = namedPersonDirectAttributeCandidate(text, metadata);
+  if (personDirectAttributeCandidate) return [personDirectAttributeCandidate];
   const personEventCandidate = namedPersonEventCandidate(text, metadata);
   if (personEventCandidate) return [personEventCandidate];
 
@@ -1171,7 +1228,7 @@ export function extractRuleMemoryCandidates(
     ];
   }
 
-  if (/^我(是|在|有)|我的|my name is|I am|I work|I live|I was born/iu.test(text)) {
+  if (/^\s*(?:我(?:是|在|有)|我的|my\s+name\s+is\b|I\s+am\b|I\s+work\b|I\s+live\b|I\s+was\s+born\b)/iu.test(stripSpeakerPrefix(text))) {
     return [
       {
         kind: "fact",
