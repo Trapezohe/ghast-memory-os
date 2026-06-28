@@ -3304,6 +3304,11 @@ assert.equal(extractRuleMemoryCandidates("My job is an engineer.")[0]?.object, "
 assert.equal(extractRuleMemoryCandidates("My profession is the architect.")[0]?.object, "architect");
 assert.equal(extractRuleMemoryCandidates("My title is the CTO.")[0]?.predicate, "person.title");
 assert.equal(extractRuleMemoryCandidates("My title is the CTO.")[0]?.object, "CTO");
+const firstPersonCurrentTool = extractRuleMemoryCandidates("My current travel planning tool is Chronos.")[0];
+assert.equal(firstPersonCurrentTool?.predicate, "person.tool");
+assert.equal(firstPersonCurrentTool?.object, "Chronos");
+assert.equal(firstPersonCurrentTool?.cardinality, "single");
+assert.equal(extractRuleMemoryCandidates("My current browser is Chrome.")[0]?.object, "Chrome");
 for (const invalidWorkAs of [
   "I work as unknown.",
   "I work as not designer.",
@@ -3320,6 +3325,10 @@ for (const invalidRoleAttribute of [
   "My profession is none.",
   "My title is n/a.",
   "My title is the n/a.",
+  "My current travel planning tool is unknown.",
+  "My current travel planning tool is unavailable.",
+  "My current travel planning tool is Chronos. My hometown is Boston.",
+  "My current travel planning tool is Chronos and I use Meridian.",
 ]) {
   assert.equal(extractRuleMemoryCandidates(invalidRoleAttribute).length, 0);
 }
@@ -3932,6 +3941,37 @@ assert.equal(
     ?.candidate.metadata?.rule,
   "first_person_current_attribute",
 );
+const speakerCurrentToolChronosReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_current_tool",
+  role: "user",
+  content: "Alex: My current travel planning tool is Chronos.",
+  metadata: {
+    speaker: "Alex",
+    participants: ["Alex", "Blair"],
+  },
+});
+assert.equal(speakerCurrentToolChronosReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(speakerCurrentToolChronosReport.memoryIds.length, 1);
+assert.equal(speakerCurrentToolChronosReport.worldBeliefIds.length, 1);
+const speakerCurrentToolMeridianReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_current_tool",
+  role: "user",
+  content: "Alex: My current travel planning tool is Meridian.",
+  metadata: {
+    speaker: "Alex",
+    participants: ["Alex", "Blair"],
+  },
+});
+assert.equal(speakerCurrentToolMeridianReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(speakerCurrentToolMeridianReport.memoryIds.length, 1);
+assert.equal(speakerCurrentToolMeridianReport.worldBeliefIds.length, 1);
+assert.equal(
+  speakerCurrentToolMeridianReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.metadata?.rule,
+  "first_person_current_tool",
+);
 const speakerBirthplaceReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -4344,6 +4384,29 @@ try {
   assert.equal(
     speakerCurrentCityBeliefs.some(
       (belief) => belief.status === "superseded" && belief.object === "Paris",
+    ),
+    true,
+  );
+  const speakerCurrentToolBeliefs = speakerAttributeDb
+    .prepare(
+      `SELECT status, object
+         FROM gmos_world_beliefs
+        WHERE profile_id = 'rules_report_current_tool'
+          AND subject = 'person:alex'
+          AND predicate = 'person.tool'
+        ORDER BY status, object`,
+    )
+    .all() as Array<{ status: string; object: string }>;
+  assert.equal(speakerCurrentToolBeliefs.filter((belief) => belief.status === "active").length, 1);
+  assert.equal(
+    speakerCurrentToolBeliefs.some(
+      (belief) => belief.status === "active" && belief.object === "Meridian",
+    ),
+    true,
+  );
+  assert.equal(
+    speakerCurrentToolBeliefs.some(
+      (belief) => belief.status === "superseded" && belief.object === "Chronos",
     ),
     true,
   );

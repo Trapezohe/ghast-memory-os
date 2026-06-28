@@ -225,16 +225,16 @@ The repository also includes a small CI-safe fixture suite at
 runs it with `--fail-on-benchmark-fail` and covers gmOS native JSONL,
 LongMemEval adapter abstention handling, LoCoMo adapter unscored-QA handling,
 profile reuse, incognito filtering, history recall, task trajectory reuse, and
-boundary-aware prepare mode. The curated native fixture set has 34 cases covering
+boundary-aware prepare mode. The curated native fixture set has 40 cases covering
 current/history recall, current-state suppression of historical project fields,
-direct, speaker-prefixed, and possessive person grounding,
+direct, speaker-prefixed, possessive, and current-state person grounding,
 temporal recall, secret-like and sensitive filtering, project aliases, procedures,
 task trajectories, forgetting, and forbidden action boundaries. A separate low-budget native run
 covers critical fact retention under context pressure. Full LongMemEval/LoCoMo
 datasets remain manual or nightly baselines because they are too large and slow
 for ordinary PR CI.
 
-External benchmark dry-run snapshot, 2026-06-27:
+Historical external benchmark dry-run snapshot, alpha.66, 2026-06-27:
 
 These runs were executed on the `@ghast/memory@0.1.0-alpha.66` release artifact
 from commit `79031172b9f968c9d65cef02a428a59063d71a70` with
@@ -245,8 +245,9 @@ deterministic adapter dry-runs for finding retrieval and reconstruction gaps,
 not the official LongMemEval/LoCoMo LLM-judge score and not a SOTA claim.
 The suite manifest recorded `@ghast/memory@0.1.0-alpha.66`, git branch `main`,
 git SHA `79031172b9f968c9d65cef02a428a59063d71a70`, and `dirty=false`.
+No alpha.67 full-dataset external snapshot is claimed here.
 
-| Dataset file | Source format | Scored cases | Pass | Fail | Score | Case groups | Reused profile cases | Warnings | Runtime |
+| Dataset file | Source format | Scored cases | Pass | Fail | Deterministic adapter score | Case groups | Reused profile cases | Warnings | Runtime |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `longmemeval_oracle.json` | LongMemEval cleaned oracle | 470 | 131 | 339 | `0.2787` | 470 | 0 | 30 | 14.5s |
 | `longmemeval_s_cleaned.json` | LongMemEval cleaned S | 470 | 131 | 339 | `0.2787` | 470 | 0 | 30 | 543.3s |

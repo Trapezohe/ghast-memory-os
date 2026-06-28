@@ -300,6 +300,24 @@ function likelyDurableObservationFact(text: string): boolean {
 function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate | null {
   const utterance = stripSpeakerPrefix(text);
   if (isQuestionLike(utterance)) return null;
+  const currentTool = /^\s*my\s+current\s+(?:[\p{L}\p{N}_ -]{0,60}\s+)?(?:tool|app|application|editor|ide|browser|calendar|database)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
+    utterance,
+  );
+  if (currentTool) {
+    const object = stableToolObject(currentTool[1]);
+    if (object) {
+      return {
+        kind: "fact",
+        content: text,
+        confidence: 0.66,
+        predicate: "person.tool",
+        object,
+        cardinality: "single",
+        metadata: { rule: "first_person_current_tool" },
+      };
+    }
+    return null;
+  }
   if (/^\s*I\s+use\s+.{2,80}?\s+for\s+.{2,80}/iu.test(utterance) || /^我用\s*.+\s*(?:做|处理|管理|进行)\s*.+/u.test(utterance)) {
     return {
       kind: "fact",
@@ -616,6 +634,8 @@ function metadataConfirmsNamedEventSubject(
 function stableToolObject(value: string | undefined): string | undefined {
   const object = projectBeliefObject(value);
   if (!object) return undefined;
+  if (invalidPersonAttributeObject(object)) return undefined;
+  if (unsafeDirectAttributeObject("tool", object)) return undefined;
   if (
     /^(?:not\s+|currently\s+)?(?:broken|unavailable|offline|down|missing|disabled|deprecated|obsolete|unsupported)\b/iu.test(
       object,
@@ -740,6 +760,10 @@ function unsafePersonAttributeObject(field: string | undefined, object: string):
 
 function malformedFirstPersonStructuredAttribute(text: string): boolean {
   const utterance = stripSpeakerPrefix(text);
+  const currentTool = /^\s*my\s+current\s+(?:[\p{L}\p{N}_ -]{0,60}\s+)?(?:tool|app|application|editor|ide|browser|calendar|database)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
+    utterance,
+  );
+  if (currentTool && !stableToolObject(currentTool[1])) return true;
   const currentAttribute = /^\s*my\s+current\s+(city|location|time\s+zone|timezone|role|job|profession|title|language)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
     utterance,
   );
@@ -898,7 +922,7 @@ function unsafeDirectAttributeObject(field: string, object: string): boolean {
   if (/;/u.test(object)) return true;
   const namedPersonVerb = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}\s+(?:currently\s+)?(?:lives|works|was|is|comes)\b`;
   const namedPersonPossessive = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}[’']s\s+[\p{L}\p{N}_ -]{1,60}\s+(?:is|=)\b`;
-  const firstPersonContinuation = String.raw`[Ii]\s+(?:(?:currently\s+)?live|work\s+as|was\s+born)\b|[Ii](?:'m|’m| am)\s+from\b`;
+  const firstPersonContinuation = String.raw`[Ii]\s+(?:(?:currently\s+)?live|work\s+as|was\s+born|use)\b|[Ii](?:'m|’m| am)\s+from\b`;
   const myAttributeContinuation = String.raw`[Mm]y\s+(?:current\s+)?(?:city|location|time\s+zone|timezone|role|job|profession|title|language|full\s+name|name|college\s+major|major|home\s+town|hometown|birth\s+date|birthdate|birthday|date\s+of\s+birth|birth\s+place|birthplace)\s+(?:is|=)\b`;
   const continuation = String.raw`(?:${namedPersonVerb}|${namedPersonPossessive}|${firstPersonContinuation}|${myAttributeContinuation})`;
   if (new RegExp(String.raw`[.]\s+${continuation}`, "u").test(object)) return true;
