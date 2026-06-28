@@ -681,6 +681,7 @@ export interface AddWorldBeliefInput {
   sourceMemoryId?: string | null | undefined;
   cardinality?: "single" | "multi" | undefined;
   metadata?: Record<string, unknown> | undefined;
+  createdAt?: string | undefined;
 }
 
 export interface RecordFailureInput {

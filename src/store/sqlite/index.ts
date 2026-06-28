@@ -192,6 +192,14 @@ function parseInstant(value: string | null): number | null {
   return Number.isFinite(timestamp) ? timestamp : null;
 }
 
+function laterInstantIso(current: string, candidate: string): string {
+  const currentInstant = parseInstant(current);
+  const candidateInstant = parseInstant(candidate);
+  if (currentInstant === null) return candidateInstant === null ? current : candidate;
+  if (candidateInstant === null) return current;
+  return candidateInstant > currentInstant ? candidate : current;
+}
+
 function memoryMetadataIsValidAt(metadata: Record<string, unknown>, asOfIso: string): boolean {
   const asOf = Date.parse(asOfIso);
   if (!Number.isFinite(asOf)) return true;
@@ -1771,7 +1779,8 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
 
   function addWorldBelief(input: AddWorldBeliefInput): WorldBeliefRecord {
     initialize();
-    const createdAt = nowIso();
+    const operationAt = nowIso();
+    const createdAt = input.createdAt ?? operationAt;
     const tx = db.transaction((): WorldBeliefRecord => {
       const resolution = resolveWorldEntitySubject({
         subject: input.subject,
@@ -1780,6 +1789,46 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       });
       const canonicalSubject = resolution.canonicalSubject;
       const cardinality = input.cardinality ?? "multi";
+      const insertBelief = (status: WorldBeliefRecord["status"]): WorldBeliefRecord => {
+        const beliefId = id("belief");
+        const metadata = worldBeliefMetadata({
+          inputMetadata: input.metadata,
+          resolution,
+        });
+        db.prepare(
+          `INSERT INTO gmos_world_beliefs (
+            id, profile_id, subject, predicate, object, confidence, status,
+            source_memory_id, metadata_json, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          beliefId,
+          input.profileId,
+          canonicalSubject,
+          input.predicate,
+          input.object,
+          input.confidence ?? 0.5,
+          status,
+          input.sourceMemoryId ?? null,
+          JSON.stringify(metadata),
+          createdAt,
+          operationAt,
+        );
+        const belief: WorldBeliefRecord = {
+          id: beliefId,
+          profileId: input.profileId,
+          subject: canonicalSubject,
+          predicate: input.predicate,
+          object: input.object,
+          confidence: input.confidence ?? 0.5,
+          status,
+          sourceMemoryId: input.sourceMemoryId ?? null,
+          metadata,
+          createdAt,
+          updatedAt: operationAt,
+        };
+        projectBeliefAssociations(belief);
+        return belief;
+      };
       if (cardinality === "single") {
         const activeRows = db
           .prepare(
@@ -1795,6 +1844,16 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           .filter((belief) => canonicalSubjectForBelief(belief) === canonicalSubject);
         const sameObjectRows = activeBeliefs.filter((belief) => belief.object === input.object);
         const sameObject = sameObjectRows[0];
+        const incomingInstant = parseInstant(createdAt);
+        const incomingIsOlderThanActive =
+          incomingInstant !== null &&
+          activeBeliefs.some((belief) => {
+            const activeInstant = parseInstant(belief.createdAt);
+            return activeInstant !== null && activeInstant > incomingInstant;
+          });
+        if (incomingIsOlderThanActive && !sameObject) {
+          return insertBelief("superseded");
+        }
         if (sameObject) {
           for (const belief of activeBeliefs) {
             if (belief.id === sameObject.id) continue;
@@ -1814,7 +1873,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
                   resolution,
                 }),
               ),
-              createdAt,
+              operationAt,
               belief.id,
             );
           }
@@ -1833,6 +1892,10 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
             existingMetadata: sameObject.metadata,
             resolution,
           });
+          const sameObjectCreatedAt = sameObjectRows
+            .map((belief) => belief.createdAt)
+            .concat(createdAt)
+            .reduce(laterInstantIso, sameObject.createdAt);
           const refreshedMetadata = hasTemporalValidityMetadata(input.metadata)
             ? metadata
             : withoutTemporalValidityMetadata(metadata);
@@ -1842,6 +1905,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
                  confidence = ?,
                  source_memory_id = ?,
                  metadata_json = ?,
+                 created_at = ?,
                  updated_at = ?
              WHERE id = ?`,
           ).run(
@@ -1849,7 +1913,8 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
             confidence,
             sourceMemoryId,
             JSON.stringify(refreshedMetadata),
-            createdAt,
+            sameObjectCreatedAt,
+            operationAt,
             sameObject.id,
           );
           deleteAssociationsForBelief(sameObject.id);
@@ -1878,48 +1943,12 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
                 resolution,
               }),
             ),
-            createdAt,
+            operationAt,
             belief.id,
           );
         }
       }
-      const beliefId = id("belief");
-      const metadata = worldBeliefMetadata({
-        inputMetadata: input.metadata,
-        resolution,
-      });
-      db.prepare(
-        `INSERT INTO gmos_world_beliefs (
-          id, profile_id, subject, predicate, object, confidence, status,
-          source_memory_id, metadata_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
-      ).run(
-        beliefId,
-        input.profileId,
-        canonicalSubject,
-        input.predicate,
-        input.object,
-        input.confidence ?? 0.5,
-        input.sourceMemoryId ?? null,
-        JSON.stringify(metadata),
-        createdAt,
-        createdAt,
-      );
-      const belief: WorldBeliefRecord = {
-        id: beliefId,
-        profileId: input.profileId,
-        subject: canonicalSubject,
-        predicate: input.predicate,
-        object: input.object,
-        confidence: input.confidence ?? 0.5,
-        status: "active",
-        sourceMemoryId: input.sourceMemoryId ?? null,
-        metadata,
-        createdAt,
-        updatedAt: createdAt,
-      };
-      projectBeliefAssociations(belief);
-      return belief;
+      return insertBelief("active");
     });
     return tx();
   }

@@ -1142,7 +1142,134 @@ const projectHistoricalPlanReconstruction = await projectRuleMemory.reconstructC
   temporalMode: "history",
 });
 assert.match(projectHistoricalPlanReconstruction.contextBlock, /Bluepath/);
+const projectLateOwnerNewReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_late_arrival_rule",
+  role: "user",
+  content: "Project Drift current owner is Bob.",
+  createdAt: "2026-06-20T00:00:00.000Z",
+});
+assert.equal(projectLateOwnerNewReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(projectLateOwnerNewReport.worldBeliefIds.length, 1);
+const projectLateOwnerOldReport = await projectRuleMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "project_late_arrival_rule",
+  role: "user",
+  content: "Project Drift current owner is Alice.",
+  createdAt: "2026-06-01T00:00:00.000Z",
+});
+assert.equal(projectLateOwnerOldReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(projectLateOwnerOldReport.worldBeliefIds.length, 1);
+const projectLateOwnerDb = new Database(path.join(tmp, "project-rule-extractor.db"), { readonly: true });
+try {
+  const driftBeliefs = projectLateOwnerDb
+    .prepare(
+      `SELECT status, object, created_at AS createdAt
+       FROM gmos_world_beliefs
+       WHERE profile_id = 'project_late_arrival_rule'
+         AND subject = 'project:drift'
+         AND predicate = 'project.owner'
+       ORDER BY created_at`,
+    )
+    .all() as Array<{ status: string; object: string; createdAt: string }>;
+  assert.deepEqual(
+    driftBeliefs.map((belief) => `${belief.object}:${belief.status}:${belief.createdAt}`),
+    [
+      "Alice:superseded:2026-06-01T00:00:00.000Z",
+      "Bob:active:2026-06-20T00:00:00.000Z",
+    ],
+  );
+} finally {
+  projectLateOwnerDb.close();
+}
+const projectLateOwnerCurrent = await projectRuleMemory.reconstructContext({
+  profileId: "project_late_arrival_rule",
+  query: "Who is Project Drift's current owner?",
+});
+assert.match(projectLateOwnerCurrent.contextBlock, /Bob/);
+assert.doesNotMatch(projectLateOwnerCurrent.contextBlock, /Alice/);
+const projectLateOwnerHistory = await projectRuleMemory.reconstructContext({
+  profileId: "project_late_arrival_rule",
+  query: "Who was Project Drift's previous owner?",
+  temporalMode: "history",
+});
+assert.match(projectLateOwnerHistory.contextBlock, /Alice/);
+await projectRuleMemory.observe({
+  type: "conversation.message",
+  profileId: "project_same_object_refresh_rule",
+  role: "user",
+  content: "Project Echo current owner is Alice.",
+  createdAt: "2026-06-10T00:00:00.000Z",
+});
+await projectRuleMemory.observe({
+  type: "conversation.message",
+  profileId: "project_same_object_refresh_rule",
+  role: "user",
+  content: "Project Echo current owner is Bob.",
+  createdAt: "2026-06-20T00:00:00.000Z",
+});
+await projectRuleMemory.observe({
+  type: "conversation.message",
+  profileId: "project_same_object_refresh_rule",
+  role: "user",
+  content: "Project Echo current owner is Bob.",
+  createdAt: "2026-06-30T00:00:00.000Z",
+});
+await projectRuleMemory.observe({
+  type: "conversation.message",
+  profileId: "project_same_object_refresh_rule",
+  role: "user",
+  content: "Project Echo current owner is Carol.",
+  createdAt: "2026-06-25T00:00:00.000Z",
+});
+const projectRefreshCurrent = await projectRuleMemory.reconstructContext({
+  profileId: "project_same_object_refresh_rule",
+  query: "Who is Project Echo's current owner?",
+});
+assert.match(projectRefreshCurrent.contextBlock, /Bob/);
+assert.doesNotMatch(projectRefreshCurrent.contextBlock, /Carol/);
 await projectRuleMemory.close();
+
+const lateExtractorStore = createSqliteMemoryStore({
+  path: path.join(tmp, "late-extractor-order.db"),
+});
+const lateExtractorMemory = createMemoryOS({
+  profileId: "late_extractor_order",
+  store: lateExtractorStore,
+  extractor(input) {
+    const owner = input.event.content.includes("Alice") ? "Alice" : "Bob";
+    return {
+      kind: "project",
+      content: `Extractor says Project Drift current owner is ${owner}.`,
+      confidence: 0.91,
+      predicate: "project.owner",
+      subject: "Project Drift",
+      object: owner,
+      cardinality: "single",
+    };
+  },
+});
+await lateExtractorMemory.observe({
+  type: "conversation.message",
+  profileId: "late_extractor_order",
+  role: "user",
+  content: "New owner Bob arrived first.",
+  createdAt: "2026-06-20T00:00:00.000Z",
+});
+await lateExtractorMemory.observe({
+  type: "conversation.message",
+  profileId: "late_extractor_order",
+  role: "user",
+  content: "Old owner Alice arrived late.",
+  createdAt: "2026-06-01T00:00:00.000Z",
+});
+const lateExtractorCurrent = await lateExtractorMemory.reconstructContext({
+  profileId: "late_extractor_order",
+  query: "Who is Project Drift's current owner?",
+});
+assert.match(lateExtractorCurrent.contextBlock, /Bob/);
+assert.doesNotMatch(lateExtractorCurrent.contextBlock, /Alice/);
+await lateExtractorMemory.close();
 
 await extractorMemory.observe({
   type: "conversation.message",

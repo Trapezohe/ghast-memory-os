@@ -654,6 +654,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           confidence: candidate.confidence,
           sourceMemoryId: memory.id,
           cardinality: candidate.cardinality,
+          createdAt: event.createdAt ?? memory.createdAt,
           metadata: {
             ...sanitizePublicPayloadRecord(candidate.metadata ?? {}),
             ...(Object.keys(eventMetadata).length > 0 ? { sourceMetadata: eventMetadata } : {}),
