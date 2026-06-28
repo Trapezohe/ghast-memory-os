@@ -1435,6 +1435,32 @@ const fallbackSourceScopeMemories: MemoryRecord[] = [
     createdAt: "2026-06-25T00:00:00.000Z",
     updatedAt: "2026-06-25T00:00:00.000Z",
   },
+  {
+    id: "memory_fallback_alex_direct",
+    profileId: "fallback-source-scope",
+    kind: "fact",
+    scope: "global",
+    content: "Alex uses Chronos for travel planning.",
+    sensitivity: "normal",
+    status: "active",
+    confidence: 0.9,
+    metadata: {},
+    createdAt: "2026-06-25T00:00:00.000Z",
+    updatedAt: "2026-06-25T00:00:00.000Z",
+  },
+  {
+    id: "memory_fallback_blair_direct",
+    profileId: "fallback-source-scope",
+    kind: "fact",
+    scope: "global",
+    content: "Blair uses Meridian for travel planning.",
+    sensitivity: "normal",
+    status: "active",
+    confidence: 0.9,
+    metadata: {},
+    createdAt: "2026-06-25T00:00:00.000Z",
+    updatedAt: "2026-06-25T00:00:00.000Z",
+  },
 ];
 const fallbackSourceScopeMemory = createMemoryOS({
   profileId: "fallback-source-scope",
@@ -1499,7 +1525,55 @@ const underscoredFallbackSourceScopeReconstruction = await fallbackSourceScopeMe
 });
 assert.match(underscoredFallbackSourceScopeReconstruction.contextBlock, /Helio/);
 assert.doesNotMatch(underscoredFallbackSourceScopeReconstruction.contextBlock, /Quartz/);
+const directContentFallbackSourceScopeReconstruction = await fallbackSourceScopeMemory.reconstructContext({
+  profileId: "fallback-source-scope",
+  query: "Which travel planning tool belongs to Alex?",
+  maxMemories: 3,
+});
+assert.match(directContentFallbackSourceScopeReconstruction.contextBlock, /Chronos/);
+assert.doesNotMatch(directContentFallbackSourceScopeReconstruction.contextBlock, /Meridian/);
 await fallbackSourceScopeMemory.close();
+
+const directContentSourceScopeStore = createSqliteMemoryStore({
+  path: path.join(tmp, "direct-content-source-scope.db"),
+});
+const directContentSourceScopeMemory = createMemoryOS({
+  profileId: "direct-content-source-scope",
+  store: directContentSourceScopeStore,
+});
+await directContentSourceScopeMemory.add({
+  profileId: "direct-content-source-scope",
+  kind: "fact",
+  content: "Alex uses Chronos for travel planning.",
+});
+await directContentSourceScopeMemory.add({
+  profileId: "direct-content-source-scope",
+  kind: "fact",
+  content: "Blair uses Meridian for travel planning.",
+});
+const directContentAlexPrepared = await directContentSourceScopeMemory.prepareTurn({
+  profileId: "direct-content-source-scope",
+  messages: [{ role: "user", content: "Which travel planning tool belongs to Alex?" }],
+});
+assert.match(directContentAlexPrepared.contextBlock, /Chronos/);
+assert.doesNotMatch(directContentAlexPrepared.contextBlock, /Meridian/);
+const directContentAlexReconstruction = await directContentSourceScopeMemory.reconstructContext({
+  profileId: "direct-content-source-scope",
+  query: "Which travel planning tool belongs to Alex?",
+  maxSteps: 4,
+  maxBranch: 8,
+});
+assert.match(directContentAlexReconstruction.contextBlock, /Chronos/);
+assert.doesNotMatch(directContentAlexReconstruction.contextBlock, /Meridian/);
+const directContentCompareReconstruction = await directContentSourceScopeMemory.reconstructContext({
+  profileId: "direct-content-source-scope",
+  query: "Which travel planning tools belong to Alex and Blair?",
+  maxSteps: 4,
+  maxBranch: 8,
+});
+assert.match(directContentCompareReconstruction.contextBlock, /Chronos/);
+assert.match(directContentCompareReconstruction.contextBlock, /Meridian/);
+await directContentSourceScopeMemory.close();
 
 const beliefOnlyPersonStore = createSqliteMemoryStore({ path: path.join(tmp, "belief-only-person.db") });
 const beliefOnlyPersonMemory = createMemoryOS({

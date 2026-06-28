@@ -4,6 +4,7 @@ import type {
   MemoryRecord,
   WorldBeliefRecord,
 } from "./types.js";
+import { stableNamedPersonSubject } from "./extraction.js";
 import { normalizeExplicitTemporalInstant } from "./temporal-validity.js";
 
 export type AssociationCueKind = MemoryAssociationRecord["cueKind"];
@@ -178,6 +179,22 @@ function entitySubjectCues(metadata: Record<string, unknown>): string[] {
   return unique([subjectValue, ...metadataStringArray(metadata, "subjectAliases")]);
 }
 
+export function sourceContentEntityCues(content: string): string[] {
+  const namePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}`;
+  const patterns = [
+    new RegExp(String.raw`^\s*(${namePattern})\s+uses\s+.{2,80}?\s+for\s+.{2,80}?\s*\.?\s*$`, "u"),
+    new RegExp(
+      String.raw`^\s*(${namePattern})[’']s\s+(?:preferred\s+)?(?:[\p{L}\p{N}_ -]{0,60}\s+)?tool\s+(?:is|=)\s+.{1,80}?\s*\.?\s*$`,
+      "iu",
+    ),
+  ];
+  for (const pattern of patterns) {
+    const name = pattern.exec(content)?.[1]?.trim();
+    if (name && stableNamedPersonSubject(name)) return [name];
+  }
+  return [];
+}
+
 function calendarDateCue(value: string): string | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(value.trim());
   if (!match) return null;
@@ -248,6 +265,7 @@ export function associationTagsForMemory(memory: MemoryRecord): string[] {
 export function associationCuesForMemory(memory: MemoryRecord): AssociationCue[] {
   return [
     ...sourceMetadataEntityCues(memory.metadata).map((cue) => ({ cue, cueKind: "entity" as const })),
+    ...sourceContentEntityCues(memory.content).map((cue) => ({ cue, cueKind: "entity" as const })),
     ...metadataTemporalCues(memory.metadata).map((cue) => ({ cue, cueKind: "temporal" as const })),
     { cue: memory.kind, cueKind: "kind" },
     ...(memory.scope !== "global" ? [{ cue: memory.scope, cueKind: "scope" as const }] : []),

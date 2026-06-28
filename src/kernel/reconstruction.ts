@@ -2,6 +2,7 @@ import {
   associationCueKey,
   associationCueMatchesQuery,
   extractAssociationCues,
+  sourceContentEntityCues,
   sourceMetadataEntityCues,
 } from "./associations.js";
 import { sanitizeEvidenceForPublicOutput } from "./safety.js";
@@ -494,7 +495,7 @@ function sourceScopeRejectReason(
   intent: ReconstructionIntent,
   selectedSourceCues: Set<string>,
 ): string | null {
-  const sourceCues = sourceMetadataEntityCues(memory.metadata);
+  const sourceCues = sourceEntityCuesForMemory(memory);
   if (sourceCues.length === 0) {
     return selectedSourceCues.size > 0 && hasFirstPersonAnchor(memory.content)
       ? `source_scope_mismatch:${[...selectedSourceCues].join("|")}`
@@ -514,7 +515,7 @@ function sourceScopeRejectReason(
 function sourceScopedFallbackMemories(memories: MemoryRecord[], intent: ReconstructionIntent): MemoryRecord[] {
   const selectedSourceCues = new Set<string>();
   for (const memory of memories) {
-    for (const cue of sourceMetadataEntityCues(memory.metadata)) {
+    for (const cue of sourceEntityCuesForMemory(memory)) {
       if (entityCueMatchesQuery(cue, intent)) selectedSourceCues.add(associationCueKey(cue));
     }
   }
@@ -543,7 +544,18 @@ function associationSourceRejectReason(
 
 function associationPersonCue(association: MemoryAssociationRecord): string | null {
   const personMatch = /^person:([^\s]+)/iu.exec(association.targetSummary);
-  return personMatch?.[1]?.trim().toLowerCase() ?? null;
+  return (
+    personMatch?.[1]?.trim().toLowerCase() ??
+    sourceContentEntityCues(association.targetSummary)[0] ??
+    null
+  );
+}
+
+function sourceEntityCuesForMemory(memory: MemoryRecord): string[] {
+  return [
+    ...sourceMetadataEntityCues(memory.metadata),
+    ...sourceContentEntityCues(memory.content),
+  ];
 }
 
 function pathMatchesIntent(path: ReconstructedEvidencePath, intent: ReconstructionIntent): boolean {

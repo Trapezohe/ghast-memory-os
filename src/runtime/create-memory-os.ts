@@ -4,6 +4,7 @@ import {
   associationCueKey,
   associationCueMatchesQuery,
   extractAssociationCues,
+  sourceContentEntityCues,
   sourceMetadataEntityCues,
 } from "../kernel/associations.js";
 import { composeTurnContext } from "../kernel/context-composer.js";
@@ -158,16 +159,23 @@ function sourceScopedMemories(memories: MemoryRecord[], query: string): MemoryRe
   const queryCues = new Set(extractAssociationCues(query, 48).map((cue) => cue.cue));
   const selectedSourceCues = new Set<string>();
   for (const memory of memories) {
-    for (const cue of sourceMetadataEntityCues(memory.metadata)) {
+    for (const cue of sourceEntityCuesForMemory(memory)) {
       if (associationCueMatchesQuery(cue, queryCues)) selectedSourceCues.add(associationCueKey(cue));
     }
   }
   if (selectedSourceCues.size === 0) return memories;
   return memories.filter((memory) => {
-    const sourceCues = sourceMetadataEntityCues(memory.metadata);
+    const sourceCues = sourceEntityCuesForMemory(memory);
     if (sourceCues.length === 0) return !sourcelessPersonalMemory(memory);
     return sourceCues.some((cue) => selectedSourceCues.has(associationCueKey(cue)));
   });
+}
+
+function sourceEntityCuesForMemory(memory: MemoryRecord): string[] {
+  return [
+    ...sourceMetadataEntityCues(memory.metadata),
+    ...sourceContentEntityCues(memory.content),
+  ];
 }
 
 function eventKey(event: HostEvent): string {
