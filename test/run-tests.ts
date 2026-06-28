@@ -1143,6 +1143,25 @@ const projectHistoricalPlanReconstruction = await projectRuleMemory.reconstructC
   temporalMode: "history",
 });
 assert.match(projectHistoricalPlanReconstruction.contextBlock, /Bluepath/);
+for (const historicalPlanQuery of [
+  "What plan was Project Iris formerly using?",
+  "What plan did Project Iris originally use?",
+  "What plan was Project Iris using at the time?",
+  "What plan did Project Iris use to use?",
+  "What plan used to belong to Project Iris?",
+]) {
+  const historicalPlanReconstruction = await projectRuleMemory.reconstructContext({
+    profileId: "project_history_rule",
+    query: historicalPlanQuery,
+  });
+  assert.match(historicalPlanReconstruction.contextBlock, /Bluepath/);
+}
+const projectPassiveUsedToCurrentPlanReconstruction = await projectRuleMemory.reconstructContext({
+  profileId: "project_history_rule",
+  query: "What is Project Iris used to track currently?",
+});
+assert.match(projectPassiveUsedToCurrentPlanReconstruction.contextBlock, /Greenline/);
+assert.doesNotMatch(projectPassiveUsedToCurrentPlanReconstruction.contextBlock, /Bluepath/);
 const projectLateOwnerNewReport = await projectRuleMemory.observeWithReport({
   type: "conversation.message",
   profileId: "project_late_arrival_rule",

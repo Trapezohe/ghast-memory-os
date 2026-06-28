@@ -159,6 +159,17 @@ function includesAny(text: string, needles: string[]): boolean {
   return needles.some((needle) => normalized.includes(normalizedText(needle)));
 }
 
+function hasHistoricalUsedToCue(query: string): boolean {
+  if (/\b(?:am|are|be|been|being|is|was|were)\s+used\s+to\b/iu.test(query)) return false;
+  return (
+    /\b(?:did|do|does)\b[^?.!\n]{0,80}\buse\s+to\b/iu.test(query) ||
+    /\b(?:how|what|when|where|which|who)\b[^?.!\n]{0,80}\bused\s+to\s+(?:be|belong|call|have|live|mean|own|use|work)\b/iu.test(
+      query,
+    ) ||
+    /\b(?:formerly|originally|previously)\b[^?.!\n]{0,80}\bused\s+to\b/iu.test(query)
+  );
+}
+
 type ReconstructionEvidenceCoverage = NonNullable<
   ReconstructedContext["stats"]["evidenceCoverage"]
 >;
@@ -425,9 +436,13 @@ function inferTemporalRecallPurpose(
       "history",
       "historical",
       "before",
+      "formerly",
+      "originally",
+      "at the time",
       "old state",
       "old status",
-    ])
+    ]) ||
+    hasHistoricalUsedToCue(query)
   ) {
     return "history";
   }
