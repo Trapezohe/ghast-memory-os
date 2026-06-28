@@ -50,7 +50,7 @@ function hasAny(metadata: Record<string, unknown>, keys: string[]): boolean {
   return keys.some((key) => typeof metadata[key] === "string" && String(metadata[key]).trim());
 }
 
-function explicitEventTimeContextIsValidity(text: string, index: number, length: number): boolean {
+function explicitEventTimeContextIsValidity(text: string, index: number): boolean {
   const before = text.slice(Math.max(0, index - 36), index).trimEnd();
   return (
     /\b(?:valid|active|effective|expires?|expired|expiration(?:\s+date)?|until|through|validity)(?:\s+(?:is|was))?$/iu.test(
@@ -67,7 +67,7 @@ export function explicitEventTimeMetadata(content: string): Record<string, strin
   for (const pattern of patterns) {
     const match = pattern.exec(content);
     const value = match?.[1];
-    if (!value || explicitEventTimeContextIsValidity(content, match.index, match[0].length)) continue;
+    if (!value || explicitEventTimeContextIsValidity(content, match.index)) continue;
     const eventTime = normalizeExplicitTemporalInstant(value);
     if (eventTime) return { eventTime };
   }
@@ -87,7 +87,7 @@ export function explicitTemporalValidityMetadata(content: string): Record<string
     ),
     new RegExp(String.raw`\b(?:valid|active|effective)\s+(?:to|until|through)\s+(${DATE_OR_INSTANT})`, "iu"),
     new RegExp(String.raw`\buntil\s+(${DATE_OR_INSTANT})`, "iu"),
-    new RegExp(String.raw`\b(?:expires?|expired|expiration date)(?:\s+(?:is|was|on|at))?\s+(${DATE_OR_INSTANT})`, "iu"),
+    new RegExp(String.raw`\b(?:expires?|expired|expiration(?:\s+date)?)(?:\s+(?:is|was|on|at))?\s+(${DATE_OR_INSTANT})`, "iu"),
     new RegExp(String.raw`(?:有效期到|到期(?:于)?|截止(?:到)?|直到)\s*(${DATE_OR_INSTANT})`, "u"),
     new RegExp(String.raw`到\s*(${DATE_OR_INSTANT})\s*(?:为止|截止)`, "u"),
   ];
