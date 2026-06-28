@@ -939,6 +939,7 @@ export function extractRuleMemoryCandidates(
         kind: "fact",
         content: text,
         confidence: 0.52,
+        predicate: "user.fact",
         metadata: {
           rule: "durable_observation_fact",
         },

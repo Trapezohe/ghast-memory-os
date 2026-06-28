@@ -3091,7 +3091,16 @@ const durableObservationDecision = durableObservationReport.extraction?.decision
 assert.equal(durableObservationDecision?.candidate.confidence, 0.52);
 assert.equal(durableObservationDecision?.candidate.metadata?.rule, "durable_observation_fact");
 assert.equal(durableObservationReport.memoryIds.length, 1);
-assert.equal(durableObservationReport.worldBeliefIds.length, 0);
+assert.equal(durableObservationReport.worldBeliefIds.length, 1);
+const normalDurableObservationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Caroline: I went camping yesterday.",
+});
+assert.equal(normalDurableObservationReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(normalDurableObservationReport.memoryIds.length, 1);
+assert.equal(normalDurableObservationReport.worldBeliefIds.length, 1);
 const speakerAttributeReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -3524,6 +3533,30 @@ try {
   assert.equal(speakerBirthplaceBelief?.subject, "person:rowan");
   assert.equal(speakerBirthplaceBelief?.predicate, "user.fact");
   assert.match(speakerBirthplaceBelief?.object ?? "", /Seattle/);
+  const durableObservationBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(durableObservationReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string }
+    | undefined;
+  assert.equal(durableObservationBelief?.subject, "person:caroline");
+  assert.equal(durableObservationBelief?.predicate, "user.fact");
+  assert.match(durableObservationBelief?.object ?? "", /support group/);
+  const normalDurableObservationBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(normalDurableObservationReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string }
+    | undefined;
+  assert.equal(normalDurableObservationBelief?.subject, "person:caroline");
+  assert.equal(normalDurableObservationBelief?.predicate, "user.fact");
+  assert.match(normalDurableObservationBelief?.object ?? "", /camping/);
   const favoritePreferenceBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate
@@ -3661,6 +3694,18 @@ const speakerBirthplaceReconstruction = await rulesReportMemory.reconstructConte
   maxMemories: 4,
 });
 assert.match(speakerBirthplaceReconstruction.contextBlock, /Seattle/);
+const normalDurableObservationReconstruction = await rulesReportMemory.reconstructContext({
+  profileId: "rules_report",
+  query: "What did Caroline do yesterday?",
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 6,
+});
+assert.match(normalDurableObservationReconstruction.contextBlock, /camping/);
+assert.equal(
+  normalDurableObservationReconstruction.paths.some((path) => path.targetType === "world_belief"),
+  true,
+);
 const multiwordNamedPersonPrepared = await rulesReportMemory.prepareTurn({
   profileId: "rules_report",
   messages: [{ role: "user", content: "Which travel planning tool belongs to Mary Jane?" }],
