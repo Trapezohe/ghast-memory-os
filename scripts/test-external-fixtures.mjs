@@ -132,12 +132,20 @@ try {
   const suiteMarkdown = path.join(failureTmp, "suite-summary.md");
   writeFileSync(
     failingJsonl,
-    `${JSON.stringify({
-      id: "fixture-failure-report",
-      events: [{ type: "memory", kind: "fact", content: "Visible fixture answer is Alpha." }],
-      question: "What is visible?",
-      expectedAll: ["Missing Alpha"],
-    })}\n`,
+    [
+      {
+        id: "fixture-failure-report",
+        events: [{ type: "memory", kind: "fact", content: "Visible fixture answer is Alpha." }],
+        question: "What is visible?",
+        expectedAll: ["Missing Alpha"],
+      },
+      {
+        id: "fixture-normalization-report",
+        events: [{ type: "memory", kind: "fact", content: "Visible fixture answer is Alpha-Beta." }],
+        question: "What is visible?",
+        expectedAll: ["Alpha Beta"],
+      },
+    ].map((row) => JSON.stringify(row)).join("\n") + "\n",
   );
   writeFileSync(
     failingSuite,
@@ -174,14 +182,24 @@ try {
     if (!failingReport.totalFailureStages?.some((entry) => entry.name === "answer_not_in_input" && entry.count === 1)) {
       failures.push("failure smoke missing answer_not_in_input stage");
     }
+    if (!failingReport.totalFailureStages?.some((entry) => entry.name === "answer_normalization_mismatch" && entry.count === 1)) {
+      failures.push("failure smoke missing answer_normalization_mismatch stage");
+    }
     if (perRunReport.summary?.failureSamples?.[0]?.id !== "fixture-failure-report") {
       failures.push("failure smoke missing per-run failure sample");
     }
-    if (!/## Failure Samples/.test(markdown) || !/answer_not_in_input/.test(markdown)) {
+    if (
+      !/## Failure Samples/.test(markdown) ||
+      !/answer_not_in_input/.test(markdown) ||
+      !/answer_normalization_mismatch/.test(markdown)
+    ) {
       failures.push("failure smoke markdown missing failure sample details");
     }
-    if (!/BenchmarkStatus: FAIL/.test(suiteMarkdownText)) {
-      failures.push("failure smoke suite markdown missing failed benchmark status");
+    if (
+      !/BenchmarkStatus: FAIL/.test(suiteMarkdownText) ||
+      !/answer_normalization_mismatch/.test(suiteMarkdownText)
+    ) {
+      failures.push("failure smoke suite markdown missing failed benchmark status or normalization stage");
     }
   }
 } finally {
