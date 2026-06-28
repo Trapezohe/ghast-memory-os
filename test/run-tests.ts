@@ -1099,6 +1099,16 @@ assert.equal(
   sensitiveHistorySearch.some((entry) => entry.id === sensitiveHistoryMemory.id),
   false,
 );
+const sensitiveFuzzyHistorySearch = await extractorMemory.search({
+  profileId: "extractor",
+  query: "Cetsu previuos privat plan",
+  purpose: "history",
+  limit: 10,
+});
+assert.equal(
+  sensitiveFuzzyHistorySearch.some((entry) => entry.id === sensitiveHistoryMemory.id),
+  false,
+);
 const sensitiveHistorySearchOverride = await extractorMemory.search({
   profileId: "extractor",
   query: "Cetus previous private plan",
@@ -1108,6 +1118,17 @@ const sensitiveHistorySearchOverride = await extractorMemory.search({
 });
 assert.equal(
   sensitiveHistorySearchOverride.some((entry) => entry.id === sensitiveHistoryMemory.id),
+  true,
+);
+const sensitiveFuzzyHistorySearchOverride = await extractorMemory.search({
+  profileId: "extractor",
+  query: "Cetsu previuos privat plan",
+  purpose: "history",
+  includeSensitive: true,
+  limit: 10,
+});
+assert.equal(
+  sensitiveFuzzyHistorySearchOverride.some((entry) => entry.id === sensitiveHistoryMemory.id),
   true,
 );
 const personHistorySearch = await extractorMemory.search({
@@ -2777,6 +2798,13 @@ const fuzzyHybridMatches = await memory.search({
   limit: 5,
 });
 assert.equal(fuzzyHybridMatches.some((entry) => entry.id === fuzzyVectorMemory.id), true);
+const fuzzyHistoryHybridMatches = await memory.search({
+  profileId: "fts-history",
+  query: "Auroa cheklist valdiation",
+  purpose: "history",
+  limit: 5,
+});
+assert.equal(fuzzyHistoryHybridMatches.some((entry) => entry.id === fuzzyVectorMemory.id), true);
 const fuzzyManageMatches = await memory.search({
   profileId: "fts-history",
   query: "Auroa cheklist valdiation",

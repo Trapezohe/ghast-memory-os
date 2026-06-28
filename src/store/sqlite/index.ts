@@ -1263,7 +1263,8 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     }
 
     const lexicalRows = memoryLexicalRowsForSearch(input, candidateLimit);
-    if ((input.purpose ?? "context") !== "context") return lexicalRows;
+    const purpose = input.purpose ?? "context";
+    if (purpose !== "context" && purpose !== "history") return lexicalRows;
     const vectorRows = memoryVectorRowsForSearch(input, candidateLimit);
     if (vectorRows.length === 0) return lexicalRows;
     return mergeSearchRows(lexicalRows, vectorRows, candidateLimit);
