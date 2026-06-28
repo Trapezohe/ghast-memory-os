@@ -334,6 +334,22 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
     }
     return null;
   }
+  const workAs = /^\s*I\s+work\s+as\s+(?:(?:an?|the)\s+)?(.{1,80}?)\s*\.?\s*$/iu.exec(utterance);
+  if (workAs) {
+    const object = projectBeliefObject(workAs[1]);
+    if (object && !/^(?:not|unknown|none|n\/a)\b/iu.test(object)) {
+      return {
+        kind: "fact",
+        content: text,
+        confidence: 0.66,
+        predicate: "person.role",
+        object,
+        cardinality: "single",
+        metadata: { rule: "first_person_work_as" },
+      };
+    }
+    return null;
+  }
   const birthplace = /^\s*I\s+was\s+born\s+in\s+(.{1,80}?)\s*\.?\s*$/iu.exec(utterance);
   if (birthplace) {
     const object = projectBeliefObject(birthplace[1]);
@@ -411,7 +427,10 @@ const NON_PERSON_SINGLE_NAMES = new Set([
   "amazon",
   "anthropic",
   "apple",
+  "assistant",
   "azure",
+  "bot",
+  "chatbot",
   "chrome",
   "docker",
   "facebook",
@@ -428,6 +447,7 @@ const NON_PERSON_SINGLE_NAMES = new Set([
   "openai",
   "postgres",
   "redis",
+  "robot",
   "slack",
   "sqlite",
   "windows",
@@ -511,7 +531,12 @@ function metadataSpeakerIsNonPerson(
 
 function contentHasExplicitNonPersonSpeaker(content: string): boolean {
   const prefix = speakerPrefixMatch(content)?.prefix;
-  return Boolean(prefix && !isNonSpeakerPrefix(prefix) && explicitNonPersonSubject(prefix));
+  const normalized = prefix?.trim().toLowerCase();
+  return Boolean(
+    prefix &&
+      explicitNonPersonSubject(prefix) &&
+      (!isNonSpeakerPrefix(prefix) || (normalized ? NON_PERSON_SINGLE_NAMES.has(normalized) : false)),
+  );
 }
 
 function nonPersonSpeakerCandidate(
@@ -1043,6 +1068,7 @@ export function extractRuleMemoryCandidates(
 
   const attributeCandidate = firstPersonAttributeCandidate(text);
   if (attributeCandidate) return [attributeCandidate];
+  if (/^\s*I\s+work\s+as\s+(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
   if (/^\s*I\s+live\s+in\s+(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
   if (/^\s*my\s+(?:full\s+)?name\s+(?:is|=)\s+(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
   if (/^\s*I\s+was\s+born\s+in\s+(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];

@@ -2822,6 +2822,15 @@ const nonPersonSpeakerExtractorPrefixReport =
 assert.equal(nonPersonSpeakerExtractorPrefixReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(nonPersonSpeakerExtractorPrefixReport.memoryIds.length, 0);
 assert.equal(nonPersonSpeakerExtractorPrefixReport.worldBeliefIds.length, 0);
+const assistantSpeakerExtractorReport = await nonPersonSpeakerExtractorMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "non_person_speaker_extractor",
+  role: "user",
+  content: "Assistant: I work as unknown.",
+});
+assert.equal(assistantSpeakerExtractorReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(assistantSpeakerExtractorReport.memoryIds.length, 0);
+assert.equal(assistantSpeakerExtractorReport.worldBeliefIds.length, 0);
 await nonPersonSpeakerExtractorMemory.close();
 
 const hostAliasSpeakerExtractorStore = createSqliteMemoryStore({
@@ -3241,11 +3250,49 @@ const invalidSpeakerLiveInReport = await rulesReportMemory.observeWithReport({
 assert.equal(invalidSpeakerLiveInReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(invalidSpeakerLiveInReport.memoryIds.length, 0);
 assert.equal(invalidSpeakerLiveInReport.worldBeliefIds.length, 0);
+const speakerWorkAsReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Morgan: I work as a designer.",
+  metadata: {
+    speaker: "Morgan",
+    participants: ["Morgan", "Blair"],
+  },
+});
+assert.equal(speakerWorkAsReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(speakerWorkAsReport.memoryIds.length, 1);
+assert.equal(speakerWorkAsReport.worldBeliefIds.length, 1);
+const invalidSpeakerWorkAsReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_work_as_invalid",
+  role: "user",
+  content: "Morgan: I work as unknown.",
+  metadata: {
+    speaker: "Morgan",
+    participants: ["Morgan", "Blair"],
+  },
+});
+assert.equal(invalidSpeakerWorkAsReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(invalidSpeakerWorkAsReport.memoryIds.length, 0);
+assert.equal(invalidSpeakerWorkAsReport.worldBeliefIds.length, 0);
 assert.equal(
   speakerMajorReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
     ?.candidate.metadata?.rule,
   "first_person_structured_attribute",
 );
+assert.equal(extractRuleMemoryCandidates("I work as a designer.")[0]?.predicate, "person.role");
+assert.equal(extractRuleMemoryCandidates("I work as designer.")[0]?.object, "designer");
+assert.equal(extractRuleMemoryCandidates("I work as an engineer.")[0]?.object, "engineer");
+assert.equal(extractRuleMemoryCandidates("I work at Acme Labs.")[0]?.predicate, "user.fact");
+for (const invalidWorkAs of [
+  "I work as unknown.",
+  "I work as not designer.",
+  "I work as none.",
+  "I work as n/a.",
+]) {
+  assert.equal(extractRuleMemoryCandidates(invalidWorkAs).length, 0);
+}
 assert.equal(extractRuleMemoryCandidates("I live in Berlin.")[0]?.predicate, "person.location");
 for (const invalidLiveIn of [
   "I live in unknown.",
@@ -3458,6 +3505,8 @@ for (const nonPersonSpeakerContent of [
   "OpenAI: My workflow is to draft first.",
   "OpenAI: I was born in Seattle.",
   "OpenAI: Project Atlas status is green.",
+  "Robot: I work as a designer.",
+  "Assistant: I work as unknown.",
 ]) {
   const report = await rulesReportMemory.observeWithReport({
     type: "conversation.message",
@@ -3746,6 +3795,18 @@ try {
   assert.equal(speakerLiveInBelief?.subject, "person:riley");
   assert.equal(speakerLiveInBelief?.predicate, "person.location");
   assert.equal(speakerLiveInBelief?.object, "Berlin");
+  const speakerWorkAsBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(speakerWorkAsReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string }
+    | undefined;
+  assert.equal(speakerWorkAsBelief?.subject, "person:morgan");
+  assert.equal(speakerWorkAsBelief?.predicate, "person.role");
+  assert.equal(speakerWorkAsBelief?.object, "designer");
   const namedPersonToolBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate
