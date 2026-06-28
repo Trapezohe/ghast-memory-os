@@ -23,6 +23,7 @@ import {
   type MemoryStore,
 } from "../src/index.js";
 import { associationCuesForBelief, extractAssociationCues } from "../src/kernel/associations.js";
+import { extractRuleMemoryCandidates } from "../src/kernel/extraction.js";
 import { externalBenchmarkGitInfoForPackageRoot } from "../src/gym/external.js";
 import {
   renderHostCompatibilityGymMarkdown,
@@ -2359,6 +2360,13 @@ const nonPersonSpeakerExtractorMemory = createMemoryOS({
       confidence: 0.99,
       subject: "person:openai",
     },
+    {
+      kind: "project",
+      content: "Project Atlas status is green.",
+      confidence: 0.99,
+      predicate: "project.status",
+      subject: "project:Atlas",
+    },
   ],
 });
 const nonPersonSpeakerExtractorReport = await nonPersonSpeakerExtractorMemory.observeWithReport({
@@ -2376,10 +2384,20 @@ assert.deepEqual(
   nonPersonSpeakerExtractorReport.extraction?.decisions
     .filter((decision) => decision.decision === "rejected")
     .map((decision) => decision.reason),
-  ["non_person_speaker", "non_person_speaker", "non_person_speaker"],
+  ["non_person_speaker", "non_person_speaker", "non_person_speaker", "non_person_speaker"],
 );
 assert.equal(nonPersonSpeakerExtractorReport.memoryIds.length, 0);
 assert.equal(nonPersonSpeakerExtractorReport.worldBeliefIds.length, 0);
+const nonPersonSpeakerExtractorPrefixReport =
+  await nonPersonSpeakerExtractorMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: "non_person_speaker_extractor",
+    role: "user",
+    content: "OpenAI: I prefer Azure for some workloads.",
+  });
+assert.equal(nonPersonSpeakerExtractorPrefixReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(nonPersonSpeakerExtractorPrefixReport.memoryIds.length, 0);
+assert.equal(nonPersonSpeakerExtractorPrefixReport.worldBeliefIds.length, 0);
 await nonPersonSpeakerExtractorMemory.close();
 
 const hostAliasSpeakerExtractorStore = createSqliteMemoryStore({
@@ -2388,10 +2406,10 @@ const hostAliasSpeakerExtractorStore = createSqliteMemoryStore({
 const hostAliasSpeakerExtractorMemory = createMemoryOS({
   profileId: "host_alias_speaker_extractor",
   store: hostAliasSpeakerExtractorStore,
-  extractor: () => [
+  extractor: (input) => [
     {
       kind: "preference",
-      content: "I prefer compact implementation notes.",
+      content: input.event.content,
       confidence: 0.99,
       predicate: "user.preference",
     },
@@ -2409,6 +2427,20 @@ const hostAliasSpeakerExtractorReport = await hostAliasSpeakerExtractorMemory.ob
 assert.equal(hostAliasSpeakerExtractorReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(hostAliasSpeakerExtractorReport.memoryIds.length, 1);
 assert.equal(hostAliasSpeakerExtractorReport.worldBeliefIds.length, 1);
+const hostAliasSelfParticipantExtractorReport =
+  await hostAliasSpeakerExtractorMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: "host_alias_speaker_extractor",
+    role: "user",
+    content: "I prefer compact QA notes.",
+    metadata: {
+      speaker: "MiraUser",
+      participants: ["MiraUser"],
+    },
+  });
+assert.equal(hostAliasSelfParticipantExtractorReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(hostAliasSelfParticipantExtractorReport.memoryIds.length, 1);
+assert.equal(hostAliasSelfParticipantExtractorReport.worldBeliefIds.length, 1);
 await hostAliasSpeakerExtractorMemory.close();
 
 const unsafeExtractorStore = createSqliteMemoryStore({
@@ -2661,6 +2693,23 @@ const nonPersonSpeakerPrefixReport = await rulesReportMemory.observeWithReport({
 assert.equal(nonPersonSpeakerPrefixReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(nonPersonSpeakerPrefixReport.memoryIds.length, 0);
 assert.equal(nonPersonSpeakerPrefixReport.worldBeliefIds.length, 0);
+assert.equal(extractRuleMemoryCandidates("OpenAI: I prefer Azure for some workloads.").length, 0);
+assert.equal(extractRuleMemoryCandidates("Note: I prefer compact implementation notes.").length, 1);
+for (const nonPersonSpeakerContent of [
+  "OpenAI: Do not push Project Atlas updates.",
+  "OpenAI: My workflow is to draft first.",
+  "OpenAI: Project Atlas status is green.",
+]) {
+  const report = await rulesReportMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: "rules_report",
+    role: "user",
+    content: nonPersonSpeakerContent,
+  });
+  assert.equal(report.extraction?.acceptedCandidateCount, 0);
+  assert.equal(report.memoryIds.length, 0);
+  assert.equal(report.worldBeliefIds.length, 0);
+}
 const nonPersonSpeakerMetadataReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -2686,6 +2735,22 @@ const nonPersonSpeakerMetadataOnlyReport = await rulesReportMemory.observeWithRe
 assert.equal(nonPersonSpeakerMetadataOnlyReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(nonPersonSpeakerMetadataOnlyReport.memoryIds.length, 0);
 assert.equal(nonPersonSpeakerMetadataOnlyReport.worldBeliefIds.length, 0);
+for (const metadata of [
+  { speaker: "OpenAI" },
+  { speaker: "OpenAI", participants: ["OpenAI"] },
+  { speaker: "OpenAI", participants: ["OpenAI", "User"] },
+]) {
+  const report = await rulesReportMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: "rules_report",
+    role: "user",
+    content: "Project Atlas status is green.",
+    metadata,
+  });
+  assert.equal(report.extraction?.acceptedCandidateCount, 0);
+  assert.equal(report.memoryIds.length, 0);
+  assert.equal(report.worldBeliefIds.length, 0);
+}
 const nonPersonSpeakerSelfParticipantReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",

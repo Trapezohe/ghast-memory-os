@@ -219,12 +219,19 @@ function uniqueCandidatesWithDecisions(
 }
 
 function stripSpeakerPrefix(text: string): string {
-  const match = /^([\p{L}\p{M}' -]{2,48})\s*:\s*(.+)$/u.exec(text);
-  const prefix = match?.[1]?.trim();
-  if (!prefix || !match?.[2] || isNonSpeakerPrefix(prefix) || !stableNamedPersonSubject(prefix)) {
+  const match = speakerPrefixMatch(text);
+  const prefix = match?.prefix;
+  if (!prefix || !match?.rest || isNonSpeakerPrefix(prefix) || !stableNamedPersonSubject(prefix)) {
     return text;
   }
-  return match[2].trim();
+  return match.rest;
+}
+
+function speakerPrefixMatch(text: string): { prefix: string; rest: string } | null {
+  const match = /^([\p{L}\p{M}' -]{2,48})\s*:\s*(.+)$/u.exec(text);
+  const prefix = match?.[1]?.trim();
+  const rest = match?.[2]?.trim();
+  return prefix && rest ? { prefix, rest } : null;
 }
 
 function hasFirstPersonAnchor(text: string): boolean {
@@ -388,7 +395,7 @@ function metadataSpeakerIsNonPerson(
   if (/^(?:current[-_ ]?user|user|self|me)$/iu.test(speaker)) return false;
   if (stableNamedPersonSubject(speaker)) return false;
   if (explicitNonPersonSubject(speaker)) return true;
-  const prefix = /^([\p{L}\p{M}' -]{2,48})\s*:/u.exec(content)?.[1]?.trim();
+  const prefix = speakerPrefixMatch(content)?.prefix;
   if (prefix && entityKey(prefix) === entityKey(speaker)) return true;
   const participantKeys = Array.isArray(metadata.participants)
     ? metadata.participants
@@ -403,23 +410,16 @@ function metadataSpeakerIsNonPerson(
   return participantKeys.length > 0;
 }
 
-function speakerScopedUserCandidate(
-  candidate: MemoryExtractionCandidate,
+function contentHasExplicitNonPersonSpeaker(content: string): boolean {
+  const prefix = speakerPrefixMatch(content)?.prefix;
+  return Boolean(prefix && !isNonSpeakerPrefix(prefix) && explicitNonPersonSubject(prefix));
+}
+
+function nonPersonSpeakerCandidate(
   metadata: Record<string, unknown> | undefined,
   content: string,
 ): boolean {
-  const predicatePrefix = candidate.predicate?.split(".")[0]?.toLowerCase();
-  const subjectPrefix = candidate.subject?.split(/[:.]/u)[0]?.toLowerCase();
-  if (!metadataSpeakerIsNonPerson(metadata, content)) return false;
-  if (predicatePrefix === "user" || predicatePrefix === "person") return true;
-  if (subjectPrefix === "user" || subjectPrefix === "person") return true;
-  return (
-    candidate.subject === undefined &&
-    (candidate.kind === "fact" ||
-      candidate.kind === "preference" ||
-      candidate.kind === "boundary" ||
-      candidate.kind === "procedure")
-  );
+  return metadataSpeakerIsNonPerson(metadata, content) || contentHasExplicitNonPersonSpeaker(content);
 }
 
 function metadataConfirmsNamedPerson(
@@ -690,6 +690,9 @@ export function extractRuleMemoryCandidates(
 ): MemoryExtractionCandidate[] {
   const text = normalize(content);
   if (!text || isPersonRoutedMemory(text)) return [];
+  const nonPersonSpeaker =
+    metadataSpeakerIsNonPerson(metadata, text) || contentHasExplicitNonPersonSpeaker(text);
+  if (nonPersonSpeaker) return [];
 
   if (
     /不要再提醒|别再提醒|不要主动提|不要再推|do not remind|don't remind|do not push|don't push/iu.test(
@@ -708,7 +711,6 @@ export function extractRuleMemoryCandidates(
   }
 
   if (isQuestionLike(stripSpeakerPrefix(text))) return [];
-  const nonPersonSpeaker = metadataSpeakerIsNonPerson(metadata, text);
 
   if (
     !nonPersonSpeaker &&
@@ -856,8 +858,7 @@ export async function extractMemoryCandidatePlan(input: {
       continue;
     }
     if (
-      speakerScopedUserCandidate(
-        result.candidate,
+      nonPersonSpeakerCandidate(
         input.extractionInput.event.metadata,
         input.extractionInput.event.content,
       )
