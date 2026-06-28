@@ -3324,11 +3324,33 @@ for (const invalidRoleAttribute of [
   assert.equal(extractRuleMemoryCandidates(invalidRoleAttribute).length, 0);
 }
 assert.equal(extractRuleMemoryCandidates("I live in Berlin.")[0]?.predicate, "person.location");
+assert.equal(extractRuleMemoryCandidates("I currently live in Berlin.")[0]?.predicate, "person.location");
+assert.equal(extractRuleMemoryCandidates("I am from Boston.")[0]?.predicate, "person.hometown");
+assert.equal(extractRuleMemoryCandidates("I'm from Boston.")[0]?.object, "Boston");
 for (const invalidLiveIn of [
   "I live in unknown.",
+  "I currently live in unknown.",
   "I live in not Berlin.",
   "I live in none.",
   "I live in n/a.",
+  "I am from unknown.",
+  "I am from not Boston.",
+  "I am from none.",
+  "I am from n/a.",
+  "I currently live in St. Louis. Blair lives in Seattle.",
+  "I'm from Boston; Blair is from Seattle.",
+  "I am from Boston and Blair is from Seattle.",
+  "I am from Boston. I currently live in St. Louis.",
+  "i am from Boston. i currently live in St. Louis.",
+  "I currently live in St. Louis. I was born in Seattle.",
+  "i currently live in St. Louis. i was born in Seattle.",
+  "I work as an architect and I am from Boston.",
+  "i work as an architect and i am from Boston.",
+  "I was born in Seattle and I live in Boston.",
+  "i was born in Seattle and i live in Boston.",
+  "I work as an architect, not a designer.",
+  "I was born in Seattle in 1990.",
+  "My hometown is Boston. Blair's hometown is Seattle.",
 ]) {
   assert.equal(extractRuleMemoryCandidates(invalidLiveIn).length, 0);
 }
@@ -3387,6 +3409,18 @@ assert.equal(
   "person.location",
 );
 assert.equal(
+  extractRuleMemoryCandidates("Alex currently lives in St. Louis.", namedPersonAttributeMeta)[0]?.object,
+  "St. Louis",
+);
+assert.equal(
+  extractRuleMemoryCandidates("Alex is from Boston.", namedPersonAttributeMeta)[0]?.predicate,
+  "person.hometown",
+);
+assert.equal(
+  extractRuleMemoryCandidates("Alex comes from Boston.", namedPersonAttributeMeta)[0]?.object,
+  "Boston",
+);
+assert.equal(
   extractRuleMemoryCandidates("Alex was born in Seattle.", namedPersonAttributeMeta)[0]?.predicate,
   "person.birthplace",
 );
@@ -3397,6 +3431,7 @@ assert.equal(
 assert.equal(extractRuleMemoryCandidates("Alex's job is an unknown.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Alex works as an unknown.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Alex lives in an unknown.", namedPersonAttributeMeta).length, 0);
+assert.equal(extractRuleMemoryCandidates("Alex is from an unknown.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Alex was born in an unknown place.", namedPersonAttributeMeta).length, 0);
 assert.equal(
   extractRuleMemoryCandidates("Alex lives in Boston and Blair lives in Seattle.", namedPersonAttributeMeta).length,
@@ -3416,6 +3451,8 @@ assert.equal(
 );
 assert.equal(extractRuleMemoryCandidates("Alex was born in Seattle in 1990.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Siri lives in Boston.", namedPersonAttributeMeta).length, 0);
+assert.equal(extractRuleMemoryCandidates("Siri is from Boston.", namedPersonAttributeMeta).length, 0);
+assert.equal(extractRuleMemoryCandidates("Siri currently lives in St. Louis.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Siri works as an architect.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Siri was born in Seattle.", namedPersonAttributeMeta).length, 0);
 assert.equal(extractRuleMemoryCandidates("Casey's job is an architect.", namedPersonAttributeMeta).length, 0);
@@ -3511,6 +3548,30 @@ const namedPersonDirectBirthplaceReport = await rulesReportMemory.observeWithRep
 assert.equal(namedPersonDirectBirthplaceReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(namedPersonDirectBirthplaceReport.memoryIds.length, 1);
 assert.equal(namedPersonDirectBirthplaceReport.worldBeliefIds.length, 1);
+const namedPersonDirectHometownReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_named_person_attribute",
+  role: "user",
+  content: "Alex is from Boston.",
+  metadata: {
+    participants: ["Alex", "Blair", "Mary Jane"],
+  },
+});
+assert.equal(namedPersonDirectHometownReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(namedPersonDirectHometownReport.memoryIds.length, 1);
+assert.equal(namedPersonDirectHometownReport.worldBeliefIds.length, 1);
+const namedPersonDirectCurrentLocationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_named_person_attribute",
+  role: "user",
+  content: "Blair currently lives in St. Louis.",
+  metadata: {
+    participants: ["Alex", "Blair", "Mary Jane"],
+  },
+});
+assert.equal(namedPersonDirectCurrentLocationReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(namedPersonDirectCurrentLocationReport.memoryIds.length, 1);
+assert.equal(namedPersonDirectCurrentLocationReport.worldBeliefIds.length, 1);
 const invalidNamedPersonDirectReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report_named_person_attribute_invalid",
@@ -4080,6 +4141,30 @@ try {
   assert.equal(namedPersonDirectBirthplaceBelief?.subject, "person:alex");
   assert.equal(namedPersonDirectBirthplaceBelief?.predicate, "person.birthplace");
   assert.equal(namedPersonDirectBirthplaceBelief?.object, "Seattle");
+  const namedPersonDirectHometownBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(namedPersonDirectHometownReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string }
+    | undefined;
+  assert.equal(namedPersonDirectHometownBelief?.subject, "person:alex");
+  assert.equal(namedPersonDirectHometownBelief?.predicate, "person.hometown");
+  assert.equal(namedPersonDirectHometownBelief?.object, "Boston");
+  const namedPersonDirectCurrentLocationBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(namedPersonDirectCurrentLocationReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string }
+    | undefined;
+  assert.equal(namedPersonDirectCurrentLocationBelief?.subject, "person:blair");
+  assert.equal(namedPersonDirectCurrentLocationBelief?.predicate, "person.location");
+  assert.equal(namedPersonDirectCurrentLocationBelief?.object, "St. Louis");
   const namedPersonToolBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate
