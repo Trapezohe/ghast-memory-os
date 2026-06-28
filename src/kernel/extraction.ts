@@ -331,13 +331,13 @@ function stableNamedPersonSubject(name: string): boolean {
   if (nonPersonSingleNames.has(normalized)) return false;
   if (!/\s/u.test(trimmed) && /\p{Ll}\p{Lu}/u.test(trimmed)) return false;
   if (
-    /^(?:project|team|company|org|organization|group|support|note|fact|example|preference|task|ticket|repo|repository|service|system|app|tool|product|model|agent)$/iu.test(
+    /^(?:project|team|company|org|organization|group|support|note|fact|example|preference|task|ticket|repo|repository|service|system|app|tool|product|model|agent|inc|corp|llc|ltd|labs|research|foundation|university|school|department|committee|platform|cloud)$/iu.test(
       normalized,
     )
   ) {
     return false;
   }
-  return !/\b(?:project|team|company|org|organization|group|support|repo|repository|service|system|app|tool|product|model|agent)\b/iu.test(
+  return !/\b(?:project|team|company|org|organization|group|support|repo|repository|service|system|app|tool|product|model|agent|inc|corp|llc|ltd|labs|research|foundation|university|school|department|committee|platform|cloud)\b/iu.test(
     normalized,
   );
 }

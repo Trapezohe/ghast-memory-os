@@ -2754,7 +2754,9 @@ for (const transientStatement of [
 for (const nonPersonParticipantStatement of [
   "Chrome uses Keychain for credential storage.",
   "OpenAI uses Azure for some workloads.",
+  "OpenAI Research uses Azure for some workloads.",
   "GitHub uses Actions for CI.",
+  "Acme Labs uses Linear for planning.",
 ]) {
   const nonPersonParticipantReport = await rulesReportMemory.observeWithReport({
     type: "conversation.message",
@@ -2762,7 +2764,7 @@ for (const nonPersonParticipantStatement of [
     role: "user",
     content: nonPersonParticipantStatement,
     metadata: {
-      participants: ["Chrome", "OpenAI", "GitHub"],
+      participants: ["Chrome", "OpenAI", "OpenAI Research", "GitHub", "Acme Labs"],
     },
   });
   assert.equal(nonPersonParticipantReport.extraction?.acceptedCandidateCount, 0);
