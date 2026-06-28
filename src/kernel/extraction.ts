@@ -266,19 +266,33 @@ function isQuestionLike(text: string): boolean {
   );
 }
 
+function hasDurableTemporalSignal(text: string): boolean {
+  return (
+    /\b(?:today|tomorrow|yesterday|last|next|since|before|after|daily|weekly|monthly|monday|tuesday|wednesday|thursday|friday|saturday|sunday|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|\d{4}|\d{1,2}:\d{2})\b/iu.test(
+      text,
+    ) || /\d{1,2}\s*(?:分钟|小时|天|周|月|年)/u.test(text)
+  );
+}
+
+function hasPersonalWorldEventSignal(text: string): boolean {
+  return (
+    /\b(?:went|ran|painted|planning|planned|researching|chose|started|finished|graduated|studying|working|commute|relationship|single|married|identity|transgender|counseling|therapy|mental health|adoption|career|family|kids|children|job|work|school|education|birthday|appointment|meeting|trip|travel|camping|race|support group)\b/iu.test(
+      text,
+    ) || /上学|工作|通勤|家庭|孩子|关系|单身|结婚|身份|心理|咨询|收养|旅行|露营|比赛|支持小组/u.test(text)
+  );
+}
+
+function hasNamedPersonEventSignal(text: string): boolean {
+  return /\b(?:went|ran|painted|chose|started|finished|graduated|studying|commute|appointment|meeting|trip|travel|camping|race)\b/iu.test(
+    text,
+  );
+}
+
 function likelyDurableObservationFact(text: string): boolean {
   const utterance = stripSpeakerPrefix(text);
   if (isQuestionLike(utterance)) return false;
   if (!hasFirstPersonAnchor(utterance)) return false;
-  const hasTemporalSignal =
-    /\b(?:today|tomorrow|yesterday|last|next|since|before|after|daily|weekly|monthly|monday|tuesday|wednesday|thursday|friday|saturday|sunday|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|\d{4}|\d{1,2}:\d{2})\b/iu.test(
-      utterance,
-    ) || /\d{1,2}\s*(?:分钟|小时|天|周|月|年)/u.test(utterance);
-  const hasPersonalWorldSignal =
-    /\b(?:went|ran|painted|planning|planned|researching|chose|started|finished|graduated|studying|working|commute|relationship|single|married|identity|transgender|counseling|therapy|mental health|adoption|career|family|kids|children|job|work|school|education|birthday|appointment|meeting|trip|travel|camping|race|support group)\b/iu.test(
-      utterance,
-    ) || /上学|工作|通勤|家庭|孩子|关系|单身|结婚|身份|心理|咨询|收养|旅行|露营|比赛|支持小组/u.test(utterance);
-  return hasTemporalSignal || hasPersonalWorldSignal;
+  return hasDurableTemporalSignal(utterance) || hasPersonalWorldEventSignal(utterance);
 }
 
 function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate | null {
@@ -460,6 +474,23 @@ function metadataConfirmsNamedPerson(
   return metadataPersonNames(metadata).has(entityKey(name));
 }
 
+function metadataConfirmsNamedEventSubject(
+  name: string,
+  metadata: Record<string, unknown> | undefined,
+): boolean {
+  if (!metadata) return false;
+  const names = new Set<string>();
+  for (const value of [
+    ...(Array.isArray(metadata.participants) ? metadata.participants : []),
+    ...(Array.isArray(metadata.speakerAliases) ? metadata.speakerAliases : []),
+  ]) {
+    if (typeof value !== "string" || !stableNamedPersonSubject(value)) continue;
+    const key = entityKey(value);
+    if (key) names.add(key);
+  }
+  return names.has(entityKey(name));
+}
+
 function stableToolObject(value: string | undefined): string | undefined {
   const object = projectBeliefObject(value);
   if (!object) return undefined;
@@ -559,6 +590,36 @@ function namedPersonCurrentAttributeCandidate(
     object,
     cardinality: "single",
     metadata: { rule: "named_person_current_attribute" },
+  };
+}
+
+function namedPersonEventCandidate(
+  text: string,
+  metadata?: Record<string, unknown> | undefined,
+): MemoryExtractionCandidate | null {
+  const utterance = stripSpeakerPrefix(text);
+  if (isQuestionLike(utterance)) return null;
+  const namePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}`;
+  const match = new RegExp(String.raw`^\s*(${namePattern})\s+(.{2,180}?)\s*\.?\s*$`, "u").exec(
+    utterance,
+  );
+  const name = match?.[1]?.trim();
+  const event = projectBeliefObject(match?.[2]);
+  if (!name || !event || !stableNamedPersonSubject(name) || !metadataConfirmsNamedEventSubject(name, metadata)) {
+    return null;
+  }
+  if (/\b(?:I|I'm|I’m|I've|I’ve|my|mine|we|our)\b/iu.test(event)) return null;
+  if (!hasDurableTemporalSignal(event) || !hasNamedPersonEventSignal(event)) return null;
+  return {
+    kind: "fact",
+    content: text,
+    confidence: 0.54,
+    predicate: "person.event",
+    subject: `person:${name}`,
+    subjectAliases: [name],
+    object: event,
+    cardinality: "multi",
+    metadata: { rule: "named_person_event" },
   };
 }
 
@@ -889,6 +950,8 @@ export function extractRuleMemoryCandidates(
   if (personToolCandidate) return [personToolCandidate];
   const personCurrentAttributeCandidate = namedPersonCurrentAttributeCandidate(text, metadata);
   if (personCurrentAttributeCandidate) return [personCurrentAttributeCandidate];
+  const personEventCandidate = namedPersonEventCandidate(text, metadata);
+  if (personEventCandidate) return [personEventCandidate];
 
   if (/步骤|流程|procedure|workflow|when .* do|每次.*先/u.test(text)) {
     return [

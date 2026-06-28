@@ -3736,14 +3736,136 @@ const durableQuestionReport = await rulesReportMemory.observeWithReport({
 });
 assert.equal(durableQuestionReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(durableQuestionReport.memoryIds.length, 0);
+const durableThirdPersonNoMetadataReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Morgan: Blair painted a sunrise in 2022 after the charity race.",
+});
+assert.equal(durableThirdPersonNoMetadataReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(durableThirdPersonNoMetadataReport.memoryIds.length, 0);
+const durableThirdPersonSpeakerOnlyReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Blair painted a sunrise in 2022 after the charity race.",
+  metadata: {
+    speaker: "Blair",
+  },
+});
+assert.equal(durableThirdPersonSpeakerOnlyReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(durableThirdPersonSpeakerOnlyReport.memoryIds.length, 0);
+const durableThirdPersonUnconfirmedReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Morgan: Blair painted a sunrise in 2022 after the charity race.",
+  metadata: {
+    speaker: "Morgan",
+    participants: ["Morgan", "Casey"],
+  },
+});
+assert.equal(durableThirdPersonUnconfirmedReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(durableThirdPersonUnconfirmedReport.memoryIds.length, 0);
+const durableThirdPersonQuestionReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Morgan: Did Blair paint a sunrise in 2022 after the charity race?",
+  metadata: {
+    speaker: "Morgan",
+    participants: ["Morgan", "Blair"],
+  },
+});
+assert.equal(durableThirdPersonQuestionReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(durableThirdPersonQuestionReport.memoryIds.length, 0);
+const durableMixedFirstPersonReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Morgan: Blair and I painted a sunrise in 2022 after the charity race.",
+  metadata: {
+    speaker: "Morgan",
+    participants: ["Morgan", "Blair"],
+  },
+});
+const durableMixedFirstPersonDecision = durableMixedFirstPersonReport.extraction?.decisions.find(
+  (decision) => decision.decision === "accepted",
+);
+assert.equal(durableMixedFirstPersonReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(durableMixedFirstPersonDecision?.candidate.predicate, "user.fact");
+assert.notEqual(durableMixedFirstPersonDecision?.candidate.subject, "person:Blair");
+const durableNonPersonEventReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Morgan: OpenAI ran a migration in 2022 after the outage.",
+  metadata: {
+    speaker: "Morgan",
+    participants: ["Morgan", "OpenAI"],
+  },
+});
+assert.equal(durableNonPersonEventReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(durableNonPersonEventReport.memoryIds.length, 0);
 const durableThirdPersonReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
   role: "user",
-  content: "Alex: Blair painted a sunrise in 2022 after the charity race.",
+  content: "Morgan: Blair painted a sunrise in 2022 after the charity race.",
+  metadata: {
+    speaker: "Morgan",
+    participants: ["Morgan", "Blair"],
+  },
 });
-assert.equal(durableThirdPersonReport.extraction?.acceptedCandidateCount, 0);
-assert.equal(durableThirdPersonReport.memoryIds.length, 0);
+const durableThirdPersonDecision = durableThirdPersonReport.extraction?.decisions.find(
+  (decision) => decision.decision === "accepted",
+);
+assert.equal(durableThirdPersonDecision?.candidate.predicate, "person.event");
+assert.equal(durableThirdPersonDecision?.candidate.subject, "person:Blair");
+assert.equal(durableThirdPersonDecision?.candidate.metadata?.rule, "named_person_event");
+assert.equal(durableThirdPersonReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(durableThirdPersonReport.memoryIds.length, 1);
+assert.equal(durableThirdPersonReport.worldBeliefIds.length, 1);
+const durableThirdPersonAliasReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Blair ran a charity race in 2023 after training.",
+  metadata: {
+    speakerAliases: ["Blair"],
+  },
+});
+assert.equal(durableThirdPersonAliasReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(durableThirdPersonAliasReport.memoryIds.length, 1);
+assert.equal(durableThirdPersonAliasReport.worldBeliefIds.length, 1);
+const durableThirdPersonDb = new Database(rulesReportPath, { readonly: true });
+try {
+  const eventBeliefs = durableThirdPersonDb
+    .prepare(
+      `SELECT status, predicate, subject, object
+         FROM gmos_world_beliefs
+        WHERE profile_id = 'rules_report'
+          AND subject = 'person:blair'
+          AND predicate = 'person.event'
+        ORDER BY object`,
+    )
+    .all() as Array<{ status: string; predicate: string; subject: string; object: string }>;
+  assert.equal(eventBeliefs.length, 2);
+  assert.equal(eventBeliefs.every((belief) => belief.status === "active"), true);
+  assert.equal(eventBeliefs.some((belief) => belief.object.includes("painted a sunrise")), true);
+  assert.equal(eventBeliefs.some((belief) => belief.object.includes("ran a charity race")), true);
+} finally {
+  durableThirdPersonDb.close();
+}
+const durableThirdPersonReconstruction = await rulesReportMemory.reconstructContext({
+  profileId: "rules_report",
+  query: "When did Blair paint a sunrise?",
+  maxSteps: 4,
+  maxBranch: 4,
+  maxMemories: 4,
+});
+assert.match(durableThirdPersonReconstruction.contextBlock, /2022/);
+assert.match(durableThirdPersonReconstruction.contextBlock, /sunrise/);
 const durableChineseQuestionReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
