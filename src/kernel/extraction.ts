@@ -335,6 +335,26 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
         metadata: { rule: "first_person_current_attribute" },
       };
     }
+    return null;
+  }
+  const stableAttribute = /^\s*my\s+(college\s+major|major)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
+    utterance,
+  );
+  if (stableAttribute) {
+    const predicate = personCurrentAttributePredicate(stableAttribute[1]);
+    const object = projectBeliefObject(stableAttribute[2]);
+    if (predicate && object && !/^(?:not|unknown|none|n\/a)\b/iu.test(object)) {
+      return {
+        kind: "fact",
+        content: text,
+        confidence: 0.66,
+        predicate,
+        object,
+        cardinality: "single",
+        metadata: { rule: "first_person_structured_attribute" },
+      };
+    }
+    return null;
   }
   const englishAttribute = /^\s*my\s+([\p{L}\p{N} _-]{2,80}?)\s+(?:is|are)\s+.{1,80}/iu.exec(
     utterance,
@@ -588,6 +608,8 @@ function personCurrentAttributePredicate(field: string | undefined): string | nu
             ? "person.title"
             : normalized === "language"
               ? "person.language"
+              : normalized === "major" || normalized === "college major"
+                ? "person.major"
               : null;
 }
 

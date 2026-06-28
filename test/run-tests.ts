@@ -3150,7 +3150,14 @@ const competingSpeakerMajorReport = await rulesReportMemory.observeWithReport({
 assert.equal(competingSpeakerMajorReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(competingSpeakerMajorReport.memoryIds.length, 1);
 assert.equal(competingSpeakerMajorReport.worldBeliefIds.length, 1);
+assert.equal(
+  speakerMajorReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.metadata?.rule,
+  "first_person_structured_attribute",
+);
 assert.equal(extractRuleMemoryCandidates("My hometown is Boston.")[0]?.predicate, "user.attribute");
+assert.equal(extractRuleMemoryCandidates("My major is unknown.").length, 0);
+assert.equal(extractRuleMemoryCandidates("My current city is unknown.").length, 0);
 const namedPersonToolReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -3538,15 +3545,28 @@ try {
   assert.equal(speakerAttributeBelief?.predicate, "user.attribute");
   const speakerMajorBelief = speakerAttributeDb
     .prepare(
-      `SELECT subject, predicate
+      `SELECT subject, predicate, object
          FROM gmos_world_beliefs
         WHERE id = ?`,
     )
     .get(speakerMajorReport.worldBeliefIds[0]!) as
-    | { subject: string; predicate: string }
+    | { subject: string; predicate: string; object: string }
     | undefined;
   assert.equal(speakerMajorBelief?.subject, "person:alex");
-  assert.equal(speakerMajorBelief?.predicate, "user.attribute");
+  assert.equal(speakerMajorBelief?.predicate, "person.major");
+  assert.equal(speakerMajorBelief?.object, "physics");
+  const competingSpeakerMajorBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(competingSpeakerMajorReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string }
+    | undefined;
+  assert.equal(competingSpeakerMajorBelief?.subject, "person:blair");
+  assert.equal(competingSpeakerMajorBelief?.predicate, "person.major");
+  assert.equal(competingSpeakerMajorBelief?.object, "chemistry");
   const namedPersonToolBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate
