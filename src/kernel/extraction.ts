@@ -366,12 +366,12 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
     }
     return null;
   }
-  const currentAttribute = /^\s*my\s+current\s+(city|location|time\s+zone|timezone|role|title|language)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
+  const currentAttribute = /^\s*my\s+current\s+(city|location|time\s+zone|timezone|role|job|profession|title|language)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
     utterance,
   );
   if (currentAttribute) {
     const predicate = personCurrentAttributePredicate(currentAttribute[1]);
-    const object = projectBeliefObject(currentAttribute[2]);
+    const object = personAttributeObject(currentAttribute[1], currentAttribute[2]);
     if (predicate && object && !/^(?:not|unknown|none|n\/a)\b/iu.test(object)) {
       return {
         kind: "fact",
@@ -385,12 +385,12 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
     }
     return null;
   }
-  const stableAttribute = /^\s*my\s+(full\s+name|name|college\s+major|major|home\s+town|hometown)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
+  const stableAttribute = /^\s*my\s+(full\s+name|name|college\s+major|major|home\s+town|hometown|role|job|profession|title)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
     utterance,
   );
   if (stableAttribute) {
     const predicate = personCurrentAttributePredicate(stableAttribute[1]);
-    const object = projectBeliefObject(stableAttribute[2]);
+    const object = personAttributeObject(stableAttribute[1], stableAttribute[2]);
     if (predicate && object && !/^(?:not|unknown|none|n\/a)\b/iu.test(object)) {
       return {
         kind: "fact",
@@ -659,7 +659,7 @@ function personCurrentAttributePredicate(field: string | undefined): string | nu
       ? "person.location"
       : normalized === "timezone" || normalized === "time zone"
         ? "person.timezone"
-        : normalized === "role"
+        : normalized === "role" || normalized === "job" || normalized === "profession"
           ? "person.role"
           : normalized === "title"
             ? "person.title"
@@ -674,6 +674,15 @@ function personCurrentAttributePredicate(field: string | undefined): string | nu
                   : null;
 }
 
+function personAttributeObject(field: string | undefined, value: string | undefined): string | undefined {
+  const object = projectBeliefObject(value);
+  if (!object) return undefined;
+  const normalized = field?.trim().toLowerCase().replace(/[-_]+/gu, " ").replace(/\s+/gu, " ");
+  return normalized === "role" || normalized === "job" || normalized === "profession" || normalized === "title"
+    ? object.replace(/^(?:an?|the)\s+/iu, "").trim() || undefined
+    : object;
+}
+
 function namedPersonCurrentAttributeCandidate(
   text: string,
   metadata?: Record<string, unknown> | undefined,
@@ -681,7 +690,7 @@ function namedPersonCurrentAttributeCandidate(
   const utterance = stripSpeakerPrefix(text);
   if (isQuestionLike(utterance)) return null;
   const namePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}`;
-  const fieldPattern = String.raw`city|location|time\s+zone|timezone|role|title|language`;
+  const fieldPattern = String.raw`city|location|time\s+zone|timezone|role|job|profession|title|language`;
   const match = [
     new RegExp(
       String.raw`^\s*(${namePattern})\s+current\s+(${fieldPattern})\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$`,
@@ -697,7 +706,7 @@ function namedPersonCurrentAttributeCandidate(
     return null;
   }
   const predicate = personCurrentAttributePredicate(match?.[2]);
-  const object = projectBeliefObject(match?.[3]);
+  const object = personAttributeObject(match?.[2], match?.[3]);
   if (!predicate || !object || /^(?:not|unknown|none|n\/a)\b/iu.test(object)) return null;
   return {
     kind: "fact",
@@ -1068,6 +1077,7 @@ export function extractRuleMemoryCandidates(
 
   const attributeCandidate = firstPersonAttributeCandidate(text);
   if (attributeCandidate) return [attributeCandidate];
+  if (/^\s*my\s+(?:current\s+)?(?:role|job|profession|title)\s+(?:is|=)\s+(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
   if (/^\s*I\s+work\s+as\s+(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
   if (/^\s*I\s+live\s+in\s+(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
   if (/^\s*my\s+(?:full\s+)?name\s+(?:is|=)\s+(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];

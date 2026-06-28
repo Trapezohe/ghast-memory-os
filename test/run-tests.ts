@@ -3263,6 +3263,19 @@ const speakerWorkAsReport = await rulesReportMemory.observeWithReport({
 assert.equal(speakerWorkAsReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(speakerWorkAsReport.memoryIds.length, 1);
 assert.equal(speakerWorkAsReport.worldBeliefIds.length, 1);
+const speakerJobReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Morgan: My job is an architect.",
+  metadata: {
+    speaker: "Morgan",
+    participants: ["Morgan", "Blair"],
+  },
+});
+assert.equal(speakerJobReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(speakerJobReport.memoryIds.length, 1);
+assert.equal(speakerJobReport.worldBeliefIds.length, 1);
 const invalidSpeakerWorkAsReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report_work_as_invalid",
@@ -3285,6 +3298,12 @@ assert.equal(extractRuleMemoryCandidates("I work as a designer.")[0]?.predicate,
 assert.equal(extractRuleMemoryCandidates("I work as designer.")[0]?.object, "designer");
 assert.equal(extractRuleMemoryCandidates("I work as an engineer.")[0]?.object, "engineer");
 assert.equal(extractRuleMemoryCandidates("I work at Acme Labs.")[0]?.predicate, "user.fact");
+assert.equal(extractRuleMemoryCandidates("My role is a designer.")[0]?.predicate, "person.role");
+assert.equal(extractRuleMemoryCandidates("My role is a designer.")[0]?.object, "designer");
+assert.equal(extractRuleMemoryCandidates("My job is an engineer.")[0]?.object, "engineer");
+assert.equal(extractRuleMemoryCandidates("My profession is the architect.")[0]?.object, "architect");
+assert.equal(extractRuleMemoryCandidates("My title is the CTO.")[0]?.predicate, "person.title");
+assert.equal(extractRuleMemoryCandidates("My title is the CTO.")[0]?.object, "CTO");
 for (const invalidWorkAs of [
   "I work as unknown.",
   "I work as not designer.",
@@ -3292,6 +3311,17 @@ for (const invalidWorkAs of [
   "I work as n/a.",
 ]) {
   assert.equal(extractRuleMemoryCandidates(invalidWorkAs).length, 0);
+}
+for (const invalidRoleAttribute of [
+  "My role is unknown.",
+  "My role is an unknown.",
+  "My job is not designer.",
+  "My job is a not designer.",
+  "My profession is none.",
+  "My title is n/a.",
+  "My title is the n/a.",
+]) {
+  assert.equal(extractRuleMemoryCandidates(invalidRoleAttribute).length, 0);
 }
 assert.equal(extractRuleMemoryCandidates("I live in Berlin.")[0]?.predicate, "person.location");
 for (const invalidLiveIn of [
@@ -3506,6 +3536,8 @@ for (const nonPersonSpeakerContent of [
   "OpenAI: I was born in Seattle.",
   "OpenAI: Project Atlas status is green.",
   "Robot: I work as a designer.",
+  "Robot: My job is an architect.",
+  "Assistant: My job is an architect.",
   "Assistant: I work as unknown.",
 ]) {
   const report = await rulesReportMemory.observeWithReport({
@@ -3807,6 +3839,18 @@ try {
   assert.equal(speakerWorkAsBelief?.subject, "person:morgan");
   assert.equal(speakerWorkAsBelief?.predicate, "person.role");
   assert.equal(speakerWorkAsBelief?.object, "designer");
+  const speakerJobBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(speakerJobReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string }
+    | undefined;
+  assert.equal(speakerJobBelief?.subject, "person:morgan");
+  assert.equal(speakerJobBelief?.predicate, "person.role");
+  assert.equal(speakerJobBelief?.object, "architect");
   const namedPersonToolBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate
