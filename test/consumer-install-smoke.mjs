@@ -187,6 +187,76 @@ try {
           }),
         /secret-like/,
       );
+      const structuredExtractorStore = createSqliteMemoryStore({
+        path: path.join(process.cwd(), "consumer-structured-extractor.db"),
+      });
+      const structuredExtractorMemory = createMemoryOS({
+        profileId: "consumer-structured-extractor",
+        store: structuredExtractorStore,
+        extractor: (input) => [{
+          kind: "project",
+          content: \`Consumer structured extractor saw \${input.event.content}\`,
+          confidence: 0.83,
+          predicate: "project.status",
+          subject: "project:consumer-structured",
+          object: input.event.content.includes("updated") ? "updated" : "typed",
+          source: "consumer-runtime-smoke",
+          cardinality: "single",
+        }],
+      });
+      const structuredObserveResult = await structuredExtractorMemory.observeWithReport({
+        type: "conversation.message",
+        profileId: "consumer-structured-extractor",
+        role: "user",
+        content: "public custom extraction",
+      });
+      assert.equal(structuredObserveResult.extraction?.acceptedCandidateCount, 1);
+      assert.equal(structuredObserveResult.worldBeliefIds.length, 1);
+      const structuredExtractorMatches = await structuredExtractorMemory.search({
+        profileId: "consumer-structured-extractor",
+        query: "public custom extraction",
+      });
+      assert.equal(structuredExtractorMatches.length, 1);
+      assert.equal(structuredExtractorMatches[0]?.metadata.source, "consumer-runtime-smoke");
+      const initialStructuredBeliefAssociations = structuredExtractorStore
+        .searchAssociations({
+          profileId: "consumer-structured-extractor",
+          query: "project:consumer-structured project.status typed",
+          limit: 5,
+        })
+        .filter((association) => association.targetType === "world_belief");
+      assert.equal(initialStructuredBeliefAssociations.length, 1);
+      assert.equal(
+        initialStructuredBeliefAssociations[0]?.targetSummary,
+        "project:consumer-structured project.status typed",
+      );
+      const updatedStructuredObserveResult = await structuredExtractorMemory.observeWithReport({
+        type: "conversation.message",
+        profileId: "consumer-structured-extractor",
+        role: "user",
+        content: "public custom extraction updated",
+      });
+      assert.equal(updatedStructuredObserveResult.extraction?.acceptedCandidateCount, 1);
+      assert.equal(updatedStructuredObserveResult.worldBeliefIds.length, 1);
+      const currentStructuredBeliefAssociations = structuredExtractorStore
+        .searchAssociations({
+          profileId: "consumer-structured-extractor",
+          query: "project:consumer-structured project.status updated",
+          limit: 5,
+        })
+        .filter((association) => association.targetType === "world_belief");
+      assert.equal(currentStructuredBeliefAssociations.length, 1);
+      assert.equal(
+        currentStructuredBeliefAssociations[0]?.targetSummary,
+        "project:consumer-structured project.status updated",
+      );
+      assert.equal(
+        currentStructuredBeliefAssociations.some((association) =>
+          association.targetSummary.includes(" typed"),
+        ),
+        false,
+      );
+      await structuredExtractorMemory.close();
       assert.equal(createPresetHostAdapter("ghast").compatibility.level, "L4");
 
       const mcp = createMemoryMcpServer(memory);
@@ -580,12 +650,14 @@ try {
       void observeOnlyHost;
       const typedExtractor: MemoryExtractor = (input) => {
         const candidate: MemoryExtractionCandidate = {
-          kind: "preference",
+          kind: "project",
           content: \`Typed extractor saw \${input.event.content}\`,
           confidence: 0.83,
-          predicate: "user.preference",
-          actionPolicyKind: "prefer",
-          cardinality: "multi",
+          predicate: "project.status",
+          subject: "project:consumer-types",
+          object: "typed",
+          source: "consumer-type-smoke",
+          cardinality: "single",
         };
         return [candidate];
       };
