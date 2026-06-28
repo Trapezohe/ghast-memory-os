@@ -11,6 +11,7 @@ import { buildEvidencePathExplanation } from "../kernel/evidence-path.js";
 import {
   extractMemoryCandidatePlan,
   extractRuleMemoryCandidates,
+  stableNamedPersonSubject,
 } from "../kernel/extraction.js";
 import { reconstructMemoryContext } from "../kernel/reconstruction.js";
 import {
@@ -91,7 +92,9 @@ function publicSpeaker(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const speaker = value.trim();
   if (!speaker || speaker.startsWith("[redacted_")) return undefined;
-  return classifySensitivity(speaker) === "normal" ? speaker : undefined;
+  return classifySensitivity(speaker) === "normal" && stableNamedPersonSubject(speaker)
+    ? speaker
+    : undefined;
 }
 
 function publicStringArray(value: unknown): string[] {
@@ -563,7 +566,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       extractor: options.extractor,
       extractionInput: {
         profileId,
-        event,
+        event: { ...event, metadata: eventMetadata },
         evidence,
         ruleCandidates: extractRuleMemoryCandidates(event.content, eventMetadata),
       },

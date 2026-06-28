@@ -221,7 +221,9 @@ function uniqueCandidatesWithDecisions(
 function stripSpeakerPrefix(text: string): string {
   const match = /^([\p{L}\p{M}' -]{2,48})\s*:\s*(.+)$/u.exec(text);
   const prefix = match?.[1]?.trim();
-  if (!prefix || !match?.[2] || isNonSpeakerPrefix(prefix)) return text;
+  if (!prefix || !match?.[2] || isNonSpeakerPrefix(prefix) || !stableNamedPersonSubject(prefix)) {
+    return text;
+  }
   return match[2].trim();
 }
 
@@ -299,47 +301,56 @@ function firstPersonAttributeCandidate(text: string): MemoryExtractionCandidate 
   return null;
 }
 
-function stableNamedPersonSubject(name: string): boolean {
-  const trimmed = name.trim();
-  const normalized = trimmed.toLowerCase();
+const NON_PERSON_SINGLE_NAMES = new Set([
+  "amazon",
+  "anthropic",
+  "apple",
+  "azure",
+  "chrome",
+  "docker",
+  "facebook",
+  "figma",
+  "github",
+  "google",
+  "jira",
+  "kubernetes",
+  "linear",
+  "linux",
+  "meta",
+  "microsoft",
+  "notion",
+  "openai",
+  "postgres",
+  "redis",
+  "slack",
+  "sqlite",
+  "windows",
+]);
+
+const NON_PERSON_SUBJECT_PATTERN =
+  /\b(?:project|team|company|org|organization|group|support|repo|repository|service|system|app|tool|product|model|agent|inc|corp|llc|ltd|labs|research|foundation|university|school|department|committee|platform|cloud)\b/iu;
+
+function explicitNonPersonSubject(name: string): boolean {
+  const normalized = name.trim().toLowerCase();
   if (!normalized) return false;
-  const nonPersonSingleNames = new Set([
-    "amazon",
-    "anthropic",
-    "apple",
-    "azure",
-    "chrome",
-    "docker",
-    "facebook",
-    "figma",
-    "github",
-    "google",
-    "jira",
-    "kubernetes",
-    "linear",
-    "linux",
-    "meta",
-    "microsoft",
-    "notion",
-    "openai",
-    "postgres",
-    "redis",
-    "slack",
-    "sqlite",
-    "windows",
-  ]);
-  if (nonPersonSingleNames.has(normalized)) return false;
-  if (!/\s/u.test(trimmed) && /\p{Ll}\p{Lu}/u.test(trimmed)) return false;
+  if (NON_PERSON_SINGLE_NAMES.has(normalized)) return true;
   if (
     /^(?:project|team|company|org|organization|group|support|note|fact|example|preference|task|ticket|repo|repository|service|system|app|tool|product|model|agent|inc|corp|llc|ltd|labs|research|foundation|university|school|department|committee|platform|cloud)$/iu.test(
       normalized,
     )
   ) {
-    return false;
+    return true;
   }
-  return !/\b(?:project|team|company|org|organization|group|support|repo|repository|service|system|app|tool|product|model|agent|inc|corp|llc|ltd|labs|research|foundation|university|school|department|committee|platform|cloud)\b/iu.test(
-    normalized,
-  );
+  return NON_PERSON_SUBJECT_PATTERN.test(normalized);
+}
+
+export function stableNamedPersonSubject(name: string): boolean {
+  const trimmed = name.trim();
+  const normalized = trimmed.toLowerCase();
+  if (!normalized) return false;
+  if (NON_PERSON_SINGLE_NAMES.has(normalized)) return false;
+  if (!/\s/u.test(trimmed) && /\p{Ll}\p{Lu}/u.test(trimmed)) return false;
+  return !explicitNonPersonSubject(normalized);
 }
 
 function entityKey(input: string): string {
@@ -366,6 +377,49 @@ function metadataPersonNames(metadata: Record<string, unknown> | undefined): Set
     if (key) names.add(key);
   }
   return names;
+}
+
+function metadataSpeakerIsNonPerson(
+  metadata: Record<string, unknown> | undefined,
+  content: string,
+): boolean {
+  if (typeof metadata?.speaker !== "string") return false;
+  const speaker = metadata.speaker.trim();
+  if (/^(?:current[-_ ]?user|user|self|me)$/iu.test(speaker)) return false;
+  if (stableNamedPersonSubject(speaker)) return false;
+  if (explicitNonPersonSubject(speaker)) return true;
+  const prefix = /^([\p{L}\p{M}' -]{2,48})\s*:/u.exec(content)?.[1]?.trim();
+  if (prefix && entityKey(prefix) === entityKey(speaker)) return true;
+  const participantKeys = Array.isArray(metadata.participants)
+    ? metadata.participants
+        .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+        .map((entry) => entityKey(entry))
+        .filter((entry) => entry.length > 0)
+    : [];
+  const speakerKey = entityKey(speaker);
+  if (participantKeys.length > 0 && participantKeys.every((entry) => entry === speakerKey)) {
+    return false;
+  }
+  return participantKeys.length > 0;
+}
+
+function speakerScopedUserCandidate(
+  candidate: MemoryExtractionCandidate,
+  metadata: Record<string, unknown> | undefined,
+  content: string,
+): boolean {
+  const predicatePrefix = candidate.predicate?.split(".")[0]?.toLowerCase();
+  const subjectPrefix = candidate.subject?.split(/[:.]/u)[0]?.toLowerCase();
+  if (!metadataSpeakerIsNonPerson(metadata, content)) return false;
+  if (predicatePrefix === "user" || predicatePrefix === "person") return true;
+  if (subjectPrefix === "user" || subjectPrefix === "person") return true;
+  return (
+    candidate.subject === undefined &&
+    (candidate.kind === "fact" ||
+      candidate.kind === "preference" ||
+      candidate.kind === "boundary" ||
+      candidate.kind === "procedure")
+  );
 }
 
 function metadataConfirmsNamedPerson(
@@ -654,8 +708,12 @@ export function extractRuleMemoryCandidates(
   }
 
   if (isQuestionLike(stripSpeakerPrefix(text))) return [];
+  const nonPersonSpeaker = metadataSpeakerIsNonPerson(metadata, text);
 
-  if (/我喜欢|我最喜欢|我偏好|我更喜欢|I prefer|I like|my favorite|my preference is/iu.test(text)) {
+  if (
+    !nonPersonSpeaker &&
+    /我喜欢|我最喜欢|我偏好|我更喜欢|I prefer|I like|my favorite|my preference is/iu.test(text)
+  ) {
     return [
       {
         kind: "preference",
@@ -667,7 +725,7 @@ export function extractRuleMemoryCandidates(
     ];
   }
 
-  const attributeCandidate = firstPersonAttributeCandidate(text);
+  const attributeCandidate = nonPersonSpeaker ? null : firstPersonAttributeCandidate(text);
   if (attributeCandidate) return [attributeCandidate];
   if (nonNameCalledRelation(stripSpeakerPrefix(text))) return [];
   const personToolCandidate = namedPersonToolCandidate(text, metadata);
@@ -703,7 +761,7 @@ export function extractRuleMemoryCandidates(
     ];
   }
 
-  if (/^我(是|在|有)|我的|my name is|I am|I work|I live/iu.test(text)) {
+  if (!nonPersonSpeaker && /^我(是|在|有)|我的|my name is|I am|I work|I live/iu.test(text)) {
     return [
       {
         kind: "fact",
@@ -714,7 +772,7 @@ export function extractRuleMemoryCandidates(
     ];
   }
 
-  if (likelyDurableObservationFact(text)) {
+  if (!nonPersonSpeaker && likelyDurableObservationFact(text)) {
     return [
       {
         kind: "fact",
@@ -795,6 +853,16 @@ export async function extractMemoryCandidatePlan(input: {
     });
     if ("reason" in result) {
       rejected.push(rejectDecision(rawCandidate, result.reason));
+      continue;
+    }
+    if (
+      speakerScopedUserCandidate(
+        result.candidate,
+        input.extractionInput.event.metadata,
+        input.extractionInput.event.content,
+      )
+    ) {
+      rejected.push(rejectDecision(rawCandidate, "non_person_speaker"));
       continue;
     }
     const candidate: MemoryExtractionCandidate = {

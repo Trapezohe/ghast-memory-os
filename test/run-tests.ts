@@ -2335,6 +2335,82 @@ try {
 }
 await invalidTemporalExtractorMemory.close();
 
+const nonPersonSpeakerExtractorStore = createSqliteMemoryStore({
+  path: path.join(tmp, "non-person-speaker-extractor.db"),
+});
+const nonPersonSpeakerExtractorMemory = createMemoryOS({
+  profileId: "non_person_speaker_extractor",
+  store: nonPersonSpeakerExtractorStore,
+  extractor: () => [
+    {
+      kind: "preference",
+      content: "I prefer Azure for some workloads.",
+      confidence: 0.99,
+      predicate: "user.preference",
+    },
+    {
+      kind: "preference",
+      content: "I prefer Azure without an explicit predicate.",
+      confidence: 0.99,
+    },
+    {
+      kind: "fact",
+      content: "OpenAI uses Azure as a provider.",
+      confidence: 0.99,
+      subject: "person:openai",
+    },
+  ],
+});
+const nonPersonSpeakerExtractorReport = await nonPersonSpeakerExtractorMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "non_person_speaker_extractor",
+  role: "user",
+  content: "I prefer Azure for some workloads.",
+  metadata: {
+    speaker: "OpenAI",
+    participants: ["OpenAI", "User"],
+  },
+});
+assert.equal(nonPersonSpeakerExtractorReport.extraction?.acceptedCandidateCount, 0);
+assert.deepEqual(
+  nonPersonSpeakerExtractorReport.extraction?.decisions
+    .filter((decision) => decision.decision === "rejected")
+    .map((decision) => decision.reason),
+  ["non_person_speaker", "non_person_speaker", "non_person_speaker"],
+);
+assert.equal(nonPersonSpeakerExtractorReport.memoryIds.length, 0);
+assert.equal(nonPersonSpeakerExtractorReport.worldBeliefIds.length, 0);
+await nonPersonSpeakerExtractorMemory.close();
+
+const hostAliasSpeakerExtractorStore = createSqliteMemoryStore({
+  path: path.join(tmp, "host-alias-speaker-extractor.db"),
+});
+const hostAliasSpeakerExtractorMemory = createMemoryOS({
+  profileId: "host_alias_speaker_extractor",
+  store: hostAliasSpeakerExtractorStore,
+  extractor: () => [
+    {
+      kind: "preference",
+      content: "I prefer compact implementation notes.",
+      confidence: 0.99,
+      predicate: "user.preference",
+    },
+  ],
+});
+const hostAliasSpeakerExtractorReport = await hostAliasSpeakerExtractorMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "host_alias_speaker_extractor",
+  role: "user",
+  content: "I prefer compact implementation notes.",
+  metadata: {
+    speaker: "MiraUser",
+  },
+});
+assert.equal(hostAliasSpeakerExtractorReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(hostAliasSpeakerExtractorReport.memoryIds.length, 1);
+assert.equal(hostAliasSpeakerExtractorReport.worldBeliefIds.length, 1);
+await hostAliasSpeakerExtractorMemory.close();
+
 const unsafeExtractorStore = createSqliteMemoryStore({
   path: path.join(tmp, "unsafe-extractor.db"),
 });
@@ -2576,6 +2652,65 @@ const secondNamedPersonToolReport = await rulesReportMemory.observeWithReport({
 assert.equal(secondNamedPersonToolReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(secondNamedPersonToolReport.memoryIds.length, 1);
 assert.equal(secondNamedPersonToolReport.worldBeliefIds.length, 1);
+const nonPersonSpeakerPrefixReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "OpenAI: I use Azure for some workloads.",
+});
+assert.equal(nonPersonSpeakerPrefixReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(nonPersonSpeakerPrefixReport.memoryIds.length, 0);
+assert.equal(nonPersonSpeakerPrefixReport.worldBeliefIds.length, 0);
+const nonPersonSpeakerMetadataReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "I use Azure for some workloads.",
+  metadata: {
+    speaker: "OpenAI",
+    participants: ["OpenAI", "User"],
+  },
+});
+assert.equal(nonPersonSpeakerMetadataReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(nonPersonSpeakerMetadataReport.memoryIds.length, 0);
+assert.equal(nonPersonSpeakerMetadataReport.worldBeliefIds.length, 0);
+const nonPersonSpeakerMetadataOnlyReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "I use Azure for some workloads.",
+  metadata: {
+    speaker: "OpenAI",
+  },
+});
+assert.equal(nonPersonSpeakerMetadataOnlyReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(nonPersonSpeakerMetadataOnlyReport.memoryIds.length, 0);
+assert.equal(nonPersonSpeakerMetadataOnlyReport.worldBeliefIds.length, 0);
+const nonPersonSpeakerSelfParticipantReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "I use Azure for some workloads.",
+  metadata: {
+    speaker: "OpenAI",
+    participants: ["OpenAI"],
+  },
+});
+assert.equal(nonPersonSpeakerSelfParticipantReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(nonPersonSpeakerSelfParticipantReport.memoryIds.length, 0);
+assert.equal(nonPersonSpeakerSelfParticipantReport.worldBeliefIds.length, 0);
+const hostAliasSpeakerOnlyReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "I use compact implementation notes for reviews.",
+  metadata: {
+    speaker: "MiraUser",
+  },
+});
+assert.equal(hostAliasSpeakerOnlyReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(hostAliasSpeakerOnlyReport.memoryIds.length, 1);
+assert.equal(hostAliasSpeakerOnlyReport.worldBeliefIds.length, 1);
 const namedRelationReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",

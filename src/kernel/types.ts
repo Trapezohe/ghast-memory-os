@@ -152,6 +152,7 @@ export type MemoryExtractionRejectReason =
   | "invalid_kind"
   | "person_kind"
   | "person_routed"
+  | "non_person_speaker"
   | "secret_like"
   | "low_confidence"
   | "duplicate";
