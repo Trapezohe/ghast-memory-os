@@ -553,6 +553,17 @@ function metadataConfirmsNamedPerson(
   return metadataPersonNames(metadata).has(entityKey(name));
 }
 
+function metadataParticipantsConfirmNamedPerson(
+  name: string,
+  metadata: Record<string, unknown> | undefined,
+): boolean {
+  if (!metadata || !Array.isArray(metadata.participants)) return false;
+  const key = entityKey(name);
+  return metadata.participants.some(
+    (value) => typeof value === "string" && stableNamedPersonSubject(value) && entityKey(value) === key,
+  );
+}
+
 function metadataConfirmsNamedEventSubject(
   name: string,
   metadata: Record<string, unknown> | undefined,
@@ -665,6 +676,8 @@ function personCurrentAttributePredicate(field: string | undefined): string | nu
             ? "person.title"
             : normalized === "language"
               ? "person.language"
+              : normalized === "birthplace" || normalized === "birth place"
+                ? "person.birthplace"
               : normalized === "major" || normalized === "college major"
                 ? "person.major"
                 : normalized === "name" || normalized === "full name"
@@ -718,6 +731,38 @@ function namedPersonCurrentAttributeCandidate(
     object,
     cardinality: "single",
     metadata: { rule: "named_person_current_attribute" },
+  };
+}
+
+function namedPersonStableAttributeCandidate(
+  text: string,
+  metadata?: Record<string, unknown> | undefined,
+): MemoryExtractionCandidate | null {
+  const utterance = stripSpeakerPrefix(text);
+  if (isQuestionLike(utterance)) return null;
+  const namePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}`;
+  const fieldPattern = String.raw`full\s+name|name|college\s+major|major|home\s+town|hometown|birth\s+place|birthplace|role|job|profession|title`;
+  const match = new RegExp(
+    String.raw`^\s*(${namePattern})[’']s\s+(${fieldPattern})\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$`,
+    "iu",
+  ).exec(utterance);
+  const name = match?.[1]?.trim();
+  if (!name || !stableNamedPersonSubject(name) || !metadataParticipantsConfirmNamedPerson(name, metadata)) {
+    return null;
+  }
+  const predicate = personCurrentAttributePredicate(match?.[2]);
+  const object = personAttributeObject(match?.[2], match?.[3]);
+  if (!predicate || !object || /^(?:not|unknown|none|n\/a)\b/iu.test(object)) return null;
+  return {
+    kind: "fact",
+    content: text,
+    confidence: 0.66,
+    predicate,
+    subject: `person:${name}`,
+    subjectAliases: [name],
+    object,
+    cardinality: "single",
+    metadata: { rule: "named_person_stable_attribute" },
   };
 }
 
@@ -1089,6 +1134,8 @@ export function extractRuleMemoryCandidates(
   if (personPreferenceCandidate) return [personPreferenceCandidate];
   const personCurrentAttributeCandidate = namedPersonCurrentAttributeCandidate(text, metadata);
   if (personCurrentAttributeCandidate) return [personCurrentAttributeCandidate];
+  const personStableAttributeCandidate = namedPersonStableAttributeCandidate(text, metadata);
+  if (personStableAttributeCandidate) return [personStableAttributeCandidate];
   const personEventCandidate = namedPersonEventCandidate(text, metadata);
   if (personEventCandidate) return [personEventCandidate];
 

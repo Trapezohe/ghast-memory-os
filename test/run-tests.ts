@@ -3361,6 +3361,43 @@ for (const invalidBirthplace of [
 ]) {
   assert.equal(extractRuleMemoryCandidates(invalidBirthplace).length, 0);
 }
+const namedPersonAttributeMeta = { participants: ["Alex", "Blair"] };
+assert.equal(
+  extractRuleMemoryCandidates("Alex's hometown is Boston.", namedPersonAttributeMeta)[0]?.predicate,
+  "person.hometown",
+);
+assert.equal(
+  extractRuleMemoryCandidates("Alex's college major is physics.", namedPersonAttributeMeta)[0]?.object,
+  "physics",
+);
+assert.equal(
+  extractRuleMemoryCandidates("Alex's full name is Alex Chen.", namedPersonAttributeMeta)[0]?.predicate,
+  "person.name",
+);
+assert.equal(
+  extractRuleMemoryCandidates("Alex's birthplace is Seattle.", namedPersonAttributeMeta)[0]?.predicate,
+  "person.birthplace",
+);
+assert.equal(
+  extractRuleMemoryCandidates("Alex's job is an architect.", namedPersonAttributeMeta)[0]?.object,
+  "architect",
+);
+assert.equal(extractRuleMemoryCandidates("Alex's job is an unknown.", namedPersonAttributeMeta).length, 0);
+assert.equal(extractRuleMemoryCandidates("Casey's job is an architect.", namedPersonAttributeMeta).length, 0);
+assert.equal(
+  extractRuleMemoryCandidates("Casey's job is an architect.", {
+    speaker: "Casey",
+    participants: ["Alex", "Blair"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("Casey's job is an architect.", {
+    speakerAliases: ["Casey"],
+    participants: ["Alex", "Blair"],
+  }).length,
+  0,
+);
 const namedPersonToolReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -3378,6 +3415,42 @@ assert.equal(
     ?.candidate.metadata?.rule,
   "named_person_tool",
 );
+const namedPersonHometownReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_named_person_attribute",
+  role: "user",
+  content: "Alex's hometown is Boston.",
+  metadata: {
+    participants: ["Alex", "Blair", "Mary Jane"],
+  },
+});
+assert.equal(namedPersonHometownReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(namedPersonHometownReport.memoryIds.length, 1);
+assert.equal(namedPersonHometownReport.worldBeliefIds.length, 1);
+const namedPersonJobReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_named_person_attribute",
+  role: "user",
+  content: "Blair's job is an architect.",
+  metadata: {
+    participants: ["Alex", "Blair", "Mary Jane"],
+  },
+});
+assert.equal(namedPersonJobReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(namedPersonJobReport.memoryIds.length, 1);
+assert.equal(namedPersonJobReport.worldBeliefIds.length, 1);
+const invalidNamedPersonJobReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_named_person_attribute_invalid",
+  role: "user",
+  content: "Blair's job is an unknown.",
+  metadata: {
+    participants: ["Alex", "Blair", "Mary Jane"],
+  },
+});
+assert.equal(invalidNamedPersonJobReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(invalidNamedPersonJobReport.memoryIds.length, 0);
+assert.equal(invalidNamedPersonJobReport.worldBeliefIds.length, 0);
 const secondNamedPersonToolReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -3851,6 +3924,30 @@ try {
   assert.equal(speakerJobBelief?.subject, "person:morgan");
   assert.equal(speakerJobBelief?.predicate, "person.role");
   assert.equal(speakerJobBelief?.object, "architect");
+  const namedPersonHometownBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(namedPersonHometownReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string }
+    | undefined;
+  assert.equal(namedPersonHometownBelief?.subject, "person:alex");
+  assert.equal(namedPersonHometownBelief?.predicate, "person.hometown");
+  assert.equal(namedPersonHometownBelief?.object, "Boston");
+  const namedPersonJobBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(namedPersonJobReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string }
+    | undefined;
+  assert.equal(namedPersonJobBelief?.subject, "person:blair");
+  assert.equal(namedPersonJobBelief?.predicate, "person.role");
+  assert.equal(namedPersonJobBelief?.object, "architect");
   const namedPersonToolBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate
