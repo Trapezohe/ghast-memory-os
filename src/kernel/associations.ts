@@ -172,17 +172,17 @@ function metadataStringArray(metadata: Record<string, unknown>, key: string): st
   return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
 }
 
-function safeSourceMetadataCueValue(value: unknown): string {
+function safeMetadataCueValue(value: unknown): string {
   if (typeof value !== "string") return "";
   const trimmed = value.trim();
   if (!trimmed || /^\[redacted_[a-z_]+\]$/iu.test(trimmed)) return "";
   return classifySensitivity(trimmed) === "normal" ? trimmed : "";
 }
 
-function safeSourceMetadataCueArray(metadata: Record<string, unknown>, key: string): string[] {
+function safeMetadataCueArray(metadata: Record<string, unknown>, key: string): string[] {
   const value = metadata[key];
   if (!Array.isArray(value)) return [];
-  return value.map(safeSourceMetadataCueValue).filter(Boolean);
+  return value.map(safeMetadataCueValue).filter(Boolean);
 }
 
 function entityAliases(metadata: Record<string, unknown>): string[] {
@@ -196,7 +196,7 @@ function entitySubjectCues(metadata: Record<string, unknown>): string[] {
   if (!predicate.startsWith("person.")) return [];
   const subject = normalizedMetadataValue(metadata, "subject");
   const subjectValue = subject?.match(/^person\s*[:/]\s*(.+)$/iu)?.[1] ?? subject ?? "";
-  return unique([subjectValue, ...metadataStringArray(metadata, "subjectAliases")]);
+  return unique([safeMetadataCueValue(subjectValue), ...safeMetadataCueArray(metadata, "subjectAliases")]);
 }
 
 export function sourceContentEntityCues(content: string): string[] {
@@ -270,8 +270,8 @@ export function sourceMetadataEntityCues(metadata: Record<string, unknown>): str
   return unique([
     ...subjectCues,
     ...mentionCues,
-    safeSourceMetadataCueValue(record.speaker).toLowerCase(),
-    ...safeSourceMetadataCueArray(record, "speakerAliases"),
+    safeMetadataCueValue(record.speaker).toLowerCase(),
+    ...safeMetadataCueArray(record, "speakerAliases"),
   ]);
 }
 

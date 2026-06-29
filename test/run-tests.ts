@@ -214,6 +214,40 @@ assert.equal(
   JSON.stringify(redactedSourceMetadataAssociationFixture).includes("sk-redactedsourcealias"),
   false,
 );
+const redactedPersonSubjectAssociationFixture = associationCuesForMemory({
+  id: "memory-association-redacted-person-subject-fixture",
+  profileId: "test",
+  kind: "fact",
+  scope: "global",
+  content: "Ordinary person metadata audit fixture.",
+  sensitivity: "normal",
+  status: "active",
+  confidence: 0.8,
+  metadata: {
+    predicate: "person.tool",
+    subject: "person:[redacted_secret]",
+    subjectAliases: [
+      "CleanAlias",
+      "[redacted_sensitive]",
+      "api key sk-redactedsubjectalias123456",
+    ],
+  },
+  createdAt: "2026-06-20T00:00:00.000Z",
+  updatedAt: "2026-06-20T00:00:00.000Z",
+});
+assert.equal(redactedPersonSubjectAssociationFixture.some((cue) => cue.cue === "cleanalias"), true);
+assert.equal(
+  redactedPersonSubjectAssociationFixture.some((cue) => cue.cue === "[redacted_secret]"),
+  false,
+);
+assert.equal(
+  redactedPersonSubjectAssociationFixture.some((cue) => cue.cue === "[redacted_sensitive]"),
+  false,
+);
+assert.equal(
+  JSON.stringify(redactedPersonSubjectAssociationFixture).includes("sk-redactedsubjectalias"),
+  false,
+);
 const relationBeliefAssociationFixture = {
   id: "belief-association-relation-fixture",
   profileId: "test",
