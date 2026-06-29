@@ -8,6 +8,7 @@ import {
   type ExternalMemoryBenchmarkCase,
   type ExternalMemoryBenchmarkCounter,
   type ExternalMemoryBenchmarkDatasetFormat,
+  type ExternalMemoryBenchmarkDiagnosticsLevel,
   type ExternalMemoryBenchmarkMode,
   type ExternalMemoryBenchmarkResult,
   type ExternalMemoryBenchmarkSliceScore,
@@ -35,6 +36,7 @@ export interface ExternalMemoryBenchmarkSuiteRunConfig {
   concurrency?: number | undefined;
   reuseProfiles?: boolean | undefined;
   failureSampleLimit?: number | undefined;
+  diagnosticsLevel?: ExternalMemoryBenchmarkDiagnosticsLevel | undefined;
 }
 
 export interface ExternalMemoryBenchmarkSuiteDocument {
@@ -57,8 +59,12 @@ export interface ExternalMemoryBenchmarkSuiteRunSummary {
   passedCount: number;
   failedCount: number;
   score: number;
+  strictScore: number;
+  normalizedEvidenceScore: number;
+  normalizedEvidencePassedCount: number;
   caseGroupCount: number;
   reusedProfileCaseCount: number;
+  runtime: ExternalMemoryBenchmarkResult["summary"]["runtime"];
   datasetHash: string | null;
   warningCount: number;
   warnings: string[];
@@ -78,8 +84,13 @@ export interface ExternalMemoryBenchmarkSuiteResult {
   failedRunCount: number;
   scoreMean: number;
   scoreWeighted: number;
+  strictScoreMean: number;
+  strictScoreWeighted: number;
+  normalizedEvidenceScoreMean: number;
+  normalizedEvidenceScoreWeighted: number;
   totalCaseCount: number;
   totalPassedCount: number;
+  totalNormalizedEvidencePassedCount: number;
   totalFailedCount: number;
   totalWarningCount: number;
   totalFailureReasons: ExternalMemoryBenchmarkCounter[];
@@ -165,6 +176,15 @@ function temporalModeValue(value: unknown, label: string): ExternalMemoryBenchma
   throw new Error(`${label} must be auto, current, or history`);
 }
 
+function diagnosticsLevelValue(
+  value: unknown,
+  label: string,
+): ExternalMemoryBenchmarkDiagnosticsLevel | undefined {
+  if (value === undefined) return undefined;
+  if (value === "off" || value === "basic" || value === "full") return value;
+  throw new Error(`${label} must be off, basic, or full`);
+}
+
 function runId(value: unknown, label: string): string {
   const id = stringValue(value, label);
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(id)) {
@@ -191,6 +211,7 @@ function parseRunConfig(value: unknown, label: string): ExternalMemoryBenchmarkS
     concurrency: optionalPositiveInteger(record.concurrency, `${label}.concurrency`),
     reuseProfiles: optionalBoolean(record.reuseProfiles, `${label}.reuseProfiles`),
     failureSampleLimit: optionalNonNegativeInteger(record.failureSampleLimit, `${label}.failureSampleLimit`),
+    diagnosticsLevel: diagnosticsLevelValue(record.diagnosticsLevel, `${label}.diagnosticsLevel`),
   };
 }
 
@@ -219,6 +240,10 @@ function parseDefaults(value: unknown): ExternalMemoryBenchmarkSuiteDocument["de
     failureSampleLimit: optionalNonNegativeInteger(
       record.failureSampleLimit,
       "External benchmark suite defaults.failureSampleLimit",
+    ),
+    diagnosticsLevel: diagnosticsLevelValue(
+      record.diagnosticsLevel,
+      "External benchmark suite defaults.diagnosticsLevel",
     ),
   };
 }
@@ -275,6 +300,7 @@ function effectiveRun(
     concurrency: run.concurrency ?? defaults?.concurrency,
     reuseProfiles: run.reuseProfiles ?? defaults?.reuseProfiles,
     failureSampleLimit: run.failureSampleLimit ?? defaults?.failureSampleLimit,
+    diagnosticsLevel: run.diagnosticsLevel ?? defaults?.diagnosticsLevel,
   };
 }
 
@@ -326,6 +352,7 @@ function reportOptions(input: {
     ...(input.run.concurrency !== undefined ? { concurrency: input.run.concurrency } : {}),
     ...(input.run.reuseProfiles !== undefined ? { reuseProfiles: input.run.reuseProfiles } : {}),
     ...(input.run.failureSampleLimit !== undefined ? { failureSampleLimit: input.run.failureSampleLimit } : {}),
+    ...(input.run.diagnosticsLevel !== undefined ? { diagnosticsLevel: input.run.diagnosticsLevel } : {}),
     ...(requireConvergence ? { requireConvergence: true } : {}),
   };
 }
@@ -384,8 +411,12 @@ export async function runExternalMemoryBenchmarkSuite(
       passedCount: report.passedCount,
       failedCount: report.failedCount,
       score: report.score,
+      strictScore: report.strictScore,
+      normalizedEvidenceScore: report.normalizedEvidenceScore,
+      normalizedEvidencePassedCount: report.normalizedEvidencePassedCount,
       caseGroupCount: report.runManifest.execution.caseGroupCount,
       reusedProfileCaseCount: report.runManifest.execution.reusedProfileCaseCount,
+      runtime: report.summary.runtime,
       datasetHash: report.runManifest.dataset.hash,
       warningCount: report.runManifest.dataset.warnings.length,
       warnings: report.runManifest.dataset.warnings,
@@ -398,8 +429,18 @@ export async function runExternalMemoryBenchmarkSuite(
   }
   const benchmarkPass = runs.every((run) => run.pass);
   const scoreMean = runs.length ? runs.reduce((sum, run) => sum + run.score, 0) / runs.length : 0;
+  const strictScoreMean = runs.length
+    ? runs.reduce((sum, run) => sum + run.strictScore, 0) / runs.length
+    : 0;
+  const normalizedEvidenceScoreMean = runs.length
+    ? runs.reduce((sum, run) => sum + run.normalizedEvidenceScore, 0) / runs.length
+    : 0;
   const totalCaseCount = runs.reduce((sum, run) => sum + run.caseCount, 0);
   const totalPassedCount = runs.reduce((sum, run) => sum + run.passedCount, 0);
+  const totalNormalizedEvidencePassedCount = runs.reduce(
+    (sum, run) => sum + run.normalizedEvidencePassedCount,
+    0,
+  );
   const totalFailedCount = runs.reduce((sum, run) => sum + run.failedCount, 0);
   const totalWarningCount = runs.reduce((sum, run) => sum + run.warningCount, 0);
   const totalFailureReasons = aggregateCounters(runs.map((run) => run.failureReasons));
@@ -417,8 +458,15 @@ export async function runExternalMemoryBenchmarkSuite(
       failedRunCount: runs.filter((run) => !run.pass).length,
       scoreMean,
       scoreWeighted: totalCaseCount ? totalPassedCount / totalCaseCount : 0,
+      strictScoreMean,
+      strictScoreWeighted: totalCaseCount ? totalPassedCount / totalCaseCount : 0,
+      normalizedEvidenceScoreMean,
+      normalizedEvidenceScoreWeighted: totalCaseCount
+        ? totalNormalizedEvidencePassedCount / totalCaseCount
+        : 0,
       totalCaseCount,
       totalPassedCount,
+      totalNormalizedEvidencePassedCount,
       totalFailedCount,
       totalWarningCount,
       totalFailureReasons,

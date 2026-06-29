@@ -120,8 +120,8 @@ Usage:
   gmos gym run --db :memory: --generated-seeds 3 --format markdown --report-file ./memory-gym.md
   gmos gym scale --sizes 100,1000 --threshold-p95-ms 250
   gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --require-convergence --include-sensitive --temporal-metadata
-  gmos gym external --input-file ./longmemeval_s_cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --progress
-  gmos gym external --input-file ./locomo10.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --progress
+  gmos gym external --input-file ./longmemeval_s_cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
+  gmos gym external --input-file ./locomo10.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
   gmos gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format markdown
   gmos gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
   gmos gym statebench write-agent --output-file ./STATE-Bench/agents/gmos_memory_agent.py
@@ -336,6 +336,15 @@ function temporalModeOption(): "auto" | "current" | "history" | undefined {
   if (!raw) return undefined;
   if (raw !== "auto" && raw !== "current" && raw !== "history") {
     throw new Error("--temporal-mode must be one of: auto, current, history");
+  }
+  return raw;
+}
+
+function diagnosticsLevelOption(): "off" | "basic" | "full" | undefined {
+  const raw = value("--diagnostics-level");
+  if (!raw) return undefined;
+  if (raw !== "off" && raw !== "basic" && raw !== "full") {
+    throw new Error("--diagnostics-level must be one of: off, basic, full");
   }
   return raw;
 }
@@ -678,6 +687,7 @@ async function main(): Promise<void> {
       concurrency: positiveIntegerOption("--concurrency", 4),
       reuseProfiles: !has("--no-reuse-profiles"),
       failureSampleLimit: nonNegativeIntegerOption("--failure-sample-limit", 20),
+      diagnosticsLevel: diagnosticsLevelOption(),
       ...(has("--progress")
         ? {
             onCaseResult: (progress) => {

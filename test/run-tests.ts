@@ -10770,6 +10770,9 @@ assert.equal(parsedGmosExternalDataset.cases.length, 8);
 const externalBenchmark = await runExternalMemoryBenchmark({ cases: externalCases });
 assert.equal(externalBenchmark.pass, true);
 assert.equal(externalBenchmark.score, 1);
+assert.equal(externalBenchmark.strictScore, 1);
+assert.equal(externalBenchmark.normalizedEvidenceScore, 1);
+assert.equal(externalBenchmark.normalizedEvidencePassedCount, 8);
 assert.equal(externalBenchmark.runManifest.framework, "gmos-external-long-memory-qa");
 assert.equal(externalBenchmark.runManifest.dataset.caseCount, 8);
 assert.equal(externalBenchmark.runManifest.dataset.hash, null);
@@ -10781,6 +10784,7 @@ assert.equal(externalBenchmark.runManifest.options.requireConvergence, false);
 assert.equal(externalBenchmark.runManifest.options.includeSensitive, false);
 assert.equal(externalBenchmark.runManifest.options.includeTemporalMetadata, false);
 assert.equal(externalBenchmark.runManifest.options.failureSampleLimit, 20);
+assert.equal(externalBenchmark.runManifest.options.diagnosticsLevel, "full");
 assert.deepEqual(externalBenchmark.summary.failureReasons, []);
 assert.deepEqual(externalBenchmark.summary.sliceScores, [
   {
@@ -10792,8 +10796,17 @@ assert.deepEqual(externalBenchmark.summary.sliceScores, [
   },
 ]);
 assert.equal(externalBenchmark.summary.warnings.length > 0, true);
+assert.equal(externalBenchmark.summary.runtime.setupRuntimeMs >= 0, true);
+assert.equal(externalBenchmark.summary.runtime.scoringRuntimeMs >= 0, true);
+assert.equal(externalBenchmark.summary.runtime.taxonomyRuntimeMs >= 0, true);
+assert.equal(externalBenchmark.summary.runtime.wideBudgetDiagnosticRuntimeMs >= 0, true);
 assert.equal(externalBenchmark.summary.failureSamples.length, 0);
 assert.equal(externalBenchmark.cases[0]?.failureReasons.length, 0);
+assert.equal(externalBenchmark.cases[0]?.strictPass, true);
+assert.equal(externalBenchmark.cases[0]?.normalizedEvidencePass, true);
+assert.equal((externalBenchmark.cases[0]?.scoringRuntimeMs ?? -1) >= 0, true);
+assert.equal((externalBenchmark.cases[0]?.taxonomyRuntimeMs ?? -1) >= 0, true);
+assert.equal((externalBenchmark.cases[0]?.wideBudgetDiagnosticRuntimeMs ?? -1) >= 0, true);
 assert.equal(typeof externalBenchmark.cases[0]?.diagnostics.evidenceConvergenceScore, "number");
 const externalHash = hashExternalMemoryBenchmarkInput(externalBenchmarkJsonl);
 assert.match(externalHash, /^sha256:[a-f0-9]{64}$/);
@@ -11088,6 +11101,12 @@ const externalAnswerNormalizationBenchmark = await runExternalMemoryBenchmark({
   ],
 });
 assert.equal(externalAnswerNormalizationBenchmark.pass, false);
+assert.equal(externalAnswerNormalizationBenchmark.strictScore, 0);
+assert.equal(externalAnswerNormalizationBenchmark.normalizedEvidencePassedCount, 10);
+assert.equal(
+  externalAnswerNormalizationBenchmark.normalizedEvidenceScore,
+  10 / externalAnswerNormalizationBenchmark.caseCount,
+);
 assert.deepEqual(externalAnswerNormalizationBenchmark.summary.failureStages, [
   { name: "answer_not_in_input", count: 12 },
   { name: "answer_normalization_mismatch", count: 10 },
@@ -11268,6 +11287,49 @@ assert.equal(externalBudgetTaxonomyBenchmark.pass, false);
 assert.deepEqual(externalBudgetTaxonomyBenchmark.cases[0]?.failureTaxonomy, [
   { stage: "context_composer_or_budget_drop", terms: ["BudgetFlag"] },
 ]);
+assert.equal((externalBudgetTaxonomyBenchmark.cases[0]?.wideBudgetDiagnosticRuntimeMs ?? 0) >= 0, true);
+const externalBudgetBasicTaxonomyBenchmark = await runExternalMemoryBenchmark({
+  contextBudgetTokens: 8,
+  diagnosticsLevel: "basic",
+  cases: [
+    {
+      id: "budget-drop-alpha-basic",
+      events: [
+        {
+          type: "memory",
+          kind: "fact",
+          content:
+            "The Alpha marker is BudgetFlag and it should be recovered only when enough context budget is available.",
+        },
+      ],
+      question: "What is the Alpha marker?",
+      expectedAll: ["BudgetFlag"],
+    },
+  ],
+});
+assert.equal(externalBudgetBasicTaxonomyBenchmark.runManifest.options.diagnosticsLevel, "basic");
+assert.deepEqual(externalBudgetBasicTaxonomyBenchmark.cases[0]?.failureTaxonomy, [
+  { stage: "retrieval_or_reconstruction_miss", terms: ["BudgetFlag"] },
+]);
+assert.equal(externalBudgetBasicTaxonomyBenchmark.cases[0]?.wideBudgetDiagnosticRuntimeMs, 0);
+const externalDiagnosticsOffBenchmark = await runExternalMemoryBenchmark({
+  diagnosticsLevel: "off",
+  cases: [
+    {
+      id: "diagnostics-off-missing",
+      events: [{ type: "memory", kind: "fact", content: "Visible answer is Alpha." }],
+      question: "What is visible?",
+      expectedAll: ["Missing Alpha"],
+    },
+  ],
+});
+assert.equal(externalDiagnosticsOffBenchmark.pass, false);
+assert.equal(externalDiagnosticsOffBenchmark.runManifest.options.diagnosticsLevel, "off");
+assert.deepEqual(externalDiagnosticsOffBenchmark.summary.failureStages, []);
+assert.deepEqual(externalDiagnosticsOffBenchmark.cases[0]?.failureTaxonomy, []);
+assert.deepEqual(externalDiagnosticsOffBenchmark.cases[0]?.warnings, []);
+assert.equal(externalDiagnosticsOffBenchmark.cases[0]?.taxonomyRuntimeMs, 0);
+assert.equal(externalDiagnosticsOffBenchmark.cases[0]?.wideBudgetDiagnosticRuntimeMs, 0);
 const externalTemporalEvents = [
   {
     type: "memory" as const,
@@ -11336,6 +11398,7 @@ writeFileSync(
         failureSampleLimit: 0,
         includeSensitive: true,
         includeTemporalMetadata: false,
+        diagnosticsLevel: "basic",
       },
       runs: [
         { id: "passing", inputFile: path.basename(externalBenchmarkFile), temporalMode: "history" },
@@ -11352,6 +11415,7 @@ const parsedExternalSuite = parseExternalMemoryBenchmarkSuite(
 assert.equal(parsedExternalSuite.runs.length, 2);
 assert.equal(parsedExternalSuite.defaults?.includeSensitive, true);
 assert.equal(parsedExternalSuite.defaults?.includeTemporalMetadata, false);
+assert.equal(parsedExternalSuite.defaults?.diagnosticsLevel, "basic");
 assert.equal(parsedExternalSuite.runs[0]?.temporalMode, "history");
 const externalSuiteExecution = await runExternalMemoryBenchmarkSuite({
   suite: parsedExternalSuite,
@@ -11366,6 +11430,7 @@ assert.equal(externalSuiteExecution.result.failedRunCount, 1);
 assert.equal(externalSuiteExecution.reports.passing?.runManifest.options.includeSensitive, true);
 assert.equal(externalSuiteExecution.reports.passing?.runManifest.options.includeTemporalMetadata, false);
 assert.equal(externalSuiteExecution.reports.passing?.runManifest.options.temporalMode, "history");
+assert.equal(externalSuiteExecution.reports.passing?.runManifest.options.diagnosticsLevel, "basic");
 assert.deepEqual(externalSuiteExecution.result.runs[0]?.sliceScores, [
   {
     name: "gmos:project_procedure",
@@ -11377,6 +11442,11 @@ assert.deepEqual(externalSuiteExecution.result.runs[0]?.sliceScores, [
 ]);
 assert.equal(externalSuiteExecution.result.totalCaseCount, externalSuiteExecution.reports.passing!.caseCount + externalSuiteExecution.reports.failing!.caseCount);
 assert.equal(externalSuiteExecution.result.totalPassedCount, externalSuiteExecution.reports.passing!.passedCount);
+assert.equal(
+  externalSuiteExecution.result.totalNormalizedEvidencePassedCount,
+  externalSuiteExecution.reports.passing!.normalizedEvidencePassedCount +
+    externalSuiteExecution.reports.failing!.normalizedEvidencePassedCount,
+);
 assert.equal(externalSuiteExecution.result.totalFailedCount, externalSuiteExecution.reports.failing!.failedCount);
 assert.equal(externalSuiteExecution.result.totalWarningCount, 0);
 assert.deepEqual(externalSuiteExecution.result.totalFailureReasons, [
@@ -11394,6 +11464,11 @@ assert.deepEqual(externalSuiteExecution.result.runs[1]?.failureStages, [
   { name: "answer_not_in_input", count: 1 },
 ]);
 assert.equal(externalSuiteExecution.result.scoreWeighted > 0 && externalSuiteExecution.result.scoreWeighted < 1, true);
+assert.equal(externalSuiteExecution.result.strictScoreWeighted, externalSuiteExecution.result.scoreWeighted);
+assert.equal(
+  externalSuiteExecution.result.normalizedEvidenceScoreWeighted >= externalSuiteExecution.result.strictScoreWeighted,
+  true,
+);
 assert.equal(externalSuiteExecution.result.runManifest.durationMs >= 0, true);
 assert.equal(externalSuiteExecution.result.runManifest.package?.name, "@ghast/memory");
 assert.equal(externalSuiteExecution.result.runManifest.package?.version, packageJson.version);
@@ -11402,6 +11477,10 @@ assert.equal(typeof externalSuiteExecution.result.runManifest.node, "string");
 assert.equal(externalSuiteExecution.result.runs[0]?.durationMs >= 0, true);
 assert.equal(externalSuiteExecution.result.runs[0]?.caseGroupCount >= 1, true);
 assert.equal(externalSuiteExecution.result.runs[0]?.warningCount, 0);
+assert.equal((externalSuiteExecution.result.runs[0]?.runtime.setupRuntimeMs ?? -1) >= 0, true);
+assert.equal((externalSuiteExecution.result.runs[0]?.runtime.scoringRuntimeMs ?? -1) >= 0, true);
+assert.equal((externalSuiteExecution.result.runs[0]?.runtime.taxonomyRuntimeMs ?? -1) >= 0, true);
+assert.equal((externalSuiteExecution.result.runs[0]?.runtime.wideBudgetDiagnosticRuntimeMs ?? -1) >= 0, true);
 assert.equal(externalSuiteExecution.reports.passing?.pass, true);
 assert.equal(externalSuiteExecution.reports.failing?.pass, false);
 assert.equal((externalSuiteExecution.reports.failing?.cases[0]?.durationMs ?? -1) >= 0, true);
@@ -11415,11 +11494,15 @@ assert.match(
 );
 assert.match(
   renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!),
-  /Slowest case groups: case:0=\d+ms setup=\d+ms scoring=\d+ms cases=0\/1 events=1/,
+  /Slowest case groups: case:0=\d+ms setup=\d+ms scoring=\d+ms taxonomy=\d+ms wide=\d+ms cases=0\/1 events=1/,
 );
 assert.match(renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!), /Duration ms/);
+assert.match(renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!), /Strict score:/);
+assert.match(renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!), /Normalized evidence score:/);
+assert.match(renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!), /Runtime: total=\d+ms setup=\d+ms scoring=\d+ms taxonomy=\d+ms wideBudget=\d+ms diagnostics=\d+ms/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /BenchmarkStatus: FAIL/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Weighted score:/);
+assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Normalized evidence weighted score:/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Failure reasons: expected_all_missing=1/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Failure stages: answer_not_in_input=1/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /## Diagnostic Summary/);
@@ -12733,6 +12816,8 @@ const cliExternal = spawnSync(
     "history",
     "--failure-sample-limit",
     "3",
+    "--diagnostics-level",
+    "basic",
   ],
   { cwd: process.cwd(), encoding: "utf8" },
 );
@@ -12748,6 +12833,7 @@ const cliExternalJson = JSON.parse(cliExternal.stdout) as {
       includeTemporalMetadata?: boolean;
       temporalMode?: string | null;
       failureSampleLimit?: number;
+      diagnosticsLevel?: string;
     };
   };
   summary?: { failureSampleLimit?: number };
@@ -12762,6 +12848,7 @@ assert.equal(cliExternalJson.runManifest?.options?.includeSensitive, false);
 assert.equal(cliExternalJson.runManifest?.options?.includeTemporalMetadata, false);
 assert.equal(cliExternalJson.runManifest?.options?.temporalMode, "history");
 assert.equal(cliExternalJson.runManifest?.options?.failureSampleLimit, 3);
+assert.equal(cliExternalJson.runManifest?.options?.diagnosticsLevel, "basic");
 assert.equal(cliExternalJson.summary?.failureSampleLimit, 3);
 assert.equal(existsSync(cliExternalJsonFile), true);
 assert.equal(existsSync(cliExternalMarkdownFile), true);
@@ -12769,6 +12856,7 @@ assert.equal(JSON.parse(readFileSync(cliExternalJsonFile, "utf8")).schema, "gmos
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /gmOS External Long-Memory QA Benchmark/);
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /Failure sample limit: 3/);
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /temporalMode=history includeSensitive=false includeTemporalMetadata=false/);
+assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /diagnosticsLevel=basic/);
 const cliExternalSuiteOutputDir = path.join(tmp, "cli-external-suite");
 const cliExternalSuiteJsonFile = path.join(tmp, "cli-external-suite-summary.json");
 const cliExternalSuiteMarkdownFile = path.join(tmp, "cli-external-suite-summary.md");

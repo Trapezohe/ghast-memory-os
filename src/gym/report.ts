@@ -100,7 +100,7 @@ function markdownSlowExternalGroups(
     ? values
         .map(
           (entry) =>
-            `${markdownCell(entry.groupKey)}=${entry.durationMs}ms setup=${entry.setupDurationMs}ms scoring=${entry.scoringDurationMs}ms cases=${entry.passedCount}/${entry.caseCount} events=${entry.eventCount}`,
+            `${markdownCell(entry.groupKey)}=${entry.durationMs}ms setup=${entry.setupRuntimeMs}ms scoring=${entry.scoringRuntimeMs}ms taxonomy=${entry.taxonomyRuntimeMs}ms wide=${entry.wideBudgetDiagnosticRuntimeMs}ms cases=${entry.passedCount}/${entry.caseCount} events=${entry.eventCount}`,
         )
         .join(", ")
     : "none";
@@ -206,6 +206,8 @@ export function renderExternalMemoryBenchmarkMarkdown(
     `DatasetFormat: ${report.datasetFormat}`,
     `Cases: ${report.passedCount}/${report.caseCount}`,
     `Score: ${report.score.toFixed(4)}`,
+    `Strict score: ${report.strictScore.toFixed(4)}`,
+    `Normalized evidence score: ${report.normalizedEvidenceScore.toFixed(4)} (${report.normalizedEvidencePassedCount}/${report.caseCount})`,
     "",
     "## Run Manifest",
     "",
@@ -217,7 +219,7 @@ export function renderExternalMemoryBenchmarkMarkdown(
     `Dataset: ${report.runManifest.dataset.id ?? "unknown"} format=${report.runManifest.dataset.format} hash=${report.runManifest.dataset.hash ?? "unknown"} cases=${report.runManifest.dataset.caseCount}`,
     `Dataset warnings: ${report.runManifest.dataset.warnings.length ? report.runManifest.dataset.warnings.map(markdownCell).join("; ") : "none"}`,
     `Execution: caseGroups=${report.runManifest.execution.caseGroupCount} reusedProfileCases=${report.runManifest.execution.reusedProfileCaseCount}`,
-    `Options: mode=${report.runManifest.options.mode ?? "case/default"} maxSteps=${report.runManifest.options.maxSteps ?? "default"} maxBranch=${report.runManifest.options.maxBranch ?? "default"} maxMemories=${report.runManifest.options.maxMemories ?? "default"} contextBudgetTokens=${report.runManifest.options.contextBudgetTokens ?? "default"} temporalMode=${report.runManifest.options.temporalMode ?? "case/default"} includeSensitive=${report.runManifest.options.includeSensitive} includeTemporalMetadata=${report.runManifest.options.includeTemporalMetadata} requireConvergence=${report.runManifest.options.requireConvergence} concurrency=${report.runManifest.options.concurrency} reuseProfiles=${report.runManifest.options.reuseProfiles}`,
+    `Options: mode=${report.runManifest.options.mode ?? "case/default"} maxSteps=${report.runManifest.options.maxSteps ?? "default"} maxBranch=${report.runManifest.options.maxBranch ?? "default"} maxMemories=${report.runManifest.options.maxMemories ?? "default"} contextBudgetTokens=${report.runManifest.options.contextBudgetTokens ?? "default"} temporalMode=${report.runManifest.options.temporalMode ?? "case/default"} includeSensitive=${report.runManifest.options.includeSensitive} includeTemporalMetadata=${report.runManifest.options.includeTemporalMetadata} requireConvergence=${report.runManifest.options.requireConvergence} concurrency=${report.runManifest.options.concurrency} reuseProfiles=${report.runManifest.options.reuseProfiles} diagnosticsLevel=${report.runManifest.options.diagnosticsLevel}`,
     `Failure sample limit: ${report.runManifest.options.failureSampleLimit}`,
     `Deterministic only: ${report.runManifest.deterministicOnly ? "yes" : "no"}`,
     "",
@@ -229,6 +231,7 @@ export function renderExternalMemoryBenchmarkMarkdown(
     `Warnings: ${markdownCounters(report.summary.warnings)}`,
     `Uncertainty: low=${report.summary.uncertaintyLevels.low}, medium=${report.summary.uncertaintyLevels.medium}, high=${report.summary.uncertaintyLevels.high}, unknown=${report.summary.uncertaintyLevels.unknown}`,
     `Evidence convergence: reached=${report.summary.evidenceConvergence.reached}, notReached=${report.summary.evidenceConvergence.notReached}, unknown=${report.summary.evidenceConvergence.unknown}`,
+    `Runtime: total=${report.summary.runtime.totalRuntimeMs}ms setup=${report.summary.runtime.setupRuntimeMs}ms scoring=${report.summary.runtime.scoringRuntimeMs}ms taxonomy=${report.summary.runtime.taxonomyRuntimeMs}ms wideBudget=${report.summary.runtime.wideBudgetDiagnosticRuntimeMs}ms diagnostics=${report.summary.runtime.diagnosticRuntimeMs}ms`,
     `Slowest cases: ${markdownSlowExternalCases(report.summary.slowestCases)}`,
     `Slowest case groups: ${markdownSlowExternalGroups(report.summary.slowestCaseGroups)}`,
     "",
@@ -237,21 +240,21 @@ export function renderExternalMemoryBenchmarkMarkdown(
     ...(report.summary.failureSamples.length === 0
       ? ["None"]
       : [
-          "| Case | Temporal | Failure reasons | Failure stages | Warnings | Missing expectedAny | Missing expectedAll | Forbidden matches | Missing intent groups | Convergence | Uncertainty | Tokens | Paths | Duration ms |",
-          "| --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | ---: |",
+          "| Case | Temporal | Failure reasons | Failure stages | Warnings | Missing expectedAny | Missing expectedAll | Forbidden matches | Missing intent groups | Convergence | Uncertainty | Tokens | Paths | Duration ms | Scoring ms | Taxonomy ms | Wide ms |",
+          "| --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
           ...report.summary.failureSamples.map(
             (entry) =>
-              `| ${markdownCell(entry.id)} | ${entry.temporalMode ?? "-"} | ${markdownListCell(entry.failureReasons)} | ${markdownTaxonomyCell(entry.failureTaxonomy ?? [])} | ${markdownListCell(entry.warnings)} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.forbiddenMatches)} | ${markdownListCell(entry.missingRequiredIntentGroups)} | ${markdownNullableNumber(entry.evidenceConvergenceScore)}${entry.evidenceConvergenceReached === null ? "" : entry.evidenceConvergenceReached ? " reached" : " not reached"} | ${entry.uncertaintyLevel ?? "-"} | ${entry.promptTokenEstimate} | ${entry.reconstructedPathCount} | ${entry.durationMs} |`,
+              `| ${markdownCell(entry.id)} | ${entry.temporalMode ?? "-"} | ${markdownListCell(entry.failureReasons)} | ${markdownTaxonomyCell(entry.failureTaxonomy ?? [])} | ${markdownListCell(entry.warnings)} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.forbiddenMatches)} | ${markdownListCell(entry.missingRequiredIntentGroups)} | ${markdownNullableNumber(entry.evidenceConvergenceScore)}${entry.evidenceConvergenceReached === null ? "" : entry.evidenceConvergenceReached ? " reached" : " not reached"} | ${entry.uncertaintyLevel ?? "-"} | ${entry.promptTokenEstimate} | ${entry.reconstructedPathCount} | ${entry.durationMs} | ${entry.scoringRuntimeMs} | ${entry.taxonomyRuntimeMs} | ${entry.wideBudgetDiagnosticRuntimeMs} |`,
           ),
         ]),
     "",
     "## Cases",
     "",
-    "| Case | Status | Mode | Temporal | Failure reasons | Failure stages | Warnings | Missing expectedAny | Missing expectedAll | Forbidden matches | Missing intent groups | Convergence | Uncertainty | Tokens | Paths | Duration ms |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | ---: |",
+    "| Case | Status | Mode | Temporal | Failure reasons | Failure stages | Warnings | Missing expectedAny | Missing expectedAll | Forbidden matches | Missing intent groups | Convergence | Uncertainty | Tokens | Paths | Duration ms | Scoring ms | Taxonomy ms | Wide ms |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ...report.cases.map(
       (entry) =>
-        `| ${markdownCell(entry.id)} | ${entry.pass ? "PASS" : "FAIL"} | ${entry.mode}${entry.requireConvergence ? " + convergence" : ""} | ${entry.temporalMode ?? "-"} | ${markdownListCell(entry.failureReasons)} | ${markdownTaxonomyCell(entry.failureTaxonomy ?? [])} | ${markdownListCell(entry.warnings)} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.forbiddenMatches)} | ${markdownListCell(entry.diagnostics.missingRequiredIntentGroups)} | ${markdownNullableNumber(entry.diagnostics.evidenceConvergenceScore)}${entry.diagnostics.evidenceConvergenceReached === null ? "" : entry.diagnostics.evidenceConvergenceReached ? " reached" : " not reached"} | ${entry.diagnostics.uncertaintyLevel ?? "-"} | ${entry.promptTokenEstimate} | ${entry.reconstructedPathCount} | ${entry.durationMs} |`,
+        `| ${markdownCell(entry.id)} | ${entry.pass ? "PASS" : "FAIL"} | ${entry.mode}${entry.requireConvergence ? " + convergence" : ""} | ${entry.temporalMode ?? "-"} | ${markdownListCell(entry.failureReasons)} | ${markdownTaxonomyCell(entry.failureTaxonomy ?? [])} | ${markdownListCell(entry.warnings)} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.forbiddenMatches)} | ${markdownListCell(entry.diagnostics.missingRequiredIntentGroups)} | ${markdownNullableNumber(entry.diagnostics.evidenceConvergenceScore)}${entry.diagnostics.evidenceConvergenceReached === null ? "" : entry.diagnostics.evidenceConvergenceReached ? " reached" : " not reached"} | ${entry.diagnostics.uncertaintyLevel ?? "-"} | ${entry.promptTokenEstimate} | ${entry.reconstructedPathCount} | ${entry.durationMs} | ${entry.scoringRuntimeMs} | ${entry.taxonomyRuntimeMs} | ${entry.wideBudgetDiagnosticRuntimeMs} |`,
     ),
     "",
   ].join("\n");
@@ -270,7 +273,12 @@ export function renderExternalMemoryBenchmarkSuiteMarkdown(
     `Runs: ${report.passedRunCount}/${report.runCount}`,
     `Mean score: ${report.scoreMean.toFixed(4)}`,
     `Weighted score: ${report.scoreWeighted.toFixed(4)}`,
+    `Strict mean score: ${report.strictScoreMean.toFixed(4)}`,
+    `Strict weighted score: ${report.strictScoreWeighted.toFixed(4)}`,
+    `Normalized evidence mean score: ${report.normalizedEvidenceScoreMean.toFixed(4)}`,
+    `Normalized evidence weighted score: ${report.normalizedEvidenceScoreWeighted.toFixed(4)}`,
     `Cases: ${report.totalPassedCount}/${report.totalCaseCount}`,
+    `Normalized evidence cases: ${report.totalNormalizedEvidencePassedCount}/${report.totalCaseCount}`,
     `Warnings: ${report.totalWarningCount}`,
     `Failure reasons: ${markdownCounters(report.totalFailureReasons)}`,
     `Failure stages: ${markdownCounters(report.totalFailureStages)}`,
@@ -303,11 +311,11 @@ export function renderExternalMemoryBenchmarkSuiteMarkdown(
     "",
     "## Runs",
     "",
-    "| Run | Status | Dataset | Cases | Score | Duration | Groups | Reused | Failure reasons | Failure stages | Slice scores | Hash | JSON | Markdown | Warnings |",
-    "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- |",
+    "| Run | Status | Dataset | Cases | Score | Normalized evidence | Duration | Setup | Scoring | Taxonomy | Wide | Groups | Reused | Failure reasons | Failure stages | Slice scores | Hash | JSON | Markdown | Warnings |",
+    "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- |",
     ...report.runs.map(
       (run) =>
-        `| ${markdownCell(run.id)} | ${run.pass ? "PASS" : "FAIL"} | ${run.datasetFormat} | ${run.passedCount}/${run.caseCount} | ${run.score.toFixed(4)} | ${(run.durationMs / 1000).toFixed(1)}s | ${run.caseGroupCount} | ${run.reusedProfileCaseCount} | ${markdownCounters(run.failureReasons)} | ${markdownCounters(run.failureStages)} | ${markdownSliceScores(run.sliceScores)} | ${markdownCell(run.datasetHash ?? "-")} | ${markdownCell(run.jsonFile ?? "-")} | ${markdownCell(run.markdownFile ?? "-")} | ${run.warningCount}${run.warnings.length ? `: ${markdownListCell(run.warnings)}` : ""} |`,
+        `| ${markdownCell(run.id)} | ${run.pass ? "PASS" : "FAIL"} | ${run.datasetFormat} | ${run.passedCount}/${run.caseCount} | ${run.score.toFixed(4)} | ${run.normalizedEvidenceScore.toFixed(4)} | ${(run.durationMs / 1000).toFixed(1)}s | ${(run.runtime.setupRuntimeMs / 1000).toFixed(1)}s | ${(run.runtime.scoringRuntimeMs / 1000).toFixed(1)}s | ${(run.runtime.taxonomyRuntimeMs / 1000).toFixed(1)}s | ${(run.runtime.wideBudgetDiagnosticRuntimeMs / 1000).toFixed(1)}s | ${run.caseGroupCount} | ${run.reusedProfileCaseCount} | ${markdownCounters(run.failureReasons)} | ${markdownCounters(run.failureStages)} | ${markdownSliceScores(run.sliceScores)} | ${markdownCell(run.datasetHash ?? "-")} | ${markdownCell(run.jsonFile ?? "-")} | ${markdownCell(run.markdownFile ?? "-")} | ${run.warningCount}${run.warnings.length ? `: ${markdownListCell(run.warnings)}` : ""} |`,
     ),
     "",
   ].join("\n");

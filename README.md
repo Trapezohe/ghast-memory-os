@@ -133,7 +133,7 @@ node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3
 node dist/cli/gmos.js gym run --generated-seeds 10 --format markdown --report-file ./memory-gym.md
 node dist/cli/gmos.js gym scale --sizes 100,1000
 node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --require-convergence --temporal-mode current
-node dist/cli/gmos.js gym external --input-file ./longmemeval_s_cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --progress
+node dist/cli/gmos.js gym external --input-file ./longmemeval_s_cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
 node dist/cli/gmos.js gym external --input-file ./locomo10.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --progress
 node dist/cli/gmos.js gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format json --markdown-file ./external-suite.md
 node dist/cli/gmos.js gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
@@ -213,6 +213,14 @@ answer-label/input mismatch, extraction/filtering, retrieval policy filtering,
 reconstruction misses, context composer or budget drops, forbidden context
 inclusion, and convergence failures. `failureStages` counts whether a stage
 appears in a failed case; the per-case taxonomy entries carry the matched terms.
+The legacy `score` field is the strict deterministic adapter score and is also
+reported explicitly as `strictScore`. Reports also include
+`normalizedEvidenceScore`, which counts cases where the reconstructed context
+contains the expected evidence after conservative punctuation, date-order, or
+number-format normalization. This normalized view is diagnostic only; it is not
+an official benchmark score and does not change pass/fail. It still respects
+forbidden matches and required convergence; it is not a loose hit-rate that can
+override safety or convergence failures.
 Suite Markdown reports also include a diagnostic summary of the slowest runs,
 weakest slice scores, and top failure stages/reasons. That summary is derived
 from existing run statistics only; it does not change scoring, adapter behavior,
@@ -221,7 +229,17 @@ Single-run external reports include slowest case and case-group timing
 diagnostics. Case timing measures scoring/reconstruction for one question, while
 case-group timing separates profile setup from scoring so long-history datasets
 can show whether time is spent ingesting events or answering questions. These
-timing fields are diagnostic only and do not affect pass/fail scoring.
+timing fields are diagnostic only and do not affect pass/fail scoring. Runtime
+is split into setup/ingestion, core scoring, taxonomy, and wide-budget
+diagnostic probes so expensive diagnostics do not get mistaken for core memory
+runtime.
+Use `--diagnostics-level off|basic|full` on `gym external`, or
+`diagnosticsLevel` in an external-suite manifest, to control diagnostic cost.
+`off` records strict scoring without failure taxonomy, `basic` records taxonomy
+without wide-budget recovery probes, and `full` runs the full taxonomy used for
+deep failure analysis. The default is `full` for backward-compatible reports.
+`wideBudgetDiagnosticRuntimeMs` is a subset of taxonomy runtime, not an
+additional runtime bucket to add on top of `taxonomyRuntimeMs`.
 When an expected answer is not an exact substring but is present after simple
 punctuation/spacing/date-format-or-order/number-grouping normalization, the report uses
 `answer_normalization_mismatch` instead of `answer_not_in_input` so adapter
