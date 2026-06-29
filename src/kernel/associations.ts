@@ -322,16 +322,21 @@ export function associationCuesForBelief(belief: WorldBeliefRecord): Association
     ...metadataTemporalCues(belief.metadata).map((cue) => ({ cue, cueKind: "temporal" as const })),
     ...(predicateCue ? [{ cue: predicateCue, cueKind: "predicate" as const }] : []),
     ...extractAssociationCues(
-      [belief.subject, ...entityAliases(belief.metadata), belief.object, ...qualifiers].join(" "),
+      [
+        safeAssociationValue(belief.subject),
+        ...entityAliases(belief.metadata),
+        safeAssociationValue(belief.object),
+        ...qualifiers,
+      ].join(" "),
     ),
   ];
 }
 
 export function associationSummaryForBelief(belief: WorldBeliefRecord): string {
   return [
-    belief.subject,
+    safeAssociationValue(belief.subject),
     safeAssociationValue(belief.predicate),
-    belief.object,
+    safeAssociationValue(belief.object),
     belief.predicate === "person.relation"
       ? safeMetadataDisplayValue(belief.metadata, "relationType")
       : "",

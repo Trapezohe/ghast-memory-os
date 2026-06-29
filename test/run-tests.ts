@@ -3991,6 +3991,16 @@ try {
   ) as Record<string, unknown>;
   assert.equal(sensitiveObjectBeliefMetadata.object, "[redacted_sensitive]");
   assert.equal(JSON.stringify(sensitiveObjectBeliefMetadata).includes("123-45-6789"), false);
+  const sensitiveObjectAssociationsJson = JSON.stringify(
+    sensitiveObjectDb
+      .prepare(
+        `SELECT cue, tag, target_summary
+           FROM gmos_associations
+          WHERE profile_id = ?`,
+      )
+      .all("sensitive_object_extractor"),
+  );
+  assert.equal(sensitiveObjectAssociationsJson.includes("123-45-6789"), false);
 } finally {
   sensitiveObjectDb.close();
 }
@@ -4007,7 +4017,7 @@ const sensitiveAuxiliaryExtractorMemory = createMemoryOS({
       kind: "project",
       content: "Sensitive auxiliary project current milestone is public paperwork.",
       confidence: 0.93,
-      predicate: "project.state",
+      predicate: "project.state 123-45-6789",
       subject: "Project 123-45-6789",
       subjectAliases: ["Alias 123-45-6789"],
       object: "public paperwork",
@@ -4053,6 +4063,7 @@ assert.deepEqual(sensitiveAuxiliaryMemory?.metadata.subjectAliases, [
   "Alias [redacted_sensitive]",
 ]);
 assert.equal(sensitiveAuxiliaryMemory?.metadata.source, "[redacted_sensitive]");
+assert.equal(sensitiveAuxiliaryMemory?.metadata.predicate, "project.state [redacted_sensitive]");
 const sensitiveAuxiliaryMetadataJson = JSON.stringify(sensitiveAuxiliaryMemory?.metadata ?? {});
 assert.equal(sensitiveAuxiliaryMetadataJson.includes("123-45-6789"), false);
 assert.equal(sensitiveAuxiliaryMetadataJson.includes("therapy intake note"), false);
@@ -4078,6 +4089,24 @@ try {
     "Alias [redacted_sensitive]",
   ]);
   assert.equal(sensitiveAuxiliaryBeliefMetadata.source, "[redacted_sensitive]");
+  assert.equal(sensitiveAuxiliaryBeliefMetadata.predicate, "project.state [redacted_sensitive]");
+  assert.equal(
+    JSON.stringify(sensitiveAuxiliaryBeliefMetadata.entityResolution ?? {}).includes(
+      "123-45-6789",
+    ),
+    false,
+  );
+  const sensitiveAuxiliaryAssociationsJson = JSON.stringify(
+    sensitiveAuxiliaryDb
+      .prepare(
+        `SELECT cue, tag, target_summary
+           FROM gmos_associations
+          WHERE profile_id = ?`,
+      )
+      .all("sensitive_auxiliary_extractor"),
+  );
+  assert.equal(sensitiveAuxiliaryAssociationsJson.includes("123-45-6789"), false);
+  assert.equal(sensitiveAuxiliaryAssociationsJson.includes("therapy intake note"), false);
   assert.equal(JSON.stringify(sensitiveAuxiliaryBeliefMetadata).includes("123-45-6789"), false);
   assert.equal(
     JSON.stringify(sensitiveAuxiliaryBeliefMetadata).includes("therapy intake note"),
