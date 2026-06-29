@@ -29,6 +29,8 @@ smoke, and a pack dry run.
 
 - Core runtime code must not branch on dataset names, benchmark names, case IDs,
   fixture text, hidden worlds, or scenario names.
+- Core runtime code must not hard-code external fixture answers or forbidden
+  answers.
 - Deterministic external QA adapters may only map schema, normalize answers,
   and score results. Official protocol bridges, such as STATE-Bench, must keep
   their protocol-specific work outside core runtime behavior.
