@@ -92,6 +92,13 @@ calls instead of direct SDK imports:
 
 Public MCP tools intentionally do not expose sensitive override switches.
 
+Run `examples/mcp-router.mjs` for a minimal in-process MCP smoke test. The
+example validates `memory.runtime_info`, observes a preference through
+`memory.observe`, prepares evidence-backed context through
+`memory.prepare_context`, rejects public sensitive override switches, explains
+the evidence path without returning a prompt block, and deletes its temporary
+plaintext SQLite database.
+
 ## HTTP Surface
 
 The local HTTP adapter exposes:

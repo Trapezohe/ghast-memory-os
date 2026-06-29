@@ -685,6 +685,7 @@ Run the examples after installing dependencies:
 npm run examples:quickstart
 npm run examples:host-adapter
 npm run examples:http-adapter
+npm run examples:mcp-router
 ```
 
 `examples/quickstart.mjs` creates a temporary plaintext SQLite store, observes a user
@@ -704,6 +705,12 @@ preference through `/observe`, prepares evidence-backed context through
 `/prepare`, reads a content-free `/status` report, and removes its temporary
 plaintext SQLite database. Use this path when the host process cannot import
 the Node SDK directly.
+
+`examples/mcp-router.mjs` exercises the in-process MCP tool router through the
+public package exports. It checks `memory.runtime_info`, observes a preference,
+prepares evidence-backed context, verifies public MCP rejects sensitive override
+switches, explains the evidence path without returning a prompt block, and
+prints only sanitized integration metadata.
 
 ## Low-Level Compatibility APIs
 

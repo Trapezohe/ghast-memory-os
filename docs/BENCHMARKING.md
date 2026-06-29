@@ -14,7 +14,7 @@ npm run gate:pr
 The gate runs:
 
 - TypeScript build and unit/integration tests;
-- quickstart, host adapter, and HTTP adapter examples;
+- quickstart, host adapter, HTTP adapter, and MCP router examples;
 - no-benchmark-special-casing scan;
 - consumer install smoke;
 - deterministic Memory Gym smoke;

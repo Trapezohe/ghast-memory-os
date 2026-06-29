@@ -14,4 +14,4 @@ references for host applications.
   safe rollout steps.
 
 Runnable examples are shipped under `examples/`: `quickstart.mjs`,
-`host-adapter.mjs`, and `http-adapter.mjs`.
+`host-adapter.mjs`, `http-adapter.mjs`, and `mcp-router.mjs`.

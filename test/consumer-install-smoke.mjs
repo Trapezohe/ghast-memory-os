@@ -1731,6 +1731,27 @@ try {
   assert.equal(httpAdapterOutput.preparedHasPreference, true);
   assert.equal(httpAdapterOutput.statusSchemaVersion, 7);
   assert.equal(httpAdapterOutput.hostLevel, "L4");
+  const installedMcpRouterExample = path.join(
+    consumerDir,
+    "node_modules",
+    "@ghast",
+    "memory",
+    "examples",
+    "mcp-router.mjs",
+  );
+  assert.equal(existsSync(installedMcpRouterExample), true);
+  const mcpRouterExample = spawnSync(process.execPath, [installedMcpRouterExample], {
+    cwd: consumerDir,
+    encoding: "utf8",
+  });
+  assert.equal(mcpRouterExample.status, 0, mcpRouterExample.stderr);
+  const mcpRouterOutput = JSON.parse(mcpRouterExample.stdout);
+  assert.equal(mcpRouterOutput.ok, true);
+  assert.equal(mcpRouterOutput.runtimeInfoSchema, "gmos.runtime_info.v1");
+  assert.equal(mcpRouterOutput.hasRuntimeInfoTool, true);
+  assert.equal(mcpRouterOutput.preparedHasPreference, true);
+  assert.equal(mcpRouterOutput.sensitiveOverrideRejected, true);
+  assert.equal(mcpRouterOutput.evidencePathSchema, "gmos.evidence_path_explanation.v1");
   console.log("[gmos-consumer] install smoke passed");
 } finally {
   rmSync(tmp, { recursive: true, force: true });
