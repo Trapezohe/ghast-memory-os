@@ -36,6 +36,12 @@ import { resolveWorldEntitySubject } from "../src/kernel/entities.js";
 import { extractRuleMemoryCandidates } from "../src/kernel/extraction.js";
 import { externalBenchmarkGitInfoForPackageRoot } from "../src/gym/external.js";
 import {
+  DEFAULT_GMOS_CLI_BINARIES,
+  publicCliBinariesFromManifest,
+  publicCommandNameFromPackageName,
+  publicPackageExportsFromManifest,
+} from "../src/kernel/package-info.js";
+import {
   renderHostCompatibilityGymMarkdown,
   renderExternalMemoryBenchmarkMarkdown,
   renderExternalMemoryBenchmarkSuiteMarkdown,
@@ -430,6 +436,21 @@ const packageJson = JSON.parse(readFileSync(path.join(process.cwd(), "package.js
   bin: Record<string, string>;
   exports: Record<string, unknown>;
 };
+assert.equal(publicCommandNameFromPackageName("@scope/tool"), "tool");
+assert.equal(publicCommandNameFromPackageName("plain-tool"), "plain-tool");
+assert.deepEqual(
+  publicCliBinariesFromManifest({ name: "@ghast/memory", bin: { "ghast-memory": "./cli.js", gmos: "./cli.js" } }),
+  ["ghast-memory", "gmos"],
+);
+assert.deepEqual(publicCliBinariesFromManifest({ name: "@scope/tool", bin: "./dist/cli.js" }), ["tool"]);
+assert.deepEqual(publicCliBinariesFromManifest({ name: "plain-tool", bin: "./dist/cli.js" }), ["plain-tool"]);
+assert.deepEqual(publicCliBinariesFromManifest({ name: "@scope/tool", bin: "" }), DEFAULT_GMOS_CLI_BINARIES);
+assert.deepEqual(
+  publicPackageExportsFromManifest({ exports: { "./store/sqlite": "./dist/store/sqlite/index.js", ".": "./dist/index.js" } }),
+  [".", "./store/sqlite"],
+);
+assert.deepEqual(publicPackageExportsFromManifest({ exports: "./dist/index.js" }), ["."]);
+assert.deepEqual(publicPackageExportsFromManifest({ exports: [] }), []);
 function gitOutput(args: string[]): string {
   const result = spawnSync("git", args, { cwd: process.cwd(), encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
