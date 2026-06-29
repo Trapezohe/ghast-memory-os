@@ -602,6 +602,16 @@ function calendarDateKey(year: string, month: string, day: string): string | nul
   return `${year.padStart(4, "0")}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
 }
 
+function monthDayDateKey(month: string, day: string): string | null {
+  const monthNumber = Number(month);
+  const dayNumber = Number(day);
+  const parsed = new Date(Date.UTC(2000, monthNumber - 1, dayNumber));
+  if (parsed.getUTCMonth() !== monthNumber - 1 || parsed.getUTCDate() !== dayNumber) {
+    return null;
+  }
+  return `month-day:${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+}
+
 type DateAnswerMatch = {
   key: string;
   start: number;
@@ -645,6 +655,40 @@ function dateAnswerMatches(value: string): DateAnswerMatch[] {
     const key =
       month && ordinalSuffixMatchesDay(match[2]!, match[3]!)
         ? calendarDateKey(match[4]!, month, match[2]!)
+        : null;
+    if (key && match.index !== undefined) {
+      matches.push({ key, start: match.index, end: match.index + match[0].length });
+    }
+  }
+  for (const match of value.matchAll(/\b(\d{1,2})\s+([A-Za-z]+)\b/gu)) {
+    const month = ANSWER_MONTHS[match[2]!.toLowerCase()];
+    const key = month ? monthDayDateKey(month, match[1]!) : null;
+    if (key && match.index !== undefined) {
+      matches.push({ key, start: match.index, end: match.index + match[0].length });
+    }
+  }
+  for (const match of value.matchAll(/\b([A-Za-z]+)\s+(\d{1,2})\b/gu)) {
+    const month = ANSWER_MONTHS[match[1]!.toLowerCase()];
+    const key = month ? monthDayDateKey(month, match[2]!) : null;
+    if (key && match.index !== undefined) {
+      matches.push({ key, start: match.index, end: match.index + match[0].length });
+    }
+  }
+  for (const match of value.matchAll(/\b(\d{1,2})(st|nd|rd|th)\s+([A-Za-z]+)\b/giu)) {
+    const month = ANSWER_FULL_MONTHS[match[3]!.toLowerCase()];
+    const key =
+      month && ordinalSuffixMatchesDay(match[1]!, match[2]!)
+        ? monthDayDateKey(month, match[1]!)
+        : null;
+    if (key && match.index !== undefined) {
+      matches.push({ key, start: match.index, end: match.index + match[0].length });
+    }
+  }
+  for (const match of value.matchAll(/\b([A-Za-z]+)\s+(\d{1,2})(st|nd|rd|th)\b/giu)) {
+    const month = ANSWER_FULL_MONTHS[match[1]!.toLowerCase()];
+    const key =
+      month && ordinalSuffixMatchesDay(match[2]!, match[3]!)
+        ? monthDayDateKey(month, match[2]!)
         : null;
     if (key && match.index !== undefined) {
       matches.push({ key, start: match.index, end: match.index + match[0].length });
