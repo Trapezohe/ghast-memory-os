@@ -105,6 +105,16 @@ export interface ExternalMemoryBenchmarkFailureTaxonomyEntry {
   terms: string[];
 }
 
+export type ExternalMemoryBenchmarkScoreAttributionArea =
+  | "adapter_or_source_answer_alignment"
+  | "scorer_normalization"
+  | "safety_or_privacy"
+  | "extraction_or_memory_update"
+  | "temporal_or_policy_filter"
+  | "retrieval_or_reconstruction"
+  | "context_composer_or_budget"
+  | "reconstruction_convergence";
+
 export interface ExternalMemoryBenchmarkCaseResult {
   id: string;
   pass: boolean;
@@ -204,6 +214,7 @@ export interface ExternalMemoryBenchmarkFailureSample {
 export interface ExternalMemoryBenchmarkSummary {
   failureReasons: ExternalMemoryBenchmarkCounter[];
   failureStages?: ExternalMemoryBenchmarkCounter[] | undefined;
+  scoreAttribution: ExternalMemoryBenchmarkCounter[];
   sliceScores?: ExternalMemoryBenchmarkSliceScore[] | undefined;
   warnings: ExternalMemoryBenchmarkCounter[];
   uncertaintyLevels: {
@@ -1201,6 +1212,30 @@ function incrementCounter(map: Map<string, number>, name: string): void {
   map.set(name, (map.get(name) ?? 0) + 1);
 }
 
+function scoreAttributionAreaForFailureStage(
+  stage: ExternalMemoryBenchmarkFailureStage,
+): ExternalMemoryBenchmarkScoreAttributionArea {
+  switch (stage) {
+    case "answer_not_in_input":
+      return "adapter_or_source_answer_alignment";
+    case "answer_normalization_mismatch":
+      return "scorer_normalization";
+    case "source_event_filtered":
+    case "forbidden_context_inclusion":
+      return "safety_or_privacy";
+    case "not_extracted_or_filtered":
+      return "extraction_or_memory_update";
+    case "retrieval_policy_filtered":
+      return "temporal_or_policy_filter";
+    case "retrieval_or_reconstruction_miss":
+      return "retrieval_or_reconstruction";
+    case "context_composer_or_budget_drop":
+      return "context_composer_or_budget";
+    case "reconstruction_convergence_failure":
+      return "reconstruction_convergence";
+  }
+}
+
 function sortedCounters(map: Map<string, number>): ExternalMemoryBenchmarkCounter[] {
   return [...map.entries()]
     .map(([name, count]) => ({ name, count }))
@@ -1293,6 +1328,7 @@ function buildExternalMemoryBenchmarkSummary(
 ): ExternalMemoryBenchmarkSummary {
   const failureReasonCounts = new Map<string, number>();
   const failureStageCounts = new Map<string, number>();
+  const scoreAttributionCounts = new Map<string, number>();
   const sliceScoreCounts = new Map<string, { caseCount: number; passedCount: number }>();
   const warningCounts = new Map<string, number>();
   const uncertaintyLevels = {
@@ -1311,6 +1347,10 @@ function buildExternalMemoryBenchmarkSummary(
     for (const reason of entry.failureReasons) incrementCounter(failureReasonCounts, reason);
     for (const taxonomyEntry of entry.failureTaxonomy ?? []) {
       incrementCounter(failureStageCounts, taxonomyEntry.stage);
+      incrementCounter(
+        scoreAttributionCounts,
+        scoreAttributionAreaForFailureStage(taxonomyEntry.stage),
+      );
     }
     for (const slice of entry.slices ?? []) {
       const stats = sliceScoreCounts.get(slice) ?? { caseCount: 0, passedCount: 0 };
@@ -1342,6 +1382,7 @@ function buildExternalMemoryBenchmarkSummary(
   return {
     failureReasons: sortedCounters(failureReasonCounts),
     failureStages: sortedCounters(failureStageCounts),
+    scoreAttribution: sortedCounters(scoreAttributionCounts),
     sliceScores: sortedSliceScores(sliceScoreCounts),
     warnings: sortedCounters(warningCounts),
     uncertaintyLevels,

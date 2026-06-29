@@ -242,6 +242,7 @@ export function renderExternalMemoryBenchmarkMarkdown(
     "",
     `Failure reasons: ${markdownCounters(report.summary.failureReasons)}`,
     `Failure stages: ${markdownCounters(report.summary.failureStages ?? [])}`,
+    `Score attribution: ${markdownCounters(report.summary.scoreAttribution ?? [])}`,
     `Slice scores: ${markdownSliceScores(report.summary.sliceScores)}`,
     `Warnings: ${markdownCounters(report.summary.warnings)}`,
     `Uncertainty: low=${report.summary.uncertaintyLevels.low}, medium=${report.summary.uncertaintyLevels.medium}, high=${report.summary.uncertaintyLevels.high}, unknown=${report.summary.uncertaintyLevels.unknown}`,
@@ -297,6 +298,7 @@ export function renderExternalMemoryBenchmarkSuiteMarkdown(
     `Warnings: ${report.totalWarningCount}`,
     `Failure reasons: ${markdownCounters(report.totalFailureReasons)}`,
     `Failure stages: ${markdownCounters(report.totalFailureStages)}`,
+    `Score attribution: ${markdownCounters(report.totalScoreAttribution ?? [])}`,
     "",
     "## Diagnostic Summary",
     "",
@@ -310,6 +312,7 @@ export function renderExternalMemoryBenchmarkSuiteMarkdown(
     "",
     `Top failure stages: ${markdownCounters(report.totalFailureStages.slice(0, 5))}`,
     `Top failure reasons: ${markdownCounters(report.totalFailureReasons.slice(0, 5))}`,
+    `Top score attribution: ${markdownCounters((report.totalScoreAttribution ?? []).slice(0, 5))}`,
     "",
     "## Run Manifest",
     "",
@@ -328,11 +331,11 @@ export function renderExternalMemoryBenchmarkSuiteMarkdown(
     "",
     "## Runs",
     "",
-    "| Run | Status | Dataset | Cases | Score | Normalized evidence | Duration | Setup | Scoring | Taxonomy | Wide | Groups | Reused | Failure reasons | Failure stages | Slice scores | Hash | JSON | Markdown | Warnings |",
-    "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- |",
+    "| Run | Status | Dataset | Cases | Score | Normalized evidence | Duration | Setup | Scoring | Taxonomy | Wide | Groups | Reused | Failure reasons | Failure stages | Score attribution | Slice scores | Hash | JSON | Markdown | Warnings |",
+    "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...report.runs.map(
       (run) =>
-        `| ${markdownCell(run.id)} | ${run.pass ? "PASS" : "FAIL"} | ${run.datasetFormat} | ${run.passedCount}/${run.caseCount} | ${run.score.toFixed(4)} | ${run.normalizedEvidenceScore.toFixed(4)} | ${(run.durationMs / 1000).toFixed(1)}s | ${(run.runtime.setupRuntimeMs / 1000).toFixed(1)}s | ${(run.runtime.scoringRuntimeMs / 1000).toFixed(1)}s | ${(run.runtime.taxonomyRuntimeMs / 1000).toFixed(1)}s | ${(run.runtime.wideBudgetDiagnosticRuntimeMs / 1000).toFixed(1)}s | ${run.caseGroupCount} | ${run.reusedProfileCaseCount} | ${markdownCounters(run.failureReasons)} | ${markdownCounters(run.failureStages)} | ${markdownSliceScores(run.sliceScores)} | ${markdownCell(run.datasetHash ?? "-")} | ${markdownCell(run.jsonFile ?? "-")} | ${markdownCell(run.markdownFile ?? "-")} | ${run.warningCount}${run.warnings.length ? `: ${markdownListCell(run.warnings)}` : ""} |`,
+        `| ${markdownCell(run.id)} | ${run.pass ? "PASS" : "FAIL"} | ${run.datasetFormat} | ${run.passedCount}/${run.caseCount} | ${run.score.toFixed(4)} | ${run.normalizedEvidenceScore.toFixed(4)} | ${(run.durationMs / 1000).toFixed(1)}s | ${(run.runtime.setupRuntimeMs / 1000).toFixed(1)}s | ${(run.runtime.scoringRuntimeMs / 1000).toFixed(1)}s | ${(run.runtime.taxonomyRuntimeMs / 1000).toFixed(1)}s | ${(run.runtime.wideBudgetDiagnosticRuntimeMs / 1000).toFixed(1)}s | ${run.caseGroupCount} | ${run.reusedProfileCaseCount} | ${markdownCounters(run.failureReasons)} | ${markdownCounters(run.failureStages)} | ${markdownCounters(run.scoreAttribution ?? [])} | ${markdownSliceScores(run.sliceScores)} | ${markdownCell(run.datasetHash ?? "-")} | ${markdownCell(run.jsonFile ?? "-")} | ${markdownCell(run.markdownFile ?? "-")} | ${run.warningCount}${run.warnings.length ? `: ${markdownListCell(run.warnings)}` : ""} |`,
     ),
     "",
   ].join("\n");

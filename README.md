@@ -217,6 +217,11 @@ answer-label/input mismatch, extraction/filtering, retrieval policy filtering,
 reconstruction misses, context composer or budget drops, forbidden context
 inclusion, and convergence failures. `failureStages` counts whether a stage
 appears in a failed case; the per-case taxonomy entries carry the matched terms.
+Reports also include `scoreAttribution`, a capability-level rollup derived from
+those failure stages. It groups failures into areas such as adapter/source answer
+alignment, scorer normalization, extraction/update, retrieval/reconstruction,
+context budget, temporal/policy filtering, and safety/privacy. This is diagnostic
+only and does not change pass/fail.
 The legacy `score` field is the strict deterministic adapter score and is also
 reported explicitly as `strictScore`. Reports also include
 `normalizedEvidenceScore`, which counts cases where the reconstructed context

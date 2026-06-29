@@ -12637,6 +12637,10 @@ assert.deepEqual(externalFailureSummaryBenchmark.summary.failureStages, [
   { name: "answer_not_in_input", count: 2 },
   { name: "source_event_filtered", count: 1 },
 ]);
+assert.deepEqual(externalFailureSummaryBenchmark.summary.scoreAttribution, [
+  { name: "adapter_or_source_answer_alignment", count: 2 },
+  { name: "safety_or_privacy", count: 1 },
+]);
 assert.deepEqual(
   externalFailureSummaryBenchmark.cases.find((entry) => entry.id === "missing-one")?.failureTaxonomy,
   [{ stage: "answer_not_in_input", terms: ["Missing Alpha"] }],
@@ -12802,6 +12806,10 @@ assert.deepEqual(externalAnswerNormalizationBenchmark.summary.failureStages, [
   { name: "answer_not_in_input", count: 12 },
   { name: "answer_normalization_mismatch", count: 10 },
 ]);
+assert.deepEqual(externalAnswerNormalizationBenchmark.summary.scoreAttribution, [
+  { name: "adapter_or_source_answer_alignment", count: 12 },
+  { name: "scorer_normalization", count: 10 },
+]);
 assert.deepEqual(externalAnswerNormalizationBenchmark.cases[0]?.failureTaxonomy, [
   { stage: "answer_normalization_mismatch", terms: ["Alpha Beta"] },
 ]);
@@ -12956,6 +12964,12 @@ assert.deepEqual(
     "retrieval_policy_filtered",
   ],
 );
+assert.deepEqual(externalTaxonomyBenchmark.summary.scoreAttribution, [
+  { name: "extraction_or_memory_update", count: 2 },
+  { name: "retrieval_or_reconstruction", count: 1 },
+  { name: "safety_or_privacy", count: 1 },
+  { name: "temporal_or_policy_filter", count: 1 },
+]);
 const externalBudgetTaxonomyBenchmark = await runExternalMemoryBenchmark({
   contextBudgetTokens: 8,
   cases: [
@@ -12977,6 +12991,9 @@ const externalBudgetTaxonomyBenchmark = await runExternalMemoryBenchmark({
 assert.equal(externalBudgetTaxonomyBenchmark.pass, false);
 assert.deepEqual(externalBudgetTaxonomyBenchmark.cases[0]?.failureTaxonomy, [
   { stage: "context_composer_or_budget_drop", terms: ["BudgetFlag"] },
+]);
+assert.deepEqual(externalBudgetTaxonomyBenchmark.summary.scoreAttribution, [
+  { name: "context_composer_or_budget", count: 1 },
 ]);
 assert.equal((externalBudgetTaxonomyBenchmark.cases[0]?.wideBudgetDiagnosticRuntimeMs ?? 0) >= 0, true);
 const externalBudgetBasicTaxonomyBenchmark = await runExternalMemoryBenchmark({
@@ -13017,6 +13034,7 @@ const externalDiagnosticsOffBenchmark = await runExternalMemoryBenchmark({
 assert.equal(externalDiagnosticsOffBenchmark.pass, false);
 assert.equal(externalDiagnosticsOffBenchmark.runManifest.options.diagnosticsLevel, "off");
 assert.deepEqual(externalDiagnosticsOffBenchmark.summary.failureStages, []);
+assert.deepEqual(externalDiagnosticsOffBenchmark.summary.scoreAttribution, []);
 assert.deepEqual(externalDiagnosticsOffBenchmark.cases[0]?.failureTaxonomy, []);
 assert.deepEqual(externalDiagnosticsOffBenchmark.cases[0]?.warnings, []);
 assert.equal(externalDiagnosticsOffBenchmark.cases[0]?.taxonomyRuntimeMs, 0);
@@ -13146,13 +13164,20 @@ assert.deepEqual(externalSuiteExecution.result.totalFailureReasons, [
 assert.deepEqual(externalSuiteExecution.result.totalFailureStages, [
   { name: "answer_not_in_input", count: 1 },
 ]);
+assert.deepEqual(externalSuiteExecution.result.totalScoreAttribution, [
+  { name: "adapter_or_source_answer_alignment", count: 1 },
+]);
 assert.deepEqual(externalSuiteExecution.result.runs[0]?.failureReasons, []);
 assert.deepEqual(externalSuiteExecution.result.runs[0]?.failureStages, []);
+assert.deepEqual(externalSuiteExecution.result.runs[0]?.scoreAttribution, []);
 assert.deepEqual(externalSuiteExecution.result.runs[1]?.failureReasons, [
   { name: "expected_all_missing", count: 1 },
 ]);
 assert.deepEqual(externalSuiteExecution.result.runs[1]?.failureStages, [
   { name: "answer_not_in_input", count: 1 },
+]);
+assert.deepEqual(externalSuiteExecution.result.runs[1]?.scoreAttribution, [
+  { name: "adapter_or_source_answer_alignment", count: 1 },
 ]);
 assert.equal(externalSuiteExecution.result.scoreWeighted > 0 && externalSuiteExecution.result.scoreWeighted < 1, true);
 assert.equal(externalSuiteExecution.result.strictScoreWeighted, externalSuiteExecution.result.scoreWeighted);
@@ -13203,6 +13228,10 @@ assert.match(renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.report
 assert.match(renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!), /Normalized evidence score:/);
 assert.match(
   renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!),
+  /Score attribution: adapter_or_source_answer_alignment=1/,
+);
+assert.match(
+  renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!),
   /Score semantics: kind=deterministic_adapter_context primary=strictScore officialProtocol=not_run officialScore=none officialComparable=no normalizedEvidence=diagnostic_only/,
 );
 assert.match(renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!), /Runtime: total=\d+ms setup=\d+ms scoring=\d+ms taxonomy=\d+ms wideBudget=\d+ms diagnostics=\d+ms/);
@@ -13216,6 +13245,7 @@ assert.match(
 );
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Failure reasons: expected_all_missing=1/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Failure stages: answer_not_in_input=1/);
+assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Score attribution: adapter_or_source_answer_alignment=1/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /## Diagnostic Summary/);
 assert.match(
   renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result),
@@ -13225,6 +13255,7 @@ assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.r
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Weakest slices:/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Top failure stages: answer_not_in_input=1/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Top failure reasons: expected_all_missing=1/);
+assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Top score attribution: adapter_or_source_answer_alignment=1/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /- passing: .* score=1\.0000, cases=\d+\/\d+/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /- passing gmos:project_procedure: 1\/1 score=1\.0000/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Slice scores/);
@@ -14556,7 +14587,7 @@ const cliExternalJson = JSON.parse(cliExternal.stdout) as {
       comparableToOfficialScore?: boolean;
     };
   };
-  summary?: { failureSampleLimit?: number };
+  summary?: { failureSampleLimit?: number; scoreAttribution?: Array<{ name: string; count: number }> };
 };
 assert.equal(cliExternalJson.schema, "gmos.external_long_memory_qa.v1");
 assert.equal(cliExternalJson.pass, true);
@@ -14574,6 +14605,7 @@ assert.equal(cliExternalJson.runManifest?.scoreSemantics?.officialProtocol, "not
 assert.equal(cliExternalJson.runManifest?.scoreSemantics?.officialScore, null);
 assert.equal(cliExternalJson.runManifest?.scoreSemantics?.comparableToOfficialScore, false);
 assert.equal(cliExternalJson.summary?.failureSampleLimit, 3);
+assert.deepEqual(cliExternalJson.summary?.scoreAttribution, []);
 assert.equal(existsSync(cliExternalJsonFile), true);
 assert.equal(existsSync(cliExternalMarkdownFile), true);
 assert.equal(JSON.parse(readFileSync(cliExternalJsonFile, "utf8")).schema, "gmos.external_long_memory_qa.v1");
@@ -14581,6 +14613,7 @@ assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /gmOS External Long-
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /Failure sample limit: 3/);
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /temporalMode=history includeSensitive=false includeTemporalMetadata=false/);
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /diagnosticsLevel=basic/);
+assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /Score attribution: none/);
 assert.match(
   readFileSync(cliExternalMarkdownFile, "utf8"),
   /Score semantics: kind=deterministic_adapter_context primary=strictScore officialProtocol=not_run officialScore=none officialComparable=no normalizedEvidence=diagnostic_only/,
@@ -14622,6 +14655,7 @@ const cliExternalSuiteJson = JSON.parse(cliExternalSuite.stdout) as {
   totalCaseCount?: number;
   totalWarningCount?: number;
   totalFailureStages?: Array<{ name: string; count: number }>;
+  totalScoreAttribution?: Array<{ name: string; count: number }>;
   runManifest?: {
     durationMs?: number;
     package?: { version?: string | null } | null;
@@ -14638,6 +14672,7 @@ const cliExternalSuiteJson = JSON.parse(cliExternalSuite.stdout) as {
     reusedProfileCaseCount?: number;
     warningCount?: number;
     failureStages?: Array<{ name: string; count: number }>;
+    scoreAttribution?: Array<{ name: string; count: number }>;
     sliceScores?: Array<{ name: string; caseCount: number; passedCount: number; failedCount: number; score: number }>;
   }>;
 };
@@ -14652,6 +14687,9 @@ assert.equal(cliExternalSuiteJson.scoreWeighted !== undefined && cliExternalSuit
 assert.equal(cliExternalSuiteJson.totalWarningCount, 0);
 assert.deepEqual(cliExternalSuiteJson.totalFailureStages, [
   { name: "answer_not_in_input", count: 1 },
+]);
+assert.deepEqual(cliExternalSuiteJson.totalScoreAttribution, [
+  { name: "adapter_or_source_answer_alignment", count: 1 },
 ]);
 assert.equal(cliExternalSuiteJson.runManifest?.durationMs !== undefined, true);
 assert.equal(typeof cliExternalSuiteJson.runManifest?.package?.version, "string");
@@ -14677,6 +14715,9 @@ assert.deepEqual(cliExternalSuiteJson.runs?.[0]?.sliceScores, [
 assert.deepEqual(cliExternalSuiteJson.runs?.[1]?.failureStages, [
   { name: "answer_not_in_input", count: 1 },
 ]);
+assert.deepEqual(cliExternalSuiteJson.runs?.[1]?.scoreAttribution, [
+  { name: "adapter_or_source_answer_alignment", count: 1 },
+]);
 assert.equal(existsSync(path.join(cliExternalSuiteOutputDir, "passing.json")), true);
 assert.equal(existsSync(path.join(cliExternalSuiteOutputDir, "passing.md")), true);
 assert.equal(existsSync(path.join(cliExternalSuiteOutputDir, "failing.json")), true);
@@ -14689,6 +14730,7 @@ assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /gmOS External 
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Weighted score:/);
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Duration:/);
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Suite hash: sha256:[a-f0-9]{64}/);
+assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Score attribution: adapter_or_source_answer_alignment=1/);
 assert.match(
   readFileSync(cliExternalSuiteMarkdownFile, "utf8"),
   /Score semantics: kind=deterministic_adapter_context primary=strictScore officialProtocol=not_run officialScore=none officialComparable=no normalizedEvidence=diagnostic_only/,
