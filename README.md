@@ -610,6 +610,25 @@ It defaults to normal-sensitivity evidence only; `includeSensitive: true`
 returns sensitive rows with sanitized public fields and still excludes
 secret-like evidence.
 
+Durable extraction only runs for `role: "user"` conversation messages by
+default. Eligible assistant, tool, and system messages can still be recorded as
+evidence for diagnostics, but they are not promoted into memories unless a host
+explicitly opts into trusted non-user extraction:
+
+```ts
+const memory = createMemoryOS({
+  store,
+  extraction: {
+    extractFromRoles: ["user", "assistant"],
+  },
+});
+```
+
+Use this only for host-owned summaries or other trusted agent outputs. The same
+safety gates still apply: incognito and secret-like content is skipped before
+evidence persistence, `PERSON:` routed content is not promoted into user memory,
+and accepted memories keep their source role in metadata for auditability.
+
 For OpenAI-compatible providers, gmOS includes an optional structured extractor
 factory. It is never enabled by default and the SDK never stores provider keys:
 

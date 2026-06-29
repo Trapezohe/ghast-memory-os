@@ -829,6 +829,7 @@ export interface MemoryOSOptions {
   extraction?: {
     fallbackToRules?: boolean | undefined;
     minConfidence?: number | undefined;
+    extractFromRoles?: MemoryRole[] | undefined;
   } | undefined;
   host?: {
     hostId?: string | undefined;

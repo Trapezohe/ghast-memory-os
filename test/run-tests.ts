@@ -3952,9 +3952,70 @@ const nonUserEvidenceReport = await unsafeObserveMemory.observeWithReport({
 });
 assert.equal(nonUserEvidenceReport.eligibleForLongTermMemory, true);
 assert.equal(nonUserEvidenceReport.skippedReason, "non_user_message");
+assert.equal(nonUserEvidenceReport.extraction, undefined);
 assert.equal(typeof nonUserEvidenceReport.evidenceId, "string");
 assert.equal(nonUserEvidenceReport.memoryIds.length, 0);
 assert.equal(nonUserEvidenceReport.worldBeliefIds.length, 0);
+const nonUserExtractionPath = path.join(tmp, "non-user-extraction.db");
+const nonUserExtractionStore = createSqliteMemoryStore({ path: nonUserExtractionPath });
+const nonUserExtractionMemory = createMemoryOS({
+  profileId: "non_user_extraction",
+  store: nonUserExtractionStore,
+  extraction: {
+    extractFromRoles: ["user", "assistant"],
+  },
+});
+const optInAssistantExtractionReport = await nonUserExtractionMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "non_user_extraction",
+  role: "assistant",
+  content: "Summary: I attended a design workshop during spring break.",
+});
+assert.equal(optInAssistantExtractionReport.skippedReason, undefined);
+assert.equal(optInAssistantExtractionReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(optInAssistantExtractionReport.memoryIds.length, 1);
+assert.equal(optInAssistantExtractionReport.worldBeliefIds.length, 1);
+const optInAssistantExtractionMemory = await nonUserExtractionMemory.get({
+  profileId: "non_user_extraction",
+  id: optInAssistantExtractionReport.memoryIds[0]!,
+});
+assert.equal(
+  optInAssistantExtractionMemory?.content,
+  "I attended a design workshop during spring break.",
+);
+assert.equal(optInAssistantExtractionMemory?.metadata.sourceRole, "assistant");
+const optInAssistantSecretReport = await nonUserExtractionMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "non_user_extraction",
+  role: "assistant",
+  content: "Summary: My API key is sk-nonuserextractionsecret1234567890.",
+});
+assert.equal(optInAssistantSecretReport.eligibleForLongTermMemory, false);
+assert.equal(optInAssistantSecretReport.skippedReason, "not_eligible_for_long_term_memory");
+assert.equal(optInAssistantSecretReport.evidenceId, undefined);
+assert.equal(optInAssistantSecretReport.memoryIds.length, 0);
+const optInAssistantIncognitoReport = await nonUserExtractionMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "non_user_extraction",
+  role: "assistant",
+  content: "Summary: I prefer post-release checklists.",
+  privacyMode: "incognito",
+});
+assert.equal(optInAssistantIncognitoReport.eligibleForLongTermMemory, false);
+assert.equal(optInAssistantIncognitoReport.skippedReason, "not_eligible_for_long_term_memory");
+assert.equal(optInAssistantIncognitoReport.evidenceId, undefined);
+assert.equal(optInAssistantIncognitoReport.memoryIds.length, 0);
+const optInAssistantPersonRoutedReport = await nonUserExtractionMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "non_user_extraction",
+  role: "assistant",
+  content: "PERSON: Mira: prefers quiet launches.",
+});
+assert.equal(optInAssistantPersonRoutedReport.skippedReason, "person_routed");
+assert.equal(typeof optInAssistantPersonRoutedReport.evidenceId, "string");
+assert.equal(optInAssistantPersonRoutedReport.memoryIds.length, 0);
+assert.equal(optInAssistantPersonRoutedReport.worldBeliefIds.length, 0);
+await nonUserExtractionMemory.close();
 const sensitiveObserveReport = await unsafeObserveMemory.observeWithReport({
   type: "conversation.message",
   profileId: "unsafe_observe",

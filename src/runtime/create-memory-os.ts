@@ -694,7 +694,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     });
     result.evidenceId = evidence.id;
 
-    if (event.role !== "user") return { ...result, skippedReason: "non_user_message" };
+    const extractFromRoles = options.extraction?.extractFromRoles ?? ["user"];
+    if (!extractFromRoles.includes(event.role)) {
+      return { ...result, skippedReason: "non_user_message" };
+    }
     if (isPersonRoutedMemory(event.content)) return { ...result, skippedReason: "person_routed" };
     const extraction = await extractMemoryCandidatePlan({
       extractor: options.extractor,
@@ -732,6 +735,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         sourceEventId: evidence.id,
         metadata: {
           ...sanitizeExternalMemoryMetadata(candidate.metadata),
+          sourceRole: event.role,
           ...(Object.keys(eventMetadata).length > 0 ? { sourceMetadata: eventMetadata } : {}),
           actionPolicyKind: candidate.actionPolicyKind,
           predicate: candidate.predicate,
@@ -771,6 +775,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           createdAt: event.createdAt ?? memory.createdAt,
           metadata: {
             ...sanitizeExternalMemoryMetadata(candidate.metadata),
+            sourceRole: event.role,
             ...(Object.keys(eventMetadata).length > 0 ? { sourceMetadata: eventMetadata } : {}),
             ...(beliefEntityMentions.length > 0 ? { entityMentions: beliefEntityMentions } : {}),
           },
