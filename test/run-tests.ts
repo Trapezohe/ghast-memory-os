@@ -4921,6 +4921,10 @@ const firstPersonFriendCandidate = extractRuleMemoryCandidates("I have a friend 
 assert.equal(firstPersonFriendCandidate?.predicate, "person.relation");
 assert.equal(firstPersonFriendCandidate?.object, "Riley");
 assert.equal(firstPersonFriendCandidate?.metadata?.relationType, "friend");
+const firstPersonClaudeFriendCandidate = extractRuleMemoryCandidates("My friend is named Claude.")[0];
+assert.equal(firstPersonClaudeFriendCandidate?.predicate, "person.relation");
+assert.equal(firstPersonClaudeFriendCandidate?.object, "Claude");
+assert.equal(firstPersonClaudeFriendCandidate?.metadata?.relationType, "friend");
 const firstPersonChineseFriendCandidate = extractRuleMemoryCandidates("我的朋友名叫小李。")[0];
 assert.equal(firstPersonChineseFriendCandidate?.predicate, "person.relation");
 assert.equal(firstPersonChineseFriendCandidate?.object, "小李");
@@ -4938,6 +4942,10 @@ assert.equal(extractRuleMemoryCandidates("I have a daughter named Chrome.").leng
 assert.equal(extractRuleMemoryCandidates("Chrome is my daughter.").length, 0);
 assert.equal(extractRuleMemoryCandidates("My friend is named Chrome.").length, 0);
 assert.equal(extractRuleMemoryCandidates("I have a roommate named Chrome.").length, 0);
+assert.equal(extractRuleMemoryCandidates("My friend is named GPT-4.").length, 0);
+assert.equal(extractRuleMemoryCandidates("I have a roommate named Slackbot.").length, 0);
+assert.equal(extractRuleMemoryCandidates("My coworker is named Claude 3.").length, 0);
+assert.equal(extractRuleMemoryCandidates("GPT-4 is my coworker.").length, 0);
 assert.equal(extractRuleMemoryCandidates("我的女儿叫Chrome。").length, 0);
 assert.equal(extractRuleMemoryCandidates("Chrome是我的朋友。").length, 0);
 const firstPersonInverseNamedRelationReport = await rulesReportMemory.observeWithReport({
@@ -5126,7 +5134,19 @@ assert.equal(
   0,
 );
 assert.equal(
+  extractRuleMemoryCandidates("Alex has a friend named GPT-4.", {
+    participants: ["Alex", "Blair"],
+  }).length,
+  0,
+);
+assert.equal(
   extractRuleMemoryCandidates("Alex's coworker Chrome starts on Monday.", {
+    participants: ["Alex", "Blair"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("Alex's coworker Slackbot starts on Monday.", {
     participants: ["Alex", "Blair"],
   }).length,
   0,

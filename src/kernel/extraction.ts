@@ -609,10 +609,14 @@ const NON_PERSON_SINGLE_NAMES = new Set([
 const NON_PERSON_SUBJECT_PATTERN =
   /\b(?:project|team|company|org|organization|group|support|repo|repository|service|system|app|tool|product|model|agent|inc|corp|llc|ltd|labs|research|foundation|university|school|department|committee|platform|cloud)\b/iu;
 
+const OBVIOUS_TECH_NON_PERSON_NAME_PATTERN =
+  /^(?:chatgpt|gpt(?:[-_ ]?\d[\w.-]*)?|llm(?:[-_ ]?\d[\w.-]*)?|(?:llama|qwen|mistral|gemini|deepseek|grok|glm)(?:[-_ ]?\d[\w.-]*)?|claude[-_ ]?\d[\w.-]*|(?:sonnet|opus|haiku)[-_ ]?\d[\w.-]*|(?:slack|discord|telegram|github|gitlab|linear|jira|notion)?bot)$/iu;
+
 function explicitNonPersonSubject(name: string): boolean {
   const normalized = name.trim().toLowerCase();
   if (!normalized) return false;
   if (NON_PERSON_SINGLE_NAMES.has(normalized)) return true;
+  if (OBVIOUS_TECH_NON_PERSON_NAME_PATTERN.test(normalized)) return true;
   if (
     /^(?:project|team|company|org|organization|group|support|note|reminder|fact|example|preference|task|ticket|repo|repository|service|system|app|tool|product|model|agent|inc|corp|llc|ltd|labs|research|foundation|university|school|department|committee|platform|cloud)$/iu.test(
       normalized,
