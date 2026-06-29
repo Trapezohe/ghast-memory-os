@@ -11,6 +11,7 @@ import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 import { coverageMatrix, memoryStackCoverage, roadmap } from "./coverage.js";
 import {
+  EXTERNAL_MEMORY_BENCHMARK_SCORE_SEMANTICS,
   parseExternalMemoryBenchmarkJsonl,
   hashExternalMemoryBenchmarkInput,
   runExternalMemoryBenchmark,
@@ -28,6 +29,7 @@ import {
   type ExternalMemoryBenchmarkMode,
   type ExternalMemoryBenchmarkResult,
   type ExternalMemoryBenchmarkRunManifest,
+  type ExternalMemoryBenchmarkScoreSemantics,
   type ExternalMemoryBenchmarkSliceScore,
   type ExternalMemoryBenchmarkSummary,
   type RunExternalMemoryBenchmarkOptions,
@@ -91,6 +93,7 @@ export {
   parseLocomoBenchmarkDataset,
   parseLongMemEvalBenchmarkDataset,
   hashExternalMemoryBenchmarkInput,
+  EXTERNAL_MEMORY_BENCHMARK_SCORE_SEMANTICS,
   buildStateBenchLearnings,
   prepareStateBenchAgentLearningRun,
   summarizeStateBenchResults,
@@ -117,6 +120,7 @@ export type {
   ExternalMemoryBenchmarkMode,
   ExternalMemoryBenchmarkResult,
   ExternalMemoryBenchmarkRunManifest,
+  ExternalMemoryBenchmarkScoreSemantics,
   ExternalMemoryBenchmarkSliceScore,
   ExternalMemoryBenchmarkSummary,
   ExternalMemoryBenchmarkSuiteDocument,

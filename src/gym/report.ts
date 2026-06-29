@@ -2,7 +2,10 @@ import type { MemoryGymResult } from "./types.js";
 import type { MemoryScaleBenchmarkResult } from "./scale.js";
 import type { HostCompatibilityGymResult } from "./host-compatibility.js";
 import type { MemoryReleaseGateResult } from "./types.js";
-import type { ExternalMemoryBenchmarkResult } from "./external.js";
+import type {
+  ExternalMemoryBenchmarkResult,
+  ExternalMemoryBenchmarkScoreSemantics,
+} from "./external.js";
 import type { ExternalMemoryBenchmarkSuiteResult } from "./external-suite.js";
 
 function markdownCell(value: string): string {
@@ -31,6 +34,17 @@ function markdownCounters(values: { name: string; count: number }[]): string {
   return values.length
     ? values.map((entry) => `${markdownCell(entry.name)}=${entry.count}`).join(", ")
     : "none";
+}
+
+function scoreSemanticsLine(semantics: ExternalMemoryBenchmarkScoreSemantics): string {
+  return [
+    `kind=${semantics.scoreKind}`,
+    `primary=${semantics.primaryScore}`,
+    `officialProtocol=${semantics.officialProtocol}`,
+    `officialScore=${semantics.officialScore ?? "none"}`,
+    `officialComparable=${semantics.comparableToOfficialScore ? "yes" : "no"}`,
+    `normalizedEvidence=${semantics.normalizedEvidenceScorePurpose}`,
+  ].join(" ");
 }
 
 function markdownSliceScores(
@@ -221,6 +235,7 @@ export function renderExternalMemoryBenchmarkMarkdown(
     `Execution: caseGroups=${report.runManifest.execution.caseGroupCount} reusedProfileCases=${report.runManifest.execution.reusedProfileCaseCount}`,
     `Options: mode=${report.runManifest.options.mode ?? "case/default"} maxSteps=${report.runManifest.options.maxSteps ?? "default"} maxBranch=${report.runManifest.options.maxBranch ?? "default"} maxMemories=${report.runManifest.options.maxMemories ?? "default"} contextBudgetTokens=${report.runManifest.options.contextBudgetTokens ?? "default"} temporalMode=${report.runManifest.options.temporalMode ?? "case/default"} includeSensitive=${report.runManifest.options.includeSensitive} includeTemporalMetadata=${report.runManifest.options.includeTemporalMetadata} requireConvergence=${report.runManifest.options.requireConvergence} concurrency=${report.runManifest.options.concurrency} reuseProfiles=${report.runManifest.options.reuseProfiles} diagnosticsLevel=${report.runManifest.options.diagnosticsLevel}`,
     `Failure sample limit: ${report.runManifest.options.failureSampleLimit}`,
+    `Score semantics: ${scoreSemanticsLine(report.runManifest.scoreSemantics)}`,
     `Deterministic only: ${report.runManifest.deterministicOnly ? "yes" : "no"}`,
     "",
     "## Summary",
@@ -308,6 +323,7 @@ export function renderExternalMemoryBenchmarkSuiteMarkdown(
     `Git: ${report.runManifest.git?.sha ?? "unknown"}${report.runManifest.git?.dirty === null ? "" : report.runManifest.git?.dirty ? " dirty" : " clean"}`,
     `Node: ${report.runManifest.node ?? "unknown"} ${report.runManifest.platform ?? ""}`.trim(),
     `Fail on benchmark fail: ${report.runManifest.failOnBenchmarkFail ? "yes" : "no"}`,
+    `Score semantics: ${scoreSemanticsLine(report.runManifest.scoreSemantics)}`,
     `Deterministic only: ${report.runManifest.deterministicOnly ? "yes" : "no"}`,
     "",
     "## Runs",

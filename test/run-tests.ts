@@ -12467,6 +12467,15 @@ assert.equal(externalBenchmark.runManifest.options.includeSensitive, false);
 assert.equal(externalBenchmark.runManifest.options.includeTemporalMetadata, false);
 assert.equal(externalBenchmark.runManifest.options.failureSampleLimit, 20);
 assert.equal(externalBenchmark.runManifest.options.diagnosticsLevel, "full");
+assert.equal(externalBenchmark.runManifest.scoreSemantics.scoreKind, "deterministic_adapter_context");
+assert.equal(externalBenchmark.runManifest.scoreSemantics.primaryScore, "strictScore");
+assert.equal(externalBenchmark.runManifest.scoreSemantics.officialProtocol, "not_run");
+assert.equal(externalBenchmark.runManifest.scoreSemantics.officialScore, null);
+assert.equal(externalBenchmark.runManifest.scoreSemantics.comparableToOfficialScore, false);
+assert.equal(
+  externalBenchmark.runManifest.scoreSemantics.normalizedEvidenceScorePurpose,
+  "diagnostic_only",
+);
 assert.deepEqual(externalBenchmark.summary.failureReasons, []);
 assert.deepEqual(externalBenchmark.summary.sliceScores, [
   {
@@ -13159,6 +13168,13 @@ assert.equal(
   externalSuiteExecution.result.runManifest.suiteHash,
   hashExternalMemoryBenchmarkInput(readFileSync(externalSuiteFile, "utf8")),
 );
+assert.equal(
+  externalSuiteExecution.result.runManifest.scoreSemantics.scoreKind,
+  "deterministic_adapter_context",
+);
+assert.equal(externalSuiteExecution.result.runManifest.scoreSemantics.officialProtocol, "not_run");
+assert.equal(externalSuiteExecution.result.runManifest.scoreSemantics.officialScore, null);
+assert.equal(externalSuiteExecution.result.runManifest.scoreSemantics.comparableToOfficialScore, false);
 assert.equal(typeof externalSuiteExecution.result.runManifest.node, "string");
 assert.equal(externalSuiteExecution.result.runs[0]?.durationMs >= 0, true);
 assert.equal(externalSuiteExecution.result.runs[0]?.caseGroupCount >= 1, true);
@@ -13185,11 +13201,19 @@ assert.match(
 assert.match(renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!), /Duration ms/);
 assert.match(renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!), /Strict score:/);
 assert.match(renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!), /Normalized evidence score:/);
+assert.match(
+  renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!),
+  /Score semantics: kind=deterministic_adapter_context primary=strictScore officialProtocol=not_run officialScore=none officialComparable=no normalizedEvidence=diagnostic_only/,
+);
 assert.match(renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!), /Runtime: total=\d+ms setup=\d+ms scoring=\d+ms taxonomy=\d+ms wideBudget=\d+ms diagnostics=\d+ms/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /BenchmarkStatus: FAIL/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Weighted score:/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Normalized evidence weighted score:/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Suite hash: sha256:[a-f0-9]{64}/);
+assert.match(
+  renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result),
+  /Score semantics: kind=deterministic_adapter_context primary=strictScore officialProtocol=not_run officialScore=none officialComparable=no normalizedEvidence=diagnostic_only/,
+);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Failure reasons: expected_all_missing=1/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Failure stages: answer_not_in_input=1/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /## Diagnostic Summary/);
@@ -14525,6 +14549,12 @@ const cliExternalJson = JSON.parse(cliExternal.stdout) as {
       failureSampleLimit?: number;
       diagnosticsLevel?: string;
     };
+    scoreSemantics?: {
+      scoreKind?: string;
+      officialProtocol?: string;
+      officialScore?: unknown;
+      comparableToOfficialScore?: boolean;
+    };
   };
   summary?: { failureSampleLimit?: number };
 };
@@ -14539,6 +14569,10 @@ assert.equal(cliExternalJson.runManifest?.options?.includeTemporalMetadata, fals
 assert.equal(cliExternalJson.runManifest?.options?.temporalMode, "history");
 assert.equal(cliExternalJson.runManifest?.options?.failureSampleLimit, 3);
 assert.equal(cliExternalJson.runManifest?.options?.diagnosticsLevel, "basic");
+assert.equal(cliExternalJson.runManifest?.scoreSemantics?.scoreKind, "deterministic_adapter_context");
+assert.equal(cliExternalJson.runManifest?.scoreSemantics?.officialProtocol, "not_run");
+assert.equal(cliExternalJson.runManifest?.scoreSemantics?.officialScore, null);
+assert.equal(cliExternalJson.runManifest?.scoreSemantics?.comparableToOfficialScore, false);
 assert.equal(cliExternalJson.summary?.failureSampleLimit, 3);
 assert.equal(existsSync(cliExternalJsonFile), true);
 assert.equal(existsSync(cliExternalMarkdownFile), true);
@@ -14547,6 +14581,10 @@ assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /gmOS External Long-
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /Failure sample limit: 3/);
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /temporalMode=history includeSensitive=false includeTemporalMetadata=false/);
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /diagnosticsLevel=basic/);
+assert.match(
+  readFileSync(cliExternalMarkdownFile, "utf8"),
+  /Score semantics: kind=deterministic_adapter_context primary=strictScore officialProtocol=not_run officialScore=none officialComparable=no normalizedEvidence=diagnostic_only/,
+);
 const cliExternalSuiteOutputDir = path.join(tmp, "cli-external-suite");
 const cliExternalSuiteJsonFile = path.join(tmp, "cli-external-suite-summary.json");
 const cliExternalSuiteMarkdownFile = path.join(tmp, "cli-external-suite-summary.md");
@@ -14584,7 +14622,16 @@ const cliExternalSuiteJson = JSON.parse(cliExternalSuite.stdout) as {
   totalCaseCount?: number;
   totalWarningCount?: number;
   totalFailureStages?: Array<{ name: string; count: number }>;
-  runManifest?: { durationMs?: number; package?: { version?: string | null } | null };
+  runManifest?: {
+    durationMs?: number;
+    package?: { version?: string | null } | null;
+    scoreSemantics?: {
+      scoreKind?: string;
+      officialProtocol?: string;
+      officialScore?: unknown;
+      comparableToOfficialScore?: boolean;
+    };
+  };
   runs?: Array<{
     durationMs?: number;
     caseGroupCount?: number;
@@ -14608,6 +14655,13 @@ assert.deepEqual(cliExternalSuiteJson.totalFailureStages, [
 ]);
 assert.equal(cliExternalSuiteJson.runManifest?.durationMs !== undefined, true);
 assert.equal(typeof cliExternalSuiteJson.runManifest?.package?.version, "string");
+assert.equal(
+  cliExternalSuiteJson.runManifest?.scoreSemantics?.scoreKind,
+  "deterministic_adapter_context",
+);
+assert.equal(cliExternalSuiteJson.runManifest?.scoreSemantics?.officialProtocol, "not_run");
+assert.equal(cliExternalSuiteJson.runManifest?.scoreSemantics?.officialScore, null);
+assert.equal(cliExternalSuiteJson.runManifest?.scoreSemantics?.comparableToOfficialScore, false);
 assert.equal(cliExternalSuiteJson.runs?.[0]?.durationMs !== undefined, true);
 assert.equal(cliExternalSuiteJson.runs?.[0]?.caseGroupCount !== undefined, true);
 assert.equal(cliExternalSuiteJson.runs?.[0]?.warningCount, 0);
@@ -14635,6 +14689,10 @@ assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /gmOS External 
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Weighted score:/);
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Duration:/);
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Suite hash: sha256:[a-f0-9]{64}/);
+assert.match(
+  readFileSync(cliExternalSuiteMarkdownFile, "utf8"),
+  /Score semantics: kind=deterministic_adapter_context primary=strictScore officialProtocol=not_run officialScore=none officialComparable=no normalizedEvidence=diagnostic_only/,
+);
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Failure stages: answer_not_in_input=1/);
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /gmos:project_procedure=1\/1 score=1\.0000/);
 assert.match(cliExternalSuite.stderr, /\[gmos external-suite\] pass run=passing/);

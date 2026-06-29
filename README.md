@@ -225,6 +225,9 @@ number-format normalization. This normalized view is diagnostic only; it is not
 an official benchmark score and does not change pass/fail. It still respects
 forbidden matches and required convergence; it is not a loose hit-rate that can
 override safety or convergence failures.
+External run and suite manifests include `scoreSemantics` so generated JSON and
+Markdown artifacts identify these numbers as deterministic adapter/context
+scores, not official protocol scores.
 Suite Markdown reports also include a diagnostic summary of the slowest runs,
 weakest slice scores, and top failure stages/reasons. That summary is derived
 from existing run statistics only; it does not change scoring, adapter behavior,

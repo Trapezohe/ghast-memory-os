@@ -231,6 +231,30 @@ export interface ExternalMemoryBenchmarkSummary {
   failureSamples: ExternalMemoryBenchmarkFailureSample[];
 }
 
+export interface ExternalMemoryBenchmarkScoreSemantics {
+  scoreKind: "deterministic_adapter_context";
+  primaryScore: "strictScore";
+  deterministicAdapterScoreField: "score";
+  strictScoreField: "strictScore";
+  normalizedEvidenceScoreField: "normalizedEvidenceScore";
+  normalizedEvidenceScorePurpose: "diagnostic_only";
+  officialProtocol: "not_run";
+  officialScore: null;
+  comparableToOfficialScore: false;
+}
+
+export const EXTERNAL_MEMORY_BENCHMARK_SCORE_SEMANTICS: ExternalMemoryBenchmarkScoreSemantics = {
+  scoreKind: "deterministic_adapter_context",
+  primaryScore: "strictScore",
+  deterministicAdapterScoreField: "score",
+  strictScoreField: "strictScore",
+  normalizedEvidenceScoreField: "normalizedEvidenceScore",
+  normalizedEvidenceScorePurpose: "diagnostic_only",
+  officialProtocol: "not_run",
+  officialScore: null,
+  comparableToOfficialScore: false,
+};
+
 export interface ExternalMemoryBenchmarkRunManifest {
   framework: "gmos-external-long-memory-qa";
   startedAt: string;
@@ -272,6 +296,7 @@ export interface ExternalMemoryBenchmarkRunManifest {
     failureSampleLimit: number;
     diagnosticsLevel: ExternalMemoryBenchmarkDiagnosticsLevel;
   };
+  scoreSemantics: ExternalMemoryBenchmarkScoreSemantics;
   deterministicOnly: true;
 }
 
@@ -1143,6 +1168,7 @@ function createRunManifest(input: {
       failureSampleLimit: normalizedFailureSampleLimit(input.options.failureSampleLimit),
       diagnosticsLevel: normalizedDiagnosticsLevel(input.options.diagnosticsLevel),
     },
+    scoreSemantics: { ...EXTERNAL_MEMORY_BENCHMARK_SCORE_SEMANTICS },
     deterministicOnly: true,
   };
 }

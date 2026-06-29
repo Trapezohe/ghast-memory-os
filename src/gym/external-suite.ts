@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import {
+  EXTERNAL_MEMORY_BENCHMARK_SCORE_SEMANTICS,
   hashExternalMemoryBenchmarkInput,
   parseExternalMemoryBenchmarkJsonl,
   runExternalMemoryBenchmark,
@@ -11,6 +12,7 @@ import {
   type ExternalMemoryBenchmarkDiagnosticsLevel,
   type ExternalMemoryBenchmarkMode,
   type ExternalMemoryBenchmarkResult,
+  type ExternalMemoryBenchmarkScoreSemantics,
   type ExternalMemoryBenchmarkSliceScore,
   type ExternalMemoryBenchmarkTemporalMode,
   type RunExternalMemoryBenchmarkOptions,
@@ -107,6 +109,7 @@ export interface ExternalMemoryBenchmarkSuiteResult {
     platform: string | null;
     package: ExternalMemoryBenchmarkResult["runManifest"]["package"] | null;
     git: ExternalMemoryBenchmarkResult["runManifest"]["git"] | null;
+    scoreSemantics: ExternalMemoryBenchmarkScoreSemantics;
     deterministicOnly: true;
   };
   runs: ExternalMemoryBenchmarkSuiteRunSummary[];
@@ -491,6 +494,7 @@ export async function runExternalMemoryBenchmarkSuite(
         platform: firstRunManifest?.platform ?? null,
         package: firstRunManifest?.package ?? null,
         git: firstRunManifest?.git ?? null,
+        scoreSemantics: { ...EXTERNAL_MEMORY_BENCHMARK_SCORE_SEMANTICS },
         deterministicOnly: true,
       },
       runs,
