@@ -276,8 +276,13 @@ function speakerPrefixMatch(text: string): { prefix: string; rest: string } | nu
 }
 
 function durableCandidateContent(text: string): string {
-  const match = speakerPrefixMatch(text);
-  return match && isNonSpeakerPrefix(match.prefix) ? match.rest : text;
+  let current = text;
+  for (let depth = 0; depth < 4; depth += 1) {
+    const match = speakerPrefixMatch(current);
+    if (!match || !isNonSpeakerPrefix(match.prefix)) return current;
+    current = match.rest;
+  }
+  return current;
 }
 
 function personSubjectFieldsForFirstPerson(

@@ -797,7 +797,7 @@ const extractorMemory = createMemoryOS({
       return [
         {
           kind: "preference",
-          content: "Custom extractor says the user prefers risk-first plans.",
+          content: "Assistant: Note: Custom extractor says the user prefers risk-first plans.",
           confidence: 0.91,
           predicate: "user.preference",
           actionPolicyKind: "prefer",
@@ -842,7 +842,7 @@ const customExtractionReport = await extractorMemory.observeWithReport({
   type: "conversation.message",
   profileId: "extractor",
   role: "user",
-  content: "我喜欢先讲风险，而且 Helio 项目卡在 migration probe。",
+  content: "Assistant: 我喜欢先讲风险，而且 Helio 项目卡在 migration probe。",
 });
 assert.equal(customExtractionReport.extraction?.extractionSource, "custom");
 assert.equal(customExtractionReport.extraction?.acceptedCandidateCount, 2);
@@ -856,12 +856,32 @@ assert.equal(
   true,
 );
 assert.equal(JSON.stringify(customExtractionReport).includes("sk-custommetadatasecret"), false);
+const customPreferenceCandidate = customExtractionReport.extraction?.decisions.find(
+  (decision) =>
+    decision.decision === "accepted" && decision.candidate.predicate === "user.preference",
+)?.candidate;
+assert.equal(
+  customPreferenceCandidate?.content,
+  "Custom extractor says the user prefers risk-first plans.",
+);
 const extractedPreference = await extractorMemory.search({
   profileId: "extractor",
   query: "risk-first plans",
   limit: 5,
 });
 assert.equal(JSON.stringify(extractedPreference).includes("sk-custommetadatasecret"), false);
+const extractedCustomPreference = extractedPreference.find(
+  (entry) => entry.content === "Custom extractor says the user prefers risk-first plans.",
+);
+assert.notEqual(extractedCustomPreference, undefined);
+assert.equal(
+  extractedPreference.some((entry) => entry.content.includes("Assistant:") || entry.content.includes("Note:")),
+  false,
+);
+assert.equal(
+  (await extractorStore.listEvidenceForMemory(extractedCustomPreference!.id))[0]?.content,
+  "Assistant: 我喜欢先讲风险，而且 Helio 项目卡在 migration probe。",
+);
 const extractedProject = await extractorMemory.search({
   profileId: "extractor",
   query: "Helio migration probe",
