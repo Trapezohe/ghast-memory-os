@@ -4864,6 +4864,29 @@ assert.equal(
   extractRuleMemoryCandidates("I have a cat named Nova.")[0]?.metadata?.relationType,
   "cat",
 );
+const firstPersonInverseNamedRelationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Casey: Nova is my cat.",
+  metadata: {
+    speaker: "Casey",
+    participants: ["Casey", "Drew"],
+  },
+});
+assert.equal(firstPersonInverseNamedRelationReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(firstPersonInverseNamedRelationReport.memoryIds.length, 1);
+assert.equal(firstPersonInverseNamedRelationReport.worldBeliefIds.length, 1);
+assert.equal(
+  firstPersonInverseNamedRelationReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  )?.candidate.metadata?.relationType,
+  "cat",
+);
+assert.equal(
+  extractRuleMemoryCandidates("Nova is my cat.")[0]?.metadata?.relationType,
+  "cat",
+);
 assert.equal(extractRuleMemoryCandidates("I have a Cat named happy.").length, 0);
 const chineseNamedRelationReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
@@ -4892,6 +4915,21 @@ assert.equal(
   chineseExplicitNamedRelationReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
     ?.candidate.metadata?.rule,
   "first_person_named_relation",
+);
+const chineseInverseNamedRelationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "小白是我的猫。",
+});
+assert.equal(chineseInverseNamedRelationReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(chineseInverseNamedRelationReport.memoryIds.length, 1);
+assert.equal(chineseInverseNamedRelationReport.worldBeliefIds.length, 1);
+assert.equal(
+  chineseInverseNamedRelationReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  )?.candidate.metadata?.relationType,
+  "猫",
 );
 const speakerDaughterRelationReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
@@ -4925,6 +4963,13 @@ assert.equal(directHasNamedRelationCandidate?.predicate, "person.relation");
 assert.equal(directHasNamedRelationCandidate?.subject, "person:Alex");
 assert.equal(directHasNamedRelationCandidate?.object, "Emma");
 assert.equal(directHasNamedRelationCandidate?.metadata?.relationType, "daughter");
+const inverseNamedRelationCandidate = extractRuleMemoryCandidates("Emma is Alex's daughter.", {
+  participants: ["Alex", "Blair"],
+})[0];
+assert.equal(inverseNamedRelationCandidate?.predicate, "person.relation");
+assert.equal(inverseNamedRelationCandidate?.subject, "person:Alex");
+assert.equal(inverseNamedRelationCandidate?.object, "Emma");
+assert.equal(inverseNamedRelationCandidate?.metadata?.relationType, "daughter");
 assert.equal(
   extractRuleMemoryCandidates("Alex has a Daughter named Emma.", {
     participants: ["Alex", "Blair"],
@@ -4933,6 +4978,10 @@ assert.equal(
 );
 assert.equal(extractRuleMemoryCandidates("Alex's daughter is named Emma.").length, 0);
 assert.equal(extractRuleMemoryCandidates("Alex has a daughter named Emma.").length, 0);
+assert.equal(extractRuleMemoryCandidates("Emma is Alex's daughter.").length, 0);
+assert.equal(extractRuleMemoryCandidates("Chrome is Alex's daughter.", {
+  participants: ["Alex", "Blair"],
+}).length, 0);
 assert.equal(
   extractRuleMemoryCandidates("Alex's daughter is named Emma.", {
     participants: ["Blair", "Casey"],
@@ -4941,6 +4990,12 @@ assert.equal(
 );
 assert.equal(
   extractRuleMemoryCandidates("Alex has a daughter named Emma.", {
+    participants: ["Blair", "Casey"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("Emma is Alex's daughter.", {
     participants: ["Blair", "Casey"],
   }).length,
   0,
@@ -4993,6 +5048,30 @@ const directHasNamedRelationDistractorReport = await rulesReportMemory.observeWi
 assert.equal(directHasNamedRelationDistractorReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(directHasNamedRelationDistractorReport.memoryIds.length, 1);
 assert.equal(directHasNamedRelationDistractorReport.worldBeliefIds.length, 1);
+const inverseNamedRelationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_inverse_relation",
+  role: "user",
+  content: "Emma is Alex's daughter.",
+  metadata: {
+    participants: ["Alex", "Blair"],
+  },
+});
+assert.equal(inverseNamedRelationReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(inverseNamedRelationReport.memoryIds.length, 1);
+assert.equal(inverseNamedRelationReport.worldBeliefIds.length, 1);
+const inverseNamedRelationDistractorReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_inverse_relation",
+  role: "user",
+  content: "Nora is Blair's cat.",
+  metadata: {
+    participants: ["Alex", "Blair"],
+  },
+});
+assert.equal(inverseNamedRelationDistractorReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(inverseNamedRelationDistractorReport.memoryIds.length, 1);
+assert.equal(inverseNamedRelationDistractorReport.worldBeliefIds.length, 1);
 const speakerAttributeDb = new Database(rulesReportPath, { readonly: true });
 try {
   const speakerAttributeBelief = speakerAttributeDb
@@ -5502,6 +5581,19 @@ try {
   assert.equal(firstPersonHaveNamedRelationBelief?.predicate, "person.relation");
   assert.equal(firstPersonHaveNamedRelationBelief?.object, "Nova");
   assert.equal(JSON.parse(firstPersonHaveNamedRelationBelief?.metadata_json ?? "{}").relationType, "cat");
+  const firstPersonInverseNamedRelationBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object, metadata_json
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(firstPersonInverseNamedRelationReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string; metadata_json: string }
+    | undefined;
+  assert.equal(firstPersonInverseNamedRelationBelief?.subject, "person:casey");
+  assert.equal(firstPersonInverseNamedRelationBelief?.predicate, "person.relation");
+  assert.equal(firstPersonInverseNamedRelationBelief?.object, "Nova");
+  assert.equal(JSON.parse(firstPersonInverseNamedRelationBelief?.metadata_json ?? "{}").relationType, "cat");
   const chineseNamedRelationBelief = speakerAttributeDb
     .prepare(
       `SELECT predicate, object, metadata_json
@@ -5514,6 +5606,18 @@ try {
   assert.equal(chineseNamedRelationBelief?.predicate, "person.relation");
   assert.equal(chineseNamedRelationBelief?.object, "Max");
   assert.equal(JSON.parse(chineseNamedRelationBelief?.metadata_json ?? "{}").relationType, "狗");
+  const chineseInverseNamedRelationBelief = speakerAttributeDb
+    .prepare(
+      `SELECT predicate, object, metadata_json
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(chineseInverseNamedRelationReport.worldBeliefIds[0]!) as
+    | { predicate: string; object: string; metadata_json: string }
+    | undefined;
+  assert.equal(chineseInverseNamedRelationBelief?.predicate, "person.relation");
+  assert.equal(chineseInverseNamedRelationBelief?.object, "小白");
+  assert.equal(JSON.parse(chineseInverseNamedRelationBelief?.metadata_json ?? "{}").relationType, "猫");
   const speakerDaughterRelationBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate, object, metadata_json
@@ -5553,6 +5657,19 @@ try {
   assert.equal(directHasNamedRelationBelief?.predicate, "person.relation");
   assert.equal(directHasNamedRelationBelief?.object, "Emma");
   assert.equal(JSON.parse(directHasNamedRelationBelief?.metadata_json ?? "{}").relationType, "daughter");
+  const inverseNamedRelationBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object, metadata_json
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(inverseNamedRelationReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string; metadata_json: string }
+    | undefined;
+  assert.equal(inverseNamedRelationBelief?.subject, "person:alex");
+  assert.equal(inverseNamedRelationBelief?.predicate, "person.relation");
+  assert.equal(inverseNamedRelationBelief?.object, "Emma");
+  assert.equal(JSON.parse(inverseNamedRelationBelief?.metadata_json ?? "{}").relationType, "daughter");
 } finally {
   speakerAttributeDb.close();
 }
@@ -5562,11 +5679,13 @@ for (const transientStatement of [
   "My current concern is whether tests pass.",
   "What is my favorite restaurant?",
   "What is my cat named?",
+  "My cat is named Luna?",
   "My cat is hungry.",
   "My cat is called \"happy\".",
   "I have a cat named happy.",
   "My wife is called into meetings often.",
   "My child is called lazy at school.",
+  "Is Emma my daughter?",
   "我的狗叫得很大声。",
   "我的丈夫叫我别担心。",
   "我的狗叫了。",

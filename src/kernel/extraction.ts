@@ -1104,10 +1104,20 @@ function namedPersonRelationCandidate(
     String.raw`^\s*(${namePattern})\s+has\s+(?:an?\s+)?(${relationPattern})\s+(?:named|called)\s+(${englishName})\s*[.!?]?\s*$`,
     "u",
   ).exec(utterance);
-  const name = (possessiveMatch?.[1] ?? hasMatch?.[1])?.trim();
-  const relationType = (possessiveMatch?.[2] ?? hasMatch?.[2])?.trim().toLowerCase();
-  const object = projectBeliefObject((possessiveMatch?.[3] ?? hasMatch?.[3])?.replace(/^["']|["']$/gu, ""));
+  const inversePossessiveMatch = new RegExp(
+    String.raw`^\s*(${englishName})\s+(?:is|was)\s+(${namePattern})[’']s\s+(${relationPattern})\s*[.!?]?\s*$`,
+    "u",
+  ).exec(utterance);
+  const name = (possessiveMatch?.[1] ?? hasMatch?.[1] ?? inversePossessiveMatch?.[2])
+    ?.trim();
+  const relationType = (possessiveMatch?.[2] ?? hasMatch?.[2] ?? inversePossessiveMatch?.[3])
+    ?.trim()
+    .toLowerCase();
+  const rawObject = (possessiveMatch?.[3] ?? hasMatch?.[3] ?? inversePossessiveMatch?.[1])
+    ?.replace(/^["']|["']$/gu, "");
+  const object = projectBeliefObject(rawObject);
   if (!name || !relationType || !object || !stableNamedPersonSubject(name)) return null;
+  if (inversePossessiveMatch && !stableNamedPersonSubject(object)) return null;
   if (!metadataParticipantsConfirmNamedPerson(name, metadata)) return null;
   return {
     kind: "fact",
@@ -1127,6 +1137,7 @@ function firstPersonNamedRelationCandidate(
   metadata?: Record<string, unknown> | undefined,
 ): MemoryExtractionCandidate | null {
   const utterance = stripSpeakerPrefix(text);
+  if (isQuestionLike(utterance)) return null;
   const englishNameCore = String.raw`\p{Lu}[\p{L}0-9_-]{0,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{0,30}){0,2}`;
   const englishName = String.raw`(?:${englishNameCore}|"${englishNameCore}"|'${englishNameCore}')`;
   const relationPattern = String.raw`[Dd]og|[Cc]at|[Pp]et|[Dd]aughter|[Ss]on|[Cc]hild|[Kk]id|[Pp]artner|[Ss]pouse|[Ww]ife|[Hh]usband`;
@@ -1140,20 +1151,42 @@ function firstPersonNamedRelationCandidate(
     String.raw`^\s*I\s+have\s+(?:an?\s+)?(${relationPattern})\s+(?:named|called)\s+(${englishName})\s*[.!?]?\s*$`,
     "u",
   ).exec(utterance);
+  const englishInverse = new RegExp(
+    String.raw`^\s*(${englishName})\s+(?:is|was)\s+my\s+(${relationPattern})\s*[.!?]?\s*$`,
+    "u",
+  ).exec(utterance);
   const chineseExplicit = new RegExp(
     String.raw`^\s*我的\s*(狗|猫|宠物|女儿|儿子|孩子|伴侣|配偶|妻子|丈夫)\s*(?:名叫|名字是|姓名是)\s*(${chineseExplicitName})\s*[。.!?]?\s*$`,
+    "u",
+  ).exec(utterance);
+  const chineseInverse = new RegExp(
+    String.raw`^\s*(${chineseExplicitName})\s*是我的\s*(狗|猫|宠物|女儿|儿子|孩子|伴侣|配偶|妻子|丈夫)\s*[。.!?]?\s*$`,
     "u",
   ).exec(utterance);
   const chineseCalled = new RegExp(
     String.raw`^\s*我的\s*(狗|猫|宠物|女儿|儿子|孩子|伴侣|配偶|妻子|丈夫)\s*叫\s*(${latinName})\s*[。.!?]?\s*$`,
     "u",
   ).exec(utterance);
-  const relationType = (english?.[1] ?? englishHave?.[1] ?? chineseExplicit?.[1] ?? chineseCalled?.[1])
+  const relationType = (
+    english?.[1] ??
+    englishHave?.[1] ??
+    englishInverse?.[2] ??
+    chineseExplicit?.[1] ??
+    chineseInverse?.[2] ??
+    chineseCalled?.[1]
+  )
     ?.trim()
     .toLowerCase();
-  const rawName = english?.[2] ?? englishHave?.[2] ?? chineseExplicit?.[2] ?? chineseCalled?.[2];
+  const rawName =
+    english?.[2] ??
+    englishHave?.[2] ??
+    englishInverse?.[1] ??
+    chineseExplicit?.[2] ??
+    chineseInverse?.[1] ??
+    chineseCalled?.[2];
   const object = projectBeliefObject(rawName?.replace(/^["']|["']$/gu, ""));
   if (!relationType || !object) return null;
+  if ((englishInverse || chineseInverse) && !stableNamedPersonSubject(object)) return null;
   return {
     kind: "fact",
     content: text,
