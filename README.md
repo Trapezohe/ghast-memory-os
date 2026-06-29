@@ -235,35 +235,35 @@ covers critical fact retention under context pressure. Full LongMemEval/LoCoMo
 datasets remain manual or nightly baselines because they are too large and slow
 for ordinary PR CI.
 
-Historical external benchmark dry-run snapshot, alpha.66, 2026-06-27:
+Latest external benchmark dry-run snapshot, alpha.67, 2026-06-29:
 
-These runs were executed on the `@ghast/memory@0.1.0-alpha.66` release artifact
-from commit `79031172b9f968c9d65cef02a428a59063d71a70` with
-the suite invocation
-`gmos gym external-suite --suite-file external-suite-alpha66.json --output-dir results/alpha66-external-suite --format json`
-with `concurrency: 2` and `failureSampleLimit: 20` in the suite defaults. They are
-deterministic adapter dry-runs for finding retrieval and reconstruction gaps,
-not the official LongMemEval/LoCoMo LLM-judge score and not a SOTA claim.
-The suite manifest recorded `@ghast/memory@0.1.0-alpha.66`, git branch `main`,
-git SHA `79031172b9f968c9d65cef02a428a59063d71a70`, and `dirty=false`.
-No alpha.67 full-dataset external snapshot is claimed here.
+These runs were executed on the `@ghast/memory@0.1.0-alpha.67` local build from
+commit `3e6afeae3b5395ec60734f8414e6abd6274a1276` with the suite invocation
+`gmos gym external-suite --suite-file external-suite-alpha67.json --output-dir results/alpha67-external-suite --format json`
+with `concurrency: 2` and `failureSampleLimit: 20` in the suite defaults. They
+are deterministic adapter dry-runs for finding retrieval and reconstruction
+gaps, not the official LongMemEval/LoCoMo LLM-judge score and not a SOTA claim.
+The suite manifest recorded `@ghast/memory@0.1.0-alpha.67`, git branch `main`,
+git SHA `3e6afeae3b5395ec60734f8414e6abd6274a1276`, `dirty=false`,
+Node `v24.16.0`, and platform `darwin/arm64`.
+The suite files and datasets were kept in an external benchmark work directory;
+the invocation paths above are relative to that directory, not to the repository
+root. Suite summary: `benchmarkPass=false`, `scoreMean=0.2009`,
+`scoreWeighted=0.1612`, total cases `400/2482`, total runtime `1676.4s`.
 
 | Dataset file | Source format | Scored cases | Pass | Fail | Deterministic adapter score | Case groups | Reused profile cases | Warnings | Runtime |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `longmemeval_oracle.json` | LongMemEval cleaned oracle | 470 | 131 | 339 | `0.2787` | 470 | 0 | 30 | 14.5s |
-| `longmemeval_s_cleaned.json` | LongMemEval cleaned S | 470 | 131 | 339 | `0.2787` | 470 | 0 | 30 | 543.3s |
-| `locomo10.json` | LoCoMo full history | 1542 | 106 | 1436 | `0.0687` | 10 | 1532 | 444 | 88.3s |
+| `longmemeval_oracle.json` | LongMemEval cleaned oracle | 470 | 113 | 357 | `0.2404` | 470 | 0 | 30 | 26.3s |
+| `longmemeval_s_cleaned.json` | LongMemEval cleaned S | 470 | 119 | 351 | `0.2532` | 470 | 0 | 30 | 1284.2s |
+| `locomo10.json` | LoCoMo full history | 1542 | 168 | 1374 | `0.1089` | 10 | 1532 | 444 | 363.4s |
 
 Failure-stage taxonomy:
 
-This historical snapshot was generated with the alpha.66 taxonomy, before
-`answer_normalization_mismatch` was split out from `answer_not_in_input`.
-
-| Dataset file | `answer_not_in_input` | `not_extracted_or_filtered` | `retrieval_or_reconstruction_miss` | `context_composer_or_budget_drop` | `forbidden_context_inclusion` |
+| Dataset file | `answer_not_in_input` | `not_extracted_or_filtered` | `retrieval_or_reconstruction_miss` | `answer_normalization_mismatch` | `context_composer_or_budget_drop` |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `longmemeval_oracle.json` | 224 | 110 | 5 | 0 | 0 |
-| `longmemeval_s_cleaned.json` | 198 | 113 | 25 | 3 | 0 |
-| `locomo10.json` | 949 | 267 | 219 | 1 | 0 |
+| `longmemeval_oracle.json` | 219 | 128 | 4 | 6 | 0 |
+| `longmemeval_s_cleaned.json` | 194 | 119 | 27 | 7 | 4 |
+| `locomo10.json` | 946 | 272 | 149 | 7 | 0 |
 
 Dataset hashes:
 
@@ -279,17 +279,19 @@ alpha baseline, while the dry-run command itself stayed successful so the weak
 baseline can be recorded and compared over time. The runner skips official
 LongMemEval abstention cases by default. The LoCoMo adapter also skips QA
 annotations that lack an official `answer`; in this run, 444 such annotations
-were reported as warnings and not counted as scored cases. The alpha.66 score
-is unchanged from alpha.65, as expected: alpha.66 changes benchmark provenance,
-not retrieval behavior. Compared with the alpha.64 snapshot, the weighted score
-moved from `0.1338` to `0.1483`: cleaned S rose from `0.2468` to `0.2787`,
-LoCoMo10 rose from `0.0545` to `0.0687`, and the oracle run moved down by one
-passing case. The taxonomy still shows three immediate work streams:
-dataset/adapter answer normalization for
-`answer_normalization_mismatch` / `answer_not_in_input`, stronger durable observation extraction for
-`not_extracted_or_filtered`, and better speaker/entity/time/event reconstruction
-for `retrieval_or_reconstruction_miss`. LoCoMo remains the clearest pressure
-test for multi-party entity grounding and exact event recall.
+were reported as warnings and not counted as scored cases. Compared with the
+alpha.66 snapshot, LongMemEval oracle moved from `0.2787` to `0.2404`,
+LongMemEval cleaned S moved from `0.2787` to `0.2532`, and LoCoMo10 moved from
+`0.0687` to `0.1089`. Runtime also increased materially: cleaned S moved from
+`543.3s` to `1284.2s`, and LoCoMo10 moved from `88.3s` to `363.4s`. This is a
+real baseline, not a filtered success report: the current branch improved some
+multi-party LoCoMo recall while regressing LongMemEval score and large-input
+runtime. The taxonomy shows three immediate work streams: dataset/adapter answer
+normalization for `answer_normalization_mismatch` / `answer_not_in_input`,
+stronger durable observation extraction for `not_extracted_or_filtered`, and
+better speaker/entity/time/event reconstruction for
+`retrieval_or_reconstruction_miss`. LoCoMo remains the clearest pressure test
+for multi-party entity grounding and exact event recall.
 Many failed cases carried medium or high uncertainty, and many did not reach
 evidence convergence, which makes this a useful baseline for active
 reconstruction, hybrid retrieval, entity resolution, and temporal current-state
@@ -300,6 +302,14 @@ for external benchmark execution. The LoCoMo run demonstrates why profile/event
 grouping matters: all scored QA cases share only 10 conversation histories, so
 the benchmark can reuse prepared profiles without writing answer labels,
 evidence ids, category labels, or `has_answer` labels into memory.
+
+Previous historical snapshot, alpha.66, 2026-06-27:
+
+| Dataset file | Deterministic adapter score | Runtime |
+| --- | ---: | ---: |
+| `longmemeval_oracle.json` | `0.2787` | 14.5s |
+| `longmemeval_s_cleaned.json` | `0.2787` | 543.3s |
+| `locomo10.json` | `0.0687` | 88.3s |
 
 Dataset source pointers used for this dry-run:
 [LongMemEval cleaned](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned),
