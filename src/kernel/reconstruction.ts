@@ -5,8 +5,10 @@ import {
   sourceContentEntityCues,
   sourceMetadataEntityCues,
 } from "./associations.js";
+import type { AssociationCue } from "./associations.js";
 import { sanitizeEvidenceForPublicOutput } from "./safety.js";
 import { observedAtSegment, temporalMetadataSegment } from "./temporal-format.js";
+import { temporalCueValuesFromText } from "./temporal-validity.js";
 import type {
   EvidenceEvent,
   MemoryAssociationRecord,
@@ -168,8 +170,25 @@ function entityCueMatchesQuery(cue: string, intent: ReconstructionIntent): boole
   return associationCueMatchesQuery(cue, intent.queryCues);
 }
 
+function queryAssociationCues(query: string, max: number): AssociationCue[] {
+  const seen = new Set<string>();
+  const result: AssociationCue[] = [];
+  const candidates = [
+    ...temporalCueValuesFromText(query).map((cue) => ({ cue, cueKind: "temporal" as const })),
+    ...extractAssociationCues(query, max),
+  ];
+  for (const candidate of candidates) {
+    const key = associationCueKey(candidate.cue);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(candidate);
+    if (result.length >= max) break;
+  }
+  return result;
+}
+
 function queryCueSet(query: string): Set<string> {
-  return new Set(extractAssociationCues(query, 48).map((cue) => cue.cue));
+  return new Set(queryAssociationCues(query, 48).map((cue) => cue.cue));
 }
 
 function includesAny(text: string, needles: string[]): boolean {
@@ -236,7 +255,7 @@ function stepCountForTrace(paths: ReconstructedEvidencePath[]): number {
 }
 
 function coverageCues(query: string): string[] {
-  return uniqueStrings(extractAssociationCues(query, 16).map((cue) => cue.cue)).slice(0, 8);
+  return uniqueStrings(queryAssociationCues(query, 16).map((cue) => cue.cue)).slice(0, 8);
 }
 
 function pathCoversCue(path: ReconstructedEvidencePath, cue: string): boolean {
@@ -468,16 +487,22 @@ function inferTemporalRecallPurpose(
 }
 
 function seedFrontier(query: string, intent: ReconstructionIntent): FrontierCue[] {
-  const cues = extractAssociationCues(query, 12);
+  const cues = queryAssociationCues(query, 12);
   if (cues.length === 0) return [{ cue: query, priority: 1, reason: "raw_query" }];
   return cues.map((cue, index) => {
     let priority = 10 - index * 0.1;
     if (cue.cueKind === "entity") priority += 4;
+    if (cue.cueKind === "temporal") priority += 3;
     if (intent.expectedTags.has(cue.cue)) priority += 2;
     return {
       cue: cue.cue,
       priority,
-      reason: cue.cueKind === "entity" ? "initial_entity_cue" : "initial_query_cue",
+      reason:
+        cue.cueKind === "entity"
+          ? "initial_entity_cue"
+          : cue.cueKind === "temporal"
+            ? "initial_temporal_cue"
+            : "initial_query_cue",
     };
   });
 }

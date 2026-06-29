@@ -113,6 +113,7 @@ import {
   explicitTemporalValidityMetadata,
   mergeExplicitTemporalValidityMetadata,
   normalizeExplicitTemporalInstant,
+  temporalCueValuesFromText,
 } from "../src/kernel/temporal-validity.js";
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-sdk-test-"));
@@ -2686,6 +2687,28 @@ const naturalDateDefaultReconstruction = await naturalDateTemporalMemory.reconst
 });
 assert.match(naturalDateDefaultReconstruction.contextBlock, /design workshop/);
 assert.doesNotMatch(naturalDateDefaultReconstruction.contextBlock, /event_time=/);
+await naturalDateTemporalMemory.add({
+  profileId: "natural-date-temporal",
+  kind: "fact",
+  content: "The archive review produced the blue notebook decision.",
+  metadata: { eventTime: "2023-05-07T00:00:00.000Z" },
+});
+const naturalDateQueryOnlyReconstruction = await naturalDateTemporalMemory.reconstructContext({
+  profileId: "natural-date-temporal",
+  query: "What happened on 7 May 2023?",
+  includeTemporalMetadata: true,
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.match(naturalDateQueryOnlyReconstruction.contextBlock, /blue notebook decision/);
+assert.match(naturalDateQueryOnlyReconstruction.contextBlock, /event_time=2023-05-07/);
+assert.equal(
+  naturalDateQueryOnlyReconstruction.plannerTrace?.steps.some((step) =>
+    step.selectedCue === "2023-05-07T00:00:00.000Z" || step.selectedCue === "2023-05-07",
+  ),
+  true,
+);
 await naturalDateTemporalMemory.close();
 const directTemporalCueStore = createSqliteMemoryStore({
   path: path.join(tmp, "direct-temporal-cue.db"),
@@ -8985,6 +9008,16 @@ assert.equal(
   eventTimeSegment({ eventTime: "2023-05-07T00:00:00.000Z" }),
   "; event_time=2023-05-07; event_time_text=7 May 2023",
 );
+assert.deepEqual(temporalCueValuesFromText("What happened on May 7, 2023?"), [
+  "2023-05-07T00:00:00.000Z",
+  "2023-05-07",
+]);
+assert.deepEqual(temporalCueValuesFromText("2023年5月7日发生了什么？"), [
+  "2023-05-07T00:00:00.000Z",
+  "2023-05-07",
+]);
+assert.deepEqual(temporalCueValuesFromText("What happened on May 2023?"), []);
+assert.deepEqual(temporalCueValuesFromText("What happened on February 30, 2023?"), []);
 assert.deepEqual(
   mergeExplicitTemporalValidityMetadata("until 2026-07-01", {
     validTo: "2030-01-01T00:00:00.000Z",

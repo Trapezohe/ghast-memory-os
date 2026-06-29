@@ -9,6 +9,7 @@ const NATURAL_DATE_VALUE = String.raw`(?:${MONTH_NAME}\s+${ORDINAL_DAY},?\s+\d{4
 const HAN_DATE_VALUE = String.raw`\d{4}年\d{1,2}月\d{1,2}日?`;
 const ENGLISH_EVENT_TIME_VALUE = String.raw`(?:${DATE_OR_INSTANT}|${NATURAL_DATE_VALUE})`;
 const HAN_EVENT_TIME_VALUE = String.raw`(?:${DATE_OR_INSTANT_BEFORE_HAN}|${HAN_DATE_VALUE})`;
+const DATE_OR_INSTANT_IN_TEXT = `${DATE_VALUE}(?=\\p{Script=Han}|[^\\p{L}\\p{N}_-]|$)`;
 
 const MONTH_ALIASES: Readonly<Record<string, number>> = {
   jan: 1,
@@ -114,6 +115,24 @@ function calendarInstant(parts: CalendarParts): string | null {
   return new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).toISOString();
 }
 
+function uniqueValues(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
+  }
+  return result;
+}
+
+function addTemporalCueValues(values: string[], value: string): void {
+  const normalized = normalizeExplicitTemporalInstant(value);
+  if (!normalized) return;
+  values.push(normalized, normalized.slice(0, 10));
+}
+
 export function normalizeExplicitTemporalInstant(value: string): string | null {
   const trimmed = value.trim();
   const parts = isoDateParts(trimmed);
@@ -127,6 +146,21 @@ export function normalizeExplicitTemporalInstant(value: string): string | null {
   const timestamp = Date.parse(trimmed);
   if (!Number.isFinite(timestamp)) return null;
   return new Date(timestamp).toISOString();
+}
+
+export function temporalCueValuesFromText(text: string): string[] {
+  const values: string[] = [];
+  const patterns = [
+    new RegExp(DATE_OR_INSTANT_IN_TEXT, "giu"),
+    new RegExp(String.raw`\b${NATURAL_DATE_VALUE}\b`, "giu"),
+    new RegExp(HAN_DATE_VALUE, "gu"),
+  ];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      addTemporalCueValues(values, match[0]);
+    }
+  }
+  return uniqueValues(values);
 }
 
 function firstMatch(text: string, patterns: RegExp[]): string | null {
