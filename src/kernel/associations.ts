@@ -6,6 +6,7 @@ import type {
 } from "./types.js";
 import { entityMentionCues } from "./entities.js";
 import { stableNamedPersonSubject } from "./extraction.js";
+import { classifySensitivity } from "./safety.js";
 import { normalizeExplicitTemporalInstant } from "./temporal-validity.js";
 
 export type AssociationCueKind = MemoryAssociationRecord["cueKind"];
@@ -171,6 +172,19 @@ function metadataStringArray(metadata: Record<string, unknown>, key: string): st
   return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
 }
 
+function safeSourceMetadataCueValue(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed || /^\[redacted_[a-z_]+\]$/iu.test(trimmed)) return "";
+  return classifySensitivity(trimmed) === "normal" ? trimmed : "";
+}
+
+function safeSourceMetadataCueArray(metadata: Record<string, unknown>, key: string): string[] {
+  const value = metadata[key];
+  if (!Array.isArray(value)) return [];
+  return value.map(safeSourceMetadataCueValue).filter(Boolean);
+}
+
 function entityAliases(metadata: Record<string, unknown>): string[] {
   const entity = metadata.entityResolution;
   if (!entity || typeof entity !== "object" || Array.isArray(entity)) return [];
@@ -256,8 +270,8 @@ export function sourceMetadataEntityCues(metadata: Record<string, unknown>): str
   return unique([
     ...subjectCues,
     ...mentionCues,
-    normalizedMetadataValue(record, "speaker") ?? "",
-    ...metadataStringArray(record, "speakerAliases"),
+    safeSourceMetadataCueValue(record.speaker).toLowerCase(),
+    ...safeSourceMetadataCueArray(record, "speakerAliases"),
   ]);
 }
 
