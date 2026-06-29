@@ -459,6 +459,7 @@ assert.equal(publicRuntimeInfo.package.version, packageJson.version);
 assert.deepEqual(publicRuntimeInfo.cli.binaries, Object.keys(packageJson.bin).sort());
 assert.deepEqual(publicRuntimeInfo.packageExports, Object.keys(packageJson.exports).sort());
 assert.equal(publicRuntimeInfo.publicSurface.mcpTools.includes("memory.prepare_context"), true);
+assert.equal(publicRuntimeInfo.publicSurface.httpRoutes.includes("GET /runtime-info"), true);
 assert.equal(publicRuntimeInfo.publicSurface.httpRoutes.includes("POST /prepare"), true);
 assert.equal(publicRuntimeInfo.trustContract.localFirst, true);
 assert.equal(publicRuntimeInfo.trustContract.defaultStorage, "sqlite");
@@ -10044,6 +10045,9 @@ try {
   assert.equal(health.status, 200);
   assert.equal(health.body.ok, true);
   assert.equal(health.body.framework, "ghast-memory-os");
+  const runtimeInfo = await httpJson(`${httpAddress.url}/runtime-info`);
+  assert.equal(runtimeInfo.status, 200);
+  assert.deepEqual(runtimeInfo.body.runtimeInfo, getGmosRuntimeInfo());
   const tools = await httpJson(`${httpAddress.url}/tools`);
   assert.equal(tools.status, 200);
   assert.match(tools.text, /memory.prepare_context/);
@@ -10053,6 +10057,7 @@ try {
   );
   assert.deepEqual(PUBLIC_MEMORY_HTTP_ROUTES, [
     "GET /health",
+    "GET /runtime-info",
     "GET /tools",
     "GET /status",
     "POST /add",
@@ -10275,6 +10280,14 @@ try {
   assert.equal(toolsWithoutToken.status, 401);
   assert.equal((toolsWithoutToken.body.error as { code?: string }).code, "unauthorized");
   assert.equal(toolsWithoutToken.text.includes("local-test-token"), false);
+  const runtimeInfoWithoutToken = await httpJson(`${authedHttpAddress.url}/runtime-info`);
+  assert.equal(runtimeInfoWithoutToken.status, 401);
+  assert.equal(Object.hasOwn(runtimeInfoWithoutToken.body, "runtimeInfo"), false);
+  const authorizedRuntimeInfo = await httpJson(`${authedHttpAddress.url}/runtime-info`, {
+    headers: { authorization: "Bearer local-test-token" },
+  });
+  assert.equal(authorizedRuntimeInfo.status, 200);
+  assert.deepEqual(authorizedRuntimeInfo.body.runtimeInfo, getGmosRuntimeInfo());
   const wrongToken = await postJson(
     `${authedHttpAddress.url}/observe`,
     {
@@ -10361,6 +10374,13 @@ try {
   assert.equal(cliHealth.status, 200);
   assert.equal(cliHealth.body.framework, "ghast-memory-os");
   assert.equal(cliHealth.body.authRequired, true);
+  const cliUnauthedRuntimeInfo = await httpJson(`${cliHttpUrl}/runtime-info`);
+  assert.equal(cliUnauthedRuntimeInfo.status, 401);
+  const cliRuntimeInfo = await httpJson(`${cliHttpUrl}/runtime-info`, {
+    headers: { authorization: "Bearer cli-local-token" },
+  });
+  assert.equal(cliRuntimeInfo.status, 200);
+  assert.deepEqual(cliRuntimeInfo.body.runtimeInfo, getGmosRuntimeInfo());
   const cliUnauthedObserve = await postJson(`${cliHttpUrl}/observe`, {
     profileId: "cli_http",
     role: "user",
@@ -10461,11 +10481,18 @@ try {
   assert.equal(cliEnvHealth.body.authRequired, true);
   const cliEnvUnauthedTools = await httpJson(`${cliEnvHttpUrl}/tools`);
   assert.equal(cliEnvUnauthedTools.status, 401);
+  const cliEnvUnauthedRuntimeInfo = await httpJson(`${cliEnvHttpUrl}/runtime-info`);
+  assert.equal(cliEnvUnauthedRuntimeInfo.status, 401);
   const cliEnvTools = await httpJson(`${cliEnvHttpUrl}/tools`, {
     headers: { authorization: "Bearer cli-env-token" },
   });
   assert.equal(cliEnvTools.status, 200);
   assert.match(cliEnvTools.text, /memory.prepare_context/);
+  const cliEnvRuntimeInfo = await httpJson(`${cliEnvHttpUrl}/runtime-info`, {
+    headers: { authorization: "Bearer cli-env-token" },
+  });
+  assert.equal(cliEnvRuntimeInfo.status, 200);
+  assert.deepEqual(cliEnvRuntimeInfo.body.runtimeInfo, getGmosRuntimeInfo());
 } finally {
   cliEnvHttp.kill("SIGTERM");
   await Promise.race([

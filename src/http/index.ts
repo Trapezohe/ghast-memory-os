@@ -13,6 +13,7 @@ import {
   PUBLIC_MEMORY_HTTP_ROUTE_REGISTRY,
   PUBLIC_MEMORY_HTTP_ROUTES,
 } from "../mcp/index.js";
+import { getGmosRuntimeInfo } from "../runtime-info.js";
 
 export { PUBLIC_MEMORY_HTTP_ROUTE_REGISTRY, PUBLIC_MEMORY_HTTP_ROUTES };
 
@@ -223,6 +224,11 @@ export function createMemoryHttpServer(
 
       if (route.route === "GET /tools") {
         writeJson(response, 200, ok({ ok: true, tools: mcp.listTools() }));
+        return;
+      }
+
+      if (route.route === "GET /runtime-info") {
+        writeJson(response, 200, ok({ ok: true, runtimeInfo: getGmosRuntimeInfo() }));
         return;
       }
 

@@ -272,6 +272,7 @@ try {
         [...PUBLIC_MEMORY_MCP_TOOL_NAMES],
       );
       assert.deepEqual(HTTP_PUBLIC_MEMORY_HTTP_ROUTES, PUBLIC_MEMORY_HTTP_ROUTES);
+      assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("GET /runtime-info"), true);
       assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /backup"), false);
       assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /restore"), false);
       assert.equal(Object.hasOwn(prepareTool.inputSchema.properties, "includeSensitive"), false);
@@ -385,6 +386,7 @@ try {
       assert.deepEqual(runtimeInfo.cli.binaries, Object.keys(installedPackage.bin).sort());
       assert.deepEqual(runtimeInfo.packageExports, Object.keys(installedPackage.exports).sort());
       assert.equal(runtimeInfo.publicSurface.mcpTools.includes("memory.prepare_context"), true);
+      assert.equal(runtimeInfo.publicSurface.httpRoutes.includes("GET /runtime-info"), true);
       assert.equal(runtimeInfo.publicSurface.httpRoutes.includes("POST /prepare"), true);
       assert.equal(runtimeInfo.trustContract.localFirst, true);
       assert.equal(runtimeInfo.trustContract.defaultStorage, "sqlite");
@@ -489,8 +491,16 @@ try {
         const healthBody = await health.json();
         assert.equal(healthBody.framework, "ghast-memory-os");
         assert.equal(healthBody.authRequired, true);
+        const unauthenticatedRuntimeInfo = await fetch(httpAddress.url + "/runtime-info");
+        assert.equal(unauthenticatedRuntimeInfo.status, 401);
         const unauthenticatedTools = await fetch(httpAddress.url + "/tools");
         assert.equal(unauthenticatedTools.status, 401);
+        const httpRuntimeInfo = await fetch(httpAddress.url + "/runtime-info", {
+          headers: { authorization: "Bearer consumer-local-token" },
+        });
+        assert.equal(httpRuntimeInfo.status, 200);
+        const httpRuntimeInfoBody = await httpRuntimeInfo.json();
+        assert.deepEqual(httpRuntimeInfoBody.runtimeInfo, getGmosRuntimeInfo());
         const httpObserve = await fetch(httpAddress.url + "/observe", {
           method: "POST",
           headers: {
