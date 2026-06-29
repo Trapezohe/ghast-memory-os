@@ -14,6 +14,7 @@ import {
   type HostPreset,
 } from "../host/index.js";
 import { readGmosPackageInfo } from "../kernel/package-info.js";
+import { getGmosRuntimeInfo, type GmosRuntimeInfo } from "../runtime-info.js";
 
 export interface DiagnosticsStore {
   rowCounts(): Promise<Record<string, number>> | Record<string, number>;
@@ -86,6 +87,7 @@ export interface MemoryStatusReport {
     name: string;
     version: string;
   };
+  runtimeInfo: GmosRuntimeInfo;
   storage: MemoryStorageStatus;
   failureSummary: MemoryFailureSummary;
   hostCompatibility?: HostCompatibilityReport | undefined;
@@ -255,11 +257,17 @@ export async function createMemoryStatusReport(
 ): Promise<MemoryStatusReport> {
   const profileId = input.profileId ?? "default";
   const storage = await storageStatus(input.store);
+  const packageInfo = input.packageInfo ?? readGmosPackageInfo();
+  const runtimeInfo: GmosRuntimeInfo = {
+    ...getGmosRuntimeInfo(),
+    package: packageInfo,
+  };
   return {
     framework: "ghast-memory-os",
     generatedAt: input.now?.() ?? new Date().toISOString(),
     profileId,
-    package: input.packageInfo ?? readGmosPackageInfo(),
+    package: packageInfo,
+    runtimeInfo,
     storage,
     failureSummary: await failureSummary({
       store: input.store,
@@ -285,6 +293,17 @@ export function renderMemoryStatusMarkdown(report: MemoryStatusReport): string {
     `Generated: ${report.generatedAt}`,
     `Profile: ${report.profileId}`,
     `Package: ${report.package.name}@${report.package.version}`,
+    "",
+    "## Runtime",
+    "",
+    `CLI binaries: ${report.runtimeInfo.cli.binaries.join(", ")}`,
+    `Package exports: ${report.runtimeInfo.packageExports.length ? report.runtimeInfo.packageExports.join(", ") : "unknown"}`,
+    `MCP tools: ${report.runtimeInfo.publicSurface.mcpTools.join(", ")}`,
+    `HTTP routes: ${report.runtimeInfo.publicSurface.httpRoutes.join(", ")}`,
+    `Local-first: ${report.runtimeInfo.trustContract.localFirst ? "yes" : "no"}`,
+    `Default storage: ${report.runtimeInfo.trustContract.defaultStorage}`,
+    `Encrypted by default: ${report.runtimeInfo.trustContract.encryptedByDefault ? "yes" : "no"}`,
+    `Cloud required: ${report.runtimeInfo.trustContract.cloudRequired ? "yes" : "no"}`,
     "",
     "## Storage",
     "",

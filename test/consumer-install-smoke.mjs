@@ -480,6 +480,9 @@ try {
       });
       assert.equal(status.package.name, installedPackage.name);
       assert.equal(status.package.version, installedPackage.version);
+      assert.deepEqual(status.runtimeInfo, getGmosRuntimeInfo());
+      assert.equal(status.runtimeInfo.publicSurface.mcpTools.includes("memory.runtime_info"), true);
+      assert.equal(status.runtimeInfo.publicSurface.httpRoutes.includes("GET /runtime-info"), true);
       assert.equal(status.storage.schemaVersion, 7);
       assert.equal(status.storage.searchIndex.status, "ok");
       assert.equal(status.storage.searchIndex.missingEntryCount, 0);
@@ -1016,6 +1019,10 @@ try {
         profileId: "consumer-types",
       });
       if (status.framework !== "ghast-memory-os") throw new Error("unexpected diagnostics framework");
+      const statusRuntimeInfo: GmosRuntimeInfo = status.runtimeInfo;
+      if (!statusRuntimeInfo.publicSurface.mcpTools.includes("memory.runtime_info")) {
+        throw new Error("typed diagnostics runtime info missing MCP surface");
+      }
       if (status.storage.readAudit.status !== "ok") throw new Error("typed read audit diagnostics failed");
       if (!status.trustContract.readPathSideEffectsChecked) {
         throw new Error("typed read path trust contract failed");

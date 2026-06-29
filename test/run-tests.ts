@@ -9156,6 +9156,9 @@ const statusReport = await createMemoryStatusReport({
 assert.equal(statusReport.framework, "ghast-memory-os");
 assert.equal(statusReport.package.name, packageJson.name);
 assert.equal(statusReport.package.version, packageJson.version);
+assert.deepEqual(statusReport.runtimeInfo, getGmosRuntimeInfo());
+assert.equal(statusReport.runtimeInfo.publicSurface.mcpTools.includes("memory.runtime_info"), true);
+assert.equal(statusReport.runtimeInfo.publicSurface.httpRoutes.includes("GET /runtime-info"), true);
 assert.equal(statusReport.storage.status, "ok");
 assert.equal(statusReport.storage.schemaVersion, 7);
 assert.equal(statusReport.storage.searchIndex?.status, "ok");
@@ -9179,6 +9182,9 @@ assert.equal(JSON.stringify(statusReport).includes("110101199001011234"), false)
 assert.equal(JSON.stringify(statusReport).includes("stateHash"), false);
 const renderedStatus = renderMemoryStatusMarkdown(statusReport);
 assert.match(renderedStatus, /gmOS Status Report/);
+assert.match(renderedStatus, /## Runtime/);
+assert.match(renderedStatus, /memory\.runtime_info/);
+assert.match(renderedStatus, /GET \/runtime-info/);
 assert.match(renderedStatus, /Search index: ok/);
 assert.match(renderedStatus, /Read audit: ok/);
 assert.match(renderedStatus, /gmos_failure_events/);
@@ -10097,6 +10103,10 @@ try {
   assert.equal(
     ((status.body.report as { storage?: { schemaVersion?: number } }).storage ?? {}).schemaVersion,
     7,
+  );
+  assert.deepEqual(
+    (status.body.report as { runtimeInfo?: unknown }).runtimeInfo,
+    getGmosRuntimeInfo(),
   );
   assert.equal(status.text.includes("mcp fixture failure"), false);
   const httpContextHistorySearch = await postJson(`${httpAddress.url}/search`, {
