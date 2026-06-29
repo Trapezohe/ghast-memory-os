@@ -191,7 +191,7 @@ function normalizeCandidate(
 ):
   | { candidate: MemoryExtractionCandidate }
   | { reason: MemoryExtractionRejectReason } {
-  const content = normalize(candidate.content);
+  const content = normalize(durableCandidateContent(candidate.content));
   if (!KNOWN_MEMORY_KINDS.has(String(candidate.kind))) return { reason: "invalid_kind" };
   if (!content) return { reason: "empty_content" };
   if (candidate.kind === "person") return { reason: "person_kind" };
@@ -273,6 +273,11 @@ function speakerPrefixMatch(text: string): { prefix: string; rest: string } | nu
   const prefix = match?.[1]?.trim();
   const rest = match?.[2]?.trim();
   return prefix && rest ? { prefix, rest } : null;
+}
+
+function durableCandidateContent(text: string): string {
+  const match = speakerPrefixMatch(text);
+  return match && isNonSpeakerPrefix(match.prefix) ? match.rest : text;
 }
 
 function personSubjectFieldsForFirstPerson(

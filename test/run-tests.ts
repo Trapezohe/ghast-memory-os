@@ -3734,6 +3734,12 @@ const nonSpeakerPrefixedPreferenceCandidate =
   )?.candidate;
 assert.equal(nonSpeakerPrefixedPreferenceCandidate?.predicate, "user.preference");
 assert.equal(nonSpeakerPrefixedPreferenceCandidate?.subject, undefined);
+assert.equal(nonSpeakerPrefixedPreferenceCandidate?.content, "I prefer traceable release plans.");
+const nonSpeakerPrefixedPreferenceMemory = await rulesReportMemory.get({
+  profileId: "rules_report",
+  id: nonSpeakerPrefixedPreferenceReport.memoryIds[0]!,
+});
+assert.equal(nonSpeakerPrefixedPreferenceMemory?.content, "I prefer traceable release plans.");
 for (const secretLikeFavoriteStatement of [
   "My favorite password is correcthorsebatterystaple.",
   "My favorite password is letmeinplease.",
@@ -4601,6 +4607,33 @@ const assistantPrefixedAttributeCandidate =
   )?.candidate;
 assert.equal(assistantPrefixedAttributeCandidate?.predicate, "person.role");
 assert.equal(assistantPrefixedAttributeCandidate?.subject, undefined);
+assert.equal(assistantPrefixedAttributeCandidate?.content, "My job is an architect.");
+const assistantPrefixedAttributeMemory = await rulesReportMemory.get({
+  profileId: "rules_report",
+  id: assistantPrefixedAttributeReport.memoryIds[0]!,
+});
+assert.equal(assistantPrefixedAttributeMemory?.content, "My job is an architect.");
+const summaryPrefixedProjectReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Summary: Project Helio owner is Mira.",
+});
+assert.equal(summaryPrefixedProjectReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(summaryPrefixedProjectReport.memoryIds.length, 1);
+assert.equal(summaryPrefixedProjectReport.worldBeliefIds.length, 1);
+const summaryPrefixedProjectCandidate =
+  summaryPrefixedProjectReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  )?.candidate;
+assert.equal(summaryPrefixedProjectCandidate?.predicate, "project.owner");
+assert.equal(summaryPrefixedProjectCandidate?.subject, "project:Helio");
+assert.equal(summaryPrefixedProjectCandidate?.content, "Project Helio owner is Mira.");
+const summaryPrefixedProjectMemory = await rulesReportMemory.get({
+  profileId: "rules_report",
+  id: summaryPrefixedProjectReport.memoryIds[0]!,
+});
+assert.equal(summaryPrefixedProjectMemory?.content, "Project Helio owner is Mira.");
 for (const nonPersonSpeakerContent of [
   "OpenAI: Do not push Project Atlas updates.",
   "OpenAI: My workflow is to draft first.",
@@ -6135,6 +6168,11 @@ for (const prefix of ["Note", "Preference", "Fact", "Example"]) {
   assert.equal(nonSpeakerPrefixReport.extraction?.acceptedCandidateCount, 1);
   assert.equal(nonSpeakerPrefixReport.memoryIds.length, 1);
   assert.equal(nonSpeakerPrefixReport.worldBeliefIds.length, 1);
+  const nonSpeakerPrefixMemory = await rulesReportMemory.get({
+    profileId: "rules_report",
+    id: nonSpeakerPrefixReport.memoryIds[0]!,
+  });
+  assert.equal(nonSpeakerPrefixMemory?.content, "I use VectorPad for travel planning.");
 }
 await rulesReportMemory.observeWithReport({
   type: "conversation.message",
