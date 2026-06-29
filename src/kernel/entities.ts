@@ -81,7 +81,9 @@ function unique(values: string[]): string[] {
 }
 
 function publicAlias(value: string): string {
-  return classifySensitivity(value) === "normal" ? value : "";
+  const compacted = compact(value);
+  if (/^\[redacted_[a-z_]+\]$/iu.test(compacted)) return "";
+  return compacted && classifySensitivity(compacted) === "normal" ? compacted : "";
 }
 
 function publicEntityValue(value: unknown): string {

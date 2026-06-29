@@ -161,22 +161,15 @@ function normalizedMetadataValue(metadata: Record<string, unknown>, key: string)
   return typeof value === "string" && value.trim().length > 0 ? value.trim().toLowerCase() : null;
 }
 
-function metadataDisplayValue(metadata: Record<string, unknown>, key: string): string | null {
-  const value = metadata[key];
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function metadataStringArray(metadata: Record<string, unknown>, key: string): string[] {
-  const value = metadata[key];
-  if (!Array.isArray(value)) return [];
-  return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
-}
-
 function safeMetadataCueValue(value: unknown): string {
   if (typeof value !== "string") return "";
   const trimmed = value.trim();
   if (!trimmed || /^\[redacted_[a-z_]+\]$/iu.test(trimmed)) return "";
   return classifySensitivity(trimmed) === "normal" ? trimmed : "";
+}
+
+function safeMetadataDisplayValue(metadata: Record<string, unknown>, key: string): string {
+  return safeMetadataCueValue(metadata[key]);
 }
 
 function safeMetadataCueArray(metadata: Record<string, unknown>, key: string): string[] {
@@ -188,7 +181,7 @@ function safeMetadataCueArray(metadata: Record<string, unknown>, key: string): s
 function entityAliases(metadata: Record<string, unknown>): string[] {
   const entity = metadata.entityResolution;
   if (!entity || typeof entity !== "object" || Array.isArray(entity)) return [];
-  return metadataStringArray(entity as Record<string, unknown>, "aliases");
+  return safeMetadataCueArray(entity as Record<string, unknown>, "aliases");
 }
 
 function entitySubjectCues(metadata: Record<string, unknown>): string[] {
@@ -304,10 +297,10 @@ export function associationTagsForBelief(belief: WorldBeliefRecord): string[] {
 export function associationCuesForBelief(belief: WorldBeliefRecord): AssociationCue[] {
   const qualifiers = [
     belief.predicate === "person.relation"
-      ? (metadataDisplayValue(belief.metadata, "relationType") ?? "")
+      ? safeMetadataDisplayValue(belief.metadata, "relationType")
       : "",
-    metadataDisplayValue(belief.metadata, "toolPurpose") ?? "",
-    metadataDisplayValue(belief.metadata, "toolScope") ?? "",
+    safeMetadataDisplayValue(belief.metadata, "toolPurpose"),
+    safeMetadataDisplayValue(belief.metadata, "toolScope"),
   ];
   return [
     ...sourceMetadataEntityCues(belief.metadata).map((cue) => ({ cue, cueKind: "entity" as const })),
@@ -325,10 +318,10 @@ export function associationSummaryForBelief(belief: WorldBeliefRecord): string {
     belief.predicate,
     belief.object,
     belief.predicate === "person.relation"
-      ? (metadataDisplayValue(belief.metadata, "relationType") ?? "")
+      ? safeMetadataDisplayValue(belief.metadata, "relationType")
       : "",
-    metadataDisplayValue(belief.metadata, "toolPurpose") ?? "",
-    metadataDisplayValue(belief.metadata, "toolScope") ?? "",
+    safeMetadataDisplayValue(belief.metadata, "toolPurpose"),
+    safeMetadataDisplayValue(belief.metadata, "toolScope"),
   ]
     .filter(Boolean)
     .join(" ");

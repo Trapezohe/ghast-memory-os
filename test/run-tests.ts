@@ -28,6 +28,7 @@ import {
   associationSummaryForBelief,
   extractAssociationCues,
 } from "../src/kernel/associations.js";
+import { resolveWorldEntitySubject } from "../src/kernel/entities.js";
 import { extractRuleMemoryCandidates } from "../src/kernel/extraction.js";
 import { externalBenchmarkGitInfoForPackageRoot } from "../src/gym/external.js";
 import {
@@ -248,6 +249,65 @@ assert.equal(
   JSON.stringify(redactedPersonSubjectAssociationFixture).includes("sk-redactedsubjectalias"),
   false,
 );
+const redactedEntityResolutionFixture = resolveWorldEntitySubject({
+  subject: "project:atlas",
+  predicate: "project.status",
+  aliases: [
+    "Atlas Clean",
+    "[redacted_secret]",
+    "api key sk-entityresolutionalias123456",
+  ],
+});
+assert.equal(redactedEntityResolutionFixture.aliases.includes("Atlas Clean"), true);
+assert.equal(redactedEntityResolutionFixture.aliases.includes("[redacted_secret]"), false);
+assert.equal(
+  JSON.stringify(redactedEntityResolutionFixture).includes("sk-entityresolutionalias"),
+  false,
+);
+const redactedBeliefMetadataAssociationFixture = {
+  id: "belief-association-redacted-metadata-fixture",
+  profileId: "test",
+  subject: "person:Alex",
+  predicate: "person.relation",
+  object: "Emma",
+  confidence: 0.8,
+  status: "active" as const,
+  metadata: {
+    entityResolution: {
+      aliases: [
+        "CleanBeliefAlias",
+        "[redacted_sensitive]",
+        "api key sk-beliefalias123456789",
+      ],
+    },
+    relationType: "daughter",
+    toolPurpose: "CleanPurpose",
+    toolScope: "api key sk-beliefscope123456789",
+  },
+  createdAt: "2026-06-20T00:00:00.000Z",
+  updatedAt: "2026-06-20T00:00:00.000Z",
+};
+const redactedBeliefMetadataAssociationCues = associationCuesForBelief(
+  redactedBeliefMetadataAssociationFixture,
+);
+const redactedBeliefMetadataAssociationSummary = associationSummaryForBelief(
+  redactedBeliefMetadataAssociationFixture,
+);
+assert.equal(
+  redactedBeliefMetadataAssociationCues.some((cue) => cue.cue === "cleanbeliefalias"),
+  true,
+);
+assert.equal(redactedBeliefMetadataAssociationSummary.includes("daughter"), true);
+assert.equal(redactedBeliefMetadataAssociationSummary.includes("CleanPurpose"), true);
+assert.equal(
+  JSON.stringify(redactedBeliefMetadataAssociationCues).includes("[redacted_sensitive]"),
+  false,
+);
+assert.equal(
+  JSON.stringify(redactedBeliefMetadataAssociationCues).includes("sk-beliefalias"),
+  false,
+);
+assert.equal(redactedBeliefMetadataAssociationSummary.includes("sk-beliefscope"), false);
 const relationBeliefAssociationFixture = {
   id: "belief-association-relation-fixture",
   profileId: "test",
