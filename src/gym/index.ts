@@ -792,8 +792,14 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   gate(
     result,
     "reconstruction_secret_like_trajectory_exclusion",
-    !secretTrajectoryReconstruction.contextBlock.includes("sk-reconstructiongymsecret"),
-    "secret-like task trajectory summaries must not enter association reconstruction",
+    !secretTrajectoryReconstruction.contextBlock.includes("sk-reconstructiongymsecret") &&
+      !JSON.stringify(
+        store.exportProfileBackup({
+          profileId: "gym_reconstruct",
+          mode: "full",
+        }),
+      ).includes("sk-reconstructiongymsecret"),
+    "secret-like task trajectory summaries must not persist or enter association reconstruction",
     "safety",
   );
   await memory.observe({

@@ -21,6 +21,7 @@ import {
   eligibleForLongTermMemory,
   isNonSpeakerPrefix,
   isPersonRoutedMemory,
+  redactForReport,
   sanitizeEvidenceForPublicOutput,
   sanitizePublicPayloadRecord,
   sanitizePublicSourceMetadata,
@@ -253,6 +254,68 @@ function lowLevelSensitivity(input: {
   }
   if (detected === "sensitive" || scopeSensitivity === "sensitive") return "sensitive";
   return input.sensitivity ?? detected;
+}
+
+function sensitivityForParts(parts: Array<string | undefined>): Sensitivity {
+  let result: Sensitivity = "normal";
+  for (const part of parts) {
+    if (!part) continue;
+    const sensitivity = classifySensitivity(part);
+    if (sensitivity === "secret_like") return "secret_like";
+    if (sensitivity === "sensitive") result = "sensitive";
+  }
+  return result;
+}
+
+function failureContentForStorage(content: string): string {
+  return classifySensitivity(content) === "secret_like" ? redactForReport(content) : content;
+}
+
+async function recordRuntimeFailure(
+  store: MemoryOSOptions["store"],
+  input: {
+    profileId: string;
+    failureKind: NonNullable<FeedbackInput["failureKind"]>;
+    content: string;
+    createdAt?: string | undefined;
+    metadata?: Record<string, unknown> | undefined;
+  },
+): Promise<void> {
+  await store.recordFailure({
+    profileId: input.profileId,
+    failureKind: input.failureKind,
+    content: failureContentForStorage(input.content),
+    createdAt: input.createdAt,
+    metadata: input.metadata,
+  });
+}
+
+async function recordRuntimeTaskOutcome(
+  store: MemoryOSOptions["store"],
+  input: {
+    profileId: string;
+    taskId?: string | undefined;
+    objective: string;
+    status: "completed" | "failed";
+    summary?: string | undefined;
+    createdAt?: string | undefined;
+  },
+): Promise<"recorded" | "skipped_secret_like"> {
+  const sensitivity = sensitivityForParts([input.taskId, input.objective, input.summary]);
+  if (sensitivity !== "secret_like") {
+    await store.recordTaskTrajectory(input);
+    return "recorded";
+  }
+  if (input.status === "failed") {
+    await recordRuntimeFailure(store, {
+      profileId: input.profileId,
+      failureKind: "task_failure",
+      content: input.summary ?? input.objective,
+      createdAt: input.createdAt,
+      metadata: { taskTrajectorySkippedReason: "secret_like" },
+    });
+  }
+  return "skipped_secret_like";
 }
 
 function assertLowLevelPersonAllowed(input: {
@@ -555,7 +618,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     }
 
     if (event.type === "user.feedback" || event.type === "user.correction") {
-      await store.recordFailure({
+      await recordRuntimeFailure(store, {
         profileId,
         failureKind: event.failureKind ?? "wrong_recall",
         content: event.content,
@@ -565,7 +628,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     }
 
     if (event.type === "task.completed" || event.type === "task.failed") {
-      await store.recordTaskTrajectory({
+      const taskOutcomeResult = await recordRuntimeTaskOutcome(store, {
         profileId,
         taskId: event.taskId,
         objective: event.objective,
@@ -573,15 +636,21 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         summary: event.summary,
         createdAt: event.createdAt,
       });
-      if (event.type === "task.failed") {
-        await store.recordFailure({
+      if (taskOutcomeResult === "recorded" && event.type === "task.failed") {
+        await recordRuntimeFailure(store, {
           profileId,
           failureKind: "task_failure",
           content: event.summary ?? event.objective,
           createdAt: event.createdAt,
         });
       }
-      return { ...result, skippedReason: "task_trajectory_recorded" };
+      return {
+        ...result,
+        skippedReason:
+          taskOutcomeResult === "recorded"
+            ? "task_trajectory_recorded"
+            : "not_eligible_for_long_term_memory",
+      };
     }
 
     if (event.type !== "conversation.message") return { ...result, skippedReason: "unsupported_event" };
@@ -817,7 +886,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   async function commitOutcome(input: CommitOutcomeInput): Promise<void> {
     await initialize();
     const profileId = profileIdFor(defaultProfileId, input.profileId);
-    await store.recordTaskTrajectory({
+    const taskOutcomeResult = await recordRuntimeTaskOutcome(store, {
       profileId,
       taskId: input.taskId,
       objective: input.objective,
@@ -825,8 +894,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       summary: input.summary,
       createdAt: input.createdAt,
     });
-    if (input.status === "failed") {
-      await store.recordFailure({
+    if (taskOutcomeResult === "recorded" && input.status === "failed") {
+      await recordRuntimeFailure(store, {
         profileId,
         failureKind: "task_failure",
         content: input.summary ?? input.objective,
@@ -837,7 +906,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
 
   async function recordFeedback(input: FeedbackInput): Promise<void> {
     await initialize();
-    await store.recordFailure({
+    await recordRuntimeFailure(store, {
       profileId: profileIdFor(defaultProfileId, input.profileId),
       failureKind: input.failureKind ?? "wrong_recall",
       content: input.content,

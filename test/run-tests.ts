@@ -8154,6 +8154,53 @@ await memory.recordFeedback({
 const testProfileFailures = store.listFailures({ profileId: "test" });
 assert.equal(testProfileFailures.length, 3);
 
+const secretRuntimeProfileId = "runtime_secret_boundary";
+await memory.recordFeedback({
+  profileId: secretRuntimeProfileId,
+  content: "feedback exposed API key sk-feedbackboundarysecret1234567890",
+  failureKind: "privacy_leak",
+});
+await memory.observe({
+  type: "user.feedback",
+  profileId: secretRuntimeProfileId,
+  content: "feedback exposed token: sk-observefeedbacksecret1234567890",
+  failureKind: "privacy_leak",
+});
+await memory.commitOutcome({
+  profileId: secretRuntimeProfileId,
+  taskId: "secret-task-sk-trajectoryidsecret1234567890",
+  objective: "Secret task outcome",
+  status: "completed",
+  summary: "Do not store API key sk-trajectorysummarysecret1234567890.",
+});
+await memory.commitOutcome({
+  profileId: secretRuntimeProfileId,
+  objective: "Failed secret task outcome",
+  status: "failed",
+  summary: "Do not store API key sk-failedtrajectorysecret1234567890.",
+});
+const secretTaskObserveReport = await memory.observeWithReport({
+  type: "task.failed",
+  profileId: secretRuntimeProfileId,
+  objective: "Observed failed secret task outcome",
+  summary: "Do not store API key sk-observedtasksecret1234567890.",
+});
+assert.equal(secretTaskObserveReport.skippedReason, "not_eligible_for_long_term_memory");
+const secretRuntimeBackup = store.exportProfileBackup({
+  profileId: secretRuntimeProfileId,
+  mode: "full",
+});
+assert.equal(secretRuntimeBackup.taskTrajectories.length, 0);
+assert.equal(secretRuntimeBackup.failureEvents.length, 4);
+const secretRuntimeBackupJson = JSON.stringify(secretRuntimeBackup);
+assert.equal(secretRuntimeBackupJson.includes("sk-feedbackboundarysecret"), false);
+assert.equal(secretRuntimeBackupJson.includes("sk-observefeedbacksecret"), false);
+assert.equal(secretRuntimeBackupJson.includes("sk-trajectoryidsecret"), false);
+assert.equal(secretRuntimeBackupJson.includes("sk-trajectorysummarysecret"), false);
+assert.equal(secretRuntimeBackupJson.includes("sk-failedtrajectorysecret"), false);
+assert.equal(secretRuntimeBackupJson.includes("sk-observedtasksecret"), false);
+assert.equal(secretRuntimeBackupJson.includes("[redacted_secret]"), true);
+
 const compat = classifyHostCompatibility({
   hostId: "ghast",
   capabilities: createPresetHostAdapter("ghast").capabilities,
@@ -11066,6 +11113,20 @@ const secretTrajectoryReconstruction = await reconstructionMemory.reconstructCon
 });
 assert.equal(
   secretTrajectoryReconstruction.contextBlock.includes("sk-reconstructiontrajectorysecret"),
+  false,
+);
+const secretTrajectoryBackup = reconstructionStore.exportProfileBackup({
+  profileId: "recon",
+  mode: "full",
+});
+assert.equal(
+  secretTrajectoryBackup.taskTrajectories.some(
+    (trajectory) => trajectory.taskId === "helio-secret-outcome",
+  ),
+  false,
+);
+assert.equal(
+  JSON.stringify(secretTrajectoryBackup).includes("sk-reconstructiontrajectorysecret"),
   false,
 );
 await reconstructionMemory.observe({
