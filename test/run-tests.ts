@@ -22,7 +22,11 @@ import {
   createOpenAICompatibleExtractor,
   type MemoryStore,
 } from "../src/index.js";
-import { associationCuesForBelief, extractAssociationCues } from "../src/kernel/associations.js";
+import {
+  associationCuesForBelief,
+  associationSummaryForBelief,
+  extractAssociationCues,
+} from "../src/kernel/associations.js";
 import { extractRuleMemoryCandidates } from "../src/kernel/extraction.js";
 import { externalBenchmarkGitInfoForPackageRoot } from "../src/gym/external.js";
 import {
@@ -133,6 +137,23 @@ const beliefAssociationCueFixture = associationCuesForBelief({
 assert.equal(beliefAssociationCueFixture.some((cue) => cue.cue === "blair"), true);
 assert.equal(beliefAssociationCueFixture.some((cue) => cue.cue === "b"), false);
 assert.equal(beliefAssociationCueFixture.some((cue) => cue.cue === "alex"), false);
+const relationBeliefAssociationFixture = {
+  id: "belief-association-relation-fixture",
+  profileId: "test",
+  subject: "person:alex",
+  predicate: "person.relation",
+  object: "Emma",
+  confidence: 0.8,
+  status: "active" as const,
+  metadata: { relationType: "daughter" },
+  createdAt: "2026-06-20T00:00:00.000Z",
+  updatedAt: "2026-06-20T00:00:00.000Z",
+};
+assert.equal(
+  associationCuesForBelief(relationBeliefAssociationFixture).some((cue) => cue.cue === "daughter"),
+  true,
+);
+assert.match(associationSummaryForBelief(relationBeliefAssociationFixture), /daughter/);
 const publicSourceMetadataFixture = sanitizePublicSourceMetadata({
   speaker: "Blair",
   speakerAliases: ["B", { answer: "nested alias answer" }],
@@ -250,7 +271,7 @@ function rawHttpRequest(port: number, payload: string): Promise<string> {
 const store: SqliteMemoryStore = createSqliteMemoryStore({ path: dbPath });
 const memory = createMemoryOS({ profileId: "test", store });
 await store.initialize();
-assert.equal(await store.schemaVersion(), 6);
+assert.equal(await store.schemaVersion(), 7);
 
 const legacyDbPath = path.join(tmp, "legacy-no-ledger.db");
 const legacyHandle = new Database(legacyDbPath);
@@ -282,11 +303,19 @@ legacyHandle.exec(`
 `);
 const legacyStore = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
 await legacyStore.initialize();
-assert.equal(await legacyStore.schemaVersion(), 6);
+assert.equal(await legacyStore.schemaVersion(), 7);
 assert.equal(
   (
     legacyHandle
       .prepare("SELECT COUNT(*) AS count FROM gmos_schema_migrations WHERE version = 1")
+      .get() as { count: number }
+  ).count,
+  1,
+);
+assert.equal(
+  (
+    legacyHandle
+      .prepare("SELECT COUNT(*) AS count FROM gmos_schema_migrations WHERE version = 7")
       .get() as { count: number }
   ).count,
   1,
@@ -345,7 +374,7 @@ assert.ok(
 );
 const legacyStoreReopen = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
 await legacyStoreReopen.initialize();
-assert.equal(await legacyStoreReopen.schemaVersion(), 6);
+assert.equal(await legacyStoreReopen.schemaVersion(), 7);
 assert.equal(
   (
     legacyHandle
@@ -393,7 +422,7 @@ legacyV2Handle.exec(`
 `);
 const legacyV2Store = createSqliteMemoryStore({ path: legacyV2DbPath, handle: legacyV2Handle });
 await legacyV2Store.initialize();
-assert.equal(await legacyV2Store.schemaVersion(), 6);
+assert.equal(await legacyV2Store.schemaVersion(), 7);
 assert.ok(
   (
     legacyV2Handle
@@ -424,6 +453,65 @@ const legacyV2Reconstructed = await legacyV2Memory.reconstructContext({
 assert.match(legacyV2Reconstructed.contextBlock, /migration probe/);
 await legacyV2Memory.close();
 legacyV2Handle.close();
+
+const legacyV6ProjectionDbPath = path.join(tmp, "legacy-v6-relation-projection.db");
+const legacyV6ProjectionStore = createSqliteMemoryStore({ path: legacyV6ProjectionDbPath });
+await legacyV6ProjectionStore.initialize();
+await legacyV6ProjectionStore.addWorldBelief({
+  profileId: "legacy_v6_projection",
+  subject: "person:alex",
+  predicate: "person.relation",
+  object: "Emma",
+  confidence: 0.9,
+  metadata: { relationType: "daughter" },
+});
+await legacyV6ProjectionStore.close();
+const legacyV6ProjectionHandle = new Database(legacyV6ProjectionDbPath);
+legacyV6ProjectionHandle.prepare("DELETE FROM gmos_schema_migrations WHERE version = 7").run();
+legacyV6ProjectionHandle
+  .prepare("DELETE FROM gmos_associations WHERE profile_id = ? AND cue = ?")
+  .run("legacy_v6_projection", "daughter");
+legacyV6ProjectionHandle
+  .prepare(
+    `UPDATE gmos_associations
+       SET target_summary = replace(target_summary, ' daughter', '')
+     WHERE profile_id = ?`,
+  )
+  .run("legacy_v6_projection");
+assert.equal(
+  (
+    legacyV6ProjectionHandle
+      .prepare(
+        `SELECT COUNT(*) AS count
+           FROM gmos_associations
+          WHERE profile_id = ?
+            AND (cue = ? OR target_summary LIKE ?)`,
+      )
+      .get("legacy_v6_projection", "daughter", "%daughter%") as { count: number }
+  ).count,
+  0,
+);
+const legacyV6ProjectionUpgradeStore = createSqliteMemoryStore({
+  path: legacyV6ProjectionDbPath,
+  handle: legacyV6ProjectionHandle,
+});
+await legacyV6ProjectionUpgradeStore.initialize();
+assert.equal(await legacyV6ProjectionUpgradeStore.schemaVersion(), 7);
+const upgradedRelationAssociation = legacyV6ProjectionHandle
+  .prepare(
+    `SELECT cue, target_summary
+       FROM gmos_associations
+      WHERE profile_id = ?
+        AND cue = ?
+      LIMIT 1`,
+  )
+  .get("legacy_v6_projection", "daughter") as
+  | { cue: string; target_summary: string }
+  | undefined;
+assert.equal(upgradedRelationAssociation?.cue, "daughter");
+assert.match(upgradedRelationAssociation?.target_summary ?? "", /Emma/);
+assert.match(upgradedRelationAssociation?.target_summary ?? "", /daughter/);
+await legacyV6ProjectionUpgradeStore.close();
 
 await memory.observe({
   type: "conversation.message",
@@ -1936,6 +2024,28 @@ await beliefOnlyPersonStore.addWorldBelief({
   object: "Quartz for travel planning",
   confidence: 0.82,
 });
+await beliefOnlyPersonStore.addWorldBelief({
+  profileId: "belief-only-person",
+  subject: "person:alex",
+  predicate: "person.relation",
+  object: "Emma",
+  confidence: 0.86,
+  metadata: { relationType: "daughter" },
+});
+const beliefOnlyRelationAssociations = await beliefOnlyPersonStore.searchAssociations({
+  profileId: "belief-only-person",
+  query: "daughter",
+  limit: 10,
+});
+assert.equal(
+  beliefOnlyRelationAssociations.some(
+    (association) =>
+      association.cue === "daughter" &&
+      /Emma/.test(association.targetSummary) &&
+      /daughter/.test(association.targetSummary),
+  ),
+  true,
+);
 const beliefOnlyGenericReconstruction = await beliefOnlyPersonMemory.reconstructContext({
   profileId: "belief-only-person",
   query: "travel planning tool",
@@ -1967,6 +2077,21 @@ const beliefOnlyUnderscoredMaryJaneReconstruction = await beliefOnlyPersonMemory
 });
 assert.match(beliefOnlyUnderscoredMaryJaneReconstruction.contextBlock, /Helio/);
 assert.doesNotMatch(beliefOnlyUnderscoredMaryJaneReconstruction.contextBlock, /Quartz/);
+const beliefOnlyRelationReconstruction = await beliefOnlyPersonMemory.reconstructContext({
+  profileId: "belief-only-person",
+  query: "Which daughter belongs to Alex?",
+  maxSteps: 4,
+  maxBranch: 8,
+});
+assert.match(beliefOnlyRelationReconstruction.contextBlock, /Emma/);
+assert.equal(
+  beliefOnlyRelationReconstruction.paths.some(
+    (path) =>
+      /Emma/.test(path.targetSummary) &&
+      /daughter/.test(path.targetSummary),
+  ),
+  true,
+);
 await beliefOnlyPersonMemory.close();
 
 const sharedSourceStore = createSqliteMemoryStore({ path: path.join(tmp, "shared-source.db") });
@@ -7255,7 +7380,7 @@ assert.equal(statusReport.framework, "ghast-memory-os");
 assert.equal(statusReport.package.name, packageJson.name);
 assert.equal(statusReport.package.version, packageJson.version);
 assert.equal(statusReport.storage.status, "ok");
-assert.equal(statusReport.storage.schemaVersion, 6);
+assert.equal(statusReport.storage.schemaVersion, 7);
 assert.equal(statusReport.storage.searchIndex?.status, "ok");
 assert.equal(statusReport.storage.searchIndex?.missingEntryCount, 0);
 assert.equal(statusReport.storage.rowCounts.gmos_failure_events >= testProfileFailures.length, true);
@@ -8076,7 +8201,7 @@ try {
   assert.equal(status.status, 200);
   assert.equal(
     ((status.body.report as { storage?: { schemaVersion?: number } }).storage ?? {}).schemaVersion,
-    6,
+    7,
   );
   assert.equal(status.text.includes("mcp fixture failure"), false);
   const httpContextHistorySearch = await postJson(`${httpAddress.url}/search`, {
@@ -10289,7 +10414,7 @@ const cliStatusPayload = JSON.parse(cliStatus.stdout) as {
   failureSummary?: { inspectedFailureCount?: number };
   hostCompatibility?: { level?: string };
 };
-assert.equal(cliStatusPayload.storage?.schemaVersion, 6);
+assert.equal(cliStatusPayload.storage?.schemaVersion, 7);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_memories ?? 0) > 0);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_associations ?? 0) > 0);
 assert.equal(cliStatusPayload.storage?.searchIndex?.status, "ok");
@@ -10338,7 +10463,7 @@ assert.equal(gym.roadmapResult.status, "clear");
 assert.equal(gym.runManifest.dbPathMode, "memory");
 assert.equal(gym.runManifest.package.name, packageJson.name);
 assert.equal(gym.runManifest.package.version, packageJson.version);
-assert.equal(gym.runManifest.sqliteSchemaVersion, 6);
+assert.equal(gym.runManifest.sqliteSchemaVersion, 7);
 assert.equal(gym.runManifest.git.branch, expectedGit.branch);
 assert.equal(gym.runManifest.git.sha, expectedGit.sha);
 assert.equal(gym.runManifest.git.dirty, expectedGit.dirty);
@@ -10351,7 +10476,7 @@ assert.match(renderedGym, /gmOS Memory Gym Report/);
 assert.match(renderedGym, /Coverage Matrix/);
 assert.match(renderedGym, /Run Manifest/);
 assert.match(renderedGym, /Package: @ghast\/memory@/);
-assert.match(renderedGym, /SQLite schema: 6/);
+assert.match(renderedGym, /SQLite schema: 7/);
 const externalBenchmarkJsonl = [
   JSON.stringify({
     id: "project-next-step",
@@ -12277,7 +12402,7 @@ for (const [host, expectedLevel] of [
   };
   assert.equal(doctorJson.encrypted, false);
   assert.equal(doctorJson.schema?.dialect, "sqlite");
-  assert.equal(doctorJson.schema?.version, 6);
+  assert.equal(doctorJson.schema?.version, 7);
   assert.equal(doctorJson.readAudit?.status, "ok");
   assert.equal(doctorJson.readAudit?.schema, "gmos.read_audit_snapshot.v1");
   assert.equal((doctorJson.readAudit?.tableCount ?? 0) >= 10, true);

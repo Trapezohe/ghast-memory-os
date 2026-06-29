@@ -403,7 +403,7 @@ try {
       assert.equal(memoryGym.runManifest.package.name, installedPackage.name);
       assert.equal(memoryGym.runManifest.package.version, installedPackage.version);
       assert.notEqual(memoryGym.runManifest.package.name, "host-app-should-not-leak");
-      assert.equal(memoryGym.runManifest.sqliteSchemaVersion, 6);
+      assert.equal(memoryGym.runManifest.sqliteSchemaVersion, 7);
       const releaseGate = await runMemoryReleaseGate({
         generatedSeeds: 1,
         scaleSizes: [10],
@@ -458,7 +458,7 @@ try {
       });
       assert.equal(status.package.name, installedPackage.name);
       assert.equal(status.package.version, installedPackage.version);
-      assert.equal(status.storage.schemaVersion, 6);
+      assert.equal(status.storage.schemaVersion, 7);
       assert.equal(status.storage.searchIndex.status, "ok");
       assert.equal(status.storage.searchIndex.missingEntryCount, 0);
       assert.equal(status.hostCompatibility.level, "L4");
@@ -1100,7 +1100,7 @@ try {
   const doctor = JSON.parse(bin.stdout);
   assert.equal(doctor.encrypted, false);
   assert.equal(doctor.schema.dialect, "sqlite");
-  assert.equal(doctor.schema.version, 6);
+  assert.equal(doctor.schema.version, 7);
   assert.equal(doctor.readAudit.status, "ok");
   assert.equal(doctor.readAudit.schema, "gmos.read_audit_snapshot.v1");
   assert.equal(doctor.readAudit.tableCount >= 10, true);
@@ -1467,7 +1467,7 @@ try {
   );
   assert.equal(statusBin.status, 0, statusBin.stderr);
   const status = JSON.parse(statusBin.stdout);
-  assert.equal(status.storage.schemaVersion, 6);
+  assert.equal(status.storage.schemaVersion, 7);
   assert.equal(status.storage.searchIndex.status, "ok");
   assert.equal(status.storage.searchIndex.missingEntryCount, 0);
   assert.equal(status.hostCompatibility.level, "L4");
@@ -1552,7 +1552,7 @@ try {
   assert.equal(quickstartOutput.ok, true);
   assert.equal(quickstartOutput.contextHasPreference, true);
   assert.equal(quickstartOutput.importedSearchHit, true);
-  assert.equal(quickstartOutput.schemaVersion, 6);
+  assert.equal(quickstartOutput.schemaVersion, 7);
   assert.equal(quickstartOutput.hostLevel, "L4");
   const installedHostAdapterExample = path.join(
     consumerDir,

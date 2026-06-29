@@ -535,7 +535,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     ftsAvailableCache = tableExists("gmos_memories_fts");
     vectorIndexAvailableCache = tableExists("gmos_memory_vectors");
     initialized = true;
-    if (previousSchemaVersion < 3) {
+    if (previousSchemaVersion < 7) {
       rebuildAssociations();
     }
     if (previousSchemaVersion < 5) {

@@ -284,6 +284,9 @@ export function associationTagsForBelief(belief: WorldBeliefRecord): string[] {
 
 export function associationCuesForBelief(belief: WorldBeliefRecord): AssociationCue[] {
   const qualifiers = [
+    belief.predicate === "person.relation"
+      ? (metadataDisplayValue(belief.metadata, "relationType") ?? "")
+      : "",
     metadataDisplayValue(belief.metadata, "toolPurpose") ?? "",
     metadataDisplayValue(belief.metadata, "toolScope") ?? "",
   ];
@@ -302,6 +305,9 @@ export function associationSummaryForBelief(belief: WorldBeliefRecord): string {
     belief.subject,
     belief.predicate,
     belief.object,
+    belief.predicate === "person.relation"
+      ? (metadataDisplayValue(belief.metadata, "relationType") ?? "")
+      : "",
     metadataDisplayValue(belief.metadata, "toolPurpose") ?? "",
     metadataDisplayValue(belief.metadata, "toolScope") ?? "",
   ]

@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-export const GMOS_SQLITE_SCHEMA_VERSION = 6;
+export const GMOS_SQLITE_SCHEMA_VERSION = 7;
 
 const READ_AUDIT_REVISION_TABLES = [
   "gmos_evidence_events",
@@ -278,6 +278,12 @@ export function ensureSqliteSchema(db: Database.Database): void {
       VALUES (
         6,
         'read_audit_revision_triggers',
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      );
+    INSERT OR IGNORE INTO gmos_schema_migrations(version, name, applied_at)
+      VALUES (
+        7,
+        'relation_belief_association_projection',
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       );
   `);
