@@ -161,7 +161,7 @@ function normalizedMetadataValue(metadata: Record<string, unknown>, key: string)
   return typeof value === "string" && value.trim().length > 0 ? value.trim().toLowerCase() : null;
 }
 
-function safeMetadataCueValue(value: unknown): string {
+function safeAssociationValue(value: unknown): string {
   if (typeof value !== "string") return "";
   const trimmed = value.trim();
   if (!trimmed || /^\[redacted_[a-z_]+\]$/iu.test(trimmed)) return "";
@@ -169,13 +169,13 @@ function safeMetadataCueValue(value: unknown): string {
 }
 
 function safeMetadataDisplayValue(metadata: Record<string, unknown>, key: string): string {
-  return safeMetadataCueValue(metadata[key]);
+  return safeAssociationValue(metadata[key]);
 }
 
 function safeMetadataCueArray(metadata: Record<string, unknown>, key: string): string[] {
   const value = metadata[key];
   if (!Array.isArray(value)) return [];
-  return value.map(safeMetadataCueValue).filter(Boolean);
+  return value.map(safeAssociationValue).filter(Boolean);
 }
 
 function entityAliases(metadata: Record<string, unknown>): string[] {
@@ -189,7 +189,7 @@ function entitySubjectCues(metadata: Record<string, unknown>): string[] {
   if (!predicate.startsWith("person.")) return [];
   const subject = normalizedMetadataValue(metadata, "subject");
   const subjectValue = subject?.match(/^person\s*[:/]\s*(.+)$/iu)?.[1] ?? subject ?? "";
-  return unique([safeMetadataCueValue(subjectValue), ...safeMetadataCueArray(metadata, "subjectAliases")]);
+  return unique([safeAssociationValue(subjectValue), ...safeMetadataCueArray(metadata, "subjectAliases")]);
 }
 
 export function sourceContentEntityCues(content: string): string[] {
@@ -263,7 +263,7 @@ export function sourceMetadataEntityCues(metadata: Record<string, unknown>): str
   return unique([
     ...subjectCues,
     ...mentionCues,
-    safeMetadataCueValue(record.speaker).toLowerCase(),
+    safeAssociationValue(record.speaker).toLowerCase(),
     ...safeMetadataCueArray(record, "speakerAliases"),
   ]);
 }
@@ -271,30 +271,32 @@ export function sourceMetadataEntityCues(metadata: Record<string, unknown>): str
 export function associationTagsForMemory(memory: MemoryRecord): string[] {
   const tags = [
     memory.kind,
-    memory.scope !== "global" ? memory.scope : "",
-    normalizedMetadataValue(memory.metadata, "actionPolicyKind") ?? "",
-    normalizedMetadataValue(memory.metadata, "predicate") ?? "",
+    memory.scope !== "global" ? safeAssociationValue(memory.scope) : "",
+    safeMetadataDisplayValue(memory.metadata, "actionPolicyKind"),
+    safeMetadataDisplayValue(memory.metadata, "predicate"),
     memory.kind === "boundary" ? "do_not_push" : "",
   ];
   return unique(tags);
 }
 
 export function associationCuesForMemory(memory: MemoryRecord): AssociationCue[] {
+  const scopeCue = memory.scope !== "global" ? safeAssociationValue(memory.scope) : "";
   return [
     ...sourceMetadataEntityCues(memory.metadata).map((cue) => ({ cue, cueKind: "entity" as const })),
     ...sourceContentEntityCues(memory.content).map((cue) => ({ cue, cueKind: "entity" as const })),
     ...metadataTemporalCues(memory.metadata).map((cue) => ({ cue, cueKind: "temporal" as const })),
     { cue: memory.kind, cueKind: "kind" },
-    ...(memory.scope !== "global" ? [{ cue: memory.scope, cueKind: "scope" as const }] : []),
+    ...(scopeCue ? [{ cue: scopeCue, cueKind: "scope" as const }] : []),
     ...extractAssociationCues(memory.content),
   ];
 }
 
 export function associationTagsForBelief(belief: WorldBeliefRecord): string[] {
-  return unique([belief.predicate, "world_belief"]);
+  return unique([safeAssociationValue(belief.predicate), "world_belief"]);
 }
 
 export function associationCuesForBelief(belief: WorldBeliefRecord): AssociationCue[] {
+  const predicateCue = safeAssociationValue(belief.predicate);
   const qualifiers = [
     belief.predicate === "person.relation"
       ? safeMetadataDisplayValue(belief.metadata, "relationType")
@@ -305,7 +307,7 @@ export function associationCuesForBelief(belief: WorldBeliefRecord): Association
   return [
     ...sourceMetadataEntityCues(belief.metadata).map((cue) => ({ cue, cueKind: "entity" as const })),
     ...metadataTemporalCues(belief.metadata).map((cue) => ({ cue, cueKind: "temporal" as const })),
-    { cue: belief.predicate, cueKind: "predicate" },
+    ...(predicateCue ? [{ cue: predicateCue, cueKind: "predicate" as const }] : []),
     ...extractAssociationCues(
       [belief.subject, ...entityAliases(belief.metadata), belief.object, ...qualifiers].join(" "),
     ),
@@ -315,7 +317,7 @@ export function associationCuesForBelief(belief: WorldBeliefRecord): Association
 export function associationSummaryForBelief(belief: WorldBeliefRecord): string {
   return [
     belief.subject,
-    belief.predicate,
+    safeAssociationValue(belief.predicate),
     belief.object,
     belief.predicate === "person.relation"
       ? safeMetadataDisplayValue(belief.metadata, "relationType")
@@ -330,15 +332,16 @@ export function associationSummaryForBelief(belief: WorldBeliefRecord): string {
 export function associationTagsForTaskTrajectory(
   trajectory: TaskTrajectoryAssociationSource,
 ): string[] {
-  return unique(["task_trajectory", trajectory.status, trajectory.taskId ?? ""]);
+  return unique(["task_trajectory", trajectory.status, safeAssociationValue(trajectory.taskId)]);
 }
 
 export function associationCuesForTaskTrajectory(
   trajectory: TaskTrajectoryAssociationSource,
 ): AssociationCue[] {
+  const taskIdCue = safeAssociationValue(trajectory.taskId);
   return [
     { cue: trajectory.status, cueKind: "task" },
-    ...(trajectory.taskId ? [{ cue: trajectory.taskId, cueKind: "task" as const }] : []),
+    ...(taskIdCue ? [{ cue: taskIdCue, cueKind: "task" as const }] : []),
     ...extractAssociationCues(`${trajectory.objective} ${trajectory.summary ?? ""}`),
   ];
 }

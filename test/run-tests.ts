@@ -25,7 +25,11 @@ import {
 import {
   associationCuesForBelief,
   associationCuesForMemory,
+  associationCuesForTaskTrajectory,
   associationSummaryForBelief,
+  associationTagsForBelief,
+  associationTagsForMemory,
+  associationTagsForTaskTrajectory,
   extractAssociationCues,
 } from "../src/kernel/associations.js";
 import { resolveWorldEntitySubject } from "../src/kernel/entities.js";
@@ -308,6 +312,80 @@ assert.equal(
   false,
 );
 assert.equal(redactedBeliefMetadataAssociationSummary.includes("sk-beliefscope"), false);
+const redactedMemoryAssociationTagFixture = {
+  id: "memory-association-redacted-tag-fixture",
+  profileId: "test",
+  kind: "boundary" as const,
+  scope: "api key sk-memoryscope1234567890",
+  content: "Ordinary memory tag audit fixture.",
+  sensitivity: "normal" as const,
+  status: "active" as const,
+  confidence: 0.8,
+  metadata: {
+    actionPolicyKind: "do_not_push",
+    predicate: "[redacted_secret]",
+  },
+  createdAt: "2026-06-20T00:00:00.000Z",
+  updatedAt: "2026-06-20T00:00:00.000Z",
+};
+const redactedMemoryAssociationTags = associationTagsForMemory(redactedMemoryAssociationTagFixture);
+const redactedMemoryAssociationCues = associationCuesForMemory(redactedMemoryAssociationTagFixture);
+assert.equal(redactedMemoryAssociationTags.includes("do_not_push"), true);
+assert.equal(JSON.stringify(redactedMemoryAssociationTags).includes("[redacted_secret]"), false);
+assert.equal(
+  JSON.stringify([...redactedMemoryAssociationTags, ...redactedMemoryAssociationCues]).includes(
+    "sk-memoryscope",
+  ),
+  false,
+);
+const redactedBeliefAssociationTagFixture = {
+  ...redactedBeliefMetadataAssociationFixture,
+  predicate: "api key sk-beliefpredicate123456789",
+};
+assert.deepEqual(associationTagsForBelief(redactedBeliefAssociationTagFixture), [
+  "world_belief",
+]);
+assert.equal(
+  JSON.stringify(associationCuesForBelief(redactedBeliefAssociationTagFixture)).includes(
+    "sk-beliefpredicate",
+  ),
+  false,
+);
+assert.equal(
+  associationSummaryForBelief(redactedBeliefAssociationTagFixture).includes("sk-beliefpredicate"),
+  false,
+);
+const cleanTaskTrajectoryAssociationFixture = {
+  id: "task-trajectory-clean-tag-fixture",
+  profileId: "test",
+  taskId: "CleanTask-7",
+  objective: "Complete ordinary release notes.",
+  status: "completed" as const,
+  summary: "Release notes were completed.",
+  createdAt: "2026-06-20T00:00:00.000Z",
+};
+assert.equal(
+  associationTagsForTaskTrajectory(cleanTaskTrajectoryAssociationFixture).includes("cleantask-7"),
+  true,
+);
+assert.equal(
+  associationCuesForTaskTrajectory(cleanTaskTrajectoryAssociationFixture).some(
+    (cue) => cue.cue === "CleanTask-7",
+  ),
+  true,
+);
+const redactedTaskTrajectoryAssociationFixture = {
+  ...cleanTaskTrajectoryAssociationFixture,
+  id: "task-trajectory-redacted-tag-fixture",
+  taskId: "api key sk-tasktrajectoryid123456789",
+};
+assert.equal(
+  JSON.stringify([
+    ...associationTagsForTaskTrajectory(redactedTaskTrajectoryAssociationFixture),
+    ...associationCuesForTaskTrajectory(redactedTaskTrajectoryAssociationFixture),
+  ]).includes("sk-tasktrajectoryid"),
+  false,
+);
 const relationBeliefAssociationFixture = {
   id: "belief-association-relation-fixture",
   profileId: "test",
