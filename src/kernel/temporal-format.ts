@@ -120,9 +120,43 @@ export function eventTimeSegment(metadata: Record<string, unknown>): string {
   return `; event_time=${eventDate}; event_time_text=${calendarDateText(parsed)}${time}`;
 }
 
+function validityInstantSegment(label: "valid_from" | "valid_to", value: unknown): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) return "";
+  const normalized = normalizeExplicitTemporalInstant(raw);
+  if (!normalized) return "";
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return "";
+  const eventDate = calendarDate(parsed);
+  const hours = parsed.getUTCHours();
+  const minutes = parsed.getUTCMinutes();
+  const seconds = parsed.getUTCSeconds();
+  const time =
+    hours === 0 && minutes === 0 && seconds === 0
+      ? ""
+      : `; ${label}_utc=${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}${
+          seconds === 0 ? "" : `:${String(seconds).padStart(2, "0")}`
+        }`;
+  return `; ${label}=${eventDate}; ${label}_text=${calendarDateText(parsed)}${time}`;
+}
+
+export function validityWindowSegment(metadata: Record<string, unknown>): string {
+  const validFrom = validityInstantSegment("valid_from", metadata.validFrom ?? metadata.valid_from);
+  const validTo = validityInstantSegment(
+    "valid_to",
+    metadata.validTo ?? metadata.valid_to ?? metadata.expiresAt,
+  );
+  return `${validFrom}${validTo}`;
+}
+
 export function temporalMetadataSegment(
   createdAt: string | undefined,
   metadata: Record<string, unknown> = {},
 ): string {
-  return `${observedAtSegment(createdAt)}${relativeEventDateSegment(metadata)}${eventTimeSegment(metadata)}`;
+  return [
+    observedAtSegment(createdAt),
+    relativeEventDateSegment(metadata),
+    eventTimeSegment(metadata),
+    validityWindowSegment(metadata),
+  ].join("");
 }

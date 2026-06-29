@@ -107,6 +107,7 @@ import {
   eventTimeSegment,
   observedAtMetadata,
   relativeEventDateMetadata,
+  temporalMetadataSegment,
 } from "../src/kernel/temporal-format.js";
 import {
   explicitEventTimeMetadata,
@@ -2746,6 +2747,30 @@ assert.equal(
   ),
   true,
 );
+const naturalDateValidityObservation = await naturalDateTemporalMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "natural-date-temporal",
+  role: "user",
+  content: "I need reviewer access valid from May 10, 2023 until January 1, 2999.",
+});
+assert.equal(naturalDateValidityObservation.extraction?.acceptedCandidateCount, 1);
+const naturalDateValidityMemory = await naturalDateTemporalMemory.get({
+  profileId: "natural-date-temporal",
+  id: naturalDateValidityObservation.memoryIds[0]!,
+});
+assert.equal(naturalDateValidityMemory?.metadata.validFrom, "2023-05-10T00:00:00.000Z");
+assert.equal(naturalDateValidityMemory?.metadata.validTo, "2999-01-01T00:00:00.000Z");
+const naturalDateValidityReconstruction = await naturalDateTemporalMemory.reconstructContext({
+  profileId: "natural-date-temporal",
+  query: "What became active on May 10, 2023?",
+  includeTemporalMetadata: true,
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.match(naturalDateValidityReconstruction.contextBlock, /reviewer access/);
+assert.match(naturalDateValidityReconstruction.contextBlock, /valid_from=2023-05-10/);
+assert.match(naturalDateValidityReconstruction.contextBlock, /valid_to=2999-01-01/);
 await naturalDateTemporalMemory.close();
 const directTemporalCueStore = createSqliteMemoryStore({
   path: path.join(tmp, "direct-temporal-cue.db"),
@@ -8991,6 +9016,7 @@ assert.deepEqual(explicitEventTimeMetadata("I attended the design workshop on 7 
 assert.deepEqual(explicitEventTimeMetadata("我在2023年5月7日参加了设计研讨会。"), {
   eventTime: "2023-05-07T00:00:00.000Z",
 });
+assert.deepEqual(explicitEventTimeMetadata("我在2023年5月7日abc参加了设计研讨会。"), {});
 assert.deepEqual(explicitEventTimeMetadata("valid from 2024-06-05 to 2024-07-01"), {});
 assert.deepEqual(explicitEventTimeMetadata("until 2024-06-05"), {});
 assert.deepEqual(explicitEventTimeMetadata("expires on 2024-06-05"), {});
@@ -9011,12 +9037,23 @@ assert.deepEqual(
     validTo: "2026-07-01T00:00:00.000Z",
   },
 );
+assert.deepEqual(
+  explicitTemporalValidityMetadata("valid from May 7, 2023 to June 1, 2023"),
+  {
+    validFrom: "2023-05-07T00:00:00.000Z",
+    validTo: "2023-06-01T00:00:00.000Z",
+  },
+);
 assert.deepEqual(explicitTemporalValidityMetadata("valid from 2026-99-99"), {});
 assert.deepEqual(explicitTemporalValidityMetadata("until tomorrow"), {});
 assert.deepEqual(explicitTemporalValidityMetadata("直到明天"), {});
 assert.deepEqual(explicitTemporalValidityMetadata("until 2026-07-01abc"), {});
 assert.deepEqual(explicitTemporalValidityMetadata("until 2026-07-011"), {});
 assert.deepEqual(explicitTemporalValidityMetadata("until 2026-07-01T00:00:00Zabc"), {});
+assert.deepEqual(explicitTemporalValidityMetadata("until May 7, 2023abc"), {});
+assert.deepEqual(explicitTemporalValidityMetadata("until February 30, 2023"), {});
+assert.deepEqual(explicitTemporalValidityMetadata("until May 2023"), {});
+assert.deepEqual(explicitTemporalValidityMetadata("直到2023年5月7日abc"), {});
 assert.deepEqual(explicitTemporalValidityMetadata("until 2026-07-01."), {
   validTo: "2026-07-01T00:00:00.000Z",
 });
@@ -9033,6 +9070,15 @@ assert.deepEqual(explicitTemporalValidityMetadata("expiration on 2024-06-05"), {
 assert.deepEqual(explicitTemporalValidityMetadata("expiration is 2024-06-05"), {
   validTo: "2024-06-05T00:00:00.000Z",
 });
+assert.deepEqual(explicitTemporalValidityMetadata("expires on May 7, 2023"), {
+  validTo: "2023-05-07T00:00:00.000Z",
+});
+assert.deepEqual(explicitTemporalValidityMetadata("expiration date on 7 May 2023"), {
+  validTo: "2023-05-07T00:00:00.000Z",
+});
+assert.deepEqual(explicitTemporalValidityMetadata("直到2023年5月7日"), {
+  validTo: "2023-05-07T00:00:00.000Z",
+});
 assert.equal(normalizeExplicitTemporalInstant("2026-02-31T00:00:00Z"), null);
 assert.equal(normalizeExplicitTemporalInstant("2026-07-01T10:30:00"), null);
 assert.equal(normalizeExplicitTemporalInstant("May 7, 2023"), "2023-05-07T00:00:00.000Z");
@@ -9044,6 +9090,13 @@ assert.equal(normalizeExplicitTemporalInstant("May 2023"), null);
 assert.equal(
   eventTimeSegment({ eventTime: "2023-05-07T00:00:00.000Z" }),
   "; event_time=2023-05-07; event_time_text=7 May 2023",
+);
+assert.equal(
+  temporalMetadataSegment(undefined, {
+    validFrom: "2023-05-07T00:00:00.000Z",
+    validTo: "2023-06-01T12:30:00.000Z",
+  }),
+  "; valid_from=2023-05-07; valid_from_text=7 May 2023; valid_to=2023-06-01; valid_to_text=1 June 2023; valid_to_utc=12:30",
 );
 assert.deepEqual(temporalCueValuesFromText("What happened on May 7, 2023?"), [
   "2023-05-07T00:00:00.000Z",
@@ -9058,6 +9111,7 @@ assert.deepEqual(temporalCueValuesFromText("在2023-05-07发生了什么？"), [
   "2023-05-07",
 ]);
 assert.deepEqual(temporalCueValuesFromText("What happened near foo2023-05-07?"), []);
+assert.deepEqual(temporalCueValuesFromText("2023年5月7日abc发生了什么？"), []);
 assert.deepEqual(temporalCueValuesFromText("What happened on May 2023?"), []);
 assert.deepEqual(temporalCueValuesFromText("What happened on February 30, 2023?"), []);
 assert.deepEqual(

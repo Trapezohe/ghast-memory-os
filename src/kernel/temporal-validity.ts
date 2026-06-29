@@ -7,9 +7,14 @@ const MONTH_NAME =
 const ORDINAL_DAY = String.raw`\d{1,2}(?:st|nd|rd|th)?`;
 const NATURAL_DATE_VALUE = String.raw`(?:${MONTH_NAME}\s+${ORDINAL_DAY},?\s+\d{4}|${ORDINAL_DAY}\s+${MONTH_NAME},?\s+\d{4})`;
 const HAN_DATE_VALUE = String.raw`\d{4}年\d{1,2}月\d{1,2}日?`;
+const DATE_TEXT_RIGHT_BOUNDARY = String.raw`(?=\p{Script=Han}|[^\p{L}\p{N}_-]|$)`;
+const HAN_DATE_IN_TEXT = String.raw`\d{4}年\d{1,2}月\d{1,2}(?:日${DATE_TEXT_RIGHT_BOUNDARY}|(?!日)${DATE_TEXT_RIGHT_BOUNDARY})`;
 const ENGLISH_EVENT_TIME_VALUE = String.raw`(?:${DATE_OR_INSTANT}|${NATURAL_DATE_VALUE})`;
-const HAN_EVENT_TIME_VALUE = String.raw`(?:${DATE_OR_INSTANT_BEFORE_HAN}|${HAN_DATE_VALUE})`;
-const DATE_OR_INSTANT_IN_TEXT = `${DATE_VALUE}(?=\\p{Script=Han}|[^\\p{L}\\p{N}_-]|$)`;
+const HAN_EVENT_TIME_VALUE = String.raw`(?:${DATE_OR_INSTANT_BEFORE_HAN}|${HAN_DATE_IN_TEXT})`;
+const DATE_OR_INSTANT_IN_TEXT = `${DATE_VALUE}${DATE_TEXT_RIGHT_BOUNDARY}`;
+const NATURAL_DATE_IN_TEXT = `${NATURAL_DATE_VALUE}(?![\\p{L}\\p{N}_-])`;
+const ENGLISH_VALIDITY_TIME_VALUE = String.raw`(?:${DATE_OR_INSTANT}|${NATURAL_DATE_IN_TEXT})`;
+const HAN_VALIDITY_TIME_VALUE = String.raw`(?:${DATE_OR_INSTANT_BEFORE_HAN}|${HAN_DATE_IN_TEXT})`;
 
 const MONTH_ALIASES: Readonly<Record<string, number>> = {
   jan: 1,
@@ -159,7 +164,7 @@ export function temporalCueValuesFromText(text: string): string[] {
   const patterns = [
     new RegExp(DATE_OR_INSTANT_IN_TEXT, "giu"),
     new RegExp(String.raw`\b${NATURAL_DATE_VALUE}\b`, "giu"),
-    new RegExp(HAN_DATE_VALUE, "gu"),
+    new RegExp(HAN_DATE_IN_TEXT, "gu"),
   ];
   for (const [patternIndex, pattern] of patterns.entries()) {
     for (const match of text.matchAll(pattern)) {
@@ -211,20 +216,26 @@ export function explicitEventTimeMetadata(content: string): Record<string, strin
 
 export function explicitTemporalValidityMetadata(content: string): Record<string, string> {
   const fromPatterns = [
-    new RegExp(String.raw`\b(?:valid|active|effective)\s+from\s+(${DATE_OR_INSTANT})`, "iu"),
-    new RegExp(String.raw`\b(?:starting|starts)\s+(?:on\s+)?(${DATE_OR_INSTANT})`, "iu"),
-    new RegExp(String.raw`(?:从|自)\s*(${DATE_OR_INSTANT})\s*(?:开始|起)`, "u"),
+    new RegExp(String.raw`\b(?:valid|active|effective)\s+from\s+(${ENGLISH_VALIDITY_TIME_VALUE})`, "iu"),
+    new RegExp(String.raw`\b(?:starting|starts)\s+(?:on\s+)?(${ENGLISH_VALIDITY_TIME_VALUE})`, "iu"),
+    new RegExp(String.raw`(?:从|自)\s*(${HAN_VALIDITY_TIME_VALUE})\s*(?:开始|起)`, "u"),
   ];
   const toPatterns = [
     new RegExp(
-      String.raw`\b(?:valid|active|effective)\s+from\s+${DATE_OR_INSTANT}\s+(?:to|until|through)\s+(${DATE_OR_INSTANT})`,
+      String.raw`\b(?:valid|active|effective)\s+from\s+${ENGLISH_VALIDITY_TIME_VALUE}\s+(?:to|until|through)\s+(${ENGLISH_VALIDITY_TIME_VALUE})`,
       "iu",
     ),
-    new RegExp(String.raw`\b(?:valid|active|effective)\s+(?:to|until|through)\s+(${DATE_OR_INSTANT})`, "iu"),
-    new RegExp(String.raw`\buntil\s+(${DATE_OR_INSTANT})`, "iu"),
-    new RegExp(String.raw`\b(?:expires?|expired|expiration(?:\s+date)?)(?:\s+(?:is|was|on|at))?\s+(${DATE_OR_INSTANT})`, "iu"),
-    new RegExp(String.raw`(?:有效期到|到期(?:于)?|截止(?:到)?|直到)\s*(${DATE_OR_INSTANT})`, "u"),
-    new RegExp(String.raw`到\s*(${DATE_OR_INSTANT})\s*(?:为止|截止)`, "u"),
+    new RegExp(
+      String.raw`\b(?:valid|active|effective)\s+(?:to|until|through)\s+(${ENGLISH_VALIDITY_TIME_VALUE})`,
+      "iu",
+    ),
+    new RegExp(String.raw`\buntil\s+(${ENGLISH_VALIDITY_TIME_VALUE})`, "iu"),
+    new RegExp(
+      String.raw`\b(?:expires?|expired|expiration(?:\s+date)?)(?:\s+(?:is|was|on|at))?\s+(${ENGLISH_VALIDITY_TIME_VALUE})`,
+      "iu",
+    ),
+    new RegExp(String.raw`(?:有效期到|到期(?:于)?|截止(?:到)?|直到)\s*(${HAN_VALIDITY_TIME_VALUE})`, "u"),
+    new RegExp(String.raw`到\s*(${HAN_VALIDITY_TIME_VALUE})\s*(?:为止|截止)`, "u"),
   ];
   const validFrom = firstMatch(content, fromPatterns);
   const validTo = firstMatch(content, toPatterns);
