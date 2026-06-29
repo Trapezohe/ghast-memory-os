@@ -5,7 +5,7 @@ import type {
   WorldBeliefRecord,
 } from "./types.js";
 import { entityMentionCues } from "./entities.js";
-import { stableNamedPersonSubject } from "./extraction.js";
+import { isReservedSpeakerIdentity, stableNamedPersonSubject } from "./extraction.js";
 import { classifySensitivity } from "./safety.js";
 import { normalizeExplicitTemporalInstant } from "./temporal-validity.js";
 
@@ -178,6 +178,16 @@ function safeMetadataCueArray(metadata: Record<string, unknown>, key: string): s
   return value.map(safeAssociationValue).filter(Boolean);
 }
 
+function sourceSpeakerCue(value: unknown): string {
+  const cue = safeAssociationValue(value);
+  return cue && !isReservedSpeakerIdentity(cue) && stableNamedPersonSubject(cue) ? cue : "";
+}
+
+function sourceSpeakerAliasCues(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(sourceSpeakerCue).filter(Boolean);
+}
+
 function entityAliases(metadata: Record<string, unknown>): string[] {
   const entity = metadata.entityResolution;
   if (!entity || typeof entity !== "object" || Array.isArray(entity)) return [];
@@ -263,8 +273,8 @@ export function sourceMetadataEntityCues(metadata: Record<string, unknown>): str
   return unique([
     ...subjectCues,
     ...mentionCues,
-    safeAssociationValue(record.speaker).toLowerCase(),
-    ...safeMetadataCueArray(record, "speakerAliases"),
+    sourceSpeakerCue(record.speaker).toLowerCase(),
+    ...sourceSpeakerAliasCues(record.speakerAliases),
   ]);
 }
 

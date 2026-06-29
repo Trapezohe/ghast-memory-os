@@ -662,8 +662,10 @@ function textContainsSpecificCue(text: string, cueKeys: string[]): boolean {
 
 function associationPersonCue(association: MemoryAssociationRecord): string | null {
   const personMatch = /^person:([^\s]+)/iu.exec(association.targetSummary);
+  const userMatch = /^user\b/iu.exec(association.targetSummary);
   return (
     personMatch?.[1]?.trim().toLowerCase() ??
+    userMatch?.[0]?.trim().toLowerCase() ??
     sourceContentEntityCues(association.targetSummary)[0] ??
     null
   );

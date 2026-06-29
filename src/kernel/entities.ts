@@ -133,11 +133,16 @@ function projectPhraseSubject(subject: string): string | null {
 
 export function resolveWorldEntitySubject(input: EntityResolutionInput): EntityResolutionResult {
   const originalSubject = compact(input.subject) || "user";
+  const isExplicitUserSubject = key(originalSubject) === "user";
   const explicit = prefixedSubject(originalSubject);
   const projectPhrase = explicit ? null : projectPhraseSubject(originalSubject);
-  const inferredKind = explicit?.kind ?? (projectPhrase ? "project" : kindFromPredicate(input.predicate));
+  const inferredKind = isExplicitUserSubject
+    ? "user"
+    : (explicit?.kind ?? (projectPhrase ? "project" : kindFromPredicate(input.predicate)));
   const rawKey =
-    explicit?.rawKey ?? projectPhrase ?? (inferredKind === "user" ? "user" : originalSubject);
+    isExplicitUserSubject
+      ? "user"
+      : (explicit?.rawKey ?? projectPhrase ?? (inferredKind === "user" ? "user" : originalSubject));
   const entityKey = key(rawKey);
   const canonicalSubject =
     inferredKind && inferredKind !== "user" && entityKey

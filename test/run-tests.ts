@@ -4262,6 +4262,15 @@ const speakerUseToolCandidate = extractRuleMemoryCandidates("Alex: I use Chronos
 })[0];
 assert.equal(speakerUseToolCandidate?.subject, "person:Alex");
 assert.deepEqual(speakerUseToolCandidate?.subjectAliases, ["Alex"]);
+const speakerAliasUseToolCandidate = extractRuleMemoryCandidates(
+  "Mira: I use Chronos for travel planning.",
+  {
+    speaker: "Mira Stone",
+    speakerAliases: ["current_user", "self", "me", "user", "Mira"],
+  },
+)[0];
+assert.equal(speakerAliasUseToolCandidate?.subject, "person:Mira Stone");
+assert.deepEqual(speakerAliasUseToolCandidate?.subjectAliases, ["Mira Stone", "Mira"]);
 assert.equal(extractRuleMemoryCandidates("My current browser is Chrome.")[0]?.object, "Chrome");
 for (const invalidWorkAs of [
   "I work as unknown.",
@@ -4985,10 +4994,89 @@ function rulesReportWorldBeliefSubject(id: string, profileId = "rules_report"): 
     db.close();
   }
 }
+function rulesReportMemoryMetadata(id: string, profileId = "rules_report"): Record<string, unknown> {
+  const db = new Database(rulesReportPath, { readonly: true });
+  try {
+    const row = db
+      .prepare(
+        `SELECT metadata_json
+           FROM gmos_memories
+          WHERE profile_id = ? AND id = ?
+          LIMIT 1`,
+      )
+      .get(profileId, id) as { metadata_json: string } | undefined;
+    return JSON.parse(row?.metadata_json ?? "{}") as Record<string, unknown>;
+  } finally {
+    db.close();
+  }
+}
+function rulesReportAssociationCues(profileId: string): string[] {
+  const db = new Database(rulesReportPath, { readonly: true });
+  try {
+    return db
+      .prepare(
+        `SELECT cue
+           FROM gmos_associations
+          WHERE profile_id = ?
+            AND cue_kind = 'entity'
+          ORDER BY cue ASC`,
+      )
+      .all(profileId)
+      .map((row) => String((row as { cue: string }).cue));
+  } finally {
+    db.close();
+  }
+}
 assert.equal(
   rulesReportWorldBeliefSubject(hostAliasSpeakerOnlyReport.worldBeliefIds[0]!),
   "person:mira-stone",
 );
+const speakerAliasPrefixReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_speaker_alias_prefix",
+  role: "user",
+  content: "Mira: I prefer compact planning notes.",
+  metadata: {
+    speaker: "Mira Stone",
+    speakerAliases: ["current_user", "self", "me", "user", "Mira"],
+  },
+});
+assert.equal(speakerAliasPrefixReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(speakerAliasPrefixReport.memoryIds.length, 1);
+assert.equal(speakerAliasPrefixReport.worldBeliefIds.length, 1);
+assert.equal(
+  rulesReportWorldBeliefSubject(
+    speakerAliasPrefixReport.worldBeliefIds[0]!,
+    "rules_report_speaker_alias_prefix",
+  ),
+  "person:mira-stone",
+);
+const speakerAliasPrefixMetadata = rulesReportMemoryMetadata(
+  speakerAliasPrefixReport.memoryIds[0]!,
+  "rules_report_speaker_alias_prefix",
+);
+const speakerAliasPrefixMentions = speakerAliasPrefixMetadata.entityMentions as
+  | Array<{ role?: string; value?: string }>
+  | undefined;
+assert.equal(
+  speakerAliasPrefixMentions?.some(
+    (mention) => mention.role === "source_speaker_alias" && mention.value === "Mira",
+  ),
+  true,
+);
+for (const reservedAlias of ["current_user", "self", "me", "user"]) {
+  assert.equal(
+    speakerAliasPrefixMentions?.some((mention) => mention.value === reservedAlias),
+    false,
+  );
+}
+const speakerAliasPrefixAssociationCues = rulesReportAssociationCues(
+  "rules_report_speaker_alias_prefix",
+).map((cue) => cue.toLowerCase());
+assert.equal(speakerAliasPrefixAssociationCues.includes("mira"), true);
+for (const reservedAlias of ["current_user", "self", "me", "user"]) {
+  assert.equal(speakerAliasPrefixAssociationCues.includes(reservedAlias), false);
+}
 const mismatchedSpeakerPrefixReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report_speaker_mismatch",
@@ -4996,6 +5084,7 @@ const mismatchedSpeakerPrefixReport = await rulesReportMemory.observeWithReport(
   content: "Alex: I prefer compact planning notes.",
   metadata: {
     speaker: "Mira Stone",
+    speakerAliases: ["Mira"],
   },
 });
 assert.equal(mismatchedSpeakerPrefixReport.extraction?.acceptedCandidateCount, 1);
@@ -5020,7 +5109,7 @@ assert.equal(currentUserSpeakerOnlyReport.extraction?.acceptedCandidateCount, 1)
 assert.equal(currentUserSpeakerOnlyReport.worldBeliefIds.length, 1);
 assert.equal(
   rulesReportWorldBeliefSubject(currentUserSpeakerOnlyReport.worldBeliefIds[0]!),
-  "person:user",
+  "user",
 );
 const metadataOnlySpeakerCityReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",

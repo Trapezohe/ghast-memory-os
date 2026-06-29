@@ -13,6 +13,7 @@ import { buildEvidencePathExplanation } from "../kernel/evidence-path.js";
 import {
   extractMemoryCandidatePlan,
   extractRuleMemoryCandidates,
+  isReservedSpeakerIdentity,
   stableNamedPersonSubject,
 } from "../kernel/extraction.js";
 import { reconstructMemoryContext } from "../kernel/reconstruction.js";
@@ -106,7 +107,7 @@ function publicSpeaker(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const speaker = value.trim();
   if (!speaker || speaker.startsWith("[redacted_")) return undefined;
-  if (/^(?:current[-_ ]?user|user|self|me)$/iu.test(speaker)) return undefined;
+  if (isReservedSpeakerIdentity(speaker)) return undefined;
   return classifySensitivity(speaker) === "normal" && stableNamedPersonSubject(speaker)
     ? speaker
     : undefined;
@@ -125,13 +126,21 @@ function speakerKey(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function speakerIdentityKeys(input: { speaker: string; aliases?: unknown }): Set<string> {
+  return new Set([input.speaker, ...publicStringArray(input.aliases)].map(speakerKey));
+}
+
 function shouldRouteBeliefToSpeaker(input: {
   eventContent: string;
   eventMetadata: Record<string, unknown>;
   speaker: string;
 }): boolean {
   const prefix = inferSpeakerPrefix(input.eventContent);
-  if (prefix) return speakerKey(prefix) === speakerKey(input.speaker);
+  const speakerKeys = speakerIdentityKeys({
+    speaker: input.speaker,
+    aliases: input.eventMetadata.speakerAliases,
+  });
+  if (prefix) return speakerKeys.has(speakerKey(prefix));
   const participants = publicStringArray(input.eventMetadata.participants);
   if (new Set(participants.map(speakerKey)).size > 1) return true;
   return participants.length === 0 && hasFirstPersonAnchor(input.eventContent);

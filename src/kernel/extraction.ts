@@ -298,6 +298,8 @@ function personSubjectFieldsForFirstPerson(
     stableNamedPersonSubject(metadata.speaker)
       ? metadata.speaker.trim()
       : "";
+  const speakerAliases = metadataSpeakerAliases(metadata);
+  const speakerKeys = new Set([metadataSpeaker, ...speakerAliases].filter(Boolean).map(entityKey));
   const participantKeys = new Set(
     (Array.isArray(metadata?.participants) ? metadata.participants : [])
       .filter((entry): entry is string => typeof entry === "string" && stableNamedPersonSubject(entry))
@@ -305,10 +307,18 @@ function personSubjectFieldsForFirstPerson(
   );
   const speaker =
     metadataSpeaker &&
-    ((validPrefix && entityKey(validPrefix) === entityKey(metadataSpeaker)) || participantKeys.size > 1)
+    ((validPrefix && speakerKeys.has(entityKey(validPrefix))) || participantKeys.size > 1)
       ? metadataSpeaker
       : validPrefix;
-  return speaker ? { subject: `person:${speaker}`, subjectAliases: [speaker] } : {};
+  return speaker
+    ? {
+        subject: `person:${speaker}`,
+        subjectAliases: uniqueStrings([
+          speaker,
+          ...(speaker === metadataSpeaker ? speakerAliases : []),
+        ]),
+      }
+    : {};
 }
 
 function hasFirstPersonAnchor(text: string): boolean {
@@ -627,10 +637,16 @@ function explicitNonPersonSubject(name: string): boolean {
   return NON_PERSON_SUBJECT_PATTERN.test(normalized);
 }
 
+export function isReservedSpeakerIdentity(name: string): boolean {
+  const normalized = name.trim().replace(/\s+/gu, " ");
+  return /^(?:current[-_ ]?user|user|self|me)$/iu.test(normalized);
+}
+
 export function stableNamedPersonSubject(name: string): boolean {
   const trimmed = name.trim();
   const normalized = trimmed.toLowerCase();
   if (!normalized) return false;
+  if (isReservedSpeakerIdentity(trimmed)) return false;
   if (NON_PERSON_SINGLE_NAMES.has(normalized)) return false;
   if (!/\s/u.test(trimmed) && /\p{Ll}\p{Lu}/u.test(trimmed)) return false;
   return !explicitNonPersonSubject(normalized);
@@ -644,6 +660,25 @@ function entityKey(input: string): string {
     .replace(/_+/gu, "-")
     .replace(/-+/gu, "-")
     .replace(/^-+|-+$/gu, "");
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = normalize(value);
+    const key = normalized.toLowerCase();
+    if (!normalized || seen.has(key)) continue;
+    seen.add(key);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function metadataSpeakerAliases(metadata: Record<string, unknown> | undefined): string[] {
+  return (Array.isArray(metadata?.speakerAliases) ? metadata.speakerAliases : []).filter(
+    (entry): entry is string => typeof entry === "string" && stableNamedPersonSubject(entry),
+  );
 }
 
 function metadataPersonNames(metadata: Record<string, unknown> | undefined): Set<string> {
