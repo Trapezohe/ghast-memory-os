@@ -44,6 +44,13 @@ const KNOWN_MEMORY_KINDS = new Set([
   "task_trajectory",
 ]);
 
+const REPORT_OWNED_METADATA_KEYS = new Set([
+  "entityMentions",
+  "entityResolution",
+  "sourceMetadata",
+  "subjectAliases",
+]);
+
 function extractorName(extractor: MemoryExtractor | undefined): string | undefined {
   if (!extractor) return undefined;
   if (typeof extractor === "function") return extractor.name || undefined;
@@ -76,6 +83,12 @@ function normalizedStringArray(value: unknown): string[] | undefined {
 function publicStringArray(value: unknown): string[] | undefined {
   const output = normalizedStringArray(value)?.map(publicString);
   return output && output.length > 0 ? output : undefined;
+}
+
+function sanitizeCandidateReportMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
+  const sanitized = sanitizePublicPayloadRecord(metadata);
+  for (const key of REPORT_OWNED_METADATA_KEYS) delete sanitized[key];
+  return sanitized;
 }
 
 function subjectKey(input: string): string {
@@ -121,7 +134,7 @@ function snapshotCandidate(candidate: unknown): MemoryExtractionCandidateSnapsho
   const subjectAliases = publicStringArray(record.subjectAliases);
   const metadata =
     record.metadata && typeof record.metadata === "object" && !Array.isArray(record.metadata)
-      ? sanitizePublicPayloadRecord(record.metadata as Record<string, unknown>)
+      ? sanitizeCandidateReportMetadata(record.metadata as Record<string, unknown>)
       : undefined;
   return {
     ...(typeof record.kind === "string" ? { kind: publicString(record.kind) } : {}),

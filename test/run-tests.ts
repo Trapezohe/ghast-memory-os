@@ -3351,6 +3351,15 @@ assert.deepEqual(
     ?.candidate.subjectAliases,
   ["Jordan"],
 );
+const customSubjectAliasAcceptedCandidate = customSubjectAliasReport.extraction?.decisions.find(
+  (decision) => decision.decision === "accepted",
+)?.candidate;
+const customSubjectAliasReportMetadataJson = JSON.stringify(
+  customSubjectAliasAcceptedCandidate?.metadata ?? {},
+);
+assert.equal(customSubjectAliasReportMetadataJson.includes("subjectAliases"), false);
+assert.equal(customSubjectAliasReportMetadataJson.includes("MetadataJordan"), false);
+assert.equal(customSubjectAliasReportMetadataJson.includes("current_user"), false);
 assert.equal(customSubjectAliasReport.memoryIds.length, 1);
 assert.equal(customSubjectAliasReport.worldBeliefIds.length, 1);
 const customSubjectAliasMemoryRow = await customSubjectAliasMemory.get({
