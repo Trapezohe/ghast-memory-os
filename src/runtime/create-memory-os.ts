@@ -238,13 +238,20 @@ function lowLevelKind(input: LowLevelAddMemoryInput): MemoryKind {
 
 function lowLevelSensitivity(input: {
   content: string;
+  scope?: string | undefined;
   sensitivity?: Sensitivity | undefined;
 }): Sensitivity {
   const detected = classifySensitivity(input.content);
-  if (detected === "secret_like" || input.sensitivity === "secret_like") {
-    throw new Error("gmOS low-level mutation rejects secret-like content");
+  const scopeSensitivity =
+    typeof input.scope === "string" ? classifySensitivity(input.scope) : "normal";
+  if (
+    detected === "secret_like" ||
+    scopeSensitivity === "secret_like" ||
+    input.sensitivity === "secret_like"
+  ) {
+    throw new Error("gmOS low-level mutation rejects secret-like content or scope");
   }
-  if (detected === "sensitive") return "sensitive";
+  if (detected === "sensitive" || scopeSensitivity === "sensitive") return "sensitive";
   return input.sensitivity ?? detected;
 }
 
@@ -385,6 +392,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     });
     const sensitivity = lowLevelSensitivity({
       content,
+      scope: input.scope ?? existing.scope,
       sensitivity: input.sensitivity ?? existing.sensitivity,
     });
     const updatedAt = input.updatedAt ?? nowIso();

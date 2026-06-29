@@ -6545,6 +6545,45 @@ await assert.rejects(
     }),
   /person memory/,
 );
+const lowLevelScopeUpdateFixture = await memory.add({
+  profileId: "test",
+  kind: "fact",
+  content: "Low-level scope update fixture starts as normal.",
+});
+const lowLevelBeforeSecretScopeUpdate = await store.rowCounts();
+await assert.rejects(
+  () =>
+    memory.update({
+      profileId: "test",
+      id: lowLevelScopeUpdateFixture.id,
+      scope: "api key sk-lowlevelupdatescope1234567890",
+    }),
+  /secret-like/,
+);
+assert.deepEqual(await store.rowCounts(), lowLevelBeforeSecretScopeUpdate);
+const lowLevelSensitiveScopeUpdate = await memory.update({
+  profileId: "test",
+  id: lowLevelScopeUpdateFixture.id,
+  scope: "SSN 123-45-6789",
+});
+assert.equal(lowLevelSensitiveScopeUpdate?.sensitivity, "sensitive");
+const lowLevelSensitiveScopeUpdateDefault = await memory.search({
+  profileId: "test",
+  query: "scope update fixture",
+});
+assert.equal(
+  lowLevelSensitiveScopeUpdateDefault.some((entry) => entry.id === lowLevelScopeUpdateFixture.id),
+  false,
+);
+const lowLevelSensitiveScopeUpdateIncluded = await memory.search({
+  profileId: "test",
+  query: "scope update fixture",
+  includeSensitive: true,
+});
+assert.equal(
+  lowLevelSensitiveScopeUpdateIncluded.some((entry) => entry.id === lowLevelScopeUpdateFixture.id),
+  true,
+);
 const unsupportedUpdateDbPath = path.join(tmp, "unsupported-update-store.db");
 const unsupportedUpdateBase = createSqliteMemoryStore({ path: unsupportedUpdateDbPath });
 await unsupportedUpdateBase.initialize();
@@ -6757,6 +6796,43 @@ await assert.rejects(
   /secret-like/,
 );
 assert.deepEqual(await store.rowCounts(), lowLevelBeforeSecret);
+const lowLevelBeforeSecretScope = await store.rowCounts();
+await assert.rejects(
+  () =>
+    memory.add({
+      profileId: "test",
+      kind: "fact",
+      content: "Low-level secret scope fixture should not persist.",
+      scope: "api key sk-lowlevelscope1234567890",
+    }),
+  /secret-like/,
+);
+assert.deepEqual(await store.rowCounts(), lowLevelBeforeSecretScope);
+const lowLevelSensitiveScope = await memory.add({
+  profileId: "test",
+  kind: "fact",
+  content: "Low-level sensitive scope fixture should be hidden by default.",
+  scope: "SSN 123-45-6789",
+});
+assert.equal(lowLevelSensitiveScope.sensitivity, "sensitive");
+const lowLevelSensitiveScopeDefault = await memory.search({
+  profileId: "test",
+  query: "sensitive scope fixture",
+});
+assert.equal(
+  lowLevelSensitiveScopeDefault.some((entry) => entry.id === lowLevelSensitiveScope.id),
+  false,
+);
+const lowLevelSensitiveScopeIncluded = await memory.search({
+  profileId: "test",
+  query: "sensitive scope fixture",
+  includeSensitive: true,
+});
+assert.equal(
+  lowLevelSensitiveScopeIncluded.some((entry) => entry.id === lowLevelSensitiveScope.id),
+  true,
+);
+assert.equal(await memory.get({ profileId: "test", id: lowLevelSensitiveScope.id }), null);
 const lowLevelSensitive = await memory.add({
   profileId: "test",
   kind: "fact",
