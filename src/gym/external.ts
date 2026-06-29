@@ -556,21 +556,6 @@ const ANSWER_MONTHS: Record<string, string> = {
   december: "12",
 };
 
-const ANSWER_FULL_MONTHS: Record<string, string> = {
-  january: "01",
-  february: "02",
-  march: "03",
-  april: "04",
-  may: "05",
-  june: "06",
-  july: "07",
-  august: "08",
-  september: "09",
-  october: "10",
-  november: "11",
-  december: "12",
-};
-
 function ordinalSuffixMatchesDay(day: string, suffix: string): boolean {
   const dayNumber = Number(day);
   const teen = dayNumber % 100;
@@ -641,7 +626,7 @@ function dateAnswerMatches(value: string): DateAnswerMatch[] {
     }
   }
   for (const match of value.matchAll(/\b(\d{1,2})(st|nd|rd|th)\s+([A-Za-z]+),?\s+(\d{4})\b/giu)) {
-    const month = ANSWER_FULL_MONTHS[match[3]!.toLowerCase()];
+    const month = ANSWER_MONTHS[match[3]!.toLowerCase()];
     const key =
       month && ordinalSuffixMatchesDay(match[1]!, match[2]!)
         ? calendarDateKey(match[4]!, month, match[1]!)
@@ -651,7 +636,7 @@ function dateAnswerMatches(value: string): DateAnswerMatch[] {
     }
   }
   for (const match of value.matchAll(/\b([A-Za-z]+)\s+(\d{1,2})(st|nd|rd|th),?\s+(\d{4})\b/giu)) {
-    const month = ANSWER_FULL_MONTHS[match[1]!.toLowerCase()];
+    const month = ANSWER_MONTHS[match[1]!.toLowerCase()];
     const key =
       month && ordinalSuffixMatchesDay(match[2]!, match[3]!)
         ? calendarDateKey(match[4]!, month, match[2]!)
@@ -675,7 +660,7 @@ function dateAnswerMatches(value: string): DateAnswerMatch[] {
     }
   }
   for (const match of value.matchAll(/\b(\d{1,2})(st|nd|rd|th)\s+([A-Za-z]+)\b/giu)) {
-    const month = ANSWER_FULL_MONTHS[match[3]!.toLowerCase()];
+    const month = ANSWER_MONTHS[match[3]!.toLowerCase()];
     const key =
       month && ordinalSuffixMatchesDay(match[1]!, match[2]!)
         ? monthDayDateKey(month, match[1]!)
@@ -685,7 +670,7 @@ function dateAnswerMatches(value: string): DateAnswerMatch[] {
     }
   }
   for (const match of value.matchAll(/\b([A-Za-z]+)\s+(\d{1,2})(st|nd|rd|th)\b/giu)) {
-    const month = ANSWER_FULL_MONTHS[match[1]!.toLowerCase()];
+    const month = ANSWER_MONTHS[match[1]!.toLowerCase()];
     const key =
       month && ordinalSuffixMatchesDay(match[2]!, match[3]!)
         ? monthDayDateKey(month, match[2]!)
