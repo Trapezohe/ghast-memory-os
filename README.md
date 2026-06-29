@@ -213,6 +213,10 @@ answer-label/input mismatch, extraction/filtering, retrieval policy filtering,
 reconstruction misses, context composer or budget drops, forbidden context
 inclusion, and convergence failures. `failureStages` counts whether a stage
 appears in a failed case; the per-case taxonomy entries carry the matched terms.
+Suite Markdown reports also include a diagnostic summary of the slowest runs,
+weakest slice scores, and top failure stages/reasons. That summary is derived
+from existing run statistics only; it does not change scoring, adapter behavior,
+or runtime behavior.
 When an expected answer is not an exact substring but is present after simple
 punctuation/spacing/date-format-or-order/number-grouping normalization, the report uses
 `answer_normalization_mismatch` instead of `answer_not_in_input` so adapter

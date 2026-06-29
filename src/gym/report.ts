@@ -43,6 +43,43 @@ function markdownSliceScores(
     : "none";
 }
 
+function weakestSuiteSlices(report: ExternalMemoryBenchmarkSuiteResult, limit = 8): string[] {
+  return report.runs
+    .flatMap((run) =>
+      (run.sliceScores ?? [])
+        .filter((slice) => slice.caseCount > 0)
+        .map((slice) => ({
+          runId: run.id,
+          name: slice.name,
+          caseCount: slice.caseCount,
+          passedCount: slice.passedCount,
+          score: slice.score,
+        })),
+    )
+    .sort(
+      (a, b) =>
+        a.score - b.score ||
+        b.caseCount - a.caseCount ||
+        a.runId.localeCompare(b.runId) ||
+        a.name.localeCompare(b.name),
+    )
+    .slice(0, limit)
+    .map(
+      (slice) =>
+        `- ${markdownCell(slice.runId)} ${markdownCell(slice.name)}: ${slice.passedCount}/${slice.caseCount} score=${slice.score.toFixed(4)}`,
+    );
+}
+
+function slowestSuiteRuns(report: ExternalMemoryBenchmarkSuiteResult, limit = 5): string[] {
+  return [...report.runs]
+    .sort((a, b) => b.durationMs - a.durationMs || a.id.localeCompare(b.id))
+    .slice(0, limit)
+    .map(
+      (run) =>
+        `- ${markdownCell(run.id)}: ${(run.durationMs / 1000).toFixed(1)}s, score=${run.score.toFixed(4)}, cases=${run.passedCount}/${run.caseCount}`,
+    );
+}
+
 export function renderMemoryGymMarkdown(report: MemoryGymResult): string {
   return [
     "# gmOS Memory Gym Report",
@@ -195,6 +232,8 @@ export function renderExternalMemoryBenchmarkMarkdown(
 export function renderExternalMemoryBenchmarkSuiteMarkdown(
   report: ExternalMemoryBenchmarkSuiteResult,
 ): string {
+  const slowRuns = slowestSuiteRuns(report);
+  const weakSlices = weakestSuiteSlices(report);
   return [
     "# gmOS External Benchmark Suite",
     "",
@@ -207,6 +246,19 @@ export function renderExternalMemoryBenchmarkSuiteMarkdown(
     `Warnings: ${report.totalWarningCount}`,
     `Failure reasons: ${markdownCounters(report.totalFailureReasons)}`,
     `Failure stages: ${markdownCounters(report.totalFailureStages)}`,
+    "",
+    "## Diagnostic Summary",
+    "",
+    "This section is derived from existing run statistics. It does not change scoring, adapter behavior, or runtime behavior.",
+    "",
+    "Slowest runs:",
+    ...(slowRuns.length ? slowRuns : ["- none"]),
+    "",
+    "Weakest slices:",
+    ...(weakSlices.length ? weakSlices : ["- none"]),
+    "",
+    `Top failure stages: ${markdownCounters(report.totalFailureStages.slice(0, 5))}`,
+    `Top failure reasons: ${markdownCounters(report.totalFailureReasons.slice(0, 5))}`,
     "",
     "## Run Manifest",
     "",

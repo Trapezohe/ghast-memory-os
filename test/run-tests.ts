@@ -11410,6 +11410,17 @@ assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.r
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Weighted score:/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Failure reasons: expected_all_missing=1/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Failure stages: answer_not_in_input=1/);
+assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /## Diagnostic Summary/);
+assert.match(
+  renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result),
+  /does not change scoring, adapter behavior, or runtime behavior/,
+);
+assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Slowest runs:/);
+assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Weakest slices:/);
+assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Top failure stages: answer_not_in_input=1/);
+assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Top failure reasons: expected_all_missing=1/);
+assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /- passing: .* score=1\.0000, cases=\d+\/\d+/);
+assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /- passing gmos:project_procedure: 1\/1 score=1\.0000/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Slice scores/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /gmos:project_procedure=1\/1 score=1\.0000/);
 const externalBenchmarkCwd = path.join(tmp, "external-benchmark-cwd");
