@@ -13,3 +13,5 @@ references for host applications.
 - [Migration guide](./MIGRATION.md): host snapshot import, profile backup, and
   safe rollout steps.
 
+Runnable examples are shipped under `examples/`: `quickstart.mjs`,
+`host-adapter.mjs`, and `http-adapter.mjs`.

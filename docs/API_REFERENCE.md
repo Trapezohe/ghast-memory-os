@@ -115,6 +115,12 @@ The local HTTP adapter exposes:
 Use an auth token for local service boundaries that are reachable by more than
 one process.
 
+Run `examples/http-adapter.mjs` for a minimal host-style smoke test. The example
+starts an ephemeral localhost server with bearer auth, rejects unauthenticated
+non-health requests, records a preference through `/observe`, prepares context
+through `/prepare`, reads `/status`, and deletes its temporary plaintext SQLite
+database.
+
 ## Diagnostics Contract
 
 `getGmosRuntimeInfo()`, `gmos version`, `gmos doctor`, `/runtime-info`,

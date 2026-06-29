@@ -14,7 +14,7 @@ npm run gate:pr
 The gate runs:
 
 - TypeScript build and unit/integration tests;
-- quickstart and host adapter examples;
+- quickstart, host adapter, and HTTP adapter examples;
 - no-benchmark-special-casing scan;
 - consumer install smoke;
 - deterministic Memory Gym smoke;
@@ -91,4 +91,3 @@ state, reconstruction, context composition, safety, action policy, or feedback.
   state.
 - Do not improve scores by weakening secret, incognito, PERSON, forget,
   sensitive, or do-not-push gates.
-

@@ -10,8 +10,8 @@ npm ci
 npm run gate:pr
 ```
 
-`gate:pr` is the required PR gate. It runs build/test, quickstart and host
-examples, the core no-benchmark-special-casing scan, consumer install smoke,
+`gate:pr` is the required PR gate. It runs build/test, published examples,
+the core no-benchmark-special-casing scan, consumer install smoke,
 deterministic Memory Gym smoke, external fixtures, the SDK release gate, scale
 smoke, and a pack dry run.
 

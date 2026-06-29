@@ -164,8 +164,8 @@ node dist/cli/gmos.js repair --db ./gmos.db --search-index
 node dist/cli/gmos.js repair --db ./gmos.db --associations
 ```
 
-`gate:pr` is the local and CI PR gate. It runs build/test, quickstart and host
-examples, the core no-benchmark-special-casing scan, consumer install smoke,
+`gate:pr` is the local and CI PR gate. It runs build/test, published examples,
+the core no-benchmark-special-casing scan, consumer install smoke,
 deterministic Memory Gym smoke, external fixtures, the SDK release gate, scale
 smoke, and a pack dry run.
 
@@ -684,6 +684,7 @@ Run the examples after installing dependencies:
 ```bash
 npm run examples:quickstart
 npm run examples:host-adapter
+npm run examples:http-adapter
 ```
 
 `examples/quickstart.mjs` creates a temporary plaintext SQLite store, observes a user
@@ -696,6 +697,13 @@ host memory snapshot into gmOS, skip secret-like and person-routed memories,
 prepare evidence-aware context, and archive stale imported memories on the next
 sync. Use this path when the host already has a memory table and needs gmOS as
 the context/action runtime without replacing storage in one step.
+
+`examples/http-adapter.mjs` starts a local ephemeral HTTP server with bearer
+auth, verifies unauthenticated non-health requests are rejected, observes a
+preference through `/observe`, prepares evidence-backed context through
+`/prepare`, reads a content-free `/status` report, and removes its temporary
+plaintext SQLite database. Use this path when the host process cannot import
+the Node SDK directly.
 
 ## Low-Level Compatibility APIs
 

@@ -1709,6 +1709,28 @@ try {
   assert.equal(hostAdapterOutput.firstSync.skippedCount, 2);
   assert.equal(hostAdapterOutput.prepared.contextHasBoundary, true);
   assert.equal(hostAdapterOutput.secondSync.archivedCount, 1);
+  const installedHttpAdapterExample = path.join(
+    consumerDir,
+    "node_modules",
+    "@ghast",
+    "memory",
+    "examples",
+    "http-adapter.mjs",
+  );
+  assert.equal(existsSync(installedHttpAdapterExample), true);
+  const httpAdapterExample = spawnSync(process.execPath, [installedHttpAdapterExample], {
+    cwd: consumerDir,
+    encoding: "utf8",
+  });
+  assert.equal(httpAdapterExample.status, 0, httpAdapterExample.stderr);
+  const httpAdapterOutput = JSON.parse(httpAdapterExample.stdout);
+  assert.equal(httpAdapterOutput.ok, true);
+  assert.equal(httpAdapterOutput.authRequired, true);
+  assert.equal(httpAdapterOutput.unauthenticatedRuntimeInfoStatus, 401);
+  assert.equal(httpAdapterOutput.runtimeInfoSchema, "gmos.runtime_info.v1");
+  assert.equal(httpAdapterOutput.preparedHasPreference, true);
+  assert.equal(httpAdapterOutput.statusSchemaVersion, 7);
+  assert.equal(httpAdapterOutput.hostLevel, "L4");
   console.log("[gmos-consumer] install smoke passed");
 } finally {
   rmSync(tmp, { recursive: true, force: true });
