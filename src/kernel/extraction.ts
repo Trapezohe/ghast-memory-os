@@ -1071,16 +1071,20 @@ function namedPersonRelationCandidate(
   const utterance = stripSpeakerPrefix(text);
   if (isQuestionLike(utterance)) return null;
   const namePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}`;
-  const relationPattern = String.raw`dog|cat|pet|daughter|son|child|kid|partner|spouse|wife|husband`;
+  const relationPattern = String.raw`[Dd]og|[Cc]at|[Pp]et|[Dd]aughter|[Ss]on|[Cc]hild|[Kk]id|[Pp]artner|[Ss]pouse|[Ww]ife|[Hh]usband`;
   const englishNameCore = String.raw`\p{Lu}[\p{L}0-9_-]{0,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{0,30}){0,2}`;
   const englishName = String.raw`(?:${englishNameCore}|"${englishNameCore}"|'${englishNameCore}')`;
-  const match = new RegExp(
+  const possessiveMatch = new RegExp(
     String.raw`^\s*(${namePattern})[’']s\s+(${relationPattern})(?:'s)?\s+(?:[Nn]ame\s+[Ii]s|[Ii]s\s+[Nn]amed|[Ii]s\s+[Cc]alled)\s+(${englishName})\s*[.!?]?\s*$`,
-    "iu",
+    "u",
   ).exec(utterance);
-  const name = match?.[1]?.trim();
-  const relationType = match?.[2]?.trim();
-  const object = projectBeliefObject(match?.[3]?.replace(/^["']|["']$/gu, ""));
+  const hasMatch = new RegExp(
+    String.raw`^\s*(${namePattern})\s+has\s+(?:an?\s+)?(${relationPattern})\s+(?:named|called)\s+(${englishName})\s*[.!?]?\s*$`,
+    "u",
+  ).exec(utterance);
+  const name = (possessiveMatch?.[1] ?? hasMatch?.[1])?.trim();
+  const relationType = (possessiveMatch?.[2] ?? hasMatch?.[2])?.trim().toLowerCase();
+  const object = projectBeliefObject((possessiveMatch?.[3] ?? hasMatch?.[3])?.replace(/^["']|["']$/gu, ""));
   if (!name || !relationType || !object || !stableNamedPersonSubject(name)) return null;
   if (!metadataParticipantsConfirmNamedPerson(name, metadata)) return null;
   return {
@@ -1109,6 +1113,10 @@ function firstPersonNamedRelationCandidate(
     String.raw`^\s*[Mm]y\s+(dog|cat|pet|daughter|son|child|kid|partner|spouse|wife|husband)(?:'s)?\s+(?:[Nn]ame\s+[Ii]s|[Ii]s\s+[Nn]amed|[Ii]s\s+[Cc]alled)\s+(${englishName})\s*[.!?]?\s*$`,
     "u",
   ).exec(utterance);
+  const englishHave = new RegExp(
+    String.raw`^\s*I\s+have\s+(?:an?\s+)?(dog|cat|pet|daughter|son|child|kid|partner|spouse|wife|husband)\s+(?:named|called)\s+(${englishName})\s*[.!?]?\s*$`,
+    "u",
+  ).exec(utterance);
   const chineseExplicit = new RegExp(
     String.raw`^\s*我的\s*(狗|猫|宠物|女儿|儿子|孩子|伴侣|配偶|妻子|丈夫)\s*(?:名叫|名字是|姓名是)\s*(${chineseExplicitName})\s*[。.!?]?\s*$`,
     "u",
@@ -1117,8 +1125,8 @@ function firstPersonNamedRelationCandidate(
     String.raw`^\s*我的\s*(狗|猫|宠物|女儿|儿子|孩子|伴侣|配偶|妻子|丈夫)\s*叫\s*(${latinName})\s*[。.!?]?\s*$`,
     "u",
   ).exec(utterance);
-  const relationType = english?.[1] ?? chineseExplicit?.[1] ?? chineseCalled?.[1];
-  const rawName = english?.[2] ?? chineseExplicit?.[2] ?? chineseCalled?.[2];
+  const relationType = english?.[1] ?? englishHave?.[1] ?? chineseExplicit?.[1] ?? chineseCalled?.[1];
+  const rawName = english?.[2] ?? englishHave?.[2] ?? chineseExplicit?.[2] ?? chineseCalled?.[2];
   const object = projectBeliefObject(rawName?.replace(/^["']|["']$/gu, ""));
   if (!relationType || !object) return null;
   return {
