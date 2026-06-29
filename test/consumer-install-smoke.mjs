@@ -1753,6 +1753,42 @@ try {
   assert.equal(mcpRouterOutput.preparedHasPreference, true);
   assert.equal(mcpRouterOutput.sensitiveOverrideRejected, true);
   assert.equal(mcpRouterOutput.evidencePathSchema, "gmos.evidence_path_explanation.v1");
+  const installedExternalMiniExample = path.join(
+    consumerDir,
+    "node_modules",
+    "@ghast",
+    "memory",
+    "examples",
+    "external-mini-benchmark.mjs",
+  );
+  const installedExternalMiniFixture = path.join(
+    consumerDir,
+    "node_modules",
+    "@ghast",
+    "memory",
+    "examples",
+    "external-mini-fixture.jsonl",
+  );
+  assert.equal(existsSync(installedExternalMiniExample), true);
+  assert.equal(existsSync(installedExternalMiniFixture), true);
+  const externalMiniExample = spawnSync(process.execPath, [installedExternalMiniExample], {
+    cwd: consumerDir,
+    encoding: "utf8",
+  });
+  assert.equal(externalMiniExample.status, 0, externalMiniExample.stderr);
+  const externalMiniOutput = JSON.parse(externalMiniExample.stdout);
+  assert.equal(externalMiniOutput.ok, true);
+  assert.equal(externalMiniOutput.datasetFormat, "gmos.external_long_memory_qa.jsonl");
+  assert.equal(externalMiniOutput.deterministicOnly, true);
+  assert.equal(externalMiniOutput.officialProtocol, "not_run");
+  assert.equal(externalMiniOutput.comparableToOfficialScore, false);
+  assert.equal(externalMiniOutput.caseCount, 3);
+  assert.equal(externalMiniOutput.passedCount, 3);
+  assert.equal(externalMiniOutput.strictScore, 1);
+  assert.equal(externalMiniOutput.normalizedEvidenceScore, 1);
+  assert.equal(externalMiniOutput.failureReasonCount, 0);
+  assert.equal(externalMiniOutput.sliceScores["mini:current_state"], 1);
+  assert.equal(externalMiniOutput.sliceScores["mini:reconstruction"], 1);
   console.log("[gmos-consumer] install smoke passed");
 } finally {
   rmSync(tmp, { recursive: true, force: true });

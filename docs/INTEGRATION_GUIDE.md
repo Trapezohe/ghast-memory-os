@@ -146,6 +146,16 @@ For local SDK confidence, run:
 npm run gate:pr
 ```
 
+For a small external-adapter smoke that ships with the package, run:
+
+```bash
+npm run examples:external-mini
+```
+
+This uses the native deterministic mini fixture under `examples/` and reports
+score semantics explicitly. It is useful for checking reproducibility wiring,
+not for claiming official external benchmark performance.
+
 For a host-specific compatibility check, export the host status report and run:
 
 ```bash

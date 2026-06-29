@@ -14,7 +14,8 @@ npm run gate:pr
 The gate runs:
 
 - TypeScript build and unit/integration tests;
-- quickstart, host adapter, HTTP adapter, and MCP router examples;
+- quickstart, host adapter, HTTP adapter, MCP router, and external mini
+  examples;
 - no-benchmark-special-casing scan;
 - consumer install smoke;
 - deterministic Memory Gym smoke;
@@ -52,6 +53,18 @@ reports. They must not write expected answers, category labels, `has_answer`,
 dataset names, case IDs, or forbidden answers into runtime memory or evidence.
 
 Example:
+
+```bash
+npm run examples:external-mini
+```
+
+The external mini example uses `examples/external-mini-fixture.jsonl` and the
+native deterministic adapter. It is a local smoke test for report generation,
+score semantics, slice scores, and failure taxonomy wiring. It is not an
+official benchmark score and is not comparable to LongMemEval or LoCoMo
+leaderboards.
+
+Larger local run:
 
 ```bash
 gmos gym external \

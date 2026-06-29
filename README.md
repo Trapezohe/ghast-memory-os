@@ -687,6 +687,7 @@ npm run examples:quickstart
 npm run examples:host-adapter
 npm run examples:http-adapter
 npm run examples:mcp-router
+npm run examples:external-mini
 ```
 
 `examples/quickstart.mjs` creates a temporary plaintext SQLite store, observes a user
@@ -712,6 +713,12 @@ public package exports. It checks `memory.runtime_info`, observes a preference,
 prepares evidence-backed context, verifies public MCP rejects sensitive override
 switches, explains the evidence path without returning a prompt block, and
 prints only sanitized integration metadata.
+
+`examples/external-mini-benchmark.mjs` runs the native deterministic external
+mini fixture in `examples/external-mini-fixture.jsonl`. It is a reproducibility
+smoke for the external adapter report path, not an official benchmark score or
+SOTA claim. The output keeps only aggregate scores, score semantics, and slice
+scores.
 
 ## Low-Level Compatibility APIs
 

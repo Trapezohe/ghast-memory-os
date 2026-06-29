@@ -93,7 +93,8 @@
     "examples:host-adapter": "node examples/host-adapter.mjs",
     "examples:http-adapter": "node examples/http-adapter.mjs",
     "examples:mcp-router": "node examples/mcp-router.mjs",
-    "check": "npm run build && npm test && npm run examples:quickstart && npm run examples:host-adapter && npm run examples:http-adapter && npm run examples:mcp-router",
+    "examples:external-mini": "node examples/external-mini-benchmark.mjs",
+    "check": "npm run build && npm test && npm run examples:quickstart && npm run examples:host-adapter && npm run examples:http-adapter && npm run examples:mcp-router && npm run examples:external-mini",
     "prepare": "npm run build",
     "prepack": "npm run build",
     "gym": "node --import tsx src/cli/gmos.ts gym run --db :memory:"
