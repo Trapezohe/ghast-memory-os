@@ -352,6 +352,8 @@ function beliefSubjectAliases(belief: WorldBeliefRecord): string[] {
 }
 
 function canonicalSubjectForBelief(belief: WorldBeliefRecord): string {
+  const storedSubject = belief.subject.trim();
+  if (storedSubject) return storedSubject;
   const existing = beliefEntityResolutionMetadata(belief).canonicalSubject;
   return typeof existing === "string" && existing.trim()
     ? existing.trim()
@@ -360,6 +362,17 @@ function canonicalSubjectForBelief(belief: WorldBeliefRecord): string {
         predicate: belief.predicate,
         aliases: beliefSubjectAliases(belief),
       }).canonicalSubject;
+}
+
+function publicEntityResolutionMetadata(
+  resolution: ReturnType<typeof resolveWorldEntitySubject>,
+): Record<string, unknown> {
+  const entityResolution = sanitizePublicPayloadRecord({
+    entityResolution: entityResolutionMetadata(resolution),
+  }).entityResolution;
+  return entityResolution && typeof entityResolution === "object" && !Array.isArray(entityResolution)
+    ? (entityResolution as Record<string, unknown>)
+    : {};
 }
 
 function worldBeliefMetadata(input: {
@@ -374,7 +387,7 @@ function worldBeliefMetadata(input: {
     previousEntity && typeof previousEntity === "object" && !Array.isArray(previousEntity)
       ? stringArrayFromUnknown((previousEntity as Record<string, unknown>).aliases)
       : [];
-  const entityResolution = entityResolutionMetadata({
+  const entityResolution = publicEntityResolutionMetadata({
     ...input.resolution,
     aliases: uniqueStrings([...previousAliases, ...input.resolution.aliases]),
   });

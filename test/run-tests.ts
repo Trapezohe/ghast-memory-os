@@ -3995,6 +3995,98 @@ try {
   sensitiveObjectDb.close();
 }
 await sensitiveObjectExtractorMemory.close();
+
+const sensitiveAuxiliaryExtractorStore = createSqliteMemoryStore({
+  path: path.join(tmp, "sensitive-auxiliary-extractor.db"),
+});
+const sensitiveAuxiliaryExtractorMemory = createMemoryOS({
+  profileId: "sensitive_auxiliary_extractor",
+  store: sensitiveAuxiliaryExtractorStore,
+  extractor: () => [
+    {
+      kind: "project",
+      content: "Sensitive auxiliary project current milestone is public paperwork.",
+      confidence: 0.93,
+      predicate: "project.state",
+      subject: "Project 123-45-6789",
+      subjectAliases: ["Alias 123-45-6789"],
+      object: "public paperwork",
+      source: "therapy intake note",
+      cardinality: "single",
+    },
+  ],
+});
+const sensitiveAuxiliaryExtractionReport = await sensitiveAuxiliaryExtractorMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "sensitive_auxiliary_extractor",
+  role: "user",
+  content: "The project milestone is ordinary, but the structured fields are sensitive.",
+});
+assert.equal(sensitiveAuxiliaryExtractionReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(sensitiveAuxiliaryExtractionReport.memoryIds.length, 1);
+assert.equal(sensitiveAuxiliaryExtractionReport.worldBeliefIds.length, 1);
+const sensitiveAuxiliaryMemoryId = sensitiveAuxiliaryExtractionReport.memoryIds[0]!;
+assert.equal(
+  await sensitiveAuxiliaryExtractorMemory.get({
+    profileId: "sensitive_auxiliary_extractor",
+    id: sensitiveAuxiliaryMemoryId,
+  }),
+  null,
+);
+assert.equal(
+  (
+    await sensitiveAuxiliaryExtractorMemory.search({
+      profileId: "sensitive_auxiliary_extractor",
+      query: "public paperwork",
+    })
+  ).length,
+  0,
+);
+const sensitiveAuxiliaryMemory = await sensitiveAuxiliaryExtractorMemory.get({
+  profileId: "sensitive_auxiliary_extractor",
+  id: sensitiveAuxiliaryMemoryId,
+  includeSensitive: true,
+});
+assert.equal(sensitiveAuxiliaryMemory?.sensitivity, "sensitive");
+assert.equal(sensitiveAuxiliaryMemory?.metadata.subject, "Project [redacted_sensitive]");
+assert.deepEqual(sensitiveAuxiliaryMemory?.metadata.subjectAliases, [
+  "Alias [redacted_sensitive]",
+]);
+assert.equal(sensitiveAuxiliaryMemory?.metadata.source, "[redacted_sensitive]");
+const sensitiveAuxiliaryMetadataJson = JSON.stringify(sensitiveAuxiliaryMemory?.metadata ?? {});
+assert.equal(sensitiveAuxiliaryMetadataJson.includes("123-45-6789"), false);
+assert.equal(sensitiveAuxiliaryMetadataJson.includes("therapy intake note"), false);
+const sensitiveAuxiliaryDb = new Database(path.join(tmp, "sensitive-auxiliary-extractor.db"), {
+  readonly: true,
+});
+try {
+  const sensitiveAuxiliaryBeliefMetadataRow = sensitiveAuxiliaryDb
+    .prepare(
+      `SELECT metadata_json
+         FROM gmos_world_beliefs
+        WHERE profile_id = ?
+          AND source_memory_id = ?`,
+    )
+    .get("sensitive_auxiliary_extractor", sensitiveAuxiliaryMemoryId) as
+    | { metadata_json: string }
+    | undefined;
+  const sensitiveAuxiliaryBeliefMetadata = JSON.parse(
+    sensitiveAuxiliaryBeliefMetadataRow?.metadata_json ?? "{}",
+  ) as Record<string, unknown>;
+  assert.equal(sensitiveAuxiliaryBeliefMetadata.subject, "Project [redacted_sensitive]");
+  assert.deepEqual(sensitiveAuxiliaryBeliefMetadata.subjectAliases, [
+    "Alias [redacted_sensitive]",
+  ]);
+  assert.equal(sensitiveAuxiliaryBeliefMetadata.source, "[redacted_sensitive]");
+  assert.equal(JSON.stringify(sensitiveAuxiliaryBeliefMetadata).includes("123-45-6789"), false);
+  assert.equal(
+    JSON.stringify(sensitiveAuxiliaryBeliefMetadata).includes("therapy intake note"),
+    false,
+  );
+} finally {
+  sensitiveAuxiliaryDb.close();
+}
+await sensitiveAuxiliaryExtractorMemory.close();
 await fallbackExtractorMemory.close();
 await suppressRulesMemory.close();
 await extractorMemory.close();

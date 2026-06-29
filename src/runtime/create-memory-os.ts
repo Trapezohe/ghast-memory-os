@@ -102,19 +102,63 @@ function sanitizeExternalMemoryMetadata(
 
 function structuredCandidateMetadata(candidate: MemoryExtractionCandidate): Record<string, unknown> {
   const metadata: Record<string, unknown> = {};
-  if (candidate.object) {
-    const sanitizedObject = sanitizePublicPayloadRecord({ object: candidate.object }).object;
-    if (typeof sanitizedObject === "string" && sanitizedObject.trim()) {
-      metadata.object = sanitizedObject;
-    }
+  for (const [key, value] of [
+    ["actionPolicyKind", candidate.actionPolicyKind],
+    ["cardinality", candidate.cardinality],
+    ["object", candidate.object],
+    ["predicate", candidate.predicate],
+    ["source", candidate.source],
+    ["subject", candidate.subject],
+  ] as const) {
+    const sanitized = publicStructuredStringField(key, value);
+    if (sanitized) metadata[key] = sanitized;
   }
-  if (candidate.cardinality) metadata.cardinality = candidate.cardinality;
+  const subjectAliases = publicStructuredStringArrayField(
+    "subjectAliases",
+    candidate.subjectAliases,
+  );
+  if (subjectAliases) metadata.subjectAliases = subjectAliases;
   return metadata;
 }
 
 function structuredCandidateSensitivity(candidate: MemoryExtractionCandidate): Sensitivity {
-  const objectSensitivity = candidate.object ? classifySensitivity(candidate.object) : "normal";
-  return objectSensitivity;
+  let sensitivity: Sensitivity = "normal";
+  for (const value of [
+    candidate.actionPolicyKind,
+    candidate.cardinality,
+    candidate.eventTime,
+    candidate.object,
+    candidate.predicate,
+    candidate.source,
+    candidate.subject,
+    ...(candidate.subjectAliases ?? []),
+    candidate.validFrom,
+    candidate.validTo,
+  ]) {
+    if (typeof value !== "string") continue;
+    sensitivity = maxSensitivity(sensitivity, classifySensitivity(value));
+    if (sensitivity === "secret_like") return sensitivity;
+  }
+  return sensitivity;
+}
+
+function publicStructuredStringField(key: string, value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const sanitized = sanitizePublicPayloadRecord({ [key]: value })[key];
+  return typeof sanitized === "string" && sanitized.trim().length > 0 ? sanitized : undefined;
+}
+
+function publicStructuredStringArrayField(
+  key: string,
+  values: string[] | undefined,
+): string[] | undefined {
+  if (!values || values.length === 0) return undefined;
+  const sanitized = sanitizePublicPayloadRecord({ [key]: values })[key];
+  if (!Array.isArray(sanitized)) return undefined;
+  const publicValues = sanitized.filter(
+    (value): value is string => typeof value === "string" && value.trim().length > 0,
+  );
+  return publicValues.length > 0 ? publicValues : undefined;
 }
 
 function maxSensitivity(left: Sensitivity, right: Sensitivity): Sensitivity {
@@ -748,6 +792,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     for (const candidate of extraction.candidates) {
       const candidateSensitivity = classifySensitivity(candidate.content);
       const candidateStructuredSensitivity = structuredCandidateSensitivity(candidate);
+      const structuredMetadata = structuredCandidateMetadata(candidate);
       if (
         candidate.kind === "person" ||
         candidateSensitivity === "secret_like" ||
@@ -775,13 +820,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         sourceEventId: evidence.id,
         metadata: {
           ...sanitizeExternalMemoryMetadata(candidate.metadata),
-          ...structuredCandidateMetadata(candidate),
+          ...structuredMetadata,
           sourceRole: event.role,
           ...(Object.keys(eventMetadata).length > 0 ? { sourceMetadata: eventMetadata } : {}),
-          actionPolicyKind: candidate.actionPolicyKind,
-          predicate: candidate.predicate,
-          ...(candidate.subject ? { subject: candidate.subject } : {}),
-          ...(candidate.subjectAliases ? { subjectAliases: candidate.subjectAliases } : {}),
           ...(memoryEntityMentions.length > 0 ? { entityMentions: memoryEntityMentions } : {}),
         },
         createdAt: event.createdAt,
@@ -816,7 +857,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           createdAt: event.createdAt ?? memory.createdAt,
           metadata: {
             ...sanitizeExternalMemoryMetadata(candidate.metadata),
-            ...structuredCandidateMetadata(candidate),
+            ...structuredMetadata,
             sourceRole: event.role,
             ...(Object.keys(eventMetadata).length > 0 ? { sourceMetadata: eventMetadata } : {}),
             ...(beliefEntityMentions.length > 0 ? { entityMentions: beliefEntityMentions } : {}),
