@@ -332,7 +332,7 @@ function isQuestionLike(text: string): boolean {
 
 function hasDurableTemporalSignal(text: string): boolean {
   return (
-    /\b(?:today|tomorrow|yesterday|last|next|since|before|after|daily|weekly|monthly|monday|tuesday|wednesday|thursday|friday|saturday|sunday|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|\d{4}|\d{1,2}:\d{2})\b/iu.test(
+    /\b(?:today|tomorrow|yesterday|last|next|since|before|after|daily|weekly|monthly|weekend|spring|summer|autumn|winter|holiday|vacation|monday|tuesday|wednesday|thursday|friday|saturday|sunday|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|\d{4}|\d{1,2}:\d{2})\b/iu.test(
       text,
     ) || /\d{1,2}\s*(?:分钟|小时|天|周|月|年)/u.test(text)
   );
@@ -340,14 +340,14 @@ function hasDurableTemporalSignal(text: string): boolean {
 
 function hasPersonalWorldEventSignal(text: string): boolean {
   return (
-    /\b(?:went|ran|painted|planning|planned|researching|chose|started|finished|graduated|studying|working|commute|relationship|single|married|identity|transgender|counseling|therapy|mental health|adoption|career|family|kids|children|job|work|school|education|birthday|appointment|meeting|trip|travel|camping|race|support group)\b/iu.test(
+    /\b(?:went|visited|attended|moved\s+to|relocated|booked|reserved|ran|painted|planning|planned|researching|chose|started|finished|graduated|studying|working|commute|relationship|single|married|identity|transgender|counseling|therapy|mental health|adoption|adopted|career|family|kids|children|job|work|school|education|class|course|workshop|conference|birthday|appointment|meeting|trip|travel|flight|hotel|reservation|camping|race|support group)\b/iu.test(
       text,
-    ) || /上学|工作|通勤|家庭|孩子|关系|单身|结婚|身份|心理|咨询|收养|旅行|露营|比赛|支持小组/u.test(text)
+    ) || /上学|工作|通勤|家庭|孩子|关系|单身|结婚|身份|心理|咨询|收养|参加|访问|搬家|预订|预约|课程|研讨会|会议|旅行|航班|酒店|露营|比赛|支持小组/u.test(text)
   );
 }
 
 function hasNamedPersonEventSignal(text: string): boolean {
-  return /\b(?:went|ran|painted|chose|started|finished|graduated|studying|commute|appointment|meeting|trip|travel|camping|race)\b/iu.test(
+  return /\b(?:went|visited|attended|moved\s+to|relocated|booked|reserved|ran|painted|chose|started|finished|graduated|studying|commute|appointment|meeting|class|course|workshop|conference|trip|travel|flight|hotel|reservation|camping|race)\b/iu.test(
     text,
   );
 }

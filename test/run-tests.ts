@@ -3843,6 +3843,24 @@ const normalDurableObservationReport = await rulesReportMemory.observeWithReport
 assert.equal(normalDurableObservationReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(normalDurableObservationReport.memoryIds.length, 1);
 assert.equal(normalDurableObservationReport.worldBeliefIds.length, 1);
+const expandedDurableObservationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Summary: I attended a design workshop during spring break.",
+});
+const expandedDurableObservationDecision =
+  expandedDurableObservationReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  );
+assert.equal(expandedDurableObservationReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(expandedDurableObservationReport.memoryIds.length, 1);
+assert.equal(expandedDurableObservationReport.worldBeliefIds.length, 1);
+assert.equal(expandedDurableObservationDecision?.candidate.metadata?.rule, "durable_observation_fact");
+assert.equal(
+  expandedDurableObservationDecision?.candidate.content,
+  "I attended a design workshop during spring break.",
+);
 const explicitEventTimeObservationReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -6142,6 +6160,20 @@ const durableQuestionReport = await rulesReportMemory.observeWithReport({
 });
 assert.equal(durableQuestionReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(durableQuestionReport.memoryIds.length, 0);
+for (const transientObservation of [
+  "I joined the call this morning.",
+  "I moved the slider during the demo.",
+]) {
+  const transientObservationReport = await rulesReportMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: "rules_report_transient_observation",
+    role: "user",
+    content: transientObservation,
+  });
+  assert.equal(transientObservationReport.extraction?.acceptedCandidateCount, 0);
+  assert.equal(transientObservationReport.memoryIds.length, 0);
+  assert.equal(transientObservationReport.worldBeliefIds.length, 0);
+}
 const durableThirdPersonNoMetadataReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -6232,6 +6264,31 @@ assert.equal(durableThirdPersonDecision?.candidate.metadata?.rule, "named_person
 assert.equal(durableThirdPersonReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(durableThirdPersonReport.memoryIds.length, 1);
 assert.equal(durableThirdPersonReport.worldBeliefIds.length, 1);
+const expandedThirdPersonEventReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_event_expansion",
+  role: "user",
+  content: "Morgan: Blair visited Kyoto during spring break.",
+  metadata: {
+    speaker: "Morgan",
+    participants: ["Morgan", "Blair"],
+  },
+});
+const expandedThirdPersonEventDecision =
+  expandedThirdPersonEventReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  );
+assert.equal(expandedThirdPersonEventReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(expandedThirdPersonEventDecision?.candidate.predicate, "person.event");
+assert.equal(expandedThirdPersonEventDecision?.candidate.subject, "person:Blair");
+assert.equal(expandedThirdPersonEventDecision?.candidate.metadata?.rule, "named_person_event");
+assert.equal(expandedThirdPersonEventReport.memoryIds.length, 1);
+assert.equal(expandedThirdPersonEventReport.worldBeliefIds.length, 1);
+const expandedThirdPersonEventMemory = await rulesReportMemory.get({
+  profileId: "rules_report_event_expansion",
+  id: expandedThirdPersonEventReport.memoryIds[0]!,
+});
+assert.match(expandedThirdPersonEventMemory?.content ?? "", /visited Kyoto/);
 const durableThirdPersonAliasReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
