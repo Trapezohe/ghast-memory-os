@@ -6,6 +6,8 @@ references for host applications.
 
 - [API reference](./API_REFERENCE.md): public SDK, CLI, MCP, HTTP, and store
   surfaces.
+- [MCP and HTTP integration guide](./INTEGRATION_GUIDE.md): host boundary
+  choices, public tool contracts, and local service smoke tests.
 - [Architecture guide](./ARCHITECTURE.md): source-of-truth boundaries and data
   flow.
 - [Benchmark guide](./BENCHMARKING.md): internal gates, external adapters, and

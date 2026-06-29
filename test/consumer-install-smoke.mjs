@@ -1680,6 +1680,7 @@ try {
   const installedPackageRoot = path.join(consumerDir, "node_modules", "@ghast", "memory");
   for (const [docFile, heading] of [
     ["docs/API_REFERENCE.md", "# gmOS API Reference"],
+    ["docs/INTEGRATION_GUIDE.md", "# gmOS MCP and HTTP Integration Guide"],
     ["docs/ARCHITECTURE.md", "# gmOS Architecture Guide"],
     ["docs/BENCHMARKING.md", "# gmOS Benchmark Guide"],
     ["docs/MIGRATION.md", "# gmOS Migration Guide"],

@@ -91,6 +91,8 @@ calls instead of direct SDK imports:
 - `memory.runtime_info`
 
 Public MCP tools intentionally do not expose sensitive override switches.
+See [MCP and HTTP integration guide](./INTEGRATION_GUIDE.md) for host boundary
+selection, lifecycle wiring, and smoke-test commands.
 
 Run `examples/mcp-router.mjs` for a minimal in-process MCP smoke test. The
 example validates `memory.runtime_info`, observes a preference through
