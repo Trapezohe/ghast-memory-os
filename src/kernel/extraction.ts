@@ -1,11 +1,14 @@
 import type {
+  MemoryExtractionAcceptanceClass,
   MemoryExtractionCandidate,
   MemoryExtractionCandidateSnapshot,
   MemoryExtractionDecision,
+  MemoryExtractionFallbackReason,
   MemoryExtractionInput,
   MemoryExtractionReport,
-  MemoryExtractionResult,
+  MemoryExtractionRejectClass,
   MemoryExtractionRejectReason,
+  MemoryExtractionResult,
   MemoryExtractor,
 } from "./types.js";
 import {
@@ -112,9 +115,30 @@ function rejectDecision(
 ): MemoryExtractionDecision {
   return {
     decision: "rejected",
+    rejectClass: rejectClassForReason(reason),
     reason,
     candidate: snapshotCandidate(candidate),
   };
+}
+
+function acceptDecision(
+  candidate: MemoryExtractionCandidate,
+  acceptanceClass: MemoryExtractionAcceptanceClass,
+): MemoryExtractionDecision {
+  return {
+    decision: "accepted",
+    acceptanceClass,
+    candidate: snapshotCandidate(candidate),
+  };
+}
+
+function rejectClassForReason(reason: MemoryExtractionRejectReason): MemoryExtractionRejectClass {
+  return reason === "secret_like" ||
+    reason === "person_kind" ||
+    reason === "person_routed" ||
+    reason === "non_person_speaker"
+    ? "hardReject"
+    : "softReject";
 }
 
 function allowedActionPolicyKind(
@@ -1582,47 +1606,91 @@ export async function extractMemoryCandidatePlan(input: {
 
   const fallbackToRules = input.fallbackToRules ?? true;
   const useRules = selected === null && fallbackToRules;
-  const fallbackUsed = Boolean(input.extractor && useRules);
-  const extractionSource: MemoryExtractionReport["extractionSource"] =
+  let fallbackUsed = Boolean(input.extractor && useRules);
+  let fallbackReason: MemoryExtractionFallbackReason | undefined =
+    fallbackUsed && extractorFailed ? "extractor_failed" : undefined;
+  let extractionSource: MemoryExtractionReport["extractionSource"] =
     useRules ? "rules" : selected === null ? "none" : "custom";
-  const source = useRules ? ruleCandidates : (selected ?? []);
   const extractor = extractorName(input.extractor);
-  const normalized: Array<{
+  let rawCandidateCount = 0;
+  const rejected: MemoryExtractionDecision[] = [];
+
+  function normalizeSourceCandidates(
+    source: MemoryExtractionCandidate[],
+    sourceKind: MemoryExtractionReport["extractionSource"],
+    acceptanceClass: MemoryExtractionAcceptanceClass,
+  ): Array<{
     raw: MemoryExtractionCandidate;
     candidate: MemoryExtractionCandidate;
-  }> = [];
-  const rejected: MemoryExtractionDecision[] = [];
-  for (const rawCandidate of source) {
-    const result = normalizeCandidate(rawCandidate, {
-      minConfidence,
-      createdAt: input.extractionInput.event.createdAt,
-    });
-    if ("reason" in result) {
-      rejected.push(rejectDecision(rawCandidate, result.reason));
-      continue;
+    acceptanceClass: MemoryExtractionAcceptanceClass;
+  }> {
+    const normalized: Array<{
+      raw: MemoryExtractionCandidate;
+      candidate: MemoryExtractionCandidate;
+      acceptanceClass: MemoryExtractionAcceptanceClass;
+    }> = [];
+    rawCandidateCount += source.length;
+    for (const rawCandidate of source) {
+      const result = normalizeCandidate(rawCandidate, {
+        minConfidence,
+        createdAt: input.extractionInput.event.createdAt,
+      });
+      if ("reason" in result) {
+        rejected.push(rejectDecision(rawCandidate, result.reason));
+        continue;
+      }
+      if (
+        nonPersonSpeakerCandidate(
+          input.extractionInput.event.metadata,
+          input.extractionInput.event.content,
+        )
+      ) {
+        rejected.push(rejectDecision(rawCandidate, "non_person_speaker"));
+        continue;
+      }
+      const candidate: MemoryExtractionCandidate = {
+        ...result.candidate,
+        metadata: {
+          ...(result.candidate.metadata ?? {}),
+          extractionSource: sourceKind,
+          ...(acceptanceClass === "fallbackDurableCandidate" && input.extractor
+            ? { extractorFallback: true, extractorName: extractor }
+            : input.extractor && sourceKind === "custom"
+              ? { extractorName: extractor }
+              : {}),
+        },
+      };
+      normalized.push({ raw: rawCandidate, candidate, acceptanceClass });
     }
-    if (
-      nonPersonSpeakerCandidate(
-        input.extractionInput.event.metadata,
-        input.extractionInput.event.content,
-      )
-    ) {
-      rejected.push(rejectDecision(rawCandidate, "non_person_speaker"));
-      continue;
-    }
-    const candidate: MemoryExtractionCandidate = {
-      ...result.candidate,
-      metadata: {
-        ...(result.candidate.metadata ?? {}),
-        extractionSource,
-        ...(fallbackUsed && input.extractor
-          ? { extractorFallback: true, extractorName: extractor }
-          : input.extractor && selected !== null
-            ? { extractorName: extractor }
-            : {}),
-      },
-    };
-    normalized.push({ raw: rawCandidate, candidate });
+    return normalized;
+  }
+
+  let normalized =
+    useRules
+      ? normalizeSourceCandidates(ruleCandidates, "rules", fallbackUsed ? "fallbackDurableCandidate" : "structured")
+      : selected === null
+        ? []
+        : normalizeSourceCandidates(selected, "custom", "structured");
+
+  const shouldFallbackAfterRejectedCustomCandidates =
+    Boolean(input.extractor) &&
+    !useRules &&
+    fallbackToRules &&
+    selected !== null &&
+    selected.length > 0 &&
+    normalized.length === 0 &&
+    ruleCandidates.length > 0 &&
+    rejected.every(
+      (decision) => decision.decision === "rejected" && decision.rejectClass === "softReject",
+    );
+  if (shouldFallbackAfterRejectedCustomCandidates) {
+    fallbackUsed = true;
+    fallbackReason = "custom_candidates_rejected";
+    extractionSource = "rules";
+    normalized = [
+      ...normalized,
+      ...normalizeSourceCandidates(ruleCandidates, "rules", "fallbackDurableCandidate"),
+    ];
   }
 
   const deduped = uniqueCandidatesWithDecisions(normalized.map((entry) => entry.candidate));
@@ -1637,12 +1705,20 @@ export async function extractMemoryCandidatePlan(input: {
     }
     acceptedKeys.delete(key);
     candidates.push(entry.candidate);
-    decisions.push({
-      decision: "accepted",
-      candidate: snapshotCandidate(entry.candidate),
-    });
+    decisions.push(acceptDecision(entry.candidate, entry.acceptanceClass));
   }
   decisions.push(...rejected);
+  const hardRejectCount = decisions.filter(
+    (decision) => decision.decision === "rejected" && decision.rejectClass === "hardReject",
+  ).length;
+  const softRejectCount = decisions.filter(
+    (decision) => decision.decision === "rejected" && decision.rejectClass === "softReject",
+  ).length;
+  const fallbackDurableCandidateCount = decisions.filter(
+    (decision) =>
+      decision.decision === "accepted" &&
+      decision.acceptanceClass === "fallbackDurableCandidate",
+  ).length;
 
   return {
     candidates,
@@ -1652,9 +1728,13 @@ export async function extractMemoryCandidatePlan(input: {
       fallbackUsed,
       extractorFailed,
       ruleCandidateCount: ruleCandidates.length,
-      rawCandidateCount: source.length,
+      rawCandidateCount,
       acceptedCandidateCount: candidates.length,
       rejectedCandidateCount: decisions.filter((decision) => decision.decision === "rejected").length,
+      hardRejectCount,
+      softRejectCount,
+      fallbackDurableCandidateCount,
+      ...(fallbackReason ? { fallbackReason } : {}),
       decisions,
     },
   };

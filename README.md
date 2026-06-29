@@ -551,7 +551,12 @@ rejects incognito and secret-like writes before evidence persistence, skips PERS
 routed candidates, bounds confidence, deduplicates candidates, and writes world
 beliefs only from accepted candidates that carry a structured predicate.
 Returning `[]` means "extract nothing"; returning `null` or throwing falls back
-to the built-in rules by default. Use
+to the built-in rules by default. If a custom extractor returns candidates but
+all of them are rejected by the gmOS write-path validator, gmOS records the
+hard/soft reject audit. If every rejection is a soft structural or quality
+failure, gmOS may fall back to built-in durable rule candidates instead of
+treating the structured extraction failure as final. Secret-like, PERSON-routed,
+person-kind, and non-person speaker hard rejects do not fall back. Use
 `createMemoryOS({ extraction: { fallbackToRules: false } })` when a host wants
 custom extraction failure to produce no memory instead of rule fallback.
 
@@ -571,8 +576,9 @@ console.log(report.extraction?.decisions);
 ```
 
 The report includes the evidence id, accepted memory ids, world belief ids,
-rule/custom candidate counts, fallback status, and accepted/rejected candidate
-decisions after candidates enter gmOS write-path validation. It is not a raw
+rule/custom candidate counts, fallback status, hard/soft reject counts,
+fallback durable candidate counts, and accepted/rejected candidate decisions
+after candidates enter gmOS write-path validation. It is not a raw
 LLM-output transcript. Candidate snapshots are sanitized; rejected secret-like
 fields and sensitive metadata are redacted or omitted so the report can be
 logged by a host without becoming a credential side channel.

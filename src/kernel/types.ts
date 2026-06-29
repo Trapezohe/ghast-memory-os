@@ -159,6 +159,12 @@ export type MemoryExtractionRejectReason =
   | "low_confidence"
   | "duplicate";
 
+export type MemoryExtractionRejectClass = "hardReject" | "softReject";
+export type MemoryExtractionAcceptanceClass = "structured" | "fallbackDurableCandidate";
+export type MemoryExtractionFallbackReason =
+  | "extractor_failed"
+  | "custom_candidates_rejected";
+
 export interface MemoryExtractionCandidateSnapshot {
   kind?: string | undefined;
   content: string;
@@ -178,11 +184,13 @@ export interface MemoryExtractionCandidateSnapshot {
 
 export interface AcceptedMemoryExtractionDecision {
   decision: "accepted";
+  acceptanceClass: MemoryExtractionAcceptanceClass;
   candidate: MemoryExtractionCandidateSnapshot;
 }
 
 export interface RejectedMemoryExtractionDecision {
   decision: "rejected";
+  rejectClass: MemoryExtractionRejectClass;
   candidate: MemoryExtractionCandidateSnapshot;
   reason: MemoryExtractionRejectReason;
 }
@@ -200,6 +208,10 @@ export interface MemoryExtractionReport {
   rawCandidateCount: number;
   acceptedCandidateCount: number;
   rejectedCandidateCount: number;
+  hardRejectCount: number;
+  softRejectCount: number;
+  fallbackDurableCandidateCount: number;
+  fallbackReason?: MemoryExtractionFallbackReason | undefined;
   decisions: MemoryExtractionDecision[];
 }
 

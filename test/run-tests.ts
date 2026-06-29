@@ -2835,8 +2835,17 @@ const fallbackExtractionReport = await fallbackExtractorMemory.observeWithReport
 });
 assert.equal(fallbackExtractionReport.extraction?.extractionSource, "rules");
 assert.equal(fallbackExtractionReport.extraction?.fallbackUsed, true);
+assert.equal(fallbackExtractionReport.extraction?.fallbackReason, "extractor_failed");
 assert.equal(fallbackExtractionReport.extraction?.extractorFailed, true);
 assert.equal(fallbackExtractionReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(fallbackExtractionReport.extraction?.fallbackDurableCandidateCount, 1);
+assert.equal(fallbackExtractionReport.extraction?.decisions[0]?.decision, "accepted");
+assert.equal(
+  fallbackExtractionReport.extraction?.decisions[0]?.decision === "accepted"
+    ? fallbackExtractionReport.extraction.decisions[0].acceptanceClass
+    : undefined,
+  "fallbackDurableCandidate",
+);
 assert.equal(fallbackExtractionReport.memoryIds.length, 1);
 const fallbackMatches = await fallbackExtractorMemory.search({
   profileId: "fallback_extractor",
@@ -2845,6 +2854,118 @@ const fallbackMatches = await fallbackExtractorMemory.search({
 assert.equal(fallbackMatches.length, 1);
 assert.equal(fallbackMatches[0]?.metadata.extractionSource, "rules");
 assert.equal(fallbackMatches[0]?.metadata.extractorFallback, true);
+
+const rejectedCustomFallbackStore = createSqliteMemoryStore({
+  path: path.join(tmp, "rejected-custom-fallback.db"),
+});
+const rejectedCustomFallbackMemory = createMemoryOS({
+  profileId: "rejected_custom_fallback",
+  store: rejectedCustomFallbackStore,
+  extractor: {
+    name: "weak-structured-extractor",
+    extract() {
+      return {
+        kind: "preference",
+        content: "Weak structured extraction should not suppress rule fallback.",
+        confidence: 0,
+        predicate: "user.preference",
+      };
+    },
+  },
+});
+const rejectedCustomFallbackReport = await rejectedCustomFallbackMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rejected_custom_fallback",
+  role: "user",
+  content: "I prefer fallback after weak custom extraction.",
+});
+assert.equal(rejectedCustomFallbackReport.extraction?.extractionSource, "rules");
+assert.equal(rejectedCustomFallbackReport.extraction?.fallbackUsed, true);
+assert.equal(rejectedCustomFallbackReport.extraction?.fallbackReason, "custom_candidates_rejected");
+assert.equal(rejectedCustomFallbackReport.extraction?.extractorFailed, false);
+assert.equal(rejectedCustomFallbackReport.extraction?.rawCandidateCount, 2);
+assert.equal(rejectedCustomFallbackReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(rejectedCustomFallbackReport.extraction?.rejectedCandidateCount, 1);
+assert.equal(rejectedCustomFallbackReport.extraction?.softRejectCount, 1);
+assert.equal(rejectedCustomFallbackReport.extraction?.hardRejectCount, 0);
+assert.equal(rejectedCustomFallbackReport.extraction?.fallbackDurableCandidateCount, 1);
+assert.deepEqual(
+  rejectedCustomFallbackReport.extraction?.decisions.map((decision) =>
+    decision.decision === "accepted"
+      ? `${decision.decision}:${decision.acceptanceClass}`
+      : `${decision.decision}:${decision.rejectClass}:${decision.reason}`,
+  ),
+  ["accepted:fallbackDurableCandidate", "rejected:softReject:low_confidence"],
+);
+assert.equal(rejectedCustomFallbackReport.memoryIds.length, 1);
+const rejectedCustomFallbackMatches = await rejectedCustomFallbackMemory.search({
+  profileId: "rejected_custom_fallback",
+  query: "weak custom extraction",
+});
+assert.equal(rejectedCustomFallbackMatches.length, 1);
+assert.equal(rejectedCustomFallbackMatches[0]?.metadata.extractionSource, "rules");
+assert.equal(rejectedCustomFallbackMatches[0]?.metadata.extractorFallback, true);
+await rejectedCustomFallbackMemory.close();
+
+const hardRejectedCustomFallbackStore = createSqliteMemoryStore({
+  path: path.join(tmp, "hard-rejected-custom-fallback.db"),
+});
+const hardRejectedCustomFallbackMemory = createMemoryOS({
+  profileId: "hard_rejected_custom_fallback",
+  store: hardRejectedCustomFallbackStore,
+  extractor: {
+    name: "unsafe-structured-extractor",
+    extract() {
+      return {
+        kind: "fact",
+        content: "Unsafe extractor hallucinated api key sk-hardrejectfallback1234567890.",
+        confidence: 0.99,
+        predicate: "user.fact",
+      };
+    },
+  },
+});
+const hardRejectedCustomFallbackReport =
+  await hardRejectedCustomFallbackMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: "hard_rejected_custom_fallback",
+    role: "user",
+    content: "I prefer fallback after unsafe custom extraction.",
+  });
+assert.equal(hardRejectedCustomFallbackReport.extraction?.extractionSource, "custom");
+assert.equal(hardRejectedCustomFallbackReport.extraction?.fallbackUsed, false);
+assert.equal(hardRejectedCustomFallbackReport.extraction?.fallbackReason, undefined);
+assert.equal(hardRejectedCustomFallbackReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(hardRejectedCustomFallbackReport.extraction?.rejectedCandidateCount, 1);
+assert.equal(hardRejectedCustomFallbackReport.extraction?.hardRejectCount, 1);
+assert.equal(hardRejectedCustomFallbackReport.extraction?.softRejectCount, 0);
+assert.equal(hardRejectedCustomFallbackReport.extraction?.fallbackDurableCandidateCount, 0);
+assert.deepEqual(
+  hardRejectedCustomFallbackReport.extraction?.decisions.map((decision) =>
+    decision.decision === "accepted"
+      ? `${decision.decision}:${decision.acceptanceClass}`
+      : `${decision.decision}:${decision.rejectClass}:${decision.reason}`,
+  ),
+  ["rejected:hardReject:secret_like"],
+);
+assert.equal(hardRejectedCustomFallbackReport.memoryIds.length, 0);
+assert.equal(hardRejectedCustomFallbackReport.worldBeliefIds.length, 0);
+assert.equal(
+  JSON.stringify(hardRejectedCustomFallbackReport).includes("sk-hardrejectfallback"),
+  false,
+);
+assert.equal(
+  (
+    await hardRejectedCustomFallbackMemory.search({
+      profileId: "hard_rejected_custom_fallback",
+      query: "fallback unsafe custom extraction",
+      purpose: "manage",
+      includeSensitive: true,
+    })
+  ).length,
+  0,
+);
+await hardRejectedCustomFallbackMemory.close();
 
 const invalidTemporalExtractorStore = createSqliteMemoryStore({
   path: path.join(tmp, "invalid-temporal-extractor.db"),
