@@ -397,13 +397,16 @@ avoid opening hundreds of SQLite stores for long-history datasets. `--progress`
 writes content-free case progress to stderr, which keeps large redirected JSON
 runs observable without mixing progress lines into stdout. `--json-file` and
 `--markdown-file` can be used together to create a reproducibility bundle from
-one run; `--failure-sample-limit <n>` controls how many failed cases are copied
-into the summary section. Add `"requireConvergence": true` to a case, or pass
-`--require-convergence` for the whole run, when the benchmark should fail unless
-active reconstruction converges; this is useful for multi-hop or multi-intent
-cases where a plain text hit is not strong enough evidence. `--require-convergence`
-is only valid for reconstruct mode and forces every case in that run to require
-convergence. Pass `--temporal-mode current|history`, or set `"temporalMode"` on
+one run. External suite reports also include the raw suite file SHA-256 hash
+when a `--suite-file` is provided, so reproduced runs can verify both the suite
+manifest and each dataset file. `--failure-sample-limit <n>` controls how many
+failed cases are copied into the summary section. Add `"requireConvergence":
+true` to a case, or pass `--require-convergence` for the whole run, when the
+benchmark should fail unless active reconstruction converges; this is useful for
+multi-hop or multi-intent cases where a plain text hit is not strong enough
+evidence. `--require-convergence` is only valid for reconstruct mode and forces
+every case in that run to require convergence. Pass
+`--temporal-mode current|history`, or set `"temporalMode"` on
 a case or external suite run, when a benchmark must force current-state or
 historical recall instead of relying on query cues. Pass `--temporal-metadata`, or set `"includeTemporalMetadata":
 true` in an external suite manifest, when session-date answers should be scored

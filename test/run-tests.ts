@@ -13155,6 +13155,10 @@ assert.equal(externalSuiteExecution.result.runManifest.durationMs >= 0, true);
 assert.equal(externalSuiteExecution.result.runManifest.package?.name, "@ghast/memory");
 assert.equal(externalSuiteExecution.result.runManifest.package?.version, packageJson.version);
 assert.equal(externalSuiteExecution.result.runManifest.git?.sha, expectedGit.sha);
+assert.equal(
+  externalSuiteExecution.result.runManifest.suiteHash,
+  hashExternalMemoryBenchmarkInput(readFileSync(externalSuiteFile, "utf8")),
+);
 assert.equal(typeof externalSuiteExecution.result.runManifest.node, "string");
 assert.equal(externalSuiteExecution.result.runs[0]?.durationMs >= 0, true);
 assert.equal(externalSuiteExecution.result.runs[0]?.caseGroupCount >= 1, true);
@@ -13185,6 +13189,7 @@ assert.match(renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.report
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /BenchmarkStatus: FAIL/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Weighted score:/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Normalized evidence weighted score:/);
+assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Suite hash: sha256:[a-f0-9]{64}/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Failure reasons: expected_all_missing=1/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Failure stages: answer_not_in_input=1/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /## Diagnostic Summary/);
@@ -14622,9 +14627,14 @@ assert.equal(existsSync(path.join(cliExternalSuiteOutputDir, "passing.json")), t
 assert.equal(existsSync(path.join(cliExternalSuiteOutputDir, "passing.md")), true);
 assert.equal(existsSync(path.join(cliExternalSuiteOutputDir, "failing.json")), true);
 assert.equal(JSON.parse(readFileSync(cliExternalSuiteJsonFile, "utf8")).schema, "gmos.external_benchmark_suite.v1");
+assert.match(
+  JSON.parse(readFileSync(cliExternalSuiteJsonFile, "utf8")).runManifest?.suiteHash ?? "",
+  /^sha256:[a-f0-9]{64}$/u,
+);
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /gmOS External Benchmark Suite/);
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Weighted score:/);
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Duration:/);
+assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Suite hash: sha256:[a-f0-9]{64}/);
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Failure stages: answer_not_in_input=1/);
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /gmos:project_procedure=1\/1 score=1\.0000/);
 assert.match(cliExternalSuite.stderr, /\[gmos external-suite\] pass run=passing/);

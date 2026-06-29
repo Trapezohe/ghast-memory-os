@@ -302,6 +302,7 @@ export function renderExternalMemoryBenchmarkSuiteMarkdown(
     `Finished: ${report.runManifest.finishedAt}`,
     `Duration: ${(report.runManifest.durationMs / 1000).toFixed(1)}s`,
     `Suite file: ${report.runManifest.suiteFile ?? "none"}`,
+    `Suite hash: ${report.runManifest.suiteHash ?? "none"}`,
     `Base dir: ${report.runManifest.baseDir}`,
     `SDK package: ${report.runManifest.package?.name ?? "unknown"}@${report.runManifest.package?.version ?? "unknown"}`,
     `Git: ${report.runManifest.git?.sha ?? "unknown"}${report.runManifest.git?.dirty === null ? "" : report.runManifest.git?.dirty ? " dirty" : " clean"}`,

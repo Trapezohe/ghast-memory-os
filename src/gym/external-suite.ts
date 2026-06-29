@@ -100,6 +100,7 @@ export interface ExternalMemoryBenchmarkSuiteResult {
     finishedAt: string;
     durationMs: number;
     suiteFile: string | null;
+    suiteHash: string | null;
     baseDir: string;
     failOnBenchmarkFail: boolean;
     node: string | null;
@@ -276,6 +277,11 @@ function suiteBaseDir(options: RunExternalMemoryBenchmarkSuiteOptions): string {
   return process.cwd();
 }
 
+function suiteFileHash(suiteFile: string | null): string | null {
+  if (!suiteFile) return null;
+  return hashExternalMemoryBenchmarkInput(readFileSync(suiteFile, "utf8"));
+}
+
 function resolveInputFile(baseDir: string, inputFile: string): string {
   return path.isAbsolute(inputFile) ? inputFile : path.resolve(baseDir, inputFile);
 }
@@ -383,6 +389,8 @@ export async function runExternalMemoryBenchmarkSuite(
 ): Promise<ExternalMemoryBenchmarkSuiteExecution> {
   const startedAt = new Date().toISOString();
   const baseDir = suiteBaseDir(options);
+  const suiteFile = options.suiteFile ? path.resolve(options.suiteFile) : null;
+  const suiteHash = suiteFileHash(suiteFile);
   const reports: Record<string, ExternalMemoryBenchmarkResult> = {};
   const runs: ExternalMemoryBenchmarkSuiteRunSummary[] = [];
   for (const runConfig of options.suite.runs) {
@@ -475,7 +483,8 @@ export async function runExternalMemoryBenchmarkSuite(
         startedAt,
         finishedAt,
         durationMs: durationMs(startedAt, finishedAt),
-        suiteFile: options.suiteFile ? path.resolve(options.suiteFile) : null,
+        suiteFile,
+        suiteHash,
         baseDir,
         failOnBenchmarkFail,
         node: firstRunManifest?.node ?? null,

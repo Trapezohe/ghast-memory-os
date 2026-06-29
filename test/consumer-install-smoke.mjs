@@ -851,6 +851,7 @@ try {
             finishedAt: "",
             durationMs: 0,
             suiteFile: null,
+            suiteHash: null,
             baseDir: ".",
             failOnBenchmarkFail: false,
             node: null,
