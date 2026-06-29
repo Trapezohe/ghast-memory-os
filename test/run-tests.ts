@@ -14611,6 +14611,46 @@ for (const [host, expectedLevel] of [
   assert.equal(doctorJson.searchIndex?.vectorIndex?.status, "ok");
   if (host === "ghast") assert.deepEqual(doctorJson.hostCompatibility?.gaps, []);
 }
+const doctorMarkdownFile = path.join(tmp, "doctor.md");
+const doctorJsonFile = path.join(tmp, "doctor.json");
+const doctorMarkdown = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "doctor",
+    "--db",
+    path.join(tmp, "doctor-markdown.db"),
+    "--host",
+    "ghast",
+    "--format",
+    "markdown",
+    "--markdown-file",
+    doctorMarkdownFile,
+    "--json-file",
+    doctorJsonFile,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(doctorMarkdown.status, 0, doctorMarkdown.stderr);
+assert.match(doctorMarkdown.stdout, /^# gmOS Doctor Report/m);
+assert.match(doctorMarkdown.stdout, /## Runtime/);
+assert.match(doctorMarkdown.stdout, /memory\.runtime_info/);
+assert.match(doctorMarkdown.stdout, /GET \/runtime-info/);
+assert.match(doctorMarkdown.stdout, /Local-first: yes/);
+assert.match(doctorMarkdown.stdout, /## SQLite/);
+assert.match(doctorMarkdown.stdout, /Search index: ok/);
+assert.match(doctorMarkdown.stdout, /## Host Compatibility/);
+assert.match(doctorMarkdown.stdout, /Host: ghast/);
+assert.doesNotMatch(doctorMarkdown.stdout, /stateHash/);
+assert.equal(readFileSync(doctorMarkdownFile, "utf8").trimEnd(), doctorMarkdown.stdout.trimEnd());
+const doctorJsonFilePayload = JSON.parse(readFileSync(doctorJsonFile, "utf8")) as {
+  runtimeInfo?: { schema?: string };
+  readAudit?: { stateHash?: string };
+};
+assert.equal(doctorJsonFilePayload.runtimeInfo?.schema, "gmos.runtime_info.v1");
+assert.equal(doctorJsonFilePayload.readAudit?.stateHash, undefined);
 const missingEvolutionDb = path.join(tmp, "evolution-missing.db");
 assert.equal(existsSync(missingEvolutionDb), false);
 const cliEvolutionReport = spawnSync(

@@ -99,7 +99,7 @@ npm install
 npm run build
 
 node dist/cli/gmos.js init --db ./gmos.db
-node dist/cli/gmos.js doctor --db ./gmos.db --host ghast
+node dist/cli/gmos.js doctor --db ./gmos.db --host ghast --format markdown
 node dist/cli/gmos.js repair --db ./gmos.db --search-index
 node dist/cli/gmos.js repair --db ./gmos.db --associations
 node dist/cli/gmos.js status --db ./gmos.db --profile local --host ghast --format markdown
@@ -996,8 +996,13 @@ const report = await createMemoryStatusReport({
 CLI:
 
 ```bash
+gmos doctor --db ./gmos.db --host ghast --format markdown
 gmos status --db ./gmos.db --profile local --host ghast --format markdown
 ```
+
+Both commands can also write reproducibility artifacts with `--json-file` and
+`--markdown-file`; the reports stay content-free and do not include memory text,
+failure samples, or table state hashes.
 
 ## Trust Contract
 
@@ -1031,8 +1036,8 @@ host must expose the right hooks to preserve full behavior:
   directive enforcement.
 - `search_only`: L1, recall-only and not a full Memory OS integration.
 
-Run `gmos doctor --host ghast` to inspect capability gaps and hard-gate
-coverage.
+Run `gmos doctor --host ghast --format markdown` to inspect runtime surface,
+SQLite health, capability gaps, and hard-gate coverage.
 
 Run `gmos gym host` to execute the host compatibility gym. Unlike `doctor`,
 which is a static capability report, the host gym exercises behavior expected

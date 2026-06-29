@@ -1215,6 +1215,22 @@ try {
   assert.equal(doctor.searchIndex.status, "ok");
   assert.equal(doctor.searchIndex.vectorIndex.status, "ok");
   assert.equal(doctor.hostCompatibility.level, "L4");
+  const doctorMarkdown = runInstalledCli([
+    "doctor",
+    "--db",
+    path.join(consumerDir, "doctor.db"),
+    "--host",
+    "ghast",
+    "--format",
+    "markdown",
+  ]);
+  assert.equal(doctorMarkdown.status, 0, doctorMarkdown.stderr);
+  assert.match(doctorMarkdown.stdout, /^# gmOS Doctor Report/m);
+  assert.match(doctorMarkdown.stdout, /memory\.runtime_info/);
+  assert.match(doctorMarkdown.stdout, /GET \/runtime-info/);
+  assert.match(doctorMarkdown.stdout, /Search index: ok/);
+  assert.match(doctorMarkdown.stdout, /Host: ghast/);
+  assert.doesNotMatch(doctorMarkdown.stdout, /stateHash/);
   const binLowLevelDb = path.join(consumerDir, "bin-low-level.db");
   const addBin = runInstalledCli(
     [

@@ -38,6 +38,7 @@ import {
 import {
   createPresetHostAdapter,
   exportMemorySnapshots,
+  type HostCompatibilityReport,
   type HostActualCompatibilityReport,
   type HostPreset,
   loadHostMemorySnapshotsIntoStore,
@@ -63,8 +64,9 @@ import type {
   LowLevelSearchInput,
   MemoryKind,
   ReadAuditSnapshot,
+  SearchIndexStatus,
 } from "../kernel/types.js";
-import { getGmosRuntimeInfo } from "../runtime-info.js";
+import { getGmosRuntimeInfo, type GmosRuntimeInfo } from "../runtime-info.js";
 
 function value(name: string, fallback?: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -91,7 +93,7 @@ function usage(): never {
 Usage:
   gmos version --format json
   gmos init --db ./gmos.db
-  gmos doctor --db ./gmos.db --host ghast
+  gmos doctor --db ./gmos.db --host ghast --format markdown
   gmos repair --db ./gmos.db --search-index
   gmos repair --db ./gmos.db --associations
   gmos status --db ./gmos.db --profile local --host ghast --format markdown
@@ -288,6 +290,80 @@ function doctorReadAudit(snapshot: ReadAuditSnapshot | null) {
       .sort(),
     hashesAvailable: entries.every(([, table]) => typeof table.stateHash === "string"),
   };
+}
+
+interface CliDoctorReport {
+  ok: true;
+  dbPath: string;
+  encrypted: false;
+  runtimeInfo: GmosRuntimeInfo;
+  schema: {
+    dialect: "sqlite";
+    version: number | null;
+  };
+  rowCounts: Record<string, number>;
+  readAudit: ReturnType<typeof doctorReadAudit>;
+  searchIndex: SearchIndexStatus | null;
+  hostCompatibility: HostCompatibilityReport | undefined;
+}
+
+function renderDoctorMarkdown(report: CliDoctorReport): string {
+  const vectorIndex = report.searchIndex?.vectorIndex;
+  const rowCounts = Object.entries(report.rowCounts).sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+  return [
+    "# gmOS Doctor Report",
+    "",
+    `Database: ${report.dbPath}`,
+    "Encrypted: no",
+    "",
+    "## Runtime",
+    "",
+    `Package: ${report.runtimeInfo.package.name}@${report.runtimeInfo.package.version}`,
+    `CLI binaries: ${report.runtimeInfo.cli.binaries.join(", ")}`,
+    `Package exports: ${report.runtimeInfo.packageExports.length ? report.runtimeInfo.packageExports.join(", ") : "unknown"}`,
+    `MCP tools: ${report.runtimeInfo.publicSurface.mcpTools.join(", ")}`,
+    `HTTP routes: ${report.runtimeInfo.publicSurface.httpRoutes.join(", ")}`,
+    `Local-first: ${report.runtimeInfo.trustContract.localFirst ? "yes" : "no"}`,
+    `Default storage: ${report.runtimeInfo.trustContract.defaultStorage}`,
+    `Encrypted by default: ${report.runtimeInfo.trustContract.encryptedByDefault ? "yes" : "no"}`,
+    `Cloud required: ${report.runtimeInfo.trustContract.cloudRequired ? "yes" : "no"}`,
+    "",
+    "## SQLite",
+    "",
+    `Schema dialect: ${report.schema.dialect}`,
+    `Schema version: ${report.schema.version ?? "unknown"}`,
+    `Read audit: ${report.readAudit.status} (${report.readAudit.tableCount} tables; rows=${report.readAudit.rowCountTotal}; missing=${report.readAudit.missingTables.length}; hashes=${report.readAudit.hashesAvailable ? "available" : "unavailable"})`,
+    report.searchIndex
+      ? `Search index: ${report.searchIndex.status} (${report.searchIndex.indexedMemoryCount}/${report.searchIndex.totalMemoryCount} indexed; missing=${report.searchIndex.missingEntryCount}; stale=${report.searchIndex.staleEntryCount}; orphan=${report.searchIndex.orphanEntryCount}; duplicate=${report.searchIndex.duplicateEntryCount})`
+      : "Search index: unsupported",
+    vectorIndex
+      ? `Vector index: ${vectorIndex.status} (${vectorIndex.indexedMemoryCount} indexed; missing=${vectorIndex.missingEntryCount}; stale=${vectorIndex.staleEntryCount}; orphan=${vectorIndex.orphanEntryCount}; duplicate=${vectorIndex.duplicateEntryCount}; dimensions=${vectorIndex.dimensions})`
+      : "",
+    "",
+    "### Row Counts",
+    "",
+    rowCounts.length === 0
+      ? "No row counts available."
+      : "| Table | Rows |\n| --- | ---: |\n" +
+          rowCounts.map(([table, count]) => `| ${table} | ${count} |`).join("\n"),
+    "",
+    report.hostCompatibility
+      ? [
+          "## Host Compatibility",
+          "",
+          `Host: ${report.hostCompatibility.hostId}`,
+          `Level: ${report.hostCompatibility.level}`,
+          `Score: ${report.hostCompatibility.score.toFixed(2)}`,
+          `Capability retention: ${report.hostCompatibility.capabilityRetention}`,
+          report.hostCompatibility.gaps.length === 0
+            ? "Gaps: none"
+            : `Gaps: ${report.hostCompatibility.gaps.join(", ")}`,
+          "",
+        ].join("\n")
+      : "",
+  ].join("\n");
 }
 
 function actualHostReportsFromOption(): HostActualCompatibilityReport[] | undefined {
@@ -906,28 +982,21 @@ async function main(): Promise<void> {
 
     if (command === "doctor") {
       await store.initialize();
-      console.log(
-        JSON.stringify(
-          {
-            ok: true,
-            dbPath,
-            encrypted: false,
-            runtimeInfo: getGmosRuntimeInfo(),
-            schema: {
-              dialect: "sqlite",
-              version: store.schemaVersion ? await store.schemaVersion() : null,
-            },
-            rowCounts: await store.rowCounts(),
-            readAudit: doctorReadAudit(
-              store.readAuditSnapshot ? await store.readAuditSnapshot() : null,
-            ),
-            searchIndex: store.searchIndexStatus ? await store.searchIndexStatus() : null,
-            hostCompatibility: hostReport(requestedHost),
-          },
-          null,
-          2,
-        ),
-      );
+      const report: CliDoctorReport = {
+        ok: true,
+        dbPath,
+        encrypted: false,
+        runtimeInfo: getGmosRuntimeInfo(),
+        schema: {
+          dialect: "sqlite",
+          version: store.schemaVersion ? await store.schemaVersion() : null,
+        },
+        rowCounts: await store.rowCounts(),
+        readAudit: doctorReadAudit(store.readAuditSnapshot ? await store.readAuditSnapshot() : null),
+        searchIndex: store.searchIndexStatus ? await store.searchIndexStatus() : null,
+        hostCompatibility: hostReport(requestedHost),
+      };
+      printReport(report, renderDoctorMarkdown(report));
       return;
     }
 
