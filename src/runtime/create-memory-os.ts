@@ -106,6 +106,7 @@ function publicSpeaker(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const speaker = value.trim();
   if (!speaker || speaker.startsWith("[redacted_")) return undefined;
+  if (/^(?:current[-_ ]?user|user|self|me)$/iu.test(speaker)) return undefined;
   return classifySensitivity(speaker) === "normal" && stableNamedPersonSubject(speaker)
     ? speaker
     : undefined;
@@ -129,8 +130,11 @@ function shouldRouteBeliefToSpeaker(input: {
   eventMetadata: Record<string, unknown>;
   speaker: string;
 }): boolean {
-  if (speakerKey(inferSpeakerPrefix(input.eventContent) ?? "") === speakerKey(input.speaker)) return true;
-  return new Set(publicStringArray(input.eventMetadata.participants).map(speakerKey)).size > 1;
+  const prefix = inferSpeakerPrefix(input.eventContent);
+  if (prefix) return speakerKey(prefix) === speakerKey(input.speaker);
+  const participants = publicStringArray(input.eventMetadata.participants);
+  if (new Set(participants.map(speakerKey)).size > 1) return true;
+  return participants.length === 0 && hasFirstPersonAnchor(input.eventContent);
 }
 
 function worldBeliefSubjectForCandidate(input: {

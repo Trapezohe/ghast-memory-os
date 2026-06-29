@@ -4962,12 +4962,66 @@ const hostAliasSpeakerOnlyReport = await rulesReportMemory.observeWithReport({
   role: "user",
   content: "I use compact implementation notes for reviews.",
   metadata: {
-    speaker: "MiraUser",
+    speaker: "Mira Stone",
   },
 });
 assert.equal(hostAliasSpeakerOnlyReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(hostAliasSpeakerOnlyReport.memoryIds.length, 1);
 assert.equal(hostAliasSpeakerOnlyReport.worldBeliefIds.length, 1);
+function rulesReportWorldBeliefSubject(id: string, profileId = "rules_report"): string | undefined {
+  const db = new Database(rulesReportPath, { readonly: true });
+  try {
+    return (
+      db
+        .prepare(
+          `SELECT subject
+             FROM gmos_world_beliefs
+            WHERE profile_id = ? AND id = ?
+            LIMIT 1`,
+        )
+        .get(profileId, id) as { subject: string } | undefined
+    )?.subject;
+  } finally {
+    db.close();
+  }
+}
+assert.equal(
+  rulesReportWorldBeliefSubject(hostAliasSpeakerOnlyReport.worldBeliefIds[0]!),
+  "person:mira-stone",
+);
+const mismatchedSpeakerPrefixReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_speaker_mismatch",
+  role: "user",
+  content: "Alex: I prefer compact planning notes.",
+  metadata: {
+    speaker: "Mira Stone",
+  },
+});
+assert.equal(mismatchedSpeakerPrefixReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(mismatchedSpeakerPrefixReport.worldBeliefIds.length, 1);
+assert.equal(
+  rulesReportWorldBeliefSubject(
+    mismatchedSpeakerPrefixReport.worldBeliefIds[0]!,
+    "rules_report_speaker_mismatch",
+  ),
+  "user",
+);
+const currentUserSpeakerOnlyReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "I use quiet implementation notes for reviews.",
+  metadata: {
+    speaker: "current_user",
+  },
+});
+assert.equal(currentUserSpeakerOnlyReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(currentUserSpeakerOnlyReport.worldBeliefIds.length, 1);
+assert.equal(
+  rulesReportWorldBeliefSubject(currentUserSpeakerOnlyReport.worldBeliefIds[0]!),
+  "person:user",
+);
 const metadataOnlySpeakerCityReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
