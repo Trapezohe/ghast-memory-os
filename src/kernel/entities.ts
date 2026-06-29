@@ -87,6 +87,7 @@ function publicAlias(value: string): string {
 function publicEntityValue(value: unknown): string {
   if (typeof value !== "string") return "";
   const compacted = compact(value);
+  if (/^\[redacted_[a-z_]+\]$/iu.test(compacted)) return "";
   if (!compacted || classifySensitivity(compacted) !== "normal") return "";
   return compacted;
 }

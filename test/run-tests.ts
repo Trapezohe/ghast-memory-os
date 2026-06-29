@@ -163,6 +163,13 @@ const entityMentionMemoryAssociationFixture = associationCuesForMemory({
         kind: "person",
         cueEligible: true,
       },
+      {
+        role: "source_speaker",
+        value: "[redacted_secret]",
+        key: "redacted-secret",
+        kind: "person",
+        cueEligible: true,
+      },
     ],
   },
   createdAt: "2026-06-20T00:00:00.000Z",
@@ -170,6 +177,10 @@ const entityMentionMemoryAssociationFixture = associationCuesForMemory({
 });
 assert.equal(entityMentionMemoryAssociationFixture.some((cue) => cue.cue === "helio"), true);
 assert.equal(entityMentionMemoryAssociationFixture.some((cue) => cue.cue === "alex"), false);
+assert.equal(
+  entityMentionMemoryAssociationFixture.some((cue) => cue.cue === "[redacted_secret]"),
+  false,
+);
 const relationBeliefAssociationFixture = {
   id: "belief-association-relation-fixture",
   profileId: "test",
@@ -5865,10 +5876,31 @@ const lowLevelMemory = await memory.add({
     label: "leaked low-level label",
     adversarial_answer: "leaked low-level adversarial",
     token: "sk-lowlevel-metadata-secret123456",
+    entityMentions: [
+      {
+        role: "source_speaker",
+        value: "InjectedLowLevel",
+        key: "injectedlowlevel",
+        kind: "person",
+        cueEligible: true,
+      },
+    ],
+    entityResolution: {
+      canonicalSubject: "person:injectedlowlevel",
+      aliases: ["InjectedLowLevel"],
+    },
+    sourceMetadata: {
+      speaker: "InjectedLowLevel",
+      speakerAliases: ["InjectedLowLevelAlias"],
+    },
   },
 });
 assert.equal(lowLevelMemory.kind, "preference");
 assert.equal(lowLevelMemory.sensitivity, "normal");
+assert.equal(JSON.stringify(lowLevelMemory.metadata).includes("InjectedLowLevel"), false);
+assert.equal(JSON.stringify(lowLevelMemory.metadata).includes("entityMentions"), false);
+assert.equal(JSON.stringify(lowLevelMemory.metadata).includes("entityResolution"), false);
+assert.equal(JSON.stringify(lowLevelMemory.metadata).includes("sourceMetadata"), false);
 const lowLevelMatches = await memory.search({
   profileId: "test",
   query: "compatibility concise SDK docs",
@@ -6207,10 +6239,47 @@ const updatedLowLevelMemory = await memory.update({
     label: "leaked low-level update label",
     adversarial_answer: "leaked low-level update adversarial",
     token: "sk-lowlevel-update-metadata-secret123456",
+    entityMentions: [
+      {
+        role: "source_speaker",
+        value: "InjectedUpdate",
+        key: "injectedupdate",
+        kind: "person",
+        cueEligible: true,
+      },
+    ],
+    entityResolution: {
+      canonicalSubject: "person:injectedupdate",
+      aliases: ["InjectedUpdate"],
+    },
+    sourceMetadata: {
+      speaker: "InjectedUpdate",
+      speakerAliases: ["InjectedUpdateAlias"],
+    },
   },
 });
 assert.equal(updatedLowLevelMemory?.id, lowLevelMemory.id);
 assert.match(updatedLowLevelMemory?.content ?? "", /risk-first SDK docs/);
+assert.equal(JSON.stringify(updatedLowLevelMemory?.metadata ?? {}).includes("InjectedUpdate"), false);
+assert.equal(JSON.stringify(updatedLowLevelMemory?.metadata ?? {}).includes("entityMentions"), false);
+assert.equal(JSON.stringify(updatedLowLevelMemory?.metadata ?? {}).includes("entityResolution"), false);
+assert.equal(JSON.stringify(updatedLowLevelMemory?.metadata ?? {}).includes("sourceMetadata"), false);
+const lowLevelMetadataInjectionDb = new Database(dbPath, { readonly: true });
+try {
+  const lowLevelInjectedAssociationCount = (
+    lowLevelMetadataInjectionDb
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM gmos_associations
+         WHERE profile_id = ?
+           AND lower(cue) IN (lower(?), lower(?))`,
+      )
+      .get("test", "InjectedLowLevel", "InjectedUpdate") as { count: number }
+  ).count;
+  assert.equal(lowLevelInjectedAssociationCount, 0);
+} finally {
+  lowLevelMetadataInjectionDb.close();
+}
 const updatedLowLevelExplanation = await memory.explain(lowLevelMemory.id, "test");
 assert.equal(updatedLowLevelExplanation?.evidence[0]?.sourceType, "sdk.low_level_update");
 assert.equal(
