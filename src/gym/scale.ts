@@ -56,6 +56,8 @@ export interface MemoryScaleBenchmarkResult {
   results: MemoryScaleBenchmarkRow[];
 }
 
+const DEFAULT_SCALE_ITERATIONS = 32;
+
 function percentile(values: number[], rate: number): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
@@ -89,7 +91,7 @@ export async function runMemoryScaleBenchmark(
   } = {},
 ): Promise<MemoryScaleBenchmarkResult> {
   const sizes = options.sizes ?? [100, 1000];
-  const iterations = options.iterations ?? 16;
+  const iterations = options.iterations ?? DEFAULT_SCALE_ITERATIONS;
   const thresholdP95Ms = options.thresholdP95Ms ?? 250;
   if (
     sizes.length === 0 ||

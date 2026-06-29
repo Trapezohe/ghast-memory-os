@@ -1096,6 +1096,21 @@ function namedPersonEventCandidate(
   };
 }
 
+function humanRelationType(relationType: string): boolean {
+  return /^(?:daughter|son|child|kid|partner|spouse|wife|husband|女儿|儿子|孩子|小孩|伴侣|配偶|妻子|丈夫)$/iu.test(
+    relationType.trim(),
+  );
+}
+
+function appositiveRelationTailContradicts(tail: string | undefined, relationType: string): boolean {
+  if (!tail) return false;
+  const relation = relationType.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return new RegExp(
+    String.raw`\b(?:(?:(?:is|was|are|were)\s+)?(?:not|never)|(?:isn't|wasn't|aren't|weren't|isnt|wasnt))\s+(?:actually\s+)?(?:(?:his|her|their|my|our)\s+)?${relation}\b`,
+    "iu",
+  ).test(tail);
+}
+
 function namedPersonRelationCandidate(
   text: string,
   metadata?: Record<string, unknown> | undefined,
@@ -1119,7 +1134,7 @@ function namedPersonRelationCandidate(
     "u",
   ).exec(utterance);
   const appositivePossessiveMatch = new RegExp(
-    String.raw`^\s*(${namePattern})[’']s\s+(${relationPattern})\s*,?\s+(${englishName})\s*,?(?:\s+.{1,120})?\s*[.!?]?\s*$`,
+    String.raw`^\s*(${namePattern})[’']s\s+(${relationPattern})\s*,?\s+(${englishName})(?:\s*,?\s+(.{1,120}?))?\s*[.!?]?\s*$`,
     "u",
   ).exec(utterance);
   const name = (
@@ -1146,7 +1161,10 @@ function namedPersonRelationCandidate(
     ?.replace(/^["']|["']$/gu, "");
   const object = projectBeliefObject(rawObject);
   if (!name || !relationType || !object || !stableNamedPersonSubject(name)) return null;
-  if (inversePossessiveMatch && !stableNamedPersonSubject(object)) return null;
+  if (appositiveRelationTailContradicts(appositivePossessiveMatch?.[4], relationType)) return null;
+  if ((inversePossessiveMatch || humanRelationType(relationType)) && !stableNamedPersonSubject(object)) {
+    return null;
+  }
   if (!metadataParticipantsConfirmNamedPerson(name, metadata)) return null;
   return {
     kind: "fact",
@@ -1215,7 +1233,7 @@ function firstPersonNamedRelationCandidate(
     chineseCalled?.[2];
   const object = projectBeliefObject(rawName?.replace(/^["']|["']$/gu, ""));
   if (!relationType || !object) return null;
-  if ((englishInverse || chineseInverse) && !stableNamedPersonSubject(object)) return null;
+  if (humanRelationType(relationType) && !stableNamedPersonSubject(object)) return null;
   return {
     kind: "fact",
     content: text,

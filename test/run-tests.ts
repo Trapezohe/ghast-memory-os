@@ -4917,6 +4917,13 @@ assert.equal(
   extractRuleMemoryCandidates("I have a cat named Nova.")[0]?.metadata?.relationType,
   "cat",
 );
+assert.equal(
+  extractRuleMemoryCandidates("My daughter is named Emma.")[0]?.metadata?.relationType,
+  "daughter",
+);
+assert.equal(extractRuleMemoryCandidates("My daughter is named Chrome.").length, 0);
+assert.equal(extractRuleMemoryCandidates("I have a daughter named Chrome.").length, 0);
+assert.equal(extractRuleMemoryCandidates("Chrome is my daughter.").length, 0);
 const firstPersonInverseNamedRelationReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -5033,6 +5040,16 @@ assert.equal(appositiveNamedRelationCandidate?.predicate, "person.relation");
 assert.equal(appositiveNamedRelationCandidate?.subject, "person:Alex");
 assert.equal(appositiveNamedRelationCandidate?.object, "Emma");
 assert.equal(appositiveNamedRelationCandidate?.metadata?.relationType, "daughter");
+const appositivePetProductNameCandidate = extractRuleMemoryCandidates(
+  "Alex's cat Chrome needs a vet appointment.",
+  {
+    participants: ["Alex", "Blair"],
+  },
+)[0];
+assert.equal(appositivePetProductNameCandidate?.predicate, "person.relation");
+assert.equal(appositivePetProductNameCandidate?.subject, "person:Alex");
+assert.equal(appositivePetProductNameCandidate?.object, "Chrome");
+assert.equal(appositivePetProductNameCandidate?.metadata?.relationType, "cat");
 assert.equal(
   extractRuleMemoryCandidates("Alex has a Daughter named Emma.", {
     participants: ["Alex", "Blair"],
@@ -5043,6 +5060,30 @@ assert.equal(extractRuleMemoryCandidates("Alex's daughter is named Emma.").lengt
 assert.equal(extractRuleMemoryCandidates("Alex has a daughter named Emma.").length, 0);
 assert.equal(extractRuleMemoryCandidates("Emma is Alex's daughter.").length, 0);
 assert.equal(extractRuleMemoryCandidates("Alex's daughter Emma starts college in September.").length, 0);
+assert.equal(
+  extractRuleMemoryCandidates("Alex has a daughter named Chrome.", {
+    participants: ["Alex", "Blair"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("Alex's daughter Chrome starts college in September.", {
+    participants: ["Alex", "Blair"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("Alex's daughter Emma is not actually his daughter.", {
+    participants: ["Alex", "Blair"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("Alex's daughter Emma isn't actually his daughter.", {
+    participants: ["Alex", "Blair"],
+  }).length,
+  0,
+);
 assert.equal(extractRuleMemoryCandidates("Chrome is Alex's daughter.", {
   participants: ["Alex", "Blair"],
 }).length, 0);
@@ -13531,6 +13572,9 @@ assert.ok((scale.results[0]?.reconstructedPathCount.p95 ?? 0) > 0);
 assert.match(renderMemoryScaleMarkdown(scale), /gmOS Memory Scale Benchmark/);
 assert.match(renderMemoryScaleMarkdown(scale), /reconstructContext/);
 assert.match(renderMemoryScaleMarkdown(scale), /contextNoHitSearch/);
+const defaultScale = await runMemoryScaleBenchmark({ sizes: [10] });
+assert.equal(defaultScale.pass, true);
+assert.equal(defaultScale.results[0]?.prepareTurn.samples, 32);
 const scaleOutlierSummary = summarizeMemoryScaleLatenciesForTest([
   ...Array.from({ length: 15 }, () => 100),
   400,
