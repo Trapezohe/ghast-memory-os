@@ -1096,10 +1096,22 @@ function namedPersonEventCandidate(
   };
 }
 
+const ENGLISH_PET_RELATION_PATTERN = String.raw`[Dd]og|[Cc]at|[Pp]et`;
+const ENGLISH_HUMAN_RELATION_PATTERN =
+  String.raw`[Dd]aughter|[Ss]on|[Cc]hild|[Kk]id|[Pp]artner|[Ss]pouse|[Ww]ife|[Hh]usband|[Mm]other|[Mm]om|[Mm]um|[Ff]ather|[Dd]ad|[Pp]arent|[Bb]rother|[Ss]ister|[Ss]ibling|[Ff]riend|[Bb]est\s+[Ff]riend|[Rr]oommate|[Hh]ousemate|[Cc]olleague|[Cc]oworker|[Cc]o-worker|[Tt]eammate|[Mm]anager|[Bb]oss|[Bb]oyfriend|[Gg]irlfriend`;
+const ENGLISH_RELATION_PATTERN = String.raw`(?:${ENGLISH_PET_RELATION_PATTERN}|${ENGLISH_HUMAN_RELATION_PATTERN})`;
+const CHINESE_PET_RELATION_PATTERN = String.raw`狗|猫|宠物`;
+const CHINESE_HUMAN_RELATION_PATTERN =
+  String.raw`女儿|儿子|孩子|小孩|伴侣|配偶|妻子|丈夫|妈妈|母亲|爸爸|父亲|父母|家长|哥哥|弟弟|姐姐|妹妹|兄弟|姐妹|朋友|好友|室友|同事|队友|老板|经理|男友|女友|男朋友|女朋友`;
+const CHINESE_RELATION_PATTERN = String.raw`(?:${CHINESE_PET_RELATION_PATTERN}|${CHINESE_HUMAN_RELATION_PATTERN})`;
+
+const HUMAN_RELATION_TYPE_PATTERN = new RegExp(
+  String.raw`^(?:${ENGLISH_HUMAN_RELATION_PATTERN}|${CHINESE_HUMAN_RELATION_PATTERN})$`,
+  "iu",
+);
+
 function humanRelationType(relationType: string): boolean {
-  return /^(?:daughter|son|child|kid|partner|spouse|wife|husband|女儿|儿子|孩子|小孩|伴侣|配偶|妻子|丈夫)$/iu.test(
-    relationType.trim(),
-  );
+  return HUMAN_RELATION_TYPE_PATTERN.test(relationType.trim());
 }
 
 function appositiveRelationTailContradicts(tail: string | undefined, relationType: string): boolean {
@@ -1118,23 +1130,22 @@ function namedPersonRelationCandidate(
   const utterance = stripSpeakerPrefix(text);
   if (isQuestionLike(utterance)) return null;
   const namePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}`;
-  const relationPattern = String.raw`[Dd]og|[Cc]at|[Pp]et|[Dd]aughter|[Ss]on|[Cc]hild|[Kk]id|[Pp]artner|[Ss]pouse|[Ww]ife|[Hh]usband`;
   const englishNameCore = String.raw`\p{Lu}[\p{L}0-9_-]{0,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{0,30}){0,2}`;
   const englishName = String.raw`(?:${englishNameCore}|"${englishNameCore}"|'${englishNameCore}')`;
   const possessiveMatch = new RegExp(
-    String.raw`^\s*(${namePattern})[’']s\s+(${relationPattern})(?:'s)?\s+(?:[Nn]ame\s+[Ii]s|[Ii]s\s+[Nn]amed|[Ii]s\s+[Cc]alled)\s+(${englishName})\s*[.!?]?\s*$`,
+    String.raw`^\s*(${namePattern})[’']s\s+(${ENGLISH_RELATION_PATTERN})(?:'s)?\s+(?:[Nn]ame\s+[Ii]s|[Ii]s\s+[Nn]amed|[Ii]s\s+[Cc]alled)\s+(${englishName})\s*[.!?]?\s*$`,
     "u",
   ).exec(utterance);
   const hasMatch = new RegExp(
-    String.raw`^\s*(${namePattern})\s+has\s+(?:an?\s+)?(${relationPattern})\s+(?:named|called)\s+(${englishName})\s*[.!?]?\s*$`,
+    String.raw`^\s*(${namePattern})\s+has\s+(?:an?\s+)?(${ENGLISH_RELATION_PATTERN})\s+(?:named|called)\s+(${englishName})\s*[.!?]?\s*$`,
     "u",
   ).exec(utterance);
   const inversePossessiveMatch = new RegExp(
-    String.raw`^\s*(${englishName})\s+(?:is|was)\s+(${namePattern})[’']s\s+(${relationPattern})\s*[.!?]?\s*$`,
+    String.raw`^\s*(${englishName})\s+(?:is|was)\s+(${namePattern})[’']s\s+(${ENGLISH_RELATION_PATTERN})\s*[.!?]?\s*$`,
     "u",
   ).exec(utterance);
   const appositivePossessiveMatch = new RegExp(
-    String.raw`^\s*(${namePattern})[’']s\s+(${relationPattern})\s*,?\s+(${englishName})(?:\s*,?\s+(.{1,120}?))?\s*[.!?]?\s*$`,
+    String.raw`^\s*(${namePattern})[’']s\s+(${ENGLISH_RELATION_PATTERN})\s*,?\s+(${englishName})(?:\s*,?\s+(.{1,120}?))?\s*[.!?]?\s*$`,
     "u",
   ).exec(utterance);
   const name = (
@@ -1187,31 +1198,30 @@ function firstPersonNamedRelationCandidate(
   if (isQuestionLike(utterance)) return null;
   const englishNameCore = String.raw`\p{Lu}[\p{L}0-9_-]{0,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{0,30}){0,2}`;
   const englishName = String.raw`(?:${englishNameCore}|"${englishNameCore}"|'${englishNameCore}')`;
-  const relationPattern = String.raw`[Dd]og|[Cc]at|[Pp]et|[Dd]aughter|[Ss]on|[Cc]hild|[Kk]id|[Pp]artner|[Ss]pouse|[Ww]ife|[Hh]usband`;
   const chineseExplicitName = String.raw`(?:[\p{Script=Han}]{1,6}|[A-Z][A-Za-z0-9_-]{0,30})`;
   const latinName = String.raw`[A-Z][A-Za-z0-9_-]{0,30}`;
   const english = new RegExp(
-    String.raw`^\s*[Mm]y\s+(${relationPattern})(?:'s)?\s+(?:[Nn]ame\s+[Ii]s|[Ii]s\s+[Nn]amed|[Ii]s\s+[Cc]alled)\s+(${englishName})\s*[.!?]?\s*$`,
+    String.raw`^\s*[Mm]y\s+(${ENGLISH_RELATION_PATTERN})(?:'s)?\s+(?:[Nn]ame\s+[Ii]s|[Ii]s\s+[Nn]amed|[Ii]s\s+[Cc]alled)\s+(${englishName})\s*[.!?]?\s*$`,
     "u",
   ).exec(utterance);
   const englishHave = new RegExp(
-    String.raw`^\s*I\s+have\s+(?:an?\s+)?(${relationPattern})\s+(?:named|called)\s+(${englishName})\s*[.!?]?\s*$`,
+    String.raw`^\s*I\s+have\s+(?:an?\s+)?(${ENGLISH_RELATION_PATTERN})\s+(?:named|called)\s+(${englishName})\s*[.!?]?\s*$`,
     "u",
   ).exec(utterance);
   const englishInverse = new RegExp(
-    String.raw`^\s*(${englishName})\s+(?:is|was)\s+my\s+(${relationPattern})\s*[.!?]?\s*$`,
+    String.raw`^\s*(${englishName})\s+(?:is|was)\s+my\s+(${ENGLISH_RELATION_PATTERN})\s*[.!?]?\s*$`,
     "u",
   ).exec(utterance);
   const chineseExplicit = new RegExp(
-    String.raw`^\s*我的\s*(狗|猫|宠物|女儿|儿子|孩子|伴侣|配偶|妻子|丈夫)\s*(?:名叫|名字是|姓名是)\s*(${chineseExplicitName})\s*[。.!?]?\s*$`,
+    String.raw`^\s*我的\s*(${CHINESE_RELATION_PATTERN})\s*(?:名叫|名字是|姓名是)\s*(${chineseExplicitName})\s*[。.!?]?\s*$`,
     "u",
   ).exec(utterance);
   const chineseInverse = new RegExp(
-    String.raw`^\s*(${chineseExplicitName})\s*是我的\s*(狗|猫|宠物|女儿|儿子|孩子|伴侣|配偶|妻子|丈夫)\s*[。.!?]?\s*$`,
+    String.raw`^\s*(${chineseExplicitName})\s*是我的\s*(${CHINESE_RELATION_PATTERN})\s*[。.!?]?\s*$`,
     "u",
   ).exec(utterance);
   const chineseCalled = new RegExp(
-    String.raw`^\s*我的\s*(狗|猫|宠物|女儿|儿子|孩子|伴侣|配偶|妻子|丈夫)\s*叫\s*(${latinName})\s*[。.!?]?\s*$`,
+    String.raw`^\s*我的\s*(${CHINESE_RELATION_PATTERN})\s*叫\s*(${latinName})\s*[。.!?]?\s*$`,
     "u",
   ).exec(utterance);
   const relationType = (

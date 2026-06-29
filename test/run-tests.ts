@@ -4917,6 +4917,18 @@ assert.equal(
   extractRuleMemoryCandidates("I have a cat named Nova.")[0]?.metadata?.relationType,
   "cat",
 );
+const firstPersonFriendCandidate = extractRuleMemoryCandidates("I have a friend named Riley.")[0];
+assert.equal(firstPersonFriendCandidate?.predicate, "person.relation");
+assert.equal(firstPersonFriendCandidate?.object, "Riley");
+assert.equal(firstPersonFriendCandidate?.metadata?.relationType, "friend");
+const firstPersonChineseFriendCandidate = extractRuleMemoryCandidates("我的朋友名叫小李。")[0];
+assert.equal(firstPersonChineseFriendCandidate?.predicate, "person.relation");
+assert.equal(firstPersonChineseFriendCandidate?.object, "小李");
+assert.equal(firstPersonChineseFriendCandidate?.metadata?.relationType, "朋友");
+const firstPersonChinesePetCandidate = extractRuleMemoryCandidates("我的猫名叫小白。")[0];
+assert.equal(firstPersonChinesePetCandidate?.predicate, "person.relation");
+assert.equal(firstPersonChinesePetCandidate?.object, "小白");
+assert.equal(firstPersonChinesePetCandidate?.metadata?.relationType, "猫");
 assert.equal(
   extractRuleMemoryCandidates("My daughter is named Emma.")[0]?.metadata?.relationType,
   "daughter",
@@ -4924,6 +4936,10 @@ assert.equal(
 assert.equal(extractRuleMemoryCandidates("My daughter is named Chrome.").length, 0);
 assert.equal(extractRuleMemoryCandidates("I have a daughter named Chrome.").length, 0);
 assert.equal(extractRuleMemoryCandidates("Chrome is my daughter.").length, 0);
+assert.equal(extractRuleMemoryCandidates("My friend is named Chrome.").length, 0);
+assert.equal(extractRuleMemoryCandidates("I have a roommate named Chrome.").length, 0);
+assert.equal(extractRuleMemoryCandidates("我的女儿叫Chrome。").length, 0);
+assert.equal(extractRuleMemoryCandidates("Chrome是我的朋友。").length, 0);
 const firstPersonInverseNamedRelationReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -5023,6 +5039,20 @@ assert.equal(directHasNamedRelationCandidate?.predicate, "person.relation");
 assert.equal(directHasNamedRelationCandidate?.subject, "person:Alex");
 assert.equal(directHasNamedRelationCandidate?.object, "Emma");
 assert.equal(directHasNamedRelationCandidate?.metadata?.relationType, "daughter");
+const directFriendRelationCandidate = extractRuleMemoryCandidates("Alex has a friend named Riley.", {
+  participants: ["Alex", "Blair"],
+})[0];
+assert.equal(directFriendRelationCandidate?.predicate, "person.relation");
+assert.equal(directFriendRelationCandidate?.subject, "person:Alex");
+assert.equal(directFriendRelationCandidate?.object, "Riley");
+assert.equal(directFriendRelationCandidate?.metadata?.relationType, "friend");
+const directMotherRelationCandidate = extractRuleMemoryCandidates("Alex's mother is named Dana.", {
+  participants: ["Alex", "Blair"],
+})[0];
+assert.equal(directMotherRelationCandidate?.predicate, "person.relation");
+assert.equal(directMotherRelationCandidate?.subject, "person:Alex");
+assert.equal(directMotherRelationCandidate?.object, "Dana");
+assert.equal(directMotherRelationCandidate?.metadata?.relationType, "mother");
 const inverseNamedRelationCandidate = extractRuleMemoryCandidates("Emma is Alex's daughter.", {
   participants: ["Alex", "Blair"],
 })[0];
@@ -5030,6 +5060,13 @@ assert.equal(inverseNamedRelationCandidate?.predicate, "person.relation");
 assert.equal(inverseNamedRelationCandidate?.subject, "person:Alex");
 assert.equal(inverseNamedRelationCandidate?.object, "Emma");
 assert.equal(inverseNamedRelationCandidate?.metadata?.relationType, "daughter");
+const inverseRoommateRelationCandidate = extractRuleMemoryCandidates("Jordan is Alex's roommate.", {
+  participants: ["Alex", "Blair"],
+})[0];
+assert.equal(inverseRoommateRelationCandidate?.predicate, "person.relation");
+assert.equal(inverseRoommateRelationCandidate?.subject, "person:Alex");
+assert.equal(inverseRoommateRelationCandidate?.object, "Jordan");
+assert.equal(inverseRoommateRelationCandidate?.metadata?.relationType, "roommate");
 const appositiveNamedRelationCandidate = extractRuleMemoryCandidates(
   "Alex's daughter Emma starts college in September.",
   {
@@ -5040,6 +5077,16 @@ assert.equal(appositiveNamedRelationCandidate?.predicate, "person.relation");
 assert.equal(appositiveNamedRelationCandidate?.subject, "person:Alex");
 assert.equal(appositiveNamedRelationCandidate?.object, "Emma");
 assert.equal(appositiveNamedRelationCandidate?.metadata?.relationType, "daughter");
+const appositiveCoworkerRelationCandidate = extractRuleMemoryCandidates(
+  "Alex's coworker Morgan starts on Monday.",
+  {
+    participants: ["Alex", "Blair"],
+  },
+)[0];
+assert.equal(appositiveCoworkerRelationCandidate?.predicate, "person.relation");
+assert.equal(appositiveCoworkerRelationCandidate?.subject, "person:Alex");
+assert.equal(appositiveCoworkerRelationCandidate?.object, "Morgan");
+assert.equal(appositiveCoworkerRelationCandidate?.metadata?.relationType, "coworker");
 const appositivePetProductNameCandidate = extractRuleMemoryCandidates(
   "Alex's cat Chrome needs a vet appointment.",
   {
@@ -5068,6 +5115,18 @@ assert.equal(
 );
 assert.equal(
   extractRuleMemoryCandidates("Alex's daughter Chrome starts college in September.", {
+    participants: ["Alex", "Blair"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("Alex has a friend named Chrome.", {
+    participants: ["Alex", "Blair"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("Alex's coworker Chrome starts on Monday.", {
     participants: ["Alex", "Blair"],
   }).length,
   0,
