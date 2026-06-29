@@ -2,9 +2,27 @@ name: CI
 
 on:
   pull_request:
-  push:
     branches:
       - main
+    paths:
+      - ".github/workflows/ci.yml"
+      - "examples/**"
+      - "package-lock.json"
+      - "package.json"
+      - "scripts/**"
+      - "src/**"
+      - "test/**"
+      - "tsconfig.json"
+  push:
+    # Routine branch pushes are intentionally excluded to avoid billed CI runs.
+    # Use pull requests, manual workflow_dispatch, or v* release tags when CI is needed.
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
