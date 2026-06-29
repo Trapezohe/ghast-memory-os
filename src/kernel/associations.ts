@@ -4,6 +4,7 @@ import type {
   MemoryRecord,
   WorldBeliefRecord,
 } from "./types.js";
+import { entityMentionCues } from "./entities.js";
 import { stableNamedPersonSubject } from "./extraction.js";
 import { normalizeExplicitTemporalInstant } from "./temporal-validity.js";
 
@@ -247,10 +248,14 @@ function metadataTemporalCues(metadata: Record<string, unknown>): string[] {
 export function sourceMetadataEntityCues(metadata: Record<string, unknown>): string[] {
   const sourceMetadata = metadata.sourceMetadata;
   const subjectCues = entitySubjectCues(metadata);
-  if (!sourceMetadata || typeof sourceMetadata !== "object" || Array.isArray(sourceMetadata)) return subjectCues;
+  const mentionCues = entityMentionCues(metadata);
+  if (!sourceMetadata || typeof sourceMetadata !== "object" || Array.isArray(sourceMetadata)) {
+    return unique([...subjectCues, ...mentionCues]);
+  }
   const record = sourceMetadata as Record<string, unknown>;
   return unique([
     ...subjectCues,
+    ...mentionCues,
     normalizedMetadataValue(record, "speaker") ?? "",
     ...metadataStringArray(record, "speakerAliases"),
   ]);

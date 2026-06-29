@@ -1,4 +1,5 @@
 import { classifySensitivity } from "./safety.js";
+import { stableNamedPersonSubject } from "./extraction.js";
 
 export interface EntityResolutionInput {
   subject: string;
@@ -13,6 +14,35 @@ export interface EntityResolutionResult {
   entityKey: string | null;
   aliases: string[];
 }
+
+export type EntityMentionRole =
+  | "subject"
+  | "subject_alias"
+  | "source_speaker"
+  | "source_speaker_alias"
+  | "participant";
+
+export interface EntityMention {
+  role: EntityMentionRole;
+  value: string;
+  key: string;
+  kind: string;
+  cueEligible: boolean;
+}
+
+export interface EntityMentionInput {
+  subject?: string | undefined;
+  predicate?: string | undefined;
+  subjectAliases?: string[] | undefined;
+  sourceMetadata?: Record<string, unknown> | undefined;
+}
+
+const ASSOCIATION_CUE_ENTITY_MENTION_ROLES = new Set<EntityMentionRole>([
+  "subject",
+  "subject_alias",
+  "source_speaker",
+  "source_speaker_alias",
+]);
 
 const PREFIX_KINDS = new Set([
   "project",
@@ -52,6 +82,17 @@ function unique(values: string[]): string[] {
 
 function publicAlias(value: string): string {
   return classifySensitivity(value) === "normal" ? value : "";
+}
+
+function publicEntityValue(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const compacted = compact(value);
+  if (!compacted || classifySensitivity(compacted) !== "normal") return "";
+  return compacted;
+}
+
+function publicStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(publicEntityValue).filter(Boolean) : [];
 }
 
 function kindFromPredicate(predicate: string | undefined): string | null {
@@ -130,4 +171,121 @@ export function entityResolutionMetadata(
     ...(resolution.entityKind ? { kind: resolution.entityKind } : {}),
     ...(resolution.entityKey ? { key: resolution.entityKey } : {}),
   };
+}
+
+function personSubjectValue(value: string): string {
+  return compact(value.match(/^person\s*[:/]\s*(.+)$/iu)?.[1] ?? value);
+}
+
+function mentionKey(value: string): string {
+  return key(value);
+}
+
+function addMention(
+  mentions: EntityMention[],
+  input: {
+    role: EntityMentionRole;
+    value: string;
+    kind: string;
+    cueEligible: boolean;
+  },
+): void {
+  const value = publicEntityValue(input.value);
+  const mentionKeyValue = mentionKey(value);
+  if (mentionKeyValue.length < 2) return;
+  const existing = mentions.find(
+    (mention) => mention.role === input.role && mention.key === mentionKeyValue,
+  );
+  if (existing) {
+    existing.cueEligible = existing.cueEligible || input.cueEligible;
+    return;
+  }
+  mentions.push({
+    role: input.role,
+    value,
+    key: mentionKeyValue,
+    kind: input.kind,
+    cueEligible: input.cueEligible,
+  });
+}
+
+export function buildEntityMentions(input: EntityMentionInput): EntityMention[] {
+  const mentions: EntityMention[] = [];
+  if (input.subject) {
+    const resolution = resolveWorldEntitySubject({
+      subject: input.subject,
+      predicate: input.predicate,
+      aliases: input.subjectAliases,
+    });
+    if (resolution.entityKind && resolution.entityKind !== "user") {
+      const subjectValue =
+        resolution.entityKind === "person"
+          ? personSubjectValue(resolution.originalSubject)
+          : resolution.entityKey ?? resolution.originalSubject;
+      addMention(mentions, {
+        role: "subject",
+        value: subjectValue,
+        kind: resolution.entityKind,
+        cueEligible: true,
+      });
+      for (const alias of resolution.aliases) {
+        const value = resolution.entityKind === "person" ? personSubjectValue(alias) : alias;
+        addMention(mentions, {
+          role: "subject_alias",
+          value,
+          kind: resolution.entityKind,
+          cueEligible: true,
+        });
+      }
+    }
+  }
+
+  const sourceMetadata = input.sourceMetadata ?? {};
+  const speaker = publicEntityValue(sourceMetadata.speaker);
+  if (speaker && stableNamedPersonSubject(speaker)) {
+    addMention(mentions, {
+      role: "source_speaker",
+      value: speaker,
+      kind: "person",
+      cueEligible: true,
+    });
+  }
+  for (const alias of publicStringArray(sourceMetadata.speakerAliases)) {
+    if (!stableNamedPersonSubject(alias)) continue;
+    addMention(mentions, {
+      role: "source_speaker_alias",
+      value: alias,
+      kind: "person",
+      cueEligible: true,
+    });
+  }
+  for (const participant of publicStringArray(sourceMetadata.participants)) {
+    if (!stableNamedPersonSubject(participant)) continue;
+    addMention(mentions, {
+      role: "participant",
+      value: participant,
+      kind: "person",
+      cueEligible: false,
+    });
+  }
+  return mentions;
+}
+
+export function entityMentionCues(metadata: Record<string, unknown>): string[] {
+  const mentions = metadata.entityMentions;
+  if (!Array.isArray(mentions)) return [];
+  return unique(
+    mentions.flatMap((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+      const record = entry as Record<string, unknown>;
+      if (record.cueEligible !== true) return [];
+      if (
+        typeof record.role !== "string" ||
+        !ASSOCIATION_CUE_ENTITY_MENTION_ROLES.has(record.role as EntityMentionRole)
+      ) {
+        return [];
+      }
+      return [publicEntityValue(record.value)];
+    }),
+  );
 }

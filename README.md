@@ -48,6 +48,10 @@ const prepared = await memory.prepareTurn({
 - Deterministic world-entity normalization for current-state beliefs. Equivalent
   subjects such as `Atlas project`, `project:atlas`, and `Project Atlas`
   converge before single-cardinality invalidation runs.
+- Entity mention metadata for accepted memories and world beliefs. gmOS records
+  subject, speaker, alias, and ambient participant mentions for audit, but only
+  cue-eligible subject/speaker/alias mentions are projected into strong
+  association cues so group participants do not pollute speaker-specific recall.
 - Historical recall mode for temporal/current-state questions. Ordinary context
   still suppresses superseded or out-of-window memories, while explicit
   `history` recall can retrieve those past facts without using manage/delete

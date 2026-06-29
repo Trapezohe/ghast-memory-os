@@ -24,6 +24,7 @@ import {
 } from "../src/index.js";
 import {
   associationCuesForBelief,
+  associationCuesForMemory,
   associationSummaryForBelief,
   extractAssociationCues,
 } from "../src/kernel/associations.js";
@@ -137,6 +138,38 @@ const beliefAssociationCueFixture = associationCuesForBelief({
 assert.equal(beliefAssociationCueFixture.some((cue) => cue.cue === "blair"), true);
 assert.equal(beliefAssociationCueFixture.some((cue) => cue.cue === "b"), false);
 assert.equal(beliefAssociationCueFixture.some((cue) => cue.cue === "alex"), false);
+const entityMentionMemoryAssociationFixture = associationCuesForMemory({
+  id: "memory-association-entity-mention-fixture",
+  profileId: "test",
+  kind: "project",
+  scope: "global",
+  content: "The current blocker is rollout audit.",
+  sensitivity: "normal",
+  status: "active",
+  confidence: 0.8,
+  metadata: {
+    entityMentions: [
+      {
+        role: "subject",
+        value: "Helio",
+        key: "helio",
+        kind: "project",
+        cueEligible: true,
+      },
+      {
+        role: "participant",
+        value: "Alex",
+        key: "alex",
+        kind: "person",
+        cueEligible: true,
+      },
+    ],
+  },
+  createdAt: "2026-06-20T00:00:00.000Z",
+  updatedAt: "2026-06-20T00:00:00.000Z",
+});
+assert.equal(entityMentionMemoryAssociationFixture.some((cue) => cue.cue === "helio"), true);
+assert.equal(entityMentionMemoryAssociationFixture.some((cue) => cue.cue === "alex"), false);
 const relationBeliefAssociationFixture = {
   id: "belief-association-relation-fixture",
   profileId: "test",
@@ -564,7 +597,26 @@ const extractorMemory = createMemoryOS({
           predicate: "project.state",
           subject: "Helio project",
           cardinality: "single",
-          metadata: { extractorFixture: "project" },
+          metadata: {
+            extractorFixture: "project",
+            entityMentions: [
+              {
+                role: "participant",
+                value: "Blair",
+                key: "blair",
+                kind: "person",
+                cueEligible: true,
+              },
+            ],
+            entityResolution: {
+              canonicalSubject: "person:blair",
+              aliases: ["Blair"],
+            },
+            sourceMetadata: {
+              speaker: "Blair",
+              speakerAliases: ["B"],
+            },
+          },
         },
       ];
     },
@@ -609,6 +661,54 @@ assert.equal(
   ),
   true,
 );
+const customExtractorDb = new Database(path.join(tmp, "custom-extractor.db"), { readonly: true });
+try {
+  const injectedProjectMemory = extractedProject.find((entry) =>
+    entry.content.includes("Helio project"),
+  );
+  const injectedMemoryMetadataJson = JSON.stringify(injectedProjectMemory?.metadata ?? {});
+  assert.equal(injectedMemoryMetadataJson.includes("Blair"), false);
+  assert.equal(injectedMemoryMetadataJson.includes("entityResolution"), false);
+  assert.equal(injectedMemoryMetadataJson.includes("sourceMetadata"), false);
+  const injectedMemoryEntityMentions = Array.isArray(injectedProjectMemory?.metadata.entityMentions)
+    ? injectedProjectMemory.metadata.entityMentions
+    : [];
+  assert.equal(
+    injectedMemoryEntityMentions.some(
+      (entry: unknown) =>
+        Boolean(entry) &&
+        typeof entry === "object" &&
+        !Array.isArray(entry) &&
+        (entry as { role?: unknown; value?: unknown }).role === "subject" &&
+        (entry as { role?: unknown; value?: unknown }).value === "helio",
+    ),
+    true,
+  );
+  const injectedProjectBelief = customExtractorDb
+    .prepare(
+      `SELECT metadata_json AS metadataJson
+       FROM gmos_world_beliefs
+       WHERE profile_id = ? AND source_memory_id = ?
+       LIMIT 1`,
+    )
+    .get("extractor", injectedProjectMemory?.id ?? "") as { metadataJson: string } | undefined;
+  const injectedBeliefMetadataJson = injectedProjectBelief?.metadataJson ?? "{}";
+  assert.equal(injectedBeliefMetadataJson.includes("Blair"), false);
+  assert.equal(injectedBeliefMetadataJson.includes("sourceMetadata"), false);
+  const injectedBlairAssociationCount = (
+    customExtractorDb
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM gmos_associations
+         WHERE profile_id = ?
+           AND lower(cue) = lower(?)`,
+      )
+      .get("extractor", "Blair") as { count: number }
+  ).count;
+  assert.equal(injectedBlairAssociationCount, 0);
+} finally {
+  customExtractorDb.close();
+}
 const speakerBeliefStore = createSqliteMemoryStore({
   path: path.join(tmp, "speaker-belief-extractor.db"),
 });
@@ -2707,6 +2807,19 @@ assert.equal(llmProjectMemory?.metadata.eventTime, "2026-06-20T00:00:00.000Z");
 assert.equal(llmProjectMemory?.metadata.validFrom, "2026-06-21T00:00:00.000Z");
 assert.equal(llmProjectMemory?.metadata.validTo, "2999-07-01T10:30:00.000Z");
 assert.equal(llmProjectMemory?.metadata.source, "dialogue:project-status");
+const llmProjectMemoryEntityMentions = llmProjectMemory?.metadata.entityMentions as
+  | Array<{ role?: string; value?: string; kind?: string; cueEligible?: boolean }>
+  | undefined;
+assert.equal(
+  llmProjectMemoryEntityMentions?.some(
+    (mention) =>
+      mention.role === "subject_alias" &&
+      mention.value === "StarlingAlias" &&
+      mention.kind === "project" &&
+      mention.cueEligible === true,
+  ),
+  true,
+);
 const llmExtractorDb = new Database(path.join(tmp, "llm-extractor.db"), { readonly: true });
 try {
   const llmProjectBeliefRow = llmExtractorDb
@@ -2741,6 +2854,19 @@ try {
   assert.equal(llmProjectBeliefMetadataJson.includes("leaked llm extractor oracle"), false);
   assert.equal(llmProjectBeliefMetadataJson.includes("leaked llm extractor adversarial"), false);
   assert.equal(llmProjectBeliefMetadataJson.includes("leaked llm extractor label"), false);
+  const llmProjectBeliefEntityMentions = llmProjectBeliefMetadata.entityMentions as
+    | Array<{ role?: string; value?: string; kind?: string; cueEligible?: boolean }>
+    | undefined;
+  assert.equal(
+    llmProjectBeliefEntityMentions?.some(
+      (mention) =>
+        mention.role === "subject_alias" &&
+        mention.value === "StarlingAlias" &&
+        mention.kind === "project" &&
+        mention.cueEligible === true,
+    ),
+    true,
+  );
   const llmProjectEntity = llmProjectBeliefMetadata.entityResolution as
     | { aliases?: unknown }
     | undefined;
@@ -2751,6 +2877,19 @@ try {
       llmProjectEntity.aliases.includes("StarlingAlias"),
     true,
   );
+  const starlingMemoryAssociationCount = (
+    llmExtractorDb
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM gmos_associations
+         WHERE profile_id = ?
+           AND target_type = 'memory'
+           AND target_id = ?
+           AND lower(cue) = lower(?)`,
+      )
+      .get("llm_extractor", llmProjectMemory?.id ?? "", "StarlingAlias") as { count: number }
+  ).count;
+  assert.equal(starlingMemoryAssociationCount > 0, true);
 } finally {
   llmExtractorDb.close();
 }

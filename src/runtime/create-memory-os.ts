@@ -8,6 +8,7 @@ import {
   sourceMetadataEntityCues,
 } from "../kernel/associations.js";
 import { composeTurnContext } from "../kernel/context-composer.js";
+import { buildEntityMentions } from "../kernel/entities.js";
 import { buildEvidencePathExplanation } from "../kernel/evidence-path.js";
 import {
   extractMemoryCandidatePlan,
@@ -87,6 +88,16 @@ function sourceMetadataForEvent(event: Extract<HostEvent, { type: "conversation.
   const inferredSpeaker = inferSpeakerPrefix(event.content);
   if (!inferredSpeaker) return explicit;
   return { ...explicit, speaker: inferredSpeaker };
+}
+
+const GMOS_OWNED_METADATA_KEYS = new Set(["entityMentions", "entityResolution", "sourceMetadata"]);
+
+function sanitizeExternalMemoryMetadata(
+  metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const sanitized = sanitizePublicPayloadRecord(metadata ?? {});
+  for (const key of GMOS_OWNED_METADATA_KEYS) delete sanitized[key];
+  return sanitized;
 }
 
 function publicSpeaker(value: unknown): string | undefined {
@@ -346,7 +357,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       sensitivity,
       sourceEventId: evidence.id,
       metadata: {
-        ...sanitizePublicPayloadRecord(input.metadata ?? {}),
+        ...sanitizeExternalMemoryMetadata(input.metadata),
         lowLevelApi: true,
       },
       createdAt,
@@ -377,11 +388,12 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       sensitivity: input.sensitivity ?? existing.sensitivity,
     });
     const updatedAt = input.updatedAt ?? nowIso();
+    const inputMetadata = sanitizeExternalMemoryMetadata(input.metadata);
     const metadata = input.replaceMetadata
-      ? sanitizePublicPayloadRecord(input.metadata ?? {})
+      ? inputMetadata
       : {
           ...existing.metadata,
-          ...sanitizePublicPayloadRecord(input.metadata ?? {}),
+          ...inputMetadata,
         };
     const evidence = await store.recordEvidence({
       profileId,
@@ -617,6 +629,12 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       ) {
         continue;
       }
+      const memoryEntityMentions = buildEntityMentions({
+        subject: candidate.subject,
+        predicate: candidate.predicate,
+        subjectAliases: candidate.subjectAliases,
+        sourceMetadata: eventMetadata,
+      });
       const memory = await store.addMemory({
         profileId,
         kind: candidate.kind,
@@ -625,12 +643,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         sensitivity: sensitivity === "sensitive" ? sensitivity : candidateSensitivity,
         sourceEventId: evidence.id,
         metadata: {
-          ...sanitizePublicPayloadRecord(candidate.metadata ?? {}),
+          ...sanitizeExternalMemoryMetadata(candidate.metadata),
           ...(Object.keys(eventMetadata).length > 0 ? { sourceMetadata: eventMetadata } : {}),
           actionPolicyKind: candidate.actionPolicyKind,
           predicate: candidate.predicate,
           ...(candidate.subject ? { subject: candidate.subject } : {}),
           ...(candidate.subjectAliases ? { subjectAliases: candidate.subjectAliases } : {}),
+          ...(memoryEntityMentions.length > 0 ? { entityMentions: memoryEntityMentions } : {}),
         },
         createdAt: event.createdAt,
       });
@@ -641,14 +660,21 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           eventContent: event.content,
           eventMetadata,
         });
+        const subjectAliases = worldBeliefSubjectAliasesForCandidate({
+          candidate,
+          subject,
+          eventMetadata,
+        });
+        const beliefEntityMentions = buildEntityMentions({
+          subject,
+          predicate: candidate.predicate,
+          subjectAliases,
+          sourceMetadata: eventMetadata,
+        });
         const belief = await store.addWorldBelief({
           profileId,
           subject,
-          subjectAliases: worldBeliefSubjectAliasesForCandidate({
-            candidate,
-            subject,
-            eventMetadata,
-          }),
+          subjectAliases,
           predicate: candidate.predicate,
           object: candidate.object ?? candidate.content,
           confidence: candidate.confidence,
@@ -656,8 +682,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           cardinality: candidate.cardinality,
           createdAt: event.createdAt ?? memory.createdAt,
           metadata: {
-            ...sanitizePublicPayloadRecord(candidate.metadata ?? {}),
+            ...sanitizeExternalMemoryMetadata(candidate.metadata),
             ...(Object.keys(eventMetadata).length > 0 ? { sourceMetadata: eventMetadata } : {}),
+            ...(beliefEntityMentions.length > 0 ? { entityMentions: beliefEntityMentions } : {}),
           },
         });
         result.worldBeliefIds.push(belief.id);
