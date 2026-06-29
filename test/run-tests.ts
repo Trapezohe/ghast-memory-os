@@ -11404,8 +11404,20 @@ assert.equal(externalSuiteExecution.result.runs[0]?.caseGroupCount >= 1, true);
 assert.equal(externalSuiteExecution.result.runs[0]?.warningCount, 0);
 assert.equal(externalSuiteExecution.reports.passing?.pass, true);
 assert.equal(externalSuiteExecution.reports.failing?.pass, false);
+assert.equal((externalSuiteExecution.reports.failing?.cases[0]?.durationMs ?? -1) >= 0, true);
+assert.equal((externalSuiteExecution.reports.failing?.summary.slowestCases.length ?? 0) > 0, true);
+assert.equal((externalSuiteExecution.reports.failing?.summary.slowestCaseGroups.length ?? 0) > 0, true);
 assert.equal(externalSuiteExecution.reports.failing?.summary.failureSampleLimit, 0);
 assert.equal(externalSuiteExecution.reports.failing?.summary.failureSamples.length, 0);
+assert.match(
+  renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!),
+  /Slowest cases: suite-fail-case=\d+ms FAIL/,
+);
+assert.match(
+  renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!),
+  /Slowest case groups: case:0=\d+ms setup=\d+ms scoring=\d+ms cases=0\/1 events=1/,
+);
+assert.match(renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!), /Duration ms/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /BenchmarkStatus: FAIL/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Weighted score:/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Failure reasons: expected_all_missing=1/);
@@ -12967,7 +12979,10 @@ assert.equal(cliLocomoJson.runManifest?.execution?.caseGroupCount, 1);
 assert.equal(cliLocomoJson.runManifest?.execution?.reusedProfileCaseCount, 0);
 assert.equal(cliLocomoJson.runManifest?.options?.concurrency, 2);
 assert.equal(cliLocomoJson.runManifest?.options?.reuseProfiles, true);
-assert.match(cliLocomoExternal.stderr, /\[gmos external\] 1\/1 pass case=locomo-cli-atlas:qa-1/);
+assert.match(
+  cliLocomoExternal.stderr,
+  /\[gmos external\] 1\/1 pass case=locomo-cli-atlas:qa-1 durationMs=\d+ passed=1 failed=0/,
+);
 const stateBenchArtifactFile = path.join(tmp, "statebench-learnings.json");
 const cliStateBenchBuild = spawnSync(
   process.execPath,

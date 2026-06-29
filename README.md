@@ -217,6 +217,11 @@ Suite Markdown reports also include a diagnostic summary of the slowest runs,
 weakest slice scores, and top failure stages/reasons. That summary is derived
 from existing run statistics only; it does not change scoring, adapter behavior,
 or runtime behavior.
+Single-run external reports include slowest case and case-group timing
+diagnostics. Case timing measures scoring/reconstruction for one question, while
+case-group timing separates profile setup from scoring so long-history datasets
+can show whether time is spent ingesting events or answering questions. These
+timing fields are diagnostic only and do not affect pass/fail scoring.
 When an expected answer is not an exact substring but is present after simple
 punctuation/spacing/date-format-or-order/number-grouping normalization, the report uses
 `answer_normalization_mismatch` instead of `answer_not_in_input` so adapter

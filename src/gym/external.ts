@@ -122,6 +122,30 @@ export interface ExternalMemoryBenchmarkCaseResult {
   promptTokenEstimate: number;
   retrievedMemoryCount: number;
   reconstructedPathCount: number;
+  durationMs: number;
+}
+
+export interface ExternalMemoryBenchmarkCaseTiming {
+  id: string;
+  pass: boolean;
+  mode: ExternalMemoryBenchmarkMode;
+  temporalMode: ExternalMemoryBenchmarkTemporalMode | null;
+  durationMs: number;
+  promptTokenEstimate: number;
+  retrievedMemoryCount: number;
+  reconstructedPathCount: number;
+}
+
+export interface ExternalMemoryBenchmarkGroupTiming {
+  groupKey: string;
+  caseCount: number;
+  eventCount: number;
+  caseIds: string[];
+  durationMs: number;
+  setupDurationMs: number;
+  scoringDurationMs: number;
+  passedCount: number;
+  failedCount: number;
 }
 
 export interface ExternalMemoryBenchmarkCounter {
@@ -155,6 +179,7 @@ export interface ExternalMemoryBenchmarkFailureSample {
   promptTokenEstimate: number;
   retrievedMemoryCount: number;
   reconstructedPathCount: number;
+  durationMs: number;
 }
 
 export interface ExternalMemoryBenchmarkSummary {
@@ -173,6 +198,8 @@ export interface ExternalMemoryBenchmarkSummary {
     notReached: number;
     unknown: number;
   };
+  slowestCases: ExternalMemoryBenchmarkCaseTiming[];
+  slowestCaseGroups: ExternalMemoryBenchmarkGroupTiming[];
   failureSampleLimit: number;
   failureSamples: ExternalMemoryBenchmarkFailureSample[];
 }
@@ -262,6 +289,7 @@ export interface ExternalMemoryBenchmarkProgress {
   caseId: string;
   caseIndex: number;
   pass: boolean;
+  durationMs: number;
 }
 
 interface NormalizedCaseInput {
@@ -1122,12 +1150,27 @@ function failureSampleForCase(
     promptTokenEstimate: entry.promptTokenEstimate,
     retrievedMemoryCount: entry.retrievedMemoryCount,
     reconstructedPathCount: entry.reconstructedPathCount,
+    durationMs: entry.durationMs,
+  };
+}
+
+function caseTiming(entry: ExternalMemoryBenchmarkCaseResult): ExternalMemoryBenchmarkCaseTiming {
+  return {
+    id: entry.id,
+    pass: entry.pass,
+    mode: entry.mode,
+    temporalMode: entry.temporalMode,
+    durationMs: entry.durationMs,
+    promptTokenEstimate: entry.promptTokenEstimate,
+    retrievedMemoryCount: entry.retrievedMemoryCount,
+    reconstructedPathCount: entry.reconstructedPathCount,
   };
 }
 
 function buildExternalMemoryBenchmarkSummary(
   cases: ExternalMemoryBenchmarkCaseResult[],
   failureSampleLimit: number,
+  groupTimings: ExternalMemoryBenchmarkGroupTiming[] = [],
 ): ExternalMemoryBenchmarkSummary {
   const failureReasonCounts = new Map<string, number>();
   const failureStageCounts = new Map<string, number>();
@@ -1184,6 +1227,13 @@ function buildExternalMemoryBenchmarkSummary(
     warnings: sortedCounters(warningCounts),
     uncertaintyLevels,
     evidenceConvergence,
+    slowestCases: [...cases]
+      .sort((left, right) => right.durationMs - left.durationMs || left.id.localeCompare(right.id))
+      .slice(0, 20)
+      .map(caseTiming),
+    slowestCaseGroups: [...groupTimings]
+      .sort((left, right) => right.durationMs - left.durationMs || left.groupKey.localeCompare(right.groupKey))
+      .slice(0, 20),
     failureSampleLimit,
     failureSamples,
   };
@@ -1295,6 +1345,7 @@ async function scoreCase(input: {
   index: number;
   options: RunExternalMemoryBenchmarkOptions;
 }): Promise<ExternalMemoryBenchmarkCaseResult> {
+  const startedMs = Date.now();
   const id = input.benchmarkCase.id ?? `case-${input.index + 1}`;
   const profileId = input.profileId;
   const mode = input.benchmarkCase.mode ?? input.options.mode ?? "reconstruct";
@@ -1382,6 +1433,7 @@ async function scoreCase(input: {
     retrievedMemoryCount:
       prepared?.stats.retrievedMemoryCount ?? reconstructed?.stats.retrievedMemoryCount ?? 0,
     reconstructedPathCount: reconstructed?.paths.length ?? 0,
+    durationMs: Math.max(0, Date.now() - startedMs),
   };
 }
 
@@ -1389,15 +1441,19 @@ async function runCaseGroup(input: {
   group: CaseGroup;
   options: RunExternalMemoryBenchmarkOptions;
   recordResult: (index: number, result: ExternalMemoryBenchmarkCaseResult) => void;
-}): Promise<void> {
+}): Promise<ExternalMemoryBenchmarkGroupTiming> {
+  const groupStartedMs = Date.now();
   const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-external-benchmark-"));
   const store = createSqliteMemoryStore({ path: path.join(tmp, "group.db") });
   const memory = createMemoryOS({ profileId: "external", store });
+  const results: ExternalMemoryBenchmarkCaseResult[] = [];
+  let setupDurationMs = 0;
   try {
     await store.initialize();
     for (const event of input.group.events) {
       await applyBenchmarkEvent(memory, input.group.profileId, event);
     }
+    setupDurationMs = Math.max(0, Date.now() - groupStartedMs);
     for (const item of input.group.items) {
       const result = await scoreCase({
         memory,
@@ -1406,8 +1462,23 @@ async function runCaseGroup(input: {
         index: item.index,
         options: input.options,
       });
+      results.push(result);
       input.recordResult(item.index, result);
     }
+    const durationMs = Math.max(0, Date.now() - groupStartedMs);
+    return {
+      groupKey: input.group.key,
+      caseCount: input.group.items.length,
+      eventCount: input.group.events.length,
+      caseIds: input.group.items
+        .slice(0, 5)
+        .map((item) => item.benchmarkCase.id ?? `case-${item.index + 1}`),
+      durationMs,
+      setupDurationMs,
+      scoringDurationMs: Math.max(0, durationMs - setupDurationMs),
+      passedCount: results.filter((result) => result.pass).length,
+      failedCount: results.filter((result) => !result.pass).length,
+    };
   } finally {
     await memory.close();
     rmSync(tmp, { recursive: true, force: true });
@@ -1417,19 +1488,21 @@ async function runCaseGroup(input: {
 async function runGroupsWithConcurrency(
   groups: CaseGroup[],
   concurrency: number,
-  worker: (group: CaseGroup) => Promise<void>,
-): Promise<void> {
+  worker: (group: CaseGroup) => Promise<ExternalMemoryBenchmarkGroupTiming>,
+): Promise<ExternalMemoryBenchmarkGroupTiming[]> {
   let next = 0;
+  const results: ExternalMemoryBenchmarkGroupTiming[] = [];
   const workerCount = Math.min(concurrency, groups.length);
   await Promise.all(
     Array.from({ length: workerCount }, async () => {
       while (next < groups.length) {
         const group = groups[next];
         next += 1;
-        if (group) await worker(group);
+        if (group) results.push(await worker(group));
       }
     }),
   );
+  return results;
 }
 
 export async function runExternalMemoryBenchmark(
@@ -1472,9 +1545,10 @@ export async function runExternalMemoryBenchmark(
       caseId: result.id,
       caseIndex: index,
       pass: result.pass,
+      durationMs: result.durationMs,
     });
   };
-  await runGroupsWithConcurrency(groups, concurrency, (group) =>
+  const groupTimings = await runGroupsWithConcurrency(groups, concurrency, (group) =>
     runCaseGroup({ group, options: normalizedOptions, recordResult }),
   );
   const completedCases = cases.map((entry, index) => {
@@ -1483,7 +1557,7 @@ export async function runExternalMemoryBenchmark(
   });
   const finalPassedCount = completedCases.filter((entry) => entry.pass).length;
   const finishedAt = new Date().toISOString();
-  const summary = buildExternalMemoryBenchmarkSummary(completedCases, failureSampleLimit);
+  const summary = buildExternalMemoryBenchmarkSummary(completedCases, failureSampleLimit, groupTimings);
   return {
     schema: "gmos.external_long_memory_qa.v1",
     pass: finalPassedCount === completedCases.length,

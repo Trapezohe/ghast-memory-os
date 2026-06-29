@@ -683,7 +683,7 @@ async function main(): Promise<void> {
             onCaseResult: (progress) => {
               const status = progress.pass ? "pass" : "fail";
               console.error(
-                `[gmos external] ${progress.completedCount}/${progress.totalCount} ${status} case=${progress.caseId} passed=${progress.passedCount} failed=${progress.failedCount}`,
+                `[gmos external] ${progress.completedCount}/${progress.totalCount} ${status} case=${progress.caseId} durationMs=${progress.durationMs} passed=${progress.passedCount} failed=${progress.failedCount}`,
               );
             },
           }
