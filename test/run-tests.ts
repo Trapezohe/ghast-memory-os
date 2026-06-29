@@ -3820,6 +3820,10 @@ const unsafeExtractorMemory = createMemoryOS({
       content: "Invalid custom extractor kind should not enter memory storage.",
       confidence: 0.99,
       predicate: "invalid.kind",
+      metadata: {
+        ordinaryBusinessKey: "ordinary-value",
+        subjectAliases: ["RejectedMetadataJordan"],
+      },
     },
   ],
 });
@@ -3852,6 +3856,14 @@ assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customtemporals
 assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customaliassecret"), false);
 assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customobjectsecret"), false);
 assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customsourcesecret"), false);
+const unsafeInvalidKindCandidate = unsafeExtractionReport.extraction?.decisions.find(
+  (decision) => decision.decision === "rejected" && decision.reason === "invalid_kind",
+)?.candidate;
+const unsafeInvalidKindMetadataJson = JSON.stringify(unsafeInvalidKindCandidate?.metadata ?? {});
+assert.equal(unsafeInvalidKindMetadataJson.includes("ordinaryBusinessKey"), true);
+assert.equal(unsafeInvalidKindMetadataJson.includes("ordinary-value"), true);
+assert.equal(unsafeInvalidKindMetadataJson.includes("subjectAliases"), false);
+assert.equal(unsafeInvalidKindMetadataJson.includes("RejectedMetadataJordan"), false);
 assert.equal(
   (
     await unsafeExtractorMemory.search({

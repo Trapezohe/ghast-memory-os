@@ -67,6 +67,13 @@ const NON_SPEAKER_PREFIXES = new Set([
   "示例",
   "说明",
 ]);
+
+const GMOS_OWNED_METADATA_KEYS = [
+  "entityMentions",
+  "entityResolution",
+  "sourceMetadata",
+  "subjectAliases",
+] as const;
 const CREDENTIAL_KEY_PATTERN =
   "api[\\s_.-]?key|access[\\s_.-]?token|refresh[\\s_.-]?token|id[\\s_.-]?token|client[\\s_.-]?secret|token|password|secret|auth(?:entication)?(?:[\\s_.-]?token)?|authorization|cookies?|credentials?(?:[\\s_.-]?id)?|session(?:[\\s_.-]?(?:id|token))?";
 const DOUBLE_QUOTED_CREDENTIAL_ASSIGNMENT_PATTERN = new RegExp(
@@ -144,6 +151,12 @@ export function sanitizePublicPayloadRecord(input: Record<string, unknown>): Rec
   const sanitized = sanitizePublicPayload(input);
   if (!sanitized || typeof sanitized !== "object" || Array.isArray(sanitized)) return {};
   return sanitized as Record<string, unknown>;
+}
+
+export function stripGmosOwnedMetadataFields(metadata: Record<string, unknown>): Record<string, unknown> {
+  const output = { ...metadata };
+  for (const key of GMOS_OWNED_METADATA_KEYS) delete output[key];
+  return output;
 }
 
 const PUBLIC_SOURCE_METADATA_KEYS = new Set([

@@ -26,6 +26,7 @@ import {
   sanitizeEvidenceForPublicOutput,
   sanitizePublicPayloadRecord,
   sanitizePublicSourceMetadata,
+  stripGmosOwnedMetadataFields,
 } from "../kernel/safety.js";
 import type {
   CommitOutcomeInput,
@@ -93,19 +94,10 @@ function sourceMetadataForEvent(event: Extract<HostEvent, { type: "conversation.
   return { ...explicit, speaker: inferredSpeaker };
 }
 
-const GMOS_OWNED_METADATA_KEYS = new Set([
-  "entityMentions",
-  "entityResolution",
-  "sourceMetadata",
-  "subjectAliases",
-]);
-
 function sanitizeExternalMemoryMetadata(
   metadata: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
-  const sanitized = sanitizePublicPayloadRecord(metadata ?? {});
-  for (const key of GMOS_OWNED_METADATA_KEYS) delete sanitized[key];
-  return sanitized;
+  return stripGmosOwnedMetadataFields(sanitizePublicPayloadRecord(metadata ?? {}));
 }
 
 function publicSpeaker(value: unknown): string | undefined {

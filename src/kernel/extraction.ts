@@ -17,6 +17,7 @@ import {
   isPersonRoutedMemory,
   redactForReport,
   sanitizePublicPayloadRecord,
+  stripGmosOwnedMetadataFields,
 } from "./safety.js";
 import { relativeEventDateMetadata } from "./temporal-format.js";
 import {
@@ -42,13 +43,6 @@ const KNOWN_MEMORY_KINDS = new Set([
   "project",
   "person",
   "task_trajectory",
-]);
-
-const REPORT_OWNED_METADATA_KEYS = new Set([
-  "entityMentions",
-  "entityResolution",
-  "sourceMetadata",
-  "subjectAliases",
 ]);
 
 function extractorName(extractor: MemoryExtractor | undefined): string | undefined {
@@ -86,9 +80,7 @@ function publicStringArray(value: unknown): string[] | undefined {
 }
 
 function sanitizeCandidateReportMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
-  const sanitized = sanitizePublicPayloadRecord(metadata);
-  for (const key of REPORT_OWNED_METADATA_KEYS) delete sanitized[key];
-  return sanitized;
+  return stripGmosOwnedMetadataFields(sanitizePublicPayloadRecord(metadata));
 }
 
 function subjectKey(input: string): string {
