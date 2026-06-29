@@ -2771,6 +2771,19 @@ const naturalDateValidityReconstruction = await naturalDateTemporalMemory.recons
 assert.match(naturalDateValidityReconstruction.contextBlock, /reviewer access/);
 assert.match(naturalDateValidityReconstruction.contextBlock, /valid_from=2023-05-10/);
 assert.match(naturalDateValidityReconstruction.contextBlock, /valid_to=2999-01-01/);
+const malformedValidityObservation = await naturalDateTemporalMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "natural-date-temporal",
+  role: "user",
+  content: "I need fallback reviewer access valid from February 30, 2023 until January 1, 2999.",
+});
+assert.equal(malformedValidityObservation.extraction?.acceptedCandidateCount, 1);
+const malformedValidityMemory = await naturalDateTemporalMemory.get({
+  profileId: "natural-date-temporal",
+  id: malformedValidityObservation.memoryIds[0]!,
+});
+assert.equal(malformedValidityMemory?.metadata.validFrom, undefined);
+assert.equal(malformedValidityMemory?.metadata.validTo, undefined);
 await naturalDateTemporalMemory.close();
 const directTemporalCueStore = createSqliteMemoryStore({
   path: path.join(tmp, "direct-temporal-cue.db"),
@@ -9044,7 +9057,36 @@ assert.deepEqual(
     validTo: "2023-06-01T00:00:00.000Z",
   },
 );
+assert.deepEqual(
+  explicitTemporalValidityMetadata("从2023年5月7日起到2023年6月1日为止"),
+  {
+    validFrom: "2023-05-07T00:00:00.000Z",
+    validTo: "2023-06-01T00:00:00.000Z",
+  },
+);
 assert.deepEqual(explicitTemporalValidityMetadata("valid from 2026-99-99"), {});
+assert.deepEqual(explicitTemporalValidityMetadata("valid from 2026-99-99 to 2026-07-01"), {});
+assert.deepEqual(explicitTemporalValidityMetadata("valid from February 30, 2023 to June 1, 2023"), {});
+assert.deepEqual(explicitTemporalValidityMetadata("valid from May 7, 2023 to February 30, 2023"), {});
+assert.deepEqual(explicitTemporalValidityMetadata("从2023年2月30日起到2023年6月1日为止"), {});
+assert.deepEqual(explicitTemporalValidityMetadata("valid from May 7, 2023 to June 1, 2023abc"), {});
+assert.deepEqual(explicitTemporalValidityMetadata("valid from 2026-01-01 to 2026-07-01abc"), {});
+assert.deepEqual(explicitTemporalValidityMetadata("从2023年5月7日起到2023年6月1日abc"), {});
+assert.deepEqual(explicitTemporalValidityMetadata("valid from May 7, 2023"), {
+  validFrom: "2023-05-07T00:00:00.000Z",
+});
+assert.deepEqual(
+  explicitTemporalValidityMetadata("valid from May 7, 2023 because migration to the new system is staged"),
+  {
+    validFrom: "2023-05-07T00:00:00.000Z",
+  },
+);
+assert.deepEqual(explicitTemporalValidityMetadata("until June 1, 2023"), {
+  validTo: "2023-06-01T00:00:00.000Z",
+});
+assert.deepEqual(explicitTemporalValidityMetadata("从2023年5月7日起迁移到新系统"), {
+  validFrom: "2023-05-07T00:00:00.000Z",
+});
 assert.deepEqual(explicitTemporalValidityMetadata("until tomorrow"), {});
 assert.deepEqual(explicitTemporalValidityMetadata("直到明天"), {});
 assert.deepEqual(explicitTemporalValidityMetadata("until 2026-07-01abc"), {});

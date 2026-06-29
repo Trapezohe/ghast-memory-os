@@ -186,6 +186,47 @@ function firstMatch(text: string, patterns: RegExp[]): string | null {
   return null;
 }
 
+function explicitValidityRangeMetadata(content: string): { matched: boolean; metadata: Record<string, string> } {
+  const patterns = [
+    new RegExp(
+      String.raw`\b(?:valid|active|effective)\s+from\s+(${ENGLISH_VALIDITY_TIME_VALUE})\s+(?:to|until|through)\s+(${ENGLISH_VALIDITY_TIME_VALUE})`,
+      "iu",
+    ),
+    new RegExp(
+      String.raw`(?:从|自)\s*(${HAN_VALIDITY_TIME_VALUE})\s*(?:开始|起)?\s*(?:到|至|直到|截止(?:到)?)\s*(${HAN_VALIDITY_TIME_VALUE})`,
+      "u",
+    ),
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(content);
+    const rawFrom = match?.[1];
+    const rawTo = match?.[2];
+    if (!rawFrom || !rawTo) continue;
+    const validFrom = normalizeExplicitTemporalInstant(rawFrom);
+    const validTo = normalizeExplicitTemporalInstant(rawTo);
+    return {
+      matched: true,
+      metadata: validFrom && validTo ? { validFrom, validTo } : {},
+    };
+  }
+  return { matched: looksLikeExplicitValidityRange(content), metadata: {} };
+}
+
+function looksLikeExplicitValidityRange(content: string): boolean {
+  const englishDateLike = String.raw`(?:\d{4}-\d{1,2}-\d{1,2}(?:T[^\s,.;，。:：;；]*)?|${MONTH_NAME}\s+${ORDINAL_DAY},?\s+\d{4}\S*|${ORDINAL_DAY}\s+${MONTH_NAME},?\s+\d{4}\S*)`;
+  const hanDateLike = String.raw`\d{4}年\d{1,2}月\d{1,2}日?\S*`;
+  return (
+    new RegExp(
+      String.raw`\b(?:valid|active|effective)\s+from\s+${englishDateLike}\s+(?:to|until|through)\s+${englishDateLike}`,
+      "iu",
+    ).test(content) ||
+    new RegExp(
+      String.raw`(?:从|自)\s*${hanDateLike}\s*(?:开始|起)?\s*(?:到|至|直到|截止(?:到)?)\s*${hanDateLike}`,
+      "u",
+    ).test(content)
+  );
+}
+
 function hasAny(metadata: Record<string, unknown>, keys: string[]): boolean {
   return keys.some((key) => typeof metadata[key] === "string" && String(metadata[key]).trim());
 }
@@ -215,6 +256,8 @@ export function explicitEventTimeMetadata(content: string): Record<string, strin
 }
 
 export function explicitTemporalValidityMetadata(content: string): Record<string, string> {
+  const range = explicitValidityRangeMetadata(content);
+  if (range.matched) return range.metadata;
   const fromPatterns = [
     new RegExp(String.raw`\b(?:valid|active|effective)\s+from\s+(${ENGLISH_VALIDITY_TIME_VALUE})`, "iu"),
     new RegExp(String.raw`\b(?:starting|starts)\s+(?:on\s+)?(${ENGLISH_VALIDITY_TIME_VALUE})`, "iu"),
