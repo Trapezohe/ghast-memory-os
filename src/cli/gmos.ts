@@ -912,6 +912,7 @@ async function main(): Promise<void> {
             ok: true,
             dbPath,
             encrypted: false,
+            runtimeInfo: getGmosRuntimeInfo(),
             schema: {
               dialect: "sqlite",
               version: store.schemaVersion ? await store.schemaVersion() : null,

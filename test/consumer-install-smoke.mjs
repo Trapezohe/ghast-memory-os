@@ -1196,6 +1196,15 @@ try {
   assert.equal(bin.status, 0, bin.stderr);
   const doctor = JSON.parse(bin.stdout);
   assert.equal(doctor.encrypted, false);
+  assert.equal(doctor.runtimeInfo.schema, "gmos.runtime_info.v1");
+  assert.equal(doctor.runtimeInfo.cli.binaries.includes("gmos"), true);
+  assert.equal(doctor.runtimeInfo.packageExports.includes("."), true);
+  assert.equal(doctor.runtimeInfo.publicSurface.mcpTools.includes("memory.runtime_info"), true);
+  assert.equal(doctor.runtimeInfo.publicSurface.httpRoutes.includes("GET /runtime-info"), true);
+  assert.equal(doctor.runtimeInfo.trustContract.localFirst, true);
+  assert.equal(doctor.runtimeInfo.trustContract.defaultStorage, "sqlite");
+  assert.equal(doctor.runtimeInfo.trustContract.encryptedByDefault, false);
+  assert.equal(doctor.runtimeInfo.trustContract.cloudRequired, false);
   assert.equal(doctor.schema.dialect, "sqlite");
   assert.equal(doctor.schema.version, 7);
   assert.equal(doctor.readAudit.status, "ok");

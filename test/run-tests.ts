@@ -14557,6 +14557,18 @@ for (const [host, expectedLevel] of [
   assert.equal(doctor.status, 0, doctor.stderr);
   const doctorJson = JSON.parse(doctor.stdout) as {
     encrypted: boolean;
+    runtimeInfo?: {
+      schema?: string;
+      cli?: { binaries?: string[] };
+      packageExports?: string[];
+      publicSurface?: { mcpTools?: string[]; httpRoutes?: string[] };
+      trustContract?: {
+        localFirst?: boolean;
+        defaultStorage?: string;
+        encryptedByDefault?: boolean;
+        cloudRequired?: boolean;
+      };
+    };
     schema?: { dialect?: string; version?: number };
     readAudit?: {
       status?: string;
@@ -14571,6 +14583,21 @@ for (const [host, expectedLevel] of [
     searchIndex?: { status?: string; missingEntryCount?: number; vectorIndex?: { status?: string } };
   };
   assert.equal(doctorJson.encrypted, false);
+  assert.equal(doctorJson.runtimeInfo?.schema, "gmos.runtime_info.v1");
+  assert.equal(doctorJson.runtimeInfo?.cli?.binaries?.includes("gmos"), true);
+  assert.equal(doctorJson.runtimeInfo?.packageExports?.includes("."), true);
+  assert.equal(
+    doctorJson.runtimeInfo?.publicSurface?.mcpTools?.includes("memory.runtime_info"),
+    true,
+  );
+  assert.equal(
+    doctorJson.runtimeInfo?.publicSurface?.httpRoutes?.includes("GET /runtime-info"),
+    true,
+  );
+  assert.equal(doctorJson.runtimeInfo?.trustContract?.localFirst, true);
+  assert.equal(doctorJson.runtimeInfo?.trustContract?.defaultStorage, "sqlite");
+  assert.equal(doctorJson.runtimeInfo?.trustContract?.encryptedByDefault, false);
+  assert.equal(doctorJson.runtimeInfo?.trustContract?.cloudRequired, false);
   assert.equal(doctorJson.schema?.dialect, "sqlite");
   assert.equal(doctorJson.schema?.version, 7);
   assert.equal(doctorJson.readAudit?.status, "ok");

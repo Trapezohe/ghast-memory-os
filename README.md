@@ -440,15 +440,17 @@ gate means the SDK's local runtime contract is healthy;
 it is still not an external long-term agent benchmark or a proof of mature
 digital-twin capability.
 
-`doctor` and `status` include content-free SQLite health summaries: indexed row
-count, missing FTS rows, stale rows, orphan rows, duplicates, local vector side
-index status, and read-audit coverage. The read-audit summary reports table
-counts and whether hashes are available; it does not print table state hashes or
-memory content. Context search uses a deterministic local vector projection with
-FTS/BM25 and LIKE fallback; delete and management search stay lexical so fuzzy
-recall cannot archive the wrong memory. The vector index is derived from
-`gmos_memories`, stored in plaintext SQLite, and never calls a network embedding
-service. If the index drifts from the canonical table,
+`doctor` and `status` include content-free SQLite health summaries and runtime
+capability metadata: public CLI binaries, package exports, MCP tools, HTTP
+routes, the local-first SQLite trust contract, indexed row count, missing FTS
+rows, stale rows, orphan rows, duplicates, local vector side index status, and
+read-audit coverage. The read-audit summary reports table counts and whether
+hashes are available; it does not print table state hashes or memory content.
+Context search uses a deterministic local vector projection with FTS/BM25 and
+LIKE fallback; delete and management search stay lexical so fuzzy recall cannot
+archive the wrong memory. The vector index is derived from `gmos_memories`,
+stored in plaintext SQLite, and never calls a network embedding service. If the
+index drifts from the canonical table,
 run `gmos repair --db ./gmos.db --search-index` to rebuild both FTS and vector
 rows from the stored memories. Repair does not create or delete memories; it
 only rebuilds derived search indexes.
@@ -1011,9 +1013,12 @@ and host boundaries, not database encryption:
   same-row-count FTS rewrites are treated as side effects.
 
 SQLite stores include a `gmos_schema_migrations` ledger. `gmos doctor` reports
-the current schema version so host applications can verify upgrade state before
-running long-lived agents. TypeScript consumers can use the exported
-`SqliteMemoryStore` type when they need SQLite-specific diagnostics.
+the current schema version plus the same content-free runtime capability
+contract exposed by `gmos version`, `/runtime-info`, `memory.runtime_info`, and
+`createMemoryStatusReport()`, so host applications can verify package surface
+and upgrade state before running long-lived agents. TypeScript consumers can
+use the exported `SqliteMemoryStore` type when they need SQLite-specific
+diagnostics.
 
 ## Host Compatibility
 
