@@ -97,5 +97,50 @@
         "evidence": ["s3"]
       }
     ]
+  },
+  {
+    "sample_id": "locomo-mini-speaker-tool-use",
+    "conversation": {
+      "speaker_a": "Alex",
+      "speaker_b": "Blair",
+      "session_1_date_time": "2026-06-22T10:00:00Z",
+      "session_1": [
+        {
+          "speaker": "Alex",
+          "dia_id": "t1",
+          "text": "I use Chronos for travel planning."
+        },
+        {
+          "speaker": "Alex",
+          "dia_id": "t2",
+          "text": "I use BudgetBee for expense reports."
+        },
+        {
+          "speaker": "Blair",
+          "dia_id": "t3",
+          "text": "I use Meridian for travel planning."
+        }
+      ]
+    },
+    "qa": [
+      {
+        "question": "Which tool does Alex use for travel planning?",
+        "answer": "Chronos",
+        "adversarial_answer": "BudgetBee",
+        "evidence": ["t1"]
+      },
+      {
+        "question": "Which tool does Alex use for expense reports?",
+        "answer": "BudgetBee",
+        "adversarial_answer": "Chronos",
+        "evidence": ["t2"]
+      },
+      {
+        "question": "Which tool does Blair use for travel planning?",
+        "answer": "Meridian",
+        "adversarial_answer": "Chronos",
+        "evidence": ["t3"]
+      }
+    ]
   }
 ]

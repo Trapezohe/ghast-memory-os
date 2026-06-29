@@ -368,7 +368,24 @@ function firstPersonAttributeCandidate(
     }
     return null;
   }
-  if (/^\s*I\s+use\s+.{2,80}?\s+for\s+.{2,80}/iu.test(utterance) || /^我用\s*.+\s*(?:做|处理|管理|进行)\s*.+/u.test(utterance)) {
+  const useTool = /^\s*I\s+use\s+(.{2,80}?)\s+for\s+(.{2,80}?)\s*\.?\s*$/iu.exec(utterance);
+  if (useTool) {
+    const object = stableToolObject(useTool[1]);
+    const toolPurpose = toolPurposeObject(useTool[2]);
+    if (object) {
+      return {
+        kind: "fact",
+        content: text,
+        confidence: 0.64,
+        predicate: "person.tool",
+        object,
+        ...personSubject,
+        metadata: { rule: "first_person_tool_use", ...(toolPurpose ? { toolPurpose } : {}) },
+      };
+    }
+    return null;
+  }
+  if (/^我用\s*.+\s*(?:做|处理|管理|进行)\s*.+/u.test(utterance)) {
     return {
       kind: "fact",
       content: text,
@@ -705,6 +722,14 @@ function stableToolObject(value: string | undefined): string | undefined {
   return object;
 }
 
+function toolPurposeObject(value: string | undefined): string | undefined {
+  const object = projectBeliefObject(value);
+  if (!object) return undefined;
+  if (invalidPersonAttributeObject(object)) return undefined;
+  if (unsafeDirectAttributeObject("toolPurpose", object)) return undefined;
+  return object;
+}
+
 function namedPersonToolCandidate(
   text: string,
   metadata?: Record<string, unknown> | undefined,
@@ -713,7 +738,7 @@ function namedPersonToolCandidate(
   if (isQuestionLike(utterance)) return null;
   const namePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}`;
   const usesMatch = new RegExp(
-    String.raw`^\s*(${namePattern})\s+uses\s+(.{2,80}?)\s+for\s+.{2,80}?\s*\.?\s*$`,
+    String.raw`^\s*(${namePattern})\s+uses\s+(.{2,80}?)\s+for\s+(.{2,80}?)\s*\.?\s*$`,
     "u",
   ).exec(utterance);
   const possessiveMatch = new RegExp(
@@ -725,6 +750,7 @@ function namedPersonToolCandidate(
   if (!metadataConfirmsNamedPerson(name, metadata)) return null;
   const object = stableToolObject(usesMatch?.[2] ?? possessiveMatch?.[2]);
   if (!object) return null;
+  const toolPurpose = usesMatch ? toolPurposeObject(usesMatch[3]) : undefined;
   return {
     kind: "fact",
     content: text,
@@ -733,8 +759,8 @@ function namedPersonToolCandidate(
     subject: `person:${name}`,
     subjectAliases: [name],
     ...(object ? { object } : {}),
-    cardinality: "single",
-    metadata: { rule: "named_person_tool" },
+    ...(possessiveMatch ? { cardinality: "single" as const } : {}),
+    metadata: { rule: "named_person_tool", ...(toolPurpose ? { toolPurpose } : {}) },
   };
 }
 
@@ -834,6 +860,8 @@ function malformedFirstPersonStructuredAttribute(text: string): boolean {
     utterance,
   );
   if (stableTool && !stableToolObject(stableTool[1])) return true;
+  const useTool = /^\s*I\s+use\s+(.{2,80}?)\s+for\s+.{2,80}?\s*\.?\s*$/iu.exec(utterance);
+  if (useTool && !stableToolObject(useTool[1])) return true;
   const currentAttribute = /^\s*my\s+current\s+(city|location|time\s+zone|timezone|role|job|profession|title|language)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
     utterance,
   );
@@ -864,6 +892,12 @@ function malformedFirstPersonStructuredAttribute(text: string): boolean {
     if (object && unsafePersonAttributeObject(entry.field, object)) return true;
   }
   return false;
+}
+
+function nonSpeakerPrefixedFirstPersonToolUse(text: string): boolean {
+  const prefixMatch = speakerPrefixMatch(text);
+  if (!prefixMatch || !isNonSpeakerPrefix(prefixMatch.prefix)) return false;
+  return /^\s*I\s+use\s+.{2,80}?\s+for\s+.{2,80}?\s*\.?\s*$/iu.test(prefixMatch.rest);
 }
 
 function namedPersonCurrentAttributeCandidate(
@@ -1364,6 +1398,7 @@ export function extractRuleMemoryCandidates(
   const attributeCandidate = firstPersonAttributeCandidate(text, metadata);
   if (attributeCandidate) return [attributeCandidate];
   if (malformedFirstPersonStructuredAttribute(text)) return [];
+  if (nonSpeakerPrefixedFirstPersonToolUse(text)) return [];
   if (/^\s*my\s+(?:current\s+)?(?:role|job|profession|title)\s+(?:is|=)\s+(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
   if (/^\s*I\s+work\s+as\s+(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
   if (/^\s*I\s+(?:currently\s+)?live\s+in\s+(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];

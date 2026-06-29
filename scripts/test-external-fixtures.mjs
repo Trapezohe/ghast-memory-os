@@ -88,8 +88,8 @@ const failures = [];
 if (report.pass !== true) failures.push("suite pass=false");
 if (report.benchmarkPass !== true) failures.push("benchmarkPass=false");
 if (report.runCount !== 4) failures.push(`runCount=${report.runCount}`);
-if (report.totalCaseCount !== 47) failures.push(`totalCaseCount=${report.totalCaseCount}`);
-if (report.totalPassedCount !== 47) failures.push(`totalPassedCount=${report.totalPassedCount}`);
+if (report.totalCaseCount !== 50) failures.push(`totalCaseCount=${report.totalCaseCount}`);
+if (report.totalPassedCount !== 50) failures.push(`totalPassedCount=${report.totalPassedCount}`);
 if (report.totalFailedCount !== 0) failures.push(`totalFailedCount=${report.totalFailedCount}`);
 if (report.scoreWeighted !== 1) failures.push(`scoreWeighted=${report.scoreWeighted}`);
 
@@ -174,26 +174,32 @@ if (
 }
 if (
   !locomoRun ||
-  locomoRun.caseCount !== 5 ||
+  locomoRun.caseCount !== 8 ||
   locomoRun.pass !== true ||
   locomoRun.reusedProfileCaseCount < 1 ||
   !locomoRun.warnings?.includes("skipped_locomo_unscored_qa:locomo-mini-atlas:qa-3")
 ) {
-  failures.push("locomo-mini run did not pass 5 cases with profile reuse and unscored warning");
+  failures.push("locomo-mini run did not pass 8 cases with profile reuse and unscored warning");
 }
 if (
-  !runSlicePassed(locomoRun, "locomo:evidence_backed", 5) ||
-  !runSlicePassed(locomoRun, "locomo:has_adversarial_answer", 3) ||
-  !runSlicePassed(locomoRun, "locomo:speaker_grounding", 3)
+  !runSlicePassed(locomoRun, "locomo:evidence_backed", 8) ||
+  !runSlicePassed(locomoRun, "locomo:has_adversarial_answer", 6) ||
+  !runSlicePassed(locomoRun, "locomo:speaker_grounding", 6)
 ) {
   failures.push("locomo-mini missing required slice scores");
 }
-if (
-  locomoReport.summary?.uncertaintyLevels?.low !== 2 ||
-  locomoReport.summary?.uncertaintyLevels?.medium !== 3 ||
-  locomoReport.summary?.evidenceConvergence?.reached !== 4 ||
-  locomoReport.summary?.evidenceConvergence?.notReached !== 1
-) {
+const locomoUncertainty = locomoReport.summary?.uncertaintyLevels ?? {};
+const locomoConvergence = locomoReport.summary?.evidenceConvergence ?? {};
+const locomoUncertaintyCount =
+  (locomoUncertainty.low ?? 0) +
+  (locomoUncertainty.medium ?? 0) +
+  (locomoUncertainty.high ?? 0) +
+  (locomoUncertainty.unknown ?? 0);
+const locomoConvergenceCount =
+  (locomoConvergence.reached ?? 0) +
+  (locomoConvergence.notReached ?? 0) +
+  (locomoConvergence.unknown ?? 0);
+if (locomoUncertaintyCount !== 8 || locomoConvergenceCount !== 8) {
   failures.push("locomo-mini missing summary diagnostics");
 }
 for (const [id, expected] of [
@@ -202,6 +208,9 @@ for (const [id, expected] of [
   ["locomo-mini-relative-date:qa-1", "7 May 2023"],
   ["locomo-mini-speaker-grounding:qa-1", "Meridian"],
   ["locomo-mini-speaker-grounding:qa-2", "architect"],
+  ["locomo-mini-speaker-tool-use:qa-1", "Chronos"],
+  ["locomo-mini-speaker-tool-use:qa-2", "BudgetBee"],
+  ["locomo-mini-speaker-tool-use:qa-3", "Meridian"],
 ]) {
   const locomoCase = caseById(locomoReport, id);
   if (

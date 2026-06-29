@@ -159,6 +159,11 @@ function normalizedMetadataValue(metadata: Record<string, unknown>, key: string)
   return typeof value === "string" && value.trim().length > 0 ? value.trim().toLowerCase() : null;
 }
 
+function metadataDisplayValue(metadata: Record<string, unknown>, key: string): string | null {
+  const value = metadata[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
 function metadataStringArray(metadata: Record<string, unknown>, key: string): string[] {
   const value = metadata[key];
   if (!Array.isArray(value)) return [];
@@ -278,14 +283,30 @@ export function associationTagsForBelief(belief: WorldBeliefRecord): string[] {
 }
 
 export function associationCuesForBelief(belief: WorldBeliefRecord): AssociationCue[] {
+  const qualifiers = [
+    metadataDisplayValue(belief.metadata, "toolPurpose") ?? "",
+    metadataDisplayValue(belief.metadata, "toolScope") ?? "",
+  ];
   return [
     ...sourceMetadataEntityCues(belief.metadata).map((cue) => ({ cue, cueKind: "entity" as const })),
     ...metadataTemporalCues(belief.metadata).map((cue) => ({ cue, cueKind: "temporal" as const })),
     { cue: belief.predicate, cueKind: "predicate" },
     ...extractAssociationCues(
-      [belief.subject, ...entityAliases(belief.metadata), belief.object].join(" "),
+      [belief.subject, ...entityAliases(belief.metadata), belief.object, ...qualifiers].join(" "),
     ),
   ];
+}
+
+export function associationSummaryForBelief(belief: WorldBeliefRecord): string {
+  return [
+    belief.subject,
+    belief.predicate,
+    belief.object,
+    metadataDisplayValue(belief.metadata, "toolPurpose") ?? "",
+    metadataDisplayValue(belief.metadata, "toolScope") ?? "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 export function associationTagsForTaskTrajectory(

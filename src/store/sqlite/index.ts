@@ -37,6 +37,7 @@ import {
   associationCuesForBelief,
   associationCuesForMemory,
   associationCuesForTaskTrajectory,
+  associationSummaryForBelief,
   associationTagsForBelief,
   associationTagsForMemory,
   associationTagsForTaskTrajectory,
@@ -871,7 +872,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         return;
       }
     }
-    const targetSummary = `${belief.subject} ${belief.predicate} ${belief.object}`;
+    const targetSummary = associationSummaryForBelief(belief);
     const aliasSummary = beliefSubjectAliases(belief).join(" ");
     const detectedSensitivity = classifySensitivity(`${targetSummary} ${aliasSummary}`);
     if (detectedSensitivity === "secret_like") return;

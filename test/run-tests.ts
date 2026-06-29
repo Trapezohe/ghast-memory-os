@@ -3152,6 +3152,32 @@ const speakerAttributeReport = await rulesReportMemory.observeWithReport({
 assert.equal(speakerAttributeReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(speakerAttributeReport.memoryIds.length, 1);
 assert.equal(speakerAttributeReport.worldBeliefIds.length, 1);
+const speakerUseToolReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_tool_use_multi",
+  role: "user",
+  content: "Alex: I use Chronos for travel planning.",
+  metadata: {
+    speaker: "Alex",
+    participants: ["Alex", "Blair"],
+  },
+});
+assert.equal(speakerUseToolReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(speakerUseToolReport.memoryIds.length, 1);
+assert.equal(speakerUseToolReport.worldBeliefIds.length, 1);
+const speakerUseSecondToolReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_tool_use_multi",
+  role: "user",
+  content: "Alex: I use BudgetBee for expense reports.",
+  metadata: {
+    speaker: "Alex",
+    participants: ["Alex", "Blair"],
+  },
+});
+assert.equal(speakerUseSecondToolReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(speakerUseSecondToolReport.memoryIds.length, 1);
+assert.equal(speakerUseSecondToolReport.worldBeliefIds.length, 1);
 const speakerMajorReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -3337,6 +3363,18 @@ assert.equal(firstPersonTool?.predicate, "person.tool");
 assert.equal(firstPersonTool?.object, "Chronos");
 assert.equal(firstPersonTool?.cardinality, "single");
 assert.equal(firstPersonTool?.metadata?.rule, "first_person_tool");
+const firstPersonUseTool = extractRuleMemoryCandidates("I use Chronos for travel planning.")[0];
+assert.equal(firstPersonUseTool?.predicate, "person.tool");
+assert.equal(firstPersonUseTool?.object, "Chronos");
+assert.equal(firstPersonUseTool?.cardinality, undefined);
+assert.equal(firstPersonUseTool?.metadata?.rule, "first_person_tool_use");
+assert.equal(firstPersonUseTool?.metadata?.toolPurpose, "travel planning");
+const speakerUseToolCandidate = extractRuleMemoryCandidates("Alex: I use Chronos for travel planning.", {
+  speaker: "Alex",
+  participants: ["Alex", "Blair"],
+})[0];
+assert.equal(speakerUseToolCandidate?.subject, "person:Alex");
+assert.deepEqual(speakerUseToolCandidate?.subjectAliases, ["Alex"]);
 assert.equal(extractRuleMemoryCandidates("My current browser is Chrome.")[0]?.object, "Chrome");
 for (const invalidWorkAs of [
   "I work as unknown.",
@@ -3367,6 +3405,9 @@ for (const invalidRoleAttribute of [
   "My travel planning tool is Chronos. My travel planning tool is Meridian.",
   "My travel planning tool is Chronos, my hometown is Boston.",
   "My travel planning tool is Chronos and I use Meridian.",
+  "I use unknown for travel planning.",
+  "I use unavailable for travel planning.",
+  "I use Chronos and I use Meridian for travel planning.",
 ]) {
   assert.equal(extractRuleMemoryCandidates(invalidRoleAttribute).length, 0);
 }
@@ -3592,6 +3633,16 @@ assert.equal(
   namedPersonToolReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
     ?.candidate.metadata?.rule,
   "named_person_tool",
+);
+assert.equal(
+  namedPersonToolReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.cardinality,
+  undefined,
+);
+assert.equal(
+  namedPersonToolReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.metadata?.toolPurpose,
+  "travel planning",
 );
 const namedPersonHometownReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
@@ -4169,6 +4220,45 @@ try {
   assert.equal(speakerAttributeBelief?.subject, "person:blair");
   assert.equal(speakerAttributeBelief?.predicate, "person.tool");
   assert.equal(speakerAttributeBelief?.object, "Meridian");
+  const speakerUseToolBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(speakerUseToolReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string }
+    | undefined;
+  assert.equal(speakerUseToolBelief?.subject, "person:alex");
+  assert.equal(speakerUseToolBelief?.predicate, "person.tool");
+  assert.equal(speakerUseToolBelief?.object, "Chronos");
+  const speakerUseSecondToolBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(speakerUseSecondToolReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string }
+    | undefined;
+  assert.equal(speakerUseSecondToolBelief?.subject, "person:alex");
+  assert.equal(speakerUseSecondToolBelief?.predicate, "person.tool");
+  assert.equal(speakerUseSecondToolBelief?.object, "BudgetBee");
+  const speakerUseToolStatuses = speakerAttributeDb
+    .prepare(
+      `SELECT status, object
+         FROM gmos_world_beliefs
+        WHERE id IN (?, ?)
+        ORDER BY object`,
+    )
+    .all(speakerUseSecondToolReport.worldBeliefIds[0]!, speakerUseToolReport.worldBeliefIds[0]!) as Array<{
+    status: string;
+    object: string;
+  }>;
+  assert.deepEqual(speakerUseToolStatuses, [
+    { status: "active", object: "BudgetBee" },
+    { status: "active", object: "Chronos" },
+  ]);
   const speakerMajorBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate, object
@@ -4996,6 +5086,40 @@ assert.equal(
   JSON.stringify(alexSpeakerMetadataReconstruction).includes("leaked speaker fixture label"),
   false,
 );
+const genericToolRecallProfile = "rules_report_tool_generic_recall";
+for (const content of [
+  "Alex: I use Chronos for travel planning.",
+  "Alex: I use BudgetBee for expense reports.",
+  "Blair: I use Meridian for travel planning.",
+]) {
+  const report = await rulesReportMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: genericToolRecallProfile,
+    role: "user",
+    content,
+  });
+  assert.equal(report.extraction?.acceptedCandidateCount, 1);
+}
+const alexGenericToolRecall = await rulesReportMemory.reconstructContext({
+  profileId: genericToolRecallProfile,
+  query: "What do we know about Alex?",
+  maxSteps: 4,
+  maxBranch: 4,
+  maxMemories: 8,
+});
+assert.match(alexGenericToolRecall.contextBlock, /Chronos/);
+assert.match(alexGenericToolRecall.contextBlock, /BudgetBee/);
+assert.doesNotMatch(alexGenericToolRecall.contextBlock, /Meridian/);
+const multiPersonGenericToolRecall = await rulesReportMemory.reconstructContext({
+  profileId: genericToolRecallProfile,
+  query: "What do we know about Alex and Blair?",
+  maxSteps: 4,
+  maxBranch: 4,
+  maxMemories: 8,
+});
+assert.match(multiPersonGenericToolRecall.contextBlock, /Chronos/);
+assert.match(multiPersonGenericToolRecall.contextBlock, /BudgetBee/);
+assert.match(multiPersonGenericToolRecall.contextBlock, /Meridian/);
 const inferredNoraSpeakerReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -5018,15 +5142,9 @@ for (const prefix of ["Note", "Preference", "Fact", "Example"]) {
     role: "user",
     content: `${prefix}: I use VectorPad for travel planning.`,
   });
-  assert.equal(nonSpeakerPrefixReport.extraction?.acceptedCandidateCount, 1);
-  const nonSpeakerPrefixMemory = await rulesReportMemory.get({
-    profileId: "rules_report",
-    id: nonSpeakerPrefixReport.memoryIds[0]!,
-  });
-  assert.equal(
-    (nonSpeakerPrefixMemory?.metadata.sourceMetadata as Record<string, unknown> | undefined)?.speaker,
-    undefined,
-  );
+  assert.equal(nonSpeakerPrefixReport.extraction?.acceptedCandidateCount, 0);
+  assert.equal(nonSpeakerPrefixReport.memoryIds.length, 0);
+  assert.equal(nonSpeakerPrefixReport.worldBeliefIds.length, 0);
 }
 await rulesReportMemory.observeWithReport({
   type: "conversation.message",

@@ -141,6 +141,24 @@ interface RankedMemoryCandidate {
 }
 
 const GENERATED_CUE_STOP_TERMS = new Set(["fact", "memory", "after", "before"]);
+const SPECIFIC_TOOL_CUE_STOP_KEYS = new Set([
+  "which",
+  "tool",
+  "tools",
+  "app",
+  "apps",
+  "application",
+  "applications",
+  "use",
+  "uses",
+  "used",
+  "using",
+  "belong",
+  "belongs",
+  "belonged",
+  "current",
+  "currently",
+]);
 
 function normalizedText(value: string): string {
   return value.toLowerCase();
@@ -557,6 +575,66 @@ function associationSourceRejectReason(
     : null;
 }
 
+function associationSpecificToolCueRejectReason(
+  association: MemoryAssociationRecord,
+  intent: ReconstructionIntent,
+): string | null {
+  if (association.tag !== "person.tool" && !/\bperson\.tool\b/iu.test(association.targetSummary)) {
+    return null;
+  }
+  const personCue = associationPersonCue(association);
+  const specificCueKeys = specificToolCueKeys(intent, personCue ? [personCue] : []);
+  if (specificCueKeys.length === 0) return null;
+  return textContainsSpecificCue(
+    `${association.cue} ${association.tag} ${association.targetKind} ${association.targetSummary}`,
+    specificCueKeys,
+  )
+    ? null
+    : `tool_scope_mismatch:${specificCueKeys.join("|")}`;
+}
+
+function memorySpecificToolCueRejectReason(memory: MemoryRecord, intent: ReconstructionIntent): string | null {
+  const predicate = typeof memory.metadata.predicate === "string" ? memory.metadata.predicate : "";
+  const toolPurpose = typeof memory.metadata.toolPurpose === "string" ? memory.metadata.toolPurpose : "";
+  const toolScope = typeof memory.metadata.toolScope === "string" ? memory.metadata.toolScope : "";
+  if (
+    predicate !== "person.tool" &&
+    !/^\s*(?:[\p{L}\p{M}' -]{2,48}\s*:\s*)?I\s+use\s+.{2,80}?\s+for\s+.{2,80}?\s*\.?\s*$/iu.test(
+      memory.content,
+    ) &&
+    !/^\s*\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}\s+uses\s+.{2,80}?\s+for\s+.{2,80}?\s*\.?\s*$/u.test(
+      memory.content,
+    )
+  ) {
+    return null;
+  }
+  const sourceCues = sourceEntityCuesForMemory(memory);
+  const specificCueKeys = specificToolCueKeys(intent, sourceCues);
+  if (specificCueKeys.length === 0) return null;
+  return textContainsSpecificCue(`${memory.content} ${toolPurpose} ${toolScope}`, specificCueKeys)
+    ? null
+    : `tool_scope_mismatch:${specificCueKeys.join("|")}`;
+}
+
+function specificToolCueKeys(intent: ReconstructionIntent, sourceCues: string[]): string[] {
+  const toolQuery = [...intent.queryCues].some((cue) =>
+    ["tool", "tools", "app", "apps", "application", "applications", "use", "uses", "used", "using"].includes(
+      associationCueKey(cue),
+    ),
+  );
+  if (!toolQuery) return [];
+  const sourceCueKeys = new Set(sourceCues.map(associationCueKey).filter(Boolean));
+  return [...intent.queryCues]
+    .filter((cue) => !/^\p{Lu}/u.test(cue.trim()))
+    .map((cue) => associationCueKey(cue))
+    .filter((cue) => cue && !sourceCueKeys.has(cue) && !SPECIFIC_TOOL_CUE_STOP_KEYS.has(cue));
+}
+
+function textContainsSpecificCue(text: string, cueKeys: string[]): boolean {
+  const textCueKeys = new Set(extractAssociationCues(text, 64).map((cue) => associationCueKey(cue.cue)));
+  return cueKeys.some((cue) => textCueKeys.has(cue));
+}
+
 function associationPersonCue(association: MemoryAssociationRecord): string | null {
   const personMatch = /^person:([^\s]+)/iu.exec(association.targetSummary);
   return (
@@ -797,7 +875,7 @@ async function fuseDirectMemorySearch(input: {
       candidate.memory,
       input.intent,
       input.selectedSourceCues,
-    );
+    ) ?? memorySpecificToolCueRejectReason(candidate.memory, input.intent);
     if (sourceRejectReason) continue;
     input.seenMemoryIds.add(candidate.memory.id);
     input.memories.push(candidate.memory);
@@ -1183,7 +1261,7 @@ export async function reconstructMemoryContext(input: {
         association,
         intent,
         selectedSourceCues,
-      );
+      ) ?? associationSpecificToolCueRejectReason(association, intent);
       if (associationRejectReason) {
         prunedBranchCount += 1;
         stepTrace.prunedBranchCount += 1;
@@ -1234,7 +1312,9 @@ export async function reconstructMemoryContext(input: {
         includeSensitive: input.request.includeSensitive,
       });
       if (!memory) continue;
-      const sourceRejectReason = sourceScopeRejectReason(memory, intent, selectedSourceCues);
+      const sourceRejectReason =
+        sourceScopeRejectReason(memory, intent, selectedSourceCues) ??
+        memorySpecificToolCueRejectReason(memory, intent);
       if (sourceRejectReason) {
         prunedBranchCount += 1;
         stepTrace.prunedBranchCount += 1;
