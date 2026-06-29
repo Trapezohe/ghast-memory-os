@@ -236,9 +236,11 @@ function uniqueCandidatesWithDecisions(
 function stripSpeakerPrefix(text: string): string {
   const match = speakerPrefixMatch(text);
   const prefix = match?.prefix;
-  if (!prefix || !match?.rest || isNonSpeakerPrefix(prefix) || !stableNamedPersonSubject(prefix)) {
+  if (!prefix || !match?.rest) {
     return text;
   }
+  if (isNonSpeakerPrefix(prefix)) return match.rest;
+  if (!stableNamedPersonSubject(prefix)) return text;
   return match.rest;
 }
 
@@ -648,12 +650,8 @@ function metadataSpeakerIsNonPerson(
 
 function contentHasExplicitNonPersonSpeaker(content: string): boolean {
   const prefix = speakerPrefixMatch(content)?.prefix;
-  const normalized = prefix?.trim().toLowerCase();
-  return Boolean(
-    prefix &&
-      explicitNonPersonSubject(prefix) &&
-      (!isNonSpeakerPrefix(prefix) || (normalized ? NON_PERSON_SINGLE_NAMES.has(normalized) : false)),
-  );
+  if (!prefix || isNonSpeakerPrefix(prefix)) return false;
+  return explicitNonPersonSubject(prefix);
 }
 
 function nonPersonSpeakerCandidate(

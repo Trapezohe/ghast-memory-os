@@ -565,7 +565,6 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     }
 
     if (event.type !== "conversation.message") return { ...result, skippedReason: "unsupported_event" };
-    if (event.role !== "user") return { ...result, skippedReason: "non_user_message" };
 
     const sensitivity = classifySensitivity(event.content);
     const eligible = eligibleForLongTermMemory({
@@ -595,6 +594,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     });
     result.evidenceId = evidence.id;
 
+    if (event.role !== "user") return { ...result, skippedReason: "non_user_message" };
     if (isPersonRoutedMemory(event.content)) return { ...result, skippedReason: "person_routed" };
     const extraction = await extractMemoryCandidatePlan({
       extractor: options.extractor,

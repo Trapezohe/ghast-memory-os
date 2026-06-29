@@ -2966,15 +2966,15 @@ const nonPersonSpeakerExtractorPrefixReport =
 assert.equal(nonPersonSpeakerExtractorPrefixReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(nonPersonSpeakerExtractorPrefixReport.memoryIds.length, 0);
 assert.equal(nonPersonSpeakerExtractorPrefixReport.worldBeliefIds.length, 0);
-const assistantSpeakerExtractorReport = await nonPersonSpeakerExtractorMemory.observeWithReport({
+const robotSpeakerExtractorReport = await nonPersonSpeakerExtractorMemory.observeWithReport({
   type: "conversation.message",
   profileId: "non_person_speaker_extractor",
   role: "user",
-  content: "Assistant: I work as unknown.",
+  content: "Robot: I work as unknown.",
 });
-assert.equal(assistantSpeakerExtractorReport.extraction?.acceptedCandidateCount, 0);
-assert.equal(assistantSpeakerExtractorReport.memoryIds.length, 0);
-assert.equal(assistantSpeakerExtractorReport.worldBeliefIds.length, 0);
+assert.equal(robotSpeakerExtractorReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(robotSpeakerExtractorReport.memoryIds.length, 0);
+assert.equal(robotSpeakerExtractorReport.worldBeliefIds.length, 0);
 await nonPersonSpeakerExtractorMemory.close();
 
 const hostAliasSpeakerExtractorStore = createSqliteMemoryStore({
@@ -3155,6 +3155,17 @@ const incognitoObserveReport = await unsafeObserveMemory.observeWithReport({
 assert.equal(incognitoObserveReport.eligibleForLongTermMemory, false);
 assert.equal(incognitoObserveReport.skippedReason, "not_eligible_for_long_term_memory");
 assert.equal(incognitoObserveReport.evidenceId, undefined);
+const nonUserEvidenceReport = await unsafeObserveMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "unsafe_observe",
+  role: "assistant",
+  content: "Assistant diagnostic note says the model suggested Graphiti next.",
+});
+assert.equal(nonUserEvidenceReport.eligibleForLongTermMemory, true);
+assert.equal(nonUserEvidenceReport.skippedReason, "non_user_message");
+assert.equal(typeof nonUserEvidenceReport.evidenceId, "string");
+assert.equal(nonUserEvidenceReport.memoryIds.length, 0);
+assert.equal(nonUserEvidenceReport.worldBeliefIds.length, 0);
 await unsafeObserveMemory.close();
 const unsafeObserveDb = new Database(unsafeObservePath, { readonly: true });
 try {
@@ -3167,6 +3178,24 @@ try {
     )
     .all("%sk-sdkobservesecretreport%", "%HiddenSdkObserveReportFlag%");
   assert.equal(unsafeObserveRows.length, 0);
+  const nonUserEvidenceRows = unsafeObserveDb
+    .prepare(
+      `SELECT content
+         FROM gmos_evidence_events
+        WHERE profile_id = ?
+          AND content LIKE ?`,
+    )
+    .all("unsafe_observe", "%Assistant diagnostic note%") as Array<{ content: string }>;
+  assert.equal(nonUserEvidenceRows.length, 1);
+  const nonUserMemoryRows = unsafeObserveDb
+    .prepare(
+      `SELECT content
+         FROM gmos_memories
+        WHERE profile_id = ?
+          AND content LIKE ?`,
+    )
+    .all("unsafe_observe", "%Assistant diagnostic note%") as Array<{ content: string }>;
+  assert.equal(nonUserMemoryRows.length, 0);
 } finally {
   unsafeObserveDb.close();
 }
@@ -3214,6 +3243,21 @@ const chineseFavoritePreferenceReport = await rulesReportMemory.observeWithRepor
 assert.equal(chineseFavoritePreferenceReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(chineseFavoritePreferenceReport.memoryIds.length, 1);
 assert.equal(chineseFavoritePreferenceReport.worldBeliefIds.length, 1);
+const nonSpeakerPrefixedPreferenceReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Assistant: I prefer traceable release plans.",
+});
+assert.equal(nonSpeakerPrefixedPreferenceReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(nonSpeakerPrefixedPreferenceReport.memoryIds.length, 1);
+assert.equal(nonSpeakerPrefixedPreferenceReport.worldBeliefIds.length, 1);
+const nonSpeakerPrefixedPreferenceCandidate =
+  nonSpeakerPrefixedPreferenceReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  )?.candidate;
+assert.equal(nonSpeakerPrefixedPreferenceCandidate?.predicate, "user.preference");
+assert.equal(nonSpeakerPrefixedPreferenceCandidate?.subject, undefined);
 for (const secretLikeFavoriteStatement of [
   "My favorite password is correcthorsebatterystaple.",
   "My favorite password is letmeinplease.",
@@ -4066,6 +4110,21 @@ assert.equal(nonPersonSpeakerPrefixReport.worldBeliefIds.length, 0);
 assert.equal(extractRuleMemoryCandidates("OpenAI: I prefer Azure for some workloads.").length, 0);
 assert.equal(extractRuleMemoryCandidates("Note: I prefer compact implementation notes.").length, 1);
 assert.equal(extractRuleMemoryCandidates("Reminder: My birthday is July 10.").length, 0);
+const assistantPrefixedAttributeReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Assistant: My job is an architect.",
+});
+assert.equal(assistantPrefixedAttributeReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(assistantPrefixedAttributeReport.memoryIds.length, 1);
+assert.equal(assistantPrefixedAttributeReport.worldBeliefIds.length, 1);
+const assistantPrefixedAttributeCandidate =
+  assistantPrefixedAttributeReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  )?.candidate;
+assert.equal(assistantPrefixedAttributeCandidate?.predicate, "person.role");
+assert.equal(assistantPrefixedAttributeCandidate?.subject, undefined);
 for (const nonPersonSpeakerContent of [
   "OpenAI: Do not push Project Atlas updates.",
   "OpenAI: My workflow is to draft first.",
@@ -4074,7 +4133,6 @@ for (const nonPersonSpeakerContent of [
   "Reminder: My current city is Paris.",
   "Robot: I work as a designer.",
   "Robot: My job is an architect.",
-  "Assistant: My job is an architect.",
   "Assistant: I work as unknown.",
 ]) {
   const report = await rulesReportMemory.observeWithReport({
@@ -5479,9 +5537,9 @@ for (const prefix of ["Note", "Preference", "Fact", "Example"]) {
     role: "user",
     content: `${prefix}: I use VectorPad for travel planning.`,
   });
-  assert.equal(nonSpeakerPrefixReport.extraction?.acceptedCandidateCount, 0);
-  assert.equal(nonSpeakerPrefixReport.memoryIds.length, 0);
-  assert.equal(nonSpeakerPrefixReport.worldBeliefIds.length, 0);
+  assert.equal(nonSpeakerPrefixReport.extraction?.acceptedCandidateCount, 1);
+  assert.equal(nonSpeakerPrefixReport.memoryIds.length, 1);
+  assert.equal(nonSpeakerPrefixReport.worldBeliefIds.length, 1);
 }
 await rulesReportMemory.observeWithReport({
   type: "conversation.message",
