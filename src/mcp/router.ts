@@ -23,6 +23,7 @@ import {
   isPersonRoutedMemory,
   payloadContainsRestrictedValue,
 } from "../kernel/safety.js";
+import { getGmosRuntimeInfo } from "../runtime-info.js";
 import { listMemoryMcpTools, type MemoryMcpTool, type MemoryMcpToolName } from "./tools.js";
 
 export interface MemoryMcpTextContent {
@@ -530,6 +531,10 @@ function assertNeverTool(name: never): never {
 
 export function createMemoryMcpServer(memory: MemoryOS): MemoryMcpServer {
   const handlers: Record<MemoryMcpToolName, MemoryMcpToolHandler> = {
+    "memory.runtime_info": async (object) => {
+      assertAllowedKeys(object, new Set(), "memory.runtime_info");
+      return ok({ ok: true, runtimeInfo: getGmosRuntimeInfo() });
+    },
     "memory.add": async (object) =>
       ok({ ok: true, memory: publicMemoryRecord(await memory.add(addInput(object))) }),
     "memory.search": async (object) => {

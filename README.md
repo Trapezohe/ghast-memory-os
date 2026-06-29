@@ -855,7 +855,12 @@ MCP initialization unless the host passes an explicit `version` override.
 Current tools are `memory.add`, `memory.search`, `memory.observe`,
 `memory.prepare_context`, `memory.reconstruct_context`,
 `memory.explain_evidence_path`, `memory.commit_outcome`,
-`memory.record_feedback`, `memory.forget`, and `memory.explain_belief`.
+`memory.record_feedback`, `memory.forget`, `memory.explain_belief`, and
+`memory.runtime_info`.
+
+`memory.runtime_info` takes no input and returns the installed package version,
+CLI binaries, package exports, public MCP/HTTP surface, and local-first trust
+contract. It does not open or mutate the SQLite store.
 
 Hosts can gate this public tool surface explicitly:
 
@@ -911,6 +916,7 @@ GMOS_HTTP_AUTH_TOKEN=local-dev-token \
 Endpoints:
 
 - `GET /health` (always open; reports whether auth is required)
+- `GET /runtime-info`
 - `GET /status?profileId=local`
 - `GET /tools`
 - `POST /add`

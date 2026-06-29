@@ -9,6 +9,7 @@ export const PUBLIC_MEMORY_MCP_TOOL_NAMES = [
   "memory.record_feedback",
   "memory.forget",
   "memory.explain_belief",
+  "memory.runtime_info",
 ] as const;
 
 export const PUBLIC_MEMORY_HTTP_ROUTE_REGISTRY = [

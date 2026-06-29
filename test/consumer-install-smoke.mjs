@@ -261,10 +261,12 @@ try {
       assert.equal(createPresetHostAdapter("ghast").compatibility.level, "L4");
 
       const mcp = createMemoryMcpServer(memory);
+      const runtimeInfoTool = mcp.listTools().find((tool) => tool.name === "memory.runtime_info");
       const prepareTool = mcp.listTools().find((tool) => tool.name === "memory.prepare_context");
       const explainEvidencePathTool = mcp
         .listTools()
         .find((tool) => tool.name === "memory.explain_evidence_path");
+      assert.ok(runtimeInfoTool);
       assert.ok(prepareTool);
       assert.ok(explainEvidencePathTool);
       assert.deepEqual(
@@ -275,11 +277,16 @@ try {
       assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("GET /runtime-info"), true);
       assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /backup"), false);
       assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /restore"), false);
+      assert.equal(Object.keys(runtimeInfoTool.inputSchema.properties).length, 0);
       assert.equal(Object.hasOwn(prepareTool.inputSchema.properties, "includeSensitive"), false);
       assert.equal(
         Object.hasOwn(explainEvidencePathTool.inputSchema.properties, "includeSensitive"),
         false,
       );
+      const mcpRuntimeInfo = await mcp.callTool("memory.runtime_info");
+      assert.equal(mcpRuntimeInfo.isError, undefined);
+      assert.deepEqual(mcpRuntimeInfo.structuredContent.runtimeInfo, getGmosRuntimeInfo());
+      assert.equal((await mcp.callTool("memory.runtime_info", { profileId: "consumer" })).isError, true);
       const mcpAddResult = await mcp.callTool("memory.add", {
         profileId: "consumer",
         kind: "preference",
@@ -385,6 +392,7 @@ try {
       assert.equal(runtimeInfo.package.version, installedPackage.version);
       assert.deepEqual(runtimeInfo.cli.binaries, Object.keys(installedPackage.bin).sort());
       assert.deepEqual(runtimeInfo.packageExports, Object.keys(installedPackage.exports).sort());
+      assert.equal(runtimeInfo.publicSurface.mcpTools.includes("memory.runtime_info"), true);
       assert.equal(runtimeInfo.publicSurface.mcpTools.includes("memory.prepare_context"), true);
       assert.equal(runtimeInfo.publicSurface.httpRoutes.includes("GET /runtime-info"), true);
       assert.equal(runtimeInfo.publicSurface.httpRoutes.includes("POST /prepare"), true);
@@ -987,9 +995,13 @@ try {
       if (HTTP_PUBLIC_MEMORY_HTTP_ROUTES[0] !== "GET /health") {
         throw new Error("typed http public surface export failed");
       }
+      const runtimeInfoToolName: MemoryMcpToolName = "memory.runtime_info";
       const prepareToolName: MemoryMcpToolName = "memory.prepare_context";
       const addToolName: MemoryMcpToolName = "memory.add";
       const searchToolName: MemoryMcpToolName = "memory.search";
+      if (!mcpServer.listTools().some((tool) => tool.name === runtimeInfoToolName)) {
+        throw new Error("typed mcp runtime_info tool missing");
+      }
       if (!mcpServer.listTools().some((tool) => tool.name === prepareToolName)) {
         throw new Error("typed mcp tool missing");
       }
@@ -1082,6 +1094,7 @@ try {
   assert.equal(installedVersionJson.packageExports.includes("./gym"), true);
   assert.equal(installedVersionJson.packageExports.includes("./mcp"), true);
   assert.equal(installedVersionJson.packageExports.includes("./store/sqlite"), true);
+  assert.equal(installedVersionJson.publicSurface.mcpTools.includes("memory.runtime_info"), true);
   assert.equal(installedVersionJson.publicSurface.mcpTools.includes("memory.prepare_context"), true);
   assert.equal(installedVersionJson.publicSurface.httpRoutes.includes("POST /prepare"), true);
   assert.equal(installedVersionJson.trustContract.localFirst, true);

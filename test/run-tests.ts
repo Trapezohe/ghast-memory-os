@@ -458,6 +458,7 @@ assert.equal(publicRuntimeInfo.package.name, packageJson.name);
 assert.equal(publicRuntimeInfo.package.version, packageJson.version);
 assert.deepEqual(publicRuntimeInfo.cli.binaries, Object.keys(packageJson.bin).sort());
 assert.deepEqual(publicRuntimeInfo.packageExports, Object.keys(packageJson.exports).sort());
+assert.equal(publicRuntimeInfo.publicSurface.mcpTools.includes("memory.runtime_info"), true);
 assert.equal(publicRuntimeInfo.publicSurface.mcpTools.includes("memory.prepare_context"), true);
 assert.equal(publicRuntimeInfo.publicSurface.httpRoutes.includes("GET /runtime-info"), true);
 assert.equal(publicRuntimeInfo.publicSurface.httpRoutes.includes("POST /prepare"), true);
@@ -9736,6 +9737,17 @@ assert.deepEqual(
 );
 assert.equal(PUBLIC_MEMORY_MCP_TOOL_NAMES.includes("memory.backup" as never), false);
 assert.ok(mcpServer.listTools().every((tool) => tool.inputSchema.type === "object"));
+const mcpRuntimeInfoBefore = await store.rowCounts();
+const mcpRuntimeInfo = await mcpServer.callTool("memory.runtime_info");
+assert.equal(mcpRuntimeInfo.isError, undefined);
+assert.deepEqual(
+  (mcpRuntimeInfo.structuredContent as { runtimeInfo?: unknown }).runtimeInfo,
+  getGmosRuntimeInfo(),
+);
+assert.deepEqual(await store.rowCounts(), mcpRuntimeInfoBefore);
+const invalidMcpRuntimeInfo = await mcpServer.callTool("memory.runtime_info", { profileId: "mcp" });
+assert.equal(invalidMcpRuntimeInfo.isError, true);
+assert.deepEqual(await store.rowCounts(), mcpRuntimeInfoBefore);
 const mcpInvalidBefore = await store.rowCounts();
 const invalidMcpObserve = await mcpServer.callTool("memory.observe", { content: 42 });
 assert.equal(invalidMcpObserve.isError, true);
@@ -10055,6 +10067,12 @@ try {
     (tools.body.tools as Array<{ name: string }>).map((tool) => tool.name),
     [...PUBLIC_MEMORY_MCP_TOOL_NAMES],
   );
+  const httpMcpRuntimeInfo = await postJson(`${httpAddress.url}/mcp/call`, {
+    tool: "memory.runtime_info",
+    args: {},
+  });
+  assert.equal(httpMcpRuntimeInfo.status, 200);
+  assert.deepEqual(httpMcpRuntimeInfo.body.runtimeInfo, getGmosRuntimeInfo());
   assert.deepEqual(PUBLIC_MEMORY_HTTP_ROUTES, [
     "GET /health",
     "GET /runtime-info",
@@ -15640,7 +15658,71 @@ assert.ok(
     (tool) => tool.name === "memory.prepare_context",
   ),
 );
+assert.ok(
+  (JSON.parse(cliMcpTools.stdout) as { tools: Array<{ name: string }> }).tools.some(
+    (tool) => tool.name === "memory.runtime_info",
+  ),
+);
 const mcpCliDb = path.join(tmp, "mcp-cli.db");
+const cliMcpRuntimeInfo = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "mcp",
+    "call",
+    "--db",
+    mcpCliDb,
+    "--profile",
+    "cli_mcp",
+    "--tool",
+    "memory.runtime_info",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliMcpRuntimeInfo.status, 0, cliMcpRuntimeInfo.stderr);
+assert.equal(existsSync(mcpCliDb), false);
+assert.deepEqual(
+  (JSON.parse(cliMcpRuntimeInfo.stdout) as { structuredContent?: { runtimeInfo?: unknown } })
+    .structuredContent?.runtimeInfo,
+  getGmosRuntimeInfo(),
+);
+const cliMcpRuntimeInfoDefaultCwd = path.join(tmp, "mcp-runtime-info-default-cwd");
+mkdirSync(cliMcpRuntimeInfoDefaultCwd, { recursive: true });
+const cliMcpRuntimeInfoDefaultDb = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    path.join(process.cwd(), "node_modules/tsx/dist/esm/index.mjs"),
+    path.join(process.cwd(), "src/cli/gmos.ts"),
+    "mcp",
+    "call",
+    "--tool",
+    "memory.runtime_info",
+  ],
+  { cwd: cliMcpRuntimeInfoDefaultCwd, encoding: "utf8" },
+);
+assert.equal(cliMcpRuntimeInfoDefaultDb.status, 0, cliMcpRuntimeInfoDefaultDb.stderr);
+assert.equal(existsSync(path.join(cliMcpRuntimeInfoDefaultCwd, "gmos.db")), false);
+const cliMcpRuntimeInfoInvalid = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "mcp",
+    "call",
+    "--tool",
+    "memory.runtime_info",
+    "--input",
+    JSON.stringify({ profileId: "cli_mcp" }),
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliMcpRuntimeInfoInvalid.status, 0);
+assert.match(cliMcpRuntimeInfoInvalid.stdout, /unsupported fields/);
+assert.equal(existsSync(mcpCliDb), false);
 const cliMcpObserve = spawnSync(
   process.execPath,
   [
@@ -15800,6 +15882,15 @@ try {
   assert.deepEqual(
     stdioTools.tools.map((tool) => tool.name),
     [...PUBLIC_MEMORY_MCP_TOOL_NAMES],
+  );
+  const stdioRuntimeInfo = await stdioClient.callTool({
+    name: "memory.runtime_info",
+    arguments: {},
+  });
+  assert.equal(stdioRuntimeInfo.isError, undefined);
+  assert.deepEqual(
+    (stdioRuntimeInfo.structuredContent as { runtimeInfo?: unknown }).runtimeInfo,
+    getGmosRuntimeInfo(),
   );
   const stdioAdd = await stdioClient.callTool({
     name: "memory.add",

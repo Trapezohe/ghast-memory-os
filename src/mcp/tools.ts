@@ -20,6 +20,15 @@ export interface MemoryMcpTool {
 
 export function listMemoryMcpTools(): MemoryMcpTool[] {
   const tools: Record<MemoryMcpToolName, MemoryMcpTool> = {
+    "memory.runtime_info": {
+      name: "memory.runtime_info",
+      description: "Return gmOS package, public integration surface, and local-first trust contract.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {},
+      },
+    },
     "memory.add": {
       name: "memory.add",
       description: "Remember a non-secret, non-person memory.",

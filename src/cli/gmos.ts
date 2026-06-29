@@ -862,6 +862,29 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "mcp" && subcommand === "call" && value("--tool") === "memory.runtime_info") {
+    const input = parseJsonInput(value("--input"));
+    const unsupported =
+      input && typeof input === "object" && !Array.isArray(input)
+        ? Object.keys(input as Record<string, unknown>)
+        : ["input"];
+    const structuredContent =
+      unsupported.length === 0
+        ? { ok: true, runtimeInfo: getGmosRuntimeInfo() }
+        : {
+            ok: false,
+            error: `memory.runtime_info contains unsupported fields: ${unsupported.join(", ")}`,
+          };
+    const result = {
+      content: [{ type: "text", text: JSON.stringify(structuredContent, null, 2) }],
+      structuredContent,
+      ...(structuredContent.ok ? {} : { isError: true }),
+    };
+    console.log(JSON.stringify(result, null, 2));
+    if (!structuredContent.ok) process.exitCode = 1;
+    return;
+  }
+
   if (command === "evolution" && subcommand === "report") {
     await runEvolutionReport();
     return;

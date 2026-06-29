@@ -135,7 +135,10 @@ const explainBeliefSchema = z.object({
   id: z.string().min(1),
 }).strict();
 
+const runtimeInfoSchema = z.object({}).strict();
+
 const STDIO_TOOL_SCHEMAS: Record<MemoryMcpToolName, z.ZodObject> = {
+  "memory.runtime_info": runtimeInfoSchema,
   "memory.add": addSchema,
   "memory.search": searchSchema,
   "memory.observe": observeSchema,
