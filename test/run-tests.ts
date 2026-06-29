@@ -4206,6 +4206,24 @@ assert.equal(
     ?.candidate.metadata?.rule,
   "first_person_named_relation",
 );
+const speakerDaughterRelationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_relation",
+  role: "user",
+  content: "Alex: My daughter is named Emma.",
+  metadata: {
+    speaker: "Alex",
+    participants: ["Alex", "Blair"],
+  },
+});
+assert.equal(speakerDaughterRelationReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(speakerDaughterRelationReport.memoryIds.length, 1);
+assert.equal(speakerDaughterRelationReport.worldBeliefIds.length, 1);
+assert.equal(
+  speakerDaughterRelationReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.metadata?.relationType,
+  "daughter",
+);
 const speakerAttributeDb = new Database(rulesReportPath, { readonly: true });
 try {
   const speakerAttributeBelief = speakerAttributeDb
@@ -4691,25 +4709,42 @@ try {
   assert.equal(favoritePreferenceBelief?.predicate, "user.preference");
   const namedRelationBelief = speakerAttributeDb
     .prepare(
-      `SELECT subject, predicate
+      `SELECT subject, predicate, object, metadata_json
          FROM gmos_world_beliefs
         WHERE id = ?`,
     )
     .get(namedRelationReport.worldBeliefIds[0]!) as
-    | { subject: string; predicate: string }
+    | { subject: string; predicate: string; object: string; metadata_json: string }
     | undefined;
   assert.equal(namedRelationBelief?.subject, "person:casey");
-  assert.equal(namedRelationBelief?.predicate, "user.attribute");
+  assert.equal(namedRelationBelief?.predicate, "person.relation");
+  assert.equal(namedRelationBelief?.object, "Luna");
+  assert.equal(JSON.parse(namedRelationBelief?.metadata_json ?? "{}").relationType, "cat");
   const chineseNamedRelationBelief = speakerAttributeDb
     .prepare(
-      `SELECT predicate
+      `SELECT predicate, object, metadata_json
          FROM gmos_world_beliefs
         WHERE id = ?`,
     )
     .get(chineseNamedRelationReport.worldBeliefIds[0]!) as
-    | { predicate: string }
+    | { predicate: string; object: string; metadata_json: string }
     | undefined;
-  assert.equal(chineseNamedRelationBelief?.predicate, "user.attribute");
+  assert.equal(chineseNamedRelationBelief?.predicate, "person.relation");
+  assert.equal(chineseNamedRelationBelief?.object, "Max");
+  assert.equal(JSON.parse(chineseNamedRelationBelief?.metadata_json ?? "{}").relationType, "狗");
+  const speakerDaughterRelationBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object, metadata_json
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(speakerDaughterRelationReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string; metadata_json: string }
+    | undefined;
+  assert.equal(speakerDaughterRelationBelief?.subject, "person:alex");
+  assert.equal(speakerDaughterRelationBelief?.predicate, "person.relation");
+  assert.equal(speakerDaughterRelationBelief?.object, "Emma");
+  assert.equal(JSON.parse(speakerDaughterRelationBelief?.metadata_json ?? "{}").relationType, "daughter");
 } finally {
   speakerAttributeDb.close();
 }
@@ -4824,6 +4859,15 @@ const speakerBirthplaceReconstruction = await rulesReportMemory.reconstructConte
   maxMemories: 4,
 });
 assert.match(speakerBirthplaceReconstruction.contextBlock, /Seattle/);
+const speakerRelationReconstruction = await rulesReportMemory.reconstructContext({
+  profileId: "rules_report_relation",
+  query: "What is Alex's daughter named?",
+  maxSteps: 4,
+  maxBranch: 4,
+  maxMemories: 4,
+});
+assert.match(speakerRelationReconstruction.contextBlock, /Emma/);
+assert.doesNotMatch(speakerRelationReconstruction.contextBlock, /Luna/);
 const normalDurableObservationReconstruction = await rulesReportMemory.reconstructContext({
   profileId: "rules_report",
   query: "What did Caroline do yesterday?",

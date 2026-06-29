@@ -9,7 +9,7 @@ const root = path.resolve(import.meta.dirname, "..");
 const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-consumer-smoke-"));
 const packDir = path.join(tmp, "pack");
 const consumerDir = path.join(tmp, "consumer");
-const npmCacheDir = process.env.npm_config_cache || path.join(os.homedir(), ".npm");
+const npmCacheDir = process.env.npm_config_cache || path.join(tmp, "npm-cache");
 const isWindows = process.platform === "win32";
 const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
 
@@ -37,6 +37,7 @@ function spawnCommand(command, args, options = {}) {
 try {
   mkdirSync(packDir, { recursive: true });
   mkdirSync(consumerDir, { recursive: true });
+  mkdirSync(npmCacheDir, { recursive: true });
   const packOutput = run(npmBin, ["pack", "--pack-destination", packDir]);
   const tarball = packOutput.trim().split(/\s+/u).at(-1);
   assert.ok(tarball?.endsWith(".tgz"));

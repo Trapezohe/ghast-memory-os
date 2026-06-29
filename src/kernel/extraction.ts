@@ -394,15 +394,8 @@ function firstPersonAttributeCandidate(
       metadata: { rule: "first_person_attribute" },
     };
   }
-  if (firstPersonNamedRelation(utterance)) {
-    return {
-      kind: "fact",
-      content: text,
-      confidence: 0.66,
-      predicate: "user.attribute",
-      metadata: { rule: "first_person_named_relation" },
-    };
-  }
+  const namedRelation = firstPersonNamedRelationCandidate(text, metadata);
+  if (namedRelation) return namedRelation;
   const currentlyLiveIn = /^\s*I\s+(?:currently\s+)?live\s+in\s+(.{1,80}?)\s*\.?\s*$/iu.exec(utterance);
   if (currentlyLiveIn) {
     const object = projectBeliefObject(currentlyLiveIn[1]);
@@ -1071,27 +1064,45 @@ function namedPersonEventCandidate(
   };
 }
 
-function firstPersonNamedRelation(text: string): boolean {
+function firstPersonNamedRelationCandidate(
+  text: string,
+  metadata?: Record<string, unknown> | undefined,
+): MemoryExtractionCandidate | null {
+  const utterance = stripSpeakerPrefix(text);
   const englishNameCore = String.raw`\p{Lu}[\p{L}0-9_-]{0,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{0,30}){0,2}`;
   const englishName = String.raw`(?:${englishNameCore}|"${englishNameCore}"|'${englishNameCore}')`;
   const chineseExplicitName = String.raw`(?:[\p{Script=Han}]{1,6}|[A-Z][A-Za-z0-9_-]{0,30})`;
   const latinName = String.raw`[A-Z][A-Za-z0-9_-]{0,30}`;
-  return (
-    new RegExp(
-      String.raw`^\s*[Mm]y\s+(?:dog|cat|pet|daughter|son|child|kid|partner|spouse|wife|husband)(?:'s)?\s+(?:[Nn]ame\s+[Ii]s|[Ii]s\s+[Nn]amed|[Ii]s\s+[Cc]alled)\s+${englishName}\s*[.!?]?\s*$`,
-      "u",
-    ).test(text) ||
-    new RegExp(
-      String.raw`^\s*我的\s*(?:狗|猫|宠物|女儿|儿子|孩子|伴侣|配偶|妻子|丈夫)\s*(?:名叫|名字是|姓名是)\s*${chineseExplicitName}\s*[。.!?]?\s*$`,
-      "u",
-    ).test(text) ||
-    new RegExp(
-      String.raw`^\s*我的\s*(?:狗|猫|宠物|女儿|儿子|孩子|伴侣|配偶|妻子|丈夫)\s*叫\s*${latinName}\s*[。.!?]?\s*$`,
-      "u",
-    ).test(
-      text,
-    )
-  );
+  const english = new RegExp(
+    String.raw`^\s*[Mm]y\s+(dog|cat|pet|daughter|son|child|kid|partner|spouse|wife|husband)(?:'s)?\s+(?:[Nn]ame\s+[Ii]s|[Ii]s\s+[Nn]amed|[Ii]s\s+[Cc]alled)\s+(${englishName})\s*[.!?]?\s*$`,
+    "u",
+  ).exec(utterance);
+  const chineseExplicit = new RegExp(
+    String.raw`^\s*我的\s*(狗|猫|宠物|女儿|儿子|孩子|伴侣|配偶|妻子|丈夫)\s*(?:名叫|名字是|姓名是)\s*(${chineseExplicitName})\s*[。.!?]?\s*$`,
+    "u",
+  ).exec(utterance);
+  const chineseCalled = new RegExp(
+    String.raw`^\s*我的\s*(狗|猫|宠物|女儿|儿子|孩子|伴侣|配偶|妻子|丈夫)\s*叫\s*(${latinName})\s*[。.!?]?\s*$`,
+    "u",
+  ).exec(utterance);
+  const relationType = english?.[1] ?? chineseExplicit?.[1] ?? chineseCalled?.[1];
+  const rawName = english?.[2] ?? chineseExplicit?.[2] ?? chineseCalled?.[2];
+  const object = projectBeliefObject(rawName?.replace(/^["']|["']$/gu, ""));
+  if (!relationType || !object) return null;
+  return {
+    kind: "fact",
+    content: text,
+    confidence: 0.66,
+    predicate: "person.relation",
+    object,
+    cardinality: "multi",
+    ...personSubjectFieldsForFirstPerson(text, metadata),
+    metadata: { rule: "first_person_named_relation", relationType },
+  };
+}
+
+function firstPersonNamedRelation(text: string): boolean {
+  return firstPersonNamedRelationCandidate(text) !== null;
 }
 
 function nonNameCalledRelation(text: string): boolean {
