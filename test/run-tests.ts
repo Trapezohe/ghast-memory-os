@@ -12236,6 +12236,64 @@ await reconstructionMemory.add({
   (error: unknown) => assert.match(String(error), /secret-like/),
 );
 await reconstructionMemory.close();
+const cliVersionCwd = mkdtempSync(path.join(tmp, "cli-version-"));
+const cliVersionDefaultDb = path.join(cliVersionCwd, "gmos.db");
+const tsxLoader = path.join(process.cwd(), "node_modules", "tsx", "dist", "loader.mjs");
+assert.equal(existsSync(cliVersionDefaultDb), false);
+const cliVersion = spawnSync(
+  process.execPath,
+  ["--import", tsxLoader, path.join(process.cwd(), "src/cli/gmos.ts"), "version", "--format", "json"],
+  { cwd: cliVersionCwd, encoding: "utf8" },
+);
+assert.equal(cliVersion.status, 0, cliVersion.stderr);
+assert.equal(existsSync(cliVersionDefaultDb), false);
+const cliVersionPayload = JSON.parse(cliVersion.stdout) as {
+  schema?: string;
+  package?: { name?: string; version?: string };
+  cli?: { binaries?: string[]; commands?: string[] };
+  packageExports?: string[];
+  publicSurface?: { mcpTools?: string[]; httpRoutes?: string[] };
+  trustContract?: {
+    localFirst?: boolean;
+    defaultStorage?: string;
+    encryptedByDefault?: boolean;
+    cloudRequired?: boolean;
+  };
+};
+assert.equal(cliVersionPayload.schema, "gmos.cli_version.v1");
+assert.equal(cliVersionPayload.package?.name, packageJson.name);
+assert.equal(cliVersionPayload.package?.version, packageJson.version);
+assert.equal(cliVersionPayload.cli?.binaries?.includes("gmos"), true);
+assert.equal(cliVersionPayload.cli?.binaries?.includes("ghast-memory"), true);
+assert.equal(cliVersionPayload.cli?.commands?.includes("version"), true);
+assert.equal(cliVersionPayload.cli?.commands?.includes("history"), true);
+assert.equal(cliVersionPayload.cli?.commands?.includes("gym"), true);
+for (const exportPath of [".", "./gym", "./mcp", "./http", "./store/sqlite"]) {
+  assert.equal(cliVersionPayload.packageExports?.includes(exportPath), true);
+}
+assert.equal(cliVersionPayload.publicSurface?.mcpTools?.includes("memory.prepare_context"), true);
+assert.equal(cliVersionPayload.publicSurface?.httpRoutes?.includes("POST /prepare"), true);
+assert.equal(cliVersionPayload.trustContract?.localFirst, true);
+assert.equal(cliVersionPayload.trustContract?.defaultStorage, "sqlite");
+assert.equal(cliVersionPayload.trustContract?.encryptedByDefault, false);
+assert.equal(cliVersionPayload.trustContract?.cloudRequired, false);
+const cliVersionMarkdown = spawnSync(
+  process.execPath,
+  ["--import", tsxLoader, path.join(process.cwd(), "src/cli/gmos.ts"), "version", "--format", "markdown"],
+  { cwd: cliVersionCwd, encoding: "utf8" },
+);
+assert.equal(cliVersionMarkdown.status, 0, cliVersionMarkdown.stderr);
+assert.match(cliVersionMarkdown.stdout, /# gmOS CLI Version/);
+assert.match(cliVersionMarkdown.stdout, /Local-first: yes/);
+assert.match(cliVersionMarkdown.stdout, /Encrypted by default: no/);
+assert.equal(existsSync(cliVersionDefaultDb), false);
+const cliShortVersion = spawnSync(
+  process.execPath,
+  ["--import", tsxLoader, path.join(process.cwd(), "src/cli/gmos.ts"), "--version"],
+  { cwd: cliVersionCwd, encoding: "utf8" },
+);
+assert.equal(cliShortVersion.status, 0, cliShortVersion.stderr);
+assert.equal(cliShortVersion.stdout.trim(), packageJson.version);
 const cliStatus = spawnSync(
   process.execPath,
   [

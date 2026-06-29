@@ -45,9 +45,12 @@ import {
   parseMemorySnapshotExport,
 } from "../host/index.js";
 import { serveMemoryHttp } from "../http/index.js";
+import { readGmosPackageInfo, readGmosPackageRoot } from "../kernel/package-info.js";
 import {
   createMemoryMcpServer,
   listMemoryMcpTools,
+  PUBLIC_MEMORY_HTTP_ROUTES,
+  PUBLIC_MEMORY_MCP_TOOL_NAMES,
   serveMemoryMcpStdio,
 } from "../mcp/index.js";
 import {
@@ -87,6 +90,7 @@ function usage(): never {
   console.log(`gmOS CLI
 
 Usage:
+  gmos version --format json
   gmos init --db ./gmos.db
   gmos doctor --db ./gmos.db --host ghast
   gmos repair --db ./gmos.db --search-index
@@ -418,6 +422,125 @@ function publicOutputPath(resolved: string): string {
   return path.basename(resolved);
 }
 
+interface CliVersionReport {
+  schema: "gmos.cli_version.v1";
+  package: {
+    name: string;
+    version: string;
+  };
+  cli: {
+    binaries: string[];
+    commands: string[];
+  };
+  runtime: {
+    node: string;
+    platform: string;
+  };
+  packageExports: string[];
+  publicSurface: {
+    mcpTools: string[];
+    httpRoutes: string[];
+  };
+  trustContract: {
+    localFirst: true;
+    defaultStorage: "sqlite";
+    encryptedByDefault: false;
+    cloudRequired: false;
+  };
+}
+
+const PUBLIC_CLI_COMMANDS = [
+  "version",
+  "init",
+  "doctor",
+  "repair",
+  "status",
+  "add",
+  "update",
+  "delete",
+  "clear",
+  "search",
+  "history",
+  "list",
+  "get",
+  "export",
+  "import",
+  "backup",
+  "restore",
+  "observe",
+  "prepare",
+  "reconstruct",
+  "explain-path",
+  "forget",
+  "explain",
+  "mcp",
+  "http",
+  "evolution",
+  "gate",
+  "gym",
+];
+
+function publicPackageExports(): string[] {
+  const packageRoot = readGmosPackageRoot();
+  if (!packageRoot) return [];
+  try {
+    const parsed = JSON.parse(
+      readFileSync(path.join(packageRoot, "package.json"), "utf8"),
+    ) as { exports?: unknown };
+    if (!parsed.exports || typeof parsed.exports !== "object" || Array.isArray(parsed.exports)) {
+      return [];
+    }
+    return Object.keys(parsed.exports).sort();
+  } catch {
+    return [];
+  }
+}
+
+function createCliVersionReport(): CliVersionReport {
+  return {
+    schema: "gmos.cli_version.v1",
+    package: readGmosPackageInfo(),
+    cli: {
+      binaries: ["gmos", "ghast-memory"],
+      commands: [...PUBLIC_CLI_COMMANDS],
+    },
+    runtime: {
+      node: process.version,
+      platform: `${process.platform}/${process.arch}`,
+    },
+    packageExports: publicPackageExports(),
+    publicSurface: {
+      mcpTools: [...PUBLIC_MEMORY_MCP_TOOL_NAMES],
+      httpRoutes: [...PUBLIC_MEMORY_HTTP_ROUTES],
+    },
+    trustContract: {
+      localFirst: true,
+      defaultStorage: "sqlite",
+      encryptedByDefault: false,
+      cloudRequired: false,
+    },
+  };
+}
+
+function renderCliVersionMarkdown(report: CliVersionReport): string {
+  return [
+    "# gmOS CLI Version",
+    "",
+    `Package: ${report.package.name}@${report.package.version}`,
+    `Node: ${report.runtime.node} ${report.runtime.platform}`,
+    `Binaries: ${report.cli.binaries.join(", ")}`,
+    `Commands: ${report.cli.commands.join(", ")}`,
+    `Package exports: ${report.packageExports.length ? report.packageExports.join(", ") : "unknown"}`,
+    `MCP tools: ${report.publicSurface.mcpTools.join(", ")}`,
+    `HTTP routes: ${report.publicSurface.httpRoutes.join(", ")}`,
+    `Local-first: ${report.trustContract.localFirst ? "yes" : "no"}`,
+    `Default storage: ${report.trustContract.defaultStorage}`,
+    `Encrypted by default: ${report.trustContract.encryptedByDefault ? "yes" : "no"}`,
+    `Cloud required: ${report.trustContract.cloudRequired ? "yes" : "no"}`,
+    "",
+  ].join("\n");
+}
+
 function writeJsonOutput(payload: unknown): void {
   const output = JSON.stringify(payload, null, 2);
   const outputFile = value("--output-file");
@@ -519,7 +642,17 @@ function waitForServerShutdown(): Promise<void> {
 
 async function main(): Promise<void> {
   const [command, subcommand] = process.argv.slice(2);
+  if (command === "--version" || command === "-v") {
+    console.log(readGmosPackageInfo().version);
+    return;
+  }
   if (!command || has("--help") || has("-h")) usage();
+
+  if (command === "version") {
+    const report = createCliVersionReport();
+    printReport(report, renderCliVersionMarkdown(report));
+    return;
+  }
 
   if (command === "gate" || (command === "gym" && subcommand === "gate")) {
     const report = await runMemoryReleaseGate({

@@ -1034,6 +1034,34 @@ try {
     });
   }
 
+  const installedVersionDefaultDb = path.join(consumerDir, "gmos.db");
+  assert.equal(existsSync(installedVersionDefaultDb), false);
+  const installedVersionBin = runInstalledCli(["version", "--format", "json"]);
+  assert.equal(installedVersionBin.status, 0, installedVersionBin.stderr);
+  assert.equal(existsSync(installedVersionDefaultDb), false);
+  const installedVersionJson = JSON.parse(installedVersionBin.stdout);
+  assert.equal(installedVersionJson.schema, "gmos.cli_version.v1");
+  assert.equal(installedVersionJson.package.name, "@ghast/memory");
+  assert.equal(installedVersionJson.package.version, installedPackage.version);
+  assert.equal(installedVersionJson.cli.binaries.includes("gmos"), true);
+  assert.equal(installedVersionJson.cli.binaries.includes("ghast-memory"), true);
+  assert.equal(installedVersionJson.cli.commands.includes("version"), true);
+  assert.equal(installedVersionJson.cli.commands.includes("history"), true);
+  assert.equal(installedVersionJson.cli.commands.includes("gym"), true);
+  assert.equal(installedVersionJson.packageExports.includes("./gym"), true);
+  assert.equal(installedVersionJson.packageExports.includes("./mcp"), true);
+  assert.equal(installedVersionJson.packageExports.includes("./store/sqlite"), true);
+  assert.equal(installedVersionJson.publicSurface.mcpTools.includes("memory.prepare_context"), true);
+  assert.equal(installedVersionJson.publicSurface.httpRoutes.includes("POST /prepare"), true);
+  assert.equal(installedVersionJson.trustContract.localFirst, true);
+  assert.equal(installedVersionJson.trustContract.defaultStorage, "sqlite");
+  assert.equal(installedVersionJson.trustContract.encryptedByDefault, false);
+  assert.equal(installedVersionJson.trustContract.cloudRequired, false);
+  const installedShortVersionBin = runInstalledCli(["--version"]);
+  assert.equal(installedShortVersionBin.status, 0, installedShortVersionBin.stderr);
+  assert.equal(installedShortVersionBin.stdout.trim(), installedPackage.version);
+  assert.equal(existsSync(installedVersionDefaultDb), false);
+
   const installedExternalPassingFile = path.join(consumerDir, "installed-external-passing.jsonl");
   const installedExternalFailingFile = path.join(consumerDir, "installed-external-failing.jsonl");
   const installedExternalSuiteFile = path.join(consumerDir, "installed-external-suite.json");
@@ -1527,6 +1555,7 @@ try {
   run(process.execPath, [installedMcpVersionScript], { cwd: consumerDir, stdio: "pipe" });
   const helpBin = spawnCommand(gmosBin, ["--help"], { cwd: consumerDir, encoding: "utf8" });
   assert.equal(helpBin.status, 1);
+  assert.match(helpBin.stdout, /gmos version --format json/);
   assert.match(helpBin.stdout, /gmos http serve/);
   const hostGymBin = runInstalledCli(
     ["gym", "host", "--hosts", "ghast,mcp", "--format", "json"],
