@@ -17,11 +17,9 @@ on:
       - "src/**"
       - "test/**"
       - "tsconfig.json"
-  push:
-    # Routine branch pushes are intentionally excluded to avoid billed CI runs.
-    # Use pull requests, manual workflow_dispatch, or v* release tags when CI is needed.
-    tags:
-      - "v*"
+  # Deliberately no push trigger. Organization Actions minutes are billed, so
+  # branch pushes and alpha/release tag pushes rely on local gates by default.
+  # Use workflow_dispatch when remote CI is explicitly needed.
   workflow_dispatch:
 
 concurrency:
