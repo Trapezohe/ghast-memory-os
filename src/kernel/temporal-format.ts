@@ -1,3 +1,5 @@
+import { normalizeExplicitTemporalInstant } from "./temporal-validity.js";
+
 const MONTH_NAMES = [
   "January",
   "February",
@@ -98,9 +100,29 @@ export function relativeEventDateSegment(metadata: Record<string, unknown>): str
   return `; event_date=${eventDate}; event_date_text=${calendarDateText(parsed)}`;
 }
 
+export function eventTimeSegment(metadata: Record<string, unknown>): string {
+  const eventTime = typeof metadata.eventTime === "string" ? metadata.eventTime.trim() : "";
+  if (!eventTime) return "";
+  const normalized = normalizeExplicitTemporalInstant(eventTime);
+  if (!normalized) return "";
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return "";
+  const eventDate = calendarDate(parsed);
+  const hours = parsed.getUTCHours();
+  const minutes = parsed.getUTCMinutes();
+  const seconds = parsed.getUTCSeconds();
+  const time =
+    hours === 0 && minutes === 0 && seconds === 0
+      ? ""
+      : `; event_time_utc=${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}${
+          seconds === 0 ? "" : `:${String(seconds).padStart(2, "0")}`
+        }`;
+  return `; event_time=${eventDate}; event_time_text=${calendarDateText(parsed)}${time}`;
+}
+
 export function temporalMetadataSegment(
   createdAt: string | undefined,
   metadata: Record<string, unknown> = {},
 ): string {
-  return `${observedAtSegment(createdAt)}${relativeEventDateSegment(metadata)}`;
+  return `${observedAtSegment(createdAt)}${relativeEventDateSegment(metadata)}${eventTimeSegment(metadata)}`;
 }
