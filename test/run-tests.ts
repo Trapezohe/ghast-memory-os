@@ -5023,6 +5023,16 @@ assert.equal(inverseNamedRelationCandidate?.predicate, "person.relation");
 assert.equal(inverseNamedRelationCandidate?.subject, "person:Alex");
 assert.equal(inverseNamedRelationCandidate?.object, "Emma");
 assert.equal(inverseNamedRelationCandidate?.metadata?.relationType, "daughter");
+const appositiveNamedRelationCandidate = extractRuleMemoryCandidates(
+  "Alex's daughter Emma starts college in September.",
+  {
+    participants: ["Alex", "Blair"],
+  },
+)[0];
+assert.equal(appositiveNamedRelationCandidate?.predicate, "person.relation");
+assert.equal(appositiveNamedRelationCandidate?.subject, "person:Alex");
+assert.equal(appositiveNamedRelationCandidate?.object, "Emma");
+assert.equal(appositiveNamedRelationCandidate?.metadata?.relationType, "daughter");
 assert.equal(
   extractRuleMemoryCandidates("Alex has a Daughter named Emma.", {
     participants: ["Alex", "Blair"],
@@ -5032,6 +5042,7 @@ assert.equal(
 assert.equal(extractRuleMemoryCandidates("Alex's daughter is named Emma.").length, 0);
 assert.equal(extractRuleMemoryCandidates("Alex has a daughter named Emma.").length, 0);
 assert.equal(extractRuleMemoryCandidates("Emma is Alex's daughter.").length, 0);
+assert.equal(extractRuleMemoryCandidates("Alex's daughter Emma starts college in September.").length, 0);
 assert.equal(extractRuleMemoryCandidates("Chrome is Alex's daughter.", {
   participants: ["Alex", "Blair"],
 }).length, 0);
@@ -5049,6 +5060,12 @@ assert.equal(
 );
 assert.equal(
   extractRuleMemoryCandidates("Emma is Alex's daughter.", {
+    participants: ["Blair", "Casey"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("Alex's daughter Emma starts college in September.", {
     participants: ["Blair", "Casey"],
   }).length,
   0,
@@ -5125,6 +5142,30 @@ const inverseNamedRelationDistractorReport = await rulesReportMemory.observeWith
 assert.equal(inverseNamedRelationDistractorReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(inverseNamedRelationDistractorReport.memoryIds.length, 1);
 assert.equal(inverseNamedRelationDistractorReport.worldBeliefIds.length, 1);
+const appositiveNamedRelationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_appositive_relation",
+  role: "user",
+  content: "Alex's daughter Emma starts college in September.",
+  metadata: {
+    participants: ["Alex", "Blair"],
+  },
+});
+assert.equal(appositiveNamedRelationReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(appositiveNamedRelationReport.memoryIds.length, 1);
+assert.equal(appositiveNamedRelationReport.worldBeliefIds.length, 1);
+const appositiveNamedRelationDistractorReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_appositive_relation",
+  role: "user",
+  content: "Blair's cat Nora needs a vet appointment.",
+  metadata: {
+    participants: ["Alex", "Blair"],
+  },
+});
+assert.equal(appositiveNamedRelationDistractorReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(appositiveNamedRelationDistractorReport.memoryIds.length, 1);
+assert.equal(appositiveNamedRelationDistractorReport.worldBeliefIds.length, 1);
 const speakerAttributeDb = new Database(rulesReportPath, { readonly: true });
 try {
   const speakerAttributeBelief = speakerAttributeDb
@@ -5723,6 +5764,19 @@ try {
   assert.equal(inverseNamedRelationBelief?.predicate, "person.relation");
   assert.equal(inverseNamedRelationBelief?.object, "Emma");
   assert.equal(JSON.parse(inverseNamedRelationBelief?.metadata_json ?? "{}").relationType, "daughter");
+  const appositiveNamedRelationBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object, metadata_json
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(appositiveNamedRelationReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string; metadata_json: string }
+    | undefined;
+  assert.equal(appositiveNamedRelationBelief?.subject, "person:alex");
+  assert.equal(appositiveNamedRelationBelief?.predicate, "person.relation");
+  assert.equal(appositiveNamedRelationBelief?.object, "Emma");
+  assert.equal(JSON.parse(appositiveNamedRelationBelief?.metadata_json ?? "{}").relationType, "daughter");
 } finally {
   speakerAttributeDb.close();
 }
@@ -5867,6 +5921,15 @@ const directHasNamedRelationReconstruction = await rulesReportMemory.reconstruct
 });
 assert.match(directHasNamedRelationReconstruction.contextBlock, /Emma/);
 assert.doesNotMatch(directHasNamedRelationReconstruction.contextBlock, /Nora/);
+const appositiveNamedRelationReconstruction = await rulesReportMemory.reconstructContext({
+  profileId: "rules_report_appositive_relation",
+  query: "What is Alex's daughter named?",
+  maxSteps: 4,
+  maxBranch: 4,
+  maxMemories: 4,
+});
+assert.match(appositiveNamedRelationReconstruction.contextBlock, /Emma/);
+assert.doesNotMatch(appositiveNamedRelationReconstruction.contextBlock, /Nora/);
 const normalDurableObservationReconstruction = await rulesReportMemory.reconstructContext({
   profileId: "rules_report",
   query: "What did Caroline do yesterday?",

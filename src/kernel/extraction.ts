@@ -1118,12 +1118,31 @@ function namedPersonRelationCandidate(
     String.raw`^\s*(${englishName})\s+(?:is|was)\s+(${namePattern})[’']s\s+(${relationPattern})\s*[.!?]?\s*$`,
     "u",
   ).exec(utterance);
-  const name = (possessiveMatch?.[1] ?? hasMatch?.[1] ?? inversePossessiveMatch?.[2])
+  const appositivePossessiveMatch = new RegExp(
+    String.raw`^\s*(${namePattern})[’']s\s+(${relationPattern})\s*,?\s+(${englishName})\s*,?(?:\s+.{1,120})?\s*[.!?]?\s*$`,
+    "u",
+  ).exec(utterance);
+  const name = (
+    possessiveMatch?.[1] ??
+    hasMatch?.[1] ??
+    inversePossessiveMatch?.[2] ??
+    appositivePossessiveMatch?.[1]
+  )
     ?.trim();
-  const relationType = (possessiveMatch?.[2] ?? hasMatch?.[2] ?? inversePossessiveMatch?.[3])
+  const relationType = (
+    possessiveMatch?.[2] ??
+    hasMatch?.[2] ??
+    inversePossessiveMatch?.[3] ??
+    appositivePossessiveMatch?.[2]
+  )
     ?.trim()
     .toLowerCase();
-  const rawObject = (possessiveMatch?.[3] ?? hasMatch?.[3] ?? inversePossessiveMatch?.[1])
+  const rawObject = (
+    possessiveMatch?.[3] ??
+    hasMatch?.[3] ??
+    inversePossessiveMatch?.[1] ??
+    appositivePossessiveMatch?.[3]
+  )
     ?.replace(/^["']|["']$/gu, "");
   const object = projectBeliefObject(rawObject);
   if (!name || !relationType || !object || !stableNamedPersonSubject(name)) return null;
