@@ -1064,6 +1064,38 @@ function namedPersonEventCandidate(
   };
 }
 
+function namedPersonRelationCandidate(
+  text: string,
+  metadata?: Record<string, unknown> | undefined,
+): MemoryExtractionCandidate | null {
+  const utterance = stripSpeakerPrefix(text);
+  if (isQuestionLike(utterance)) return null;
+  const namePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}`;
+  const relationPattern = String.raw`dog|cat|pet|daughter|son|child|kid|partner|spouse|wife|husband`;
+  const englishNameCore = String.raw`\p{Lu}[\p{L}0-9_-]{0,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{0,30}){0,2}`;
+  const englishName = String.raw`(?:${englishNameCore}|"${englishNameCore}"|'${englishNameCore}')`;
+  const match = new RegExp(
+    String.raw`^\s*(${namePattern})[’']s\s+(${relationPattern})(?:'s)?\s+(?:[Nn]ame\s+[Ii]s|[Ii]s\s+[Nn]amed|[Ii]s\s+[Cc]alled)\s+(${englishName})\s*[.!?]?\s*$`,
+    "iu",
+  ).exec(utterance);
+  const name = match?.[1]?.trim();
+  const relationType = match?.[2]?.trim();
+  const object = projectBeliefObject(match?.[3]?.replace(/^["']|["']$/gu, ""));
+  if (!name || !relationType || !object || !stableNamedPersonSubject(name)) return null;
+  if (!metadataParticipantsConfirmNamedPerson(name, metadata)) return null;
+  return {
+    kind: "fact",
+    content: text,
+    confidence: 0.66,
+    predicate: "person.relation",
+    subject: `person:${name}`,
+    subjectAliases: [name],
+    object,
+    cardinality: "multi",
+    metadata: { rule: "named_person_relation", relationType },
+  };
+}
+
 function firstPersonNamedRelationCandidate(
   text: string,
   metadata?: Record<string, unknown> | undefined,
@@ -1428,6 +1460,8 @@ export function extractRuleMemoryCandidates(
   if (personStableAttributeCandidate) return [personStableAttributeCandidate];
   const personDirectAttributeCandidate = namedPersonDirectAttributeCandidate(text, metadata);
   if (personDirectAttributeCandidate) return [personDirectAttributeCandidate];
+  const personRelationCandidate = namedPersonRelationCandidate(text, metadata);
+  if (personRelationCandidate) return [personRelationCandidate];
   const personEventCandidate = namedPersonEventCandidate(text, metadata);
   if (personEventCandidate) return [personEventCandidate];
 

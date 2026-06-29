@@ -4349,6 +4349,44 @@ assert.equal(
     ?.candidate.metadata?.relationType,
   "daughter",
 );
+const directNamedRelationCandidate = extractRuleMemoryCandidates("Alex's daughter is named Emma.", {
+  participants: ["Alex", "Blair"],
+})[0];
+assert.equal(directNamedRelationCandidate?.predicate, "person.relation");
+assert.equal(directNamedRelationCandidate?.subject, "person:Alex");
+assert.equal(directNamedRelationCandidate?.object, "Emma");
+assert.equal(directNamedRelationCandidate?.metadata?.relationType, "daughter");
+assert.equal(extractRuleMemoryCandidates("Alex's daughter is named Emma.").length, 0);
+assert.equal(
+  extractRuleMemoryCandidates("Alex's daughter is named Emma.", {
+    participants: ["Blair", "Casey"],
+  }).length,
+  0,
+);
+const directNamedRelationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_direct_relation",
+  role: "user",
+  content: "Alex's daughter is named Emma.",
+  metadata: {
+    participants: ["Alex", "Blair"],
+  },
+});
+assert.equal(directNamedRelationReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(directNamedRelationReport.memoryIds.length, 1);
+assert.equal(directNamedRelationReport.worldBeliefIds.length, 1);
+const directNamedRelationDistractorReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_direct_relation",
+  role: "user",
+  content: "Blair's cat is named Nora.",
+  metadata: {
+    participants: ["Alex", "Blair"],
+  },
+});
+assert.equal(directNamedRelationDistractorReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(directNamedRelationDistractorReport.memoryIds.length, 1);
+assert.equal(directNamedRelationDistractorReport.worldBeliefIds.length, 1);
 const speakerAttributeDb = new Database(rulesReportPath, { readonly: true });
 try {
   const speakerAttributeBelief = speakerAttributeDb
@@ -4870,6 +4908,19 @@ try {
   assert.equal(speakerDaughterRelationBelief?.predicate, "person.relation");
   assert.equal(speakerDaughterRelationBelief?.object, "Emma");
   assert.equal(JSON.parse(speakerDaughterRelationBelief?.metadata_json ?? "{}").relationType, "daughter");
+  const directNamedRelationBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object, metadata_json
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(directNamedRelationReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string; metadata_json: string }
+    | undefined;
+  assert.equal(directNamedRelationBelief?.subject, "person:alex");
+  assert.equal(directNamedRelationBelief?.predicate, "person.relation");
+  assert.equal(directNamedRelationBelief?.object, "Emma");
+  assert.equal(JSON.parse(directNamedRelationBelief?.metadata_json ?? "{}").relationType, "daughter");
 } finally {
   speakerAttributeDb.close();
 }
@@ -4993,6 +5044,15 @@ const speakerRelationReconstruction = await rulesReportMemory.reconstructContext
 });
 assert.match(speakerRelationReconstruction.contextBlock, /Emma/);
 assert.doesNotMatch(speakerRelationReconstruction.contextBlock, /Luna/);
+const directNamedRelationReconstruction = await rulesReportMemory.reconstructContext({
+  profileId: "rules_report_direct_relation",
+  query: "What is Alex's daughter named?",
+  maxSteps: 4,
+  maxBranch: 4,
+  maxMemories: 4,
+});
+assert.match(directNamedRelationReconstruction.contextBlock, /Emma/);
+assert.doesNotMatch(directNamedRelationReconstruction.contextBlock, /Nora/);
 const normalDurableObservationReconstruction = await rulesReportMemory.reconstructContext({
   profileId: "rules_report",
   query: "What did Caroline do yesterday?",

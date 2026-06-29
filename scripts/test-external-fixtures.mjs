@@ -88,8 +88,8 @@ const failures = [];
 if (report.pass !== true) failures.push("suite pass=false");
 if (report.benchmarkPass !== true) failures.push("benchmarkPass=false");
 if (report.runCount !== 4) failures.push(`runCount=${report.runCount}`);
-if (report.totalCaseCount !== 51) failures.push(`totalCaseCount=${report.totalCaseCount}`);
-if (report.totalPassedCount !== 51) failures.push(`totalPassedCount=${report.totalPassedCount}`);
+if (report.totalCaseCount !== 52) failures.push(`totalCaseCount=${report.totalCaseCount}`);
+if (report.totalPassedCount !== 52) failures.push(`totalPassedCount=${report.totalPassedCount}`);
 if (report.totalFailedCount !== 0) failures.push(`totalFailedCount=${report.totalFailedCount}`);
 if (report.scoreWeighted !== 1) failures.push(`scoreWeighted=${report.scoreWeighted}`);
 
@@ -124,6 +124,7 @@ for (const id of [
   "native-speaker-origin-location",
   "native-speaker-birthdate",
   "native-speaker-relation-name",
+  "native-speaker-possessive-relation-name",
   "native-temporal-current-deadline",
   "native-temporal-history-deadline",
   "native-incognito-filter",
@@ -143,8 +144,8 @@ if (!budgetIds.has("native-budget-drop-critical-retention")) {
   failures.push("missing budget-drop fixture native-budget-drop-critical-retention");
 }
 
-if (!gmosRun || gmosRun.caseCount !== 41 || gmosRun.pass !== true) {
-  failures.push("curated-gmos run did not pass 41 cases");
+if (!gmosRun || gmosRun.caseCount !== 42 || gmosRun.pass !== true) {
+  failures.push("curated-gmos run did not pass 42 cases");
 }
 if (!budgetRun || budgetRun.caseCount !== 1 || budgetRun.pass !== true) {
   failures.push("budget-drop-mini run did not pass 1 case");
