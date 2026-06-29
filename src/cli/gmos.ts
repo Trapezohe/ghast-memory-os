@@ -449,6 +449,13 @@ interface CliVersionReport {
   };
 }
 
+interface PublicPackageManifest {
+  bin?: unknown;
+  exports?: unknown;
+}
+
+const FALLBACK_PUBLIC_CLI_BINARIES = ["gmos", "ghast-memory"];
+
 const PUBLIC_CLI_COMMANDS = [
   "version",
   "init",
@@ -480,35 +487,44 @@ const PUBLIC_CLI_COMMANDS = [
   "gym",
 ];
 
-function publicPackageExports(): string[] {
+function readPublicPackageManifest(): PublicPackageManifest | null {
   const packageRoot = readGmosPackageRoot();
-  if (!packageRoot) return [];
+  if (!packageRoot) return null;
   try {
-    const parsed = JSON.parse(
-      readFileSync(path.join(packageRoot, "package.json"), "utf8"),
-    ) as { exports?: unknown };
-    if (!parsed.exports || typeof parsed.exports !== "object" || Array.isArray(parsed.exports)) {
-      return [];
-    }
-    return Object.keys(parsed.exports).sort();
+    return JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8")) as PublicPackageManifest;
   } catch {
-    return [];
+    return null;
   }
 }
 
+function publicStringKeys(value: unknown): string[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  return Object.keys(value).filter((key) => key.length > 0).sort();
+}
+
+function publicCliBinaries(manifest: PublicPackageManifest | null): string[] {
+  const binKeys = publicStringKeys(manifest?.bin);
+  return binKeys.length > 0 ? binKeys : [...FALLBACK_PUBLIC_CLI_BINARIES];
+}
+
+function publicPackageExports(manifest: PublicPackageManifest | null): string[] {
+  return publicStringKeys(manifest?.exports);
+}
+
 function createCliVersionReport(): CliVersionReport {
+  const manifest = readPublicPackageManifest();
   return {
     schema: "gmos.cli_version.v1",
     package: readGmosPackageInfo(),
     cli: {
-      binaries: ["gmos", "ghast-memory"],
+      binaries: publicCliBinaries(manifest),
       commands: [...PUBLIC_CLI_COMMANDS],
     },
     runtime: {
       node: process.version,
       platform: `${process.platform}/${process.arch}`,
     },
-    packageExports: publicPackageExports(),
+    packageExports: publicPackageExports(manifest),
     publicSurface: {
       mcpTools: [...PUBLIC_MEMORY_MCP_TOOL_NAMES],
       httpRoutes: [...PUBLIC_MEMORY_HTTP_ROUTES],

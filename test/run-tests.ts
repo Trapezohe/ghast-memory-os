@@ -427,6 +427,8 @@ const dbPath = path.join(tmp, "test.db");
 const packageJson = JSON.parse(readFileSync(path.join(process.cwd(), "package.json"), "utf8")) as {
   name: string;
   version: string;
+  bin: Record<string, string>;
+  exports: Record<string, unknown>;
 };
 function gitOutput(args: string[]): string {
   const result = spawnSync("git", args, { cwd: process.cwd(), encoding: "utf8" });
@@ -12263,6 +12265,7 @@ const cliVersionPayload = JSON.parse(cliVersion.stdout) as {
 assert.equal(cliVersionPayload.schema, "gmos.cli_version.v1");
 assert.equal(cliVersionPayload.package?.name, packageJson.name);
 assert.equal(cliVersionPayload.package?.version, packageJson.version);
+assert.deepEqual(cliVersionPayload.cli?.binaries, Object.keys(packageJson.bin).sort());
 assert.equal(cliVersionPayload.cli?.binaries?.includes("gmos"), true);
 assert.equal(cliVersionPayload.cli?.binaries?.includes("ghast-memory"), true);
 assert.equal(cliVersionPayload.cli?.commands?.includes("version"), true);
@@ -12271,6 +12274,7 @@ assert.equal(cliVersionPayload.cli?.commands?.includes("gym"), true);
 for (const exportPath of [".", "./gym", "./mcp", "./http", "./store/sqlite"]) {
   assert.equal(cliVersionPayload.packageExports?.includes(exportPath), true);
 }
+assert.deepEqual(cliVersionPayload.packageExports, Object.keys(packageJson.exports).sort());
 assert.equal(cliVersionPayload.publicSurface?.mcpTools?.includes("memory.prepare_context"), true);
 assert.equal(cliVersionPayload.publicSurface?.httpRoutes?.includes("POST /prepare"), true);
 assert.equal(cliVersionPayload.trustContract?.localFirst, true);

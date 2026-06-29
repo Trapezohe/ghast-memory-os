@@ -1043,6 +1043,7 @@ try {
   assert.equal(installedVersionJson.schema, "gmos.cli_version.v1");
   assert.equal(installedVersionJson.package.name, "@ghast/memory");
   assert.equal(installedVersionJson.package.version, installedPackage.version);
+  assert.deepEqual(installedVersionJson.cli.binaries, Object.keys(installedPackage.bin).sort());
   assert.equal(installedVersionJson.cli.binaries.includes("gmos"), true);
   assert.equal(installedVersionJson.cli.binaries.includes("ghast-memory"), true);
   assert.equal(installedVersionJson.cli.commands.includes("version"), true);
