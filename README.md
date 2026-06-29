@@ -587,6 +587,13 @@ LLM-output transcript. Candidate snapshots are sanitized; rejected secret-like
 fields and sensitive metadata are redacted or omitted so the report can be
 logged by a host without becoming a credential side channel.
 
+Use `listEvidence()` when a host needs a read-only diagnostic view of recent
+evidence events, including eligible non-user messages that were intentionally
+not promoted into memories. This API is not used for ordinary prompt context.
+It defaults to normal-sensitivity evidence only; `includeSensitive: true`
+returns sensitive rows with sanitized public fields and still excludes
+secret-like evidence.
+
 For OpenAI-compatible providers, gmOS includes an optional structured extractor
 factory. It is never enabled by default and the SDK never stores provider keys:
 

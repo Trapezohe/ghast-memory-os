@@ -30,6 +30,7 @@ import type {
   CommitOutcomeInput,
   EvidencePathExplanation,
   EvidenceEvent,
+  EvidenceListInput,
   ExplainEvidencePathInput,
   ExplainResult,
   FeedbackInput,
@@ -770,6 +771,25 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     return result;
   }
 
+  async function listEvidence(
+    input: Omit<EvidenceListInput, "profileId"> & { profileId?: string | undefined } = {},
+  ): Promise<EvidenceEvent[]> {
+    await initialize();
+    if (!store.listEvidence) {
+      throw new Error("gmOS store does not support evidence listing");
+    }
+    const evidence = await store.listEvidence({
+      profileId: profileIdFor(defaultProfileId, input.profileId),
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      ...(input.sourceType !== undefined ? { sourceType: input.sourceType } : {}),
+      ...(input.includeSensitive !== undefined ? { includeSensitive: input.includeSensitive } : {}),
+      ...(input.eligibleForLongTermMemory !== undefined
+        ? { eligibleForLongTermMemory: input.eligibleForLongTermMemory }
+        : {}),
+    });
+    return evidence.map(sanitizeEvidenceForPublicOutput);
+  }
+
   async function prepareTurn(input: PrepareTurnInput) {
     await initialize();
     const profileId = profileIdFor(defaultProfileId, input.profileId);
@@ -955,6 +975,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     get,
     observe,
     observeWithReport,
+    listEvidence,
     prepareTurn,
     reconstructContext,
     explainEvidencePath,

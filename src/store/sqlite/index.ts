@@ -9,6 +9,7 @@ import type {
   ArchiveMemoryInput,
   ArchiveStaleHostImportsInput,
   EvidenceEvent,
+  EvidenceListInput,
   FailureEventRecord,
   ForgetInput,
   ForgetResult,
@@ -2236,6 +2237,38 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       });
   }
 
+  function listEvidence(input: EvidenceListInput): EvidenceEvent[] {
+    initialize();
+    const clauses = ["profile_id = ?"];
+    const params: Array<string | number> = [input.profileId];
+    clauses.push(
+      input.includeSensitive ? "sensitivity != 'secret_like'" : "sensitivity = 'normal'",
+    );
+    if (input.sourceType) {
+      clauses.push("source_type = ?");
+      params.push(input.sourceType);
+    }
+    if (input.eligibleForLongTermMemory !== undefined) {
+      clauses.push("eligible_for_long_term_memory = ?");
+      params.push(input.eligibleForLongTermMemory ? 1 : 0);
+    }
+    const rawLimit = input.limit;
+    const requestedLimit =
+      typeof rawLimit === "number" && Number.isFinite(rawLimit) ? Math.trunc(rawLimit) : 50;
+    const limit = Math.max(1, Math.min(500, requestedLimit));
+    return (
+      db
+        .prepare(
+          `SELECT *
+           FROM gmos_evidence_events
+           WHERE ${clauses.join(" AND ")}
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?`,
+        )
+        .all(...params, limit) as Record<string, unknown>[]
+    ).map(normalizeEvidence);
+  }
+
   function listEvidenceForMemory(memoryId: string): EvidenceEvent[] {
     initialize();
     const row = db
@@ -2572,6 +2605,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     findActiveMemoryByMetadata,
     archiveStaleHostImports,
     listActionPolicies,
+    listEvidence,
     listEvidenceForMemory,
     searchAssociations,
     rebuildAssociations,

@@ -632,6 +632,14 @@ export interface RecordEvidenceInput {
   createdAt?: string | undefined;
 }
 
+export interface EvidenceListInput {
+  profileId: string;
+  limit?: number | undefined;
+  sourceType?: string | undefined;
+  includeSensitive?: boolean | undefined;
+  eligibleForLongTermMemory?: boolean | undefined;
+}
+
 export interface AddMemoryInput {
   profileId: string;
   kind: MemoryKind;
@@ -795,6 +803,7 @@ export interface MemoryStore {
     profileId: string,
     options?: { includeSensitive?: boolean | undefined },
   ): Promise<ActionPolicy[]> | ActionPolicy[];
+  listEvidence?(input: EvidenceListInput): Promise<EvidenceEvent[]> | EvidenceEvent[];
   listEvidenceForMemory(memoryId: string): Promise<EvidenceEvent[]> | EvidenceEvent[];
   searchAssociations?(
     input: MemoryAssociationSearchInput,
@@ -838,6 +847,9 @@ export interface MemoryOS {
   get(input: LowLevelGetMemoryInput): Promise<MemoryRecord | null>;
   observe(event: HostEvent): Promise<void>;
   observeWithReport(event: HostEvent): Promise<ObserveResult>;
+  listEvidence(
+    input?: Omit<EvidenceListInput, "profileId"> & { profileId?: string | undefined },
+  ): Promise<EvidenceEvent[]>;
   prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn>;
   reconstructContext(input: ReconstructContextInput): Promise<ReconstructedContext>;
   explainEvidencePath(input: ExplainEvidencePathInput): Promise<EvidencePathExplanation>;

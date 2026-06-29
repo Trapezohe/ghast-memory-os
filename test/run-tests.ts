@@ -3628,9 +3628,10 @@ await suppressRulesMemory.close();
 await extractorMemory.close();
 
 const unsafeObservePath = path.join(tmp, "unsafe-observe-report.db");
+const unsafeObserveStore = createSqliteMemoryStore({ path: unsafeObservePath });
 const unsafeObserveMemory = createMemoryOS({
   profileId: "unsafe_observe",
-  store: createSqliteMemoryStore({ path: unsafeObservePath }),
+  store: unsafeObserveStore,
 });
 const secretObserveReport = await unsafeObserveMemory.observeWithReport({
   type: "conversation.message",
@@ -3662,6 +3663,47 @@ assert.equal(nonUserEvidenceReport.skippedReason, "non_user_message");
 assert.equal(typeof nonUserEvidenceReport.evidenceId, "string");
 assert.equal(nonUserEvidenceReport.memoryIds.length, 0);
 assert.equal(nonUserEvidenceReport.worldBeliefIds.length, 0);
+const sensitiveObserveReport = await unsafeObserveMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "unsafe_observe",
+  role: "user",
+  content: "I attend mental health therapy every Monday.",
+});
+assert.equal(sensitiveObserveReport.eligibleForLongTermMemory, true);
+assert.equal(typeof sensitiveObserveReport.evidenceId, "string");
+const listedNonUserEvidence = await unsafeObserveMemory.listEvidence({
+  profileId: "unsafe_observe",
+  sourceType: "conversation.message",
+});
+assert.equal(
+  listedNonUserEvidence.some(
+    (entry) =>
+      entry.content.includes("Assistant diagnostic note") &&
+      entry.payload.role === "assistant",
+  ),
+  true,
+);
+assert.equal(JSON.stringify(listedNonUserEvidence).includes("therapy"), false);
+const listedSensitiveEvidence = await unsafeObserveMemory.listEvidence({
+  profileId: "unsafe_observe",
+  includeSensitive: true,
+  limit: 10,
+});
+assert.equal(
+  listedSensitiveEvidence.some(
+    (entry) =>
+      entry.sensitivity === "sensitive" && entry.content === "[redacted_sensitive]",
+  ),
+  true,
+);
+assert.equal(JSON.stringify(listedSensitiveEvidence).includes("therapy"), false);
+assert.ok(
+  (await unsafeObserveMemory.listEvidence({ profileId: "unsafe_observe", limit: 1 })).length <= 1,
+);
+assert.ok(
+  (await unsafeObserveMemory.listEvidence({ profileId: "unsafe_observe", limit: Number.NaN }))
+    .length > 0,
+);
 await unsafeObserveMemory.close();
 const unsafeObserveDb = new Database(unsafeObservePath, { readonly: true });
 try {
