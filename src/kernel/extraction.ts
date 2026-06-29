@@ -78,6 +78,40 @@ function publicStringArray(value: unknown): string[] | undefined {
   return output && output.length > 0 ? output : undefined;
 }
 
+function subjectKey(input: string): string {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}_-]+/gu, "-")
+    .replace(/_+/gu, "-")
+    .replace(/-+/gu, "-")
+    .replace(/^-+|-+$/gu, "");
+}
+
+function explicitPersonSubject(input: string | undefined): boolean {
+  return typeof input === "string" && /^person\s*[:/]\s*.+$/iu.test(input.trim());
+}
+
+function explicitUserSubject(input: string | undefined): boolean {
+  return typeof input === "string" && subjectKey(input) === "user";
+}
+
+function normalizedSubjectAliases(candidate: MemoryExtractionCandidate): string[] | undefined {
+  const rawAliases = normalizedStringArray(
+    (candidate as { subjectAliases?: unknown }).subjectAliases,
+  )?.filter((alias) => !isReservedSpeakerIdentity(alias));
+  if (!rawAliases || rawAliases.length === 0) return undefined;
+  const subject = typeof candidate.subject === "string" ? normalize(candidate.subject) : undefined;
+  if (explicitUserSubject(subject)) return undefined;
+  const predicate = typeof candidate.predicate === "string" ? candidate.predicate.trim().toLowerCase() : "";
+  const aliasesNamePerson =
+    explicitPersonSubject(subject) || (Boolean(subject) && predicate.startsWith("person."));
+  const aliases = aliasesNamePerson
+    ? rawAliases.filter((alias) => stableNamedPersonSubject(alias))
+    : rawAliases;
+  return uniqueStrings(aliases);
+}
+
 function snapshotCandidate(candidate: unknown): MemoryExtractionCandidateSnapshot {
   const record = candidate && typeof candidate === "object" && !Array.isArray(candidate)
     ? (candidate as Record<string, unknown>)
@@ -204,9 +238,7 @@ function normalizeCandidate(
   if (confidence < options.minConfidence) return { reason: "low_confidence" };
   const object = typeof candidate.object === "string" ? normalize(candidate.object) : undefined;
   const source = typeof candidate.source === "string" ? normalize(candidate.source) : undefined;
-  const subjectAliases = normalizedStringArray(
-    (candidate as { subjectAliases?: unknown }).subjectAliases,
-  );
+  const subjectAliases = normalizedSubjectAliases(candidate);
   const candidateWithoutAliases = { ...candidate };
   delete (candidateWithoutAliases as { subjectAliases?: unknown }).subjectAliases;
   delete (candidateWithoutAliases as { object?: unknown }).object;

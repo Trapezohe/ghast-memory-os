@@ -93,7 +93,12 @@ function sourceMetadataForEvent(event: Extract<HostEvent, { type: "conversation.
   return { ...explicit, speaker: inferredSpeaker };
 }
 
-const GMOS_OWNED_METADATA_KEYS = new Set(["entityMentions", "entityResolution", "sourceMetadata"]);
+const GMOS_OWNED_METADATA_KEYS = new Set([
+  "entityMentions",
+  "entityResolution",
+  "sourceMetadata",
+  "subjectAliases",
+]);
 
 function sanitizeExternalMemoryMetadata(
   metadata: Record<string, unknown> | undefined,

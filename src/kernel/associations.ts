@@ -199,7 +199,10 @@ function entitySubjectCues(metadata: Record<string, unknown>): string[] {
   if (!predicate.startsWith("person.")) return [];
   const subject = normalizedMetadataValue(metadata, "subject");
   const subjectValue = subject?.match(/^person\s*[:/]\s*(.+)$/iu)?.[1] ?? subject ?? "";
-  return unique([safeAssociationValue(subjectValue), ...safeMetadataCueArray(metadata, "subjectAliases")]);
+  return unique([
+    safeAssociationValue(subjectValue),
+    ...safeMetadataCueArray(metadata, "subjectAliases").filter(stableNamedPersonSubject),
+  ]);
 }
 
 export function sourceContentEntityCues(content: string): string[] {

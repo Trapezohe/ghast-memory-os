@@ -238,7 +238,7 @@ const redactedPersonSubjectAssociationFixture = associationCuesForMemory({
     predicate: "person.tool",
     subject: "person:[redacted_secret]",
     subjectAliases: [
-      "CleanAlias",
+      "Clean Alias",
       "[redacted_sensitive]",
       "api key sk-redactedsubjectalias123456",
     ],
@@ -246,7 +246,7 @@ const redactedPersonSubjectAssociationFixture = associationCuesForMemory({
   createdAt: "2026-06-20T00:00:00.000Z",
   updatedAt: "2026-06-20T00:00:00.000Z",
 });
-assert.equal(redactedPersonSubjectAssociationFixture.some((cue) => cue.cue === "cleanalias"), true);
+assert.equal(redactedPersonSubjectAssociationFixture.some((cue) => cue.cue === "clean alias"), true);
 assert.equal(
   redactedPersonSubjectAssociationFixture.some((cue) => cue.cue === "[redacted_secret]"),
   false,
@@ -3318,6 +3318,83 @@ assert.equal(
 assert.equal(llmNonPersonSpeakerReport.memoryIds.length, 0);
 assert.equal(llmNonPersonSpeakerReport.worldBeliefIds.length, 0);
 await llmExtractorMemory.close();
+
+const customSubjectAliasPath = path.join(tmp, "custom-subject-alias.db");
+const customSubjectAliasStore = createSqliteMemoryStore({ path: customSubjectAliasPath });
+const customSubjectAliasMemory = createMemoryOS({
+  profileId: "custom_subject_alias",
+  store: customSubjectAliasStore,
+  extractor: () => [
+    {
+      kind: "fact",
+      subject: "person:Jordan Vale",
+      subjectAliases: ["current_user", "current-user", "current user", "self", "me", "user", "Jordan"],
+      content: "Jordan Vale uses Atlas for travel planning.",
+      confidence: 0.91,
+      predicate: "person.tool",
+      object: "Atlas",
+      metadata: {
+        subjectAliases: ["current_user", "self", "user", "MetadataJordan"],
+      },
+    },
+  ],
+});
+const customSubjectAliasReport = await customSubjectAliasMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "custom_subject_alias",
+  role: "user",
+  content: "Jordan Vale mentioned a planning tool.",
+});
+assert.equal(customSubjectAliasReport.extraction?.acceptedCandidateCount, 1);
+assert.deepEqual(
+  customSubjectAliasReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.subjectAliases,
+  ["Jordan"],
+);
+assert.equal(customSubjectAliasReport.memoryIds.length, 1);
+assert.equal(customSubjectAliasReport.worldBeliefIds.length, 1);
+const customSubjectAliasMemoryRow = await customSubjectAliasMemory.get({
+  profileId: "custom_subject_alias",
+  id: customSubjectAliasReport.memoryIds[0]!,
+});
+const customSubjectAliasMetadataJson = JSON.stringify(customSubjectAliasMemoryRow?.metadata ?? {});
+assert.equal(customSubjectAliasMetadataJson.includes("MetadataJordan"), false);
+const customSubjectAliasMentions = customSubjectAliasMemoryRow?.metadata.entityMentions as
+  | Array<{ role?: string; value?: string }>
+  | undefined;
+assert.equal(
+  customSubjectAliasMentions?.some(
+    (mention) => mention.role === "subject_alias" && mention.value === "Jordan",
+  ),
+  true,
+);
+for (const reservedAlias of ["current_user", "current-user", "current user", "self", "me", "user"]) {
+  assert.equal(
+    customSubjectAliasMentions?.some((mention) => mention.value === reservedAlias),
+    false,
+  );
+}
+const customSubjectAliasDb = new Database(customSubjectAliasPath, { readonly: true });
+try {
+  const customSubjectAliasCues = customSubjectAliasDb
+    .prepare(
+      `SELECT cue
+         FROM gmos_associations
+        WHERE profile_id = ?
+          AND cue_kind = 'entity'
+        ORDER BY cue ASC`,
+    )
+    .all("custom_subject_alias")
+    .map((row) => String((row as { cue: string }).cue).toLowerCase());
+  assert.equal(customSubjectAliasCues.includes("jordan"), true);
+  assert.equal(customSubjectAliasCues.includes("metadatajordan"), false);
+  for (const reservedAlias of ["current_user", "current-user", "current user", "self", "me", "user"]) {
+    assert.equal(customSubjectAliasCues.includes(reservedAlias), false);
+  }
+} finally {
+  customSubjectAliasDb.close();
+  await customSubjectAliasMemory.close();
+}
 
 const suppressRulesStore = createSqliteMemoryStore({ path: path.join(tmp, "suppress-rules.db") });
 const suppressRulesMemory = createMemoryOS({
