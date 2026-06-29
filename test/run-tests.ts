@@ -20,6 +20,7 @@ import Database from "better-sqlite3";
 import {
   createMemoryOS,
   createOpenAICompatibleExtractor,
+  getGmosRuntimeInfo,
   type MemoryStore,
 } from "../src/index.js";
 import {
@@ -451,6 +452,18 @@ assert.deepEqual(
 );
 assert.deepEqual(publicPackageExportsFromManifest({ exports: "./dist/index.js" }), ["."]);
 assert.deepEqual(publicPackageExportsFromManifest({ exports: [] }), []);
+const publicRuntimeInfo = getGmosRuntimeInfo();
+assert.equal(publicRuntimeInfo.schema, "gmos.runtime_info.v1");
+assert.equal(publicRuntimeInfo.package.name, packageJson.name);
+assert.equal(publicRuntimeInfo.package.version, packageJson.version);
+assert.deepEqual(publicRuntimeInfo.cli.binaries, Object.keys(packageJson.bin).sort());
+assert.deepEqual(publicRuntimeInfo.packageExports, Object.keys(packageJson.exports).sort());
+assert.equal(publicRuntimeInfo.publicSurface.mcpTools.includes("memory.prepare_context"), true);
+assert.equal(publicRuntimeInfo.publicSurface.httpRoutes.includes("POST /prepare"), true);
+assert.equal(publicRuntimeInfo.trustContract.localFirst, true);
+assert.equal(publicRuntimeInfo.trustContract.defaultStorage, "sqlite");
+assert.equal(publicRuntimeInfo.trustContract.encryptedByDefault, false);
+assert.equal(publicRuntimeInfo.trustContract.cloudRequired, false);
 function gitOutput(args: string[]): string {
   const result = spawnSync("git", args, { cwd: process.cwd(), encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);

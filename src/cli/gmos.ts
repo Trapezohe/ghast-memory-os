@@ -45,17 +45,10 @@ import {
   parseMemorySnapshotExport,
 } from "../host/index.js";
 import { serveMemoryHttp } from "../http/index.js";
-import {
-  publicCliBinariesFromManifest,
-  publicPackageExportsFromManifest,
-  readGmosPackageInfo,
-  readGmosPackageManifest,
-} from "../kernel/package-info.js";
+import { readGmosPackageInfo } from "../kernel/package-info.js";
 import {
   createMemoryMcpServer,
   listMemoryMcpTools,
-  PUBLIC_MEMORY_HTTP_ROUTES,
-  PUBLIC_MEMORY_MCP_TOOL_NAMES,
   serveMemoryMcpStdio,
 } from "../mcp/index.js";
 import {
@@ -71,6 +64,7 @@ import type {
   MemoryKind,
   ReadAuditSnapshot,
 } from "../kernel/types.js";
+import { getGmosRuntimeInfo } from "../runtime-info.js";
 
 function value(name: string, fallback?: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -486,29 +480,21 @@ const PUBLIC_CLI_COMMANDS = [
 ];
 
 function createCliVersionReport(): CliVersionReport {
-  const manifest = readGmosPackageManifest();
+  const runtimeInfo = getGmosRuntimeInfo();
   return {
     schema: "gmos.cli_version.v1",
-    package: readGmosPackageInfo(),
+    package: runtimeInfo.package,
     cli: {
-      binaries: publicCliBinariesFromManifest(manifest),
+      binaries: runtimeInfo.cli.binaries,
       commands: [...PUBLIC_CLI_COMMANDS],
     },
     runtime: {
       node: process.version,
       platform: `${process.platform}/${process.arch}`,
     },
-    packageExports: publicPackageExportsFromManifest(manifest),
-    publicSurface: {
-      mcpTools: [...PUBLIC_MEMORY_MCP_TOOL_NAMES],
-      httpRoutes: [...PUBLIC_MEMORY_HTTP_ROUTES],
-    },
-    trustContract: {
-      localFirst: true,
-      defaultStorage: "sqlite",
-      encryptedByDefault: false,
-      cloudRequired: false,
-    },
+    packageExports: runtimeInfo.packageExports,
+    publicSurface: runtimeInfo.publicSurface,
+    trustContract: runtimeInfo.trustContract,
   };
 }
 

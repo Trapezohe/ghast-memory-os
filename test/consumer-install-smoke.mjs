@@ -66,7 +66,7 @@ try {
       import { strict as assert } from "node:assert";
       import { readFileSync, writeFileSync } from "node:fs";
       import path from "node:path";
-      import { createMemoryOS } from "@ghast/memory";
+      import { createMemoryOS, getGmosRuntimeInfo } from "@ghast/memory";
       import { createMemoryStatusReport } from "@ghast/memory/diagnostics";
       import { createEvolutionControlPlane } from "@ghast/memory/evolution";
       import {
@@ -378,6 +378,18 @@ try {
       const installedPackage = JSON.parse(
         readFileSync(path.join(process.cwd(), "node_modules", "@ghast", "memory", "package.json"), "utf8"),
       );
+      const runtimeInfo = getGmosRuntimeInfo();
+      assert.equal(runtimeInfo.schema, "gmos.runtime_info.v1");
+      assert.equal(runtimeInfo.package.name, "@ghast/memory");
+      assert.equal(runtimeInfo.package.version, installedPackage.version);
+      assert.deepEqual(runtimeInfo.cli.binaries, Object.keys(installedPackage.bin).sort());
+      assert.deepEqual(runtimeInfo.packageExports, Object.keys(installedPackage.exports).sort());
+      assert.equal(runtimeInfo.publicSurface.mcpTools.includes("memory.prepare_context"), true);
+      assert.equal(runtimeInfo.publicSurface.httpRoutes.includes("POST /prepare"), true);
+      assert.equal(runtimeInfo.trustContract.localFirst, true);
+      assert.equal(runtimeInfo.trustContract.defaultStorage, "sqlite");
+      assert.equal(runtimeInfo.trustContract.encryptedByDefault, false);
+      assert.equal(runtimeInfo.trustContract.cloudRequired, false);
       assert.equal(installedPackage.types, "./dist/index.d.ts");
       assert.equal(consumerSuiteExecution.result.runManifest.package.name, "@ghast/memory");
       assert.equal(consumerSuiteExecution.result.runManifest.package.version, installedPackage.version);
@@ -563,6 +575,8 @@ try {
       import {
         createMemoryOS,
         createOpenAICompatibleExtractor,
+        getGmosRuntimeInfo,
+        type GmosRuntimeInfo,
         type MemoryExtractionCandidate,
         type EvidencePathExplanation,
         type ExplainEvidencePathInput,
@@ -640,6 +654,12 @@ try {
         type SqliteProfileBackupRestoreResult,
         type SqliteMemoryStore,
       } from "@ghast/memory/store/sqlite";
+
+      const runtimeInfo: GmosRuntimeInfo = getGmosRuntimeInfo();
+      const runtimeInfoSchema: "gmos.runtime_info.v1" = runtimeInfo.schema;
+      const localFirstContract: true = runtimeInfo.trustContract.localFirst;
+      void runtimeInfoSchema;
+      void localFirstContract;
 
       const sqliteStore: SqliteMemoryStore = createSqliteMemoryStore({ path: ":memory:" });
       const genericStore: MemoryStore = sqliteStore;
