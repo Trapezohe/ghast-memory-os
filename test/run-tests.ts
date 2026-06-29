@@ -4307,7 +4307,7 @@ const firstPersonHaveNamedRelationReport = await rulesReportMemory.observeWithRe
   type: "conversation.message",
   profileId: "rules_report",
   role: "user",
-  content: "Casey: I have a cat named Nova.",
+  content: "Casey: I have a Cat named Nova.",
   metadata: {
     speaker: "Casey",
     participants: ["Casey", "Drew"],
@@ -4321,6 +4321,16 @@ assert.equal(
     ?.candidate.metadata?.rule,
   "first_person_named_relation",
 );
+assert.equal(
+  firstPersonHaveNamedRelationReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.metadata?.relationType,
+  "cat",
+);
+assert.equal(
+  extractRuleMemoryCandidates("I have a cat named Nova.")[0]?.metadata?.relationType,
+  "cat",
+);
+assert.equal(extractRuleMemoryCandidates("I have a Cat named happy.").length, 0);
 const chineseNamedRelationReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
