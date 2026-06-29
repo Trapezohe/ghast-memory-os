@@ -3237,6 +3237,8 @@ assert.equal(llmProjectMemory?.metadata.eventTime, "2026-06-20T00:00:00.000Z");
 assert.equal(llmProjectMemory?.metadata.validFrom, "2026-06-21T00:00:00.000Z");
 assert.equal(llmProjectMemory?.metadata.validTo, "2999-07-01T10:30:00.000Z");
 assert.equal(llmProjectMemory?.metadata.source, "dialogue:project-status");
+assert.equal(llmProjectMemory?.metadata.object, "rollout audit");
+assert.equal(llmProjectMemory?.metadata.cardinality, "single");
 const llmProjectMemoryEntityMentions = llmProjectMemory?.metadata.entityMentions as
   | Array<{ role?: string; value?: string; kind?: string; cueEligible?: boolean }>
   | undefined;
@@ -3271,6 +3273,8 @@ try {
   assert.equal(llmProjectBeliefMetadata.validFrom, "2026-06-21T00:00:00.000Z");
   assert.equal(llmProjectBeliefMetadata.validTo, "2999-07-01T10:30:00.000Z");
   assert.equal(llmProjectBeliefMetadata.source, "dialogue:project-status");
+  assert.equal(llmProjectBeliefMetadata.object, "rollout audit");
+  assert.equal(llmProjectBeliefMetadata.cardinality, "single");
   const llmProjectSourceMetadata = llmProjectBeliefMetadata.sourceMetadata as
     | { speaker?: unknown; speakerAliases?: unknown; participants?: unknown }
     | undefined;
@@ -3915,6 +3919,82 @@ assert.equal(
   0,
 );
 await unsafeExtractorMemory.close();
+
+const sensitiveObjectExtractorStore = createSqliteMemoryStore({
+  path: path.join(tmp, "sensitive-object-extractor.db"),
+});
+const sensitiveObjectExtractorMemory = createMemoryOS({
+  profileId: "sensitive_object_extractor",
+  store: sensitiveObjectExtractorStore,
+  extractor: () => [
+    {
+      kind: "project",
+      content: "Sensitive object project current blocker is private document review.",
+      confidence: 0.94,
+      predicate: "project.state",
+      subject: "Project Sensitive Object",
+      object: "123-45-6789",
+      cardinality: "single",
+    },
+  ],
+});
+const sensitiveObjectExtractionReport = await sensitiveObjectExtractorMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "sensitive_object_extractor",
+  role: "user",
+  content: "The project blocker should be reviewed without leaking sensitive structured values.",
+});
+assert.equal(sensitiveObjectExtractionReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(sensitiveObjectExtractionReport.memoryIds.length, 1);
+assert.equal(sensitiveObjectExtractionReport.worldBeliefIds.length, 1);
+const sensitiveObjectMemoryId = sensitiveObjectExtractionReport.memoryIds[0]!;
+assert.equal(
+  await sensitiveObjectExtractorMemory.get({
+    profileId: "sensitive_object_extractor",
+    id: sensitiveObjectMemoryId,
+  }),
+  null,
+);
+assert.equal(
+  (
+    await sensitiveObjectExtractorMemory.search({
+      profileId: "sensitive_object_extractor",
+      query: "private document review",
+    })
+  ).length,
+  0,
+);
+const sensitiveObjectMemory = await sensitiveObjectExtractorMemory.get({
+  profileId: "sensitive_object_extractor",
+  id: sensitiveObjectMemoryId,
+  includeSensitive: true,
+});
+assert.equal(sensitiveObjectMemory?.sensitivity, "sensitive");
+assert.equal(sensitiveObjectMemory?.metadata.object, "[redacted_sensitive]");
+assert.equal(JSON.stringify(sensitiveObjectMemory?.metadata ?? {}).includes("123-45-6789"), false);
+const sensitiveObjectDb = new Database(path.join(tmp, "sensitive-object-extractor.db"), {
+  readonly: true,
+});
+try {
+  const sensitiveObjectBeliefMetadataRow = sensitiveObjectDb
+    .prepare(
+      `SELECT metadata_json
+         FROM gmos_world_beliefs
+        WHERE profile_id = ?
+          AND source_memory_id = ?`,
+    )
+    .get("sensitive_object_extractor", sensitiveObjectMemoryId) as
+    | { metadata_json: string }
+    | undefined;
+  const sensitiveObjectBeliefMetadata = JSON.parse(
+    sensitiveObjectBeliefMetadataRow?.metadata_json ?? "{}",
+  ) as Record<string, unknown>;
+  assert.equal(sensitiveObjectBeliefMetadata.object, "[redacted_sensitive]");
+  assert.equal(JSON.stringify(sensitiveObjectBeliefMetadata).includes("123-45-6789"), false);
+} finally {
+  sensitiveObjectDb.close();
+}
+await sensitiveObjectExtractorMemory.close();
 await fallbackExtractorMemory.close();
 await suppressRulesMemory.close();
 await extractorMemory.close();

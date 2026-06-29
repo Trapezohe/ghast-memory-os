@@ -656,6 +656,9 @@ Structured candidates may include `subject`, `predicate`, `object`, `source`,
 `eventTime`, `validFrom`, `validTo`, and `cardinality`; `source` is only a short
 public label for the extracted candidate, while evidence `sourceType/sourceUri`
 remain the provenance source of truth.
+Accepted memories and world beliefs retain the normalized structured fields in
+their public metadata so hosts can audit the extraction without reading private
+tables.
 
 Use `cardinality: "single"` only for current-state beliefs where one active
 value should replace the previous one, such as a project's current owner,

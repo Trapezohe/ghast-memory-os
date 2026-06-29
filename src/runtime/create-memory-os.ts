@@ -100,6 +100,40 @@ function sanitizeExternalMemoryMetadata(
   return stripGmosOwnedMetadataFields(sanitizePublicPayloadRecord(metadata ?? {}));
 }
 
+function structuredCandidateMetadata(candidate: MemoryExtractionCandidate): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {};
+  if (candidate.object) {
+    const sanitizedObject = sanitizePublicPayloadRecord({ object: candidate.object }).object;
+    if (typeof sanitizedObject === "string" && sanitizedObject.trim()) {
+      metadata.object = sanitizedObject;
+    }
+  }
+  if (candidate.cardinality) metadata.cardinality = candidate.cardinality;
+  return metadata;
+}
+
+function structuredCandidateSensitivity(candidate: MemoryExtractionCandidate): Sensitivity {
+  const objectSensitivity = candidate.object ? classifySensitivity(candidate.object) : "normal";
+  return objectSensitivity;
+}
+
+function maxSensitivity(left: Sensitivity, right: Sensitivity): Sensitivity {
+  if (left === "secret_like" || right === "secret_like") return "secret_like";
+  if (left === "sensitive" || right === "sensitive") return "sensitive";
+  return "normal";
+}
+
+function memorySensitivityForCandidate(input: {
+  eventSensitivity: Sensitivity;
+  candidateContentSensitivity: Sensitivity;
+  candidateStructuredSensitivity: Sensitivity;
+}): Sensitivity {
+  return maxSensitivity(
+    maxSensitivity(input.eventSensitivity, input.candidateContentSensitivity),
+    input.candidateStructuredSensitivity,
+  );
+}
+
 function publicSpeaker(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const speaker = value.trim();
@@ -713,9 +747,11 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     result.extraction = extraction.report;
     for (const candidate of extraction.candidates) {
       const candidateSensitivity = classifySensitivity(candidate.content);
+      const candidateStructuredSensitivity = structuredCandidateSensitivity(candidate);
       if (
         candidate.kind === "person" ||
         candidateSensitivity === "secret_like" ||
+        candidateStructuredSensitivity === "secret_like" ||
         isPersonRoutedMemory(candidate.content)
       ) {
         continue;
@@ -731,10 +767,15 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         kind: candidate.kind,
         content: candidate.content,
         confidence: candidate.confidence,
-        sensitivity: sensitivity === "sensitive" ? sensitivity : candidateSensitivity,
+        sensitivity: memorySensitivityForCandidate({
+          eventSensitivity: sensitivity,
+          candidateContentSensitivity: candidateSensitivity,
+          candidateStructuredSensitivity,
+        }),
         sourceEventId: evidence.id,
         metadata: {
           ...sanitizeExternalMemoryMetadata(candidate.metadata),
+          ...structuredCandidateMetadata(candidate),
           sourceRole: event.role,
           ...(Object.keys(eventMetadata).length > 0 ? { sourceMetadata: eventMetadata } : {}),
           actionPolicyKind: candidate.actionPolicyKind,
@@ -775,6 +816,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           createdAt: event.createdAt ?? memory.createdAt,
           metadata: {
             ...sanitizeExternalMemoryMetadata(candidate.metadata),
+            ...structuredCandidateMetadata(candidate),
             sourceRole: event.role,
             ...(Object.keys(eventMetadata).length > 0 ? { sourceMetadata: eventMetadata } : {}),
             ...(beliefEntityMentions.length > 0 ? { entityMentions: beliefEntityMentions } : {}),
