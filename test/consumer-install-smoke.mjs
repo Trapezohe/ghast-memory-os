@@ -1677,6 +1677,17 @@ try {
   assert.equal(quickstartOutput.importedSearchHit, true);
   assert.equal(quickstartOutput.schemaVersion, 7);
   assert.equal(quickstartOutput.hostLevel, "L4");
+  const installedPackageRoot = path.join(consumerDir, "node_modules", "@ghast", "memory");
+  for (const [docFile, heading] of [
+    ["docs/API_REFERENCE.md", "# gmOS API Reference"],
+    ["docs/ARCHITECTURE.md", "# gmOS Architecture Guide"],
+    ["docs/BENCHMARKING.md", "# gmOS Benchmark Guide"],
+    ["docs/MIGRATION.md", "# gmOS Migration Guide"],
+  ]) {
+    const installedDoc = path.join(installedPackageRoot, ...docFile.split("/"));
+    assert.equal(existsSync(installedDoc), true, `${docFile} should ship with the npm package`);
+    assert.match(readFileSync(installedDoc, "utf8"), new RegExp(`^${heading}`, "m"));
+  }
   const installedHostAdapterExample = path.join(
     consumerDir,
     "node_modules",
