@@ -2,6 +2,10 @@ name: CI
 
 on:
   pull_request:
+    # Do not run on every commit pushed to an open PR. Organization Actions
+    # minutes are billed, so routine iteration should rely on local gates and
+    # explicit workflow_dispatch re-runs when remote CI is needed.
+    types: [opened, reopened, ready_for_review]
     branches:
       - main
     paths:
