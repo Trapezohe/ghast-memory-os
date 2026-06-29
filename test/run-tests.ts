@@ -2709,6 +2709,43 @@ assert.equal(
   ),
   true,
 );
+await naturalDateTemporalMemory.add({
+  profileId: "natural-date-temporal",
+  kind: "fact",
+  content: "The field journal logged the green compass milestone.",
+  metadata: { eventDate: "2023-05-08" },
+});
+const naturalDateEventDateReconstruction = await naturalDateTemporalMemory.reconstructContext({
+  profileId: "natural-date-temporal",
+  query: "What happened on May 8, 2023?",
+  includeTemporalMetadata: true,
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.match(naturalDateEventDateReconstruction.contextBlock, /green compass milestone/);
+assert.match(naturalDateEventDateReconstruction.contextBlock, /event_date=2023-05-08/);
+await naturalDateTemporalMemory.add({
+  profileId: "natural-date-temporal",
+  kind: "fact",
+  content: "Reviewer permission switched to the amber ledger.",
+  metadata: { validFrom: "2023-05-09T00:00:00.000Z" },
+});
+const naturalDateValidFromReconstruction = await naturalDateTemporalMemory.reconstructContext({
+  profileId: "natural-date-temporal",
+  query: "What became active on May 9, 2023?",
+  includeTemporalMetadata: true,
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.match(naturalDateValidFromReconstruction.contextBlock, /amber ledger/);
+assert.equal(
+  naturalDateValidFromReconstruction.paths.some(
+    (path) => path.cue.toLowerCase() === "2023-05-09t00:00:00.000z" || path.cue === "2023-05-09",
+  ),
+  true,
+);
 await naturalDateTemporalMemory.close();
 const directTemporalCueStore = createSqliteMemoryStore({
   path: path.join(tmp, "direct-temporal-cue.db"),
@@ -9016,6 +9053,11 @@ assert.deepEqual(temporalCueValuesFromText("2023年5月7日发生了什么？"),
   "2023-05-07T00:00:00.000Z",
   "2023-05-07",
 ]);
+assert.deepEqual(temporalCueValuesFromText("在2023-05-07发生了什么？"), [
+  "2023-05-07T00:00:00.000Z",
+  "2023-05-07",
+]);
+assert.deepEqual(temporalCueValuesFromText("What happened near foo2023-05-07?"), []);
 assert.deepEqual(temporalCueValuesFromText("What happened on May 2023?"), []);
 assert.deepEqual(temporalCueValuesFromText("What happened on February 30, 2023?"), []);
 assert.deepEqual(

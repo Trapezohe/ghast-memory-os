@@ -133,6 +133,12 @@ function addTemporalCueValues(values: string[], value: string): void {
   values.push(normalized, normalized.slice(0, 10));
 }
 
+function hasDateTextLeftBoundary(text: string, index: number): boolean {
+  if (index <= 0) return true;
+  const previous = Array.from(text.slice(0, index)).at(-1);
+  return !previous || !/[\p{Script=Latin}\p{N}_-]/u.test(previous);
+}
+
 export function normalizeExplicitTemporalInstant(value: string): string | null {
   const trimmed = value.trim();
   const parts = isoDateParts(trimmed);
@@ -155,8 +161,9 @@ export function temporalCueValuesFromText(text: string): string[] {
     new RegExp(String.raw`\b${NATURAL_DATE_VALUE}\b`, "giu"),
     new RegExp(HAN_DATE_VALUE, "gu"),
   ];
-  for (const pattern of patterns) {
+  for (const [patternIndex, pattern] of patterns.entries()) {
     for (const match of text.matchAll(pattern)) {
+      if (patternIndex === 0 && !hasDateTextLeftBoundary(text, match.index ?? 0)) continue;
       addTemporalCueValues(values, match[0]);
     }
   }
