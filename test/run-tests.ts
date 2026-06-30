@@ -14476,12 +14476,14 @@ const customCueDb = path.join(tmp, "custom-cue-extractor.db");
 const customCueStore = createSqliteMemoryStore({ path: customCueDb });
 const customCuePhases: string[] = [];
 const customRouteCue = "AtlasCueCustom";
-const customRouteLeakPattern = /AtlasCueCustom|customcueextractorsecret/iu;
+const customRouteAliasCue = "AtlasCueAliasOnly";
+const customRouteLeakPattern = /AtlasCueCustom|AtlasCueAliasOnly|customcueextractorsecret/iu;
 const customCueExtractor: MemoryCueExtractor = ({ text, phase }) => {
   customCuePhases.push(phase);
   if (phase === "query" && text.includes("opaque handoff")) {
     return [
       { cue: customRouteCue, cueKind: "entity" },
+      { cue: customRouteAliasCue, cueKind: "entity" },
       { cue: "api key sk-customcueextractorsecret1234567890", cueKind: "entity" },
     ];
   }
@@ -14498,7 +14500,7 @@ const customCueMemory = createMemoryOS({
 await customCueMemory.add({
   profileId: "custom_cue",
   kind: "project",
-  content: "Saffron Desk owns the routed handoff packet.",
+  content: "Saffron Desk owns the AtlasCueCustom routed handoff packet.",
   metadata: { predicate: customRouteCue },
 });
 const customCueReconstructed = await customCueMemory.reconstructContext({
@@ -14513,6 +14515,40 @@ assert.equal(customCueReconstructed.plannerTrace?.initialCues.includes("retrieva
 assert.equal(customCuePhases.includes("query"), true);
 assert.equal(customCuePhases.includes("evidence"), true);
 assert.doesNotMatch(JSON.stringify(customCueReconstructed), customRouteLeakPattern);
+const customCueCoverage = customCueReconstructed.stats.evidenceCoverage;
+assert.equal(customCueCoverage?.coveredCues.filter((cue) => cue === "retrieval_hint").length, 1);
+assert.equal(customCueCoverage?.uncoveredCues.includes("retrieval_hint"), false);
+assert.equal(
+  customCueCoverage?.queryCueCount,
+  new Set([...(customCueCoverage?.coveredCues ?? []), ...(customCueCoverage?.uncoveredCues ?? [])]).size,
+);
+assert.equal(
+  customCueReconstructed.plannerTrace?.initialCues.filter((cue) => cue === "retrieval_hint").length,
+  1,
+);
+assert.equal(
+  customCueReconstructed.plannerTrace?.steps.filter((step) => step.selectedCue === "retrieval_hint").length,
+  1,
+);
+assert.equal(customCueReconstructed.stats.evidenceConvergence?.frontierRemaining, 0);
+assert.equal(customCueReconstructed.stats.evidenceConvergence?.prunedBranchCount, 0);
+assert.match(customCueReconstructed.contextBlock, /frontier=0/);
+assert.match(customCueReconstructed.contextBlock, /pruned=0/);
+assert.equal(
+  customCueReconstructed.stats.stepCount,
+  customCueReconstructed.plannerTrace?.steps.length,
+);
+assert.match(customCueReconstructed.contextBlock, /Saffron Desk owns the retrieval_hint routed handoff packet/);
+const customCueExplanation = await customCueMemory.explainEvidencePath({
+  profileId: "custom_cue",
+  query: "opaque handoff owner?",
+  maxSteps: 3,
+  maxBranch: 4,
+  maxMemories: 3,
+  includePlannerTrace: true,
+});
+assert.doesNotMatch(JSON.stringify(customCueExplanation), customRouteLeakPattern);
+assert.match(JSON.stringify(customCueExplanation), /retrieval_hint/);
 await customCueMemory.close();
 const sourceScopeCueDb = path.join(tmp, "source-scope-cue-extractor.db");
 const sourceScopeCueStore = createSqliteMemoryStore({ path: sourceScopeCueDb });
@@ -14649,7 +14685,8 @@ await reconstructionMemory.add({
   profileId: "recon",
   kind: "fact",
   scope: internalRouteCue,
-  content: "Cobalt checklist is the public answer for the selected working set.",
+  content:
+    "host.internal.route.tag.cobalt points at Cobalt checklist as the public answer for the selected working set.",
   confidence: 0.9,
   metadata: { predicate: internalRouteTag },
 });
@@ -14665,6 +14702,7 @@ const internalRouteReconstructed = await reconstructionMemory.reconstructContext
   maxMemories: 3,
 });
 assert.match(internalRouteReconstructed.contextBlock, /Cobalt checklist/);
+assert.match(internalRouteReconstructed.contextBlock, /retrieval_hint points at Cobalt checklist/);
 const internalRouteJson = JSON.stringify(internalRouteReconstructed);
 assert.doesNotMatch(internalRouteJson, internalRouteLeakPattern);
 assert.equal(
@@ -14694,6 +14732,100 @@ assert.equal(
   true,
 );
 assert.doesNotMatch(JSON.stringify(internalRouteEvidencePath), internalRouteLeakPattern);
+const explicitPrivateCue = "HostRoute-Internal-Cobalt-777";
+const explicitPrivateCuePattern = /HostRoute-Internal-Cobalt-777/iu;
+await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "project",
+  content: "HostRoute-Internal-Cobalt-777 points at the public cobalt action.",
+  metadata: { predicate: explicitPrivateCue },
+});
+const explicitPrivateCueReconstructed = await reconstructionMemory.reconstructContext({
+  profileId: "recon",
+  query: "public cobalt action?",
+  reconstructionIntent: {
+    queryCues: [explicitPrivateCue],
+  },
+  includeEvidence: true,
+  maxSteps: 3,
+  maxBranch: 4,
+  maxMemories: 3,
+});
+assert.match(explicitPrivateCueReconstructed.contextBlock, /retrieval_hint points at the public cobalt action/);
+assert.doesNotMatch(JSON.stringify(explicitPrivateCueReconstructed), explicitPrivateCuePattern);
+const explicitPrivateCueExplanation = await reconstructionMemory.explainEvidencePath({
+  profileId: "recon",
+  query: "public cobalt action?",
+  reconstructionIntent: {
+    queryCues: [explicitPrivateCue],
+  },
+  includePlannerTrace: true,
+  maxSteps: 3,
+  maxBranch: 4,
+  maxMemories: 3,
+});
+assert.doesNotMatch(JSON.stringify(explicitPrivateCueExplanation), explicitPrivateCuePattern);
+const publicCueReconstructed = await reconstructionMemory.reconstructContext({
+  profileId: "recon",
+  query: "HostRoute Internal Cobalt 777 public cobalt action?",
+  reconstructionIntent: {
+    queryCues: [explicitPrivateCue],
+  },
+  maxSteps: 3,
+  maxBranch: 4,
+  maxMemories: 3,
+});
+assert.match(publicCueReconstructed.contextBlock, /HostRoute-Internal-Cobalt-777 points at the public cobalt action/);
+const slashPrivateCue = "host:route/cobalt-777";
+const slashPrivateCuePattern = /host:route\/cobalt-777|host-route-cobalt-777/iu;
+await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "project",
+  content: "host:route/cobalt-777 selects the public slash cobalt action.",
+  metadata: { predicate: slashPrivateCue },
+});
+const slashPrivateCueReconstructed = await reconstructionMemory.reconstructContext({
+  profileId: "recon",
+  query: "public slash cobalt action?",
+  reconstructionIntent: {
+    queryCues: [slashPrivateCue],
+  },
+  includeEvidence: true,
+  maxSteps: 3,
+  maxBranch: 4,
+  maxMemories: 3,
+});
+assert.match(
+  slashPrivateCueReconstructed.contextBlock,
+  /retrieval_hint selects the public slash cobalt action/,
+);
+assert.doesNotMatch(JSON.stringify(slashPrivateCueReconstructed), slashPrivateCuePattern);
+const slashPrivateCueExplanation = await reconstructionMemory.explainEvidencePath({
+  profileId: "recon",
+  query: "public slash cobalt action?",
+  reconstructionIntent: {
+    queryCues: [slashPrivateCue],
+  },
+  includePlannerTrace: true,
+  maxSteps: 3,
+  maxBranch: 4,
+  maxMemories: 3,
+});
+assert.doesNotMatch(JSON.stringify(slashPrivateCueExplanation), slashPrivateCuePattern);
+const publicSlashCueReconstructed = await reconstructionMemory.reconstructContext({
+  profileId: "recon",
+  query: "host route cobalt 777 public slash cobalt action?",
+  reconstructionIntent: {
+    queryCues: [slashPrivateCue],
+  },
+  maxSteps: 3,
+  maxBranch: 4,
+  maxMemories: 3,
+});
+assert.match(
+  publicSlashCueReconstructed.contextBlock,
+  /host:route\/cobalt-777 selects the public slash cobalt action/,
+);
 const exhaustiveReconstructed = await reconstructionMemory.reconstructContext({
   profileId: "recon",
   query: "我之前说的那个计划，先做什么？",
@@ -14883,6 +15015,99 @@ assert.doesNotMatch(JSON.stringify(preparedWithTaskHints.reconstruction ?? {}), 
 assert.equal(
   JSON.stringify(taskHintRowsBefore),
   JSON.stringify(await reconstructionStore.rowCounts()),
+);
+await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "project",
+  scope: "Host Private Alpha",
+  content: "Host Private Alpha owns the spaced private route note.",
+});
+const preparedWithSpacedTaskHint = await reconstructionMemory.prepareTurn({
+  profileId: "recon",
+  messages: [{ role: "user", content: "spaced private route owner?" }],
+  task: {
+    projectId: "Host Private Alpha",
+  },
+  includeEvidence: true,
+  reconstruction: {
+    mode: "shadow",
+    maxSteps: 3,
+    maxBranch: 4,
+    maxMemories: 3,
+  },
+});
+assert.match(preparedWithSpacedTaskHint.contextBlock, /retrieval_hint owns the spaced private route note/);
+assert.match(
+  preparedWithSpacedTaskHint.reconstruction?.contextBlock ?? "",
+  /retrieval_hint owns the spaced private route note/,
+);
+assert.doesNotMatch(JSON.stringify(preparedWithSpacedTaskHint), /Host Private Alpha|host_private_alpha/iu);
+const preparedWithPublicTaskSignal = await reconstructionMemory.prepareTurn({
+  profileId: "recon",
+  messages: [{ role: "user", content: "Host Private Alpha owner?" }],
+  task: {
+    projectId: "Host Private Alpha",
+  },
+  includeEvidence: true,
+  reconstruction: {
+    mode: "shadow",
+    maxSteps: 3,
+    maxBranch: 4,
+    maxMemories: 3,
+  },
+});
+assert.match(preparedWithPublicTaskSignal.contextBlock, /Host Private Alpha owns the spaced private route note/);
+assert.match(
+  preparedWithPublicTaskSignal.reconstruction?.contextBlock ?? "",
+  /Host Private Alpha owns the spaced private route note/,
+);
+await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "project",
+  scope: "host:route/cobalt-777",
+  content: "host:route/cobalt-777 owns the slash private route note.",
+});
+const preparedWithSlashTaskHint = await reconstructionMemory.prepareTurn({
+  profileId: "recon",
+  messages: [{ role: "user", content: "slash private route owner?" }],
+  task: {
+    projectId: "host:route/cobalt-777",
+  },
+  includeEvidence: true,
+  reconstruction: {
+    mode: "shadow",
+    maxSteps: 3,
+    maxBranch: 4,
+    maxMemories: 3,
+  },
+});
+assert.match(preparedWithSlashTaskHint.contextBlock, /retrieval_hint owns the slash private route note/);
+assert.match(
+  preparedWithSlashTaskHint.reconstruction?.contextBlock ?? "",
+  /retrieval_hint owns the slash private route note/,
+);
+assert.doesNotMatch(JSON.stringify(preparedWithSlashTaskHint), /host:route\/cobalt-777|host-route-cobalt-777/iu);
+const preparedWithPublicSlashTaskSignal = await reconstructionMemory.prepareTurn({
+  profileId: "recon",
+  messages: [{ role: "user", content: "host route cobalt 777 owner?" }],
+  task: {
+    projectId: "host:route/cobalt-777",
+  },
+  includeEvidence: true,
+  reconstruction: {
+    mode: "shadow",
+    maxSteps: 3,
+    maxBranch: 4,
+    maxMemories: 3,
+  },
+});
+assert.match(
+  preparedWithPublicSlashTaskSignal.contextBlock,
+  /host:route\/cobalt-777 owns the slash private route note/,
+);
+assert.match(
+  preparedWithPublicSlashTaskSignal.reconstruction?.contextBlock ?? "",
+  /host:route\/cobalt-777 owns the slash private route note/,
 );
 await reconstructionMemory.add({
   profileId: "recon",

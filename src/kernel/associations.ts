@@ -46,6 +46,21 @@ export function associationCueKey(value: string): string {
     .replace(/^-+|-+$/gu, "");
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+export function associationCueTextPattern(value: string): RegExp | null {
+  const key = associationCueKey(value);
+  if (!key) return null;
+  const parts = key.split("-").filter(Boolean).map(escapeRegExp);
+  if (parts.length === 0) return null;
+  return new RegExp(
+    `(?<![\\p{L}\\p{N}_-])${parts.join("[\\s_.:/-]+")}(?![\\p{L}\\p{N}_-])`,
+    "giu",
+  );
+}
+
 export function associationCueMatchesQuery(cue: string, queryCues: Iterable<string>): boolean {
   const key = associationCueKey(cue);
   if (!key) return false;

@@ -1,6 +1,7 @@
 import {
   associationCueKey,
   associationCueMatchesQuery,
+  associationCueTextPattern,
   extractAssociationCues,
   sourceMetadataEntityCues,
 } from "./associations.js";
@@ -35,6 +36,7 @@ function latestUserText(messages: TurnMessage[] | undefined): string {
 
 type ReconstructMemoryContextRequest = ReconstructContextInput & {
   retrievalQuery?: string | undefined;
+  privateRouteSignals?: string[] | undefined;
 };
 
 function boundedInteger(input: number | undefined, fallback: number, min: number, max: number): number {
@@ -85,12 +87,19 @@ function publicPath(
   includeTemporalMetadata: boolean,
   hideRouteSignals = false,
   privateSignalKeys = new Set<string>(),
+  privateOutputSignalKeys = new Set<string>(),
 ): ReconstructedEvidencePath {
   const routeSafePath = hideRouteSignals
     ? {
         ...path,
+        id: redactPrivateRouteSignals(path.id, privateOutputSignalKeys),
         cue: "retrieval_hint",
         tag: path.targetKind ?? path.targetType,
+        targetId: redactPrivateRouteSignals(path.targetId, privateOutputSignalKeys),
+        targetSummary: redactPrivateRouteSignals(path.targetSummary, privateOutputSignalKeys),
+        sourceEvidenceId: path.sourceEvidenceId
+          ? redactPrivateRouteSignals(path.sourceEvidenceId, privateOutputSignalKeys)
+          : path.sourceEvidenceId,
         routeReason: publicRouteReason(path.routeReason, privateSignalKeys),
       }
     : path;
@@ -99,19 +108,33 @@ function publicPath(
   return publicPathWithoutTemporalMetadata;
 }
 
-function publicMemory(memory: MemoryRecord, hideRouteSignals: boolean): MemoryRecord {
+function publicMemory(
+  memory: MemoryRecord,
+  hideRouteSignals: boolean,
+  privateOutputSignalKeys = new Set<string>(),
+): MemoryRecord {
   if (!hideRouteSignals) return memory;
   return {
     ...memory,
     scope: "global",
+    content: redactPrivateRouteSignals(memory.content, privateOutputSignalKeys),
     metadata: {},
   };
 }
 
-function publicEvidenceEvent(event: EvidenceEvent, hideRouteSignals: boolean): EvidenceEvent {
+function publicEvidenceEvent(
+  event: EvidenceEvent,
+  hideRouteSignals: boolean,
+  privateOutputSignalKeys = new Set<string>(),
+): EvidenceEvent {
   if (!hideRouteSignals) return event;
   return {
     ...event,
+    eventKey: redactPrivateRouteSignals(event.eventKey, privateOutputSignalKeys),
+    sourceUri: event.sourceUri
+      ? redactPrivateRouteSignals(event.sourceUri, privateOutputSignalKeys)
+      : event.sourceUri,
+    content: redactPrivateRouteSignals(event.content, privateOutputSignalKeys),
     payload: {},
   };
 }
@@ -123,10 +146,34 @@ function publicPlannerBranch(
   if (privateSignalKeys.size === 0) return branch;
   return {
     ...branch,
+    pathId: redactPrivateRouteSignals(branch.pathId, privateSignalKeys),
+    targetId: redactPrivateRouteSignals(branch.targetId, privateSignalKeys),
     tag: publicRouteSignal(branch.tag, privateSignalKeys),
     reason: publicRouteReason(branch.reason, privateSignalKeys) ?? branch.reason,
-    generatedCues: branch.generatedCues.map((cue) => publicRouteSignal(cue, privateSignalKeys)),
+    generatedCues: publicRouteSignals(branch.generatedCues, privateSignalKeys),
   };
+}
+
+function publicPlannerBranches(
+  branches: ReconstructedPlannerBranch[],
+  privateSignalKeys: Set<string>,
+): ReconstructedPlannerBranch[] {
+  const seen = new Set<string>();
+  const output: ReconstructedPlannerBranch[] = [];
+  for (const branch of branches.map((item) => publicPlannerBranch(item, privateSignalKeys))) {
+    const key = [
+      branch.pathId,
+      branch.targetType,
+      branch.targetId,
+      branch.tag,
+      branch.decision,
+      branch.reason,
+    ].join("\n");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(branch);
+  }
+  return output;
 }
 
 function publicPlannerStep(
@@ -134,12 +181,19 @@ function publicPlannerStep(
   privateSignalKeys: Set<string>,
 ): ReconstructedPlannerStep {
   if (privateSignalKeys.size === 0) return step;
+  const branches = publicPlannerBranches(step.branches, privateSignalKeys);
+  const selectedBranchCount = branches.filter((branch) => branch.decision !== "pruned").length;
+  const prunedBranchCount = branches.filter((branch) => branch.decision === "pruned").length;
   return {
     ...step,
     selectedCue: publicRouteSignal(step.selectedCue, privateSignalKeys),
     cueReason: publicRouteReason(step.cueReason, privateSignalKeys) ?? step.cueReason,
-    generatedCues: step.generatedCues.map((cue) => publicRouteSignal(cue, privateSignalKeys)),
-    branches: step.branches.map((branch) => publicPlannerBranch(branch, privateSignalKeys)),
+    exploredAssociationCount: branches.length,
+    hybridCandidateCount: step.hybridCandidateCount === undefined ? undefined : branches.length,
+    selectedBranchCount,
+    prunedBranchCount,
+    generatedCues: publicRouteSignals(step.generatedCues, privateSignalKeys),
+    branches,
   };
 }
 
@@ -149,10 +203,36 @@ function publicPlannerTrace(
   stopReason: ReconstructedContext["stats"]["stopReason"],
 ): ReconstructedPlannerTrace {
   if (privateSignalKeys.size === 0) return { ...trace, stopReason };
+  const steps: ReconstructedPlannerStep[] = [];
+  const seenSteps = new Set<string>();
+  for (const step of trace.steps.map((item) => publicPlannerStep(item, privateSignalKeys))) {
+    const key = step.selectedCue;
+    const existing = steps.find((candidate) => candidate.selectedCue === key);
+    if (existing) {
+      existing.generatedCues = publicRouteSignals(
+        [...existing.generatedCues, ...step.generatedCues],
+        privateSignalKeys,
+      );
+      existing.branches = publicPlannerBranches(
+        [...existing.branches, ...step.branches],
+        privateSignalKeys,
+      );
+      existing.exploredAssociationCount = existing.branches.length;
+      existing.selectedBranchCount = existing.branches.filter((branch) => branch.decision !== "pruned").length;
+      existing.prunedBranchCount = existing.branches.filter((branch) => branch.decision === "pruned").length;
+      if (existing.hybridCandidateCount !== undefined || step.hybridCandidateCount !== undefined) {
+        existing.hybridCandidateCount = existing.branches.length;
+      }
+      continue;
+    }
+    if (seenSteps.has(key)) continue;
+    seenSteps.add(key);
+    steps.push({ ...step, step: steps.length + 1 });
+  }
   return {
     ...trace,
-    initialCues: trace.initialCues.map((cue) => publicRouteSignal(cue, privateSignalKeys)),
-    steps: trace.steps.map((step) => publicPlannerStep(step, privateSignalKeys)),
+    initialCues: publicRouteSignals(trace.initialCues, privateSignalKeys),
+    steps,
     stopReason,
   };
 }
@@ -364,12 +444,14 @@ function privateRouteSignalKeys(
   intent: ReconstructionIntent,
   publicQuery: string,
   cueExtractor?: MemoryCueExtractor | undefined,
+  privateRouteSignals: string[] = [],
 ): Set<string> {
   const keys = new Set<string>();
-  const addPrivateKey = (value: string): void => {
+  const addPrivateKey = (value: string, includeParts = true): void => {
     const key = associationCueKey(value);
     if (!key) return;
     keys.add(key);
+    if (!includeParts) return;
     for (const part of key.split("-")) {
       if (part.length >= 4 || /^\d{3,}$/u.test(part)) keys.add(part);
     }
@@ -392,6 +474,10 @@ function privateRouteSignalKeys(
     if (routeSignalAppearsInPublicQuery(cue.cue, publicQuery)) continue;
     addPrivateKey(cue.cue);
   }
+  for (const signal of privateRouteSignals) {
+    if (routeSignalAppearsInPublicQuery(signal, publicQuery)) continue;
+    addPrivateKey(signal, false);
+  }
   return keys;
 }
 
@@ -400,11 +486,92 @@ function publicRouteSignal(value: string, privateSignalKeys: Set<string>): strin
   return key && privateSignalKeys.has(key) ? "retrieval_hint" : value;
 }
 
+function uniqueDisplayValues(values: string[]): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    const key = normalizedText(trimmed);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    output.push(trimmed);
+  }
+  return output;
+}
+
+function publicRouteSignals(values: string[], privateSignalKeys: Set<string>): string[] {
+  if (privateSignalKeys.size === 0) return values;
+  return uniqueDisplayValues(values.map((value) => publicRouteSignal(value, privateSignalKeys)));
+}
+
 function publicRouteReason(value: string | undefined, privateSignalKeys: Set<string>): string | undefined {
   if (!value || privateSignalKeys.size === 0) return value;
+  return redactPrivateRouteSignals(value, privateSignalKeys, "retrieval-hint");
+}
+
+function privateOutputSignalKeys(input: {
+  intent: ReconstructionIntent;
+  privateRouteSignals?: string[] | undefined;
+  publicQuery: string;
+  cueExtractor?: MemoryCueExtractor | undefined;
+}): Set<string> {
+  const keys = new Set<string>();
+  const addSignal = (value: string): void => {
+    if (classifySensitivity(value) !== "normal") return;
+    if (routeSignalAppearsInPublicQuery(value, input.publicQuery)) return;
+    const trimmed = value.trim();
+    if (trimmed) keys.add(trimmed);
+  };
+  const addOpaqueSignal = (value: string): void => {
+    if (!opaqueRouteSignal(value)) return;
+    addSignal(value);
+  };
+  for (const cue of input.intent.explicitQueryCues) {
+    addOpaqueSignal(cue);
+  }
+  for (const tag of input.intent.expectedTags) {
+    if (PUBLIC_STRUCTURED_INTENT_TAGS.has(tag)) continue;
+    addOpaqueSignal(tag);
+  }
+  for (const value of input.privateRouteSignals ?? []) {
+    addSignal(value);
+  }
+  for (const cue of customCueExtractorCues({
+    cueExtractor: input.cueExtractor,
+    text: input.publicQuery,
+    phase: "query",
+    maxCues: 48,
+  })) {
+    if (routeSignalAppearsInPublicQuery(cue.cue, input.publicQuery)) continue;
+    addSignal(cue.cue);
+  }
+  return keys;
+}
+
+function opaqueRouteSignal(value: string): boolean {
+  const key = associationCueKey(value);
+  if (!key) return false;
+  const parts = key.split("-").filter(Boolean);
+  const hasSeparator = /[\s_.:/-]/u.test(value);
+  const hasDigit = /\d/u.test(key);
+  return key.length >= 20 && hasSeparator && (hasDigit || parts.length >= 4);
+}
+
+function privateSignalPattern(value: string): RegExp | null {
+  return associationCueTextPattern(value);
+}
+
+function redactPrivateRouteSignals(
+  value: string,
+  privateSignalKeys: Set<string>,
+  replacement = "retrieval_hint",
+): string {
+  if (privateSignalKeys.size === 0) return value;
   let output = value;
   for (const key of [...privateSignalKeys].sort((left, right) => right.length - left.length)) {
-    output = output.replaceAll(key, "retrieval-hint");
+    const pattern = privateSignalPattern(key);
+    if (!pattern) continue;
+    output = output.replace(pattern, replacement);
   }
   return output;
 }
@@ -414,15 +581,27 @@ function publicEvidenceCoverage(
   privateSignalKeys: Set<string>,
 ): ReconstructionEvidenceCoverage {
   if (privateSignalKeys.size === 0) return coverage;
+  const coveredCues = publicRouteSignals(coverage.coveredCues, privateSignalKeys);
+  const coveredCueKeys = new Set(coveredCues.map(normalizedText));
+  const uncoveredCues = publicRouteSignals(coverage.uncoveredCues, privateSignalKeys)
+    .filter((cue) => !coveredCueKeys.has(normalizedText(cue)));
+  const queryCueCount = uniqueDisplayValues([...coveredCues, ...uncoveredCues]).length;
+  const coveredCueCount = coveredCues.length;
+  const coverageRate =
+    queryCueCount === 0 ? (coveredCueCount > 0 ? 1 : 0) : coveredCueCount / queryCueCount;
   return {
     ...coverage,
-    coveredCues: uniqueStrings(
-      coverage.coveredCues.map((cue) => publicRouteSignal(cue, privateSignalKeys)),
-    ),
-    uncoveredCues: uniqueStrings(
-      coverage.uncoveredCues.map((cue) => publicRouteSignal(cue, privateSignalKeys)),
-    ),
+    queryCueCount,
+    coveredCueCount,
+    coverageRate,
+    coveredCues,
+    uncoveredCues,
   };
+}
+
+function boundedPublicScore(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
 }
 
 type ReconstructionEvidenceCoverage = NonNullable<
@@ -645,6 +824,26 @@ function evidenceConvergenceForPaths(input: {
     frontierRemaining: input.frontierRemaining,
     selectedPathCount: input.paths.length,
     selectedTags: uniqueStrings(input.paths.map((path) => path.tag)).slice(0, 12),
+  };
+}
+
+function publicEvidenceConvergence(input: {
+  convergence: ReconstructionEvidenceConvergence;
+  coverage: ReconstructionEvidenceCoverage;
+  paths: ReconstructedEvidencePath[];
+  privateSignalKeys: Set<string>;
+}): ReconstructionEvidenceConvergence {
+  if (input.privateSignalKeys.size === 0) return input.convergence;
+  const fallbackScore = input.convergence.reached
+    ? Math.max(input.convergence.threshold, input.coverage.coverageRate)
+    : Math.min(input.convergence.threshold - 0.01, input.coverage.coverageRate);
+  return {
+    ...input.convergence,
+    score: boundedPublicScore(fallbackScore),
+    prunedBranchCount: 0,
+    frontierRemaining: 0,
+    selectedPathCount: input.paths.length,
+    selectedTags: uniqueDisplayValues(input.paths.map((path) => path.tag)).slice(0, 12),
   };
 }
 
@@ -1198,18 +1397,34 @@ function composeReconstructedContext(input: {
   displayQuery?: string | undefined;
   plannerTrace?: ReconstructedPlannerTrace | undefined;
   cueExtractor?: MemoryCueExtractor | undefined;
+  privateRouteSignals?: string[] | undefined;
 }): ReconstructedContext {
   let memories = [...input.memories];
   let paths = [...input.paths];
   const publicQuery = input.displayQuery ?? input.query;
-  const privateSignalKeys = privateRouteSignalKeys(input.intent, publicQuery, input.cueExtractor);
+  const privateSignalKeys = privateRouteSignalKeys(
+    input.intent,
+    publicQuery,
+    input.cueExtractor,
+    input.privateRouteSignals,
+  );
+  const privateOutputSignalKeySet = privateOutputSignalKeys({
+    intent: input.intent,
+    privateRouteSignals: input.privateRouteSignals,
+    publicQuery,
+    cueExtractor: input.cueExtractor,
+  });
   const hideInternalRouteSignals =
     (input.displayQuery !== undefined && input.displayQuery !== input.query) ||
     privateSignalKeys.size > 0;
   const publicEvidence = input.includeEvidence
     ? input.evidence
         .map(sanitizeEvidenceForPublicOutput)
-        .map((event) => publicEvidenceEvent(event, hideInternalRouteSignals))
+        .map((event) => publicEvidenceEvent(
+          event,
+          hideInternalRouteSignals,
+          privateOutputSignalKeySet,
+        ))
     : [];
   let evidence = [...publicEvidence];
   let coverage = evidenceCoverageForPaths(publicQuery, paths, input.cueExtractor);
@@ -1231,6 +1446,61 @@ function composeReconstructedContext(input: {
     stopReason: input.stopReason,
     evidenceConvergence,
   });
+  const outputState = (): {
+    paths: ReconstructedEvidencePath[];
+    coverage: ReconstructionEvidenceCoverage;
+    evidenceConvergence: ReconstructionEvidenceConvergence;
+    uncertainty: ReconstructionUncertainty;
+    plannerTrace?: ReconstructedPlannerTrace | undefined;
+    stepCount: number;
+    exploredCueCount: number;
+    associationCount: number;
+  } => {
+    const outputPaths = paths.map((path) =>
+      publicPath(
+        path,
+        input.includeTemporalMetadata,
+        hideInternalRouteSignals,
+        privateSignalKeys,
+        privateOutputSignalKeySet,
+      ),
+    );
+    const outputCoverage = publicEvidenceCoverage(coverage, privateSignalKeys);
+    const outputEvidenceConvergence = publicEvidenceConvergence({
+      convergence: evidenceConvergence,
+      coverage: outputCoverage,
+      paths: outputPaths,
+      privateSignalKeys,
+    });
+    const outputUncertainty = uncertaintyForReconstruction({
+      coverage: outputCoverage,
+      memories,
+      paths: outputPaths,
+      stopReason: input.stopReason,
+      evidenceConvergence: outputEvidenceConvergence,
+    });
+    const exposePlannerTrace = input.displayQuery === undefined || input.displayQuery === input.query;
+    const outputPlannerTrace = exposePlannerTrace && input.plannerTrace
+      ? publicPlannerTrace(input.plannerTrace, privateSignalKeys, input.stopReason)
+      : undefined;
+    const outputAssociationCount = outputPlannerTrace
+      ? outputPlannerTrace.steps.reduce((sum, step) => sum + step.exploredAssociationCount, 0)
+      : outputPaths.length;
+    return {
+      paths: outputPaths,
+      coverage: outputCoverage,
+      evidenceConvergence: outputEvidenceConvergence,
+      uncertainty: outputUncertainty,
+      plannerTrace: outputPlannerTrace,
+      stepCount: hideInternalRouteSignals
+        ? outputPlannerTrace?.steps.length ?? (outputPaths.length > 0 ? 1 : 0)
+        : input.stepCount,
+      exploredCueCount: hideInternalRouteSignals
+        ? outputPlannerTrace?.steps.length ?? (outputPaths.length > 0 ? 1 : 0)
+        : input.exploredCueCount,
+      associationCount: hideInternalRouteSignals ? outputAssociationCount : input.associationCount,
+    };
+  };
   const render = (): string => {
     coverage = evidenceCoverageForPaths(publicQuery, paths, input.cueExtractor);
     evidenceConvergence = evidenceConvergenceForPaths({
@@ -1251,21 +1521,19 @@ function composeReconstructedContext(input: {
       stopReason: input.stopReason,
       evidenceConvergence,
     });
-    const outputCoverage = publicEvidenceCoverage(coverage, privateSignalKeys);
+    const output = outputState();
     const lines = [
       "<gmos-reconstructed-context>",
       `Query: ${publicQuery}`,
-      `Evidence coverage: ${outputCoverage.coveredCueCount}/${outputCoverage.queryCueCount} cues (${outputCoverage.coverageRate.toFixed(2)}); uncovered=${outputCoverage.uncoveredCues.join(", ") || "none"}`,
-      `Evidence convergence: score=${evidenceConvergence.score.toFixed(2)}; reached=${evidenceConvergence.reached}; threshold=${evidenceConvergence.threshold.toFixed(2)}; pruned=${evidenceConvergence.prunedBranchCount}; frontier=${evidenceConvergence.frontierRemaining}; stopWhenEvidenceEnough=${evidenceConvergence.stopWhenEvidenceEnough}`,
-      `Reconstruction uncertainty: ${uncertainty.level}${uncertainty.reasons.length ? ` (${uncertainty.reasons.join(", ")})` : ""}`,
+      `Evidence coverage: ${output.coverage.coveredCueCount}/${output.coverage.queryCueCount} cues (${output.coverage.coverageRate.toFixed(2)}); uncovered=${output.coverage.uncoveredCues.join(", ") || "none"}`,
+      `Evidence convergence: score=${output.evidenceConvergence.score.toFixed(2)}; reached=${output.evidenceConvergence.reached}; threshold=${output.evidenceConvergence.threshold.toFixed(2)}; pruned=${output.evidenceConvergence.prunedBranchCount}; frontier=${output.evidenceConvergence.frontierRemaining}; stopWhenEvidenceEnough=${output.evidenceConvergence.stopWhenEvidenceEnough}`,
+      `Reconstruction uncertainty: ${output.uncertainty.level}${output.uncertainty.reasons.length ? ` (${output.uncertainty.reasons.join(", ")})` : ""}`,
       "Reconstructed evidence paths:",
-      ...paths
-        .map((path) =>
-          publicPath(path, input.includeTemporalMetadata, hideInternalRouteSignals, privateSignalKeys)
-        )
-        .map((path) => formatPathLine(path, input.includeTemporalMetadata)),
+      ...output.paths.map((path) => formatPathLine(path, input.includeTemporalMetadata)),
       "Memory content:",
-      ...memories.map(
+      ...memories.map((memory) =>
+        publicMemory(memory, hideInternalRouteSignals, privateOutputSignalKeySet)
+      ).map(
         (memory) =>
           `- [${memory.kind}; confidence=${memory.confidence.toFixed(2)}${input.includeTemporalMetadata ? temporalMetadataSegment(memory.createdAt, memory.metadata) : ""}] ${memory.content}`,
       ),
@@ -1291,20 +1559,10 @@ function composeReconstructedContext(input: {
     contextBlock = render();
   }
 
-  const outputPaths = paths.map((path) =>
-    publicPath(path, input.includeTemporalMetadata, hideInternalRouteSignals, privateSignalKeys),
-  );
+  const output = outputState();
   const outputMemories = memories.map((memory) =>
-    publicMemory(memory, hideInternalRouteSignals),
+    publicMemory(memory, hideInternalRouteSignals, privateOutputSignalKeySet),
   );
-  const outputEvidenceConvergence = hideInternalRouteSignals
-    ? {
-        ...evidenceConvergence,
-        selectedTags: uniqueStrings(outputPaths.map((path) => path.tag)).slice(0, 12),
-      }
-    : evidenceConvergence;
-  const outputCoverage = publicEvidenceCoverage(coverage, privateSignalKeys);
-  const exposePlannerTrace = input.displayQuery === undefined || input.displayQuery === input.query;
 
   return {
     profileId: input.profileId,
@@ -1312,20 +1570,18 @@ function composeReconstructedContext(input: {
     contextBlock,
     memories: outputMemories,
     evidence,
-    paths: outputPaths,
-    plannerTrace: exposePlannerTrace && input.plannerTrace
-      ? publicPlannerTrace(input.plannerTrace, privateSignalKeys, input.stopReason)
-      : undefined,
+    paths: output.paths,
+    plannerTrace: output.plannerTrace,
     stats: {
-      stepCount: input.stepCount,
-      exploredCueCount: input.exploredCueCount,
-      associationCount: input.associationCount,
+      stepCount: output.stepCount,
+      exploredCueCount: output.exploredCueCount,
+      associationCount: output.associationCount,
       retrievedMemoryCount: memories.length,
       promptTokenEstimate: estimateTokens(contextBlock),
       stopReason: input.stopReason,
-      evidenceCoverage: outputCoverage,
-      uncertainty,
-      evidenceConvergence: outputEvidenceConvergence,
+      evidenceCoverage: output.coverage,
+      uncertainty: output.uncertainty,
+      evidenceConvergence: output.evidenceConvergence,
     },
   };
 }
@@ -1362,6 +1618,7 @@ async function fallbackReconstruction(input: {
   targetMemoryCount: number;
   includeTemporalMetadata?: boolean | undefined;
   cueExtractor?: MemoryCueExtractor | undefined;
+  privateRouteSignals?: string[] | undefined;
 }): Promise<ReconstructedContext> {
   const memories = sourceScopedFallbackMemories(await input.store.searchMemories({
     profileId: input.profileId,
@@ -1454,6 +1711,7 @@ async function fallbackReconstruction(input: {
     includeTemporalMetadata: input.includeTemporalMetadata === true,
     plannerTrace,
     cueExtractor: input.cueExtractor,
+    privateRouteSignals: input.privateRouteSignals,
   });
 }
 
@@ -1504,6 +1762,7 @@ export async function reconstructMemoryContext(input: {
       targetMemoryCount,
       includeTemporalMetadata,
       cueExtractor: input.cueExtractor,
+      privateRouteSignals: input.request.privateRouteSignals,
     });
   }
 
@@ -1777,6 +2036,7 @@ export async function reconstructMemoryContext(input: {
     stopReason,
     includeTemporalMetadata,
     cueExtractor: input.cueExtractor,
+    privateRouteSignals: input.request.privateRouteSignals,
     plannerTrace: {
       mode: "associative",
       intentReason: intent.reason,

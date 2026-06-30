@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   associationCueKey,
   associationCueMatchesQuery,
+  associationCueTextPattern,
   extractAssociationCues,
   sourceMetadataEntityCues,
 } from "../kernel/associations.js";
@@ -431,18 +432,58 @@ function prepareTurnQuery(input: PrepareTurnInput): string {
     .join("\n");
 }
 
-function hideRouteMemoryMetadata(memory: MemoryRecord): MemoryRecord {
+function routeSignalAppearsInText(value: string, text: string): boolean {
+  const signal = value.trim();
+  if (!signal) return false;
+  if (text.toLowerCase().includes(signal.toLowerCase())) return true;
+  const publicCues = new Set(extractAssociationCues(text, 48).map((cue) => cue.cue));
+  return associationCueMatchesQuery(signal, publicCues);
+}
+
+function privateTaskRouteSignals(input: PrepareTurnInput, displayQuery: string): string[] {
+  return [input.task?.intent, input.task?.projectId]
+    .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    .filter((entry) => classifySensitivity(entry) === "normal")
+    .filter((entry) => !routeSignalAppearsInText(entry, displayQuery));
+}
+
+function redactRouteSignals(value: string, privateSignals: string[]): string {
+  let output = value;
+  const keys = [...new Set(privateSignals.map(associationCueKey).filter(Boolean))];
+  for (const key of keys.sort((left, right) => right.length - left.length)) {
+    const pattern = associationCueTextPattern(key);
+    if (!pattern) continue;
+    output = output.replace(pattern, "retrieval_hint");
+  }
+  return output;
+}
+
+function hideRouteMemoryMetadata(memory: MemoryRecord, privateSignals: string[] = []): MemoryRecord {
   return {
     ...memory,
     scope: "global",
+    content: redactRouteSignals(memory.content, privateSignals),
     metadata: {},
   };
 }
 
-function hideEvidencePayload(event: EvidenceEvent): EvidenceEvent {
+function hideEvidencePayload(event: EvidenceEvent, privateSignals: string[] = []): EvidenceEvent {
   return {
     ...event,
+    eventKey: redactRouteSignals(event.eventKey, privateSignals),
+    sourceUri: event.sourceUri ? redactRouteSignals(event.sourceUri, privateSignals) : event.sourceUri,
+    content: redactRouteSignals(event.content, privateSignals),
     payload: {},
+  };
+}
+
+function hideRouteActionPolicy<T extends { text: string }>(
+  policy: T,
+  privateSignals: string[],
+): T {
+  return {
+    ...policy,
+    text: redactRouteSignals(policy.text, privateSignals),
   };
 }
 
@@ -1033,6 +1074,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const displayQuery = prepareTurnDisplayQuery(input);
     const query = prepareTurnQuery(input);
     const hideTaskRetrievalHints = displayQuery !== query;
+    const privateRouteSignals = privateTaskRouteSignals(input, displayQuery);
     const before = await readAuditSnapshot(store);
     const memories = sourceScopedMemories(await store.searchMemories({
       profileId,
@@ -1051,7 +1093,11 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         if (seenEvidenceIds.has(event.id)) continue;
         seenEvidenceIds.add(event.id);
         const publicEvidence = sanitizeEvidenceForPublicOutput(event);
-        evidence.push(hideTaskRetrievalHints ? hideEvidencePayload(publicEvidence) : publicEvidence);
+        evidence.push(
+          hideTaskRetrievalHints
+            ? hideEvidencePayload(publicEvidence, privateRouteSignals)
+            : publicEvidence,
+        );
       }
     }
     if (input.includeEvidence) {
@@ -1064,8 +1110,12 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     }
     const prepared = composeTurnContext({
       profileId,
-      memories: hideTaskRetrievalHints ? memories.map(hideRouteMemoryMetadata) : memories,
-      actionPolicies,
+      memories: hideTaskRetrievalHints
+        ? memories.map((memory) => hideRouteMemoryMetadata(memory, privateRouteSignals))
+        : memories,
+      actionPolicies: hideTaskRetrievalHints
+        ? actionPolicies.map((policy) => hideRouteActionPolicy(policy, privateRouteSignals))
+        : actionPolicies,
       evidence,
       includeEvidence: input.includeEvidence,
       contextBudgetTokens: input.contextBudgetTokens,
@@ -1092,6 +1142,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
               temporalMode: input.reconstruction.temporalMode,
               recallPurpose: input.reconstruction.recallPurpose,
               reconstructionIntent: input.reconstruction.reconstructionIntent,
+              privateRouteSignals,
             },
           })
         : undefined;
