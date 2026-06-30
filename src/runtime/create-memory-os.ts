@@ -251,7 +251,9 @@ function worldBeliefSubjectForCandidate(input: {
   const { candidate, eventContent, eventMetadata } = input;
   if (candidate.subject) return candidate.subject;
   const predicatePrefix = candidate.predicate?.split(".")[0]?.toLowerCase();
-  if (predicatePrefix !== "user" && predicatePrefix !== "person") return "user";
+  if (candidate.kind !== "preference" && predicatePrefix !== "user" && predicatePrefix !== "person") {
+    return "user";
+  }
   const candidateSpeaker = publicSpeaker(candidate.speaker);
   if (candidateSpeaker) return `person:${candidateSpeaker}`;
   const speaker = publicSpeaker(eventMetadata.speaker);
@@ -278,6 +280,30 @@ function worldBeliefSubjectAliasesForCandidate(input: {
     return true;
   });
   return uniqueAliases.length > 0 ? uniqueAliases : undefined;
+}
+
+function personScopedPreferencePredicate(predicate: string | undefined): string {
+  const normalized = predicate?.trim();
+  if (!normalized || normalized.toLowerCase() === "preference") return "person.preference";
+  if (normalized.toLowerCase().startsWith("user.")) {
+    return `person.${normalized.slice("user.".length)}`;
+  }
+  return normalized;
+}
+
+function memoryWriteCandidateForSubject(input: {
+  candidate: MemoryExtractionCandidate;
+  subject: string;
+}): MemoryExtractionCandidate {
+  const { candidate, subject } = input;
+  if (subject === "user" || candidate.kind !== "preference") return candidate;
+
+  const { actionPolicyKind: _actionPolicyKind, ...candidateWithoutActionPolicy } = candidate;
+  return {
+    ...candidateWithoutActionPolicy,
+    kind: "fact",
+    predicate: personScopedPreferencePredicate(candidate.predicate),
+  };
 }
 
 function sourceScopedMemories(memories: MemoryRecord[], query: string): MemoryRecord[] {
@@ -814,29 +840,35 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     });
     result.extraction = extraction.report;
     for (const candidate of extraction.candidates) {
-      const candidateSensitivity = classifySensitivity(candidate.content);
-      const candidateStructuredSensitivity = structuredCandidateSensitivity(candidate);
-      const structuredMetadata = structuredCandidateMetadata(candidate);
+      const candidateSourceMetadata = sourceMetadataForCandidate(eventMetadata, candidate);
+      const subject = worldBeliefSubjectForCandidate({
+        candidate,
+        eventContent: event.content,
+        eventMetadata: candidateSourceMetadata,
+      });
+      const writeCandidate = memoryWriteCandidateForSubject({ candidate, subject });
+      const candidateSensitivity = classifySensitivity(writeCandidate.content);
+      const candidateStructuredSensitivity = structuredCandidateSensitivity(writeCandidate);
+      const structuredMetadata = structuredCandidateMetadata(writeCandidate);
       if (
-        candidate.kind === "person" ||
+        writeCandidate.kind === "person" ||
         candidateSensitivity === "secret_like" ||
         candidateStructuredSensitivity === "secret_like" ||
-        isPersonRoutedMemory(candidate.content)
+        isPersonRoutedMemory(writeCandidate.content)
       ) {
         continue;
       }
-      const candidateSourceMetadata = sourceMetadataForCandidate(eventMetadata, candidate);
       const memoryEntityMentions = buildEntityMentions({
-        subject: candidate.subject,
-        predicate: candidate.predicate,
-        subjectAliases: candidate.subjectAliases,
+        subject: writeCandidate.subject ?? (subject !== "user" ? subject : undefined),
+        predicate: writeCandidate.predicate,
+        subjectAliases: writeCandidate.subjectAliases,
         sourceMetadata: candidateSourceMetadata,
       });
       const memory = await store.addMemory({
         profileId,
-        kind: candidate.kind,
-        content: candidate.content,
-        confidence: candidate.confidence,
+        kind: writeCandidate.kind,
+        content: writeCandidate.content,
+        confidence: writeCandidate.confidence,
         sensitivity: memorySensitivityForCandidate({
           eventSensitivity: sensitivity,
           candidateContentSensitivity: candidateSensitivity,
@@ -853,20 +885,15 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         createdAt: event.createdAt,
       });
       result.memoryIds.push(memory.id);
-      if (candidate.predicate) {
-        const subject = worldBeliefSubjectForCandidate({
-          candidate,
-          eventContent: event.content,
-          eventMetadata: candidateSourceMetadata,
-        });
+      if (writeCandidate.predicate) {
         const subjectAliases = worldBeliefSubjectAliasesForCandidate({
-          candidate,
+          candidate: writeCandidate,
           subject,
           eventMetadata: candidateSourceMetadata,
         });
         const beliefEntityMentions = buildEntityMentions({
           subject,
-          predicate: candidate.predicate,
+          predicate: writeCandidate.predicate,
           subjectAliases,
           sourceMetadata: candidateSourceMetadata,
         });
@@ -874,14 +901,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           profileId,
           subject,
           subjectAliases,
-          predicate: candidate.predicate,
-          object: candidate.object ?? candidate.content,
-          confidence: candidate.confidence,
+          predicate: writeCandidate.predicate,
+          object: writeCandidate.object ?? writeCandidate.content,
+          confidence: writeCandidate.confidence,
           sourceMemoryId: memory.id,
-          cardinality: candidate.cardinality,
+          cardinality: writeCandidate.cardinality,
           createdAt: event.createdAt ?? memory.createdAt,
           metadata: {
-            ...sanitizeExternalMemoryMetadata(candidate.metadata),
+            ...sanitizeExternalMemoryMetadata(writeCandidate.metadata),
             ...structuredMetadata,
             sourceRole: event.role,
             ...(Object.keys(candidateSourceMetadata).length > 0 ? { sourceMetadata: candidateSourceMetadata } : {}),

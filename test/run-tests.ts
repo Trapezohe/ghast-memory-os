@@ -1042,15 +1042,21 @@ const speakerBeliefDb = new Database(path.join(tmp, "speaker-belief-extractor.db
 try {
   const speakerBeliefs = speakerBeliefDb
     .prepare(
-      `SELECT subject, status, metadata_json AS metadataJson
+      `SELECT subject, predicate, status, metadata_json AS metadataJson
        FROM gmos_world_beliefs
-       WHERE profile_id = 'speaker_belief' AND predicate = 'user.preference' AND status = 'active'
-       ORDER BY subject`,
+       WHERE profile_id = 'speaker_belief'
+         AND predicate IN ('person.preference', 'user.preference')
+         AND status = 'active'
+       ORDER BY subject, predicate`,
     )
-    .all() as Array<{ subject: string; status: string; metadataJson: string }>;
+    .all() as Array<{ subject: string; predicate: string; status: string; metadataJson: string }>;
   assert.deepEqual(
-    speakerBeliefs.map((entry) => `${entry.subject}:${entry.status}`),
-    ["person:alex:active", "person:blair:active", "user:active"],
+    speakerBeliefs.map((entry) => `${entry.subject}:${entry.predicate}:${entry.status}`),
+    [
+      "person:alex:person.preference:active",
+      "person:blair:person.preference:active",
+      "user:user.preference:active",
+    ],
   );
   assert.equal(
     JSON.stringify(speakerBeliefs.map((entry) => JSON.parse(entry.metadataJson))).includes("\"A\""),
@@ -1063,7 +1069,102 @@ try {
 } finally {
   speakerBeliefDb.close();
 }
+const speakerBeliefPrepared = await speakerBeliefMemory.prepareTurn({
+  profileId: "speaker_belief",
+  messages: [{ role: "user", content: "Help me plan travel." }],
+});
+assert.equal(
+  speakerBeliefPrepared.actionPolicies.some((policy) => /Alex|Blair|concise planning|direct planning/u.test(policy.text)),
+  false,
+);
+assert.equal(
+  speakerBeliefPrepared.actionPolicies.some((policy) => /CurrentUser prefers/u.test(policy.text)),
+  true,
+);
 await speakerBeliefMemory.close();
+
+for (const explicitSpeakerPolicyVariant of [
+  {
+    name: "candidate_speaker_user_predicate",
+    candidateSpeaker: "Alex",
+    predicate: "user.preference",
+  },
+  {
+    name: "candidate_speaker_no_predicate",
+    candidateSpeaker: "Alex",
+  },
+  {
+    name: "candidate_speaker_bare_predicate",
+    candidateSpeaker: "Alex",
+    predicate: "preference",
+  },
+  {
+    name: "event_metadata_speaker_no_predicate",
+  },
+] as const) {
+  const profileId = `explicit_speaker_policy_${explicitSpeakerPolicyVariant.name}`;
+  const dbPath = path.join(tmp, `${profileId}.db`);
+  const explicitSpeakerPolicyStore = createSqliteMemoryStore({ path: dbPath });
+  const explicitSpeakerPolicyMemory = createMemoryOS({
+    profileId,
+    store: explicitSpeakerPolicyStore,
+    extractor: () => ({
+      kind: "preference",
+      content: "Alex prefers green tea.",
+      confidence: 0.9,
+      ...(explicitSpeakerPolicyVariant.predicate
+        ? { predicate: explicitSpeakerPolicyVariant.predicate }
+        : {}),
+      ...(explicitSpeakerPolicyVariant.candidateSpeaker
+        ? { speaker: explicitSpeakerPolicyVariant.candidateSpeaker }
+        : {}),
+      cardinality: "single",
+      actionPolicyKind: "prefer",
+      metadata: { actionPolicyKind: "prefer" },
+    }),
+  });
+  await explicitSpeakerPolicyMemory.observe({
+    type: "conversation.message",
+    profileId,
+    role: "user",
+    content: "Alex: I prefer green tea.",
+    metadata: { speaker: "Alex", participants: ["Alex", "Blair"] },
+  });
+  const explicitSpeakerPrepared = await explicitSpeakerPolicyMemory.prepareTurn({
+    profileId,
+    messages: [{ role: "user", content: "Help me plan travel." }],
+  });
+  assert.equal(explicitSpeakerPrepared.actionPolicies.length, 0);
+  const explicitSpeakerPolicyDb = new Database(dbPath, { readonly: true });
+  try {
+    const explicitSpeakerMemory = explicitSpeakerPolicyDb
+      .prepare(
+        `SELECT kind, metadata_json AS metadataJson
+         FROM gmos_memories
+         WHERE profile_id = ?
+         LIMIT 1`,
+      )
+      .get(profileId) as { kind: string; metadataJson: string } | undefined;
+    assert.equal(explicitSpeakerMemory?.kind, "fact");
+    assert.equal(JSON.parse(explicitSpeakerMemory?.metadataJson ?? "{}").actionPolicyKind, undefined);
+    const explicitSpeakerBelief = explicitSpeakerPolicyDb
+      .prepare(
+        `SELECT subject, predicate, status
+         FROM gmos_world_beliefs
+         WHERE profile_id = ?
+         LIMIT 1`,
+      )
+      .get(profileId) as { subject: string; predicate: string; status: string } | undefined;
+    assert.deepEqual(explicitSpeakerBelief, {
+      subject: "person:alex",
+      predicate: "person.preference",
+      status: "active",
+    });
+  } finally {
+    explicitSpeakerPolicyDb.close();
+  }
+  await explicitSpeakerPolicyMemory.close();
+}
 
 const projectRuleStore = createSqliteMemoryStore({
   path: path.join(tmp, "project-rule-extractor.db"),

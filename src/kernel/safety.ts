@@ -69,6 +69,7 @@ const NON_SPEAKER_PREFIXES = new Set([
 ]);
 
 const GMOS_OWNED_METADATA_KEYS = [
+  "actionPolicyKind",
   "entityMentions",
   "entityResolution",
   "sourceMetadata",
