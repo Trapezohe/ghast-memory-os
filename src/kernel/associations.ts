@@ -5,8 +5,8 @@ import type {
   WorldBeliefRecord,
 } from "./types.js";
 import { entityMentionCues } from "./entities.js";
-import { isReservedSpeakerIdentity, stableNamedPersonSubject } from "./person-identity.js";
-import { classifySensitivity } from "./safety.js";
+import { isReservedSpeakerIdentity } from "./person-identity.js";
+import { classifySensitivity, sourceMetadataSpeakerIsPerson } from "./safety.js";
 import { normalizeExplicitTemporalInstant } from "./temporal-validity.js";
 
 export type AssociationCueKind = MemoryAssociationRecord["cueKind"];
@@ -178,14 +178,19 @@ function safeMetadataCueArray(metadata: Record<string, unknown>, key: string): s
   return value.map(safeAssociationValue).filter(Boolean);
 }
 
-function sourceSpeakerCue(value: unknown): string {
-  const cue = safeAssociationValue(value);
-  return cue && !isReservedSpeakerIdentity(cue) && stableNamedPersonSubject(cue) ? cue : "";
+function sourceSpeakerCue(metadata: Record<string, unknown>): string {
+  if (!sourceMetadataSpeakerIsPerson(metadata)) return "";
+  const cue = safeAssociationValue(metadata.speaker);
+  return cue && !isReservedSpeakerIdentity(cue) ? cue : "";
 }
 
-function sourceSpeakerAliasCues(value: unknown): string[] {
+function sourceSpeakerAliasCues(metadata: Record<string, unknown>): string[] {
+  if (!sourceMetadataSpeakerIsPerson(metadata)) return [];
+  const value = metadata.speakerAliases;
   if (!Array.isArray(value)) return [];
-  return value.map(sourceSpeakerCue).filter(Boolean);
+  return value
+    .map((entry) => safeAssociationValue(entry))
+    .filter((cue) => cue && !isReservedSpeakerIdentity(cue));
 }
 
 function entityAliases(metadata: Record<string, unknown>): string[] {
@@ -201,23 +206,8 @@ function entitySubjectCues(metadata: Record<string, unknown>): string[] {
   const subjectValue = subject?.match(/^person\s*[:/]\s*(.+)$/iu)?.[1] ?? subject ?? "";
   return unique([
     safeAssociationValue(subjectValue),
-    ...safeMetadataCueArray(metadata, "subjectAliases").filter(stableNamedPersonSubject),
+    ...safeMetadataCueArray(metadata, "subjectAliases").filter((alias) => !isReservedSpeakerIdentity(alias)),
   ]);
-}
-
-export function sourceContentEntityCues(content: string): string[] {
-  const namePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}`;
-  const singleNamePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}`;
-  const patterns = [
-    new RegExp(String.raw`^\s*(${namePattern})\s*:\s*.+$`, "u"),
-    new RegExp(String.raw`^\s*(${namePattern})[’']s\s+.+$`, "u"),
-    new RegExp(String.raw`^\s*(${singleNamePattern})\s+\p{Ll}[\p{L}\p{N}_-]*\b.+$`, "u"),
-  ];
-  for (const pattern of patterns) {
-    const name = pattern.exec(content)?.[1]?.trim();
-    if (name && stableNamedPersonSubject(name)) return [name];
-  }
-  return [];
 }
 
 function calendarDateCue(value: string): string | null {
@@ -269,8 +259,8 @@ export function sourceMetadataEntityCues(metadata: Record<string, unknown>): str
   const subjectCues = entitySubjectCues(metadata);
   const mentionCues = entityMentionCues(metadata);
   const directSpeakerCues = [
-    sourceSpeakerCue(metadata.speaker).toLowerCase(),
-    ...sourceSpeakerAliasCues(metadata.speakerAliases),
+    sourceSpeakerCue(metadata).toLowerCase(),
+    ...sourceSpeakerAliasCues(metadata),
   ];
   if (!sourceMetadata || typeof sourceMetadata !== "object" || Array.isArray(sourceMetadata)) {
     return unique([...subjectCues, ...mentionCues, ...directSpeakerCues]);
@@ -280,8 +270,8 @@ export function sourceMetadataEntityCues(metadata: Record<string, unknown>): str
     ...subjectCues,
     ...mentionCues,
     ...directSpeakerCues,
-    sourceSpeakerCue(record.speaker).toLowerCase(),
-    ...sourceSpeakerAliasCues(record.speakerAliases),
+    sourceSpeakerCue(record).toLowerCase(),
+    ...sourceSpeakerAliasCues(record),
   ]);
 }
 
@@ -300,7 +290,6 @@ export function associationCuesForMemory(memory: MemoryRecord): AssociationCue[]
   const scopeCue = memory.scope !== "global" ? safeAssociationValue(memory.scope) : "";
   return [
     ...sourceMetadataEntityCues(memory.metadata).map((cue) => ({ cue, cueKind: "entity" as const })),
-    ...sourceContentEntityCues(memory.content).map((cue) => ({ cue, cueKind: "entity" as const })),
     ...metadataTemporalCues(memory.metadata).map((cue) => ({ cue, cueKind: "temporal" as const })),
     { cue: memory.kind, cueKind: "kind" },
     ...(scopeCue ? [{ cue: scopeCue, cueKind: "scope" as const }] : []),

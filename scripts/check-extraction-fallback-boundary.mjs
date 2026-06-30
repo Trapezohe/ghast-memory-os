@@ -12,7 +12,10 @@ function read(relativePath) {
 const runtime = read("src/runtime/create-memory-os.ts");
 const extraction = read("src/kernel/extraction.ts");
 const associations = read("src/kernel/associations.ts");
+const entities = read("src/kernel/entities.ts");
+const personIdentity = read("src/kernel/person-identity.ts");
 const reconstruction = read("src/kernel/reconstruction.ts");
+const safety = read("src/kernel/safety.ts");
 const types = read("src/kernel/types.ts");
 const publicObserveBoundaryFiles = [
   "README.md",
@@ -40,6 +43,21 @@ const broadSemanticExtractionPatterns = [
   /我(?:最|更)?(?:喜欢|偏好)/u,
   /我的\\s\*/u,
   /predicate:\s*"person\.(?:tool|preference|location|hometown|role|relation)"/u,
+];
+
+const productionSemanticFallbackPatterns = [
+  /function\s+sourceContentEntityCues/u,
+  /hasFirstPersonAnchor/u,
+  /inferSpeakerPrefix/u,
+  /inferredProjectSubjectFromActionText/u,
+  /metadataSpeakerIsNonPerson/u,
+  /contentHasExplicitNonPersonSpeaker/u,
+  /nonPersonSpeakerCandidate/u,
+  /candidateSpeakerIsNonPerson/u,
+  /NON_PERSON/u,
+  /OBVIOUS_TECH/u,
+  /CHINESE_NON_PERSON/u,
+  /NON_SPEAKER_PREFIX/u,
 ];
 
 const publicObserveSemanticPatterns = [
@@ -72,9 +90,9 @@ const publicObserveSemanticExamples = publicObserveSemanticExampleMatches();
 
 const checks = [
   {
-    name: "runtime-default-rule-mode-safe",
-    pass: /options\.extraction\?\.ruleMode\s*\?\?\s*"safe"/u.test(runtime),
-    detail: "createMemoryOS must default rule extraction to safe mode.",
+    name: "runtime-default-rule-mode-none",
+    pass: /options\.extraction\?\.ruleMode\s*\?\?\s*"none"/u.test(runtime),
+    detail: "createMemoryOS must default rule extraction to none.",
   },
   {
     name: "runtime-passes-rule-mode-to-extractor",
@@ -87,6 +105,11 @@ const checks = [
     detail: "extractMemoryCandidatePlan must not default to rule fallback.",
   },
   {
+    name: "runtime-no-implicit-rule-fallback",
+    pass: /fallbackToRules:\s*options\.extraction\?\.fallbackToRules\s*\?\?\s*false/u.test(runtime),
+    detail: "createMemoryOS must not implicitly enable rule fallback.",
+  },
+  {
     name: "no-runtime-legacy-rule-mode",
     pass:
       !/RuleExtractionMode\s*=\s*[^;\n]*"legacy"/u.test(types) &&
@@ -95,14 +118,41 @@ const checks = [
     detail: "Broad linguistic rule extraction must not be available as a runtime fallback mode.",
   },
   {
-    name: "safe-extractor-present",
-    pass: /export function extractSafeRuleMemoryCandidates/u.test(extraction),
-    detail: "Default rule extraction must use a separate safe extractor.",
+    name: "production-has-no-do-not-push-rule-template",
+    pass:
+      !/DO_NOT_PUSH_RULE_PATTERN/u.test(extraction) &&
+      !/do not remind|don't remind|do not push|don't push|不要再提醒|别再提醒|不要主动提|不要再推/iu.test(
+        extraction,
+      ),
+    detail: "Production extraction must not synthesize do_not_push memory from hard-coded language templates.",
   },
   {
     name: "production-extraction-has-no-broad-semantic-rules",
     pass: broadSemanticExtractionPatterns.every((pattern) => !pattern.test(extraction)),
     detail: "Production extraction must not contain open-ended linguistic memory templates.",
+  },
+  {
+    name: "production-has-no-semantic-speaker-fallback",
+    pass: productionSemanticFallbackPatterns.every(
+      (pattern) =>
+        !pattern.test(runtime) &&
+        !pattern.test(associations) &&
+        !pattern.test(entities) &&
+        !pattern.test(personIdentity) &&
+        !pattern.test(reconstruction) &&
+        !pattern.test(safety),
+    ),
+    detail:
+      "Production runtime must not infer speaker/person/project identity from content templates or expanding non-person word lists.",
+  },
+  {
+    name: "source-speaker-cues-require-typed-speaker-kind",
+    pass:
+      /sourceMetadataSpeakerIsPerson\(metadata\)/u.test(associations) &&
+      /sourceMetadataSpeakerIsPerson\(sourceMetadata\)/u.test(entities) &&
+      /sourceMetadataSpeakerIsPerson\(input\.eventMetadata\)/u.test(runtime),
+    detail:
+      "Speaker source cues must require structured speakerKind metadata instead of trusting a bare speaker string.",
   },
   {
     name: "association-cues-are-not-tool-use-templates",
@@ -121,7 +171,7 @@ const checks = [
     name: "public-observe-examples-do-not-imply-semantic-preference-extraction",
     pass: publicObserveSemanticExamples.length === 0,
     detail:
-      "Public docs, examples, and CLI help must use observe for ordinary events or safe boundaries; ordinary preferences must use add() or a configured structured extractor." +
+      "Public docs, examples, and CLI help must use observe for ordinary events only; durable semantic memory must use add() or a configured structured extractor." +
       (publicObserveSemanticExamples.length > 0
         ? ` Matched: ${publicObserveSemanticExamples.join(", ")}.`
         : ""),

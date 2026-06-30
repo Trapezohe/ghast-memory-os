@@ -59,7 +59,7 @@ try {
     body: {
       profileId,
       role: "user",
-      content: "I prefer HTTP host integrations to include evidence-backed context.",
+      content: "User opened the HTTP host integration smoke test.",
       createdAt: "2026-06-25T00:00:00.000Z",
     },
   });

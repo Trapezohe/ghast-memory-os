@@ -2,7 +2,6 @@ import {
   associationCueKey,
   associationCueMatchesQuery,
   extractAssociationCues,
-  sourceContentEntityCues,
   sourceMetadataEntityCues,
 } from "./associations.js";
 import type { AssociationCue } from "./associations.js";
@@ -586,10 +585,6 @@ function memoryMatchesIntent(memory: MemoryRecord, intent: ReconstructionIntent)
   );
 }
 
-function hasFirstPersonAnchor(content: string): boolean {
-  return /\b(I|I'm|I’m|I've|I’ve|I'd|I’d|I'll|I’ll|my|mine|we|we're|we’re|we've|we’ve|our)\b|我|我们|我的|咱们/iu.test(content);
-}
-
 function sourceScopeRejectReason(
   memory: MemoryRecord,
   intent: ReconstructionIntent,
@@ -598,7 +593,7 @@ function sourceScopeRejectReason(
   const sourceCues = sourceEntityCuesForMemory(memory);
   const sourceCueKeys = new Set(sourceCues.map(associationCueKey).filter(Boolean));
   if (sourceCues.length === 0) {
-    return selectedSourceCues.size > 0 && hasFirstPersonAnchor(memory.content)
+    return selectedSourceCues.size > 0
       ? `source_scope_mismatch:${[...selectedSourceCues].join("|")}`
       : null;
   }
@@ -665,16 +660,12 @@ function associationPersonCue(association: MemoryAssociationRecord): string | nu
   return (
     personMatch?.[1]?.trim().toLowerCase() ??
     userMatch?.[0]?.trim().toLowerCase() ??
-    sourceContentEntityCues(association.targetSummary)[0] ??
     null
   );
 }
 
 function sourceEntityCuesForMemory(memory: MemoryRecord): string[] {
-  return [
-    ...sourceMetadataEntityCues(memory.metadata),
-    ...sourceContentEntityCues(memory.content),
-  ];
+  return sourceMetadataEntityCues(memory.metadata);
 }
 
 function pathMatchesIntent(path: ReconstructedEvidencePath, intent: ReconstructionIntent): boolean {

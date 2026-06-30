@@ -32,9 +32,8 @@ const memory = createMemoryOS({ profileId: "local-user", store });
 Primary methods:
 
 - `observe(event)`: record a host event, attach evidence, and extract eligible
-  long-term memory through a configured extractor or the built-in safe boundary
-  rules. Import ordinary semantic memories explicitly with `add()` when no
-  structured extractor is configured.
+  long-term memory through a configured structured extractor. Import semantic
+  memories explicitly with `add()` when no structured extractor is configured.
 - `prepareTurn(input)`: retrieve ordinary context and action policy for the next
   agent turn. This is a read path and must not write.
 - `reconstructContext(input)`: run bounded cue/tag/content reconstruction with
@@ -103,7 +102,8 @@ gmos init --db ./gmos.db
 gmos doctor --db ./gmos.db --host ghast --format markdown
 gmos status --db ./gmos.db --profile local --host ghast --format markdown
 gmos add --db ./gmos.db --profile local --kind preference --text "I prefer short answers."
-gmos observe --db ./gmos.db --profile local --text "Do not push release announcements without approval."
+gmos add --db ./gmos.db --profile local --kind boundary --text "Do not push release announcements without approval."
+gmos observe --db ./gmos.db --profile local --text "User opened the release planning thread."
 gmos prepare --db ./gmos.db --profile local --text "How should you answer me?"
 gmos reconstruct --db ./gmos.db --profile local --text "What is the project next step?"
 gmos forget --db ./gmos.db --profile local --query "old project"

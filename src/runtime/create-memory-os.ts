@@ -4,7 +4,6 @@ import {
   associationCueKey,
   associationCueMatchesQuery,
   extractAssociationCues,
-  sourceContentEntityCues,
   sourceMetadataEntityCues,
 } from "../kernel/associations.js";
 import { composeTurnContext } from "../kernel/context-composer.js";
@@ -14,17 +13,17 @@ import {
   extractMemoryCandidatePlan,
   extractRuleMemoryCandidates,
 } from "../kernel/extraction.js";
-import { isReservedSpeakerIdentity, stableNamedPersonSubject } from "../kernel/person-identity.js";
+import { isReservedSpeakerIdentity } from "../kernel/person-identity.js";
 import { reconstructMemoryContext } from "../kernel/reconstruction.js";
 import {
   classifySensitivity,
   eligibleForLongTermMemory,
-  isNonSpeakerPrefix,
   isPersonRoutedMemory,
   redactForReport,
   sanitizeEvidenceForPublicOutput,
   sanitizePublicPayloadRecord,
   sanitizePublicSourceMetadata,
+  sourceMetadataSpeakerIsPerson,
   stripGmosOwnedMetadataFields,
 } from "../kernel/safety.js";
 import type {
@@ -68,29 +67,8 @@ function profileIdFor(defaultProfileId: string, profileId?: string): string {
   return profileId ?? defaultProfileId;
 }
 
-function inferSpeakerPrefix(content: string): string | null {
-  const match = /^\s*([\p{L}\p{M}' -]{2,48})\s*:\s*(.+)$/u.exec(content);
-  if (!match?.[1] || !match[2]) return null;
-  const prefix = match[1].trim();
-  if (isNonSpeakerPrefix(prefix)) return null;
-  if (!hasFirstPersonAnchor(match[2])) return null;
-  return prefix;
-}
-
-function hasFirstPersonAnchor(content: string): boolean {
-  return /\b(I|I'm|I’m|I've|I’ve|I'd|I’d|I'll|I’ll|my|mine|we|we're|we’re|we've|we’ve|our)\b|我|我们|我的|咱们/iu.test(content);
-}
-
-function sourcelessPersonalMemory(memory: MemoryRecord): boolean {
-  return sourceMetadataEntityCues(memory.metadata).length === 0 && hasFirstPersonAnchor(memory.content);
-}
-
 function sourceMetadataForEvent(event: Extract<HostEvent, { type: "conversation.message" }>): Record<string, unknown> {
-  const explicit = sanitizePublicSourceMetadata(event.metadata);
-  if (typeof explicit.speaker === "string") return explicit;
-  const inferredSpeaker = inferSpeakerPrefix(event.content);
-  if (!inferredSpeaker) return explicit;
-  return { ...explicit, speaker: inferredSpeaker };
+  return sanitizePublicSourceMetadata(event.metadata);
 }
 
 function sourceMetadataForCandidate(
@@ -106,12 +84,13 @@ function sourceMetadataForCandidate(
   }
   const {
     speaker: _eventSpeaker,
+    speakerKind: _eventSpeakerKind,
     speakerId: _eventSpeakerId,
     speakerAliases: _eventSpeakerAliases,
     participants: _eventParticipants,
     ...nonSpeakerEventMetadata
   } = eventMetadata;
-  return { ...nonSpeakerEventMetadata, speaker: candidateSpeaker };
+  return { ...nonSpeakerEventMetadata, speaker: candidateSpeaker, speakerKind: "person" };
 }
 
 function sanitizeExternalMemoryMetadata(
@@ -204,9 +183,11 @@ function publicSpeaker(value: unknown): string | undefined {
   const speaker = value.trim();
   if (!speaker || speaker.startsWith("[redacted_")) return undefined;
   if (isReservedSpeakerIdentity(speaker)) return undefined;
-  return classifySensitivity(speaker) === "normal" && stableNamedPersonSubject(speaker)
-    ? speaker
-    : undefined;
+  return classifySensitivity(speaker) === "normal" ? speaker : undefined;
+}
+
+function publicSourceSpeaker(metadata: Record<string, unknown>): string | undefined {
+  return sourceMetadataSpeakerIsPerson(metadata) ? publicSpeaker(metadata.speaker) : undefined;
 }
 
 function publicStringArray(value: unknown): string[] {
@@ -218,36 +199,18 @@ function publicStringArray(value: unknown): string[] {
     : [];
 }
 
-function speakerKey(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-function speakerIdentityKeys(input: { speaker: string; aliases?: unknown }): Set<string> {
-  return new Set([input.speaker, ...publicStringArray(input.aliases)].map(speakerKey));
-}
-
 function shouldRouteBeliefToSpeaker(input: {
-  eventContent: string;
   eventMetadata: Record<string, unknown>;
   speaker: string;
 }): boolean {
-  const prefix = inferSpeakerPrefix(input.eventContent);
-  const speakerKeys = speakerIdentityKeys({
-    speaker: input.speaker,
-    aliases: input.eventMetadata.speakerAliases,
-  });
-  if (prefix) return speakerKeys.has(speakerKey(prefix));
-  const participants = publicStringArray(input.eventMetadata.participants);
-  if (new Set(participants.map(speakerKey)).size > 1) return true;
-  return participants.length === 0 && hasFirstPersonAnchor(input.eventContent);
+  return sourceMetadataSpeakerIsPerson(input.eventMetadata) && publicSpeaker(input.speaker) !== undefined;
 }
 
 function worldBeliefSubjectForCandidate(input: {
   candidate: MemoryExtractionCandidate;
-  eventContent: string;
   eventMetadata: Record<string, unknown>;
 }): string {
-  const { candidate, eventContent, eventMetadata } = input;
+  const { candidate, eventMetadata } = input;
   if (candidate.subject) return candidate.subject;
   const predicatePrefix = candidate.predicate?.split(".")[0]?.toLowerCase();
   if (
@@ -259,8 +222,8 @@ function worldBeliefSubjectForCandidate(input: {
   }
   const candidateSpeaker = publicSpeaker(candidate.speaker);
   if (candidateSpeaker) return `person:${candidateSpeaker}`;
-  const speaker = publicSpeaker(eventMetadata.speaker);
-  return speaker && shouldRouteBeliefToSpeaker({ eventContent, eventMetadata, speaker })
+  const speaker = publicSourceSpeaker(eventMetadata);
+  return speaker && shouldRouteBeliefToSpeaker({ eventMetadata, speaker })
     ? `person:${speaker}`
     : "user";
 }
@@ -310,107 +273,11 @@ function explicitUserSubject(subject: string): boolean {
   return subject.trim().toLowerCase() === "user";
 }
 
-function escapedRegExp(input: string): string {
-  return input.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
-
-function flexibleLiteralPattern(input: string): string {
-  return input.trim().split(/\s+/u).filter(Boolean).map(escapedRegExp).join("\\s+");
-}
-
-function textHasProjectSubjectCue(text: string, subjectPattern: string): boolean {
-  const boundary = "[^\\p{L}\\p{N}_-]";
-  const patterns = [
-    new RegExp(`(?:^|${boundary})(?:project|repo|repository)\\s+${subjectPattern}(?=$|${boundary})`, "iu"),
-    new RegExp(`(?:^|${boundary})${subjectPattern}\\s+(?:project|repo|repository)(?=$|${boundary})`, "iu"),
-    new RegExp(`项目\\s*${subjectPattern}|${subjectPattern}\\s*项目`, "iu"),
-  ];
-  return patterns.some((pattern) => pattern.test(text));
-}
-
-function eventTextHasProjectCueForCandidate(input: {
-  candidateContent: string;
-  eventContent: string;
-  subjectPattern: string;
-}): boolean {
-  const candidateContent = input.candidateContent.trim();
-  if (!candidateContent || !input.eventContent.trim()) return false;
-
-  const boundary = "[^\\p{L}\\p{N}_-]";
-  const subjectStartPattern = new RegExp(`^\\s*${input.subjectPattern}(?=$|${boundary})`, "iu");
-  if (!subjectStartPattern.test(candidateContent)) return false;
-  const candidateTail = candidateContent.replace(subjectStartPattern, "");
-
-  const normalizedCandidate = candidateContent.toLowerCase();
-  const normalizedEvent = input.eventContent.toLowerCase();
-  let foundProjectAdjacent = false;
-  let foundNonProjectAdjacent = false;
-  let searchFrom = 0;
-
-  while (searchFrom < normalizedEvent.length) {
-    const index = normalizedEvent.indexOf(normalizedCandidate, searchFrom);
-    if (index === -1) break;
-    const prefix = input.eventContent.slice(Math.max(0, index - 32), index);
-    const projectAdjacent =
-      /(?:^|[^\p{L}\p{N}_-])(?:project|repo|repository)\s*$/iu.test(prefix) ||
-      /项目\s*$/iu.test(prefix);
-    if (projectAdjacent) {
-      foundProjectAdjacent = true;
-    } else {
-      foundNonProjectAdjacent = true;
-    }
-    searchFrom = index + Math.max(normalizedCandidate.length, 1);
-  }
-
-  if (foundProjectAdjacent && !foundNonProjectAdjacent) return true;
-  if (foundNonProjectAdjacent) return false;
-
-  const candidateTailPattern = flexibleLiteralPattern(candidateTail);
-  if (!candidateTailPattern) return false;
-  const suffixCuePatterns = [
-    new RegExp(
-      `(?:^|${boundary})${input.subjectPattern}\\s+(?:project|repo|repository)\\s+${candidateTailPattern}(?=$|${boundary})`,
-      "iu",
-    ),
-    new RegExp(
-      `(?:^|${boundary})${input.subjectPattern}\\s*项目\\s*${candidateTailPattern}(?=$|${boundary})`,
-      "iu",
-    ),
-  ];
-  return suffixCuePatterns.some((pattern) => pattern.test(input.eventContent));
-}
-
-function inferredProjectSubjectFromActionText(input: {
-  candidate: MemoryExtractionCandidate;
-  eventContent: string;
-  subject: string;
-}): string | undefined {
-  const subject = input.subject.trim();
-  if (!subject || subjectPredicateNamespace(subject) || explicitUserSubject(subject)) {
-    return undefined;
-  }
-  if (classifySensitivity(subject) !== "normal") return undefined;
-  const subjectPattern = flexibleLiteralPattern(subject);
-  if (!subjectPattern) return undefined;
-  const hasCandidateProjectCue = textHasProjectSubjectCue(input.candidate.content, subjectPattern);
-  const hasEventProjectCueForCandidate = eventTextHasProjectCueForCandidate({
-    candidateContent: input.candidate.content,
-    eventContent: input.eventContent,
-    subjectPattern,
-  });
-  if (!hasCandidateProjectCue && !hasEventProjectCueForCandidate) return undefined;
-  return resolveWorldEntitySubject({
-    subject: `project:${subject}`,
-    predicate: "project.fact",
-  }).canonicalSubject;
-}
-
 function actionPredicateSubject(input: {
   candidate: MemoryExtractionCandidate;
-  eventContent: string;
   subject: string;
 }): string {
-  const { candidate, eventContent, subject } = input;
+  const { candidate, subject } = input;
   const resolution = resolveWorldEntitySubject({
     subject,
     predicate: candidate.predicate,
@@ -420,14 +287,7 @@ function actionPredicateSubject(input: {
     return resolution.canonicalSubject;
   }
   if (explicitUserSubject(subject)) return "user";
-  const projectSubject = inferredProjectSubjectFromActionText({
-    candidate,
-    eventContent,
-    subject,
-  });
-  if (projectSubject) return projectSubject;
-  const person = publicSpeaker(subject);
-  return person ? `person:${person}` : subject;
+  return subject;
 }
 
 function personScopedActionPredicate(candidate: MemoryExtractionCandidate): string {
@@ -496,12 +356,11 @@ function personScopedPreferencePredicate(predicate: string | undefined): string 
 
 function memoryWriteCandidateForSubject(input: {
   candidate: MemoryExtractionCandidate;
-  eventContent: string;
   subject: string;
 }): MemoryExtractionCandidate {
-  const { candidate, eventContent, subject } = input;
+  const { candidate, subject } = input;
   if (!isActionMemoryCandidate(candidate)) return candidate;
-  const predicateSubject = actionPredicateSubject({ candidate, eventContent, subject });
+  const predicateSubject = actionPredicateSubject({ candidate, subject });
   if (predicateSubject === "user") return candidate;
 
   const { actionPolicyKind: _actionPolicyKind, ...candidateWithoutActionPolicy } = candidate;
@@ -528,16 +387,13 @@ function sourceScopedMemories(memories: MemoryRecord[], query: string): MemoryRe
   if (selectedSourceCues.size === 0) return memories;
   return memories.filter((memory) => {
     const sourceCues = sourceEntityCuesForMemory(memory);
-    if (sourceCues.length === 0) return !sourcelessPersonalMemory(memory);
+    if (sourceCues.length === 0) return false;
     return sourceCues.some((cue) => selectedSourceCues.has(associationCueKey(cue)));
   });
 }
 
 function sourceEntityCuesForMemory(memory: MemoryRecord): string[] {
-  return [
-    ...sourceMetadataEntityCues(memory.metadata),
-    ...sourceContentEntityCues(memory.content),
-  ];
+  return sourceMetadataEntityCues(memory.metadata);
 }
 
 function eventKey(event: HostEvent): string {
@@ -1038,7 +894,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       return { ...result, skippedReason: "non_user_message" };
     }
     if (isPersonRoutedMemory(event.content)) return { ...result, skippedReason: "person_routed" };
-    const ruleMode = options.extraction?.ruleMode ?? "safe";
+    const ruleMode = options.extraction?.ruleMode ?? "none";
     const extraction = await extractMemoryCandidatePlan({
       extractor: options.extractor,
       extractionInput: {
@@ -1047,7 +903,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         evidence,
         ruleCandidates: extractRuleMemoryCandidates(event.content, eventMetadata, { mode: ruleMode }),
       },
-      fallbackToRules: options.extraction?.fallbackToRules ?? ruleMode !== "none",
+      fallbackToRules: options.extraction?.fallbackToRules ?? false,
       minConfidence: options.extraction?.minConfidence,
     });
     result.extraction = extraction.report;
@@ -1055,12 +911,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       const candidateSourceMetadata = sourceMetadataForCandidate(eventMetadata, candidate);
       const subject = worldBeliefSubjectForCandidate({
         candidate,
-        eventContent: event.content,
         eventMetadata: candidateSourceMetadata,
       });
       const writeCandidate = memoryWriteCandidateForSubject({
         candidate,
-        eventContent: event.content,
         subject,
       });
       const candidateSensitivity = classifySensitivity(writeCandidate.content);

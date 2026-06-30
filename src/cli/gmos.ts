@@ -109,8 +109,8 @@ Usage:
   gmos import --db ./gmos.db --profile local --input-file ./gmos-memory-export.json
   gmos backup --db ./gmos.db --profile local --mode safe --output-file ./gmos-profile-backup.json
   gmos restore --db ./gmos.db --input-file ./gmos-profile-backup.json --on-conflict skip
-  gmos observe --db ./gmos.db --profile local --text "不要再提醒我这个项目延期了。"
-  gmos observe --db ./gmos.db --profile local --text "不要再提醒我这个项目延期了。" --report
+  gmos add --db ./gmos.db --profile local --kind boundary --text "不要再提醒我这个项目延期了。"
+  gmos observe --db ./gmos.db --profile local --text "记录一条普通会话事件。" --report
   gmos prepare --db ./gmos.db --profile local --text "你知道我什么偏好吗？"
   gmos reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？"
   gmos explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？"

@@ -169,7 +169,7 @@ function renderSummary(manifest) {
     "## Known limitations",
     "",
     "- gmOS remains plaintext local SQLite by design; it does not provide database encryption or cloud custody.",
-    "- The built-in extractor is limited to narrow safety/action-boundary candidates. Strong semantic extraction requires a host-provided structured extractor profile.",
+    "- gmOS does not ship a built-in semantic extractor. Durable semantic memory requires a host-provided structured extractor profile or explicit low-level import.",
     "- Current public external benchmark numbers are weak deterministic baselines, not official leaderboard results.",
     "- STATE-Bench and tool/action benchmark claims require their unchanged official runners and manifests.",
     "- ghast_desktop production replacement should wait for SDK release evidence and app-side E2E adoption proof.",

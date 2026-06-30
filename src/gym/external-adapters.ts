@@ -392,6 +392,7 @@ function locomoEvents(row: Record<string, unknown>, sampleId: string): ExternalM
           createdAt,
           metadata: {
             ...(speaker ? { speaker } : {}),
+            ...(speaker ? { speakerKind: "person" } : {}),
             ...(participants.length > 0 ? { participants } : {}),
           },
         }),

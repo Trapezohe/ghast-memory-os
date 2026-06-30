@@ -25,57 +25,6 @@ const SENSITIVE_METADATA_KEYS =
   /(^|[\s_.-])(api[\s_.-]?key|access[\s_.-]?token|refresh[\s_.-]?token|token|password|secret|authorization|authentication|auth(?:entication)?(?:[\s_.-]?token)?|cookie|credential(?:[\s_.-]?id)?|session(?:[\s_.-]?id)?|ssn|social[\s_.-]?security)($|[\s_.-])/iu;
 
 const REDACTED_METADATA = "[redacted_sensitive_metadata]";
-const NON_SPEAKER_PREFIXES = new Set([
-  "action",
-  "assistant",
-  "context",
-  "clarification",
-  "corrected",
-  "correction",
-  "example",
-  "fact",
-  "input",
-  "memory",
-  "message",
-  "note",
-  "output",
-  "plan",
-  "preference",
-  "project",
-  "prompt",
-  "question",
-  "status",
-  "summary",
-  "system",
-  "task",
-  "todo",
-  "update",
-  "actually",
-  "user",
-  "上下文",
-  "修正",
-  "任务",
-  "助手",
-  "备注",
-  "摘要",
-  "更新",
-  "状态",
-  "用户",
-  "系统",
-  "计划",
-  "输入",
-  "输出",
-  "问题",
-  "项目",
-  "澄清",
-  "偏好",
-  "事实",
-  "示例",
-  "说明",
-  "纠正",
-  "更正",
-]);
-
 const GMOS_OWNED_METADATA_KEYS = [
   "actionPolicyKind",
   "entityMentions",
@@ -118,10 +67,6 @@ export function eligibleForLongTermMemory(input: {
 
 export function isPersonRoutedMemory(content: string): boolean {
   return /^\s*PERSON\s*:/iu.test(content);
-}
-
-export function isNonSpeakerPrefix(value: string): boolean {
-  return NON_SPEAKER_PREFIXES.has(value.trim().toLowerCase());
 }
 
 export function shouldHideFromOrdinaryContext(input: {
@@ -170,6 +115,7 @@ export function stripGmosOwnedMetadataFields(metadata: Record<string, unknown>):
 
 const PUBLIC_SOURCE_METADATA_KEYS = new Set([
   "speaker",
+  "speakerKind",
   "speakerId",
   "speakerAliases",
   "participants",
@@ -181,6 +127,7 @@ const PUBLIC_SOURCE_METADATA_KEYS = new Set([
 
 const PUBLIC_SOURCE_STRING_METADATA_KEYS = new Set([
   "speaker",
+  "speakerKind",
   "speakerId",
   "sessionId",
   "sessionKey",
@@ -215,6 +162,13 @@ export function sanitizePublicSourceMetadata(
     }
   }
   return output;
+}
+
+export function sourceMetadataSpeakerIsPerson(
+  metadata: Record<string, unknown> | undefined,
+): boolean {
+  const kind = typeof metadata?.speakerKind === "string" ? metadata.speakerKind.trim().toLowerCase() : "";
+  return kind === "person" || kind === "human";
 }
 
 export function payloadContainsRestrictedValue(value: unknown): boolean {

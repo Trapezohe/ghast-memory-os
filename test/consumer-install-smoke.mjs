@@ -1393,8 +1393,35 @@ try {
       );
   assert.equal(observeReportBin.status, 0, observeReportBin.stderr);
   const observeReportPayload = JSON.parse(observeReportBin.stdout);
-  assert.equal(observeReportPayload.extraction?.acceptedCandidateCount, 1);
-  assert.equal(observeReportPayload.extraction?.decisions[0]?.decision, "accepted");
+  assert.equal(observeReportPayload.extraction?.acceptedCandidateCount, 0);
+  assert.equal(observeReportPayload.extraction?.decisions.length, 0);
+  const boundaryAddBin = runInstalledCli(
+    [
+      "add",
+      "--db",
+      binLowLevelDb,
+      "--profile",
+      "bin",
+      "--kind",
+      "boundary",
+      "--text",
+      "Do not remind me about concise extraction reports.",
+    ],
+  );
+  assert.equal(boundaryAddBin.status, 0, boundaryAddBin.stderr);
+  const boundaryPrepareBin = runInstalledCli(
+    [
+      "prepare",
+      "--db",
+      binLowLevelDb,
+      "--profile",
+      "bin",
+      "--text",
+      "concise extraction reports",
+    ],
+  );
+  assert.equal(boundaryPrepareBin.status, 0, boundaryPrepareBin.stderr);
+  assert.match(boundaryPrepareBin.stdout, /concise extraction reports/);
   const secretObserveReportBin = runInstalledCli(
     [
       "observe",

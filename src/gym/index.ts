@@ -366,10 +366,9 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   );
   scenario(result, "preference_recall", "dev", ["preference_recall"]);
 
-  await memory.observe({
-    type: "conversation.message",
+  await memory.add({
     profileId: "gym",
-    role: "user",
+    kind: "boundary",
     content: "以后不要再提醒我 Alpha 项目延期了。",
     createdAt: "2026-06-25T00:01:00.000Z",
   });

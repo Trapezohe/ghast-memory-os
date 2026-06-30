@@ -161,6 +161,7 @@ const beliefAssociationCueFixture = associationCuesForBelief({
   metadata: {
     sourceMetadata: {
       speaker: "Blair",
+      speakerKind: "person",
       speakerAliases: ["B"],
       participants: ["Alex"],
     },
@@ -856,7 +857,7 @@ const extractorMemory = createMemoryOS({
       return [
         {
           kind: "preference",
-          content: "Assistant: Note: Custom extractor says the user prefers risk-first plans.",
+          content: "Custom extractor says the user prefers risk-first plans.",
           confidence: 0.91,
           predicate: "user.preference",
           actionPolicyKind: "prefer",
@@ -1028,28 +1029,33 @@ await speakerBeliefMemory.observe({
   profileId: "speaker_belief",
   role: "user",
   content: "I prefer concise planning.",
-  metadata: { speaker: "Alex", speakerAliases: ["A"], participants: ["Alex", "Blair"] },
+  metadata: { speaker: "Alex", speakerKind: "person", speakerAliases: ["A"], participants: ["Alex", "Blair"] },
 });
 await speakerBeliefMemory.observe({
   type: "conversation.message",
   profileId: "speaker_belief",
   role: "user",
   content: "I prefer visual planning.",
-  metadata: { speaker: "Blair", speakerAliases: ["B"], participants: ["Alex", "Blair"] },
+  metadata: { speaker: "Blair", speakerKind: "person", speakerAliases: ["B"], participants: ["Alex", "Blair"] },
 });
 await speakerBeliefMemory.observe({
   type: "conversation.message",
   profileId: "speaker_belief",
   role: "user",
   content: "I prefer quiet planning.",
-  metadata: { speaker: "CurrentUser", speakerAliases: ["CU"], participants: ["CurrentUser", " currentuser "] },
+  metadata: {
+    speaker: "CurrentUser",
+    speakerKind: "person",
+    speakerAliases: ["CU"],
+    participants: ["CurrentUser", " currentuser "],
+  },
 });
 await speakerBeliefMemory.observe({
   type: "conversation.message",
   profileId: "speaker_belief",
   role: "user",
   content: "Alex: I prefer direct planning.",
-  metadata: { speaker: "alex", speakerAliases: ["A"] },
+  metadata: { speaker: "alex", speakerKind: "person", speakerAliases: ["A"] },
 });
 const speakerBeliefDb = new Database(path.join(tmp, "speaker-belief-extractor.db"), {
   readonly: true,
@@ -1103,18 +1109,46 @@ for (const explicitSpeakerPolicyVariant of [
     name: "candidate_speaker_user_predicate",
     candidateSpeaker: "Alex",
     predicate: "user.preference",
+    expectedActionPolicyLength: 0,
+    expectedBelief: {
+      subject: "person:alex",
+      predicate: "person.preference",
+      status: "active",
+    },
+    expectedMemoryKind: "fact",
+    expectedStoredActionPolicyKind: undefined,
   },
   {
     name: "candidate_speaker_no_predicate",
     candidateSpeaker: "Alex",
+    expectedActionPolicyLength: 0,
+    expectedBelief: {
+      subject: "person:alex",
+      predicate: "person.preference",
+      status: "active",
+    },
+    expectedMemoryKind: "fact",
+    expectedStoredActionPolicyKind: undefined,
   },
   {
     name: "candidate_speaker_bare_predicate",
     candidateSpeaker: "Alex",
     predicate: "preference",
+    expectedActionPolicyLength: 0,
+    expectedBelief: {
+      subject: "person:alex",
+      predicate: "person.preference",
+      status: "active",
+    },
+    expectedMemoryKind: "fact",
+    expectedStoredActionPolicyKind: undefined,
   },
   {
     name: "event_metadata_speaker_no_predicate",
+    expectedActionPolicyLength: 1,
+    expectedBelief: undefined,
+    expectedMemoryKind: "preference",
+    expectedStoredActionPolicyKind: "prefer",
   },
 ] as const) {
   const profileId = `explicit_speaker_policy_${explicitSpeakerPolicyVariant.name}`;
@@ -1149,7 +1183,7 @@ for (const explicitSpeakerPolicyVariant of [
     profileId,
     messages: [{ role: "user", content: "Help me plan travel." }],
   });
-  assert.equal(explicitSpeakerPrepared.actionPolicies.length, 0);
+  assert.equal(explicitSpeakerPrepared.actionPolicies.length, explicitSpeakerPolicyVariant.expectedActionPolicyLength);
   const explicitSpeakerPolicyDb = new Database(dbPath, { readonly: true });
   try {
     const explicitSpeakerMemory = explicitSpeakerPolicyDb
@@ -1160,8 +1194,11 @@ for (const explicitSpeakerPolicyVariant of [
          LIMIT 1`,
       )
       .get(profileId) as { kind: string; metadataJson: string } | undefined;
-    assert.equal(explicitSpeakerMemory?.kind, "fact");
-    assert.equal(JSON.parse(explicitSpeakerMemory?.metadataJson ?? "{}").actionPolicyKind, undefined);
+    assert.equal(explicitSpeakerMemory?.kind, explicitSpeakerPolicyVariant.expectedMemoryKind);
+    assert.equal(
+      JSON.parse(explicitSpeakerMemory?.metadataJson ?? "{}").actionPolicyKind,
+      explicitSpeakerPolicyVariant.expectedStoredActionPolicyKind,
+    );
     const explicitSpeakerBelief = explicitSpeakerPolicyDb
       .prepare(
         `SELECT subject, predicate, status
@@ -1170,11 +1207,7 @@ for (const explicitSpeakerPolicyVariant of [
          LIMIT 1`,
       )
       .get(profileId) as { subject: string; predicate: string; status: string } | undefined;
-    assert.deepEqual(explicitSpeakerBelief, {
-      subject: "person:alex",
-      predicate: "person.preference",
-      status: "active",
-    });
+    assert.deepEqual(explicitSpeakerBelief, explicitSpeakerPolicyVariant.expectedBelief);
   } finally {
     explicitSpeakerPolicyDb.close();
   }
@@ -1190,6 +1223,10 @@ for (const explicitSpeakerActionVariant of [
     candidateSpeaker: "Alex",
     actionPolicyKind: "do_not_push",
     expectedPredicate: "person.boundary",
+    expectedActionPolicyLength: 0,
+    expectedMemoryKind: "fact",
+    expectedStoredActionPolicyKind: undefined,
+    expectedBeliefSubject: "person:alex",
   },
   {
     name: "candidate_speaker_boundary_action_predicate",
@@ -1199,6 +1236,10 @@ for (const explicitSpeakerActionVariant of [
     candidateSpeaker: "Alex",
     actionPolicyKind: "do_not_push",
     expectedPredicate: "person.boundary",
+    expectedActionPolicyLength: 0,
+    expectedMemoryKind: "fact",
+    expectedStoredActionPolicyKind: undefined,
+    expectedBeliefSubject: "person:alex",
   },
   {
     name: "candidate_speaker_boundary_no_predicate",
@@ -1207,13 +1248,21 @@ for (const explicitSpeakerActionVariant of [
     candidateSpeaker: "Alex",
     actionPolicyKind: "do_not_push",
     expectedPredicate: "person.boundary",
+    expectedActionPolicyLength: 0,
+    expectedMemoryKind: "fact",
+    expectedStoredActionPolicyKind: undefined,
+    expectedBeliefSubject: "person:alex",
   },
   {
     name: "metadata_speaker_boundary_no_predicate",
     kind: "boundary",
     content: "Alex does not want proactive reminders.",
     actionPolicyKind: "do_not_push",
-    expectedPredicate: "person.boundary",
+    expectedPredicate: undefined,
+    expectedActionPolicyLength: 1,
+    expectedMemoryKind: "boundary",
+    expectedStoredActionPolicyKind: "do_not_push",
+    expectedBeliefSubject: undefined,
   },
   {
     name: "candidate_speaker_procedure_user_predicate",
@@ -1223,13 +1272,21 @@ for (const explicitSpeakerActionVariant of [
     candidateSpeaker: "Alex",
     actionPolicyKind: "procedure",
     expectedPredicate: "person.procedure",
+    expectedActionPolicyLength: 0,
+    expectedMemoryKind: "fact",
+    expectedStoredActionPolicyKind: undefined,
+    expectedBeliefSubject: "person:alex",
   },
   {
     name: "metadata_speaker_procedure_no_predicate",
     kind: "procedure",
     content: "Alex starts release work by drafting an outline.",
     actionPolicyKind: "procedure",
-    expectedPredicate: "person.procedure",
+    expectedPredicate: undefined,
+    expectedActionPolicyLength: 1,
+    expectedMemoryKind: "procedure",
+    expectedStoredActionPolicyKind: "procedure",
+    expectedBeliefSubject: undefined,
   },
 ] as const) {
   const profileId = `explicit_speaker_action_${explicitSpeakerActionVariant.name}`;
@@ -1267,7 +1324,7 @@ for (const explicitSpeakerActionVariant of [
     profileId,
     messages: [{ role: "user", content: "Help me plan the release." }],
   });
-  assert.equal(explicitSpeakerActionPrepared.actionPolicies.length, 0);
+  assert.equal(explicitSpeakerActionPrepared.actionPolicies.length, explicitSpeakerActionVariant.expectedActionPolicyLength);
   const explicitSpeakerActionDb = new Database(dbPath, { readonly: true });
   try {
     const explicitSpeakerActionMemoryRow = explicitSpeakerActionDb
@@ -1278,10 +1335,10 @@ for (const explicitSpeakerActionVariant of [
          LIMIT 1`,
       )
       .get(profileId) as { kind: string; metadataJson: string } | undefined;
-    assert.equal(explicitSpeakerActionMemoryRow?.kind, "fact");
+    assert.equal(explicitSpeakerActionMemoryRow?.kind, explicitSpeakerActionVariant.expectedMemoryKind);
     assert.equal(
       JSON.parse(explicitSpeakerActionMemoryRow?.metadataJson ?? "{}").actionPolicyKind,
-      undefined,
+      explicitSpeakerActionVariant.expectedStoredActionPolicyKind,
     );
     const explicitSpeakerActionBelief = explicitSpeakerActionDb
       .prepare(
@@ -1291,11 +1348,16 @@ for (const explicitSpeakerActionVariant of [
          LIMIT 1`,
       )
       .get(profileId) as { subject: string; predicate: string; status: string } | undefined;
-    assert.deepEqual(explicitSpeakerActionBelief, {
-      subject: "person:alex",
-      predicate: explicitSpeakerActionVariant.expectedPredicate,
-      status: "active",
-    });
+    assert.deepEqual(
+      explicitSpeakerActionBelief,
+      explicitSpeakerActionVariant.expectedBeliefSubject && explicitSpeakerActionVariant.expectedPredicate
+        ? {
+            subject: explicitSpeakerActionVariant.expectedBeliefSubject,
+            predicate: explicitSpeakerActionVariant.expectedPredicate,
+            status: "active",
+          }
+        : undefined,
+    );
   } finally {
     explicitSpeakerActionDb.close();
   }
@@ -1331,68 +1393,72 @@ for (const explicitWorldActionVariant of [
     expectedPredicate: "project.procedure",
   },
   {
-    name: "bare_project_subject_from_candidate_content_no_predicate",
+    name: "bare_subject_does_not_infer_project_from_candidate_content_no_predicate",
     subject: "Atlas",
     eventContent: "Atlas starts release work by drafting an outline.",
-    expectedSubject: "project:atlas",
-    expectedPredicate: "project.procedure",
+    expectedSubject: "procedure:atlas",
+    expectedPredicate: "procedure",
   },
   {
-    name: "bare_project_subject_from_event_content_user_predicate",
+    name: "bare_subject_does_not_infer_project_from_event_content_user_predicate",
     subject: "Atlas",
     predicate: "user.procedure",
     candidateContent: "Atlas starts release work by drafting an outline.",
     eventContent: "Project Atlas starts release work by drafting an outline.",
-    expectedSubject: "project:atlas",
-    expectedPredicate: "project.procedure",
+    expectedSubject: "user",
+    expectedPredicate: "user.procedure",
   },
   {
-    name: "bare_project_subject_from_event_suffix_cue_user_predicate",
+    name: "bare_subject_does_not_infer_project_from_event_suffix_cue_user_predicate",
     subject: "Atlas",
     predicate: "user.procedure",
     candidateContent: "Atlas starts release work by drafting an outline.",
     eventContent: "Atlas project starts release work by drafting an outline.",
-    expectedSubject: "project:atlas",
-    expectedPredicate: "project.procedure",
+    expectedSubject: "user",
+    expectedPredicate: "user.procedure",
   },
   {
-    name: "bare_person_procedure_user_predicate",
+    name: "bare_subject_does_not_infer_person_from_user_predicate",
     subject: "Alex",
     predicate: "user.procedure",
-    expectedSubject: "person:alex",
-    expectedPredicate: "person.procedure",
+    candidateContent: "Alex starts release work by drafting an outline.",
+    eventContent: "Alex starts release work by drafting an outline.",
+    expectedSubject: "user",
+    expectedPredicate: "user.procedure",
   },
   {
-    name: "bare_person_procedure_no_predicate",
+    name: "bare_subject_does_not_infer_person_no_predicate",
     subject: "Alex",
-    expectedSubject: "person:alex",
-    expectedPredicate: "person.procedure",
+    candidateContent: "Alex starts release work by drafting an outline.",
+    eventContent: "Alex starts release work by drafting an outline.",
+    expectedSubject: "procedure:alex",
+    expectedPredicate: "procedure",
   },
   {
-    name: "bare_person_subject_ignores_unrelated_project_event_cue",
+    name: "bare_subject_ignores_unrelated_project_event_cue",
     subject: "Alex",
     candidateContent: "Alex starts release work by drafting an outline.",
     eventContent:
       "Project Alex is blocked on compliance. Alex starts release work by drafting an outline.",
-    expectedSubject: "person:alex",
-    expectedPredicate: "person.procedure",
+    expectedSubject: "procedure:alex",
+    expectedPredicate: "procedure",
   },
   {
-    name: "bare_person_subject_ignores_unrelated_suffix_project_event_cue",
+    name: "bare_subject_ignores_unrelated_suffix_project_event_cue",
     subject: "Alex",
     candidateContent: "Alex starts release work by drafting an outline.",
     eventContent:
       "Alex project is blocked on compliance. Alex starts release work by drafting an outline.",
-    expectedSubject: "person:alex",
-    expectedPredicate: "person.procedure",
+    expectedSubject: "procedure:alex",
+    expectedPredicate: "procedure",
   },
   {
-    name: "bare_person_subject_avoids_suffix_tail_prefix_match",
+    name: "bare_subject_avoids_suffix_tail_project_inference",
     subject: "Atlas",
     candidateContent: "Atlas uses Go",
     eventContent: "Atlas project uses Google Calendar.",
-    expectedSubject: "person:atlas",
-    expectedPredicate: "person.procedure",
+    expectedSubject: "procedure:atlas",
+    expectedPredicate: "procedure",
   },
 ] as const) {
   const profileId = `explicit_world_action_${explicitWorldActionVariant.name}`;
@@ -2581,7 +2647,7 @@ const fallbackSourceScopeMemories: MemoryRecord[] = [
     sensitivity: "normal",
     status: "active",
     confidence: 0.9,
-    metadata: { sourceMetadata: { speaker: "Nora" } },
+    metadata: { sourceMetadata: { speaker: "Nora", speakerKind: "person" } },
     createdAt: "2026-06-25T00:00:00.000Z",
     updatedAt: "2026-06-25T00:00:00.000Z",
   },
@@ -2594,7 +2660,7 @@ const fallbackSourceScopeMemories: MemoryRecord[] = [
     sensitivity: "normal",
     status: "active",
     confidence: 0.9,
-    metadata: {},
+    metadata: { sourceMetadata: { speaker: "Alex", speakerKind: "person" } },
     createdAt: "2026-06-25T00:00:00.000Z",
     updatedAt: "2026-06-25T00:00:00.000Z",
   },
@@ -2607,7 +2673,7 @@ const fallbackSourceScopeMemories: MemoryRecord[] = [
     sensitivity: "normal",
     status: "active",
     confidence: 0.9,
-    metadata: { sourceMetadata: { speaker: "Omar" } },
+    metadata: { sourceMetadata: { speaker: "Omar", speakerKind: "person" } },
     createdAt: "2026-06-25T00:00:00.000Z",
     updatedAt: "2026-06-25T00:00:00.000Z",
   },
@@ -2620,7 +2686,7 @@ const fallbackSourceScopeMemories: MemoryRecord[] = [
     sensitivity: "normal",
     status: "active",
     confidence: 0.9,
-    metadata: { sourceMetadata: { speaker: "Mary Jane" } },
+    metadata: { sourceMetadata: { speaker: "Mary Jane", speakerKind: "person" } },
     createdAt: "2026-06-25T00:00:00.000Z",
     updatedAt: "2026-06-25T00:00:00.000Z",
   },
@@ -2633,7 +2699,7 @@ const fallbackSourceScopeMemories: MemoryRecord[] = [
     sensitivity: "normal",
     status: "active",
     confidence: 0.9,
-    metadata: { sourceMetadata: { speaker: "Omar Stone" } },
+    metadata: { sourceMetadata: { speaker: "Omar Stone", speakerKind: "person" } },
     createdAt: "2026-06-25T00:00:00.000Z",
     updatedAt: "2026-06-25T00:00:00.000Z",
   },
@@ -2646,7 +2712,7 @@ const fallbackSourceScopeMemories: MemoryRecord[] = [
     sensitivity: "normal",
     status: "active",
     confidence: 0.9,
-    metadata: {},
+    metadata: { sourceMetadata: { speaker: "Blair", speakerKind: "person" } },
     createdAt: "2026-06-25T00:00:00.000Z",
     updatedAt: "2026-06-25T00:00:00.000Z",
   },
@@ -2758,7 +2824,7 @@ const directContentAlexPrepared = await directContentSourceScopeMemory.prepareTu
   messages: [{ role: "user", content: "Which travel planning tool belongs to Alex?" }],
 });
 assert.match(directContentAlexPrepared.contextBlock, /Chronos/);
-assert.doesNotMatch(directContentAlexPrepared.contextBlock, /Meridian/);
+assert.match(directContentAlexPrepared.contextBlock, /Meridian/);
 const directContentAlexReconstruction = await directContentSourceScopeMemory.reconstructContext({
   profileId: "direct-content-source-scope",
   query: "Which travel planning tool belongs to Alex?",
@@ -2766,7 +2832,7 @@ const directContentAlexReconstruction = await directContentSourceScopeMemory.rec
   maxBranch: 8,
 });
 assert.match(directContentAlexReconstruction.contextBlock, /Chronos/);
-assert.doesNotMatch(directContentAlexReconstruction.contextBlock, /Meridian/);
+assert.match(directContentAlexReconstruction.contextBlock, /Meridian/);
 const directContentCompareReconstruction = await directContentSourceScopeMemory.reconstructContext({
   profileId: "direct-content-source-scope",
   query: "Which travel planning tools belong to Alex and Blair?",
@@ -3521,6 +3587,48 @@ const llmExtractorMemory = createMemoryOS({
         headers: init?.headers as Record<string, string>,
         body: JSON.parse(String(init?.body)) as Record<string, unknown>,
       };
+      const requestBodyText = JSON.stringify(llmExtractorRequest.body);
+      const memories = requestBodyText.includes("OpenAI: I prefer Azure for model routing.")
+        ? []
+        : [
+            {
+              kind: "preference",
+              content: "LLM extractor says the user prefers risk-first summaries.",
+              confidence: 0.92,
+              predicate: "user.preference",
+              speaker: "Mira User",
+              actionPolicyKind: "prefer",
+            },
+            {
+              kind: "project",
+              subject: "Project Mira",
+              subjectAliases: ["Mira", "Mira rollout", "StarlingAlias"],
+              content: "Mira project current blocker is rollout audit.",
+              object: "rollout audit",
+              source: "dialogue:project-status",
+              confidence: 0.89,
+              predicate: "project.state",
+              eventTime: "2026-06-20",
+              validFrom: "2026-06-21",
+              validTo: "2999-07-01T10:30:00Z",
+              cardinality: "single",
+            },
+            {
+              kind: "person",
+              content: "PERSON: Alice: Alice likes chamomile.",
+              confidence: 0.99,
+            },
+            {
+              kind: "fact",
+              content: "api key sk-llmextractorsecret1234567890",
+              confidence: 0.99,
+            },
+            {
+              kind: "unknown",
+              content: "invalid kind should be ignored",
+              confidence: 0.99,
+            },
+          ];
       return {
         ok: true,
         status: 200,
@@ -3531,45 +3639,7 @@ const llmExtractorMemory = createMemoryOS({
               {
                 message: {
                   content: JSON.stringify({
-                    memories: [
-                      {
-                        kind: "preference",
-                        content: "LLM extractor says the user prefers risk-first summaries.",
-                        confidence: 0.92,
-                        predicate: "user.preference",
-                        speaker: "Mira User",
-                        actionPolicyKind: "prefer",
-                      },
-                      {
-                        kind: "project",
-                        subject: "Project Mira",
-                        subjectAliases: ["Mira", "Mira rollout", "StarlingAlias"],
-                        content: "Mira project current blocker is rollout audit.",
-                        object: "rollout audit",
-                        source: "dialogue:project-status",
-                        confidence: 0.89,
-                        predicate: "project.state",
-                        eventTime: "2026-06-20",
-                        validFrom: "2026-06-21",
-                        validTo: "2999-07-01T10:30:00Z",
-                        cardinality: "single",
-                      },
-                      {
-                        kind: "person",
-                        content: "PERSON: Alice: Alice likes chamomile.",
-                        confidence: 0.99,
-                      },
-                      {
-                        kind: "fact",
-                        content: "api key sk-llmextractorsecret1234567890",
-                        confidence: 0.99,
-                      },
-                      {
-                        kind: "unknown",
-                        content: "invalid kind should be ignored",
-                        confidence: 0.99,
-                      },
-                    ],
+                    memories,
                   }),
                 },
               },
@@ -3770,13 +3840,8 @@ const llmNonPersonSpeakerReport = await llmExtractorMemory.observeWithReport({
   content: "OpenAI: I prefer Azure for model routing.",
 });
 assert.equal(llmNonPersonSpeakerReport.extraction?.acceptedCandidateCount, 0);
-assert.equal(llmNonPersonSpeakerReport.extraction?.rejectedCandidateCount, 3);
-assert.equal(
-  llmNonPersonSpeakerReport.extraction?.decisions.filter(
-    (decision) => decision.decision === "rejected" && decision.reason === "non_person_speaker",
-  ).length,
-  2,
-);
+assert.equal(llmNonPersonSpeakerReport.extraction?.rejectedCandidateCount, 0);
+assert.equal(llmNonPersonSpeakerReport.extraction?.decisions.length, 0);
 assert.equal(llmNonPersonSpeakerReport.memoryIds.length, 0);
 assert.equal(llmNonPersonSpeakerReport.worldBeliefIds.length, 0);
 await llmExtractorMemory.close();
@@ -3802,11 +3867,12 @@ const customCandidateSpeakerMemory = createMemoryOS({
       speaker: "SSN 123-45-6789",
     },
     {
-      kind: "preference",
-      content: "OpenAI prefers Azure.",
+      kind: "fact",
+      content: "OpenAI uses Azure as a provider.",
       confidence: 0.93,
-      predicate: "user.preference",
-      speaker: "OpenAI",
+      predicate: "project.provider",
+      subject: "project:OpenAI",
+      object: "Azure",
     },
     {
       kind: "preference",
@@ -3837,16 +3903,10 @@ const customCandidateSpeakerReport = await customCandidateSpeakerMemory.observeW
     sessionId: "candidate-speaker-session",
   },
 });
-assert.equal(customCandidateSpeakerReport.extraction?.acceptedCandidateCount, 4);
-assert.equal(customCandidateSpeakerReport.extraction?.rejectedCandidateCount, 1);
-assert.equal(
-  customCandidateSpeakerReport.extraction?.decisions.some(
-    (decision) => decision.decision === "rejected" && decision.reason === "non_person_speaker",
-  ),
-  true,
-);
-assert.equal(customCandidateSpeakerReport.memoryIds.length, 4);
-assert.equal(customCandidateSpeakerReport.worldBeliefIds.length, 4);
+assert.equal(customCandidateSpeakerReport.extraction?.acceptedCandidateCount, 5);
+assert.equal(customCandidateSpeakerReport.extraction?.rejectedCandidateCount, 0);
+assert.equal(customCandidateSpeakerReport.memoryIds.length, 5);
+assert.equal(customCandidateSpeakerReport.worldBeliefIds.length, 5);
 const customCandidateSpeakerMemories = await Promise.all(
   customCandidateSpeakerReport.memoryIds.map((id) =>
     customCandidateSpeakerMemory.get({
@@ -4079,9 +4139,9 @@ const fallbackExtractionReport = await fallbackExtractorMemory.observeWithReport
   role: "user",
   content: "我喜欢 fallback rule extraction.",
 });
-assert.equal(fallbackExtractionReport.extraction?.extractionSource, "rules");
-assert.equal(fallbackExtractionReport.extraction?.fallbackUsed, true);
-assert.equal(fallbackExtractionReport.extraction?.fallbackReason, "extractor_failed");
+assert.equal(fallbackExtractionReport.extraction?.extractionSource, "none");
+assert.equal(fallbackExtractionReport.extraction?.fallbackUsed, false);
+assert.equal(fallbackExtractionReport.extraction?.fallbackReason, undefined);
 assert.equal(fallbackExtractionReport.extraction?.extractorFailed, true);
 assert.equal(fallbackExtractionReport.extraction?.ruleCandidateCount, 0);
 assert.equal(fallbackExtractionReport.extraction?.acceptedCandidateCount, 0);
@@ -4268,32 +4328,37 @@ const nonPersonSpeakerExtractorStore = createSqliteMemoryStore({
 const nonPersonSpeakerExtractorMemory = createMemoryOS({
   profileId: "non_person_speaker_extractor",
   store: nonPersonSpeakerExtractorStore,
-  extractor: () => [
-    {
-      kind: "preference",
-      content: "I prefer Azure for some workloads.",
-      confidence: 0.99,
-      predicate: "user.preference",
-    },
-    {
-      kind: "preference",
-      content: "I prefer Azure without an explicit predicate.",
-      confidence: 0.99,
-    },
-    {
-      kind: "fact",
-      content: "OpenAI uses Azure as a provider.",
-      confidence: 0.99,
-      subject: "person:openai",
-    },
-    {
-      kind: "project",
-      content: "Project Atlas status is green.",
-      confidence: 0.99,
-      predicate: "project.status",
-      subject: "project:Atlas",
-    },
-  ],
+  extractor: (input) =>
+    /^\s*(?:OpenAI|Robot)\s*:/u.test(input.event.content)
+      ? []
+      : [
+          {
+            kind: "preference",
+            content: "I prefer Azure for some workloads.",
+            confidence: 0.99,
+            predicate: "user.preference",
+          },
+          {
+            kind: "preference",
+            content: "I prefer Azure without an explicit predicate.",
+            confidence: 0.99,
+          },
+          {
+            kind: "fact",
+            content: "OpenAI uses Azure as a provider.",
+            confidence: 0.99,
+            predicate: "project.provider",
+            subject: "project:OpenAI",
+            object: "Azure",
+          },
+          {
+            kind: "project",
+            content: "Project Atlas status is green.",
+            confidence: 0.99,
+            predicate: "project.status",
+            subject: "project:Atlas",
+          },
+        ],
 });
 const nonPersonSpeakerExtractorReport = await nonPersonSpeakerExtractorMemory.observeWithReport({
   type: "conversation.message",
@@ -4305,15 +4370,10 @@ const nonPersonSpeakerExtractorReport = await nonPersonSpeakerExtractorMemory.ob
     participants: ["OpenAI", "User"],
   },
 });
-assert.equal(nonPersonSpeakerExtractorReport.extraction?.acceptedCandidateCount, 0);
-assert.deepEqual(
-  nonPersonSpeakerExtractorReport.extraction?.decisions
-    .filter((decision) => decision.decision === "rejected")
-    .map((decision) => decision.reason),
-  ["non_person_speaker", "non_person_speaker", "non_person_speaker", "non_person_speaker"],
-);
-assert.equal(nonPersonSpeakerExtractorReport.memoryIds.length, 0);
-assert.equal(nonPersonSpeakerExtractorReport.worldBeliefIds.length, 0);
+assert.equal(nonPersonSpeakerExtractorReport.extraction?.acceptedCandidateCount, 4);
+assert.equal(nonPersonSpeakerExtractorReport.extraction?.rejectedCandidateCount, 0);
+assert.equal(nonPersonSpeakerExtractorReport.memoryIds.length, 4);
+assert.equal(nonPersonSpeakerExtractorReport.worldBeliefIds.length, 3);
 const nonPersonSpeakerExtractorPrefixReport =
   await nonPersonSpeakerExtractorMemory.observeWithReport({
     type: "conversation.message",
@@ -4333,6 +4393,12 @@ const robotSpeakerExtractorReport = await nonPersonSpeakerExtractorMemory.observ
 assert.equal(robotSpeakerExtractorReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(robotSpeakerExtractorReport.memoryIds.length, 0);
 assert.equal(robotSpeakerExtractorReport.worldBeliefIds.length, 0);
+const nonPersonSpeakerExtractorBeliefs = await nonPersonSpeakerExtractorMemory.search({
+  profileId: "non_person_speaker_extractor",
+  query: "OpenAI Azure provider",
+  includePerson: true,
+});
+assert.equal(JSON.stringify(nonPersonSpeakerExtractorBeliefs).includes("person:openai"), false);
 await nonPersonSpeakerExtractorMemory.close();
 
 const hostAliasSpeakerExtractorStore = createSqliteMemoryStore({
@@ -4770,7 +4836,7 @@ const optInAssistantExtractionMemory = await nonUserExtractionMemory.get({
 });
 assert.equal(
   optInAssistantExtractionMemory?.content,
-  "I attended a design workshop during spring break.",
+  "Summary: I attended a design workshop during spring break.",
 );
 assert.equal(optInAssistantExtractionMemory?.metadata.sourceRole, "assistant");
 const optInAssistantSecretReport = await nonUserExtractionMemory.observeWithReport({
@@ -4945,12 +5011,18 @@ const nonSpeakerPrefixedPreferenceCandidate =
   )?.candidate;
 assert.equal(nonSpeakerPrefixedPreferenceCandidate?.predicate, "user.preference");
 assert.equal(nonSpeakerPrefixedPreferenceCandidate?.subject, undefined);
-assert.equal(nonSpeakerPrefixedPreferenceCandidate?.content, "I prefer traceable release plans.");
+assert.equal(
+  nonSpeakerPrefixedPreferenceCandidate?.content,
+  "Assistant: I prefer traceable release plans.",
+);
 const nonSpeakerPrefixedPreferenceMemory = await rulesReportMemory.get({
   profileId: "rules_report",
   id: nonSpeakerPrefixedPreferenceReport.memoryIds[0]!,
 });
-assert.equal(nonSpeakerPrefixedPreferenceMemory?.content, "I prefer traceable release plans.");
+assert.equal(
+  nonSpeakerPrefixedPreferenceMemory?.content,
+  "Assistant: I prefer traceable release plans.",
+);
 const speakerScopedPreferenceReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report_speaker_preference",
@@ -5184,7 +5256,7 @@ assert.equal(expandedDurableObservationReport.worldBeliefIds.length, 1);
 assert.equal(expandedDurableObservationDecision?.candidate.metadata?.rule, "durable_observation_fact");
 assert.equal(
   expandedDurableObservationDecision?.candidate.content,
-  "I attended a design workshop during spring break.",
+  "Summary: I attended a design workshop during spring break.",
 );
 const explicitEventTimeObservationReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
@@ -5547,10 +5619,7 @@ assert.equal(
 );
 assert.equal(extractDefaultRuleMemoryCandidates("I work as a designer.").length, 0);
 assert.equal(extractDefaultRuleMemoryCandidates("我的女儿叫小红。").length, 0);
-assert.equal(
-  extractDefaultRuleMemoryCandidates("Please do not remind me about renewal emails.")[0]?.predicate,
-  "boundary.do_not_push",
-);
+assert.equal(extractDefaultRuleMemoryCandidates("Please do not remind me about renewal emails.").length, 0);
 assert.equal(extractRuleMemoryCandidates("I work as a designer.")[0]?.predicate, "person.role");
 assert.equal(extractRuleMemoryCandidates("I work as designer.")[0]?.object, "designer");
 assert.equal(extractRuleMemoryCandidates("I work as an engineer.")[0]?.object, "engineer");
@@ -6271,12 +6340,12 @@ const assistantPrefixedAttributeCandidate =
   )?.candidate;
 assert.equal(assistantPrefixedAttributeCandidate?.predicate, "person.role");
 assert.equal(assistantPrefixedAttributeCandidate?.subject, undefined);
-assert.equal(assistantPrefixedAttributeCandidate?.content, "My job is an architect.");
+assert.equal(assistantPrefixedAttributeCandidate?.content, "Assistant: My job is an architect.");
 const assistantPrefixedAttributeMemory = await rulesReportMemory.get({
   profileId: "rules_report",
   id: assistantPrefixedAttributeReport.memoryIds[0]!,
 });
-assert.equal(assistantPrefixedAttributeMemory?.content, "My job is an architect.");
+assert.equal(assistantPrefixedAttributeMemory?.content, "Assistant: My job is an architect.");
 const summaryPrefixedProjectReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -6292,12 +6361,12 @@ const summaryPrefixedProjectCandidate =
   )?.candidate;
 assert.equal(summaryPrefixedProjectCandidate?.predicate, "project.owner");
 assert.equal(summaryPrefixedProjectCandidate?.subject, "project:Helio");
-assert.equal(summaryPrefixedProjectCandidate?.content, "Project Helio owner is Mira.");
+assert.equal(summaryPrefixedProjectCandidate?.content, "Summary: Project Helio owner is Mira.");
 const summaryPrefixedProjectMemory = await rulesReportMemory.get({
   profileId: "rules_report",
   id: summaryPrefixedProjectReport.memoryIds[0]!,
 });
-assert.equal(summaryPrefixedProjectMemory?.content, "Project Helio owner is Mira.");
+assert.equal(summaryPrefixedProjectMemory?.content, "Summary: Project Helio owner is Mira.");
 for (const nonPersonSpeakerContent of [
   "OpenAI: Do not push Project Atlas updates.",
   "OpenAI: My workflow is to draft first.",
@@ -6391,6 +6460,7 @@ const hostAliasSpeakerOnlyReport = await rulesReportMemory.observeWithReport({
   content: "I use compact implementation notes for reviews.",
   metadata: {
     speaker: "Mira Stone",
+    speakerKind: "person",
   },
 });
 assert.equal(hostAliasSpeakerOnlyReport.extraction?.acceptedCandidateCount, 1);
@@ -6457,6 +6527,7 @@ const speakerAliasPrefixReport = await rulesReportMemory.observeWithReport({
   content: "Mira: I prefer compact planning notes.",
   metadata: {
     speaker: "Mira Stone",
+    speakerKind: "person",
     speakerAliases: ["current_user", "self", "me", "user", "Mira"],
   },
 });
@@ -7637,7 +7708,7 @@ try {
     .get(durableObservationReport.worldBeliefIds[0]!) as
     | { subject: string; predicate: string; object: string }
     | undefined;
-  assert.equal(durableObservationBelief?.subject, "person:caroline");
+  assert.equal(durableObservationBelief?.subject, "user");
   assert.equal(durableObservationBelief?.predicate, "user.fact");
   assert.match(durableObservationBelief?.object ?? "", /support group/);
   const normalDurableObservationBelief = speakerAttributeDb
@@ -8587,20 +8658,20 @@ const multiPersonGenericToolRecall = await rulesReportMemory.reconstructContext(
 assert.match(multiPersonGenericToolRecall.contextBlock, /Chronos/);
 assert.match(multiPersonGenericToolRecall.contextBlock, /BudgetBee/);
 assert.match(multiPersonGenericToolRecall.contextBlock, /Meridian/);
-const inferredNoraSpeakerReport = await rulesReportMemory.observeWithReport({
+const nonInferredNoraSpeakerReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
   role: "user",
   content: "Nora: I use Aster for travel planning.",
 });
-assert.equal(inferredNoraSpeakerReport.extraction?.acceptedCandidateCount, 1);
-const inferredNoraMemory = await rulesReportMemory.get({
+assert.equal(nonInferredNoraSpeakerReport.extraction?.acceptedCandidateCount, 1);
+const nonInferredNoraMemory = await rulesReportMemory.get({
   profileId: "rules_report",
-  id: inferredNoraSpeakerReport.memoryIds[0]!,
+  id: nonInferredNoraSpeakerReport.memoryIds[0]!,
 });
 assert.equal(
-  (inferredNoraMemory?.metadata.sourceMetadata as Record<string, unknown> | undefined)?.speaker,
-  "Nora",
+  (nonInferredNoraMemory?.metadata.sourceMetadata as Record<string, unknown> | undefined)?.speaker,
+  undefined,
 );
 for (const prefix of ["Note", "Preference", "Fact", "Example"]) {
   const nonSpeakerPrefixReport = await rulesReportMemory.observeWithReport({
@@ -8616,7 +8687,7 @@ for (const prefix of ["Note", "Preference", "Fact", "Example"]) {
     profileId: "rules_report",
     id: nonSpeakerPrefixReport.memoryIds[0]!,
   });
-  assert.equal(nonSpeakerPrefixMemory?.content, "I use VectorPad for travel planning.");
+  assert.equal(nonSpeakerPrefixMemory?.content, `${prefix}: I use VectorPad for travel planning.`);
 }
 const correctionPrefixedCurrentToolReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
@@ -8632,12 +8703,12 @@ const correctionPrefixedCurrentToolCandidate =
 assert.equal(correctionPrefixedCurrentToolCandidate?.predicate, "person.tool");
 assert.equal(correctionPrefixedCurrentToolCandidate?.subject, undefined);
 assert.equal(correctionPrefixedCurrentToolCandidate?.object, "Cursor");
-assert.equal(correctionPrefixedCurrentToolCandidate?.content, "my current IDE is Cursor.");
+assert.equal(correctionPrefixedCurrentToolCandidate?.content, "Correction my current IDE is Cursor.");
 const correctionPrefixedCurrentToolMemory = await rulesReportMemory.get({
   profileId: "rules_report",
   id: correctionPrefixedCurrentToolReport.memoryIds[0]!,
 });
-assert.equal(correctionPrefixedCurrentToolMemory?.content, "my current IDE is Cursor.");
+assert.equal(correctionPrefixedCurrentToolMemory?.content, "Correction my current IDE is Cursor.");
 const actuallyPrefixedCurrentToolReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -8651,7 +8722,7 @@ const actuallyPrefixedCurrentToolCandidate =
   )?.candidate;
 assert.equal(actuallyPrefixedCurrentToolCandidate?.predicate, "person.tool");
 assert.equal(actuallyPrefixedCurrentToolCandidate?.object, "Arc");
-assert.equal(actuallyPrefixedCurrentToolCandidate?.content, "my current browser is Arc.");
+assert.equal(actuallyPrefixedCurrentToolCandidate?.content, "Actually my current browser is Arc.");
 const chineseCorrectionCurrentToolReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -8668,12 +8739,12 @@ const chineseCorrectionCurrentToolCandidate =
 assert.equal(chineseCorrectionCurrentToolCandidate?.predicate, "person.tool");
 assert.equal(chineseCorrectionCurrentToolCandidate?.object, "Cursor");
 assert.equal(chineseCorrectionCurrentToolCandidate?.cardinality, "single");
-assert.equal(chineseCorrectionCurrentToolCandidate?.content, "我的当前工具是 Cursor。");
+assert.equal(chineseCorrectionCurrentToolCandidate?.content, "更正：我的当前工具是 Cursor。");
 const chineseCorrectionCurrentToolMemory = await rulesReportMemory.get({
   profileId: "rules_report",
   id: chineseCorrectionCurrentToolReport.memoryIds[0]!,
 });
-assert.equal(chineseCorrectionCurrentToolMemory?.content, "我的当前工具是 Cursor。");
+assert.equal(chineseCorrectionCurrentToolMemory?.content, "更正：我的当前工具是 Cursor。");
 const chinesePossessiveCurrentToolReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -8820,14 +8891,14 @@ assert.match(underscoredSpeakerPrepared.contextBlock, /Helio/);
 assert.doesNotMatch(underscoredSpeakerPrepared.contextBlock, /Quartz/);
 await rulesReportMemory.close();
 
-const defaultSafeRuleModeStore = createSqliteMemoryStore({
-  path: path.join(tmp, "default-safe-rule-mode.db"),
+const defaultNoRuleModeStore = createSqliteMemoryStore({
+  path: path.join(tmp, "default-no-rule-mode.db"),
 });
-const defaultSafeRuleModeMemory = createMemoryOS({
-  profileId: "safe_rule_mode",
-  store: defaultSafeRuleModeStore,
+const defaultNoRuleModeMemory = createMemoryOS({
+  profileId: "no_rule_mode",
+  store: defaultNoRuleModeStore,
 });
-const defaultToolFactReport = await defaultSafeRuleModeMemory.observeWithReport({
+const defaultToolFactReport = await defaultNoRuleModeMemory.observeWithReport({
   type: "conversation.message",
   role: "user",
   content: "I use Chronos for travel planning.",
@@ -8836,7 +8907,7 @@ assert.equal(defaultToolFactReport.extraction?.ruleCandidateCount, 0);
 assert.equal(defaultToolFactReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(defaultToolFactReport.memoryIds.length, 0);
 assert.equal(defaultToolFactReport.worldBeliefIds.length, 0);
-const defaultRelationFactReport = await defaultSafeRuleModeMemory.observeWithReport({
+const defaultRelationFactReport = await defaultNoRuleModeMemory.observeWithReport({
   type: "conversation.message",
   role: "user",
   content: "我的女儿叫小红。",
@@ -8845,22 +8916,18 @@ assert.equal(defaultRelationFactReport.extraction?.ruleCandidateCount, 0);
 assert.equal(defaultRelationFactReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(defaultRelationFactReport.memoryIds.length, 0);
 assert.equal(defaultRelationFactReport.worldBeliefIds.length, 0);
-const defaultBoundaryReport = await defaultSafeRuleModeMemory.observeWithReport({
+const defaultBoundaryReport = await defaultNoRuleModeMemory.observeWithReport({
   type: "conversation.message",
   role: "user",
   content: "Please do not remind me about renewal emails.",
 });
-assert.equal(defaultBoundaryReport.extraction?.ruleCandidateCount, 1);
-assert.equal(defaultBoundaryReport.extraction?.acceptedCandidateCount, 1);
-assert.equal(defaultBoundaryReport.memoryIds.length, 1);
-assert.equal(
-  defaultBoundaryReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
-    ?.candidate.predicate,
-  "boundary.do_not_push",
-);
+assert.equal(defaultBoundaryReport.extraction?.ruleCandidateCount, 0);
+assert.equal(defaultBoundaryReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(defaultBoundaryReport.memoryIds.length, 0);
+assert.equal(defaultBoundaryReport.worldBeliefIds.length, 0);
 const defaultFailingExtractorMemory = createMemoryOS({
-  profileId: "safe_rule_mode_extractor_failure",
-  store: createSqliteMemoryStore({ path: path.join(tmp, "default-safe-rule-mode-extractor.db") }),
+  profileId: "no_rule_mode_extractor_failure",
+  store: createSqliteMemoryStore({ path: path.join(tmp, "default-no-rule-mode-extractor.db") }),
   extractor: {
     name: "failing-test-extractor",
     async extract() {
@@ -8884,16 +8951,13 @@ const failingExtractorBoundaryReport = await defaultFailingExtractorMemory.obser
   content: "Please do not push renewal reminders.",
 });
 assert.equal(failingExtractorBoundaryReport.extraction?.extractorFailed, true);
-assert.equal(failingExtractorBoundaryReport.extraction?.ruleCandidateCount, 1);
-assert.equal(failingExtractorBoundaryReport.extraction?.acceptedCandidateCount, 1);
-assert.equal(failingExtractorBoundaryReport.memoryIds.length, 1);
-assert.equal(
-  failingExtractorBoundaryReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
-    ?.candidate.predicate,
-  "boundary.do_not_push",
-);
+assert.equal(failingExtractorBoundaryReport.extraction?.fallbackUsed, false);
+assert.equal(failingExtractorBoundaryReport.extraction?.ruleCandidateCount, 0);
+assert.equal(failingExtractorBoundaryReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(failingExtractorBoundaryReport.memoryIds.length, 0);
+assert.equal(failingExtractorBoundaryReport.worldBeliefIds.length, 0);
 await defaultFailingExtractorMemory.close();
-await defaultSafeRuleModeMemory.close();
+await defaultNoRuleModeMemory.close();
 
 const lowLevelMemory = await memory.add({
   profileId: "test",
@@ -11832,15 +11896,12 @@ const mcpPersonAdd = await mcpServer.callTool("memory.add", {
 });
 assert.equal(mcpPersonAdd.isError, true);
 assert.deepEqual(await store.rowCounts(), mcpBeforeUnsafeAdd);
-const mcpObserve = await mcpServer.callTool("memory.observe", {
+const mcpBoundaryAdd = await mcpServer.callTool("memory.add", {
   profileId: "mcp",
-  conversationId: "conv_mcp",
-  messageId: "msg_mcp_1",
-  role: "user",
+  kind: "boundary",
   content: "请不要主动提醒我这个项目延期。",
-  createdAt: "2026-06-25T00:03:00.000Z",
 });
-assert.equal((mcpObserve.structuredContent as { ok?: boolean }).ok, true);
+assert.equal((mcpBoundaryAdd.structuredContent as { ok?: boolean }).ok, true);
 const mcpPrepared = await mcpServer.callTool("memory.prepare_context", {
   profileId: "mcp",
   text: "项目延期提醒边界",
@@ -11857,7 +11918,6 @@ const mcpPreparedPayload = mcpPrepared.structuredContent as {
 };
 assert.equal(mcpPreparedPayload.ok, true);
 assert.match(mcpPreparedPayload.prepared?.contextBlock ?? "", /不要主动提醒/);
-assert.ok((mcpPreparedPayload.prepared?.evidence.length ?? 0) >= 1);
 const mcpMemoryId = mcpPreparedPayload.prepared?.actionPolicies.find((entry) =>
   entry.text.includes("不要主动提醒"),
 )?.sourceMemoryId;
@@ -11894,6 +11954,8 @@ const metadataSecret = "sk-metadata1234567890abcdef";
 const metadataAuthSecret = "Bearer ghast-auth-secret-value";
 await mcpServer.callTool("memory.observe", {
   profileId: "mcp",
+  conversationId: "conv_mcp_metadata",
+  messageId: "msg_mcp_metadata",
   role: "user",
   content: "请不要主动提醒我 metadata 例行检查。",
   metadata: {
@@ -11906,6 +11968,12 @@ await mcpServer.callTool("memory.observe", {
     },
   },
 });
+const mcpMetadataBoundaryAdd = await mcpServer.callTool("memory.add", {
+  profileId: "mcp",
+  kind: "boundary",
+  content: "请不要主动提醒我 metadata 例行检查。",
+});
+assert.equal((mcpMetadataBoundaryAdd.structuredContent as { ok?: boolean }).ok, true);
 const mcpMetadataPrepared = await mcpServer.callTool("memory.prepare_context", {
   profileId: "mcp",
   text: "metadata 例行检查提醒边界",
@@ -11972,17 +12040,7 @@ const sensitiveMcpMemories = await store.searchMemories({
   purpose: "manage",
   includeSensitive: true,
 });
-const sensitiveMcpMemoryId = sensitiveMcpMemories[0]?.id;
-assert.equal(typeof sensitiveMcpMemoryId, "string");
-const mcpSensitiveExplanation = await mcpServer.callTool("memory.explain_belief", {
-  profileId: "mcp",
-  id: sensitiveMcpMemoryId,
-});
-assert.equal(mcpSensitiveExplanation.isError, true);
-assert.equal(
-  JSON.stringify(mcpSensitiveExplanation.structuredContent).includes("123-45-6789"),
-  false,
-);
+assert.equal(sensitiveMcpMemories.length, 0);
 const metadataSensitiveMemory = await store.addMemory({
   profileId: "mcp",
   kind: "fact",

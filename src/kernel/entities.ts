@@ -1,4 +1,4 @@
-import { classifySensitivity } from "./safety.js";
+import { classifySensitivity, sourceMetadataSpeakerIsPerson } from "./safety.js";
 import { stableNamedPersonSubject } from "./person-identity.js";
 
 export interface EntityResolutionInput {
@@ -250,7 +250,7 @@ export function buildEntityMentions(input: EntityMentionInput): EntityMention[] 
 
   const sourceMetadata = input.sourceMetadata ?? {};
   const speaker = publicEntityValue(sourceMetadata.speaker);
-  if (speaker && stableNamedPersonSubject(speaker)) {
+  if (speaker && sourceMetadataSpeakerIsPerson(sourceMetadata) && stableNamedPersonSubject(speaker)) {
     addMention(mentions, {
       role: "source_speaker",
       value: speaker,
@@ -258,23 +258,16 @@ export function buildEntityMentions(input: EntityMentionInput): EntityMention[] 
       cueEligible: true,
     });
   }
-  for (const alias of publicStringArray(sourceMetadata.speakerAliases)) {
-    if (!stableNamedPersonSubject(alias)) continue;
-    addMention(mentions, {
-      role: "source_speaker_alias",
-      value: alias,
-      kind: "person",
-      cueEligible: true,
-    });
-  }
-  for (const participant of publicStringArray(sourceMetadata.participants)) {
-    if (!stableNamedPersonSubject(participant)) continue;
-    addMention(mentions, {
-      role: "participant",
-      value: participant,
-      kind: "person",
-      cueEligible: false,
-    });
+  if (sourceMetadataSpeakerIsPerson(sourceMetadata)) {
+    for (const alias of publicStringArray(sourceMetadata.speakerAliases)) {
+      if (!stableNamedPersonSubject(alias)) continue;
+      addMention(mentions, {
+        role: "source_speaker_alias",
+        value: alias,
+        kind: "person",
+        cueEligible: true,
+      });
+    }
   }
   return mentions;
 }

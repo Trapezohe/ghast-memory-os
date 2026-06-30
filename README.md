@@ -27,12 +27,10 @@ const memory = createMemoryOS({
   store: createSqliteMemoryStore({ path: "./gmos.db" }),
 });
 
-await memory.observe({
-  type: "conversation.message",
+await memory.add({
   profileId: "local-user",
-  role: "user",
+  kind: "boundary",
   content: "以后不要再提醒我这个项目延期了。",
-  createdAt: new Date().toISOString(),
 });
 
 const prepared = await memory.prepareTurn({
@@ -58,9 +56,9 @@ const prepared = await memory.prepareTurn({
   subjects such as `Atlas project`, `project:atlas`, and `Project Atlas`
   converge before single-cardinality invalidation runs.
 - Entity mention metadata for accepted memories and world beliefs. gmOS records
-  subject, speaker, alias, and ambient participant mentions for audit, but only
-  cue-eligible subject/speaker/alias mentions are projected into strong
-  association cues so group participants do not pollute speaker-specific recall.
+  explicit subjects and aliases, and only treats source speaker metadata as a
+  person cue when the host or extractor marks it with `speakerKind: "person"`
+  or `speakerKind: "human"`.
 - Historical recall mode for temporal/current-state questions. Ordinary context
   still suppresses superseded or out-of-window memories, while explicit
   `history` recall can retrieve those past facts without using manage/delete
@@ -69,12 +67,11 @@ const prepared = await memory.prepareTurn({
   `reconstructContext`, `explainEvidencePath`, `forget`, `explain`.
 - Pluggable extraction pipeline for host-provided structured extractors. gmOS
   keeps write-path authority for evidence, PERSON, secret-like, incognito, and
-  forgetting gates, but it does not use broad linguistic rule fallback by
-  default.
-- Narrow built-in rule extraction for explicit action boundaries such as
-  `do_not_push`. Durable open-ended facts, preferences, project state, people,
-  and procedures should come from a host-provided structured extractor or an
-  explicit low-level import.
+  forgetting gates, but it does not synthesize durable semantic memory from
+  hard-coded linguistic rule fallback.
+- Durable facts, preferences, boundaries, project state, people, and procedures
+  should come from a host-provided structured extractor or an explicit low-level
+  import.
 - Low-level compatibility APIs: `add` and `search` for import, admin, and
   compatibility use cases that cannot emit full host events.
 - Safety gates for secret-like content, incognito events, PERSON isolation,
@@ -140,8 +137,8 @@ node dist/cli/gmos.js export --db ./gmos.db --profile local --output-file ./gmos
 node dist/cli/gmos.js import --db ./gmos.db --profile local --input-file ./gmos-memory-export.json
 node dist/cli/gmos.js backup --db ./gmos.db --profile local --mode safe --output-file ./gmos-profile-backup.json
 node dist/cli/gmos.js restore --db ./new-gmos.db --profile local-restored --input-file ./gmos-profile-backup.json
-node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "不要再提醒我这个项目延期了。"
-node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "不要再提醒我这个项目延期了。" --report
+node dist/cli/gmos.js add --db ./gmos.db --profile local --kind boundary --text "不要再提醒我这个项目延期了。"
+node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "记录一条普通会话事件。" --report
 node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
 node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？"
 node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "这个项目之前是什么状态？" --temporal-mode history
@@ -443,8 +440,8 @@ const memory = createMemoryOS({
   extractor: {
     name: "host-llm-extractor",
     async extract(input) {
-      // Use input.event, input.evidence, and the narrow safe rule hints to
-      // produce structured candidates from the current user message.
+      // Use input.event and input.evidence to produce structured candidates
+      // from the current user message.
       return [
         {
           kind: "preference",
@@ -472,15 +469,12 @@ rejects incognito and secret-like writes before evidence persistence, skips PERS
 routed candidates, bounds confidence, deduplicates candidates, and writes world
 beliefs only from accepted candidates that carry a structured predicate.
 Returning `[]` means "extract nothing". Returning `null` or throwing does not
-cause gmOS to synthesize broad user facts from hard-coded linguistic rules. By
-default, rule fallback is limited to narrow safe rule candidates such as
-explicit `do_not_push` boundaries. If a custom extractor returns candidates but
-all of them are rejected by the gmOS write-path validator, gmOS records the
-hard/soft reject audit; soft rejection fallback can only use the configured rule
-mode's candidates. Use `createMemoryOS({ extraction: { fallbackToRules: false } })`
-when a host wants extractor failure to produce no memory at all. gmOS does not
-ship a broad semantic rule fallback mode for production extraction; hosts should
-use a structured extractor for durable semantic memory.
+cause gmOS to synthesize user facts, preferences, boundaries, people, or project
+state from hard-coded linguistic rules. If a custom extractor returns candidates
+but all of them are rejected by the gmOS write-path validator, gmOS records the
+hard/soft reject audit and produces no fallback memory by default. Hosts should
+use a structured extractor for durable semantic memory, or call low-level `add`
+when they already have an explicit memory record.
 
 `observe()` remains the stable fire-and-forget observation API. Use
 `observeWithReport()` when a host or benchmark needs an `ObserveResult` to
@@ -498,7 +492,7 @@ console.log(report.extraction?.decisions);
 ```
 
 The report includes the evidence id, accepted memory ids, world belief ids,
-safe-rule/custom candidate counts, fallback status, hard/soft reject counts,
+custom/rule candidate counts, fallback status, hard/soft reject counts,
 fallback candidate counts, and accepted/rejected candidate decisions after
 candidates enter gmOS write-path validation. It is not a raw
 LLM-output transcript. Candidate snapshots are sanitized; rejected secret-like

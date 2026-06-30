@@ -15,7 +15,6 @@ import type {
 import { isReservedSpeakerIdentity, stableNamedPersonSubject } from "./person-identity.js";
 import {
   classifySensitivity,
-  isNonSpeakerPrefix,
   isPersonRoutedMemory,
   redactForReport,
   sanitizePublicPayloadRecord,
@@ -46,9 +45,6 @@ const KNOWN_MEMORY_KINDS = new Set([
   "person",
   "task_trajectory",
 ]);
-
-const DO_NOT_PUSH_RULE_PATTERN =
-  /不要再提醒|别再提醒|不要主动提|不要再推|do not remind|don't remind|do not push|don't push/iu;
 
 function normalize(content: string): string {
   return content.replace(/\s+/gu, " ").trim();
@@ -235,71 +231,13 @@ function structuredTemporalMetadata(candidate: MemoryExtractionCandidate): Recor
   return metadata;
 }
 
-function stripCorrectionLeadIn(text: string): string {
-  return text
-    .trim()
-    .replace(
-      /^(?:actually|correction|corrected|clarification|to\s+correct\s+myself|update)\s*[:,，]\s*/iu,
-      "",
-    )
-    .replace(
-      /^(?:actually|correction|corrected|clarification|to\s+correct\s+myself|update)\s+(?=(?:I|I'm|I’m|I've|I’ve|my|we|our|project)\b)/iu,
-      "",
-    )
-    .replace(/^(?:其实|实际(?:上)?|更正|纠正(?:一下)?|修正|澄清|更新)\s*[：:，,]\s*/u, "")
-    .trim();
-}
-
-function speakerPrefixMatch(text: string): { prefix: string; rest: string } | null {
-  const match = /^([\p{L}\p{M}' -]{2,48})\s*:\s*(.+)$/u.exec(text);
-  const prefix = match?.[1]?.trim();
-  const rest = match?.[2]?.trim();
-  return prefix && rest ? { prefix, rest } : null;
-}
-
-function durableCandidateContent(text: string): string {
-  let current = stripCorrectionLeadIn(text);
-  for (let depth = 0; depth < 4; depth += 1) {
-    const match = speakerPrefixMatch(current);
-    if (!match || !isNonSpeakerPrefix(match.prefix)) return current;
-    current = stripCorrectionLeadIn(match.rest);
-  }
-  return current;
-}
-
-function metadataSpeakerIsNonPerson(metadata: Record<string, unknown> | undefined): boolean {
-  const speaker = typeof metadata?.speaker === "string" ? metadata.speaker.trim() : "";
-  if (!speaker || isReservedSpeakerIdentity(speaker)) return false;
-  return !stableNamedPersonSubject(speaker);
-}
-
-function contentHasExplicitNonPersonSpeaker(content: string): boolean {
-  const match = speakerPrefixMatch(content);
-  if (!match) return false;
-  if (isNonSpeakerPrefix(match.prefix)) return true;
-  return !stableNamedPersonSubject(match.prefix);
-}
-
-function nonPersonSpeakerCandidate(
-  metadata: Record<string, unknown> | undefined,
-  content: string,
-): boolean {
-  return metadataSpeakerIsNonPerson(metadata) || contentHasExplicitNonPersonSpeaker(content);
-}
-
-function candidateSpeakerIsNonPerson(candidate: MemoryExtractionCandidate): boolean {
-  const speaker = typeof candidate.speaker === "string" ? candidate.speaker.trim() : "";
-  if (!speaker || isReservedSpeakerIdentity(speaker)) return false;
-  return !stableNamedPersonSubject(speaker);
-}
-
 function normalizeCandidate(
   candidate: MemoryExtractionCandidate,
   options: { minConfidence: number; createdAt?: string | undefined },
 ):
   | { candidate: MemoryExtractionCandidate }
   | { reason: MemoryExtractionRejectReason } {
-  const content = normalize(durableCandidateContent(candidate.content));
+  const content = normalize(candidate.content);
   if (!KNOWN_MEMORY_KINDS.has(String(candidate.kind))) return { reason: "invalid_kind" };
   if (!content) return { reason: "empty_content" };
   if (candidate.kind === "person") return { reason: "person_kind" };
@@ -382,22 +320,10 @@ function uniqueStrings(values: string[]): string[] {
 }
 
 export function extractSafeRuleMemoryCandidates(
-  content: string,
-  metadata?: Record<string, unknown> | undefined,
+  _content: string,
+  _metadata?: Record<string, unknown> | undefined,
 ): MemoryExtractionCandidate[] {
-  const text = normalize(content);
-  if (!text || isPersonRoutedMemory(text)) return [];
-  if (nonPersonSpeakerCandidate(metadata, text)) return [];
-  if (!DO_NOT_PUSH_RULE_PATTERN.test(text)) return [];
-  return [
-    {
-      kind: "boundary",
-      content: text,
-      confidence: 0.95,
-      predicate: "boundary.do_not_push",
-      actionPolicyKind: "do_not_push",
-    },
-  ];
+  return [];
 }
 
 export function extractRuleMemoryCandidates(
@@ -405,7 +331,7 @@ export function extractRuleMemoryCandidates(
   metadata?: Record<string, unknown> | undefined,
   options?: RuleMemoryExtractionOptions | undefined,
 ): MemoryExtractionCandidate[] {
-  const mode = options?.mode ?? "safe";
+  const mode = options?.mode ?? "none";
   if (mode === "none") return [];
   return extractSafeRuleMemoryCandidates(content, metadata);
 }
@@ -489,13 +415,6 @@ export async function extractMemoryCandidatePlan(input: {
       });
       if ("reason" in result) {
         rejected.push(rejectDecision(rawCandidate, result.reason));
-        continue;
-      }
-      if (
-        metadataSpeakerIsNonPerson(input.extractionInput.event.metadata) ||
-        candidateSpeakerIsNonPerson(result.candidate)
-      ) {
-        rejected.push(rejectDecision(rawCandidate, "non_person_speaker"));
         continue;
       }
       const candidate: MemoryExtractionCandidate = {

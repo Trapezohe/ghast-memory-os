@@ -308,10 +308,9 @@ async function runHost(
       capabilities.canObserveConversation &&
       capabilities.canInjectSystemContext
     ) {
-      await memory.observe({
-        type: "conversation.message",
+      await memory.add({
         profileId: id,
-        role: "user",
+        kind: "boundary",
         content: "以后不要再提醒我 Orion 项目延期。",
         createdAt: "2026-06-25T00:03:00.000Z",
       });

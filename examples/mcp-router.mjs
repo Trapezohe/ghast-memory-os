@@ -26,7 +26,7 @@ try {
   const observed = await server.callTool("memory.observe", {
     profileId,
     role: "user",
-    content: "I prefer MCP hosts to include evidence-backed context.",
+    content: "User opened the MCP host integration smoke test.",
     createdAt: "2026-06-25T00:00:00.000Z",
   });
   assert.equal(observed.isError, undefined);
