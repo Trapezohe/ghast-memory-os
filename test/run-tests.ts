@@ -20366,6 +20366,37 @@ try {
   assert.equal(stdioPreparedWithShadow.isError, undefined);
   assert.match(JSON.stringify(stdioPreparedWithShadow.structuredContent), /reconstruction/);
   assert.match(JSON.stringify(stdioPreparedWithShadow.structuredContent), /tool coverage/);
+  const stdioShadowIntentUnknown = await stdioClient.callTool({
+    name: "memory.prepare_context",
+    arguments: {
+      profileId: "stdio_mcp",
+      text: "tool coverage",
+      reconstruction: {
+        mode: "shadow",
+        reconstructionIntent: {
+          queryCues: ["tool coverage"],
+          includeSensitive: true,
+        },
+      },
+    },
+  });
+  assert.equal(stdioShadowIntentUnknown.isError, true);
+  const stdioShadowIntentGroupUnknown = await stdioClient.callTool({
+    name: "memory.prepare_context",
+    arguments: {
+      profileId: "stdio_mcp",
+      text: "tool coverage",
+      reconstruction: {
+        mode: "shadow",
+        reconstructionIntent: {
+          requiredTagGroups: [
+            { name: "preference", tags: ["preference"], includeSensitive: true },
+          ],
+        },
+      },
+    },
+  });
+  assert.equal(stdioShadowIntentGroupUnknown.isError, true);
   const stdioNestedSensitive = await stdioClient.callTool({
     name: "memory.prepare_context",
     arguments: {
