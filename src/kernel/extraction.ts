@@ -394,16 +394,55 @@ function hasDurableTemporalSignal(text: string): boolean {
 
 function hasPersonalWorldEventSignal(text: string): boolean {
   return (
-    /\b(?:went|visited|attended|moved\s+to|relocated|booked|reserved|ran|painted|planning|planned|researching|chose|started|finished|graduated|studying|working|commute|relationship|single|married|identity|transgender|counseling|therapy|mental health|adoption|adopted|career|family|kids|children|job|work|school|education|class|course|workshop|conference|birthday|appointment|meeting|trip|travel|flight|hotel|reservation|camping|race|support group)\b/iu.test(
+    /\b(?:went|visited|attended|traveled|travelled|flew|moved\s+to|relocated|booked|reserved|ran|painted|planning|planned|researching|chose|started|finished|graduated|studying|working|commute|relationship|single|married|identity|transgender|counseling|therapy|mental health|adoption|adopted|career|family|kids|children|job|work|school|education|class|course|workshop|conference|birthday|appointment|meeting|trip|travel|flight|hotel|reservation|camping|race|support group)\b/iu.test(
       text,
-    ) || /上学|工作|通勤|家庭|孩子|关系|单身|结婚|身份|心理|咨询|收养|参加|访问|搬家|预订|预约|课程|研讨会|会议|旅行|航班|酒店|露营|比赛|支持小组/u.test(text)
+    ) ||
+    durableStayEvent(text) ||
+    /\b(?:bought|sold|rented|leased)\s+(?:an?\s+|the\s+|my\s+)?(?:house|home|apartment|flat|condo|car|bike)\b/iu.test(
+      text,
+    ) ||
+    /上学|工作|通勤|家庭|孩子|关系|单身|结婚|身份|心理|咨询|收养|参加|访问|搬家|预订|预约|课程|研讨会|会议|旅行|航班|酒店|露营|比赛|支持小组/u.test(text)
   );
 }
 
 function hasNamedPersonEventSignal(text: string): boolean {
-  return /\b(?:went|visited|attended|moved\s+to|relocated|booked|reserved|ran|painted|chose|started|finished|graduated|studying|commute|appointment|meeting|class|course|workshop|conference|trip|travel|flight|hotel|reservation|camping|race)\b/iu.test(
-    text,
+  return (
+    /\b(?:went|visited|attended|traveled|travelled|flew|moved\s+to|relocated|booked|reserved|ran|painted|chose|started|finished|graduated|studying|commute|appointment|meeting|class|course|workshop|conference|trip|travel|flight|hotel|reservation|camping|race)\b/iu.test(
+      text,
+    ) ||
+    durableStayEvent(text) ||
+    /\b(?:bought|sold|rented|leased)\s+(?:an?\s+|the\s+|my\s+)?(?:house|home|apartment|flat|condo|car|bike)\b/iu.test(
+      text,
+    )
   );
+}
+
+function durableStayEvent(text: string): boolean {
+  const stayPrefix = String.raw`(?:had|has|have)\s+stayed|stayed`;
+  return (
+    new RegExp(
+      String.raw`\b(?:${stayPrefix})\s+(?:at|in)\s+(?:(?:the|a|an)\s+)?(?:hotel|hostel|inn|resort|motel|airbnb|ryokan|campground)\b`,
+      "iu",
+    ).test(
+      text,
+    ) ||
+    new RegExp(
+      String.raw`\b(?:${stayPrefix})\s+at\s+[\p{Lu}][\p{L}\p{M}'-]*(?:\s+[\p{Lu}][\p{L}\p{M}'-]*){0,3}\s+(?:Hotel|Hostel|Inn|Resort|Motel|Ryokan)\b`,
+      "u",
+    ).test(
+      text,
+    ) ||
+    new RegExp(
+      String.raw`\b(?:${stayPrefix})\s+in\s+[\p{Lu}][\p{L}\p{M}'-]{1,40}(?:\s+[\p{Lu}][\p{L}\p{M}'-]{1,40}){0,2}\b`,
+      "u",
+    ).test(
+      text,
+    )
+  );
+}
+
+function transientStayEvent(text: string): boolean {
+  return /^\s*(?:(?:had|has|have)\s+)?stayed\b/iu.test(text) && !durableStayEvent(text);
 }
 
 function likelyDurableObservationFact(text: string): boolean {
@@ -1173,6 +1212,7 @@ function namedPersonEventCandidate(
     return null;
   }
   if (/\b(?:I|I'm|I’m|I've|I’ve|my|mine|we|our)\b/iu.test(event)) return null;
+  if (transientStayEvent(event)) return null;
   if (!hasDurableTemporalSignal(event) || !hasNamedPersonEventSignal(event)) return null;
   return {
     kind: "fact",
@@ -1198,6 +1238,7 @@ function firstPersonEventCandidate(
   if (!subjectFields.subject) return null;
   const eventMatch = /^\s*I(?:'ve|’ve|\s+have)?\s+(.{2,180}?)\s*\.?\s*$/iu.exec(utterance);
   const event = projectBeliefObject(eventMatch?.[1]);
+  if (event && transientStayEvent(event)) return null;
   if (!event || !hasDurableTemporalSignal(event) || !hasPersonalWorldEventSignal(event)) {
     return null;
   }

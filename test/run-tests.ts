@@ -4624,6 +4624,144 @@ assert.equal(explicitEventTimeObservationDecision?.candidate.object, "went campi
 assert.equal(explicitEventTimeObservationDecision?.candidate.metadata?.rule, "first_person_event");
 assert.equal(explicitEventTimeObservationReport.memoryIds.length, 1);
 assert.equal(explicitEventTimeObservationReport.worldBeliefIds.length, 1);
+const travelFirstPersonEventReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Caroline: I traveled to Kyoto last spring.",
+});
+const travelFirstPersonEventDecision =
+  travelFirstPersonEventReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  );
+assert.equal(travelFirstPersonEventReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(travelFirstPersonEventDecision?.candidate.predicate, "person.event");
+assert.equal(travelFirstPersonEventDecision?.candidate.subject, "person:Caroline");
+assert.equal(travelFirstPersonEventDecision?.candidate.object, "traveled to Kyoto last spring");
+assert.equal(travelFirstPersonEventDecision?.candidate.metadata?.rule, "first_person_event");
+const propertyFirstPersonEventReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Caroline: I rented an apartment in 2021.",
+});
+const propertyFirstPersonEventDecision =
+  propertyFirstPersonEventReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  );
+assert.equal(propertyFirstPersonEventReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(propertyFirstPersonEventDecision?.candidate.predicate, "person.event");
+assert.equal(propertyFirstPersonEventDecision?.candidate.subject, "person:Caroline");
+assert.equal(propertyFirstPersonEventDecision?.candidate.object, "rented an apartment in 2021");
+assert.equal(propertyFirstPersonEventDecision?.candidate.metadata?.rule, "first_person_event");
+const lodgingFirstPersonEventReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Caroline: I stayed at Hotel Okura last June.",
+});
+const lodgingFirstPersonEventDecision =
+  lodgingFirstPersonEventReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  );
+assert.equal(lodgingFirstPersonEventReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(lodgingFirstPersonEventDecision?.candidate.predicate, "person.event");
+assert.equal(lodgingFirstPersonEventDecision?.candidate.subject, "person:Caroline");
+assert.equal(lodgingFirstPersonEventDecision?.candidate.object, "stayed at Hotel Okura last June");
+assert.equal(lodgingFirstPersonEventDecision?.candidate.metadata?.rule, "first_person_event");
+const placeStayFirstPersonEventReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Caroline: I stayed in Kyoto last June.",
+});
+const placeStayFirstPersonEventDecision =
+  placeStayFirstPersonEventReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  );
+assert.equal(placeStayFirstPersonEventReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(placeStayFirstPersonEventDecision?.candidate.predicate, "person.event");
+assert.equal(placeStayFirstPersonEventDecision?.candidate.subject, "person:Caroline");
+assert.equal(placeStayFirstPersonEventDecision?.candidate.object, "stayed in Kyoto last June");
+assert.equal(placeStayFirstPersonEventDecision?.candidate.metadata?.rule, "first_person_event");
+const lodgingTypeFirstPersonEventReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Caroline: I stayed at the ryokan last June.",
+});
+const lodgingTypeFirstPersonEventDecision =
+  lodgingTypeFirstPersonEventReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  );
+assert.equal(lodgingTypeFirstPersonEventReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(lodgingTypeFirstPersonEventDecision?.candidate.predicate, "person.event");
+assert.equal(lodgingTypeFirstPersonEventDecision?.candidate.subject, "person:Caroline");
+assert.equal(lodgingTypeFirstPersonEventDecision?.candidate.object, "stayed at the ryokan last June");
+assert.equal(lodgingTypeFirstPersonEventDecision?.candidate.metadata?.rule, "first_person_event");
+const lodgingArticleFirstPersonEventReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Caroline: I stayed at a hotel last June.",
+});
+const lodgingArticleFirstPersonEventDecision =
+  lodgingArticleFirstPersonEventReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  );
+assert.equal(lodgingArticleFirstPersonEventReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(lodgingArticleFirstPersonEventDecision?.candidate.predicate, "person.event");
+assert.equal(lodgingArticleFirstPersonEventDecision?.candidate.subject, "person:Caroline");
+assert.equal(lodgingArticleFirstPersonEventDecision?.candidate.object, "stayed at a hotel last June");
+assert.equal(lodgingArticleFirstPersonEventDecision?.candidate.metadata?.rule, "first_person_event");
+const lodgingAnArticleFirstPersonEventReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Caroline: I stayed at an inn last June.",
+});
+const lodgingAnArticleFirstPersonEventDecision =
+  lodgingAnArticleFirstPersonEventReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  );
+assert.equal(lodgingAnArticleFirstPersonEventReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(lodgingAnArticleFirstPersonEventDecision?.candidate.predicate, "person.event");
+assert.equal(lodgingAnArticleFirstPersonEventDecision?.candidate.subject, "person:Caroline");
+assert.equal(lodgingAnArticleFirstPersonEventDecision?.candidate.object, "stayed at an inn last June");
+assert.equal(lodgingAnArticleFirstPersonEventDecision?.candidate.metadata?.rule, "first_person_event");
+const ordinaryPurchaseFirstPersonReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Caroline: I bought coffee yesterday.",
+});
+const ordinaryPurchaseFirstPersonDecision =
+  ordinaryPurchaseFirstPersonReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  );
+assert.equal(ordinaryPurchaseFirstPersonReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(ordinaryPurchaseFirstPersonDecision?.candidate.predicate, "user.fact");
+for (const transientStayContent of [
+  "Caroline: I stayed late at work yesterday.",
+  "Caroline: I had stayed late at work yesterday.",
+  "Caroline: I stayed at the meeting yesterday.",
+  "Caroline: I had stayed at the meeting yesterday.",
+  "Caroline: I stayed at school yesterday.",
+  "Caroline: I stayed at class yesterday.",
+]) {
+  const transientStayFirstPersonReport = await rulesReportMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: "rules_report",
+    role: "user",
+    content: transientStayContent,
+  });
+  const transientStayFirstPersonDecision =
+    transientStayFirstPersonReport.extraction?.decisions.find(
+      (decision) => decision.decision === "accepted",
+    );
+  assert.equal(transientStayFirstPersonReport.extraction?.acceptedCandidateCount, 1);
+  assert.equal(transientStayFirstPersonDecision?.candidate.predicate, "user.fact");
+}
 const speakerAttributeReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -7203,6 +7341,75 @@ const expandedThirdPersonEventMemory = await rulesReportMemory.get({
   id: expandedThirdPersonEventReport.memoryIds[0]!,
 });
 assert.match(expandedThirdPersonEventMemory?.content ?? "", /visited Kyoto/);
+const travelThirdPersonEventReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_event_expansion",
+  role: "user",
+  content: "Morgan: Blair traveled to Kyoto last spring.",
+  metadata: {
+    speaker: "Morgan",
+    participants: ["Morgan", "Blair"],
+  },
+});
+const travelThirdPersonEventDecision =
+  travelThirdPersonEventReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  );
+assert.equal(travelThirdPersonEventReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(travelThirdPersonEventDecision?.candidate.predicate, "person.event");
+assert.equal(travelThirdPersonEventDecision?.candidate.subject, "person:Blair");
+assert.equal(travelThirdPersonEventDecision?.candidate.object, "traveled to Kyoto last spring");
+assert.equal(travelThirdPersonEventDecision?.candidate.metadata?.rule, "named_person_event");
+const stayThirdPersonEventReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_event_expansion",
+  role: "user",
+  content: "Morgan: Blair stayed in Kyoto last spring.",
+  metadata: {
+    speaker: "Morgan",
+    participants: ["Morgan", "Blair"],
+  },
+});
+const stayThirdPersonEventDecision =
+  stayThirdPersonEventReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  );
+assert.equal(stayThirdPersonEventReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(stayThirdPersonEventDecision?.candidate.predicate, "person.event");
+assert.equal(stayThirdPersonEventDecision?.candidate.subject, "person:Blair");
+assert.equal(stayThirdPersonEventDecision?.candidate.object, "stayed in Kyoto last spring");
+assert.equal(stayThirdPersonEventDecision?.candidate.metadata?.rule, "named_person_event");
+const lodgingArticleThirdPersonEventReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_event_expansion",
+  role: "user",
+  content: "Morgan: Blair stayed at a hotel last spring.",
+  metadata: {
+    speaker: "Morgan",
+    participants: ["Morgan", "Blair"],
+  },
+});
+const lodgingArticleThirdPersonEventDecision =
+  lodgingArticleThirdPersonEventReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  );
+assert.equal(lodgingArticleThirdPersonEventReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(lodgingArticleThirdPersonEventDecision?.candidate.predicate, "person.event");
+assert.equal(lodgingArticleThirdPersonEventDecision?.candidate.subject, "person:Blair");
+assert.equal(lodgingArticleThirdPersonEventDecision?.candidate.object, "stayed at a hotel last spring");
+assert.equal(lodgingArticleThirdPersonEventDecision?.candidate.metadata?.rule, "named_person_event");
+const transientStayThirdPersonEventReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_event_expansion",
+  role: "user",
+  content: "Morgan: Blair had stayed at the meeting yesterday.",
+  metadata: {
+    speaker: "Morgan",
+    participants: ["Morgan", "Blair"],
+  },
+});
+assert.equal(transientStayThirdPersonEventReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(transientStayThirdPersonEventReport.memoryIds.length, 0);
 const durableThirdPersonAliasReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
