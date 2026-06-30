@@ -78,12 +78,25 @@ const reconstructionIntentSchema = z.object({
   }).strict()).optional(),
 }).strict();
 
+const prepareReconstructionSchema = z.object({
+  mode: z.literal("shadow"),
+  maxSteps: z.number().int().positive().optional(),
+  maxBranch: z.number().int().positive().optional(),
+  maxMemories: z.number().int().positive().optional(),
+  stopWhenEvidenceEnough: z.boolean().optional(),
+  evidenceConvergenceThreshold: z.number().positive().optional(),
+  includeTemporalMetadata: z.boolean().optional(),
+  temporalMode: z.enum(["auto", "current", "history"]).optional(),
+  reconstructionIntent: reconstructionIntentSchema.optional(),
+}).strict();
+
 const prepareContextSchema = z.object({
   profileId: z.string().optional(),
   text: z.string().optional(),
   messages: z.array(messageSchema).optional(),
   includeEvidence: z.boolean().optional(),
   contextBudgetTokens: z.number().positive().optional(),
+  reconstruction: prepareReconstructionSchema.optional(),
 }).strict();
 
 const reconstructContextSchema = z.object({

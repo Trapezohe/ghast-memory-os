@@ -13061,6 +13061,67 @@ const mcpPreparedPayload = mcpPrepared.structuredContent as {
 };
 assert.equal(mcpPreparedPayload.ok, true);
 assert.match(mcpPreparedPayload.prepared?.contextBlock ?? "", /不要主动提醒/);
+const mcpPreparedWithShadow = await mcpServer.callTool("memory.prepare_context", {
+  profileId: "mcp",
+  text: "项目延期提醒边界",
+  includeEvidence: true,
+  reconstruction: {
+    mode: "shadow",
+    maxSteps: 2,
+    includeTemporalMetadata: true,
+    reconstructionIntent: {
+      queryCues: ["项目延期"],
+      requiredTagGroups: [{ name: "boundary", tags: ["boundary", "do_not_push"] }],
+    },
+  },
+});
+const mcpPreparedWithShadowPayload = mcpPreparedWithShadow.structuredContent as {
+  ok?: boolean;
+  prepared?: {
+    reconstruction?: { contextBlock?: string; stats?: { evidenceConvergence?: unknown } };
+  };
+};
+assert.equal(mcpPreparedWithShadowPayload.ok, true);
+assert.match(
+  mcpPreparedWithShadowPayload.prepared?.reconstruction?.contextBlock ?? "",
+  /不要主动提醒/,
+);
+assert.equal(
+  typeof mcpPreparedWithShadowPayload.prepared?.reconstruction?.stats?.evidenceConvergence,
+  "object",
+);
+const mcpPrepareShadowSensitive = await mcpServer.callTool("memory.prepare_context", {
+  profileId: "mcp",
+  text: "项目延期提醒边界",
+  reconstruction: {
+    mode: "shadow",
+    includeSensitive: true,
+  },
+});
+assert.equal(mcpPrepareShadowSensitive.isError, true);
+const mcpPrepareShadowIntentUnknown = await mcpServer.callTool("memory.prepare_context", {
+  profileId: "mcp",
+  text: "项目延期提醒边界",
+  reconstruction: {
+    mode: "shadow",
+    reconstructionIntent: {
+      queryCues: ["项目延期"],
+      includeSensitive: true,
+    },
+  },
+});
+assert.equal(mcpPrepareShadowIntentUnknown.isError, true);
+const mcpPrepareShadowIntentGroupUnknown = await mcpServer.callTool("memory.prepare_context", {
+  profileId: "mcp",
+  text: "项目延期提醒边界",
+  reconstruction: {
+    mode: "shadow",
+    reconstructionIntent: {
+      requiredTagGroups: [{ name: "boundary", tags: ["boundary"], includeSensitive: true }],
+    },
+  },
+});
+assert.equal(mcpPrepareShadowIntentGroupUnknown.isError, true);
 const mcpMemoryId = mcpPreparedPayload.prepared?.actionPolicies.find((entry) =>
   entry.text.includes("不要主动提醒"),
 )?.sourceMemoryId;
@@ -20009,15 +20070,25 @@ const cliMcpTools = spawnSync(
   { cwd: process.cwd(), encoding: "utf8" },
 );
 assert.equal(cliMcpTools.status, 0, cliMcpTools.stderr);
+const cliMcpToolsJson = JSON.parse(cliMcpTools.stdout) as {
+  tools: Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }>;
+};
 assert.ok(
-  (JSON.parse(cliMcpTools.stdout) as { tools: Array<{ name: string }> }).tools.some(
-    (tool) => tool.name === "memory.prepare_context",
-  ),
+  cliMcpToolsJson.tools.some((tool) => tool.name === "memory.prepare_context"),
 );
 assert.ok(
-  (JSON.parse(cliMcpTools.stdout) as { tools: Array<{ name: string }> }).tools.some(
-    (tool) => tool.name === "memory.runtime_info",
-  ),
+  cliMcpToolsJson.tools.some((tool) => tool.name === "memory.runtime_info"),
+);
+const cliPrepareToolSchema = cliMcpToolsJson.tools.find((tool) => tool.name === "memory.prepare_context")
+  ?.inputSchema;
+assert.equal(typeof cliPrepareToolSchema?.properties?.reconstruction, "object");
+assert.equal(
+  (
+    cliPrepareToolSchema?.properties?.reconstruction as {
+      properties?: { evidenceConvergenceThreshold?: { exclusiveMinimum?: number } };
+    }
+  ).properties?.evidenceConvergenceThreshold?.exclusiveMinimum,
+  0,
 );
 const mcpCliDb = path.join(tmp, "mcp-cli.db");
 const cliMcpRuntimeInfo = spawnSync(
@@ -20276,6 +20347,25 @@ try {
   });
   assert.equal(stdioPrepared.isError, undefined);
   assert.match(JSON.stringify(stdioPrepared.structuredContent), /tool coverage/);
+  const stdioPreparedWithShadow = await stdioClient.callTool({
+    name: "memory.prepare_context",
+    arguments: {
+      profileId: "stdio_mcp",
+      text: "tool coverage",
+      includeEvidence: true,
+      reconstruction: {
+        mode: "shadow",
+        maxSteps: 2,
+        reconstructionIntent: {
+          expectedTags: ["preference"],
+          queryCues: ["tool coverage"],
+        },
+      },
+    },
+  });
+  assert.equal(stdioPreparedWithShadow.isError, undefined);
+  assert.match(JSON.stringify(stdioPreparedWithShadow.structuredContent), /reconstruction/);
+  assert.match(JSON.stringify(stdioPreparedWithShadow.structuredContent), /tool coverage/);
   const stdioNestedSensitive = await stdioClient.callTool({
     name: "memory.prepare_context",
     arguments: {

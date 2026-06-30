@@ -39,6 +39,23 @@ const RECONSTRUCTION_INTENT_SCHEMA = {
   },
 };
 
+const PREPARE_RECONSTRUCTION_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["mode"],
+  properties: {
+    mode: { type: "string", enum: ["shadow"] },
+    maxSteps: { type: "integer", minimum: 1 },
+    maxBranch: { type: "integer", minimum: 1 },
+    maxMemories: { type: "integer", minimum: 1 },
+    stopWhenEvidenceEnough: { type: "boolean" },
+    evidenceConvergenceThreshold: { type: "number", exclusiveMinimum: 0 },
+    includeTemporalMetadata: { type: "boolean" },
+    temporalMode: { type: "string", enum: ["auto", "current", "history"] },
+    reconstructionIntent: RECONSTRUCTION_INTENT_SCHEMA,
+  },
+};
+
 export function listMemoryMcpTools(): MemoryMcpTool[] {
   const tools: Record<MemoryMcpToolName, MemoryMcpTool> = {
     "memory.runtime_info": {
@@ -125,6 +142,7 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
           },
           includeEvidence: { type: "boolean" },
           contextBudgetTokens: { type: "number" },
+          reconstruction: PREPARE_RECONSTRUCTION_SCHEMA,
         },
       },
     },
@@ -155,7 +173,7 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
           maxBranch: { type: "integer", minimum: 1 },
           maxMemories: { type: "integer", minimum: 1 },
           stopWhenEvidenceEnough: { type: "boolean" },
-          evidenceConvergenceThreshold: { type: "number", minimum: 0 },
+          evidenceConvergenceThreshold: { type: "number", exclusiveMinimum: 0 },
           includeTemporalMetadata: { type: "boolean" },
           temporalMode: { type: "string", enum: ["auto", "current", "history"] },
           reconstructionIntent: RECONSTRUCTION_INTENT_SCHEMA,
@@ -190,7 +208,7 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
           maxBranch: { type: "integer", minimum: 1 },
           maxMemories: { type: "integer", minimum: 1 },
           stopWhenEvidenceEnough: { type: "boolean" },
-          evidenceConvergenceThreshold: { type: "number", minimum: 0 },
+          evidenceConvergenceThreshold: { type: "number", exclusiveMinimum: 0 },
           includeTemporalMetadata: { type: "boolean" },
           temporalMode: { type: "string", enum: ["auto", "current", "history"] },
           reconstructionIntent: RECONSTRUCTION_INTENT_SCHEMA,

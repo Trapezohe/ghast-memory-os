@@ -152,6 +152,11 @@ function optionalReconstructionIntent(
     throw new Error(`${key} must be an object`);
   }
   const record = value as Record<string, unknown>;
+  assertAllowedKeys(
+    record,
+    new Set(["expectedTags", "queryCues", "requiredTagGroups"]),
+    key,
+  );
   const expectedTags = optionalStringArrayValue(record.expectedTags, `${key}.expectedTags`);
   const queryCues = optionalStringArrayValue(record.queryCues, `${key}.queryCues`);
   let requiredTagGroups: ReconstructionIntentHint["requiredTagGroups"];
@@ -164,12 +169,21 @@ function optionalReconstructionIntent(
         throw new Error(`${key}.requiredTagGroups[${index}] must be an object`);
       }
       const groupRecord = group as Record<string, unknown>;
+      assertAllowedKeys(
+        groupRecord,
+        new Set(["name", "tags"]),
+        `${key}.requiredTagGroups[${index}]`,
+      );
       const tags = optionalStringArrayValue(
         groupRecord.tags,
         `${key}.requiredTagGroups[${index}].tags`,
       );
       if (!tags) throw new Error(`${key}.requiredTagGroups[${index}].tags is required`);
-      const name = optionalString(groupRecord, "name");
+      const nameValue = groupRecord.name;
+      if (nameValue !== undefined && typeof nameValue !== "string") {
+        throw new Error(`${key}.requiredTagGroups[${index}].name must be a string`);
+      }
+      const name = nameValue;
       return { ...(name !== undefined ? { name } : {}), tags };
     });
   }
@@ -178,6 +192,63 @@ function optionalReconstructionIntent(
     ...(requiredTagGroups !== undefined ? { requiredTagGroups } : {}),
     ...(queryCues !== undefined ? { queryCues } : {}),
   };
+}
+
+function optionalPrepareReconstruction(
+  args: Record<string, unknown>,
+): PrepareTurnInput["reconstruction"] | undefined {
+  const value = args.reconstruction;
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("reconstruction must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  assertAllowedKeys(
+    record,
+    new Set([
+      "mode",
+      "maxSteps",
+      "maxBranch",
+      "maxMemories",
+      "stopWhenEvidenceEnough",
+      "evidenceConvergenceThreshold",
+      "includeTemporalMetadata",
+      "temporalMode",
+      "reconstructionIntent",
+    ]),
+    "memory.prepare_context.reconstruction",
+  );
+  const mode = optionalString(record, "mode");
+  if (mode !== "shadow") {
+    throw new Error("reconstruction.mode must be shadow");
+  }
+  const reconstruction: NonNullable<PrepareTurnInput["reconstruction"]> = { mode };
+  const maxSteps = optionalPositiveInteger(record, "maxSteps");
+  const maxBranch = optionalPositiveInteger(record, "maxBranch");
+  const maxMemories = optionalPositiveInteger(record, "maxMemories");
+  const stopWhenEvidenceEnough = optionalBoolean(record, "stopWhenEvidenceEnough");
+  const evidenceConvergenceThreshold = optionalPositiveNumber(
+    record,
+    "evidenceConvergenceThreshold",
+  );
+  const includeTemporalMetadata = optionalBoolean(record, "includeTemporalMetadata");
+  const temporalMode = optionalTemporalMode(record, "temporalMode");
+  const reconstructionIntent = optionalReconstructionIntent(record, "reconstructionIntent");
+  if (maxSteps !== undefined) reconstruction.maxSteps = maxSteps;
+  if (maxBranch !== undefined) reconstruction.maxBranch = maxBranch;
+  if (maxMemories !== undefined) reconstruction.maxMemories = maxMemories;
+  if (stopWhenEvidenceEnough !== undefined) {
+    reconstruction.stopWhenEvidenceEnough = stopWhenEvidenceEnough;
+  }
+  if (evidenceConvergenceThreshold !== undefined) {
+    reconstruction.evidenceConvergenceThreshold = evidenceConvergenceThreshold;
+  }
+  if (includeTemporalMetadata !== undefined) {
+    reconstruction.includeTemporalMetadata = includeTemporalMetadata;
+  }
+  if (temporalMode !== undefined) reconstruction.temporalMode = temporalMode;
+  if (reconstructionIntent !== undefined) reconstruction.reconstructionIntent = reconstructionIntent;
+  return reconstruction;
 }
 
 function optionalPublicSearchPurpose(
@@ -345,6 +416,19 @@ function searchInput(args: Record<string, unknown>): LowLevelSearchInput {
 }
 
 function prepareInput(args: Record<string, unknown>): PrepareTurnInput {
+  assertAllowedKeys(
+    args,
+    new Set([
+      "profileId",
+      "text",
+      "messages",
+      "includeEvidence",
+      "includeSensitive",
+      "contextBudgetTokens",
+      "reconstruction",
+    ]),
+    "memory.prepare_context",
+  );
   if (args.includeSensitive !== undefined) {
     throw new Error("memory.prepare_context does not allow includeSensitive over MCP");
   }
@@ -354,9 +438,11 @@ function prepareInput(args: Record<string, unknown>): PrepareTurnInput {
   const profileId = optionalString(args, "profileId");
   const includeEvidence = optionalBoolean(args, "includeEvidence");
   const contextBudgetTokens = optionalPositiveNumber(args, "contextBudgetTokens");
+  const reconstruction = optionalPrepareReconstruction(args);
   if (profileId !== undefined) input.profileId = profileId;
   if (includeEvidence !== undefined) input.includeEvidence = includeEvidence;
   if (contextBudgetTokens !== undefined) input.contextBudgetTokens = contextBudgetTokens;
+  if (reconstruction !== undefined) input.reconstruction = reconstruction;
   return input;
 }
 
