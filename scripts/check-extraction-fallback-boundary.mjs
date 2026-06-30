@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -32,6 +32,23 @@ const publicObserveBoundaryFiles = [
   "examples/mcp-router.mjs",
   "examples/quickstart.mjs",
 ];
+const productionSurfaceRoots = [
+  "README.md",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  "RELEASE_CHECKLIST.md",
+  "package.json",
+  "tsconfig.json",
+  "docs",
+  "examples",
+  "scripts",
+  "src",
+];
+const productionSurfaceFilePattern = /\.(?:ts|js|mjs|md|json|jsonl)$/u;
+const selfFile = "scripts/check-extraction-fallback-boundary.mjs";
+const legacyLinguisticFixturePattern =
+  /legacy-linguistic-extractor\.fixture|test\/helpers\/legacy-linguistic-extractor/iu;
+const exposedTestPathPattern = /(?:^|\/|\*\*\/)test(?:\/|\*|$)/iu;
 
 const broadSemanticExtractionPatterns = [
   /extractLegacyRuleMemoryCandidates/u,
@@ -78,6 +95,68 @@ const publicBuiltInExtractorClaimPatterns = [
   /rule\s+fallback\s+is\s+limited/iu,
   /observe\(\)\s+.*built-in/iu,
 ];
+
+if (!legacyLinguisticFixturePattern.test("test/helpers/legacy-linguistic-extractor.fixture.js")) {
+  throw new Error("legacy linguistic fixture boundary scanner self-check failed");
+}
+
+function posixRelativePath(relativePath) {
+  return relativePath.replace(/\\/gu, "/");
+}
+
+function filesUnder(relativePath) {
+  const fullPath = path.join(root, relativePath);
+  const posixPath = posixRelativePath(relativePath);
+  const stat = statSync(fullPath);
+  if (stat.isFile()) {
+    return productionSurfaceFilePattern.test(posixPath) ? [posixPath] : [];
+  }
+  return readdirSync(fullPath).flatMap((entry) => filesUnder(path.join(relativePath, entry)));
+}
+
+function productionSurfaceFiles() {
+  return productionSurfaceRoots
+    .flatMap(filesUnder)
+    .filter((relativePath) => relativePath !== selfFile);
+}
+
+function legacyLinguisticFixtureReferences() {
+  return productionSurfaceFiles().flatMap((relativePath) =>
+    read(relativePath)
+      .split(/\r?\n/u)
+      .flatMap((line, index) =>
+        legacyLinguisticFixturePattern.test(line)
+          ? [`${relativePath}:${index + 1}: ${line.trim()}`]
+          : [],
+      ),
+  );
+}
+
+function manifestStrings(value) {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(manifestStrings);
+  if (!value || typeof value !== "object") return [];
+  return Object.entries(value).flatMap(([key, nested]) => [key, ...manifestStrings(nested)]);
+}
+
+function exposesTestFixtureEntry(entry) {
+  const normalized = entry.trim().replace(/\\/gu, "/").replace(/^\.\//u, "");
+  return (
+    exposedTestPathPattern.test(normalized) ||
+    normalized.includes("/test/helpers/") ||
+    legacyLinguisticFixturePattern.test(normalized)
+  );
+}
+
+function packageDoesNotExposeTestFixtures() {
+  const manifest = JSON.parse(read("package.json"));
+  const files = Array.isArray(manifest.files) ? manifest.files : [];
+  const publicEntries = [
+    ...files.filter((entry) => typeof entry === "string"),
+    ...manifestStrings(manifest.exports),
+  ];
+  return !publicEntries.some(exposesTestFixtureEntry);
+}
 
 function publicObserveSemanticExampleMatches() {
   const matches = [];
@@ -155,6 +234,7 @@ function forgetCoreHasCommandStripper() {
 }
 
 const forgetCommandStripperMatches = forgetCoreHasCommandStripper();
+const legacyLinguisticFixtureMatches = legacyLinguisticFixtureReferences();
 
 const checks = [
   {
@@ -313,6 +393,21 @@ const checks = [
       (publicBuiltInExtractorClaims.length > 0
         ? ` Matched: ${publicBuiltInExtractorClaims.join(", ")}.`
         : ""),
+  },
+  {
+    name: "legacy-linguistic-fixture-not-in-production-surface",
+    pass: legacyLinguisticFixtureMatches.length === 0,
+    detail:
+      "The broad legacy linguistic extractor is a test fixture only and must not be imported, linked, or exposed from src, scripts, docs, examples, or package metadata." +
+      (legacyLinguisticFixtureMatches.length > 0
+        ? ` Matched: ${legacyLinguisticFixtureMatches.join("; ")}.`
+        : ""),
+  },
+  {
+    name: "package-does-not-expose-test-fixtures",
+    pass: packageDoesNotExposeTestFixtures(),
+    detail:
+      "The published package must not expose test helpers or the legacy linguistic extractor fixture through files or exports.",
   },
 ];
 
