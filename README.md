@@ -404,9 +404,21 @@ option.
 `forget()` accepts optional structured `targetTerms`. Hosts that already know
 which user-visible subject should be forgotten should pass those terms instead
 of relying on gmOS to infer the deletion target from a natural-language query.
-The `query` remains required as a human-readable request and compatibility
-fallback; when `targetTerms` is present, empty target terms archive nothing
-rather than broadening into a whole-profile delete.
+The `query` remains required as a human-readable request and literal compatibility
+fallback; gmOS does not strip language-specific command words from it by default.
+Empty literal queries and empty `targetTerms` archive nothing rather than
+broadening into a whole-profile delete. Hosts that need natural-language forget
+commands can pass a `forgetTargetParser` to `createSqliteMemoryStore`. Parser
+`undefined` or `null` falls back to the literal `query`; parser empty terms mean
+"parsed but no clear target" and also archive nothing:
+
+```ts
+const store = createSqliteMemoryStore({
+  path: "./gmos.db",
+  forgetTargetParser: ({ query }) =>
+    query.includes("old billing note") ? ["billing note"] : undefined,
+});
+```
 
 `explainEvidencePath()` exposes the same reconstructed cue-tag-content evidence
 path as an audit object without returning `contextBlock` or a prompt-ready

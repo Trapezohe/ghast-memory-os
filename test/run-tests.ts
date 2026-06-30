@@ -15148,6 +15148,42 @@ const structuredTargetForgotten = await reconstructionMemory.forget({
   targetTerms: ["Copper Gate"],
 });
 assert.ok(structuredTargetForgotten.archivedMemoryIds.length > 0);
+await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "project",
+  content: "Default literal forget target is Bronze Gate.",
+});
+const defaultLiteralForget = await reconstructionMemory.forget({
+  profileId: "recon",
+  query: "please forget Bronze Gate",
+});
+assert.deepEqual(defaultLiteralForget.archivedMemoryIds, []);
+const literalTargetForget = await reconstructionMemory.forget({
+  profileId: "recon",
+  query: "Bronze Gate",
+});
+assert.ok(literalTargetForget.archivedMemoryIds.length > 0);
+await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "project",
+  content: "Blank literal forget guard keeps Violet Gate.",
+});
+const blankLiteralForget = await reconstructionMemory.forget({
+  profileId: "recon",
+  query: "   ",
+});
+assert.deepEqual(blankLiteralForget.archivedMemoryIds, []);
+const punctuationLiteralForget = await reconstructionMemory.forget({
+  profileId: "recon",
+  query: "!!!",
+});
+assert.deepEqual(punctuationLiteralForget.archivedMemoryIds, []);
+const blankLiteralActive = await reconstructionMemory.list({
+  profileId: "recon",
+  status: "active",
+  limit: 50,
+});
+assert.equal(blankLiteralActive.some((entry) => entry.content.includes("Violet Gate")), true);
 const lyraAfterStructuredForget = await reconstructionMemory.reconstructContext({
   profileId: "recon",
   query: "Project Lyra contact",
@@ -15156,6 +15192,70 @@ const lyraAfterStructuredForget = await reconstructionMemory.reconstructContext(
 });
 assert.match(lyraAfterStructuredForget.contextBlock, /Silver Gate/);
 assert.equal(lyraAfterStructuredForget.contextBlock.includes("Copper Gate"), false);
+const parsedForgetStore = createSqliteMemoryStore({
+  path: path.join(tmp, "forget-target-parser.db"),
+  forgetTargetParser: (input) => {
+    if (input.query.includes("parsed empty target")) return [];
+    if (input.query.includes("parsed blank target")) return ["   "];
+    return input.query.includes("parsed stale lane") ? ["Stale Garnet"] : undefined;
+  },
+});
+const parsedForgetMemory = createMemoryOS({
+  profileId: "forget_parser",
+  store: parsedForgetStore,
+});
+await parsedForgetMemory.add({
+  profileId: "forget_parser",
+  kind: "project",
+  content: "Parsed forget stale lane is Stale Garnet.",
+});
+await parsedForgetMemory.add({
+  profileId: "forget_parser",
+  kind: "project",
+  content: "Parsed forget current lane is Current Beacon.",
+});
+await parsedForgetMemory.add({
+  profileId: "forget_parser",
+  kind: "project",
+  content: "Parsed empty target should remain Empty Quartz.",
+});
+await parsedForgetMemory.add({
+  profileId: "forget_parser",
+  kind: "project",
+  content: "Parsed blank target should remain Blank Topaz.",
+});
+const parsedEmptyForgetResult = await parsedForgetMemory.forget({
+  profileId: "forget_parser",
+  query: "please forget parsed empty target",
+});
+assert.deepEqual(parsedEmptyForgetResult.archivedMemoryIds, []);
+const parsedBlankForgetResult = await parsedForgetMemory.forget({
+  profileId: "forget_parser",
+  query: "please forget parsed blank target",
+});
+assert.deepEqual(parsedBlankForgetResult.archivedMemoryIds, []);
+const parsedForgetResult = await parsedForgetMemory.forget({
+  profileId: "forget_parser",
+  query: "please forget parsed stale lane",
+});
+assert.ok(parsedForgetResult.archivedMemoryIds.length > 0);
+const parsedForgetSearch = await parsedForgetMemory.search({
+  profileId: "forget_parser",
+  query: "Parsed",
+  purpose: "context",
+  limit: 10,
+});
+assert.equal(parsedForgetSearch.some((entry) => entry.content.includes("Stale Garnet")), false);
+assert.equal(parsedForgetSearch.some((entry) => entry.content.includes("Current Beacon")), true);
+const parsedActiveMemories = await parsedForgetMemory.list({
+  profileId: "forget_parser",
+  status: "active",
+  limit: 20,
+});
+assert.equal(parsedActiveMemories.some((entry) => entry.content.includes("Stale Garnet")), false);
+assert.equal(parsedActiveMemories.some((entry) => entry.content.includes("Empty Quartz")), true);
+assert.equal(parsedActiveMemories.some((entry) => entry.content.includes("Blank Topaz")), true);
+await parsedForgetMemory.close();
 const personSourceMemory = await reconstructionMemory.add({
   profileId: "recon",
   kind: "person",
@@ -15487,7 +15587,7 @@ const externalBenchmarkJsonl = [
     events: [
       { type: "memory", kind: "project", content: "Project Echo obsolete contact is West Pier." },
       { type: "memory", kind: "project", content: "Project Echo current contact is East Pier." },
-      { type: "forget", query: "forget what I said about West Pier" },
+      { type: "forget", query: "forget what I said about West Pier", targetTerms: ["West Pier"] },
     ],
     question: "What is Project Echo's current contact?",
     expectedAny: ["East Pier"],
@@ -15509,7 +15609,7 @@ const externalBenchmarkJsonl = [
     events: [
       { type: "memory", kind: "project", content: "Project Harbor obsolete contact is North Dock." },
       { type: "memory", kind: "project", content: "Project Harbor current contact is South Dock." },
-      { type: "forget", query: "忘记 North Dock" },
+      { type: "forget", query: "忘记 North Dock", targetTerms: ["North Dock"] },
     ],
     question: "What is Project Harbor's current contact?",
     expectedAny: ["South Dock"],
@@ -15531,7 +15631,7 @@ const externalBenchmarkJsonl = [
     events: [
       { type: "memory", kind: "project", content: "Project Dock obsolete contact is 东码头." },
       { type: "memory", kind: "project", content: "Project Dock current contact is 西码头." },
-      { type: "forget", query: "忘记东码头" },
+      { type: "forget", query: "忘记东码头", targetTerms: ["东码头"] },
     ],
     question: "What is Project Dock's current contact?",
     expectedAny: ["西码头"],

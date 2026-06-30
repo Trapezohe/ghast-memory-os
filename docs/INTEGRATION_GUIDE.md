@@ -53,7 +53,12 @@ search:
 5. Record user corrections with `recordFeedback()` or `memory.record_feedback`.
 6. Use `forget()` or `memory.forget` for user-requested deletion and residue
    cleanup. When the host already knows the deletion subject, pass structured
-   `targetTerms`; keep the natural-language `query` for audit and compatibility.
+   `targetTerms`; keep the natural-language `query` for audit and literal
+   compatibility. If the host accepts natural-language delete commands, parse
+   them with host logic or `forgetTargetParser` instead of relying on gmOS core
+   language templates. Parser `undefined` or `null` falls back to literal
+   `query`; parser empty terms archive nothing. Empty literal queries also
+   archive nothing.
 
 Low-level `add` and `search` are compatibility APIs. They are useful for import,
 admin tools, and simple hosts, but they are not a substitute for the full turn

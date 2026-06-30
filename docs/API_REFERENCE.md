@@ -88,8 +88,11 @@ Primary methods:
 - `recordFeedback(input)`: record user or host feedback into the failure loop.
 - `forget(input)`: archive matching memory and remove it from future context.
   Prefer structured `targetTerms` when a host already knows the deletion target;
-  `query` remains required as a human-readable request and compatibility
-  fallback.
+  `query` remains required as a human-readable request and literal compatibility
+  fallback. SQLite hosts can pass `forgetTargetParser` when they want to parse
+  natural-language delete commands into structured target terms. Parser
+  `undefined` or `null` falls back to literal `query`; parser empty terms archive
+  nothing. Empty literal queries also archive nothing.
 - `explain(input)`: explain a memory or belief without exposing unsafe content.
 
 Low-level compatibility methods such as `add`, `search`, `history`, `list`,

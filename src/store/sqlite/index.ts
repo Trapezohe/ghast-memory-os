@@ -91,7 +91,20 @@ export interface SqliteMemoryStoreOptions {
   readonly?: boolean | undefined;
   fileMustExist?: boolean | undefined;
   entityResolver?: EntityResolver | undefined;
+  forgetTargetParser?: SqliteForgetTargetParser | undefined;
 }
+
+export interface SqliteForgetTargetParserInput {
+  query: string;
+  reason?: string | undefined;
+}
+
+export type SqliteForgetTargetParser =
+  | ((input: SqliteForgetTargetParserInput) => string[] | null | undefined)
+  | {
+      name?: string | undefined;
+      parse(input: SqliteForgetTargetParserInput): string[] | null | undefined;
+    };
 
 export interface SqliteMemoryStore extends MemoryStore {
   listFailures(input: ListFailuresInput): FailureEventRecord[];
@@ -425,46 +438,23 @@ function scoreMemory(memory: MemoryRecord, query: string): number {
   return hits + memory.confidence;
 }
 
-const FORGET_COMMAND_TERMS = new Set([
-  "forget",
-  "forgot",
-  "remove",
-  "delete",
-  "memory",
-  "about",
-  "please",
-  "my",
-  "the",
-  "a",
-  "an",
-  "what",
-  "i",
-  "said",
-  "that",
-  "is",
-  "was",
-  "记",
-  "忘记",
-  "删除",
-  "移除",
-  "关于",
-  "请",
-  "我",
-  "说",
-  "说过",
-]);
-
-const HAN_FORGET_COMMAND_PATTERN = /忘记|删除|移除|关于/gu;
-
-function forgetMatchTerms(query: string): string[] {
-  return queryTerms(query.replace(HAN_FORGET_COMMAND_PATTERN, " ")).filter(
-    (term) => !FORGET_COMMAND_TERMS.has(term),
-  );
-}
-
 function structuredForgetTargetTerms(targetTerms: string[] | undefined): string[] | null {
   if (targetTerms === undefined) return null;
   return queryTerms(targetTerms.join(" "));
+}
+
+function parsedForgetTargetTerms(
+  parser: SqliteForgetTargetParser | undefined,
+  input: SqliteForgetTargetParserInput,
+): string[] | null {
+  if (!parser) return null;
+  try {
+    const parsed = typeof parser === "function" ? parser(input) : parser.parse(input);
+    if (parsed === null || parsed === undefined) return null;
+    return queryTerms(parsed.join(" "));
+  } catch {
+    return null;
+  }
 }
 
 function memoryMatchesForgetQuery(memory: MemoryRecord, terms: string[]): boolean {
@@ -2320,7 +2310,17 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     if (structuredTerms !== null && structuredTerms.length === 0) {
       return { archivedMemoryIds: [] };
     }
-    const terms = structuredTerms ?? forgetMatchTerms(input.query);
+    const parsedTerms = structuredTerms ?? parsedForgetTargetTerms(options.forgetTargetParser, {
+      query: input.query,
+      reason: input.reason,
+    });
+    if (parsedTerms !== null && parsedTerms.length === 0) {
+      return { archivedMemoryIds: [] };
+    }
+    const terms = parsedTerms ?? queryTerms(input.query);
+    if (terms.length === 0) {
+      return { archivedMemoryIds: [] };
+    }
     const searchQuery = terms.length > 0 ? terms.join(" ") : input.query;
     const matches = searchMemories({
       profileId: input.profileId,
