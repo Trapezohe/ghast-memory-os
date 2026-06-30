@@ -1166,6 +1166,205 @@ for (const explicitSpeakerPolicyVariant of [
   await explicitSpeakerPolicyMemory.close();
 }
 
+for (const explicitSpeakerActionVariant of [
+  {
+    name: "candidate_speaker_boundary_user_predicate",
+    kind: "boundary",
+    content: "Alex does not want proactive reminders.",
+    predicate: "user.boundary",
+    candidateSpeaker: "Alex",
+    actionPolicyKind: "do_not_push",
+    expectedPredicate: "person.boundary",
+  },
+  {
+    name: "candidate_speaker_boundary_action_predicate",
+    kind: "boundary",
+    content: "Alex does not want proactive reminders.",
+    predicate: "boundary.do_not_push",
+    candidateSpeaker: "Alex",
+    actionPolicyKind: "do_not_push",
+    expectedPredicate: "person.boundary",
+  },
+  {
+    name: "candidate_speaker_boundary_no_predicate",
+    kind: "boundary",
+    content: "Alex does not want proactive reminders.",
+    candidateSpeaker: "Alex",
+    actionPolicyKind: "do_not_push",
+    expectedPredicate: "person.boundary",
+  },
+  {
+    name: "metadata_speaker_boundary_no_predicate",
+    kind: "boundary",
+    content: "Alex does not want proactive reminders.",
+    actionPolicyKind: "do_not_push",
+    expectedPredicate: "person.boundary",
+  },
+  {
+    name: "candidate_speaker_procedure_user_predicate",
+    kind: "procedure",
+    content: "Alex starts release work by drafting an outline.",
+    predicate: "user.procedure",
+    candidateSpeaker: "Alex",
+    actionPolicyKind: "procedure",
+    expectedPredicate: "person.procedure",
+  },
+  {
+    name: "metadata_speaker_procedure_no_predicate",
+    kind: "procedure",
+    content: "Alex starts release work by drafting an outline.",
+    actionPolicyKind: "procedure",
+    expectedPredicate: "person.procedure",
+  },
+] as const) {
+  const profileId = `explicit_speaker_action_${explicitSpeakerActionVariant.name}`;
+  const dbPath = path.join(tmp, `${profileId}.db`);
+  const explicitSpeakerActionStore = createSqliteMemoryStore({ path: dbPath });
+  const explicitSpeakerActionMemory = createMemoryOS({
+    profileId,
+    store: explicitSpeakerActionStore,
+    extractor: () => ({
+      kind: explicitSpeakerActionVariant.kind,
+      content: explicitSpeakerActionVariant.content,
+      confidence: 0.9,
+      ...(explicitSpeakerActionVariant.predicate
+        ? { predicate: explicitSpeakerActionVariant.predicate }
+        : {}),
+      ...(explicitSpeakerActionVariant.candidateSpeaker
+        ? { speaker: explicitSpeakerActionVariant.candidateSpeaker }
+        : {}),
+      cardinality: "single",
+      actionPolicyKind: explicitSpeakerActionVariant.actionPolicyKind,
+      metadata: { actionPolicyKind: explicitSpeakerActionVariant.actionPolicyKind },
+    }),
+  });
+  await explicitSpeakerActionMemory.observe({
+    type: "conversation.message",
+    profileId,
+    role: "user",
+    content:
+      explicitSpeakerActionVariant.kind === "boundary"
+        ? "Alex: I do not want proactive reminders."
+        : "Alex: I start release work by drafting an outline.",
+    metadata: { speaker: "Alex", participants: ["Alex", "Blair"] },
+  });
+  const explicitSpeakerActionPrepared = await explicitSpeakerActionMemory.prepareTurn({
+    profileId,
+    messages: [{ role: "user", content: "Help me plan the release." }],
+  });
+  assert.equal(explicitSpeakerActionPrepared.actionPolicies.length, 0);
+  const explicitSpeakerActionDb = new Database(dbPath, { readonly: true });
+  try {
+    const explicitSpeakerActionMemoryRow = explicitSpeakerActionDb
+      .prepare(
+        `SELECT kind, metadata_json AS metadataJson
+         FROM gmos_memories
+         WHERE profile_id = ?
+         LIMIT 1`,
+      )
+      .get(profileId) as { kind: string; metadataJson: string } | undefined;
+    assert.equal(explicitSpeakerActionMemoryRow?.kind, "fact");
+    assert.equal(
+      JSON.parse(explicitSpeakerActionMemoryRow?.metadataJson ?? "{}").actionPolicyKind,
+      undefined,
+    );
+    const explicitSpeakerActionBelief = explicitSpeakerActionDb
+      .prepare(
+        `SELECT subject, predicate, status
+         FROM gmos_world_beliefs
+         WHERE profile_id = ?
+         LIMIT 1`,
+      )
+      .get(profileId) as { subject: string; predicate: string; status: string } | undefined;
+    assert.deepEqual(explicitSpeakerActionBelief, {
+      subject: "person:alex",
+      predicate: explicitSpeakerActionVariant.expectedPredicate,
+      status: "active",
+    });
+  } finally {
+    explicitSpeakerActionDb.close();
+  }
+  await explicitSpeakerActionMemory.close();
+}
+
+for (const explicitWorldActionVariant of [
+  {
+    name: "project_procedure_explicit_predicate",
+    subject: "project:Atlas",
+    predicate: "project.procedure",
+    expectedSubject: "project:atlas",
+    expectedPredicate: "project.procedure",
+  },
+  {
+    name: "project_procedure_user_predicate",
+    subject: "project:Atlas",
+    predicate: "user.procedure",
+    expectedSubject: "project:atlas",
+    expectedPredicate: "project.procedure",
+  },
+] as const) {
+  const profileId = `explicit_world_action_${explicitWorldActionVariant.name}`;
+  const dbPath = path.join(tmp, `${profileId}.db`);
+  const explicitWorldActionStore = createSqliteMemoryStore({ path: dbPath });
+  const explicitWorldActionMemory = createMemoryOS({
+    profileId,
+    store: explicitWorldActionStore,
+    extractor: () => ({
+      kind: "procedure",
+      content: "Project Atlas starts release work by drafting an outline.",
+      confidence: 0.9,
+      subject: explicitWorldActionVariant.subject,
+      predicate: explicitWorldActionVariant.predicate,
+      cardinality: "single",
+      actionPolicyKind: "procedure",
+      metadata: { actionPolicyKind: "procedure" },
+    }),
+  });
+  await explicitWorldActionMemory.observe({
+    type: "conversation.message",
+    profileId,
+    role: "user",
+    content: "Project Atlas starts release work by drafting an outline.",
+  });
+  const explicitWorldActionPrepared = await explicitWorldActionMemory.prepareTurn({
+    profileId,
+    messages: [{ role: "user", content: "Help me plan my release." }],
+  });
+  assert.equal(explicitWorldActionPrepared.actionPolicies.length, 0);
+  const explicitWorldActionDb = new Database(dbPath, { readonly: true });
+  try {
+    const explicitWorldActionMemoryRow = explicitWorldActionDb
+      .prepare(
+        `SELECT kind, metadata_json AS metadataJson
+         FROM gmos_memories
+         WHERE profile_id = ?
+         LIMIT 1`,
+      )
+      .get(profileId) as { kind: string; metadataJson: string } | undefined;
+    assert.equal(explicitWorldActionMemoryRow?.kind, "fact");
+    assert.equal(
+      JSON.parse(explicitWorldActionMemoryRow?.metadataJson ?? "{}").actionPolicyKind,
+      undefined,
+    );
+    const explicitWorldActionBelief = explicitWorldActionDb
+      .prepare(
+        `SELECT subject, predicate, status
+         FROM gmos_world_beliefs
+         WHERE profile_id = ?
+         LIMIT 1`,
+      )
+      .get(profileId) as { subject: string; predicate: string; status: string } | undefined;
+    assert.deepEqual(explicitWorldActionBelief, {
+      subject: explicitWorldActionVariant.expectedSubject,
+      predicate: explicitWorldActionVariant.expectedPredicate,
+      status: "active",
+    });
+  } finally {
+    explicitWorldActionDb.close();
+  }
+  await explicitWorldActionMemory.close();
+}
+
 const projectRuleStore = createSqliteMemoryStore({
   path: path.join(tmp, "project-rule-extractor.db"),
 });

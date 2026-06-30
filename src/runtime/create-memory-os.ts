@@ -251,7 +251,11 @@ function worldBeliefSubjectForCandidate(input: {
   const { candidate, eventContent, eventMetadata } = input;
   if (candidate.subject) return candidate.subject;
   const predicatePrefix = candidate.predicate?.split(".")[0]?.toLowerCase();
-  if (candidate.kind !== "preference" && predicatePrefix !== "user" && predicatePrefix !== "person") {
+  if (
+    !isActionMemoryCandidate(candidate) &&
+    predicatePrefix !== "user" &&
+    predicatePrefix !== "person"
+  ) {
     return "user";
   }
   const candidateSpeaker = publicSpeaker(candidate.speaker);
@@ -282,6 +286,82 @@ function worldBeliefSubjectAliasesForCandidate(input: {
   return uniqueAliases.length > 0 ? uniqueAliases : undefined;
 }
 
+function isActionMemoryCandidate(candidate: MemoryExtractionCandidate): boolean {
+  return (
+    candidate.kind === "preference" ||
+    candidate.kind === "boundary" ||
+    candidate.kind === "procedure" ||
+    Boolean(candidate.actionPolicyKind)
+  );
+}
+
+function actionCategoryForCandidate(candidate: MemoryExtractionCandidate): "preference" | "boundary" | "procedure" | undefined {
+  if (candidate.kind === "preference" || candidate.actionPolicyKind === "prefer") return "preference";
+  if (candidate.kind === "boundary" || candidate.actionPolicyKind === "do_not_push") return "boundary";
+  if (candidate.kind === "procedure" || candidate.actionPolicyKind === "procedure") return "procedure";
+  return undefined;
+}
+
+function subjectPredicateNamespace(subject: string): string | undefined {
+  const match = /^\s*([A-Za-z][A-Za-z0-9_-]*)\s*:/u.exec(subject);
+  return match?.[1]?.toLowerCase();
+}
+
+function personScopedActionPredicate(candidate: MemoryExtractionCandidate): string {
+  const predicate = candidate.predicate?.trim();
+  if (predicate) {
+    const normalized = predicate.toLowerCase();
+    if (normalized.startsWith("person.")) return predicate;
+    if (normalized.startsWith("user.")) return `person.${predicate.slice("user.".length)}`;
+    if (normalized === "preference" || normalized === "boundary" || normalized === "procedure") {
+      return `person.${normalized}`;
+    }
+    const actionCategory = actionCategoryForCandidate(candidate);
+    if (actionCategory) return `person.${actionCategory}`;
+    return predicate;
+  }
+
+  const actionCategory = actionCategoryForCandidate(candidate);
+  if (actionCategory) return `person.${actionCategory}`;
+  return "person.fact";
+}
+
+function subjectScopedActionPredicate(input: {
+  candidate: MemoryExtractionCandidate;
+  subject: string;
+}): string {
+  const { candidate, subject } = input;
+  const namespace = subjectPredicateNamespace(subject);
+  if (namespace === "person") {
+    return candidate.kind === "preference"
+      ? personScopedPreferencePredicate(candidate.predicate)
+      : personScopedActionPredicate(candidate);
+  }
+
+  const actionCategory = actionCategoryForCandidate(candidate);
+  const predicate = candidate.predicate?.trim();
+  if (predicate) {
+    const normalized = predicate.toLowerCase();
+    if (normalized.startsWith("user.") && namespace) {
+      return `${namespace}.${predicate.slice("user.".length)}`;
+    }
+    if (
+      actionCategory &&
+      namespace &&
+      (normalized === actionCategory ||
+        normalized.startsWith(`${actionCategory}.`) ||
+        normalized === candidate.actionPolicyKind)
+    ) {
+      return `${namespace}.${actionCategory}`;
+    }
+    return predicate;
+  }
+
+  if (actionCategory && namespace) return `${namespace}.${actionCategory}`;
+  if (actionCategory) return actionCategory;
+  return namespace ? `${namespace}.fact` : "fact";
+}
+
 function personScopedPreferencePredicate(predicate: string | undefined): string {
   const normalized = predicate?.trim();
   if (!normalized || normalized.toLowerCase() === "preference") return "person.preference";
@@ -296,13 +376,18 @@ function memoryWriteCandidateForSubject(input: {
   subject: string;
 }): MemoryExtractionCandidate {
   const { candidate, subject } = input;
-  if (subject === "user" || candidate.kind !== "preference") return candidate;
+  if (subject === "user" || !isActionMemoryCandidate(candidate)) return candidate;
 
   const { actionPolicyKind: _actionPolicyKind, ...candidateWithoutActionPolicy } = candidate;
   return {
     ...candidateWithoutActionPolicy,
-    kind: "fact",
-    predicate: personScopedPreferencePredicate(candidate.predicate),
+    kind:
+      candidate.kind === "preference" ||
+      candidate.kind === "boundary" ||
+      candidate.kind === "procedure"
+        ? "fact"
+        : candidate.kind,
+    predicate: subjectScopedActionPredicate({ candidate, subject }),
   };
 }
 
