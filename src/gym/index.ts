@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { createMemoryStatusReport } from "../diagnostics/index.js";
 import { createHostAdapter } from "../host/index.js";
 import type { HostActualCompatibilityReport, HostPreset } from "../host/index.js";
+import type { EntityResolver } from "../kernel/entities.js";
 import { createMemoryMcpServer } from "../mcp/index.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
@@ -340,8 +341,31 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     dbPath: options.dbPath ?? ":memory:",
     generatedSeeds: generatedSeedNames(options.generatedSeeds),
   };
-  const store = createSqliteMemoryStore({ path: normalized.dbPath });
-  const memory = createMemoryOS({ profileId: "gym", store });
+  const gymEntityResolver: EntityResolver = (input) => {
+    const subject = input.subject.trim();
+    const match =
+      /^Workspace\s+(.+)$/iu.exec(subject) ??
+      /^workspace\s*[:/]\s*(.+)$/iu.exec(subject);
+    const rawKey = match?.[1]?.trim();
+    if (!rawKey) return undefined;
+    const entityKey = rawKey
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}_-]+/gu, "-")
+      .replace(/^-+|-+$/gu, "");
+    if (!entityKey) return undefined;
+    return {
+      canonicalSubject: `workspace:${entityKey}`,
+      originalSubject: subject,
+      entityKind: "workspace",
+      entityKey,
+      aliases: [subject, rawKey, `workspace:${entityKey}`, ...(input.aliases ?? [])],
+    };
+  };
+  const store = createSqliteMemoryStore({
+    path: normalized.dbPath,
+    entityResolver: gymEntityResolver,
+  });
+  const memory = createMemoryOS({ profileId: "gym", store, entityResolver: gymEntityResolver });
   const result = createEmptyResult(normalized);
 
   try {
@@ -1024,16 +1048,16 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   });
   await store.addWorldBelief({
     profileId: "gym_reconstruct",
-    subject: "Orion project",
-    predicate: "project.state",
+    subject: "Workspace Orion",
+    predicate: "workspace.state",
     object: "OrionOwnerAlpha",
     confidence: 0.82,
     cardinality: "single",
   });
   await store.addWorldBelief({
     profileId: "gym_reconstruct",
-    subject: "project:orion",
-    predicate: "project.state",
+    subject: "workspace:orion",
+    predicate: "workspace.state",
     object: "OrionOwnerBeta",
     confidence: 0.91,
     cardinality: "single",
@@ -1125,7 +1149,11 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   });
   const entityResolvedCurrentStateReconstruction = await memory.reconstructContext({
     profileId: "gym_reconstruct",
-    query: "Orion project current state",
+    query: "Orion workspace current state",
+    reconstructionIntent: {
+      queryCues: ["workspace:orion"],
+      requiredTagGroups: [{ name: "current_state", tags: ["workspace.state", "world_belief"] }],
+    },
     maxSteps: 4,
     maxBranch: 8,
   });

@@ -120,22 +120,6 @@ function prefixedSubject(subject: string): { kind: string; rawKey: string } | nu
   return { kind: kind === "repository" ? "repo" : kind, rawKey };
 }
 
-function projectPhraseSubject(subject: string): string | null {
-  const trimmed = compact(subject);
-  const patterns = [
-    /^(.+?)\s+(?:project|repo|repository)$/iu,
-    /^(?:project|repo|repository)\s+(.+)$/iu,
-    /^(.+?)\s*项目$/u,
-    /^项目\s*(.+)$/u,
-  ];
-  for (const pattern of patterns) {
-    const match = trimmed.match(pattern);
-    const rawKey = compact(match?.[1] ?? "");
-    if (rawKey) return rawKey;
-  }
-  return null;
-}
-
 function sanitizedEntityKind(value: string | null | undefined): string | null {
   const publicValue = publicEntityValue(value);
   return publicValue ? key(publicValue) || null : null;
@@ -174,14 +158,13 @@ export function defaultWorldEntityResolver(input: EntityResolutionInput): Entity
   const originalSubject = compact(input.subject) || "user";
   const isExplicitUserSubject = key(originalSubject) === "user";
   const explicit = prefixedSubject(originalSubject);
-  const projectPhrase = explicit ? null : projectPhraseSubject(originalSubject);
   const inferredKind = isExplicitUserSubject
     ? "user"
-    : (explicit?.kind ?? (projectPhrase ? "project" : kindFromPredicate(input.predicate)));
+    : (explicit?.kind ?? kindFromPredicate(input.predicate));
   const rawKey =
     isExplicitUserSubject
       ? "user"
-      : (explicit?.rawKey ?? projectPhrase ?? (inferredKind === "user" ? "user" : originalSubject));
+      : (explicit?.rawKey ?? (inferredKind === "user" ? "user" : originalSubject));
   const entityKey = key(rawKey);
   const canonicalSubject =
     inferredKind && inferredKind !== "user" && entityKey
@@ -194,10 +177,6 @@ export function defaultWorldEntityResolver(input: EntityResolutionInput): Entity
     ...(input.aliases ?? []),
     canonicalSubject,
     entityKey ?? "",
-    inferredKind === "project" && entityKey ? `${entityKey} project` : "",
-    inferredKind === "project" && entityKey ? `project ${entityKey}` : "",
-    inferredKind === "project" && entityKey ? `${entityKey} 项目` : "",
-    inferredKind === "project" && entityKey ? `项目 ${entityKey}` : "",
   ].map(publicAlias));
   return {
     canonicalSubject,

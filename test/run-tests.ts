@@ -299,6 +299,21 @@ assert.equal(
   JSON.stringify(redactedEntityResolutionFixture).includes("sk-entityresolutionalias"),
   false,
 );
+const structuredProjectResolutionFixture = resolveWorldEntitySubject({
+  subject: "Atlas",
+  predicate: "project.status",
+});
+assert.equal(structuredProjectResolutionFixture.canonicalSubject, "project:atlas");
+const naturalProjectPrefixResolutionFixture = resolveWorldEntitySubject({
+  subject: "Project Atlas",
+  predicate: "project.status",
+});
+assert.equal(naturalProjectPrefixResolutionFixture.canonicalSubject, "project:project-atlas");
+const naturalProjectSuffixResolutionFixture = resolveWorldEntitySubject({
+  subject: "Atlas project",
+  predicate: "project.status",
+});
+assert.equal(naturalProjectSuffixResolutionFixture.canonicalSubject, "project:atlas-project");
 const redactedBeliefMetadataAssociationFixture = {
   id: "belief-association-redacted-metadata-fixture",
   profileId: "test",
@@ -1055,7 +1070,7 @@ const extractorMemory = createMemoryOS({
           content: "Custom extractor says the Helio project is blocked on a migration probe.",
           confidence: 0.88,
           predicate: "project.state",
-          subject: "Helio project",
+          subject: "project:helio",
           cardinality: "single",
           metadata: {
             extractorFixture: "project",
@@ -1564,17 +1579,17 @@ for (const explicitWorldActionVariant of [
     expectedPredicate: "project.procedure",
   },
   {
-    name: "natural_project_procedure_user_predicate",
+    name: "natural_project_phrase_user_predicate_does_not_infer_project",
     subject: "Project Atlas",
     predicate: "user.procedure",
-    expectedSubject: "project:atlas",
-    expectedPredicate: "project.procedure",
+    expectedSubject: "user",
+    expectedPredicate: "user.procedure",
   },
   {
-    name: "project_phrase_procedure_no_predicate",
+    name: "project_phrase_procedure_no_predicate_does_not_infer_project",
     subject: "Atlas project",
-    expectedSubject: "project:atlas",
-    expectedPredicate: "project.procedure",
+    expectedSubject: "procedure:atlas-project",
+    expectedPredicate: "procedure",
   },
   {
     name: "bare_subject_does_not_infer_project_from_candidate_content_no_predicate",
@@ -2224,17 +2239,29 @@ try {
 const projectOwnerReconstruction = await projectRuleMemory.reconstructContext({
   profileId: "project_rule",
   query: "Project Atlas current owner",
+  reconstructionIntent: {
+    queryCues: ["project:atlas"],
+    requiredTagGroups: [{ name: "current_owner", tags: ["project.owner", "world_belief"] }],
+  },
 });
 assert.match(projectOwnerReconstruction.contextBlock, /DeltaTeam/);
 assert.doesNotMatch(projectOwnerReconstruction.contextBlock, /AlphaTeam|BetaTeam|GammaTeam/);
 const projectDeadlineReconstruction = await projectRuleMemory.reconstructContext({
   profileId: "project_rule",
   query: "Project Atlas current deadline",
+  reconstructionIntent: {
+    queryCues: ["project:atlas"],
+    requiredTagGroups: [{ name: "current_deadline", tags: ["project.deadline", "world_belief"] }],
+  },
 });
 assert.match(projectDeadlineReconstruction.contextBlock, /Friday/);
 const projectCurrentContactReconstruction = await projectRuleMemory.reconstructContext({
   profileId: "project_history_rule",
   query: "What is Project Willow's current contact?",
+  reconstructionIntent: {
+    queryCues: ["project:willow"],
+    requiredTagGroups: [{ name: "current_contact", tags: ["project.contact", "world_belief"] }],
+  },
 });
 assert.match(projectCurrentContactReconstruction.contextBlock, /Blue Desk/);
 assert.doesNotMatch(projectCurrentContactReconstruction.contextBlock, /Red Desk/);
@@ -2518,7 +2545,7 @@ try {
   assert.equal(activeProjectMetadata.entityResolution?.canonicalSubject, "project:helio");
   assert.equal(
     activeProjectMetadata.entityResolution?.aliases?.some(
-      (alias) => alias.toLowerCase() === "helio project",
+      (alias) => alias.toLowerCase() === "helio",
     ),
     true,
   );

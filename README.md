@@ -52,9 +52,9 @@ const prepared = await memory.prepareTurn({
 - SQLite association projection for active reconstruction. It derives
   cue-tag-content edges from existing memory, world belief, and task trajectory
   rows; those associations are an index, not a second source of truth.
-- Deterministic world-entity normalization for current-state beliefs. Equivalent
-  subjects such as `Atlas project`, `project:atlas`, and `Project Atlas`
-  converge before single-cardinality invalidation runs.
+- Deterministic world-entity normalization for current-state beliefs. Structured
+  subjects such as `project:atlas`, `project/atlas`, or subject `Atlas` with
+  predicate `project.state` converge before single-cardinality invalidation runs.
 - Optional host-provided `entityResolver` support for product-specific entities.
   Hosts can canonicalize workspaces, accounts, repositories, or other domain
   objects without adding language-specific entity templates to gmOS core.
@@ -612,8 +612,11 @@ tables.
 Use `cardinality: "single"` only for current-state beliefs where one active
 value should replace the previous one, such as a project's current owner,
 status, or next step. gmOS first resolves the subject into a canonical entity
-key; for example, `Atlas project`, `project:atlas`, and `Project Atlas` all
-converge to the same project entity. It then marks the previous active world
+key; for example, `project:atlas`, `project/atlas`, or subject `Atlas` with
+predicate `project.state` converge to a stable project entity. `repo:atlas` and
+`repository:atlas` normalize as repository entities, not project entities.
+Natural-language aliases such as "Atlas project" are host-specific and should
+come from `entityResolver`, not from gmOS core. It then marks the previous active world
 belief for the same `profileId + canonical subject + predicate` as
 `superseded` and removes its association projection from active reconstruction.
 Ordinary context search and active reconstruction also suppress source memories
