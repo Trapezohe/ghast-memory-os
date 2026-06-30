@@ -1,8 +1,11 @@
 # gmOS Architecture Guide
 
-gmOS is not a top-k vector memory wrapper. It is a local-first memory runtime
-that turns host events into evidence-backed memory, reconstructs relevant
-context, and keeps safety and forgetting gates enforceable.
+gmOS is not a top-k vector memory wrapper. It is a local-first Memory OS runtime
+kernel for personal agents: it turns host events into evidence-backed memory,
+maintains user-world state, reconstructs relevant context, and keeps safety and
+forgetting gates enforceable. The long-term product direction is second-brain
+and digital-twin infrastructure, while the current package remains a late-alpha
+runtime kernel rather than a mature digital twin.
 
 ## Data Flow
 
@@ -91,4 +94,3 @@ execution. gmOS owns memory policy, local persistence, reconstruction,
 diagnostics, and integration contracts. A host should integrate through public
 SDK, CLI, MCP, HTTP, or host adapter APIs and should not copy internal runtime
 logic.
-

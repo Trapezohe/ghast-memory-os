@@ -1,16 +1,50 @@
 # Ghast Memory OS
 
-Ghast Memory OS, or gmOS, is a local-first actionable user-world memory runtime
-for personal agents.
+Ghast Memory OS, or gmOS, is an open-source, local-first Memory OS for
+personal agents. It is built to help agents learn user experience over time,
+maintain a user-world model, reconstruct relevant context from evidence, respect
+privacy and forgetting, and gradually become a user's second brain and digital
+twin infrastructure.
+
+The current package is the late-alpha runtime kernel for that vision. It
+provides the SDK, CLI, MCP, HTTP, plaintext SQLite storage, evidence ledger,
+world beliefs, reconstructive recall, action policies, safety gates, release
+evidence, and benchmark harness needed for stable integration. It is not a
+finished digital twin product and it is not a vector-memory CRUD wrapper.
 
 This repository is the SDK/runtime extraction target for Ghast's memory system.
-It is not a vector-memory CRUD wrapper. The public path is:
+The public path is:
 
 Project docs: [API reference](./docs/API_REFERENCE.md),
 [integration guide](./docs/INTEGRATION_GUIDE.md),
 [architecture](./docs/ARCHITECTURE.md), [benchmarking](./docs/BENCHMARKING.md),
 [migration](./docs/MIGRATION.md), [contributing](./CONTRIBUTING.md),
 [security and privacy](./SECURITY.md), [release checklist](./RELEASE_CHECKLIST.md).
+
+## External Learning Posture
+
+gmOS should not rebuild agent memory in isolation. Low external benchmark scores
+are evidence about real capability gaps, not targets for dataset-specific
+patches. The project should continuously study strong open-source and publicly
+documented memory systems, then translate their useful mechanisms into gmOS'
+local-first architecture.
+
+Reference systems worth learning from include:
+
+- [Mem0](https://github.com/mem0ai/mem0): personalization-oriented memory
+  extraction, consolidation, retrieval, and agent memory lifecycle design.
+- [Graphiti by Zep](https://github.com/getzep/graphiti): temporal context
+  graphs, provenance, evolving facts, and hybrid semantic/keyword/graph search.
+- [LangMem](https://langchain-ai.github.io/langmem/): LLM-assisted memory
+  extraction, prompt/behavior refinement, and storage-agnostic memory
+  primitives.
+
+The adoption rule is strict: borrow proven ideas, not benchmark shortcuts. A
+borrowed pattern must become a general gmOS capability such as better
+extraction, entity grounding, temporal current/history state, reconstructive
+retrieval, failure feedback, or host adapter ergonomics. It must still preserve
+plaintext local SQLite by default, evidence-backed writes, read-path purity,
+forgetting semantics, and the no-benchmark-special-casing gate.
 
 ```ts
 import { createMemoryOS } from "@ghast/memory";
