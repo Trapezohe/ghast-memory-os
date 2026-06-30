@@ -2,10 +2,11 @@ name: CI
 
 on:
   pull_request:
-    # Do not run on every commit pushed to an open PR. Organization Actions
-    # minutes are billed, so routine iteration should rely on local gates and
-    # explicit workflow_dispatch re-runs when remote CI is needed.
-    types: [opened, reopened, ready_for_review]
+    # Organization Actions minutes are billed. Keep remote CI opt-in:
+    # - run it manually with workflow_dispatch; or
+    # - add the `run-ci` / `full-ci` PR label when a remote matrix is needed.
+    # It does not run on push, tag push, PR open, PR synchronize, or ready_for_review.
+    types: [labeled]
     branches:
       - main
     paths:
@@ -32,6 +33,15 @@ permissions:
 jobs:
   test:
     name: Node ${{ matrix.node-version }} / ${{ matrix.os }}
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event_name == 'pull_request' &&
+          github.event.action == 'labeled' &&
+          (github.event.label.name == 'run-ci' || github.event.label.name == 'full-ci')
+        )
+      }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
