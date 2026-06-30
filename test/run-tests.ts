@@ -5615,6 +5615,13 @@ await hostSafetyMemory.commitOutcome({
   status: "failed",
   summary: "HostFailureOnlySensitive failed summary.",
 });
+await hostSafetyMemory.observeWithReport({
+  type: "task.failed",
+  profileId: "host_safety",
+  taskId: "host-observe-task-only-sensitive",
+  objective: "HostTaskOnlySensitive observe failed objective",
+  summary: "HostTaskOnlySensitive observe failed summary.",
+});
 const hostCrossSurfaceFailures = await hostSafetyStore.listFailures?.({
   profileId: "host_safety",
   failureKind: "task_failure",
