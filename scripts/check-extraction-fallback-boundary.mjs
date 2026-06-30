@@ -68,6 +68,16 @@ const publicObserveSemanticPatterns = [
   /(?:records?|observes?)\s+(?:a\s+)?preference\s+(?:through|via)\s+[`'"]?memory\.observe/iu,
 ];
 
+const publicBuiltInExtractorClaimPatterns = [
+  /built-in\s+default\s+extractor/iu,
+  /built-in\s+extractor/iu,
+  /built-in\s+safe\s+boundary\s+rules?/iu,
+  /safe\s+rule\s+candidates?/iu,
+  /narrow\s+safe\s+rule/iu,
+  /rule\s+fallback\s+is\s+limited/iu,
+  /observe\(\)\s+.*built-in/iu,
+];
+
 function publicObserveSemanticExampleMatches() {
   const matches = [];
   for (const relativePath of publicObserveBoundaryFiles) {
@@ -87,6 +97,21 @@ function publicObserveSemanticExampleMatches() {
 }
 
 const publicObserveSemanticExamples = publicObserveSemanticExampleMatches();
+
+function publicBuiltInExtractorClaimMatches() {
+  const matches = [];
+  for (const relativePath of publicObserveBoundaryFiles) {
+    const content = read(relativePath);
+    for (const pattern of publicBuiltInExtractorClaimPatterns) {
+      if (!pattern.test(content)) continue;
+      matches.push(relativePath);
+      break;
+    }
+  }
+  return matches;
+}
+
+const publicBuiltInExtractorClaims = publicBuiltInExtractorClaimMatches();
 
 const checks = [
   {
@@ -174,6 +199,15 @@ const checks = [
       "Public docs, examples, and CLI help must use observe for ordinary events only; durable semantic memory must use add() or a configured structured extractor." +
       (publicObserveSemanticExamples.length > 0
         ? ` Matched: ${publicObserveSemanticExamples.join(", ")}.`
+        : ""),
+  },
+  {
+    name: "public-docs-do-not-claim-built-in-semantic-extractor",
+    pass: publicBuiltInExtractorClaims.length === 0,
+    detail:
+      "Public docs, examples, and CLI help must not imply a built-in/default/safe semantic extractor exists." +
+      (publicBuiltInExtractorClaims.length > 0
+        ? ` Matched: ${publicBuiltInExtractorClaims.join(", ")}.`
         : ""),
   },
 ];

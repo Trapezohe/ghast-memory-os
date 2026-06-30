@@ -102,9 +102,9 @@ const prepared = await memory.prepareTurn({
 - gmOS is still a late-alpha SDK/runtime, not a stable 1.0 Agent Memory OS.
 - Local SQLite is plaintext by design. gmOS does not provide database
   encryption, cloud custody, vault integration, or hosted synchronization.
-- The built-in default extractor is intentionally narrow and should not be
-  treated as production-grade broad semantic extraction. Hosts should provide a
-  structured extractor for durable facts, preferences, procedures, people, and
+- gmOS does not ship a production default semantic extractor. Hosts should
+  provide a structured extractor, or explicitly import known memories with
+  `add()`, for durable facts, preferences, boundaries, procedures, people, and
   project state.
 - External LongMemEval and LoCoMo numbers are deterministic local adapter
   baselines for engineering comparison. Official benchmark claims require the
@@ -383,6 +383,17 @@ boundary.
 you want the planner to spend the full step budget and inspect additional
 branches. `evidenceConvergenceThreshold` can be raised for stricter release
 gates or lowered for exploratory tooling.
+Hosts that already know the turn intent can pass `reconstructionIntent` with
+structured `queryCues`, `expectedTags`, and required tag groups. gmOS uses those
+host-owned signals before falling back to language keyword inference, so
+integrations do not need to grow language-specific phrase lists just to request
+procedure, boundary, preference, or current-state evidence.
+Pass only content-safe retrieval cues in `queryCues`; do not pass private route
+ids, debug labels, or host-only control names because planner traces can expose
+selected cues to diagnostics.
+`recallPurpose: "history"` and `recallPurpose: "context"` provide the same explicit boundary for
+current/history state; `temporalMode` remains the CLI/MCP-facing convenience
+option.
 `explainEvidencePath()` exposes the same reconstructed cue-tag-content evidence
 path as an audit object without returning `contextBlock` or a prompt-ready
 memory list. It is intended for host diagnostics, agent self-checks, Memory Gym

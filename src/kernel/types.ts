@@ -92,6 +92,8 @@ export interface PrepareTurnInput {
     evidenceConvergenceThreshold?: number | undefined;
     includeTemporalMetadata?: boolean | undefined;
     temporalMode?: "auto" | "current" | "history" | undefined;
+    recallPurpose?: ReconstructionRecallPurpose | undefined;
+    reconstructionIntent?: ReconstructionIntentHint | undefined;
   } | undefined;
 }
 
@@ -290,6 +292,19 @@ export interface PreparedTurn {
   };
 }
 
+export type ReconstructionRecallPurpose = "context" | "history";
+
+export interface ReconstructionIntentTagGroupHint {
+  name?: string | undefined;
+  tags: string[];
+}
+
+export interface ReconstructionIntentHint {
+  expectedTags?: string[] | undefined;
+  requiredTagGroups?: ReconstructionIntentTagGroupHint[] | undefined;
+  queryCues?: string[] | undefined;
+}
+
 export interface ReconstructContextInput {
   profileId?: string | undefined;
   query?: string | undefined;
@@ -304,6 +319,8 @@ export interface ReconstructContextInput {
   evidenceConvergenceThreshold?: number | undefined;
   includeTemporalMetadata?: boolean | undefined;
   temporalMode?: "auto" | "current" | "history" | undefined;
+  recallPurpose?: ReconstructionRecallPurpose | undefined;
+  reconstructionIntent?: ReconstructionIntentHint | undefined;
 }
 
 export interface ExplainEvidencePathInput extends ReconstructContextInput {

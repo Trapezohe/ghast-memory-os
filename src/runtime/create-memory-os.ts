@@ -1072,6 +1072,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
               evidenceConvergenceThreshold: input.reconstruction.evidenceConvergenceThreshold,
               includeTemporalMetadata: input.reconstruction.includeTemporalMetadata,
               temporalMode: input.reconstruction.temporalMode,
+              recallPurpose: input.reconstruction.recallPurpose,
+              reconstructionIntent: input.reconstruction.reconstructionIntent,
             },
           })
         : undefined;

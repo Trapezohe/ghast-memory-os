@@ -19,6 +19,8 @@ import type {
   ReconstructedPlannerStep,
   ReconstructedPlannerTrace,
   ReconstructContextInput,
+  ReconstructionIntentHint,
+  ReconstructionRecallPurpose,
   TurnMessage,
 } from "./types.js";
 
@@ -121,8 +123,6 @@ interface ReconstructionIntent {
   reason: string;
 }
 
-type ReconstructionRecallPurpose = "context" | "history";
-
 interface FrontierCue {
   cue: string;
   priority: number;
@@ -174,6 +174,34 @@ function queryCueSet(query: string): Set<string> {
 function includesAny(text: string, needles: string[]): boolean {
   const normalized = normalizedText(text);
   return needles.some((needle) => normalized.includes(normalizedText(needle)));
+}
+
+function normalizedIntentToken(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/gu, "_")
+    .slice(0, 80);
+}
+
+function normalizedIntentTokens(values: string[] | undefined, max: number): string[] {
+  if (!Array.isArray(values)) return [];
+  return uniqueStrings(
+    values
+      .filter((value): value is string => typeof value === "string")
+      .map(normalizedIntentToken)
+      .filter(Boolean),
+  ).slice(0, max);
+}
+
+function normalizedCueHints(values: string[] | undefined, max: number): string[] {
+  if (!Array.isArray(values)) return [];
+  return uniqueStrings(
+    values
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter(Boolean),
+  ).slice(0, max);
 }
 
 function hasHistoricalUsedToCue(query: string): boolean {
@@ -400,14 +428,79 @@ function evidenceConvergenceForPaths(input: {
   };
 }
 
-function inferReconstructionIntent(query: string): ReconstructionIntent {
+function addIntentGroup(
+  requiredTagGroups: ReconstructionIntent["requiredTagGroups"],
+  expectedTags: Set<string>,
+  name: string,
+  tags: string[],
+): void {
+  const tagSet = new Set(normalizedIntentTokens(tags, 24));
+  if (tagSet.size === 0) return;
+  requiredTagGroups.push({ name, tags: tagSet });
+  for (const tag of tagSet) expectedTags.add(tag);
+}
+
+function publicIntentGroupName(name: string | undefined, index: number): string {
+  const normalized = normalizedIntentToken(name ?? "");
+  if (
+    normalized === "procedure_or_next_step" ||
+    normalized === "current_state" ||
+    normalized === "boundary" ||
+    normalized === "preference"
+  ) {
+    return normalized;
+  }
+  return `structured_intent_${index + 1}`;
+}
+
+function explicitReconstructionIntent(
+  query: string,
+  hint: ReconstructionIntentHint | undefined,
+): ReconstructionIntent | null {
+  if (!hint) return null;
+  const expectedTags = new Set(normalizedIntentTokens(hint.expectedTags, 32));
+  const requiredTagGroups: ReconstructionIntent["requiredTagGroups"] = [];
+  for (const [index, group] of (hint.requiredTagGroups ?? []).slice(0, 12).entries()) {
+    if (!group || !Array.isArray(group.tags)) continue;
+    addIntentGroup(
+      requiredTagGroups,
+      expectedTags,
+      publicIntentGroupName(group.name, index),
+      group.tags,
+    );
+  }
+  const explicitQueryCues = normalizedCueHints(hint.queryCues, 32);
+  if (
+    expectedTags.size === 0 &&
+    requiredTagGroups.length === 0 &&
+    explicitQueryCues.length === 0
+  ) {
+    return null;
+  }
+  return {
+    expectedTags,
+    requiredTagGroups,
+    queryCues: new Set([...queryCueSet(query), ...explicitQueryCues]),
+    reason:
+      requiredTagGroups.length > 0
+        ? `structured:${requiredTagGroups.map((group) => group.name).join("+")}`
+        : expectedTags.size > 0
+          ? "structured:expected_tags"
+          : "structured:query_cues",
+  };
+}
+
+function inferReconstructionIntent(
+  query: string,
+  hint?: ReconstructionIntentHint | undefined,
+): ReconstructionIntent {
+  const explicit = explicitReconstructionIntent(query, hint);
+  if (explicit) return explicit;
   const expectedTags = new Set<string>();
   const requiredTagGroups: ReconstructionIntent["requiredTagGroups"] = [];
   const reasons: string[] = [];
   function addGroup(name: string, tags: string[]): void {
-    const tagSet = new Set(tags);
-    requiredTagGroups.push({ name, tags: tagSet });
-    for (const tag of tagSet) expectedTags.add(tag);
+    addIntentGroup(requiredTagGroups, expectedTags, name, tags);
   }
   if (
     includesAny(query, [
@@ -453,7 +546,9 @@ function inferReconstructionIntent(query: string): ReconstructionIntent {
 function inferTemporalRecallPurpose(
   query: string,
   temporalMode: ReconstructContextInput["temporalMode"],
+  recallPurpose?: ReconstructContextInput["recallPurpose"],
 ): ReconstructionRecallPurpose {
+  if (recallPurpose === "history" || recallPurpose === "context") return recallPurpose;
   if (temporalMode === "history") return "history";
   if (temporalMode === "current") return "context";
   if (
@@ -535,6 +630,16 @@ function seedFrontier(query: string, intent: ReconstructionIntent): FrontierCue[
     };
   });
   const existing = new Set(frontier.map((cue) => associationCueKey(cue.cue)));
+  for (const queryCue of intent.queryCues) {
+    const key = associationCueKey(queryCue);
+    if (!key || existing.has(key)) continue;
+    existing.add(key);
+    frontier.push({
+      cue: queryCue,
+      priority: 9,
+      reason: "initial_structured_query_cue",
+    });
+  }
   for (const tag of intent.expectedTags) {
     const key = associationCueKey(tag);
     if (!key || existing.has(key)) continue;
@@ -1197,8 +1302,12 @@ export async function reconstructMemoryContext(input: {
     0.35,
     0.95,
   );
-  const intent = inferReconstructionIntent(query);
-  const recallPurpose = inferTemporalRecallPurpose(query, input.request.temporalMode);
+  const intent = inferReconstructionIntent(query, input.request.reconstructionIntent);
+  const recallPurpose = inferTemporalRecallPurpose(
+    query,
+    input.request.temporalMode,
+    input.request.recallPurpose,
+  );
   const targetMemoryCount = recallPurpose === "history" ? Math.min(4, maxMemories) : Math.min(2, maxMemories);
   if (!input.store.searchAssociations) {
     return fallbackReconstruction({

@@ -2469,6 +2469,12 @@ const forcedHistoricalProjectState = await extractorMemory.reconstructContext({
   temporalMode: "history",
 });
 assert.match(forcedHistoricalProjectState.contextBlock, /migration probe/);
+const explicitHistoryPurposeProjectState = await extractorMemory.reconstructContext({
+  profileId: "extractor",
+  query: "Helio state",
+  recallPurpose: "history",
+});
+assert.match(explicitHistoryPurposeProjectState.contextBlock, /migration probe/);
 const forcedCurrentProjectState = await extractorMemory.reconstructContext({
   profileId: "extractor",
   query: "What was Helio previous state?",
@@ -13839,6 +13845,61 @@ assert.deepEqual(
   multiIntentReconstructed.stats.evidenceConvergence?.missingRequiredIntentGroups,
   [],
 );
+const structuredIntentReconstructed = await reconstructionMemory.reconstructContext({
+  profileId: "recon",
+  query: "packet request",
+  reconstructionIntent: {
+    queryCues: ["Helio"],
+    requiredTagGroups: [
+      {
+        name: "procedure_or_next_step",
+        tags: ["procedure", "task_trajectory", "project.state", "world_belief"],
+      },
+      { name: "boundary", tags: ["boundary", "do_not_push"] },
+    ],
+  },
+  maxSteps: 4,
+  maxBranch: 6,
+  maxMemories: 6,
+});
+assert.match(structuredIntentReconstructed.contextBlock, /Helio 项目推进时先写复现报告/);
+assert.match(structuredIntentReconstructed.contextBlock, /不要主动催促用户/);
+assert.match(structuredIntentReconstructed.plannerTrace?.intentReason ?? "", /structured:/);
+assert.equal(
+  structuredIntentReconstructed.stats.evidenceConvergence?.requiredIntentGroupCount,
+  2,
+);
+assert.equal(
+  structuredIntentReconstructed.stats.evidenceConvergence?.coveredIntentGroupCount,
+  2,
+);
+assert.deepEqual(
+  structuredIntentReconstructed.stats.evidenceConvergence?.missingRequiredIntentGroups,
+  [],
+);
+const structuredIntentShadow = await reconstructionMemory.prepareTurn({
+  profileId: "recon",
+  messages: [{ role: "user", content: "packet request" }],
+  reconstruction: {
+    mode: "shadow",
+    reconstructionIntent: {
+      queryCues: ["Helio"],
+      requiredTagGroups: [
+        {
+          name: "procedure_or_next_step",
+          tags: ["procedure", "task_trajectory", "project.state", "world_belief"],
+        },
+        { name: "boundary", tags: ["boundary", "do_not_push"] },
+      ],
+    },
+    maxSteps: 4,
+    maxBranch: 6,
+    maxMemories: 6,
+  },
+});
+assert.match(structuredIntentShadow.reconstruction?.contextBlock ?? "", /Helio 项目推进时先写复现报告/);
+assert.match(structuredIntentShadow.reconstruction?.contextBlock ?? "", /不要主动催促用户/);
+assert.match(structuredIntentShadow.reconstruction?.plannerTrace?.intentReason ?? "", /structured:/);
 const exhaustiveReconstructed = await reconstructionMemory.reconstructContext({
   profileId: "recon",
   query: "我之前说的那个计划，先做什么？",

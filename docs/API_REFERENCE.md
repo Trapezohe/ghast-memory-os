@@ -87,6 +87,16 @@ SDK, OpenAI Agents SDK, or any other agent runtime. It wraps the same public
 gmOS methods: `observe`, `prepareTurn`, `reconstructContext`, `commitOutcome`,
 `recordFeedback`, and `forget`.
 
+Advanced hosts can pass `reconstructionIntent` to `reconstructContext()` or
+shadow `prepareTurn()` reconstruction when the host/controller already knows the
+turn needs procedure, boundary, preference, or current-state evidence. These
+structured `queryCues`, `expectedTags`, and required tag groups take precedence
+over gmOS' language-keyword fallback. Use `recallPurpose: "history"` or
+`"context"` when the host already knows whether the turn asks for historical or
+current state. `queryCues` should be content-safe retrieval cues, not private
+route ids, debug labels, or host-only control names, because planner traces can
+surface selected cues to diagnostics.
+
 ## CLI
 
 The npm package exposes two binaries:
