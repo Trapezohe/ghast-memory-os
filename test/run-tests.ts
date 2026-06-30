@@ -13886,6 +13886,7 @@ const longStructuredCue = "LongCueNormalValue-" + "x".repeat(96);
 const cappedStructuredCue = longStructuredCue.slice(0, 80).toLowerCase();
 const internalRouteCue = "HostRoute-Internal-Cobalt-777";
 const internalRouteTag = "host.internal.route.tag.cobalt";
+const internalRoutePublicQuery = "please open the routed packet";
 const internalRouteLeakPattern =
   /HostRoute-Internal-Cobalt-777|host\.internal\.route\.tag\.cobalt|hostroute|internal|777/i;
 const structuredIntentReconstructed = await reconstructionMemory.reconstructContext({
@@ -13973,10 +13974,11 @@ await reconstructionMemory.add({
   scope: internalRouteCue,
   content: "Cobalt checklist is the public answer for the selected working set.",
   confidence: 0.9,
+  metadata: { predicate: internalRouteTag },
 });
 const internalRouteReconstructed = await reconstructionMemory.reconstructContext({
   profileId: "recon",
-  query: "please reconstruct the selected working set",
+  query: internalRoutePublicQuery,
   reconstructionIntent: {
     queryCues: [internalRouteCue],
     expectedTags: [internalRouteTag],
@@ -13989,9 +13991,32 @@ assert.match(internalRouteReconstructed.contextBlock, /Cobalt checklist/);
 const internalRouteJson = JSON.stringify(internalRouteReconstructed);
 assert.doesNotMatch(internalRouteJson, internalRouteLeakPattern);
 assert.equal(
+  internalRouteReconstructed.paths.some((path) => path.cue === "retrieval_hint" && path.tag === "fact"),
+  true,
+);
+assert.equal(
   internalRouteReconstructed.plannerTrace?.initialCues.includes("retrieval_hint"),
   true,
 );
+const internalRouteEvidencePath = await reconstructionMemory.explainEvidencePath({
+  profileId: "recon",
+  query: internalRoutePublicQuery,
+  reconstructionIntent: {
+    queryCues: [internalRouteCue],
+    expectedTags: [internalRouteTag],
+  },
+  includePlannerTrace: true,
+  maxSteps: 4,
+  maxBranch: 6,
+  maxMemories: 3,
+});
+assert.match(JSON.stringify(internalRouteEvidencePath.paths), /Cobalt checklist/);
+assert.match(JSON.stringify(internalRouteEvidencePath), /retrieval_hint/);
+assert.equal(
+  internalRouteEvidencePath.paths.some((path) => path.cue === "retrieval_hint" && path.tag === "fact"),
+  true,
+);
+assert.doesNotMatch(JSON.stringify(internalRouteEvidencePath), internalRouteLeakPattern);
 const exhaustiveReconstructed = await reconstructionMemory.reconstructContext({
   profileId: "recon",
   query: "我之前说的那个计划，先做什么？",
@@ -14248,7 +14273,7 @@ const mcpPrivateRouteReconstruct = await createMemoryMcpServer(reconstructionMem
   "memory.reconstruct_context",
   {
     profileId: "recon",
-    text: "please reconstruct the selected working set",
+    text: internalRoutePublicQuery,
     reconstructionIntent: privateRouteIntent,
     maxSteps: 4,
     maxBranch: 6,
@@ -14293,7 +14318,7 @@ const mcpPrivateRouteExplainPath = await createMemoryMcpServer(reconstructionMem
   "memory.explain_evidence_path",
   {
     profileId: "recon",
-    text: "please reconstruct the selected working set",
+    text: internalRoutePublicQuery,
     reconstructionIntent: privateRouteIntent,
     includePlannerTrace: true,
     maxSteps: 4,
@@ -14373,7 +14398,7 @@ const cliPrivateRouteReconstruct = spawnSync(
     "--profile",
     "recon",
     "--text",
-    "please reconstruct the selected working set",
+    internalRoutePublicQuery,
     "--reconstruction-intent-json",
     cliPrivateRouteIntent,
     "--max-steps",
@@ -14435,7 +14460,7 @@ const cliPrivateRouteExplainPath = spawnSync(
     "--profile",
     "recon",
     "--text",
-    "please reconstruct the selected working set",
+    internalRoutePublicQuery,
     "--reconstruction-intent-json",
     cliPrivateRouteIntent,
     "--include-trace",
