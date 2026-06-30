@@ -4580,6 +4580,14 @@ const normalDurableObservationReport = await rulesReportMemory.observeWithReport
   content: "Caroline: I went camping yesterday.",
 });
 assert.equal(normalDurableObservationReport.extraction?.acceptedCandidateCount, 1);
+const normalDurableObservationDecision =
+  normalDurableObservationReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  );
+assert.equal(normalDurableObservationDecision?.candidate.predicate, "person.event");
+assert.equal(normalDurableObservationDecision?.candidate.subject, "person:Caroline");
+assert.equal(normalDurableObservationDecision?.candidate.object, "went camping yesterday");
+assert.equal(normalDurableObservationDecision?.candidate.metadata?.rule, "first_person_event");
 assert.equal(normalDurableObservationReport.memoryIds.length, 1);
 assert.equal(normalDurableObservationReport.worldBeliefIds.length, 1);
 const expandedDurableObservationReport = await rulesReportMemory.observeWithReport({
@@ -4607,6 +4615,13 @@ const explicitEventTimeObservationReport = await rulesReportMemory.observeWithRe
   content: "Caroline: I went camping on 2024-06-05.",
 });
 assert.equal(explicitEventTimeObservationReport.extraction?.acceptedCandidateCount, 1);
+const explicitEventTimeObservationDecision =
+  explicitEventTimeObservationReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  );
+assert.equal(explicitEventTimeObservationDecision?.candidate.predicate, "person.event");
+assert.equal(explicitEventTimeObservationDecision?.candidate.object, "went camping on 2024-06-05");
+assert.equal(explicitEventTimeObservationDecision?.candidate.metadata?.rule, "first_person_event");
 assert.equal(explicitEventTimeObservationReport.memoryIds.length, 1);
 assert.equal(explicitEventTimeObservationReport.worldBeliefIds.length, 1);
 const speakerAttributeReport = await rulesReportMemory.observeWithReport({
@@ -6669,7 +6684,7 @@ try {
     | { subject: string; predicate: string; object: string }
     | undefined;
   assert.equal(normalDurableObservationBelief?.subject, "person:caroline");
-  assert.equal(normalDurableObservationBelief?.predicate, "user.fact");
+  assert.equal(normalDurableObservationBelief?.predicate, "person.event");
   assert.match(normalDurableObservationBelief?.object ?? "", /camping/);
   const explicitEventTimeMemory = speakerAttributeDb
     .prepare(
@@ -7115,6 +7130,23 @@ const durableMixedFirstPersonDecision = durableMixedFirstPersonReport.extraction
 assert.equal(durableMixedFirstPersonReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(durableMixedFirstPersonDecision?.candidate.predicate, "user.fact");
 assert.notEqual(durableMixedFirstPersonDecision?.candidate.subject, "person:Blair");
+const durableMixedFirstPersonReverseReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Morgan: I and Blair painted a sunrise in 2022 after the charity race.",
+  metadata: {
+    speaker: "Morgan",
+    participants: ["Morgan", "Blair"],
+  },
+});
+const durableMixedFirstPersonReverseDecision =
+  durableMixedFirstPersonReverseReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  );
+assert.equal(durableMixedFirstPersonReverseReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(durableMixedFirstPersonReverseDecision?.candidate.predicate, "user.fact");
+assert.notEqual(durableMixedFirstPersonReverseDecision?.candidate.subject, "person:Morgan");
 const durableNonPersonEventReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",

@@ -1187,6 +1187,36 @@ function namedPersonEventCandidate(
   };
 }
 
+function firstPersonEventCandidate(
+  text: string,
+  metadata?: Record<string, unknown> | undefined,
+): MemoryExtractionCandidate | null {
+  const utterance = stripSpeakerPrefix(text);
+  if (isQuestionLike(utterance)) return null;
+  if (classifySensitivity(utterance) !== "normal") return null;
+  const subjectFields = personSubjectFieldsForFirstPerson(text, metadata);
+  if (!subjectFields.subject) return null;
+  const eventMatch = /^\s*I(?:'ve|’ve|\s+have)?\s+(.{2,180}?)\s*\.?\s*$/iu.exec(utterance);
+  const event = projectBeliefObject(eventMatch?.[1]);
+  if (!event || !hasDurableTemporalSignal(event) || !hasPersonalWorldEventSignal(event)) {
+    return null;
+  }
+  const coordinatedNamedPerson = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}`;
+  if (new RegExp(String.raw`^\s*and\s+${coordinatedNamedPerson}\b`, "u").test(event)) {
+    return null;
+  }
+  return {
+    kind: "fact",
+    content: text,
+    confidence: 0.56,
+    predicate: "person.event",
+    ...subjectFields,
+    object: event,
+    cardinality: "multi",
+    metadata: { rule: "first_person_event" },
+  };
+}
+
 const ENGLISH_PET_RELATION_PATTERN = String.raw`[Dd]og|[Cc]at|[Pp]et`;
 const ENGLISH_HUMAN_RELATION_PATTERN =
   String.raw`[Dd]aughter|[Ss]on|[Cc]hild|[Kk]id|[Pp]artner|[Ss]pouse|[Ww]ife|[Hh]usband|[Mm]other|[Mm]om|[Mm]um|[Ff]ather|[Dd]ad|[Pp]arent|[Bb]rother|[Ss]ister|[Ss]ibling|[Ff]riend|[Bb]est\s+[Ff]riend|[Rr]oommate|[Hh]ousemate|[Cc]olleague|[Cc]oworker|[Cc]o-worker|[Tt]eammate|[Mm]anager|[Bb]oss|[Bb]oyfriend|[Gg]irlfriend`;
@@ -1654,6 +1684,8 @@ export function extractRuleMemoryCandidates(
 
   const attributeCandidate = firstPersonAttributeCandidate(text, metadata);
   if (attributeCandidate) return [attributeCandidate];
+  const firstPersonEvent = firstPersonEventCandidate(text, metadata);
+  if (firstPersonEvent) return [firstPersonEvent];
   if (malformedFirstPersonStructuredAttribute(text)) return [];
   if (nonSpeakerPrefixedFirstPersonToolUse(text)) return [];
   if (/^\s*my\s+(?:current\s+)?(?:role|job|profession|title)\s+(?:is|=)\s+(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(stripSpeakerPrefix(text))) return [];
