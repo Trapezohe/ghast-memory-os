@@ -580,6 +580,26 @@ function firstPersonAttributeCandidate(
   const utterance = stripSpeakerPrefix(text);
   if (isQuestionLike(utterance)) return null;
   const personSubject = personSubjectFieldsForFirstPerson(text, metadata);
+  const chineseCurrentTool = [
+    /^\s*我的\s*(?:当前|现在)\s*(?:[\p{Script=Han}\p{L}\p{N}_ -]{0,30}\s*)?(工具|应用|软件|编辑器|浏览器|日历|数据库|IDE|ide)\s*(?:是|为|=)\s*(.{1,80}?)\s*[。.!]?\s*$/u,
+    /^\s*我(?:当前|现在)的\s*(工具|应用|软件|编辑器|浏览器|日历|数据库|IDE|ide)\s*(?:是|为|=)\s*(.{1,80}?)\s*[。.!]?\s*$/u,
+  ].map((pattern) => pattern.exec(utterance)).find((match) => match !== null);
+  if (chineseCurrentTool) {
+    const object = stableToolObject(chineseCurrentTool[2]);
+    if (object) {
+      return {
+        kind: "fact",
+        content: text,
+        confidence: 0.66,
+        predicate: "person.tool",
+        object,
+        cardinality: "single",
+        ...personSubject,
+        metadata: { rule: "first_person_current_tool" },
+      };
+    }
+    return null;
+  }
   const currentTool = /^\s*my\s+current\s+(?:[\p{L}\p{N}_ -]{0,60}\s+)?(?:tool|app|application|editor|ide|browser|calendar|database)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
     utterance,
   );

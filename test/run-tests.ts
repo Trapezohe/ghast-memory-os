@@ -8191,6 +8191,64 @@ const actuallyPrefixedCurrentToolCandidate =
 assert.equal(actuallyPrefixedCurrentToolCandidate?.predicate, "person.tool");
 assert.equal(actuallyPrefixedCurrentToolCandidate?.object, "Arc");
 assert.equal(actuallyPrefixedCurrentToolCandidate?.content, "my current browser is Arc.");
+const chineseCorrectionCurrentToolReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "更正：我的当前工具是 Cursor。",
+});
+assert.equal(chineseCorrectionCurrentToolReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(chineseCorrectionCurrentToolReport.memoryIds.length, 1);
+assert.equal(chineseCorrectionCurrentToolReport.worldBeliefIds.length, 1);
+const chineseCorrectionCurrentToolCandidate =
+  chineseCorrectionCurrentToolReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  )?.candidate;
+assert.equal(chineseCorrectionCurrentToolCandidate?.predicate, "person.tool");
+assert.equal(chineseCorrectionCurrentToolCandidate?.object, "Cursor");
+assert.equal(chineseCorrectionCurrentToolCandidate?.cardinality, "single");
+assert.equal(chineseCorrectionCurrentToolCandidate?.content, "我的当前工具是 Cursor。");
+const chineseCorrectionCurrentToolMemory = await rulesReportMemory.get({
+  profileId: "rules_report",
+  id: chineseCorrectionCurrentToolReport.memoryIds[0]!,
+});
+assert.equal(chineseCorrectionCurrentToolMemory?.content, "我的当前工具是 Cursor。");
+const chinesePossessiveCurrentToolReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "我当前的浏览器是 Arc。",
+});
+assert.equal(chinesePossessiveCurrentToolReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(chinesePossessiveCurrentToolReport.memoryIds.length, 1);
+assert.equal(chinesePossessiveCurrentToolReport.worldBeliefIds.length, 1);
+const chinesePossessiveCurrentToolCandidate =
+  chinesePossessiveCurrentToolReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  )?.candidate;
+assert.equal(chinesePossessiveCurrentToolCandidate?.predicate, "person.tool");
+assert.equal(chinesePossessiveCurrentToolCandidate?.object, "Arc");
+assert.equal(chinesePossessiveCurrentToolCandidate?.cardinality, "single");
+assert.equal(chinesePossessiveCurrentToolCandidate?.content, "我当前的浏览器是 Arc。");
+const chinesePossessiveCurrentToolMemory = await rulesReportMemory.get({
+  profileId: "rules_report",
+  id: chinesePossessiveCurrentToolReport.memoryIds[0]!,
+});
+assert.equal(chinesePossessiveCurrentToolMemory?.content, "我当前的浏览器是 Arc。");
+const chineseGeneralToolUseReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "我用 Cursor 做开发。",
+});
+assert.equal(chineseGeneralToolUseReport.extraction?.acceptedCandidateCount, 1);
+const chineseGeneralToolUseCandidate =
+  chineseGeneralToolUseReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  )?.candidate;
+assert.equal(chineseGeneralToolUseCandidate?.predicate, "user.tool");
+assert.equal(chineseGeneralToolUseCandidate?.object, undefined);
+assert.equal(chineseGeneralToolUseCandidate?.cardinality, undefined);
 const speakerCorrectionLeadInReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
