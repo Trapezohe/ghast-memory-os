@@ -8146,6 +8146,138 @@ const durableNonPersonEventReport = await rulesReportMemory.observeWithReport({
 });
 assert.equal(durableNonPersonEventReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(durableNonPersonEventReport.memoryIds.length, 0);
+const durableChineseThirdPersonEventCandidate = extractRuleMemoryCandidates("李雷去年去了京都。", {
+  participants: ["Morgan", "李雷"],
+})[0];
+assert.equal(durableChineseThirdPersonEventCandidate?.predicate, "person.event");
+assert.equal(durableChineseThirdPersonEventCandidate?.subject, "person:李雷");
+assert.equal(durableChineseThirdPersonEventCandidate?.object, "去年去了京都");
+assert.equal(durableChineseThirdPersonEventCandidate?.metadata?.rule, "named_person_event");
+assert.equal(extractRuleMemoryCandidates("李雷去年去了京都。").length, 0);
+assert.equal(
+  extractRuleMemoryCandidates("李雷去年去了京都。", {
+    participants: ["Morgan", "韩梅梅"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("李雷去年去了京都。", {
+    participants: ["Morgan", "李"],
+  }).length,
+  0,
+);
+const durableChineseAliasEventCandidate = extractRuleMemoryCandidates("李雷去年去了京都。", {
+  speakerAliases: ["李雷"],
+})[0];
+assert.equal(durableChineseAliasEventCandidate?.predicate, "person.event");
+assert.equal(durableChineseAliasEventCandidate?.subject, "person:李雷");
+assert.equal(durableChineseAliasEventCandidate?.object, "去年去了京都");
+assert.equal(
+  extractRuleMemoryCandidates("李雷去年去了京都。", {
+    speakerAliases: ["李"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("微信去年去了京都。", {
+    participants: ["Morgan", "微信"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("飞书去年去了京都。", {
+    participants: ["Morgan", "飞书"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("项目去年去了京都。", {
+    participants: ["Morgan", "项目"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("李雷的微信去年去了京都。", {
+    participants: ["Morgan", "李雷"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("李雷项目去年去了京都。", {
+    participants: ["Morgan", "李雷"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("李雷工具去年去了京都。", {
+    participants: ["Morgan", "李雷"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("李雷 和韩梅梅去年去了京都。", {
+    participants: ["Morgan", "李雷", "韩梅梅"],
+  }).length,
+  0,
+);
+const durableChineseMixedFirstPersonEventCandidate = extractRuleMemoryCandidates("李雷和我去年去了京都。", {
+  participants: ["Morgan", "李雷"],
+})[0];
+assert.equal(durableChineseMixedFirstPersonEventCandidate?.predicate, "user.fact");
+assert.notEqual(durableChineseMixedFirstPersonEventCandidate?.subject, "person:李雷");
+assert.equal(
+  extractRuleMemoryCandidates("李雷去年去了京都吗？", {
+    participants: ["Morgan", "李雷"],
+  }).length,
+  0,
+);
+const durableChineseThirdPersonEventReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Morgan: 李雷去年去了京都。",
+  metadata: {
+    speaker: "Morgan",
+    participants: ["Morgan", "李雷"],
+  },
+});
+const durableChineseThirdPersonEventDecision =
+  durableChineseThirdPersonEventReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  );
+assert.equal(durableChineseThirdPersonEventReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(durableChineseThirdPersonEventDecision?.candidate.predicate, "person.event");
+assert.equal(durableChineseThirdPersonEventDecision?.candidate.subject, "person:李雷");
+assert.equal(durableChineseThirdPersonEventDecision?.candidate.object, "去年去了京都");
+assert.equal(durableChineseThirdPersonEventDecision?.candidate.metadata?.rule, "named_person_event");
+assert.equal(durableChineseThirdPersonEventReport.memoryIds.length, 1);
+assert.equal(durableChineseThirdPersonEventReport.worldBeliefIds.length, 1);
+const durableChineseNonPersonEventReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Morgan: 微信去年去了京都。",
+  metadata: {
+    speaker: "Morgan",
+    participants: ["Morgan", "微信"],
+  },
+});
+assert.equal(durableChineseNonPersonEventReport.extraction?.acceptedCandidateCount ?? 0, 0);
+assert.equal(durableChineseNonPersonEventReport.memoryIds.length, 0);
+assert.equal(durableChineseNonPersonEventReport.worldBeliefIds.length, 0);
+const durableChineseUnsafeRemainderEventReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Morgan: 李雷的微信去年去了京都。",
+  metadata: {
+    speaker: "Morgan",
+    participants: ["Morgan", "李雷"],
+  },
+});
+assert.equal(durableChineseUnsafeRemainderEventReport.extraction?.acceptedCandidateCount ?? 0, 0);
+assert.equal(durableChineseUnsafeRemainderEventReport.memoryIds.length, 0);
+assert.equal(durableChineseUnsafeRemainderEventReport.worldBeliefIds.length, 0);
 const durableThirdPersonReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -8287,6 +8419,19 @@ try {
   assert.equal(eventBeliefs.every((belief) => belief.status === "active"), true);
   assert.equal(eventBeliefs.some((belief) => belief.object.includes("painted a sunrise")), true);
   assert.equal(eventBeliefs.some((belief) => belief.object.includes("ran a charity race")), true);
+  const chineseEventBelief = durableThirdPersonDb
+    .prepare(
+      `SELECT status, predicate, subject, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(durableChineseThirdPersonEventReport.worldBeliefIds[0]!) as
+    | { status: string; predicate: string; subject: string; object: string }
+    | undefined;
+  assert.equal(chineseEventBelief?.status, "active");
+  assert.equal(chineseEventBelief?.predicate, "person.event");
+  assert.equal(chineseEventBelief?.subject, "person:李雷");
+  assert.equal(chineseEventBelief?.object, "去年去了京都");
 } finally {
   durableThirdPersonDb.close();
 }
@@ -8299,6 +8444,15 @@ const durableThirdPersonReconstruction = await rulesReportMemory.reconstructCont
 });
 assert.match(durableThirdPersonReconstruction.contextBlock, /2022/);
 assert.match(durableThirdPersonReconstruction.contextBlock, /sunrise/);
+const durableChineseThirdPersonReconstruction = await rulesReportMemory.reconstructContext({
+  profileId: "rules_report",
+  query: "李雷去年去了哪里？",
+  maxSteps: 4,
+  maxBranch: 4,
+  maxMemories: 4,
+});
+assert.match(durableChineseThirdPersonReconstruction.contextBlock, /李雷/);
+assert.match(durableChineseThirdPersonReconstruction.contextBlock, /京都/);
 const durableChineseQuestionReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",

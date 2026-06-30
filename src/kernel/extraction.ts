@@ -559,7 +559,11 @@ function hasDurableTemporalSignal(text: string): boolean {
   return (
     /\b(?:today|tomorrow|yesterday|last|next|since|before|after|daily|weekly|monthly|weekend|spring|summer|autumn|winter|holiday|vacation|monday|tuesday|wednesday|thursday|friday|saturday|sunday|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|\d{4}|\d{1,2}:\d{2})\b/iu.test(
       text,
-    ) || /\d{1,2}\s*(?:分钟|小时|天|周|月|年)/u.test(text)
+    ) ||
+    /\d{1,2}\s*(?:分钟|小时|天|周|月|年)/u.test(text) ||
+    /(?:今天|明天|昨天|前天|后天|上周|下周|上个月|下个月|去年|今年|明年|前年|周末|春天|夏天|秋天|冬天|\d{4}年|\d{1,2}月\d{1,2}日)/u.test(
+      text,
+    )
   );
 }
 
@@ -583,6 +587,9 @@ function hasNamedPersonEventSignal(text: string): boolean {
     ) ||
     durableStayEvent(text) ||
     /\b(?:bought|sold|rented|leased)\s+(?:an?\s+|the\s+|my\s+)?(?:house|home|apartment|flat|condo|car|bike)\b/iu.test(
+      text,
+    ) ||
+    /(?:去了|去过|访问|参加|旅行|搬到|搬家|预订|预约|跑了|画了|开始|完成|毕业|上课|课程|研讨会|会议|露营|比赛|航班|酒店)/u.test(
       text,
     )
   );
@@ -1134,6 +1141,75 @@ function metadataConfirmsNamedEventSubject(
   return names.has(entityKey(name));
 }
 
+function safeNamedPersonEventPrefixBoundary(name: string, event: string): boolean {
+  if (!/[\p{Script=Han}]/u.test(name)) return true;
+  return /^(?:[:：,，\s]+|(?:今天|明天|昨天|前天|后天|上周|下周|上个月|下个月|去年|今年|明年|前年|周末|春天|夏天|秋天|冬天|\d{4}年|\d{1,2}月\d{1,2}日)|(?:去|去了|去过|访问|参加|旅行|搬到|搬家|预订|预约|跑了|画了|开始|完成|毕业|上课|露营)|(?:在|到|从)[\p{Script=Han}\p{L}\p{N}_ -]{1,40}(?:参加|访问|旅行|上课|开会|露营|比赛))/u.test(
+    event,
+  );
+}
+
+function unsafeNamedPersonEventRemainder(event: string): boolean {
+  const compact = event.trim().replace(/^[的\s]+/u, "");
+  if (!compact) return true;
+  if (/^(?:和|跟|与)[\p{Script=Han}\p{L}]/u.test(compact)) return true;
+  if (/^(?:微信|飞书|小红书|豆包|钉钉|通义|文心|智谱|项目|工具|应用|产品|模型|系统|服务|平台|插件|机器人|助手)/u.test(compact)) {
+    return true;
+  }
+  return false;
+}
+
+function metadataNamedPersonPrefix(
+  utterance: string,
+  metadata: Record<string, unknown> | undefined,
+): { name: string; event: string } | null {
+  if (!metadata) return null;
+  const names = [
+    ...(Array.isArray(metadata.participants) ? metadata.participants : []),
+    ...(Array.isArray(metadata.speakerAliases) ? metadata.speakerAliases : []),
+  ]
+    .filter((value): value is string => typeof value === "string" && stableNamedPersonSubject(value))
+    .sort((a, b) => b.trim().length - a.trim().length);
+  for (const name of names) {
+    const normalizedName = name.trim();
+    if (!normalizedName || !utterance.startsWith(normalizedName)) continue;
+    let event = utterance.slice(normalizedName.length);
+    if (/^[A-Za-z][A-Za-z0-9_ '-]*$/u.test(normalizedName) && /^[\p{L}\p{N}_-]/u.test(event)) {
+      continue;
+    }
+    if (!safeNamedPersonEventPrefixBoundary(normalizedName, event)) continue;
+    event = event.replace(/^[\s:：,，]+/u, "").trim();
+    if (unsafeNamedPersonEventRemainder(event)) continue;
+    if (event) return { name: normalizedName, event };
+  }
+  return null;
+}
+
+function rejectedNamedPersonEventPrefixUtterance(
+  text: string,
+  metadata: Record<string, unknown> | undefined,
+): boolean {
+  if (!metadata) return false;
+  const utterance = stripSpeakerPrefix(text);
+  const names = [
+    ...(Array.isArray(metadata.participants) ? metadata.participants : []),
+    ...(Array.isArray(metadata.speakerAliases) ? metadata.speakerAliases : []),
+  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  for (const name of names) {
+    const normalizedName = name.trim();
+    if (!utterance.startsWith(normalizedName)) continue;
+    const event = utterance.slice(normalizedName.length).trim();
+    if (!event) continue;
+    if (hasFirstPersonAnchor(event)) continue;
+    if (explicitChineseNonPersonSubject(normalizedName)) return true;
+    if (!/[\p{Script=Han}]/u.test(normalizedName)) continue;
+    if (unsafeNamedPersonEventRemainder(event)) return true;
+    if (!safeNamedPersonEventPrefixBoundary(normalizedName, event) && hasDurableTemporalSignal(event)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function stableToolObject(value: string | undefined): string | undefined {
   const object = projectBeliefObject(value);
   if (!object) return undefined;
@@ -1549,12 +1625,13 @@ function namedPersonEventCandidate(
   const match = new RegExp(String.raw`^\s*(${namePattern})\s+(.{2,180}?)\s*\.?\s*$`, "u").exec(
     utterance,
   );
-  const name = match?.[1]?.trim();
-  const event = projectBeliefObject(match?.[2]);
+  const metadataPrefix = metadataNamedPersonPrefix(utterance, metadata);
+  const name = match?.[1]?.trim() ?? metadataPrefix?.name;
+  const event = projectBeliefObject(match?.[2] ?? metadataPrefix?.event);
   if (!name || !event || !stableNamedPersonSubject(name) || !metadataConfirmsNamedEventSubject(name, metadata)) {
     return null;
   }
-  if (/\b(?:I|I'm|I’m|I've|I’ve|my|mine|we|our)\b/iu.test(event)) return null;
+  if (hasFirstPersonAnchor(event)) return null;
   if (transientStayEvent(event)) return null;
   if (!hasDurableTemporalSignal(event) || !hasNamedPersonEventSignal(event)) return null;
   return {
@@ -2144,6 +2221,7 @@ export function extractRuleMemoryCandidates(
   if (looksLikeNamedPersonRelationUtterance(text)) return [];
   const personEventCandidate = namedPersonEventCandidate(text, metadata);
   if (personEventCandidate) return [personEventCandidate];
+  if (rejectedNamedPersonEventPrefixUtterance(text, metadata)) return [];
 
   if (/步骤|流程|procedure|workflow|when .* do|每次.*先/u.test(text)) {
     return [
