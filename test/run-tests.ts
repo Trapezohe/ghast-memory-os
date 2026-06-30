@@ -20082,6 +20082,19 @@ assert.ok(
 const cliPrepareToolSchema = cliMcpToolsJson.tools.find((tool) => tool.name === "memory.prepare_context")
   ?.inputSchema;
 assert.equal(typeof cliPrepareToolSchema?.properties?.reconstruction, "object");
+for (const toolName of [
+  "memory.prepare_context",
+  "memory.reconstruct_context",
+  "memory.explain_evidence_path",
+]) {
+  const schema = cliMcpToolsJson.tools.find((tool) => tool.name === toolName)?.inputSchema;
+  assert.equal(
+    (
+      schema?.properties?.contextBudgetTokens as { exclusiveMinimum?: number } | undefined
+    )?.exclusiveMinimum,
+    0,
+  );
+}
 assert.equal(
   (
     cliPrepareToolSchema?.properties?.reconstruction as {
