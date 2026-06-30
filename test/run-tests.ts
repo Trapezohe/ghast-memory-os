@@ -1316,6 +1316,22 @@ for (const explicitWorldActionVariant of [
     expectedPredicate: "project.procedure",
   },
   {
+    name: "bare_project_subject_from_candidate_content_no_predicate",
+    subject: "Atlas",
+    eventContent: "Atlas starts release work by drafting an outline.",
+    expectedSubject: "project:atlas",
+    expectedPredicate: "project.procedure",
+  },
+  {
+    name: "bare_project_subject_from_event_content_user_predicate",
+    subject: "Atlas",
+    predicate: "user.procedure",
+    candidateContent: "Atlas starts release work by drafting an outline.",
+    eventContent: "Project Atlas starts release work by drafting an outline.",
+    expectedSubject: "project:atlas",
+    expectedPredicate: "project.procedure",
+  },
+  {
     name: "bare_person_procedure_user_predicate",
     subject: "Alex",
     predicate: "user.procedure",
@@ -1325,6 +1341,15 @@ for (const explicitWorldActionVariant of [
   {
     name: "bare_person_procedure_no_predicate",
     subject: "Alex",
+    expectedSubject: "person:alex",
+    expectedPredicate: "person.procedure",
+  },
+  {
+    name: "bare_person_subject_ignores_unrelated_project_event_cue",
+    subject: "Alex",
+    candidateContent: "Alex starts release work by drafting an outline.",
+    eventContent:
+      "Project Alex is blocked on compliance. Alex starts release work by drafting an outline.",
     expectedSubject: "person:alex",
     expectedPredicate: "person.procedure",
   },
@@ -1338,9 +1363,12 @@ for (const explicitWorldActionVariant of [
     extractor: () => ({
       kind: "procedure",
       content:
-        explicitWorldActionVariant.expectedSubject === "person:alex"
+        ("candidateContent" in explicitWorldActionVariant
+          ? explicitWorldActionVariant.candidateContent
+          : undefined) ??
+        (explicitWorldActionVariant.expectedSubject === "person:alex"
           ? "Alex starts release work by drafting an outline."
-          : "Project Atlas starts release work by drafting an outline.",
+          : "Project Atlas starts release work by drafting an outline."),
       confidence: 0.9,
       subject: explicitWorldActionVariant.subject,
       ...(explicitWorldActionVariant.predicate
@@ -1356,9 +1384,12 @@ for (const explicitWorldActionVariant of [
     profileId,
     role: "user",
     content:
-      explicitWorldActionVariant.expectedSubject === "person:alex"
+      ("eventContent" in explicitWorldActionVariant
+        ? explicitWorldActionVariant.eventContent
+        : undefined) ??
+      (explicitWorldActionVariant.expectedSubject === "person:alex"
         ? "Alex starts release work by drafting an outline."
-        : "Project Atlas starts release work by drafting an outline.",
+        : "Project Atlas starts release work by drafting an outline."),
   });
   const explicitWorldActionPrepared = await explicitWorldActionMemory.prepareTurn({
     profileId,

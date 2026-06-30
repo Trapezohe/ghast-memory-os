@@ -311,11 +311,94 @@ function explicitUserSubject(subject: string): boolean {
   return subject.trim().toLowerCase() === "user";
 }
 
+function escapedRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function flexibleLiteralPattern(input: string): string {
+  return input.trim().split(/\s+/u).filter(Boolean).map(escapedRegExp).join("\\s+");
+}
+
+function textHasProjectSubjectCue(text: string, subjectPattern: string): boolean {
+  const boundary = "[^\\p{L}\\p{N}_-]";
+  const patterns = [
+    new RegExp(`(?:^|${boundary})(?:project|repo|repository)\\s+${subjectPattern}(?=$|${boundary})`, "iu"),
+    new RegExp(`(?:^|${boundary})${subjectPattern}\\s+(?:project|repo|repository)(?=$|${boundary})`, "iu"),
+    new RegExp(`项目\\s*${subjectPattern}|${subjectPattern}\\s*项目`, "iu"),
+  ];
+  return patterns.some((pattern) => pattern.test(text));
+}
+
+function eventTextHasProjectCueForCandidate(input: {
+  candidateContent: string;
+  eventContent: string;
+  subjectPattern: string;
+}): boolean {
+  const candidateContent = input.candidateContent.trim();
+  if (!candidateContent || !input.eventContent.trim()) return false;
+
+  const boundary = "[^\\p{L}\\p{N}_-]";
+  const candidateStartsWithSubject = new RegExp(
+    `^\\s*${input.subjectPattern}(?=$|${boundary})`,
+    "iu",
+  ).test(candidateContent);
+  if (!candidateStartsWithSubject) return false;
+
+  const normalizedCandidate = candidateContent.toLowerCase();
+  const normalizedEvent = input.eventContent.toLowerCase();
+  let foundProjectAdjacent = false;
+  let foundNonProjectAdjacent = false;
+  let searchFrom = 0;
+
+  while (searchFrom < normalizedEvent.length) {
+    const index = normalizedEvent.indexOf(normalizedCandidate, searchFrom);
+    if (index === -1) break;
+    const prefix = input.eventContent.slice(Math.max(0, index - 32), index);
+    const projectAdjacent =
+      /(?:^|[^\p{L}\p{N}_-])(?:project|repo|repository)\s*$/iu.test(prefix) ||
+      /项目\s*$/iu.test(prefix);
+    if (projectAdjacent) {
+      foundProjectAdjacent = true;
+    } else {
+      foundNonProjectAdjacent = true;
+    }
+    searchFrom = index + Math.max(normalizedCandidate.length, 1);
+  }
+
+  return foundProjectAdjacent && !foundNonProjectAdjacent;
+}
+
+function inferredProjectSubjectFromActionText(input: {
+  candidate: MemoryExtractionCandidate;
+  eventContent: string;
+  subject: string;
+}): string | undefined {
+  const subject = input.subject.trim();
+  if (!subject || subjectPredicateNamespace(subject) || explicitUserSubject(subject)) {
+    return undefined;
+  }
+  if (classifySensitivity(subject) !== "normal") return undefined;
+  const subjectPattern = flexibleLiteralPattern(subject);
+  if (!subjectPattern) return undefined;
+  const hasCandidateProjectCue = textHasProjectSubjectCue(input.candidate.content, subjectPattern);
+  const hasEventProjectCueForCandidate = eventTextHasProjectCueForCandidate({
+    candidateContent: input.candidate.content,
+    eventContent: input.eventContent,
+    subjectPattern,
+  });
+  if (!hasCandidateProjectCue && !hasEventProjectCueForCandidate) return undefined;
+  return resolveWorldEntitySubject({
+    subject: `project:${subject}`,
+    predicate: "project.fact",
+  }).canonicalSubject;
+}
+
 function actionPredicateSubject(input: {
   candidate: MemoryExtractionCandidate;
+  eventContent: string;
   subject: string;
 }): string {
-  const { candidate, subject } = input;
+  const { candidate, eventContent, subject } = input;
   const resolution = resolveWorldEntitySubject({
     subject,
     predicate: candidate.predicate,
@@ -325,6 +408,12 @@ function actionPredicateSubject(input: {
     return resolution.canonicalSubject;
   }
   if (explicitUserSubject(subject)) return "user";
+  const projectSubject = inferredProjectSubjectFromActionText({
+    candidate,
+    eventContent,
+    subject,
+  });
+  if (projectSubject) return projectSubject;
   const person = publicSpeaker(subject);
   return person ? `person:${person}` : subject;
 }
@@ -395,11 +484,12 @@ function personScopedPreferencePredicate(predicate: string | undefined): string 
 
 function memoryWriteCandidateForSubject(input: {
   candidate: MemoryExtractionCandidate;
+  eventContent: string;
   subject: string;
 }): MemoryExtractionCandidate {
-  const { candidate, subject } = input;
+  const { candidate, eventContent, subject } = input;
   if (!isActionMemoryCandidate(candidate)) return candidate;
-  const predicateSubject = actionPredicateSubject({ candidate, subject });
+  const predicateSubject = actionPredicateSubject({ candidate, eventContent, subject });
   if (predicateSubject === "user") return candidate;
 
   const { actionPolicyKind: _actionPolicyKind, ...candidateWithoutActionPolicy } = candidate;
@@ -955,7 +1045,11 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         eventContent: event.content,
         eventMetadata: candidateSourceMetadata,
       });
-      const writeCandidate = memoryWriteCandidateForSubject({ candidate, subject });
+      const writeCandidate = memoryWriteCandidateForSubject({
+        candidate,
+        eventContent: event.content,
+        subject,
+      });
       const candidateSensitivity = classifySensitivity(writeCandidate.content);
       const candidateStructuredSensitivity = structuredCandidateSensitivity(writeCandidate);
       const structuredMetadata = structuredCandidateMetadata(writeCandidate);
