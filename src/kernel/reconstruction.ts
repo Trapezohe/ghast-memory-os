@@ -266,6 +266,8 @@ interface RankedMemoryCandidate {
   routeReason: string;
 }
 
+type EvidenceOutputSanitizer = (event: EvidenceEvent) => EvidenceEvent;
+
 const PUBLIC_STRUCTURED_INTENT_TAGS = new Set([
   "fact",
   "preference",
@@ -1398,6 +1400,7 @@ function composeReconstructedContext(input: {
   plannerTrace?: ReconstructedPlannerTrace | undefined;
   cueExtractor?: MemoryCueExtractor | undefined;
   privateRouteSignals?: string[] | undefined;
+  sanitizeEvidenceForOutput?: EvidenceOutputSanitizer | undefined;
 }): ReconstructedContext {
   let memories = [...input.memories];
   let paths = [...input.paths];
@@ -1419,7 +1422,7 @@ function composeReconstructedContext(input: {
     privateSignalKeys.size > 0;
   const publicEvidence = input.includeEvidence
     ? input.evidence
-        .map(sanitizeEvidenceForPublicOutput)
+        .map(input.sanitizeEvidenceForOutput ?? sanitizeEvidenceForPublicOutput)
         .map((event) => publicEvidenceEvent(
           event,
           hideInternalRouteSignals,
@@ -1619,6 +1622,7 @@ async function fallbackReconstruction(input: {
   includeTemporalMetadata?: boolean | undefined;
   cueExtractor?: MemoryCueExtractor | undefined;
   privateRouteSignals?: string[] | undefined;
+  sanitizeEvidenceForOutput?: EvidenceOutputSanitizer | undefined;
 }): Promise<ReconstructedContext> {
   const memories = sourceScopedFallbackMemories(await input.store.searchMemories({
     profileId: input.profileId,
@@ -1712,6 +1716,7 @@ async function fallbackReconstruction(input: {
     plannerTrace,
     cueExtractor: input.cueExtractor,
     privateRouteSignals: input.privateRouteSignals,
+    sanitizeEvidenceForOutput: input.sanitizeEvidenceForOutput,
   });
 }
 
@@ -1720,6 +1725,7 @@ export async function reconstructMemoryContext(input: {
   defaultProfileId: string;
   request: ReconstructMemoryContextRequest;
   cueExtractor?: MemoryCueExtractor | undefined;
+  sanitizeEvidenceForOutput?: EvidenceOutputSanitizer | undefined;
 }): Promise<ReconstructedContext> {
   const profileId = input.request.profileId ?? input.defaultProfileId;
   const displayQuery = (input.request.query ?? latestUserText(input.request.messages)).trim();
@@ -1763,6 +1769,7 @@ export async function reconstructMemoryContext(input: {
       includeTemporalMetadata,
       cueExtractor: input.cueExtractor,
       privateRouteSignals: input.request.privateRouteSignals,
+      sanitizeEvidenceForOutput: input.sanitizeEvidenceForOutput,
     });
   }
 
@@ -2037,6 +2044,7 @@ export async function reconstructMemoryContext(input: {
     includeTemporalMetadata,
     cueExtractor: input.cueExtractor,
     privateRouteSignals: input.request.privateRouteSignals,
+    sanitizeEvidenceForOutput: input.sanitizeEvidenceForOutput,
     plannerTrace: {
       mode: "associative",
       intentReason: intent.reason,

@@ -18,15 +18,10 @@ import {
 import { isReservedSpeakerIdentity } from "../kernel/person-identity.js";
 import { reconstructMemoryContext } from "../kernel/reconstruction.js";
 import {
-  classifySensitivity,
-  eligibleForLongTermMemory,
   isPersonRoutedMemory,
   redactForReport,
-  sanitizeEvidenceForPublicOutput,
   sanitizePublicPayloadRecord,
-  sanitizePublicSourceMetadata,
   sourceMetadataSpeakerIsPerson,
-  stripGmosOwnedMetadataFields,
 } from "../kernel/safety.js";
 import type {
   CommitOutcomeInput,
@@ -52,14 +47,26 @@ import type {
   MemoryRecord,
   MemoryOS,
   MemoryOSOptions,
+  MemorySensitivityClassifierInput,
   ObserveResult,
   PrepareTurnInput,
   ReadAuditSnapshot,
+  ReconstructionIntentHint,
   ReconstructContextInput,
   ReconstructedContext,
   RestoreArchivedResult,
   Sensitivity,
 } from "../kernel/types.js";
+import {
+  redactRuntimePayloadRecord,
+  redactRuntimeSourceMetadataRecord,
+  runtimeSensitivityClassifier,
+  runtimeValueSensitivity,
+  sanitizeRuntimeEvidenceForPublicOutput,
+  sanitizeRuntimeExtractionReport,
+  sanitizeRuntimeExternalMemoryMetadata,
+} from "./runtime-safety.js";
+import type { RuntimeSensitivityClassifier } from "./runtime-safety.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -69,18 +76,25 @@ function profileIdFor(defaultProfileId: string, profileId?: string): string {
   return profileId ?? defaultProfileId;
 }
 
-function sourceMetadataForEvent(event: Extract<HostEvent, { type: "conversation.message" }>): Record<string, unknown> {
-  return sanitizePublicSourceMetadata(event.metadata);
+function sourceMetadataForEvent(
+  event: Extract<HostEvent, { type: "conversation.message" }>,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+): Record<string, unknown> {
+  return redactRuntimeSourceMetadataRecord(event.metadata, classifyRuntimeSensitivity);
 }
 
 function sourceMetadataForCandidate(
   eventMetadata: Record<string, unknown>,
   candidate: MemoryExtractionCandidate,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
 ): Record<string, unknown> {
   if (typeof candidate.speaker !== "string" || candidate.speaker.trim().length === 0) {
     return eventMetadata;
   }
-  const candidateSpeaker = sanitizePublicSourceMetadata({ speaker: candidate.speaker }).speaker;
+  const candidateSpeaker = redactRuntimeSourceMetadataRecord(
+    { speaker: candidate.speaker },
+    classifyRuntimeSensitivity,
+  ).speaker;
   if (typeof candidateSpeaker !== "string" || candidateSpeaker.trim().length === 0) {
     return eventMetadata;
   }
@@ -93,12 +107,6 @@ function sourceMetadataForCandidate(
     ...nonSpeakerEventMetadata
   } = eventMetadata;
   return { ...nonSpeakerEventMetadata, speaker: candidateSpeaker, speakerKind: "person" };
-}
-
-function sanitizeExternalMemoryMetadata(
-  metadata: Record<string, unknown> | undefined,
-): Record<string, unknown> {
-  return stripGmosOwnedMetadataFields(sanitizePublicPayloadRecord(metadata ?? {}));
 }
 
 function structuredCandidateMetadata(candidate: MemoryExtractionCandidate): Record<string, unknown> {
@@ -122,7 +130,10 @@ function structuredCandidateMetadata(candidate: MemoryExtractionCandidate): Reco
   return metadata;
 }
 
-function structuredCandidateSensitivity(candidate: MemoryExtractionCandidate): Sensitivity {
+function structuredCandidateSensitivity(
+  candidate: MemoryExtractionCandidate,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+): Sensitivity {
   let sensitivity: Sensitivity = "normal";
   for (const value of [
     candidate.actionPolicyKind,
@@ -131,15 +142,28 @@ function structuredCandidateSensitivity(candidate: MemoryExtractionCandidate): S
     candidate.object,
     candidate.predicate,
     candidate.source,
-    candidate.speaker,
     candidate.subject,
     ...(candidate.subjectAliases ?? []),
     candidate.validFrom,
     candidate.validTo,
   ]) {
     if (typeof value !== "string") continue;
-    sensitivity = maxSensitivity(sensitivity, classifySensitivity(value));
+    sensitivity = maxSensitivity(
+      sensitivity,
+      runtimeValueSensitivity(
+        value,
+        classifyRuntimeSensitivity,
+        new WeakSet<object>(),
+        "structured_candidate",
+      ),
+    );
     if (sensitivity === "secret_like") return sensitivity;
+  }
+  if (typeof candidate.speaker === "string") {
+    sensitivity = maxSensitivity(
+      sensitivity,
+      classifyRuntimeSensitivity(candidate.speaker, "structured_candidate"),
+    );
   }
   return sensitivity;
 }
@@ -172,30 +196,45 @@ function maxSensitivity(left: Sensitivity, right: Sensitivity): Sensitivity {
 function memorySensitivityForCandidate(input: {
   eventSensitivity: Sensitivity;
   candidateContentSensitivity: Sensitivity;
+  candidateMetadataSensitivity: Sensitivity;
   candidateStructuredSensitivity: Sensitivity;
 }): Sensitivity {
   return maxSensitivity(
-    maxSensitivity(input.eventSensitivity, input.candidateContentSensitivity),
+    maxSensitivity(
+      maxSensitivity(input.eventSensitivity, input.candidateContentSensitivity),
+      input.candidateMetadataSensitivity,
+    ),
     input.candidateStructuredSensitivity,
   );
 }
 
-function publicSpeaker(value: unknown): string | undefined {
+function publicSpeaker(
+  value: unknown,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+): string | undefined {
   if (typeof value !== "string") return undefined;
   const speaker = value.trim();
   if (!speaker || speaker.startsWith("[redacted_")) return undefined;
   if (isReservedSpeakerIdentity(speaker)) return undefined;
-  return classifySensitivity(speaker) === "normal" ? speaker : undefined;
+  return classifyRuntimeSensitivity(speaker, "speaker") === "normal" ? speaker : undefined;
 }
 
-function publicSourceSpeaker(metadata: Record<string, unknown>): string | undefined {
-  return sourceMetadataSpeakerIsPerson(metadata) ? publicSpeaker(metadata.speaker) : undefined;
+function publicSourceSpeaker(
+  metadata: Record<string, unknown>,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+): string | undefined {
+  return sourceMetadataSpeakerIsPerson(metadata)
+    ? publicSpeaker(metadata.speaker, classifyRuntimeSensitivity)
+    : undefined;
 }
 
-function publicStringArray(value: unknown): string[] {
+function publicStringArray(
+  value: unknown,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+): string[] {
   return Array.isArray(value)
     ? value.flatMap((entry) => {
-        const speaker = publicSpeaker(entry);
+        const speaker = publicSpeaker(entry, classifyRuntimeSensitivity);
         return speaker ? [speaker] : [];
       })
     : [];
@@ -204,13 +243,16 @@ function publicStringArray(value: unknown): string[] {
 function shouldRouteBeliefToSpeaker(input: {
   eventMetadata: Record<string, unknown>;
   speaker: string;
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier;
 }): boolean {
-  return sourceMetadataSpeakerIsPerson(input.eventMetadata) && publicSpeaker(input.speaker) !== undefined;
+  return sourceMetadataSpeakerIsPerson(input.eventMetadata) &&
+    publicSpeaker(input.speaker, input.classifyRuntimeSensitivity) !== undefined;
 }
 
 function worldBeliefSubjectForCandidate(input: {
   candidate: MemoryExtractionCandidate;
   eventMetadata: Record<string, unknown>;
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier;
 }): string {
   const { candidate, eventMetadata } = input;
   if (candidate.subject) return candidate.subject;
@@ -222,10 +264,14 @@ function worldBeliefSubjectForCandidate(input: {
   ) {
     return "user";
   }
-  const candidateSpeaker = publicSpeaker(candidate.speaker);
+  const candidateSpeaker = publicSpeaker(candidate.speaker, input.classifyRuntimeSensitivity);
   if (candidateSpeaker) return `person:${candidateSpeaker}`;
-  const speaker = publicSourceSpeaker(eventMetadata);
-  return speaker && shouldRouteBeliefToSpeaker({ eventMetadata, speaker })
+  const speaker = publicSourceSpeaker(eventMetadata, input.classifyRuntimeSensitivity);
+  return speaker && shouldRouteBeliefToSpeaker({
+    eventMetadata,
+    speaker,
+    classifyRuntimeSensitivity: input.classifyRuntimeSensitivity,
+  })
     ? `person:${speaker}`
     : "user";
 }
@@ -234,11 +280,12 @@ function worldBeliefSubjectAliasesForCandidate(input: {
   candidate: MemoryExtractionCandidate;
   subject: string;
   eventMetadata: Record<string, unknown>;
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier;
 }): string[] | undefined {
   const { candidate, subject, eventMetadata } = input;
   const aliases = [...(candidate.subjectAliases ?? [])];
   if (!candidate.subject && subject !== "user") {
-    aliases.push(...publicStringArray(eventMetadata.speakerAliases));
+    aliases.push(...publicStringArray(eventMetadata.speakerAliases, input.classifyRuntimeSensitivity));
   }
   const seen = new Set<string>();
   const uniqueAliases = aliases.filter((alias) => {
@@ -421,12 +468,44 @@ function prepareTurnDisplayQuery(input: PrepareTurnInput): string {
   return [...input.messages].reverse().find((message) => message.role === "user")?.content ?? "";
 }
 
-function prepareTurnQuery(input: PrepareTurnInput): string {
+interface TaskRouteSignal {
+  value: string;
+  privateByDefault: boolean;
+}
+
+function taskRouteSignalEntries(input: PrepareTurnInput): TaskRouteSignal[] {
+  return [
+    { value: input.task?.intent, privateByDefault: true },
+    { value: input.task?.projectId, privateByDefault: true },
+    { value: input.task?.topic, privateByDefault: false },
+  ].flatMap((entry) =>
+    typeof entry.value === "string" && entry.value.trim().length > 0
+      ? [{ value: entry.value.trim(), privateByDefault: entry.privateByDefault }]
+      : []
+  );
+}
+
+function taskRouteSignals(input: PrepareTurnInput): string[] {
+  return taskRouteSignalEntries(input).map((entry) => entry.value);
+}
+
+function publicRouteSignal(
+  value: string,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+): string | undefined {
+  return classifyRuntimeSensitivity(value, "route_signal") === "normal" ? value : undefined;
+}
+
+function prepareTurnQuery(
+  input: PrepareTurnInput,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+): string {
   return [
     prepareTurnDisplayQuery(input),
-    input.task?.intent,
-    input.task?.projectId,
-    input.task?.topic,
+    ...taskRouteSignals(input).flatMap((entry) => {
+      const publicSignal = publicRouteSignal(entry, classifyRuntimeSensitivity);
+      return publicSignal ? [publicSignal] : [];
+    }),
   ]
     .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
     .join("\n");
@@ -440,11 +519,71 @@ function routeSignalAppearsInText(value: string, text: string): boolean {
   return associationCueMatchesQuery(signal, publicCues);
 }
 
-function privateTaskRouteSignals(input: PrepareTurnInput, displayQuery: string): string[] {
-  return [input.task?.intent, input.task?.projectId]
+function privateTaskRouteSignals(
+  input: PrepareTurnInput,
+  displayQuery: string,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+): string[] {
+  return taskRouteSignalEntries(input).flatMap((entry) => {
+    const sensitivity = classifyRuntimeSensitivity(entry.value, "route_signal");
+    if (sensitivity !== "normal") return [entry.value];
+    return entry.privateByDefault && !routeSignalAppearsInText(entry.value, displayQuery)
+      ? [entry.value]
+      : [];
+  });
+}
+
+function sanitizedRouteSignalList(
+  values: string[] | undefined,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+): string[] | undefined {
+  const output = (values ?? [])
     .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-    .filter((entry) => classifySensitivity(entry) === "normal")
-    .filter((entry) => !routeSignalAppearsInText(entry, displayQuery));
+    .map((entry) => entry.trim())
+    .filter((entry) => classifyRuntimeSensitivity(entry, "route_signal") === "normal");
+  return output.length > 0 ? output : undefined;
+}
+
+function sanitizedReconstructionIntent(
+  intent: ReconstructionIntentHint | undefined,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+): ReconstructionIntentHint | undefined {
+  if (!intent) return undefined;
+  const expectedTags = sanitizedRouteSignalList(intent.expectedTags, classifyRuntimeSensitivity);
+  const queryCues = sanitizedRouteSignalList(intent.queryCues, classifyRuntimeSensitivity);
+  const requiredTagGroups: NonNullable<ReconstructionIntentHint["requiredTagGroups"]> = [];
+  for (const group of intent.requiredTagGroups ?? []) {
+    const tags = sanitizedRouteSignalList(group.tags, classifyRuntimeSensitivity);
+    if (!tags) continue;
+    const name = typeof group.name === "string" &&
+      classifyRuntimeSensitivity(group.name, "route_signal") === "normal"
+      ? group.name
+      : undefined;
+    requiredTagGroups.push(name ? { name, tags } : { tags });
+  }
+  const sanitized: ReconstructionIntentHint = {
+    ...(expectedTags ? { expectedTags } : {}),
+    ...(queryCues ? { queryCues } : {}),
+    ...(requiredTagGroups.length > 0 ? { requiredTagGroups } : {}),
+  };
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+}
+
+function sanitizedReconstructRequest<T extends ReconstructContextInput>(
+  input: T,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+): T {
+  const reconstructionIntent = sanitizedReconstructionIntent(
+    input.reconstructionIntent,
+    classifyRuntimeSensitivity,
+  );
+  const request = { ...input };
+  if (reconstructionIntent) {
+    request.reconstructionIntent = reconstructionIntent;
+  } else {
+    delete request.reconstructionIntent;
+  }
+  return request;
 }
 
 function redactRouteSignals(value: string, privateSignals: string[]): string {
@@ -495,10 +634,13 @@ function lowLevelSensitivity(input: {
   content: string;
   scope?: string | undefined;
   sensitivity?: Sensitivity | undefined;
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier;
 }): Sensitivity {
-  const detected = classifySensitivity(input.content);
+  const detected = input.classifyRuntimeSensitivity(input.content, "content");
   const scopeSensitivity =
-    typeof input.scope === "string" ? classifySensitivity(input.scope) : "normal";
+    typeof input.scope === "string"
+      ? input.classifyRuntimeSensitivity(input.scope, "scope")
+      : "normal";
   if (
     detected === "secret_like" ||
     scopeSensitivity === "secret_like" ||
@@ -510,19 +652,57 @@ function lowLevelSensitivity(input: {
   return input.sensitivity ?? detected;
 }
 
-function sensitivityForParts(parts: Array<string | undefined>): Sensitivity {
+function sensitivityForParts(
+  parts: Array<string | undefined>,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+  surfaces: MemorySensitivityClassifierInput["surface"][],
+): Sensitivity {
   let result: Sensitivity = "normal";
   for (const part of parts) {
     if (!part) continue;
-    const sensitivity = classifySensitivity(part);
-    if (sensitivity === "secret_like") return "secret_like";
-    if (sensitivity === "sensitive") result = "sensitive";
+    for (const surface of surfaces) {
+      const sensitivity = classifyRuntimeSensitivity(part, surface);
+      if (sensitivity === "secret_like") return "secret_like";
+      if (sensitivity === "sensitive") result = "sensitive";
+    }
   }
   return result;
 }
 
-function failureContentForStorage(content: string): string {
-  return classifySensitivity(content) === "secret_like" ? redactForReport(content) : content;
+function runtimeTextForStorage(
+  content: string,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+  surfaces: MemorySensitivityClassifierInput["surface"][],
+): string {
+  const sensitivity = sensitivityForParts([content], classifyRuntimeSensitivity, surfaces);
+  if (sensitivity === "normal") return content;
+  const redacted = redactForReport(content);
+  if (redacted !== content) return redacted;
+  return sensitivity === "secret_like" ? "[redacted_secret]" : "[redacted_sensitive]";
+}
+
+function failureContentForStorage(
+  content: string,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+  additionalSurfaces: MemorySensitivityClassifierInput["surface"][] = [],
+): string {
+  return runtimeTextForStorage(
+    content,
+    classifyRuntimeSensitivity,
+    ["failure", ...additionalSurfaces],
+  );
+}
+
+function taskTrajectoryTextForStorage(
+  content: string,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+  additionalSurfaces: MemorySensitivityClassifierInput["surface"][] = [],
+): string {
+  return runtimeTextForStorage(
+    content,
+    classifyRuntimeSensitivity,
+    ["task_trajectory", ...additionalSurfaces],
+  );
 }
 
 async function recordRuntimeFailure(
@@ -533,14 +713,20 @@ async function recordRuntimeFailure(
     content: string;
     createdAt?: string | undefined;
     metadata?: Record<string, unknown> | undefined;
+    additionalSurfaces?: MemorySensitivityClassifierInput["surface"][] | undefined;
   },
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
 ): Promise<void> {
   await store.recordFailure({
     profileId: input.profileId,
     failureKind: input.failureKind,
-    content: failureContentForStorage(input.content),
+    content: failureContentForStorage(
+      input.content,
+      classifyRuntimeSensitivity,
+      input.additionalSurfaces,
+    ),
     createdAt: input.createdAt,
-    metadata: input.metadata,
+    metadata: redactRuntimePayloadRecord(input.metadata, classifyRuntimeSensitivity),
   });
 }
 
@@ -554,20 +740,53 @@ async function recordRuntimeTaskOutcome(
     summary?: string | undefined;
     createdAt?: string | undefined;
   },
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
 ): Promise<"recorded" | "skipped_secret_like"> {
-  const sensitivity = sensitivityForParts([input.taskId, input.objective, input.summary]);
+  const additionalSurfaces: MemorySensitivityClassifierInput["surface"][] =
+    input.status === "failed" ? ["failure"] : [];
+  const sensitivity = sensitivityForParts(
+    [input.taskId, input.objective, input.summary],
+    classifyRuntimeSensitivity,
+    ["task_trajectory", ...additionalSurfaces],
+  );
   if (sensitivity !== "secret_like") {
-    await store.recordTaskTrajectory(input);
+    await store.recordTaskTrajectory({
+      ...input,
+      taskId: input.taskId
+        ? taskTrajectoryTextForStorage(
+            input.taskId,
+            classifyRuntimeSensitivity,
+            additionalSurfaces,
+          )
+        : undefined,
+      objective: taskTrajectoryTextForStorage(
+        input.objective,
+        classifyRuntimeSensitivity,
+        additionalSurfaces,
+      ),
+      summary: input.summary
+        ? taskTrajectoryTextForStorage(
+            input.summary,
+            classifyRuntimeSensitivity,
+            additionalSurfaces,
+          )
+        : undefined,
+    });
     return "recorded";
   }
   if (input.status === "failed") {
-    await recordRuntimeFailure(store, {
-      profileId: input.profileId,
-      failureKind: "task_failure",
-      content: input.summary ?? input.objective,
-      createdAt: input.createdAt,
-      metadata: { taskTrajectorySkippedReason: "secret_like" },
-    });
+    await recordRuntimeFailure(
+      store,
+      {
+        profileId: input.profileId,
+        failureKind: "task_failure",
+        content: input.summary ?? input.objective,
+        createdAt: input.createdAt,
+        metadata: { taskTrajectorySkippedReason: "secret_like" },
+        additionalSurfaces: ["task_trajectory"],
+      },
+      classifyRuntimeSensitivity,
+    );
   }
   return "skipped_secret_like";
 }
@@ -642,6 +861,9 @@ function assertNoReadSideEffects(input: {
 export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   const defaultProfileId = options.profileId ?? "default";
   const store = options.store;
+  const classifyRuntimeSensitivity = runtimeSensitivityClassifier(
+    options.safety?.sensitivityClassifier,
+  );
   let initialized = false;
 
   async function initialize(): Promise<void> {
@@ -657,7 +879,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     assertLowLevelPersonAllowed(input);
     const profileId = profileIdFor(defaultProfileId, input.profileId);
     const kind = lowLevelKind(input);
-    const sensitivity = lowLevelSensitivity(input);
+    const sensitivity = lowLevelSensitivity({ ...input, classifyRuntimeSensitivity });
     const createdAt = input.createdAt ?? nowIso();
     const evidence = await store.recordEvidence({
       profileId,
@@ -670,7 +892,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       payload: {
         kind,
         scope: input.scope ?? "global",
-        metadata: sanitizePublicSourceMetadata(input.metadata),
+        metadata: redactRuntimeSourceMetadataRecord(input.metadata, classifyRuntimeSensitivity),
       },
       createdAt,
     });
@@ -681,7 +903,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       sensitivity,
       sourceEventId: evidence.id,
       metadata: {
-        ...sanitizeExternalMemoryMetadata(input.metadata),
+        ...sanitizeRuntimeExternalMemoryMetadata(input.metadata, classifyRuntimeSensitivity),
         lowLevelApi: true,
       },
       createdAt,
@@ -711,14 +933,22 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       content,
       scope: input.scope ?? existing.scope,
       sensitivity: input.sensitivity ?? existing.sensitivity,
+      classifyRuntimeSensitivity,
     });
     const updatedAt = input.updatedAt ?? nowIso();
-    const inputMetadata = sanitizeExternalMemoryMetadata(input.metadata);
+    const runtimeInputMetadata = sanitizeRuntimeExternalMemoryMetadata(
+      input.metadata,
+      classifyRuntimeSensitivity,
+    );
+    const existingMetadata = redactRuntimePayloadRecord(
+      existing.metadata,
+      classifyRuntimeSensitivity,
+    );
     const metadata = input.replaceMetadata
-      ? inputMetadata
+      ? runtimeInputMetadata
       : {
-          ...existing.metadata,
-          ...inputMetadata,
+          ...existingMetadata,
+          ...runtimeInputMetadata,
         };
     const evidence = await store.recordEvidence({
       profileId,
@@ -733,7 +963,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         previousKind: existing.kind,
         kind,
         scope: input.scope ?? existing.scope,
-        metadata: sanitizePublicSourceMetadata(input.metadata),
+        metadata: redactRuntimeSourceMetadataRecord(input.metadata, classifyRuntimeSensitivity),
       },
       createdAt: updatedAt,
     });
@@ -882,7 +1112,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         failureKind: event.failureKind ?? "wrong_recall",
         content: event.content,
         createdAt: event.createdAt,
-      });
+      }, classifyRuntimeSensitivity);
       return { ...result, skippedReason: "feedback_recorded" };
     }
 
@@ -894,14 +1124,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         status: event.type === "task.completed" ? "completed" : "failed",
         summary: event.summary,
         createdAt: event.createdAt,
-      });
+      }, classifyRuntimeSensitivity);
       if (taskOutcomeResult === "recorded" && event.type === "task.failed") {
         await recordRuntimeFailure(store, {
           profileId,
           failureKind: "task_failure",
           content: event.summary ?? event.objective,
           createdAt: event.createdAt,
-        });
+        }, classifyRuntimeSensitivity);
       }
       return {
         ...result,
@@ -914,16 +1144,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
 
     if (event.type !== "conversation.message") return { ...result, skippedReason: "unsupported_event" };
 
-    const sensitivity = classifySensitivity(event.content);
-    const eligible = eligibleForLongTermMemory({
-      content: event.content,
-      privacyMode: event.privacyMode,
-    });
+    const sensitivity = classifyRuntimeSensitivity(event.content, "content");
+    const eligible = event.privacyMode !== "incognito" && sensitivity !== "secret_like";
     result.eligibleForLongTermMemory = eligible;
 
     if (!eligible) return { ...result, skippedReason: "not_eligible_for_long_term_memory" };
 
-    const eventMetadata = sourceMetadataForEvent(event);
+    const eventMetadata = sourceMetadataForEvent(event, classifyRuntimeSensitivity);
     const evidence = await store.recordEvidence({
       profileId,
       eventKey: eventKey(event),
@@ -961,24 +1188,40 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       fallbackToRules: options.extraction?.fallbackToRules ?? false,
       minConfidence: options.extraction?.minConfidence,
     });
-    result.extraction = extraction.report;
+    result.extraction = sanitizeRuntimeExtractionReport(
+      extraction.report,
+      classifyRuntimeSensitivity,
+    );
     for (const candidate of extraction.candidates) {
-      const candidateSourceMetadata = sourceMetadataForCandidate(eventMetadata, candidate);
+      const candidateSourceMetadata = sourceMetadataForCandidate(
+        eventMetadata,
+        candidate,
+        classifyRuntimeSensitivity,
+      );
       const subject = worldBeliefSubjectForCandidate({
         candidate,
         eventMetadata: candidateSourceMetadata,
+        classifyRuntimeSensitivity,
       });
       const writeCandidate = memoryWriteCandidateForSubject({
         candidate,
         subject,
         entityResolver: options.entityResolver,
       });
-      const candidateSensitivity = classifySensitivity(writeCandidate.content);
-      const candidateStructuredSensitivity = structuredCandidateSensitivity(writeCandidate);
+      const candidateSensitivity = classifyRuntimeSensitivity(writeCandidate.content, "content");
+      const candidateStructuredSensitivity = structuredCandidateSensitivity(
+        writeCandidate,
+        classifyRuntimeSensitivity,
+      );
+      const candidateMetadataSensitivity = runtimeValueSensitivity(
+        writeCandidate.metadata,
+        classifyRuntimeSensitivity,
+      );
       const structuredMetadata = structuredCandidateMetadata(writeCandidate);
       if (
         writeCandidate.kind === "person" ||
         candidateSensitivity === "secret_like" ||
+        candidateMetadataSensitivity === "secret_like" ||
         candidateStructuredSensitivity === "secret_like" ||
         isPersonRoutedMemory(writeCandidate.content)
       ) {
@@ -999,11 +1242,15 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         sensitivity: memorySensitivityForCandidate({
           eventSensitivity: sensitivity,
           candidateContentSensitivity: candidateSensitivity,
+          candidateMetadataSensitivity,
           candidateStructuredSensitivity,
         }),
         sourceEventId: evidence.id,
         metadata: {
-          ...sanitizeExternalMemoryMetadata(candidate.metadata),
+          ...sanitizeRuntimeExternalMemoryMetadata(
+            candidate.metadata,
+            classifyRuntimeSensitivity,
+          ),
           ...structuredMetadata,
           sourceRole: event.role,
           ...(Object.keys(candidateSourceMetadata).length > 0 ? { sourceMetadata: candidateSourceMetadata } : {}),
@@ -1017,6 +1264,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           candidate: writeCandidate,
           subject,
           eventMetadata: candidateSourceMetadata,
+          classifyRuntimeSensitivity,
         });
         const beliefEntityMentions = buildEntityMentions({
           subject,
@@ -1036,7 +1284,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           cardinality: writeCandidate.cardinality,
           createdAt: event.createdAt ?? memory.createdAt,
           metadata: {
-            ...sanitizeExternalMemoryMetadata(writeCandidate.metadata),
+            ...sanitizeRuntimeExternalMemoryMetadata(
+              writeCandidate.metadata,
+              classifyRuntimeSensitivity,
+            ),
             ...structuredMetadata,
             sourceRole: event.role,
             ...(Object.keys(candidateSourceMetadata).length > 0 ? { sourceMetadata: candidateSourceMetadata } : {}),
@@ -1065,16 +1316,22 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         ? { eligibleForLongTermMemory: input.eligibleForLongTermMemory }
         : {}),
     });
-    return evidence.map(sanitizeEvidenceForPublicOutput);
+    return evidence.map((event) =>
+      sanitizeRuntimeEvidenceForPublicOutput(event, classifyRuntimeSensitivity)
+    );
   }
 
   async function prepareTurn(input: PrepareTurnInput) {
     await initialize();
     const profileId = profileIdFor(defaultProfileId, input.profileId);
     const displayQuery = prepareTurnDisplayQuery(input);
-    const query = prepareTurnQuery(input);
-    const hideTaskRetrievalHints = displayQuery !== query;
-    const privateRouteSignals = privateTaskRouteSignals(input, displayQuery);
+    const query = prepareTurnQuery(input, classifyRuntimeSensitivity);
+    const privateRouteSignals = privateTaskRouteSignals(
+      input,
+      displayQuery,
+      classifyRuntimeSensitivity,
+    );
+    const hideTaskRetrievalHints = displayQuery !== query || privateRouteSignals.length > 0;
     const before = await readAuditSnapshot(store);
     const memories = sourceScopedMemories(await store.searchMemories({
       profileId,
@@ -1092,7 +1349,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       for (const event of await store.listEvidenceForMemory(memoryId)) {
         if (seenEvidenceIds.has(event.id)) continue;
         seenEvidenceIds.add(event.id);
-        const publicEvidence = sanitizeEvidenceForPublicOutput(event);
+        const publicEvidence = sanitizeRuntimeEvidenceForPublicOutput(
+          event,
+          classifyRuntimeSensitivity,
+        );
         evidence.push(
           hideTaskRetrievalHints
             ? hideEvidencePayload(publicEvidence, privateRouteSignals)
@@ -1126,6 +1386,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
             store,
             defaultProfileId,
             cueExtractor: options.reconstruction?.cueExtractor,
+            sanitizeEvidenceForOutput: (event) =>
+              sanitizeRuntimeEvidenceForPublicOutput(event, classifyRuntimeSensitivity),
             request: {
               profileId,
               query: displayQuery,
@@ -1141,7 +1403,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
               includeTemporalMetadata: input.reconstruction.includeTemporalMetadata,
               temporalMode: input.reconstruction.temporalMode,
               recallPurpose: input.reconstruction.recallPurpose,
-              reconstructionIntent: input.reconstruction.reconstructionIntent,
+              reconstructionIntent: sanitizedReconstructionIntent(
+                input.reconstruction.reconstructionIntent,
+                classifyRuntimeSensitivity,
+              ),
               privateRouteSignals,
             },
           })
@@ -1161,7 +1426,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       store,
       defaultProfileId,
       cueExtractor: options.reconstruction?.cueExtractor,
-      request: input,
+      sanitizeEvidenceForOutput: (event) =>
+        sanitizeRuntimeEvidenceForPublicOutput(event, classifyRuntimeSensitivity),
+      request: sanitizedReconstructRequest(input, classifyRuntimeSensitivity),
     });
     assertNoReadSideEffects({
       operation: "reconstructContext",
@@ -1180,10 +1447,12 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       store,
       defaultProfileId,
       cueExtractor: options.reconstruction?.cueExtractor,
-      request: {
+      sanitizeEvidenceForOutput: (event) =>
+        sanitizeRuntimeEvidenceForPublicOutput(event, classifyRuntimeSensitivity),
+      request: sanitizedReconstructRequest({
         ...input,
         includeEvidence: input.includeEvidence ?? true,
-      },
+      }, classifyRuntimeSensitivity),
     });
     assertNoReadSideEffects({
       operation: "explainEvidencePath",
@@ -1206,14 +1475,15 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       status: input.status,
       summary: input.summary,
       createdAt: input.createdAt,
-    });
+    }, classifyRuntimeSensitivity);
     if (taskOutcomeResult === "recorded" && input.status === "failed") {
       await recordRuntimeFailure(store, {
         profileId,
         failureKind: "task_failure",
         content: input.summary ?? input.objective,
         createdAt: input.createdAt,
-      });
+        additionalSurfaces: ["task_trajectory"],
+      }, classifyRuntimeSensitivity);
     }
   }
 
@@ -1224,7 +1494,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       failureKind: input.failureKind ?? "wrong_recall",
       content: input.content,
       createdAt: input.createdAt,
-    });
+    }, classifyRuntimeSensitivity);
   }
 
   async function forget(input: ForgetInput): Promise<ForgetResult> {
@@ -1246,7 +1516,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     });
     if (!memory) return null;
     const evidence = (await store.listEvidenceForMemory(memory.id)).map(
-      sanitizeEvidenceForPublicOutput,
+      (event) => sanitizeRuntimeEvidenceForPublicOutput(event, classifyRuntimeSensitivity),
     );
     return {
       id: memory.id,

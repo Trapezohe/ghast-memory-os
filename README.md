@@ -599,6 +599,26 @@ safety gates still apply: incognito and secret-like content is skipped before
 evidence persistence, `PERSON:` routed content is not promoted into user memory,
 and accepted memories keep their source role in metadata for auditability.
 
+Hosts with local product domains can add a host-owned sensitivity classifier
+instead of asking gmOS core to grow more language or domain keyword lists:
+
+```ts
+const memory = createMemoryOS({
+  store,
+  safety: {
+    sensitivityClassifier: ({ value, surface }) =>
+      hostSensitivityPolicy.classify({ value, surface }),
+  },
+});
+```
+
+This classifier is additive. gmOS still runs its built-in conservative detector
+and combines both results by maximum sensitivity, so a host can mark additional
+terms as sensitive or secret-like but cannot downgrade built-in secret-like
+matches. Host-classified secret-like observations are skipped before evidence
+persistence. Host-classified sensitive and secret-like values are redacted on
+runtime report and public evidence output surfaces before they leave the SDK.
+
 For OpenAI-compatible providers, gmOS includes an optional structured extractor
 factory. It is never enabled by default and the SDK never stores provider keys:
 

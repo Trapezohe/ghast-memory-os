@@ -85,6 +85,11 @@ Safety gates are part of the runtime contract:
 - forget archives matching memory and removes derived context residue;
 - do-not-push boundaries become action policy, not optional prose.
 
+Hosts can provide an additive sensitivity classifier for product-specific local
+terms. The built-in detector remains active and gmOS uses the maximum
+sensitivity, so host policy can tighten storage/context gates without weakening
+default secret-like protections or growing core language keyword lists.
+
 These gates must not be weakened to improve benchmark scores.
 
 ## Host Boundary

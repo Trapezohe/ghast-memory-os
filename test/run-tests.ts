@@ -3459,8 +3459,13 @@ const unsafeEventDateParserMemory = createMemoryOS({
   },
   extractor: (input) => ({
     kind: "fact",
-    content: input.event.content,
+    content: input.event.content.includes("HOST_METADATA_ONLY")
+      ? "Host metadata carrier fact."
+      : input.event.content,
     confidence: 0.9,
+    ...(input.event.content.includes("HOST_METADATA_ONLY")
+      ? { metadata: { localDomain: "HostSecretSignal metadata value." } }
+      : {}),
   }),
 });
 const invalidEventDateReport = await unsafeEventDateParserMemory.observeWithReport({
@@ -5399,6 +5404,552 @@ assert.equal(nonUserEvidenceReport.extraction, undefined);
 assert.equal(typeof nonUserEvidenceReport.evidenceId, "string");
 assert.equal(nonUserEvidenceReport.memoryIds.length, 0);
 assert.equal(nonUserEvidenceReport.worldBeliefIds.length, 0);
+const hostSafetyPath = path.join(tmp, "host-safety-classifier.db");
+const hostSafetyStore = createSqliteMemoryStore({ path: hostSafetyPath });
+const hostSafetyMemory = createMemoryOS({
+  profileId: "host_safety",
+  store: hostSafetyStore,
+  safety: {
+    sensitivityClassifier: ({ value, surface }) =>
+      value.includes("HostSecretSignal")
+        ? "secret_like"
+        : value.includes("HostTaskOnlySecret") && surface === "task_trajectory"
+          ? "secret_like"
+        : value.includes("HostSensitiveSignal")
+          ? "sensitive"
+          : value.includes("HostTaskOnlySensitive") && surface === "task_trajectory"
+            ? "sensitive"
+            : value.includes("HostFailureOnlySensitive") && surface === "failure"
+              ? "sensitive"
+              : value.includes("HostSensitiveEvidence") && surface === "content"
+                ? "sensitive"
+                : "normal",
+  },
+  extractor: (input) => ({
+    kind: "fact",
+    content: input.event.content.includes("HOST_METADATA_ONLY")
+      ? "Host metadata carrier fact."
+      : input.event.content.includes("HOST_SENSITIVE_EVIDENCE")
+        ? "Host sensitive evidence carrier fact."
+      : input.event.content,
+    confidence: 0.9,
+    ...(input.event.content.includes("HOST_METADATA_ONLY")
+      ? { metadata: { localDomain: "HostSecretSignal metadata value." } }
+      : {}),
+  }),
+});
+const hostSecretObserveReport = await hostSafetyMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "host_safety",
+  role: "user",
+  content: "HostSecretSignal should be treated as host secret.",
+});
+assert.equal(hostSecretObserveReport.eligibleForLongTermMemory, false);
+assert.equal(hostSecretObserveReport.skippedReason, "not_eligible_for_long_term_memory");
+assert.equal(hostSecretObserveReport.evidenceId, undefined);
+await assert.rejects(
+  hostSafetyMemory.add({
+    profileId: "host_safety",
+    kind: "fact",
+    content: "HostSecretSignal low-level content.",
+  }),
+  /secret-like/,
+);
+const hostSecretMetadataReport = await hostSafetyMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "host_safety",
+  role: "user",
+  content: "HOST_METADATA_ONLY public carrier.",
+});
+assert.equal(typeof hostSecretMetadataReport.evidenceId, "string");
+assert.deepEqual(hostSecretMetadataReport.memoryIds, []);
+assert.equal(JSON.stringify(hostSecretMetadataReport.extraction).includes("HostSecretSignal"), false);
+assert.equal(JSON.stringify(hostSecretMetadataReport.extraction).includes("[redacted_secret]"), true);
+const hostMetadataMemory = await hostSafetyMemory.add({
+  profileId: "host_safety",
+  kind: "fact",
+  content: "Public low-level content with host-owned metadata.",
+  metadata: { localDomain: "HostSecretSignal metadata value." },
+});
+assert.equal(JSON.stringify(hostMetadataMemory.metadata).includes("HostSecretSignal"), false);
+assert.equal(JSON.stringify(hostMetadataMemory.metadata).includes("[redacted_secret]"), true);
+const hostLegacyMetadataPath = path.join(tmp, "host-legacy-metadata-reclean.db");
+const hostLegacyStore = createSqliteMemoryStore({ path: hostLegacyMetadataPath });
+const hostLegacyPlainMemory = createMemoryOS({
+  profileId: "host_legacy_metadata",
+  store: hostLegacyStore,
+});
+const hostLegacyRecord = await hostLegacyPlainMemory.add({
+  profileId: "host_legacy_metadata",
+  kind: "fact",
+  content: "Public legacy metadata carrier.",
+  metadata: { localDomain: "HostSecretSignal legacy metadata value." },
+});
+const hostLegacyClassifiedMemory = createMemoryOS({
+  profileId: "host_legacy_metadata",
+  store: hostLegacyStore,
+  safety: {
+    sensitivityClassifier: ({ value }) =>
+      value.includes("HostSecretSignal") ? "secret_like" : undefined,
+  },
+});
+const hostLegacyUpdated = await hostLegacyClassifiedMemory.update({
+  profileId: "host_legacy_metadata",
+  id: hostLegacyRecord.id,
+  metadata: { updatedPublic: "yes" },
+});
+assert.equal(JSON.stringify(hostLegacyUpdated?.metadata).includes("HostSecretSignal"), false);
+assert.equal(JSON.stringify(hostLegacyUpdated?.metadata).includes("[redacted_secret]"), true);
+await hostLegacyClassifiedMemory.close();
+await hostSafetyMemory.commitOutcome({
+  profileId: "host_safety",
+  taskId: "host-secret-task",
+  objective: "Host safety task",
+  status: "failed",
+  summary: "HostSecretSignal task summary.",
+});
+const hostSafetyFailures = await hostSafetyStore.listFailures?.({ profileId: "host_safety" });
+assert.equal(JSON.stringify(hostSafetyFailures).includes("HostSecretSignal"), false);
+assert.equal(JSON.stringify(hostSafetyFailures).includes("[redacted_secret]"), true);
+await hostSafetyMemory.recordFeedback({
+  profileId: "host_safety",
+  failureKind: "wrong_recall",
+  content: "HostSensitiveSignal feedback body.",
+});
+await hostSafetyMemory.commitOutcome({
+  profileId: "host_safety",
+  taskId: "HostSensitiveSignal task id",
+  objective: "HostSensitiveSignal task objective",
+  status: "completed",
+  summary: "HostSensitiveSignal task summary.",
+});
+const hostSensitiveFailures = await hostSafetyStore.listFailures?.({
+  profileId: "host_safety",
+  failureKind: "wrong_recall",
+});
+assert.equal(JSON.stringify(hostSensitiveFailures).includes("HostSensitiveSignal"), false);
+assert.equal(JSON.stringify(hostSensitiveFailures).includes("[redacted_sensitive]"), true);
+const hostSafetyDb = new Database(hostSafetyPath, { readonly: true });
+const hostSensitiveTaskRows = hostSafetyDb
+  .prepare(
+    `SELECT task_id, objective, summary
+       FROM gmos_task_trajectories
+      WHERE profile_id = ? AND status = 'completed'`,
+  )
+  .all("host_safety");
+hostSafetyDb.close();
+assert.equal(JSON.stringify(hostSensitiveTaskRows).includes("HostSensitiveSignal"), false);
+assert.equal(JSON.stringify(hostSensitiveTaskRows).includes("[redacted_sensitive]"), true);
+const hostSensitiveEvidenceReport = await hostSafetyMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "host_safety",
+  role: "user",
+  content: "HOST_SENSITIVE_EVIDENCE HostSensitiveEvidence source text.",
+});
+assert.equal(hostSensitiveEvidenceReport.memoryIds.length, 1);
+const hostSensitiveEvidence = await hostSafetyMemory.listEvidence({
+  profileId: "host_safety",
+  includeSensitive: true,
+});
+assert.equal(JSON.stringify(hostSensitiveEvidence).includes("HostSensitiveEvidence"), false);
+assert.equal(JSON.stringify(hostSensitiveEvidence).includes("[redacted_sensitive]"), true);
+const hostSensitiveEvidencePrepared = await hostSafetyMemory.prepareTurn({
+  profileId: "host_safety",
+  includeSensitive: true,
+  includeEvidence: true,
+  messages: [{ role: "user", content: "carrier fact" }],
+});
+assert.equal(hostSensitiveEvidencePrepared.contextBlock.includes("HostSensitiveEvidence"), false);
+assert.equal(JSON.stringify(hostSensitiveEvidencePrepared.evidence).includes("HostSensitiveEvidence"), false);
+assert.equal(JSON.stringify(hostSensitiveEvidencePrepared.evidence).includes("[redacted_sensitive]"), true);
+const hostSensitiveEvidenceReconstructed = await hostSafetyMemory.reconstructContext({
+  profileId: "host_safety",
+  query: "carrier fact",
+  includeSensitive: true,
+  includeEvidence: true,
+});
+assert.equal(hostSensitiveEvidenceReconstructed.contextBlock.includes("HostSensitiveEvidence"), false);
+assert.equal(JSON.stringify(hostSensitiveEvidenceReconstructed.evidence).includes("HostSensitiveEvidence"), false);
+assert.equal(JSON.stringify(hostSensitiveEvidenceReconstructed.evidence).includes("[redacted_sensitive]"), true);
+const hostSensitiveEvidencePath = await hostSafetyMemory.explainEvidencePath({
+  profileId: "host_safety",
+  query: "carrier fact",
+  includeSensitive: true,
+  includeEvidence: true,
+});
+assert.equal(JSON.stringify(hostSensitiveEvidencePath).includes("HostSensitiveEvidence"), false);
+assert.equal(JSON.stringify(hostSensitiveEvidencePath).includes("[redacted_sensitive]"), true);
+const hostSensitiveEvidenceShadow = await hostSafetyMemory.prepareTurn({
+  profileId: "host_safety",
+  includeSensitive: true,
+  includeEvidence: true,
+  reconstruction: { mode: "shadow" },
+  messages: [{ role: "user", content: "carrier fact" }],
+});
+assert.equal(
+  JSON.stringify(hostSensitiveEvidenceShadow.reconstruction).includes("HostSensitiveEvidence"),
+  false,
+);
+assert.equal(
+  JSON.stringify(hostSensitiveEvidenceShadow.reconstruction).includes("[redacted_sensitive]"),
+  true,
+);
+await hostSafetyMemory.commitOutcome({
+  profileId: "host_safety",
+  taskId: "host-task-only-secret",
+  objective: "HostTaskOnlySecret failed objective",
+  status: "failed",
+  summary: "HostTaskOnlySecret failed summary.",
+});
+await hostSafetyMemory.commitOutcome({
+  profileId: "host_safety",
+  taskId: "host-task-only-sensitive",
+  objective: "HostTaskOnlySensitive failed objective",
+  status: "failed",
+  summary: "HostTaskOnlySensitive failed summary.",
+});
+await hostSafetyMemory.commitOutcome({
+  profileId: "host_safety",
+  taskId: "host-failure-only-sensitive",
+  objective: "HostFailureOnlySensitive failed objective",
+  status: "failed",
+  summary: "HostFailureOnlySensitive failed summary.",
+});
+const hostCrossSurfaceFailures = await hostSafetyStore.listFailures?.({
+  profileId: "host_safety",
+  failureKind: "task_failure",
+});
+assert.equal(JSON.stringify(hostCrossSurfaceFailures).includes("HostTaskOnlySecret"), false);
+assert.equal(JSON.stringify(hostCrossSurfaceFailures).includes("HostTaskOnlySensitive"), false);
+assert.equal(JSON.stringify(hostCrossSurfaceFailures).includes("HostFailureOnlySensitive"), false);
+assert.equal(JSON.stringify(hostCrossSurfaceFailures).includes("[redacted_secret]"), true);
+assert.equal(JSON.stringify(hostCrossSurfaceFailures).includes("[redacted_sensitive]"), true);
+const hostCrossSurfaceDb = new Database(hostSafetyPath, { readonly: true });
+const hostCrossSurfaceTaskRows = hostCrossSurfaceDb
+  .prepare(
+    `SELECT task_id, objective, summary
+       FROM gmos_task_trajectories
+      WHERE profile_id = ?`,
+  )
+  .all("host_safety");
+hostCrossSurfaceDb.close();
+assert.equal(JSON.stringify(hostCrossSurfaceTaskRows).includes("HostTaskOnlySecret"), false);
+assert.equal(JSON.stringify(hostCrossSurfaceTaskRows).includes("HostTaskOnlySensitive"), false);
+assert.equal(JSON.stringify(hostCrossSurfaceTaskRows).includes("HostFailureOnlySensitive"), false);
+assert.equal(JSON.stringify(hostCrossSurfaceTaskRows).includes("[redacted_sensitive]"), true);
+const nonDowngradeSafetyMemory = createMemoryOS({
+  profileId: "host_safety_no_downgrade",
+  store: createSqliteMemoryStore({ path: path.join(tmp, "host-safety-no-downgrade.db") }),
+  safety: { sensitivityClassifier: () => "normal" },
+});
+await assert.rejects(
+  nonDowngradeSafetyMemory.add({
+    profileId: "host_safety_no_downgrade",
+    kind: "fact",
+    content: "api key: sk-hostsafetycannotdowngrade1234567890",
+  }),
+  /secret-like/,
+);
+const hostSpeakerSurfaceStore = createSqliteMemoryStore({
+  path: path.join(tmp, "host-speaker-surface-safety.db"),
+});
+const hostSpeakerSurfaceMemory = createMemoryOS({
+  profileId: "host_speaker_surface",
+  store: hostSpeakerSurfaceStore,
+  safety: {
+    sensitivityClassifier: ({ value, surface }) =>
+      surface === "speaker" && value.includes("HostSpeakerSecret")
+        ? "secret_like"
+        : undefined,
+  },
+  extractor: (input) => ({
+    kind: "fact",
+    content: "Public speaker metadata carrier fact.",
+    confidence: 0.9,
+    ...(input.event.content.includes("HOST_SPEAKER_CANDIDATE")
+      ? { speaker: "HostSpeakerSecret Candidate" }
+      : {}),
+    ...(input.event.content.includes("HOST_SPEAKER_METADATA_CANDIDATE")
+      ? {
+          metadata: {
+            speaker: "HostSpeakerSecret Candidate Metadata",
+            speakerAliases: ["HostSpeakerSecret Candidate Alias"],
+            participants: ["HostSpeakerSecret Candidate Participant"],
+          },
+        }
+      : {}),
+  }),
+});
+const hostSpeakerReport = await hostSpeakerSurfaceMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "host_speaker_surface",
+  role: "user",
+  content: "Public speaker metadata carrier fact.",
+  metadata: {
+    speaker: "HostSpeakerSecret Alice",
+    speakerKind: "person",
+    speakerAliases: ["HostSpeakerSecret Alias"],
+    participants: ["HostSpeakerSecret Participant"],
+  },
+});
+assert.equal(hostSpeakerReport.memoryIds.length, 1);
+const hostSpeakerMemoryRecord = await hostSpeakerSurfaceMemory.get({
+  profileId: "host_speaker_surface",
+  id: hostSpeakerReport.memoryIds[0]!,
+});
+const hostSpeakerMetadataJson = JSON.stringify(hostSpeakerMemoryRecord?.metadata);
+assert.equal(hostSpeakerMetadataJson.includes("HostSpeakerSecret"), false);
+assert.equal(hostSpeakerMetadataJson.includes("[redacted_secret]"), true);
+assert.equal(hostSpeakerMetadataJson.includes("source_speaker"), false);
+const hostLowLevelSpeakerMetadataMemory = await hostSpeakerSurfaceMemory.add({
+  profileId: "host_speaker_surface",
+  kind: "fact",
+  content: "Public low-level speaker metadata carrier.",
+  metadata: {
+    speaker: "HostSpeakerSecret LowLevel",
+    speakerKind: "person",
+    participants: ["HostSpeakerSecret LowLevel Participant"],
+  },
+});
+assert.equal(JSON.stringify(hostLowLevelSpeakerMetadataMemory.metadata).includes("HostSpeakerSecret"), false);
+assert.equal(JSON.stringify(hostLowLevelSpeakerMetadataMemory.metadata).includes("[redacted_secret]"), true);
+const hostSpeakerCandidateReport = await hostSpeakerSurfaceMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "host_speaker_surface",
+  role: "user",
+  content: "HOST_SPEAKER_CANDIDATE public candidate carrier.",
+});
+assert.equal(hostSpeakerCandidateReport.memoryIds.length, 1);
+assert.equal(JSON.stringify(hostSpeakerCandidateReport.extraction).includes("HostSpeakerSecret"), false);
+assert.equal(JSON.stringify(hostSpeakerCandidateReport.extraction).includes("[redacted_secret]"), true);
+const hostSpeakerMetadataCandidateReport = await hostSpeakerSurfaceMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "host_speaker_surface",
+  role: "user",
+  content: "HOST_SPEAKER_METADATA_CANDIDATE public candidate metadata carrier.",
+});
+assert.deepEqual(hostSpeakerMetadataCandidateReport.memoryIds, []);
+assert.equal(
+  JSON.stringify(hostSpeakerMetadataCandidateReport.extraction).includes("HostSpeakerSecret"),
+  false,
+);
+assert.equal(
+  JSON.stringify(hostSpeakerMetadataCandidateReport.extraction).includes("[redacted_secret]"),
+  true,
+);
+const hostSpeakerEvidence = await hostSpeakerSurfaceStore.listEvidence?.({
+  profileId: "host_speaker_surface",
+});
+assert.equal(JSON.stringify(hostSpeakerEvidence).includes("HostSpeakerSecret"), false);
+await hostSpeakerSurfaceMemory.close();
+const hostLegacySpeakerEntityPath = path.join(tmp, "host-legacy-speaker-entity-reclean.db");
+const hostLegacySpeakerEntityStore = createSqliteMemoryStore({
+  path: hostLegacySpeakerEntityPath,
+});
+const hostLegacySpeakerEntityPlainMemory = createMemoryOS({
+  profileId: "host_legacy_speaker_entity",
+  store: hostLegacySpeakerEntityStore,
+  extractor: () => ({
+    kind: "fact",
+    content: "Public legacy speaker entity fact.",
+    confidence: 0.9,
+  }),
+});
+const hostLegacySpeakerEntityReport = await hostLegacySpeakerEntityPlainMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "host_legacy_speaker_entity",
+  role: "user",
+  content: "Public legacy speaker entity fact.",
+  metadata: {
+    speaker: "HostSpeakerSecret Legacy Alice",
+    speakerKind: "person",
+  },
+});
+assert.equal(hostLegacySpeakerEntityReport.memoryIds.length, 1);
+const hostLegacySpeakerEntityBefore = await hostLegacySpeakerEntityPlainMemory.get({
+  profileId: "host_legacy_speaker_entity",
+  id: hostLegacySpeakerEntityReport.memoryIds[0]!,
+});
+assert.equal(
+  JSON.stringify(hostLegacySpeakerEntityBefore?.metadata).includes("HostSpeakerSecret"),
+  true,
+);
+const hostLegacySpeakerEntityClassifiedMemory = createMemoryOS({
+  profileId: "host_legacy_speaker_entity",
+  store: hostLegacySpeakerEntityStore,
+  safety: {
+    sensitivityClassifier: ({ value, surface }) =>
+      surface === "speaker" && value.includes("HostSpeakerSecret")
+        ? "secret_like"
+        : undefined,
+  },
+});
+const hostLegacySpeakerEntityUpdated = await hostLegacySpeakerEntityClassifiedMemory.update({
+  profileId: "host_legacy_speaker_entity",
+  id: hostLegacySpeakerEntityReport.memoryIds[0]!,
+  metadata: { publicUpdate: "yes" },
+});
+assert.equal(
+  JSON.stringify(hostLegacySpeakerEntityUpdated?.metadata).includes("HostSpeakerSecret"),
+  false,
+);
+assert.equal(
+  JSON.stringify(hostLegacySpeakerEntityUpdated?.metadata).includes("[redacted_secret]"),
+  true,
+);
+await hostLegacySpeakerEntityClassifiedMemory.close();
+const hostLegacyMetadataEntityPath = path.join(tmp, "host-legacy-metadata-entity-reclean.db");
+const hostLegacyMetadataEntityStore = createSqliteMemoryStore({
+  path: hostLegacyMetadataEntityPath,
+});
+const hostLegacyMetadataEntityPlainMemory = createMemoryOS({
+  profileId: "host_legacy_metadata_entity",
+  store: hostLegacyMetadataEntityStore,
+  extractor: () => ({
+    kind: "project",
+    content: "Public legacy metadata entity fact.",
+    confidence: 0.9,
+    subject: "project:HostMetadataSecret Project",
+    predicate: "project.state",
+    object: "active",
+    cardinality: "single",
+  }),
+});
+const hostLegacyMetadataEntityReport = await hostLegacyMetadataEntityPlainMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "host_legacy_metadata_entity",
+  role: "user",
+  content: "Public legacy metadata entity fact.",
+});
+assert.equal(hostLegacyMetadataEntityReport.memoryIds.length, 1);
+const hostLegacyMetadataEntityBefore = await hostLegacyMetadataEntityPlainMemory.get({
+  profileId: "host_legacy_metadata_entity",
+  id: hostLegacyMetadataEntityReport.memoryIds[0]!,
+});
+assert.equal(
+  JSON.stringify(hostLegacyMetadataEntityBefore?.metadata).includes("HostMetadataSecret"),
+  true,
+);
+const hostLegacyMetadataEntityClassifiedMemory = createMemoryOS({
+  profileId: "host_legacy_metadata_entity",
+  store: hostLegacyMetadataEntityStore,
+  safety: {
+    sensitivityClassifier: ({ value, surface }) =>
+      surface === "metadata" && value.includes("HostMetadataSecret")
+        ? "secret_like"
+        : undefined,
+  },
+});
+const hostLegacyMetadataEntityUpdated = await hostLegacyMetadataEntityClassifiedMemory.update({
+  profileId: "host_legacy_metadata_entity",
+  id: hostLegacyMetadataEntityReport.memoryIds[0]!,
+  metadata: { publicUpdate: "yes" },
+});
+assert.equal(
+  JSON.stringify(hostLegacyMetadataEntityUpdated?.metadata).includes("HostMetadataSecret"),
+  false,
+);
+assert.equal(
+  JSON.stringify(hostLegacyMetadataEntityUpdated?.metadata).includes("[redacted_secret]"),
+  true,
+);
+await hostLegacyMetadataEntityClassifiedMemory.close();
+const hostStructuredMetadataSurfaceStore = createSqliteMemoryStore({
+  path: path.join(tmp, "host-structured-metadata-surface-safety.db"),
+});
+const hostStructuredMetadataSurfaceMemory = createMemoryOS({
+  profileId: "host_structured_metadata_surface",
+  store: hostStructuredMetadataSurfaceStore,
+  safety: {
+    sensitivityClassifier: ({ value, surface }) =>
+      surface === "metadata" && value.includes("HostMetadataSecret")
+        ? "secret_like"
+        : undefined,
+  },
+  extractor: () => ({
+    kind: "project",
+    content: "Public structured metadata carrier fact.",
+    confidence: 0.9,
+    subject: "project:HostMetadataSecret Project",
+    predicate: "project.state",
+    object: "active",
+    cardinality: "single",
+  }),
+});
+const hostStructuredMetadataSurfaceReport =
+  await hostStructuredMetadataSurfaceMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: "host_structured_metadata_surface",
+    role: "user",
+    content: "Public structured metadata carrier fact.",
+  });
+assert.deepEqual(hostStructuredMetadataSurfaceReport.memoryIds, []);
+assert.equal(
+  JSON.stringify(hostStructuredMetadataSurfaceReport.extraction).includes("HostMetadataSecret"),
+  false,
+);
+assert.equal(
+  JSON.stringify(hostStructuredMetadataSurfaceReport.extraction).includes("[redacted_secret]"),
+  true,
+);
+await hostStructuredMetadataSurfaceMemory.close();
+const hostRouteSurfaceStore = createSqliteMemoryStore({
+  path: path.join(tmp, "host-route-surface-safety.db"),
+});
+const hostRouteSurfaceMemory = createMemoryOS({
+  profileId: "host_route_surface",
+  store: hostRouteSurfaceStore,
+  safety: {
+    sensitivityClassifier: ({ value, surface }) =>
+      surface === "route_signal" && value.includes("HostRouteSecret")
+        ? "secret_like"
+        : undefined,
+  },
+});
+await hostRouteSurfaceMemory.add({
+  profileId: "host_route_surface",
+  kind: "project",
+  content: "HostRouteSecret anchors RouteHiddenPlan.",
+});
+await hostRouteSurfaceMemory.add({
+  profileId: "host_route_surface",
+  kind: "project",
+  content: "PublicRouteProject anchors PublicRoutePlan.",
+});
+const publicRoutePrepared = await hostRouteSurfaceMemory.prepareTurn({
+  profileId: "host_route_surface",
+  messages: [{ role: "user", content: "General next step?" }],
+  task: { projectId: "PublicRouteProject" },
+});
+assert.equal(publicRoutePrepared.contextBlock.includes("PublicRoutePlan"), true);
+assert.equal(publicRoutePrepared.contextBlock.includes("PublicRouteProject"), false);
+const secretRoutePrepared = await hostRouteSurfaceMemory.prepareTurn({
+  profileId: "host_route_surface",
+  messages: [{ role: "user", content: "General next step?" }],
+  task: { projectId: "HostRouteSecret" },
+  includeEvidence: true,
+});
+assert.equal(secretRoutePrepared.contextBlock.includes("HostRouteSecret"), false);
+assert.equal(secretRoutePrepared.contextBlock.includes("RouteHiddenPlan"), false);
+assert.equal(JSON.stringify(secretRoutePrepared.evidence).includes("HostRouteSecret"), false);
+const secretRouteReconstructed = await hostRouteSurfaceMemory.reconstructContext({
+  profileId: "host_route_surface",
+  query: "General next step?",
+  reconstructionIntent: {
+    queryCues: ["HostRouteSecret"],
+    expectedTags: ["HostRouteSecret"],
+    requiredTagGroups: [{ name: "HostRouteSecret", tags: ["HostRouteSecret"] }],
+  },
+});
+assert.equal(secretRouteReconstructed.contextBlock.includes("HostRouteSecret"), false);
+assert.equal(secretRouteReconstructed.contextBlock.includes("RouteHiddenPlan"), false);
+assert.equal(
+  secretRouteReconstructed.paths.some((path) => path.targetSummary.includes("HostRouteSecret")),
+  false,
+);
+await hostRouteSurfaceMemory.close();
+await nonDowngradeSafetyMemory.close();
+await hostSafetyMemory.close();
 const nonUserExtractionPath = path.join(tmp, "non-user-extraction.db");
 const nonUserExtractionStore = createSqliteMemoryStore({ path: nonUserExtractionPath });
 const nonUserExtractionMemory = createMemoryOS({
@@ -11778,7 +12329,7 @@ assert.equal(evolutionReportJson.includes("110101199001011234"), false);
 assert.equal(evolutionReportJson.includes("other profile wrong recall"), false);
 assert.ok(
   evolutionReport.clusters.some((cluster) =>
-    cluster.sampleContents.includes("[redacted_sensitive_failure]"),
+    cluster.sampleContents.includes("[redacted_sensitive]"),
   ),
 );
 assert.deepEqual(await store.rowCounts(), evolutionBeforeCounts);

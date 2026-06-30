@@ -162,6 +162,13 @@ language-specific cue rules to gmOS core. The extractor is a trusted, synchronou
 host callback: gmOS audits its own store read path and sanitizes returned cues,
 but it cannot police external side effects inside host callback code.
 
+Hosts can also configure `createMemoryOS({ safety: { sensitivityClassifier } })`
+to mark product-specific local terms as `sensitive` or `secret_like`. The
+classifier is additive: gmOS still applies the built-in conservative detector and
+uses the maximum sensitivity, so the host callback cannot downgrade built-in
+secret-like matches. This is the extension point for host-owned safety semantics;
+do not add product-specific keyword lists to gmOS core.
+
 ## CLI
 
 The npm package exposes two binaries:

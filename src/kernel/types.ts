@@ -6,6 +6,28 @@ export type PrivacyMode = "normal" | "incognito";
 
 export type Sensitivity = "normal" | "sensitive" | "secret_like";
 
+export interface MemorySensitivityClassifierInput {
+  value: string;
+  surface:
+    | "content"
+    | "failure"
+    | "metadata"
+    | "route_signal"
+    | "scope"
+    | "speaker"
+    | "structured_candidate"
+    | "task_trajectory";
+}
+
+export type MemorySensitivityClassifier =
+  | ((
+      input: MemorySensitivityClassifierInput,
+    ) => Sensitivity | null | undefined)
+  | {
+      name?: string | undefined;
+      classify(input: MemorySensitivityClassifierInput): Sensitivity | null | undefined;
+    };
+
 export type MemoryKind =
   | "fact"
   | "preference"
@@ -915,6 +937,17 @@ export interface MemoryOSOptions {
   } | undefined;
   reconstruction?: {
     cueExtractor?: MemoryCueExtractor | undefined;
+  } | undefined;
+  safety?: {
+    /**
+     * Host-specific additive sensitivity classifier.
+     *
+     * gmOS always keeps the built-in conservative classifier active and combines
+     * the host result with the built-in result by maximum sensitivity. Hosts can
+     * mark additional local domains as sensitive or secret-like, but cannot
+     * downgrade built-in secret-like detections through this option.
+     */
+    sensitivityClassifier?: MemorySensitivityClassifier | undefined;
   } | undefined;
   host?: {
     hostId?: string | undefined;
