@@ -66,7 +66,6 @@ const memory = createMemoryOS({
   profileId: "local-user",
   store,
   temporal: {
-    inferFromText: false,
     parser: ({ content }) =>
       content.includes("billing rollover")
         ? { validFrom: "2026-07-01", validTo: "2026-08-01" }

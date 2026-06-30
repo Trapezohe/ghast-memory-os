@@ -458,7 +458,7 @@ function parsedForgetTargetTerms(
 }
 
 function memoryMatchesForgetQuery(memory: MemoryRecord, terms: string[]): boolean {
-  if (terms.length === 0) return true;
+  if (terms.length === 0) return false;
   const lower = memory.content.toLowerCase();
   const tokens = new Set(queryTerms(memory.content));
   return terms.every((term) =>

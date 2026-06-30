@@ -3381,8 +3381,9 @@ assert.match(relativeTemporalPrepared.contextBlock, /project workshop/);
 assert.doesNotMatch(relativeTemporalPrepared.contextBlock, /event_date=/);
 assert.doesNotMatch(relativeTemporalPrepared.contextBlock, /event_date_text=/);
 await relativeTemporalMemory.close();
+const defaultTemporalInferencePath = path.join(tmp, "default-temporal-inference-disabled.db");
 const defaultTemporalInferenceStore = createSqliteMemoryStore({
-  path: path.join(tmp, "default-temporal-inference-disabled.db"),
+  path: defaultTemporalInferencePath,
 });
 const defaultTemporalInferenceMemory = createMemoryOS({
   profileId: "default-temporal-inference-disabled",
@@ -3404,6 +3405,28 @@ assert.equal(defaultTemporalInferenceStoredMemory?.metadata.eventTime, undefined
 assert.equal(defaultTemporalInferenceStoredMemory?.metadata.eventDate, undefined);
 assert.equal(defaultTemporalInferenceStoredMemory?.metadata.validFrom, undefined);
 assert.equal(defaultTemporalInferenceStoredMemory?.metadata.validTo, undefined);
+assert.equal(defaultTemporalInferenceObservation.worldBeliefIds.length, 1);
+const defaultTemporalInferenceDb = new Database(defaultTemporalInferencePath, { readonly: true });
+try {
+  const defaultTemporalInferenceBelief = defaultTemporalInferenceDb
+    .prepare(
+      `SELECT metadata_json
+       FROM gmos_world_beliefs
+       WHERE id = ?`,
+    )
+    .get(defaultTemporalInferenceObservation.worldBeliefIds[0]!) as
+    | { metadata_json: string }
+    | undefined;
+  const defaultTemporalInferenceBeliefMetadata = JSON.parse(
+    defaultTemporalInferenceBelief?.metadata_json ?? "{}",
+  ) as Record<string, unknown>;
+  assert.equal(defaultTemporalInferenceBeliefMetadata.eventTime, undefined);
+  assert.equal(defaultTemporalInferenceBeliefMetadata.eventDate, undefined);
+  assert.equal(defaultTemporalInferenceBeliefMetadata.validFrom, undefined);
+  assert.equal(defaultTemporalInferenceBeliefMetadata.validTo, undefined);
+} finally {
+  defaultTemporalInferenceDb.close();
+}
 await defaultTemporalInferenceMemory.close();
 const naturalDateTemporalStore = createSqliteMemoryStore({
   path: path.join(tmp, "natural-date-temporal.db"),
