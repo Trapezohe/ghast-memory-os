@@ -45,6 +45,17 @@ const productionSurfaceRoots = [
   "src",
 ];
 const productionSurfaceFilePattern = /\.(?:ts|js|mjs|md|json|jsonl)$/u;
+const productionRuntimeSourceRoots = [
+  "src/kernel",
+  "src/runtime",
+  "src/store",
+  "src/host",
+  "src/http",
+  "src/mcp",
+  "src/diagnostics",
+  "src/evolution",
+];
+const productionRuntimeSourceFilePattern = /\.(?:ts|js|mjs)$/u;
 const selfFile = "scripts/check-extraction-fallback-boundary.mjs";
 const legacyLinguisticFixturePattern =
   /legacy-linguistic-extractor\.fixture|test\/helpers\/legacy-linguistic-extractor/iu;
@@ -99,6 +110,12 @@ const publicBuiltInExtractorClaimPatterns = [
 if (!legacyLinguisticFixturePattern.test("test/helpers/legacy-linguistic-extractor.fixture.js")) {
   throw new Error("legacy linguistic fixture boundary scanner self-check failed");
 }
+if (
+  productionSemanticFallbackPatterns.every((pattern) => !pattern.test("hasFirstPersonAnchor")) ||
+  productionSemanticFallbackPatterns.every((pattern) => !pattern.test("NON_PERSON"))
+) {
+  throw new Error("production semantic fallback scanner self-check failed");
+}
 
 function posixRelativePath(relativePath) {
   return relativePath.replace(/\\/gu, "/");
@@ -118,6 +135,27 @@ function productionSurfaceFiles() {
   return productionSurfaceRoots
     .flatMap(filesUnder)
     .filter((relativePath) => relativePath !== selfFile);
+}
+
+function productionRuntimeSourceFiles() {
+  return productionRuntimeSourceRoots
+    .flatMap(filesUnder)
+    .filter((relativePath) => productionRuntimeSourceFilePattern.test(relativePath));
+}
+
+function patternMatchesInFiles(relativePaths, patterns) {
+  const matches = [];
+  for (const relativePath of relativePaths) {
+    const lines = read(relativePath).split(/\r?\n/u);
+    for (const [index, line] of lines.entries()) {
+      const matched = patterns.find((pattern) => pattern.test(line));
+      if (matched) {
+        matches.push(`${relativePath}:${index + 1}: ${line.trim()}`);
+        break;
+      }
+    }
+  }
+  return matches;
 }
 
 function legacyLinguisticFixtureReferences() {
@@ -235,6 +273,10 @@ function forgetCoreHasCommandStripper() {
 
 const forgetCommandStripperMatches = forgetCoreHasCommandStripper();
 const legacyLinguisticFixtureMatches = legacyLinguisticFixtureReferences();
+const productionSemanticFallbackMatches = patternMatchesInFiles(
+  productionRuntimeSourceFiles(),
+  productionSemanticFallbackPatterns,
+);
 
 const checks = [
   {
@@ -299,17 +341,12 @@ const checks = [
   },
   {
     name: "production-has-no-semantic-speaker-fallback",
-    pass: productionSemanticFallbackPatterns.every(
-      (pattern) =>
-        !pattern.test(runtime) &&
-        !pattern.test(associations) &&
-        !pattern.test(entities) &&
-        !pattern.test(personIdentity) &&
-        !pattern.test(reconstruction) &&
-        !pattern.test(safety),
-    ),
+    pass: productionSemanticFallbackMatches.length === 0,
     detail:
-      "Production runtime must not infer speaker/person/project identity from content templates or expanding non-person word lists.",
+      "Production runtime must not infer speaker/person/project identity from content templates or expanding non-person word lists." +
+      (productionSemanticFallbackMatches.length > 0
+        ? ` Matched: ${productionSemanticFallbackMatches.join("; ")}.`
+        : ""),
   },
   {
     name: "source-speaker-cues-require-typed-speaker-kind",
