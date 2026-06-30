@@ -95,6 +95,26 @@ const prepared = await memory.prepareTurn({
   hypotheses and patch candidates without auto-apply or auto-rollout.
 - CLI: `gmos`.
 
+## Known Limitations
+
+- gmOS is still a late-alpha SDK/runtime, not a stable 1.0 Agent Memory OS.
+- Local SQLite is plaintext by design. gmOS does not provide database
+  encryption, cloud custody, vault integration, or hosted synchronization.
+- The built-in extractor is a conservative rule fallback. Production-grade
+  broad extraction should use a host-provided structured extractor and keep the
+  same gmOS write-path guards.
+- External LongMemEval and LoCoMo numbers in this README are deterministic
+  adapter/context dry-runs. They are not official benchmark scores, official
+  LLM-judge scores, or SOTA claims.
+- Current public external scores are intentionally weak baselines. They expose
+  gaps in durable extraction, speaker/person/entity grounding, temporal/event
+  reconstruction, and large-history runtime.
+- STATE-Bench, Mem2ActBench, BEAM, and similar action-memory claims require
+  their unchanged official runners, fixed model/judge settings, and public
+  reproduction bundles.
+- ghast_desktop should not replace its production memory path with gmOS until
+  the SDK release evidence and app-side Electron E2E migration proof both pass.
+
 ## CLI
 
 ```bash
@@ -156,6 +176,7 @@ node dist/cli/gmos.js gym host --hosts ghast --actual-report ./ghast-memory-stat
 
 ```bash
 npm run gate:pr
+npm run release:evidence -- --output-dir ./release-evidence/alpha67-local
 node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format json --require-convergence --progress
 node dist/cli/gmos.js gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format json
 node dist/cli/gmos.js gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
@@ -170,6 +191,14 @@ the core no-benchmark-special-casing scan, consumer install smoke,
 deterministic Memory Gym smoke, external fixtures, the SDK release gate, scale
 smoke, and a pack dry run.
 
+`release:evidence` is the release-candidate evidence bundler. It requires a
+clean worktree by default, runs `gate:pr`, packs the SDK tarball, installs that
+tarball into a fresh temporary consumer project, runs minimal SDK and CLI smoke
+checks from the installed package, and writes `manifest.json`, `SUMMARY.md`, and
+command logs under `release-evidence/`. The directory is git-ignored. Use
+`--skip-gate`, `--skip-fresh-install`, and `--allow-dirty` only for local
+diagnostics; do not use those flags for public release evidence.
+
 `test:consumer` packs the SDK, installs it into a temporary external project,
 then verifies package exports, plaintext SQLite use, the MCP-style router, MCP
 stdio server wiring, the HTTP adapter export, and the `gmos` CLI from the
@@ -178,8 +207,11 @@ installed package.
 The GitHub Actions CI runs these gates on Linux and macOS with Node 20.19 and
 Node 24, and on Windows with Node 24. Windows Node 20.19 is not part of the
 official CI matrix because the current `better-sqlite3` prebuild coverage can
-fall back to native compilation on GitHub-hosted Windows runners. The benchmark
-jobs are deterministic SDK gates; they do not call an external LLM.
+fall back to native compilation on GitHub-hosted Windows runners. Remote CI is
+opt-in to control organization Actions minutes: use `workflow_dispatch` or add
+the `run-ci` / `full-ci` label on a pull request when remote matrix evidence is
+needed. Branch pushes and release tag pushes do not run CI by default. The
+benchmark jobs are deterministic SDK gates; they do not call an external LLM.
 
 `gym run` is the deterministic SDK benchmark. It reports hard gates, coverage
 layers, a generalization view, roadmap suggestions, and a run manifest. It does

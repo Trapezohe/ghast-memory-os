@@ -17263,5 +17263,54 @@ const invalidHost = spawnSync(
 assert.notEqual(invalidHost.status, 0);
 assert.match(invalidHost.stderr, /--host must be one of/);
 assert.equal(existsSync(invalidHostDb), false);
+
+const releaseEvidenceDir = path.join(tmp, "release-evidence-dry-run");
+const releaseEvidenceDryRun = spawnSync(
+  process.execPath,
+  [
+    "scripts/create-release-evidence.mjs",
+    "--dry-run",
+    "--allow-dirty",
+    "--skip-gate",
+    "--skip-fresh-install",
+    "--output-dir",
+    releaseEvidenceDir,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(releaseEvidenceDryRun.status, 0, releaseEvidenceDryRun.stderr);
+const releaseEvidenceManifest = JSON.parse(
+  readFileSync(path.join(releaseEvidenceDir, "manifest.json"), "utf8"),
+) as {
+  schema?: string;
+  package?: { name?: string; version?: string };
+  ci?: { pushTriggerPresent?: boolean; workflowDispatchPresent?: boolean; optInRemoteCi?: boolean };
+  checks?: Array<{ name?: string; status?: string }>;
+  claimBoundaries?: { deterministicAdapterIsOfficialScore?: boolean; sotaClaimAllowed?: boolean };
+};
+assert.equal(releaseEvidenceManifest.schema, "gmos.release_evidence.v1");
+assert.deepEqual(releaseEvidenceManifest.package, {
+  name: packageJson.name,
+  version: packageJson.version,
+});
+assert.equal(releaseEvidenceManifest.ci?.pushTriggerPresent, false);
+assert.equal(releaseEvidenceManifest.ci?.workflowDispatchPresent, true);
+assert.equal(releaseEvidenceManifest.ci?.optInRemoteCi, true);
+assert.equal(
+  releaseEvidenceManifest.checks?.find((check) => check.name === "pr_gate")?.status,
+  "skipped",
+);
+assert.equal(
+  releaseEvidenceManifest.checks?.find((check) => check.name === "fresh_install_smoke")?.status,
+  "skipped",
+);
+assert.equal(releaseEvidenceManifest.claimBoundaries?.deterministicAdapterIsOfficialScore, false);
+assert.equal(releaseEvidenceManifest.claimBoundaries?.sotaClaimAllowed, false);
+const releaseEvidenceSummary = readFileSync(
+  path.join(releaseEvidenceDir, "SUMMARY.md"),
+  "utf8",
+);
+assert.match(releaseEvidenceSummary, /Known limitations/);
+assert.match(releaseEvidenceDryRun.stdout, /gmos.release_evidence.v1/);
 rmSync(tmp, { recursive: true, force: true });
 console.log("[gmos-sdk] tests passed");

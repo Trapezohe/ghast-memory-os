@@ -24,6 +24,28 @@ The gate runs:
 - scale smoke;
 - npm pack dry run.
 
+## Release Evidence Bundle
+
+Run before publishing an alpha, public beta, or release candidate:
+
+```bash
+npm run release:evidence -- --output-dir ./release-evidence/<version>-<short-sha>
+```
+
+The bundler requires a clean worktree by default, runs `gate:pr`, creates an npm
+tarball, installs that tarball into a fresh consumer project, runs minimal SDK
+and CLI smoke checks from the installed package, and writes:
+
+- `manifest.json` with package version, git SHA, dirty status, runtime, CI
+  policy, command status, and artifact paths;
+- `SUMMARY.md` with check status, CI trigger policy, claim boundaries, and known
+  limitations;
+- stdout/stderr logs for each command.
+
+The output directory is git-ignored. Do not use `--skip-gate`,
+`--skip-fresh-install`, or `--allow-dirty` for public release evidence. Those
+flags exist only for local diagnostics and script smoke tests.
+
 ## Memory Gym
 
 Memory Gym checks internal architecture and safety contracts:

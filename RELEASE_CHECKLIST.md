@@ -31,10 +31,14 @@ Run before publishing a new alpha:
 
 ```bash
 npm run gate:pr
+npm run release:evidence -- --output-dir ./release-evidence/<version>-<short-sha>
 node dist/cli/gmos.js gym external-suite --suite-file <release-suite.json> --output-dir ./external-runs --format json --markdown-file ./external-suite.md
 ```
 
-Archive the suite JSON, markdown report, and manifest. The report must include:
+Archive the release evidence directory plus the suite JSON, markdown report,
+and manifest. The release evidence bundle contains `manifest.json`,
+`SUMMARY.md`, command logs, the packed tarball, and a fresh-install smoke
+workspace. The report must include:
 
 - gmOS package version;
 - git branch, SHA, and dirty status;
@@ -49,6 +53,13 @@ Archive the suite JSON, markdown report, and manifest. The report must include:
 
 Alpha benchmark output is a deterministic adapter baseline. Do not call it an
 official LongMemEval, LoCoMo, STATE-Bench, or SOTA score.
+
+`npm run release:evidence` requires a clean worktree by default. It runs
+`gate:pr`, creates a tarball, installs that tarball into a fresh consumer
+project, verifies SDK imports, plaintext SQLite behavior, context preparation,
+evidence return, and the installed `gmos` CLI. `--skip-gate`,
+`--skip-fresh-install`, and `--allow-dirty` are for local diagnostics only and
+must not be used for public release evidence.
 
 ## Release Candidate Gate
 
@@ -86,6 +97,22 @@ Block the alpha, release candidate, or public release if any of these fail:
 - missing no-benchmark-special-casing audit;
 - public report without git SHA, dirty status, dataset hash, or run parameters;
 - benchmark improvement that cannot be explained by a general memory capability.
+
+## Known Limitations for Public Notes
+
+Keep these limitations visible in public alpha, beta, and release-candidate
+notes until the underlying capability is proven by current evidence:
+
+- gmOS is plaintext local SQLite by design. It does not provide database
+  encryption, cloud custody, or hosted synchronization.
+- Built-in extraction remains a conservative rule fallback; broad production
+  extraction requires a host-provided structured extractor profile.
+- Deterministic LongMemEval and LoCoMo adapter scores are weak diagnostic
+  baselines, not official LLM-judge or leaderboard results.
+- STATE-Bench, Mem2ActBench, BEAM, and similar claims require their unchanged
+  official runners, fixed model/judge settings, and public reproduction bundle.
+- ghast_desktop production replacement requires SDK release evidence plus
+  app-side Electron E2E migration evidence.
 
 ## Official Benchmark Claims
 
