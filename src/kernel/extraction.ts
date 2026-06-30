@@ -301,15 +301,42 @@ function uniqueCandidatesWithDecisions(
   return result;
 }
 
-function stripSpeakerPrefix(text: string): string {
-  const match = speakerPrefixMatch(text);
-  const prefix = match?.prefix;
-  if (!prefix || !match?.rest) {
-    return text;
+function stripCorrectionLeadIn(text: string): string {
+  let current = text.trim();
+  for (let depth = 0; depth < 3; depth += 1) {
+    const next = current
+      .replace(
+        /^(?:actually|correction|corrected|clarification|to\s+correct\s+myself|update)\s*[:,，]\s*/iu,
+        "",
+      )
+      .replace(
+        /^(?:actually|correction|corrected|clarification|to\s+correct\s+myself|update)\s+(?=(?:I|I'm|I’m|I've|I’ve|my|we|our|project)\b)/iu,
+        "",
+      )
+      .replace(/^(?:其实|实际(?:上)?|更正|纠正(?:一下)?|修正|澄清|更新)\s*[：:，,]\s*/u, "")
+      .trim();
+    if (next === current) return current;
+    current = next;
   }
-  if (isNonSpeakerPrefix(prefix)) return match.rest;
-  if (!stableNamedPersonSubject(prefix)) return text;
-  return match.rest;
+  return current;
+}
+
+function stripSpeakerPrefix(text: string): string {
+  let current = stripCorrectionLeadIn(text);
+  for (let depth = 0; depth < 4; depth += 1) {
+    const match = speakerPrefixMatch(current);
+    const prefix = match?.prefix;
+    if (!prefix || !match?.rest) {
+      return current;
+    }
+    if (isNonSpeakerPrefix(prefix)) {
+      current = stripCorrectionLeadIn(match.rest);
+      continue;
+    }
+    if (!stableNamedPersonSubject(prefix)) return current;
+    return stripCorrectionLeadIn(match.rest);
+  }
+  return current;
 }
 
 function speakerPrefixMatch(text: string): { prefix: string; rest: string } | null {
@@ -320,11 +347,11 @@ function speakerPrefixMatch(text: string): { prefix: string; rest: string } | nu
 }
 
 function durableCandidateContent(text: string): string {
-  let current = text;
+  let current = stripCorrectionLeadIn(text);
   for (let depth = 0; depth < 4; depth += 1) {
     const match = speakerPrefixMatch(current);
     if (!match || !isNonSpeakerPrefix(match.prefix)) return current;
-    current = match.rest;
+    current = stripCorrectionLeadIn(match.rest);
   }
   return current;
 }

@@ -8157,6 +8157,58 @@ for (const prefix of ["Note", "Preference", "Fact", "Example"]) {
   });
   assert.equal(nonSpeakerPrefixMemory?.content, "I use VectorPad for travel planning.");
 }
+const correctionPrefixedCurrentToolReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Correction my current IDE is Cursor.",
+});
+assert.equal(correctionPrefixedCurrentToolReport.extraction?.acceptedCandidateCount, 1);
+const correctionPrefixedCurrentToolCandidate =
+  correctionPrefixedCurrentToolReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  )?.candidate;
+assert.equal(correctionPrefixedCurrentToolCandidate?.predicate, "person.tool");
+assert.equal(correctionPrefixedCurrentToolCandidate?.subject, undefined);
+assert.equal(correctionPrefixedCurrentToolCandidate?.object, "Cursor");
+assert.equal(correctionPrefixedCurrentToolCandidate?.content, "my current IDE is Cursor.");
+const correctionPrefixedCurrentToolMemory = await rulesReportMemory.get({
+  profileId: "rules_report",
+  id: correctionPrefixedCurrentToolReport.memoryIds[0]!,
+});
+assert.equal(correctionPrefixedCurrentToolMemory?.content, "my current IDE is Cursor.");
+const actuallyPrefixedCurrentToolReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Actually my current browser is Arc.",
+});
+assert.equal(actuallyPrefixedCurrentToolReport.extraction?.acceptedCandidateCount, 1);
+const actuallyPrefixedCurrentToolCandidate =
+  actuallyPrefixedCurrentToolReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  )?.candidate;
+assert.equal(actuallyPrefixedCurrentToolCandidate?.predicate, "person.tool");
+assert.equal(actuallyPrefixedCurrentToolCandidate?.object, "Arc");
+assert.equal(actuallyPrefixedCurrentToolCandidate?.content, "my current browser is Arc.");
+const speakerCorrectionLeadInReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Alex: Actually I use Chronos for travel planning.",
+  metadata: {
+    speaker: "Alex",
+    participants: ["Alex", "Blair"],
+  },
+});
+assert.equal(speakerCorrectionLeadInReport.extraction?.acceptedCandidateCount, 1);
+const speakerCorrectionLeadInCandidate =
+  speakerCorrectionLeadInReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  )?.candidate;
+assert.equal(speakerCorrectionLeadInCandidate?.predicate, "person.tool");
+assert.equal(speakerCorrectionLeadInCandidate?.subject, "person:Alex");
+assert.equal(speakerCorrectionLeadInCandidate?.object, "Chronos");
 await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
