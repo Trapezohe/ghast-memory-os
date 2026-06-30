@@ -571,7 +571,8 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "active_reconstruction_multihop",
     reconstructed.contextBlock.includes("Helio 项目推进时先写复现报告") &&
       reconstructed.paths.length >= 2 &&
-      reconstructed.paths.some((path) => path.cue.toLowerCase() === "helio"),
+      reconstructed.paths.some((path) => path.cue === "retrieval_hint") &&
+      reconstructed.paths.some((path) => path.targetSummary.includes("Helio 项目推进时先写复现报告")),
     "reconstructContext should follow cue-tag-content associations instead of one-shot top-k recall",
     "reconstruction",
   );
@@ -605,8 +606,10 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
       plannerTrace.stopReason === reconstructed.stats.stopReason &&
       plannerTrace.initialCues.length > 0 &&
       plannerTrace.steps.length >= 2 &&
-      plannerTrace.steps.some((step) => step.generatedCues.includes("helio")) &&
-      plannerTrace.steps.some((step) => step.selectedCue === "helio") &&
+      plannerTrace.steps.some((step) => step.generatedCues.includes("retrieval_hint")) &&
+      plannerTrace.steps.some(
+        (step) => step.selectedCue === "procedure" || step.selectedCue === "retrieval_hint",
+      ) &&
       plannerTrace.steps.some((step) =>
         step.branches.some(
           (branch) => branch.decision === "selected" && branch.generatedCues.length > 0,

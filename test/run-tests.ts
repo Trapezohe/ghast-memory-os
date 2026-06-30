@@ -13633,7 +13633,7 @@ const reconstructed = await reconstructionMemory.reconstructContext({
 });
 assert.match(reconstructed.contextBlock, /Helio 项目推进时先写复现报告/);
 assert.ok(reconstructed.paths.length >= 2);
-assert.ok(reconstructed.paths.some((path) => path.cue.toLowerCase() === "helio"));
+assert.ok(reconstructed.paths.some((path) => path.cue === "retrieval_hint"));
 assert.ok(reconstructed.evidence.length >= 2);
 assert.match(reconstructed.contextBlock, /Evidence coverage:/);
 assert.match(reconstructed.contextBlock, /Evidence convergence:/);
@@ -13884,6 +13884,8 @@ const secretStructuredTag = "api key sk-structuredtagsecret1234567890";
 const secretStructuredGroupTag = "api key sk-structuredgroupsecret1234567890";
 const longStructuredCue = "LongCueNormalValue-" + "x".repeat(96);
 const cappedStructuredCue = longStructuredCue.slice(0, 80).toLowerCase();
+const internalRouteCue = "HostRoute-Internal-Cobalt-777";
+const internalRouteTag = "host.internal.route.tag.cobalt";
 const structuredIntentReconstructed = await reconstructionMemory.reconstructContext({
   profileId: "recon",
   query: "packet request",
@@ -13915,7 +13917,7 @@ assert.doesNotMatch(JSON.stringify(structuredIntentReconstructed), /sk-structure
 assert.doesNotMatch(JSON.stringify(structuredIntentReconstructed), /sk-structuredtagsecret/);
 assert.doesNotMatch(JSON.stringify(structuredIntentReconstructed), /sk-structuredgroupsecret/);
 assert.equal(JSON.stringify(structuredIntentReconstructed).includes(longStructuredCue), false);
-assert.equal(JSON.stringify(structuredIntentReconstructed).includes(cappedStructuredCue), true);
+assert.equal(JSON.stringify(structuredIntentReconstructed).includes(cappedStructuredCue), false);
 assert.equal(
   structuredIntentReconstructed.stats.evidenceConvergence?.requiredIntentGroupCount,
   2,
@@ -13962,7 +13964,34 @@ assert.doesNotMatch(JSON.stringify(structuredIntentShadow.reconstruction ?? {}),
 assert.doesNotMatch(JSON.stringify(structuredIntentShadow.reconstruction ?? {}), /sk-structuredtagsecret/);
 assert.doesNotMatch(JSON.stringify(structuredIntentShadow.reconstruction ?? {}), /sk-structuredgroupsecret/);
 assert.equal(JSON.stringify(structuredIntentShadow.reconstruction ?? {}).includes(longStructuredCue), false);
-assert.equal(JSON.stringify(structuredIntentShadow.reconstruction ?? {}).includes(cappedStructuredCue), true);
+assert.equal(JSON.stringify(structuredIntentShadow.reconstruction ?? {}).includes(cappedStructuredCue), false);
+await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "fact",
+  scope: internalRouteCue,
+  content: "Cobalt checklist is the public answer for the selected working set.",
+  confidence: 0.9,
+});
+const internalRouteReconstructed = await reconstructionMemory.reconstructContext({
+  profileId: "recon",
+  query: "please reconstruct the selected working set",
+  reconstructionIntent: {
+    queryCues: [internalRouteCue],
+    expectedTags: [internalRouteTag],
+  },
+  maxSteps: 4,
+  maxBranch: 6,
+  maxMemories: 3,
+});
+assert.match(internalRouteReconstructed.contextBlock, /Cobalt checklist/);
+const internalRouteJson = JSON.stringify(internalRouteReconstructed);
+assert.doesNotMatch(internalRouteJson, new RegExp(internalRouteCue, "i"));
+assert.doesNotMatch(internalRouteJson, new RegExp(internalRouteTag, "i"));
+assert.doesNotMatch(internalRouteJson, /hostroute|internal|777/i);
+assert.equal(
+  internalRouteReconstructed.plannerTrace?.initialCues.includes("retrieval_hint"),
+  true,
+);
 const exhaustiveReconstructed = await reconstructionMemory.reconstructContext({
   profileId: "recon",
   query: "我之前说的那个计划，先做什么？",

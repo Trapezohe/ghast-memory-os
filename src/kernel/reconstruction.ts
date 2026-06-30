@@ -83,12 +83,14 @@ function publicPath(
   path: ReconstructedEvidencePath,
   includeTemporalMetadata: boolean,
   hideRouteSignals = false,
+  privateSignalKeys = new Set<string>(),
 ): ReconstructedEvidencePath {
   const routeSafePath = hideRouteSignals
     ? {
         ...path,
         cue: "retrieval_hint",
         tag: path.targetKind ?? path.targetType,
+        routeReason: publicRouteReason(path.routeReason, privateSignalKeys),
       }
     : path;
   if (includeTemporalMetadata || routeSafePath.createdAt === undefined) return routeSafePath;
@@ -110,6 +112,47 @@ function publicEvidenceEvent(event: EvidenceEvent, hideRouteSignals: boolean): E
   return {
     ...event,
     payload: {},
+  };
+}
+
+function publicPlannerBranch(
+  branch: ReconstructedPlannerBranch,
+  privateSignalKeys: Set<string>,
+): ReconstructedPlannerBranch {
+  if (privateSignalKeys.size === 0) return branch;
+  return {
+    ...branch,
+    tag: publicRouteSignal(branch.tag, privateSignalKeys),
+    reason: publicRouteReason(branch.reason, privateSignalKeys) ?? branch.reason,
+    generatedCues: branch.generatedCues.map((cue) => publicRouteSignal(cue, privateSignalKeys)),
+  };
+}
+
+function publicPlannerStep(
+  step: ReconstructedPlannerStep,
+  privateSignalKeys: Set<string>,
+): ReconstructedPlannerStep {
+  if (privateSignalKeys.size === 0) return step;
+  return {
+    ...step,
+    selectedCue: publicRouteSignal(step.selectedCue, privateSignalKeys),
+    cueReason: publicRouteReason(step.cueReason, privateSignalKeys) ?? step.cueReason,
+    generatedCues: step.generatedCues.map((cue) => publicRouteSignal(cue, privateSignalKeys)),
+    branches: step.branches.map((branch) => publicPlannerBranch(branch, privateSignalKeys)),
+  };
+}
+
+function publicPlannerTrace(
+  trace: ReconstructedPlannerTrace,
+  privateSignalKeys: Set<string>,
+  stopReason: ReconstructedContext["stats"]["stopReason"],
+): ReconstructedPlannerTrace {
+  if (privateSignalKeys.size === 0) return { ...trace, stopReason };
+  return {
+    ...trace,
+    initialCues: trace.initialCues.map((cue) => publicRouteSignal(cue, privateSignalKeys)),
+    steps: trace.steps.map((step) => publicPlannerStep(step, privateSignalKeys)),
+    stopReason,
   };
 }
 
@@ -141,6 +184,20 @@ interface RankedMemoryCandidate {
   routeScore: number;
   routeReason: string;
 }
+
+const PUBLIC_STRUCTURED_INTENT_TAGS = new Set([
+  "fact",
+  "preference",
+  "boundary",
+  "procedure",
+  "project",
+  "person",
+  "task_trajectory",
+  "world_belief",
+  "project.state",
+  "do_not_push",
+  "prefer",
+]);
 
 function normalizedText(value: string): string {
   return value.toLowerCase();
@@ -201,6 +258,53 @@ function normalizedCueHints(values: string[] | undefined, max: number): string[]
       .map((value) => value.slice(0, 80))
       .filter(Boolean),
   ).slice(0, max);
+}
+
+function routeSignalAppearsInPublicQuery(value: string, publicQuery: string): boolean {
+  const signal = value.trim();
+  if (!signal) return false;
+  const normalizedSignal = normalizedText(signal);
+  const normalizedQuery = normalizedText(publicQuery);
+  if (normalizedQuery.includes(normalizedSignal)) return true;
+  const signalKey = associationCueKey(signal);
+  if (!signalKey) return false;
+  return queryCueSet(publicQuery).has(signal) || associationCueMatchesQuery(signal, queryCueSet(publicQuery));
+}
+
+function privateRouteSignalKeys(intent: ReconstructionIntent, publicQuery: string): Set<string> {
+  const keys = new Set<string>();
+  const addPrivateKey = (value: string): void => {
+    const key = associationCueKey(value);
+    if (!key) return;
+    keys.add(key);
+    for (const part of key.split("-")) {
+      if (part.length >= 4 || /^\d{3,}$/u.test(part)) keys.add(part);
+    }
+  };
+  for (const cue of intent.explicitQueryCues) {
+    if (routeSignalAppearsInPublicQuery(cue, publicQuery)) continue;
+    addPrivateKey(cue);
+  }
+  for (const tag of intent.expectedTags) {
+    if (PUBLIC_STRUCTURED_INTENT_TAGS.has(tag)) continue;
+    if (routeSignalAppearsInPublicQuery(tag, publicQuery)) continue;
+    addPrivateKey(tag);
+  }
+  return keys;
+}
+
+function publicRouteSignal(value: string, privateSignalKeys: Set<string>): string {
+  const key = associationCueKey(value);
+  return key && privateSignalKeys.has(key) ? "retrieval_hint" : value;
+}
+
+function publicRouteReason(value: string | undefined, privateSignalKeys: Set<string>): string | undefined {
+  if (!value || privateSignalKeys.size === 0) return value;
+  let output = value;
+  for (const key of [...privateSignalKeys].sort((left, right) => right.length - left.length)) {
+    output = output.replaceAll(key, "retrieval-hint");
+  }
+  return output;
 }
 
 type ReconstructionEvidenceCoverage = NonNullable<
@@ -956,8 +1060,10 @@ function composeReconstructedContext(input: {
   let memories = [...input.memories];
   let paths = [...input.paths];
   const publicQuery = input.displayQuery ?? input.query;
+  const privateSignalKeys = privateRouteSignalKeys(input.intent, publicQuery);
   const hideInternalRouteSignals =
-    input.displayQuery !== undefined && input.displayQuery !== input.query;
+    (input.displayQuery !== undefined && input.displayQuery !== input.query) ||
+    privateSignalKeys.size > 0;
   const publicEvidence = input.includeEvidence
     ? input.evidence
         .map(sanitizeEvidenceForPublicOutput)
@@ -1011,7 +1117,9 @@ function composeReconstructedContext(input: {
       `Reconstruction uncertainty: ${uncertainty.level}${uncertainty.reasons.length ? ` (${uncertainty.reasons.join(", ")})` : ""}`,
       "Reconstructed evidence paths:",
       ...paths
-        .map((path) => publicPath(path, input.includeTemporalMetadata, hideInternalRouteSignals))
+        .map((path) =>
+          publicPath(path, input.includeTemporalMetadata, hideInternalRouteSignals, privateSignalKeys)
+        )
         .map((path) => formatPathLine(path, input.includeTemporalMetadata)),
       "Memory content:",
       ...memories.map(
@@ -1041,7 +1149,7 @@ function composeReconstructedContext(input: {
   }
 
   const outputPaths = paths.map((path) =>
-    publicPath(path, input.includeTemporalMetadata, hideInternalRouteSignals),
+    publicPath(path, input.includeTemporalMetadata, hideInternalRouteSignals, privateSignalKeys),
   );
   const outputMemories = memories.map((memory) =>
     publicMemory(memory, hideInternalRouteSignals),
@@ -1062,7 +1170,7 @@ function composeReconstructedContext(input: {
     evidence,
     paths: outputPaths,
     plannerTrace: exposePlannerTrace && input.plannerTrace
-      ? { ...input.plannerTrace, stopReason: input.stopReason }
+      ? publicPlannerTrace(input.plannerTrace, privateSignalKeys, input.stopReason)
       : undefined,
     stats: {
       stepCount: input.stepCount,
