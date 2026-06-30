@@ -67,15 +67,14 @@ const prepared = await memory.prepareTurn({
   search or opening sensitive/person memory.
 - Runtime facade: `observe`, `prepareTurn`, `commitOutcome`, `recordFeedback`,
   `reconstructContext`, `explainEvidencePath`, `forget`, `explain`.
-- Pluggable extraction pipeline for host-provided structured extractors. The
-  built-in rule extractor remains the safe fallback, so hosts can add LLM
-  extraction without bypassing evidence, PERSON, secret-like, incognito, or
-  forgetting gates.
-- Bounded durable-observation fallback extraction. Personal world facts with a
-  first-person anchor, including speaker-prefixed first-person statements, plus
-  temporal/action signals can become low-confidence memory records; they stay
-  memory-only unless a structured predicate is present, so raw observations do
-  not flood world belief state.
+- Pluggable extraction pipeline for host-provided structured extractors. gmOS
+  keeps write-path authority for evidence, PERSON, secret-like, incognito, and
+  forgetting gates, but it does not use broad linguistic rule fallback by
+  default.
+- Narrow built-in rule extraction for explicit action boundaries such as
+  `do_not_push`. Durable open-ended facts, preferences, project state, people,
+  and procedures should come from a host-provided structured extractor or an
+  explicit low-level import.
 - Low-level compatibility APIs: `add` and `search` for import, admin, and
   compatibility use cases that cannot emit full host events.
 - Safety gates for secret-like content, incognito events, PERSON isolation,
@@ -106,9 +105,10 @@ const prepared = await memory.prepareTurn({
 - gmOS is still a late-alpha SDK/runtime, not a stable 1.0 Agent Memory OS.
 - Local SQLite is plaintext by design. gmOS does not provide database
   encryption, cloud custody, vault integration, or hosted synchronization.
-- The built-in extractor is a conservative rule fallback. Production-grade
-  broad extraction should use a host-provided structured extractor and keep the
-  same gmOS write-path guards.
+- The built-in default extractor is intentionally narrow and should not be
+  treated as production-grade broad semantic extraction. Hosts should provide a
+  structured extractor for durable facts, preferences, procedures, people, and
+  project state.
 - External LongMemEval and LoCoMo numbers are deterministic local adapter
   baselines for engineering comparison. Official benchmark claims require the
   upstream protocol, fixed model/judge settings, and public reproduction data.
@@ -140,8 +140,8 @@ node dist/cli/gmos.js export --db ./gmos.db --profile local --output-file ./gmos
 node dist/cli/gmos.js import --db ./gmos.db --profile local --input-file ./gmos-memory-export.json
 node dist/cli/gmos.js backup --db ./gmos.db --profile local --mode safe --output-file ./gmos-profile-backup.json
 node dist/cli/gmos.js restore --db ./new-gmos.db --profile local-restored --input-file ./gmos-profile-backup.json
-node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "我喜欢简洁的中文回答。"
-node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "我喜欢简洁的中文回答。" --report
+node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "不要再提醒我这个项目延期了。"
+node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "不要再提醒我这个项目延期了。" --report
 node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
 node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？"
 node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "这个项目之前是什么状态？" --temporal-mode history
@@ -188,8 +188,9 @@ node dist/cli/gmos.js repair --db ./gmos.db --associations
 ```
 
 `gate:pr` is the local and CI PR gate. It runs build/test, published examples,
-benchmark-integrity checks, consumer install smoke, deterministic Memory Gym
-smoke, external fixtures, the SDK release gate, scale smoke, and a pack dry run.
+benchmark-integrity checks, extraction fallback boundary checks, consumer
+install smoke, deterministic Memory Gym smoke, external fixtures, the SDK
+release gate, scale smoke, and a pack dry run.
 
 `release:evidence` is the release-candidate evidence bundler. It requires a
 clean worktree by default, runs `gate:pr`, packs the SDK tarball, installs that
@@ -228,14 +229,16 @@ those datasets. In native gmOS JSONL, each line is one deterministic case:
 {"id":"project-next-step","events":[{"type":"memory","kind":"project","content":"代号 Vega 的发布计划叫做 Lantern Run。"},{"type":"memory","kind":"procedure","content":"Lantern Run 下一步先更新 rollback matrix，再做发布实现。"}],"question":"Vega 这个发布计划下一步先做什么？","expectedAll":["rollback matrix"],"forbiddenAny":["会议室"]}
 ```
 
-The LongMemEval adapter maps each instance's `haystack_sessions` turns into
-conversation observations and uses `answer` only as the deterministic scoring
-target. The LoCoMo adapter maps each sample's `conversation.session_<n>` turns
-into observations and creates one case per `qa` annotation. It accepts `answer`
+The LongMemEval adapter maps each instance's `haystack_sessions` turns into a
+local deterministic memory corpus and uses `answer` only as the scoring target.
+The LoCoMo adapter maps each sample's `conversation.session_<n>` turns into the
+same corpus format and creates one case per `qa` annotation. It accepts `answer`
 as the deterministic scoring target and treats any provided
-`adversarial_answer` as forbidden output. Adapter code does not write answer
-labels, adversarial labels, evidence ids, category labels, or `has_answer`
-labels into memory; those fields are reserved for scoring and traceability.
+`adversarial_answer` as forbidden output. Adapter code must not write expected
+answers, forbidden/adversarial answers, evidence ids, category labels,
+`has_answer`, dataset names, case IDs, session IDs, or adapter trace labels into
+runtime memory/evidence. Those fields may appear in benchmark reports and
+manifests only.
 LoCoMo QA annotations without an official `answer` are skipped as unscorable
 and reported in the dataset warnings instead of being treated as correct.
 
@@ -440,8 +443,8 @@ const memory = createMemoryOS({
   extractor: {
     name: "host-llm-extractor",
     async extract(input) {
-      // Use input.event, input.evidence, and input.ruleCandidates to produce
-      // structured candidates from the current user message.
+      // Use input.event, input.evidence, and the narrow safe rule hints to
+      // produce structured candidates from the current user message.
       return [
         {
           kind: "preference",
@@ -468,15 +471,16 @@ The extractor is intentionally not a raw database hook. `observe()` still
 rejects incognito and secret-like writes before evidence persistence, skips PERSON
 routed candidates, bounds confidence, deduplicates candidates, and writes world
 beliefs only from accepted candidates that carry a structured predicate.
-Returning `[]` means "extract nothing"; returning `null` or throwing falls back
-to the built-in rules by default. If a custom extractor returns candidates but
+Returning `[]` means "extract nothing". Returning `null` or throwing does not
+cause gmOS to synthesize broad user facts from hard-coded linguistic rules. By
+default, rule fallback is limited to narrow safe rule candidates such as
+explicit `do_not_push` boundaries. If a custom extractor returns candidates but
 all of them are rejected by the gmOS write-path validator, gmOS records the
-hard/soft reject audit. If every rejection is a soft structural or quality
-failure, gmOS may fall back to built-in durable rule candidates instead of
-treating the structured extraction failure as final. Secret-like, PERSON-routed,
-person-kind, and non-person speaker hard rejects do not fall back. Use
-`createMemoryOS({ extraction: { fallbackToRules: false } })` when a host wants
-custom extraction failure to produce no memory instead of rule fallback.
+hard/soft reject audit; soft rejection fallback can only use the configured rule
+mode's candidates. Use `createMemoryOS({ extraction: { fallbackToRules: false } })`
+when a host wants extractor failure to produce no memory at all. gmOS does not
+ship a broad semantic rule fallback mode for production extraction; hosts should
+use a structured extractor for durable semantic memory.
 
 `observe()` remains the stable fire-and-forget observation API. Use
 `observeWithReport()` when a host or benchmark needs an `ObserveResult` to
@@ -494,9 +498,9 @@ console.log(report.extraction?.decisions);
 ```
 
 The report includes the evidence id, accepted memory ids, world belief ids,
-rule/custom candidate counts, fallback status, hard/soft reject counts,
-fallback durable candidate counts, and accepted/rejected candidate decisions
-after candidates enter gmOS write-path validation. It is not a raw
+safe-rule/custom candidate counts, fallback status, hard/soft reject counts,
+fallback candidate counts, and accepted/rejected candidate decisions after
+candidates enter gmOS write-path validation. It is not a raw
 LLM-output transcript. Candidate snapshots are sanitized; rejected secret-like
 fields and sensitive metadata are redacted or omitted so the report can be
 logged by a host without becoming a credential side channel.
@@ -548,7 +552,7 @@ The extractor calls `/chat/completions`, requests JSON output, parses
 `{"memories":[...]}`, and then sends candidates through the same gmOS write-path
 guards as every other extractor: incognito events are skipped before extraction,
 secret-like and PERSON-routed candidates are rejected, confidence is bounded,
-and rule fallback is used when the provider call fails unless disabled. Event
+and provider failure does not enable broad rule-based semantic extraction. Event
 metadata is not sent to the provider unless `includeEventMetadata: true` is set.
 Structured candidates may include `subject`, `predicate`, `object`, `source`,
 `eventTime`, `validFrom`, `validTo`, and `cardinality`; `source` is only a short
@@ -611,10 +615,10 @@ npm run examples:mcp-router
 npm run examples:external-mini
 ```
 
-`examples/quickstart.mjs` creates a temporary plaintext SQLite store, observes a user
-preference, prepares memory context, exercises low-level
-`add/update/search/archive`, prints a content-free diagnostics summary, and removes
-the temporary database.
+`examples/quickstart.mjs` creates a temporary plaintext SQLite store, imports an
+explicit preference memory, prepares memory context, exercises low-level
+`add/update/search/archive`, prints a content-free diagnostics summary, and
+removes the temporary database.
 
 `examples/agent-adapter.mjs` uses the framework-agnostic
 `createAgentMemoryAdapter()` helper from `@ghast/memory/host`. It observes
@@ -629,14 +633,15 @@ sync. Use this path when the host already has a memory table and needs gmOS as
 the context/action runtime without replacing storage in one step.
 
 `examples/http-adapter.mjs` starts a local ephemeral HTTP server with bearer
-auth, verifies unauthenticated non-health requests are rejected, observes a
-preference through `/observe`, prepares evidence-backed context through
-`/prepare`, reads a content-free `/status` report, and removes its temporary
-plaintext SQLite database. Use this path when the host process cannot import
-the Node SDK directly.
+auth, verifies unauthenticated non-health requests are rejected, records an
+ordinary observation through `/observe`, imports an explicit preference memory,
+prepares evidence-backed context through `/prepare`, reads a content-free
+`/status` report, and removes its temporary plaintext SQLite database. Use this
+path when the host process cannot import the Node SDK directly.
 
 `examples/mcp-router.mjs` exercises the in-process MCP tool router through the
-public package exports. It checks `memory.runtime_info`, observes a preference,
+public package exports. It checks `memory.runtime_info`, records an ordinary
+observation through `memory.observe`, imports an explicit preference memory,
 prepares evidence-backed context, verifies public MCP rejects sensitive override
 switches, explains the evidence path without returning a prompt block, and
 prints only sanitized integration metadata.

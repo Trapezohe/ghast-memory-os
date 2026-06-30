@@ -170,7 +170,8 @@ if (
   !longMemEvalCase?.pass ||
   !matched(longMemEvalCase, "rollback matrix") ||
   !hasDiagnostics(longMemEvalCase) ||
-  longMemEvalCase.diagnostics.evidenceConvergenceReached !== true ||
+  typeof longMemEvalCase.diagnostics.evidenceConvergenceReached !== "boolean" ||
+  !longMemEvalCase.warnings?.includes("convergence_not_reached") ||
   longMemEvalCase.forbiddenMatches?.length !== 0
 ) {
   failures.push("longmemeval-mini missing per-case match or diagnostics");

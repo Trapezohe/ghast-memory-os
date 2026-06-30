@@ -1400,9 +1400,8 @@ function buildExternalMemoryBenchmarkSummary(
   };
 }
 
-function profileIdForCase(benchmarkCase: ExternalMemoryBenchmarkCase): string {
-  const id = benchmarkCase.id ?? "case";
-  return benchmarkCase.profileId ?? `external_${id}`;
+function profileIdForCase(benchmarkCase: ExternalMemoryBenchmarkCase, index: number): string {
+  return benchmarkCase.profileId ?? `external_profile_${index + 1}`;
 }
 
 function eventHash(
@@ -1423,20 +1422,20 @@ function groupCases(
   if (options.reuseProfiles === false) {
     return cases.map((benchmarkCase, index) => ({
       key: `case:${index}`,
-      profileId: profileIdForCase(benchmarkCase),
+      profileId: profileIdForCase(benchmarkCase, index),
       events: benchmarkCase.events,
       items: [{ benchmarkCase, index }],
     }));
   }
   const profileCounts = new Map<string, number>();
-  for (const benchmarkCase of cases) {
-    const profileId = profileIdForCase(benchmarkCase);
+  for (const [index, benchmarkCase] of cases.entries()) {
+    const profileId = profileIdForCase(benchmarkCase, index);
     profileCounts.set(profileId, (profileCounts.get(profileId) ?? 0) + 1);
   }
   const groupsByKey = new Map<string, CaseGroup>();
   const hashCache = new WeakMap<ExternalMemoryBenchmarkEvent[], string>();
   for (const [index, benchmarkCase] of cases.entries()) {
-    const profileId = profileIdForCase(benchmarkCase);
+    const profileId = profileIdForCase(benchmarkCase, index);
     const key =
       (profileCounts.get(profileId) ?? 0) > 1
         ? `profile:${profileId}:events:${eventHash(benchmarkCase.events, hashCache)}`

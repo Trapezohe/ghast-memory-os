@@ -4,7 +4,9 @@ import {
   type ExternalMemoryBenchmarkDatasetFormat,
   type ExternalMemoryBenchmarkEvent,
   type ExternalMemoryBenchmarkMessageEvent,
+  type ExternalMemoryBenchmarkMemoryEvent,
 } from "./external.js";
+import { relativeEventDateMetadata } from "../kernel/temporal-format.js";
 
 export type ExternalMemoryBenchmarkDatasetAdapter = "gmos" | "longmemeval" | "locomo";
 
@@ -256,6 +258,25 @@ function messageEvent(input: {
   };
 }
 
+function memoryEvent(input: {
+  content: string;
+  createdAt?: unknown;
+  metadata?: Record<string, unknown> | undefined;
+}): ExternalMemoryBenchmarkMemoryEvent {
+  const createdAt = stringValue(input.createdAt);
+  const metadata = {
+    ...(input.metadata ?? {}),
+    ...relativeEventDateMetadata(input.content, createdAt ?? undefined),
+  };
+  return {
+    type: "memory",
+    kind: "fact",
+    content: input.content,
+    ...(createdAt ? { createdAt } : {}),
+    ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+  };
+}
+
 function contentFromTurn(turn: Record<string, unknown>): string | null {
   const content =
     stringValue(turn.content) ?? stringValue(turn.text) ?? stringValue(turn.message);
@@ -281,10 +302,12 @@ function longMemEvalEvents(row: Record<string, unknown>, caseId: string): Extern
       const content = contentFromTurn(record);
       if (!content) continue;
       events.push(
-        messageEvent({
-          role: record.role,
+        memoryEvent({
           content,
           createdAt: dates[sessionIndex],
+          metadata: {
+            role: normalizeRole(record.role, "user"),
+          },
         }),
       );
     }
@@ -313,7 +336,7 @@ function parseLongMemEvalCaseSet(
     if (expectedAny.length === 0) throw new Error(`LongMemEval case ${caseId} requires answer`);
     cases.push({
       id: caseId,
-      profileId: `longmemeval_${caseId}`,
+      profileId: `external_profile_${index + 1}`,
       mode: "reconstruct",
       slices: longMemEvalSlices(row),
       events: longMemEvalEvents(row, caseId),
@@ -364,15 +387,11 @@ function locomoEvents(row: Record<string, unknown>, sampleId: string): ExternalM
         (entry): entry is string => typeof entry === "string" && entry.length > 0,
       );
       events.push(
-        messageEvent({
-          role: "user",
+        memoryEvent({
           content: speaker ? `${speaker}: ${content}` : content,
           createdAt,
           metadata: {
-            sampleId,
-            sessionKey,
             ...(speaker ? { speaker } : {}),
-            ...(rawSpeaker && rawSpeaker !== speaker ? { rawSpeakerLabel: rawSpeaker } : {}),
             ...(participants.length > 0 ? { participants } : {}),
           },
         }),
@@ -406,7 +425,7 @@ function parseLocomoCaseSet(input: string): ParsedCaseSet {
       const forbiddenAny = uniqueStrings(stringsFromAnswer(qaRecord.adversarial_answer));
       cases.push({
         id: `${sampleId}:qa-${qaIndex + 1}`,
-        profileId: `locomo_${sampleId}`,
+        profileId: `external_profile_${sampleIndex + 1}`,
         mode: "reconstruct",
         events,
         question,

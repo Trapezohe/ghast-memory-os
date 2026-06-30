@@ -23,17 +23,23 @@
         "question": "What does the Atlas workflow start by verifying?",
         "answer": "evidence chain",
         "adversarial_answer": "push immediately",
-        "evidence": ["d1"]
+        "evidence": [
+          "d1"
+        ]
       },
       {
         "question": "What is the Atlas key year?",
         "answer": "2022",
-        "evidence": ["d1"]
+        "evidence": [
+          "d1"
+        ]
       },
       {
         "question": "What is the unscored Atlas distractor?",
         "adversarial_answer": "push immediately",
-        "evidence": ["d2"]
+        "evidence": [
+          "d2"
+        ]
       }
     ]
   },
@@ -55,7 +61,9 @@
       {
         "question": "When did Caroline go to the project workshop?",
         "answer": "7 May 2023",
-        "evidence": ["r1"]
+        "evidence": [
+          "r1"
+        ]
       }
     ]
   },
@@ -88,13 +96,17 @@
         "question": "Which travel planning tool belongs to Blair?",
         "answer": "Meridian",
         "adversarial_answer": "Chronos",
-        "evidence": ["s2"]
+        "evidence": [
+          "s2"
+        ]
       },
       {
         "question": "What is Alex's profession?",
         "answer": "architect",
         "adversarial_answer": "designer",
-        "evidence": ["s3"]
+        "evidence": [
+          "s3"
+        ]
       }
     ]
   },
@@ -126,20 +138,26 @@
       {
         "question": "Which tool does Alex use for travel planning?",
         "answer": "Chronos",
-        "adversarial_answer": "BudgetBee",
-        "evidence": ["t1"]
+        "adversarial_answer": "Meridian",
+        "evidence": [
+          "t1"
+        ]
       },
       {
         "question": "Which tool does Alex use for expense reports?",
         "answer": "BudgetBee",
-        "adversarial_answer": "Chronos",
-        "evidence": ["t2"]
+        "adversarial_answer": "Meridian",
+        "evidence": [
+          "t2"
+        ]
       },
       {
         "question": "Which tool does Blair use for travel planning?",
         "answer": "Meridian",
         "adversarial_answer": "Chronos",
-        "evidence": ["t3"]
+        "evidence": [
+          "t3"
+        ]
       }
     ]
   }

@@ -12,10 +12,9 @@ const store = createSqliteMemoryStore({ path: dbPath });
 const memory = createMemoryOS({ profileId: "quickstart", store });
 
 try {
-  await memory.observe({
-    type: "conversation.message",
+  const preference = await memory.add({
     profileId: "quickstart",
-    role: "user",
+    kind: "preference",
     content: "我喜欢先讲风险，再给方案。",
     createdAt: "2026-06-25T00:00:00.000Z",
   });
@@ -56,6 +55,7 @@ try {
     ok: true,
     contextHasPreference: prepared.contextBlock.includes("先讲风险"),
     evidenceCount: prepared.evidence.length,
+    preferenceMemoryId: preference.id,
     importedMemoryId: imported.id,
     updatedMemoryId: updated?.id,
     importedSearchHit: importedMatches.some((memoryRecord) => memoryRecord.id === imported.id),

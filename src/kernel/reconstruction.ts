@@ -143,25 +143,6 @@ interface RankedMemoryCandidate {
 }
 
 const GENERATED_CUE_STOP_TERMS = new Set(["fact", "memory", "after", "before"]);
-const SPECIFIC_TOOL_CUE_STOP_KEYS = new Set([
-  "which",
-  "tool",
-  "tools",
-  "app",
-  "apps",
-  "application",
-  "applications",
-  "use",
-  "uses",
-  "used",
-  "using",
-  "belong",
-  "belongs",
-  "belonged",
-  "current",
-  "currently",
-]);
-
 function normalizedText(value: string): string {
   return value.toLowerCase();
 }
@@ -297,6 +278,7 @@ function uncertaintyForReconstruction(input: {
   memories: MemoryRecord[];
   paths: ReconstructedEvidencePath[];
   stopReason: ReconstructedContext["stats"]["stopReason"];
+  evidenceConvergence?: ReconstructionEvidenceConvergence | undefined;
 }): ReconstructionUncertainty {
   const reasons: string[] = [];
   if (input.paths.length === 0) reasons.push("no_evidence_path");
@@ -318,6 +300,9 @@ function uncertaintyForReconstruction(input: {
     input.stopReason === "no_frontier" ||
     input.coverage.coverageRate < 0.75
   ) {
+    level = "medium";
+  }
+  if (input.evidenceConvergence?.reached && level === "high") {
     level = "medium";
   }
   return { level, reasons };
@@ -372,20 +357,37 @@ function evidenceConvergenceForPaths(input: {
       input.memories.some((memory) => memoryMatchesIntent(memory, input.intent)));
   const pathOnlySupportEnough =
     input.memories.length === 0 && input.paths.length >= targetMemoryCount && intentMatched;
-  const score = Math.min(
+  const pathSupportEnough = input.paths.length >= targetMemoryCount && intentMatched;
+  const baseScore = Math.min(
     1,
     input.coverage.coverageRate * 0.45 +
       intentScore * 0.3 +
       memoryContentScore * 0.2 +
       pathSupportScore * 0.05,
   );
+  const requiredIntentCovered =
+    input.intent.requiredTagGroups.length === 0 ||
+    coveredRequiredIntentGroups.length === input.intent.requiredTagGroups.length;
+  const hasUncoveredTemporalCue = input.coverage.uncoveredCues.some((cue) =>
+    /\b\d{4}-\d{2}-\d{2}(?:t\d{2}:\d{2}:\d{2}\.\d{3}z)?\b|^(?:jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)$/iu.test(
+      cue,
+    ),
+  );
+  const intentGroundedEnough =
+    intentMatched &&
+    requiredIntentCovered &&
+    !hasUncoveredTemporalCue &&
+    (input.coverage.coveredCueCount > 0 || input.intent.requiredTagGroups.length > 0) &&
+    (memorySupportEnough || pathOnlySupportEnough || pathSupportEnough);
+  const score = intentGroundedEnough ? Math.max(baseScore, input.threshold) : baseScore;
   return {
     score,
     reached:
-      score >= input.threshold &&
-      (memorySupportEnough || pathOnlySupportEnough) &&
-      intentMatched &&
-      coverageIsSufficient(input.coverage),
+      (score >= input.threshold &&
+        (memorySupportEnough || pathOnlySupportEnough) &&
+        intentMatched &&
+        coverageIsSufficient(input.coverage)) ||
+      intentGroundedEnough,
     threshold: input.threshold,
     stopWhenEvidenceEnough: input.stopWhenEvidenceEnough,
     intentMatched,
@@ -457,6 +459,32 @@ function inferTemporalRecallPurpose(
   if (temporalMode === "current") return "context";
   if (
     includesAny(query, [
+      "下一步",
+      "先做",
+      "怎么做",
+      "步骤",
+      "流程",
+      "procedure",
+      "next",
+      "step",
+      "should",
+    ]) &&
+    !includesAny(query, [
+      "之前的状态",
+      "以前的状态",
+      "历史状态",
+      "上一版",
+      "上一个状态",
+      "previous state",
+      "previous status",
+      "old state",
+      "old status",
+    ])
+  ) {
+    return "context";
+  }
+  if (
+    includesAny(query, [
       "之前",
       "以前",
       "过去",
@@ -488,8 +516,10 @@ function inferTemporalRecallPurpose(
 
 function seedFrontier(query: string, intent: ReconstructionIntent): FrontierCue[] {
   const cues = queryAssociationCues(query, 12);
-  if (cues.length === 0) return [{ cue: query, priority: 1, reason: "raw_query" }];
-  return cues.map((cue, index) => {
+  const queryCues = cues.length === 0
+    ? [{ cue: query, cueKind: "lexical" as const }]
+    : cues;
+  const frontier = queryCues.map((cue, index) => {
     let priority = 10 - index * 0.1;
     if (cue.cueKind === "entity") priority += 4;
     if (cue.cueKind === "temporal") priority += 3;
@@ -505,6 +535,18 @@ function seedFrontier(query: string, intent: ReconstructionIntent): FrontierCue[
             : "initial_query_cue",
     };
   });
+  const existing = new Set(frontier.map((cue) => associationCueKey(cue.cue)));
+  for (const tag of intent.expectedTags) {
+    const key = associationCueKey(tag);
+    if (!key || existing.has(key)) continue;
+    existing.add(key);
+    frontier.push({
+      cue: tag,
+      priority: 11,
+      reason: "initial_intent_tag_cue",
+    });
+  }
+  return frontier;
 }
 
 function enqueueFrontierCue(frontier: FrontierCue[], next: FrontierCue): void {
@@ -554,6 +596,7 @@ function sourceScopeRejectReason(
   selectedSourceCues: Set<string>,
 ): string | null {
   const sourceCues = sourceEntityCuesForMemory(memory);
+  const sourceCueKeys = new Set(sourceCues.map(associationCueKey).filter(Boolean));
   if (sourceCues.length === 0) {
     return selectedSourceCues.size > 0 && hasFirstPersonAnchor(memory.content)
       ? `source_scope_mismatch:${[...selectedSourceCues].join("|")}`
@@ -564,6 +607,7 @@ function sourceScopeRejectReason(
     for (const cue of matchingQueryCues) selectedSourceCues.add(associationCueKey(cue));
     return null;
   }
+  if (contentHasNonSourceQueryEntity(memory.content, intent, sourceCueKeys)) return null;
   return selectedSourceCues.size > 0 &&
     !sourceCues.some((cue) => selectedSourceCues.has(associationCueKey(cue)))
     ? `source_scope_mismatch:${[...selectedSourceCues].join("|")}`
@@ -595,69 +639,24 @@ function associationSourceRejectReason(
     selectedSourceCues.add(personCueKey);
     return null;
   }
+  if (contentHasNonSourceQueryEntity(association.targetSummary, intent, new Set([personCueKey]))) {
+    return null;
+  }
   return selectedSourceCues.size > 0 && !selectedSourceCues.has(personCueKey)
     ? `source_scope_mismatch:${[...selectedSourceCues].join("|")}`
     : null;
 }
 
-function associationSpecificToolCueRejectReason(
-  association: MemoryAssociationRecord,
+function contentHasNonSourceQueryEntity(
+  content: string,
   intent: ReconstructionIntent,
-): string | null {
-  if (association.tag !== "person.tool" && !/\bperson\.tool\b/iu.test(association.targetSummary)) {
-    return null;
-  }
-  const personCue = associationPersonCue(association);
-  const specificCueKeys = specificToolCueKeys(intent, personCue ? [personCue] : []);
-  if (specificCueKeys.length === 0) return null;
-  return textContainsSpecificCue(
-    `${association.cue} ${association.tag} ${association.targetKind} ${association.targetSummary}`,
-    specificCueKeys,
-  )
-    ? null
-    : `tool_scope_mismatch:${specificCueKeys.join("|")}`;
-}
-
-function memorySpecificToolCueRejectReason(memory: MemoryRecord, intent: ReconstructionIntent): string | null {
-  const predicate = typeof memory.metadata.predicate === "string" ? memory.metadata.predicate : "";
-  const toolPurpose = typeof memory.metadata.toolPurpose === "string" ? memory.metadata.toolPurpose : "";
-  const toolScope = typeof memory.metadata.toolScope === "string" ? memory.metadata.toolScope : "";
-  if (
-    predicate !== "person.tool" &&
-    !/^\s*(?:[\p{L}\p{M}' -]{2,48}\s*:\s*)?I\s+use\s+.{2,80}?\s+for\s+.{2,80}?\s*\.?\s*$/iu.test(
-      memory.content,
-    ) &&
-    !/^\s*\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}\s+uses\s+.{2,80}?\s+for\s+.{2,80}?\s*\.?\s*$/u.test(
-      memory.content,
-    )
-  ) {
-    return null;
-  }
-  const sourceCues = sourceEntityCuesForMemory(memory);
-  const specificCueKeys = specificToolCueKeys(intent, sourceCues);
-  if (specificCueKeys.length === 0) return null;
-  return textContainsSpecificCue(`${memory.content} ${toolPurpose} ${toolScope}`, specificCueKeys)
-    ? null
-    : `tool_scope_mismatch:${specificCueKeys.join("|")}`;
-}
-
-function specificToolCueKeys(intent: ReconstructionIntent, sourceCues: string[]): string[] {
-  const toolQuery = [...intent.queryCues].some((cue) =>
-    ["tool", "tools", "app", "apps", "application", "applications", "use", "uses", "used", "using"].includes(
-      associationCueKey(cue),
-    ),
-  );
-  if (!toolQuery) return [];
-  const sourceCueKeys = new Set(sourceCues.map(associationCueKey).filter(Boolean));
-  return [...intent.queryCues]
-    .filter((cue) => !/^\p{Lu}/u.test(cue.trim()))
-    .map((cue) => associationCueKey(cue))
-    .filter((cue) => cue && !sourceCueKeys.has(cue) && !SPECIFIC_TOOL_CUE_STOP_KEYS.has(cue));
-}
-
-function textContainsSpecificCue(text: string, cueKeys: string[]): boolean {
-  const textCueKeys = new Set(extractAssociationCues(text, 64).map((cue) => associationCueKey(cue.cue)));
-  return cueKeys.some((cue) => textCueKeys.has(cue));
+  sourceCueKeys: Set<string>,
+): boolean {
+  return extractAssociationCues(content, 64).some((cue) => {
+    if (cue.cueKind !== "entity") return false;
+    const key = associationCueKey(cue.cue);
+    return key.length > 0 && !sourceCueKeys.has(key) && entityCueMatchesQuery(cue.cue, intent);
+  });
 }
 
 function associationPersonCue(association: MemoryAssociationRecord): string | null {
@@ -902,7 +901,7 @@ async function fuseDirectMemorySearch(input: {
       candidate.memory,
       input.intent,
       input.selectedSourceCues,
-    ) ?? memorySpecificToolCueRejectReason(candidate.memory, input.intent);
+    );
     if (sourceRejectReason) continue;
     input.seenMemoryIds.add(candidate.memory.id);
     input.memories.push(candidate.memory);
@@ -947,12 +946,6 @@ function composeReconstructedContext(input: {
     : [];
   let evidence = [...publicEvidence];
   let coverage = evidenceCoverageForPaths(publicQuery, paths);
-  let uncertainty = uncertaintyForReconstruction({
-    coverage,
-    memories,
-    paths,
-    stopReason: input.stopReason,
-  });
   let evidenceConvergence = evidenceConvergenceForPaths({
     coverage,
     memories,
@@ -964,14 +957,15 @@ function composeReconstructedContext(input: {
     prunedBranchCount: input.prunedBranchCount,
     frontierRemaining: input.frontierRemaining,
   });
+  let uncertainty = uncertaintyForReconstruction({
+    coverage,
+    memories,
+    paths,
+    stopReason: input.stopReason,
+    evidenceConvergence,
+  });
   const render = (): string => {
     coverage = evidenceCoverageForPaths(publicQuery, paths);
-    uncertainty = uncertaintyForReconstruction({
-      coverage,
-      memories,
-      paths,
-      stopReason: input.stopReason,
-    });
     evidenceConvergence = evidenceConvergenceForPaths({
       coverage,
       memories,
@@ -982,6 +976,13 @@ function composeReconstructedContext(input: {
       stopWhenEvidenceEnough: input.stopWhenEvidenceEnough,
       prunedBranchCount: input.prunedBranchCount,
       frontierRemaining: input.frontierRemaining,
+    });
+    uncertainty = uncertaintyForReconstruction({
+      coverage,
+      memories,
+      paths,
+      stopReason: input.stopReason,
+      evidenceConvergence,
     });
     const lines = [
       "<gmos-reconstructed-context>",
@@ -1205,9 +1206,9 @@ export async function reconstructMemoryContext(input: {
     0.35,
     0.95,
   );
-  const targetMemoryCount = Math.min(2, maxMemories);
   const intent = inferReconstructionIntent(query);
   const recallPurpose = inferTemporalRecallPurpose(query, input.request.temporalMode);
+  const targetMemoryCount = recallPurpose === "history" ? Math.min(4, maxMemories) : Math.min(2, maxMemories);
   if (!input.store.searchAssociations) {
     return fallbackReconstruction({
       store: input.store,
@@ -1288,7 +1289,7 @@ export async function reconstructMemoryContext(input: {
         association,
         intent,
         selectedSourceCues,
-      ) ?? associationSpecificToolCueRejectReason(association, intent);
+      );
       if (associationRejectReason) {
         prunedBranchCount += 1;
         stepTrace.prunedBranchCount += 1;
@@ -1340,8 +1341,7 @@ export async function reconstructMemoryContext(input: {
       });
       if (!memory) continue;
       const sourceRejectReason =
-        sourceScopeRejectReason(memory, intent, selectedSourceCues) ??
-        memorySpecificToolCueRejectReason(memory, intent);
+        sourceScopeRejectReason(memory, intent, selectedSourceCues);
       if (sourceRejectReason) {
         prunedBranchCount += 1;
         stepTrace.prunedBranchCount += 1;
@@ -1389,7 +1389,8 @@ export async function reconstructMemoryContext(input: {
   const finalCoverageBeforeHybrid = evidenceCoverageForPaths(query, paths);
   if (
     memories.length < maxMemories &&
-    (paths.length === 0 ||
+    ((recallPurpose === "history" && memories.length < targetMemoryCount) ||
+      paths.length === 0 ||
       memories.length < Math.min(2, maxMemories) ||
       !hasIntentEvidence(paths, intent) ||
       !coverageIsSufficient(finalCoverageBeforeHybrid))

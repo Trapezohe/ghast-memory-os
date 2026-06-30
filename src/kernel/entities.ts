@@ -1,5 +1,5 @@
 import { classifySensitivity } from "./safety.js";
-import { stableNamedPersonSubject } from "./extraction.js";
+import { stableNamedPersonSubject } from "./person-identity.js";
 
 export interface EntityResolutionInput {
   subject: string;

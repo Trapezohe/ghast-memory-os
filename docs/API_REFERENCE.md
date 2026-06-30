@@ -31,8 +31,10 @@ const memory = createMemoryOS({ profileId: "local-user", store });
 
 Primary methods:
 
-- `observe(event)`: record a host event, extract eligible long-term memory, and
-  attach evidence.
+- `observe(event)`: record a host event, attach evidence, and extract eligible
+  long-term memory through a configured extractor or the built-in safe boundary
+  rules. Import ordinary semantic memories explicitly with `add()` when no
+  structured extractor is configured.
 - `prepareTurn(input)`: retrieve ordinary context and action policy for the next
   agent turn. This is a read path and must not write.
 - `reconstructContext(input)`: run bounded cue/tag/content reconstruction with
@@ -65,7 +67,13 @@ const adapter = createAgentMemoryAdapter({
 
 await adapter.observeMessage({
   role: "user",
-  content: "I prefer release plans that list rollback risk first.",
+  content: "Let's plan the release.",
+});
+
+await memory.add({
+  profileId: "local-user",
+  kind: "preference",
+  content: "For release plans, list rollback risk first.",
 });
 
 const turn = await adapter.prepareTurn({
@@ -94,7 +102,8 @@ gmos version --format json
 gmos init --db ./gmos.db
 gmos doctor --db ./gmos.db --host ghast --format markdown
 gmos status --db ./gmos.db --profile local --host ghast --format markdown
-gmos observe --db ./gmos.db --profile local --text "I prefer short answers."
+gmos add --db ./gmos.db --profile local --kind preference --text "I prefer short answers."
+gmos observe --db ./gmos.db --profile local --text "Do not push release announcements without approval."
 gmos prepare --db ./gmos.db --profile local --text "How should you answer me?"
 gmos reconstruct --db ./gmos.db --profile local --text "What is the project next step?"
 gmos forget --db ./gmos.db --profile local --query "old project"
@@ -128,11 +137,11 @@ See [MCP and HTTP integration guide](./INTEGRATION_GUIDE.md) for host boundary
 selection, lifecycle wiring, and smoke-test commands.
 
 Run `examples/mcp-router.mjs` for a minimal in-process MCP smoke test. The
-example validates `memory.runtime_info`, observes a preference through
-`memory.observe`, prepares evidence-backed context through
-`memory.prepare_context`, rejects public sensitive override switches, explains
-the evidence path without returning a prompt block, and deletes its temporary
-plaintext SQLite database.
+example validates `memory.runtime_info`, records an ordinary observation through
+`memory.observe`, imports an explicit preference memory, prepares
+evidence-backed context through `memory.prepare_context`, rejects public
+sensitive override switches, explains the evidence path without returning a
+prompt block, and deletes its temporary plaintext SQLite database.
 
 ## HTTP Surface
 
@@ -159,9 +168,9 @@ one process.
 
 Run `examples/http-adapter.mjs` for a minimal host-style smoke test. The example
 starts an ephemeral localhost server with bearer auth, rejects unauthenticated
-non-health requests, records a preference through `/observe`, prepares context
-through `/prepare`, reads `/status`, and deletes its temporary plaintext SQLite
-database.
+non-health requests, records an ordinary observation through `/observe`, imports
+an explicit preference memory, prepares context through `/prepare`, reads
+`/status`, and deletes its temporary plaintext SQLite database.
 
 ## Diagnostics Contract
 

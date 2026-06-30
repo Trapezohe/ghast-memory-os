@@ -31,6 +31,13 @@ try {
   });
   assert.equal(observed.isError, undefined);
 
+  await memory.add({
+    profileId,
+    kind: "preference",
+    content: "I prefer MCP hosts to include evidence-backed context.",
+    createdAt: "2026-06-25T00:00:00.000Z",
+  });
+
   const prepared = await server.callTool("memory.prepare_context", {
     profileId,
     text: "How should MCP host integrations prepare context for me?",

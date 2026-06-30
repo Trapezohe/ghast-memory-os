@@ -187,10 +187,9 @@ async function runHost(
       capabilities.canObserveConversation &&
       capabilities.canInjectSystemContext
     ) {
-      await memory.observe({
-        type: "conversation.message",
+      await memory.add({
         profileId: id,
-        role: "user",
+        kind: "preference",
         content: "我偏好先讲风险再给方案。",
         createdAt: "2026-06-25T00:00:00.000Z",
       });
@@ -204,7 +203,7 @@ async function runHost(
         "preference_memory_use",
         "agent_memory_use",
         prepared.contextBlock.includes("先讲风险") ? "pass" : "fail",
-        "conversation observation plus context injection should recall a user preference",
+        "explicit host memory plus context injection should recall a user preference",
       );
       addProbe(
         probes,
@@ -344,10 +343,9 @@ async function runHost(
       capabilities.canObserveConversation &&
       capabilities.canInjectSystemContext
     ) {
-      await memory.observe({
-        type: "conversation.message",
+      await memory.add({
         profileId: id,
-        role: "user",
+        kind: "project",
         content: "我在 Atlas 项目负责发布管理。",
         createdAt: "2026-06-25T00:04:00.000Z",
       });

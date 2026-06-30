@@ -13,9 +13,8 @@ import { buildEvidencePathExplanation } from "../kernel/evidence-path.js";
 import {
   extractMemoryCandidatePlan,
   extractRuleMemoryCandidates,
-  isReservedSpeakerIdentity,
-  stableNamedPersonSubject,
 } from "../kernel/extraction.js";
+import { isReservedSpeakerIdentity, stableNamedPersonSubject } from "../kernel/person-identity.js";
 import { reconstructMemoryContext } from "../kernel/reconstruction.js";
 import {
   classifySensitivity,
@@ -1039,15 +1038,16 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       return { ...result, skippedReason: "non_user_message" };
     }
     if (isPersonRoutedMemory(event.content)) return { ...result, skippedReason: "person_routed" };
+    const ruleMode = options.extraction?.ruleMode ?? "safe";
     const extraction = await extractMemoryCandidatePlan({
       extractor: options.extractor,
       extractionInput: {
         profileId,
         event: { ...event, metadata: eventMetadata },
         evidence,
-        ruleCandidates: extractRuleMemoryCandidates(event.content, eventMetadata),
+        ruleCandidates: extractRuleMemoryCandidates(event.content, eventMetadata, { mode: ruleMode }),
       },
-      fallbackToRules: options.extraction?.fallbackToRules,
+      fallbackToRules: options.extraction?.fallbackToRules ?? ruleMode !== "none",
       minConfidence: options.extraction?.minConfidence,
     });
     result.extraction = extraction.report;

@@ -347,10 +347,9 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   try {
   await store.initialize();
   result.runManifest.sqliteSchemaVersion = await store.schemaVersion();
-  await memory.observe({
-    type: "conversation.message",
+  await memory.add({
     profileId: "gym",
-    role: "user",
+    kind: "preference",
     content: "我喜欢简洁的中文回答。",
     createdAt: "2026-06-25T00:00:00.000Z",
   });
@@ -470,10 +469,9 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   );
   scenario(result, "mcp_public_boundary", "adversarial", ["mcp_public_sensitive_rejection"]);
 
-  await memory.observe({
-    type: "conversation.message",
+  await memory.add({
     profileId: "gym",
-    role: "user",
+    kind: "project",
     content: "我在 Moonbase 项目做发布管理。",
     createdAt: "2026-06-25T00:04:00.000Z",
   });
@@ -808,10 +806,9 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "secret-like task trajectory summaries must not persist or enter association reconstruction",
     "safety",
   );
-  await memory.observe({
-    type: "conversation.message",
+  await memory.add({
     profileId: "gym_reconstruct",
-    role: "user",
+    kind: "project",
     content: "Orchid project v1 owner is AlphaTeam.",
   });
   const orchidMemory = (await memory.search({
@@ -845,10 +842,9 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "updated memory-backed beliefs must not resurrect stale association summaries after repair",
     "reconstruction",
   );
-  await memory.observe({
-    type: "conversation.message",
+  await memory.add({
     profileId: "gym_reconstruct",
-    role: "user",
+    kind: "project",
     content: "Moonbase 项目发布管理由 SongSuOwnerAlpha 负责。",
   });
   const moonbaseForgotten = await memory.forget({
@@ -1266,10 +1262,9 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   );
   scenario(result, "feedback_failure_log", "dev", ["feedback_failure_log"]);
 
-  await memory.observe({
-    type: "conversation.message",
+  await memory.add({
     profileId: "holdout",
-    role: "user",
+    kind: "preference",
     content: "I prefer risk-first release notes.",
     createdAt: "2026-06-25T00:05:00.000Z",
   });
@@ -1290,10 +1285,9 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   for (const seed of normalized.generatedSeeds) {
     const profileId = `gym_${seed}`;
     const content = `I prefer ${seed} risk-first project notes.`;
-    await memory.observe({
-      type: "conversation.message",
+    await memory.add({
       profileId,
-      role: "user",
+      kind: "preference",
       content,
     });
     const generated = await memory.prepareTurn({

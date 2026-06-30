@@ -18,6 +18,7 @@ The gate runs:
 - quickstart, host adapter, HTTP adapter, MCP router, and external mini
   examples;
 - no-benchmark-special-casing scan;
+- extraction fallback boundary scan;
 - consumer install smoke;
 - deterministic Memory Gym smoke;
 - external fixture smoke;
@@ -72,8 +73,10 @@ twin capability.
 - `locomo`: local LoCoMo JSON/JSONL adapter.
 
 Adapters may map input schema, normalize answers, score outputs, and write
-reports. They must not write expected answers, category labels, `has_answer`,
-dataset names, case IDs, or forbidden answers into runtime memory or evidence.
+reports. They must not write expected answers, forbidden/adversarial answers,
+evidence ids, category labels, `has_answer`, dataset names, case IDs, session
+ids, or adapter trace labels into runtime memory or evidence. Those fields may
+appear in benchmark reports and manifests only.
 
 Example:
 

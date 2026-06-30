@@ -118,6 +118,11 @@ try {
         role: "user",
         content: "我偏好先讲风险再给方案。",
       });
+      await memory.add({
+        profileId: "consumer",
+        kind: "preference",
+        content: "我偏好先讲风险再给方案。",
+      });
       const prepared = await memory.prepareTurn({
         profileId: "consumer",
         messages: [{ role: "user", content: "风险 方案" }],
@@ -1374,18 +1379,18 @@ try {
   const historyPrepareShadowPayload = JSON.parse(historyPrepareShadowBin.stdout);
   assert.equal(typeof historyPrepareShadowPayload.reconstruction?.contextBlock, "string");
   assert.match(historyPrepareShadowPayload.reconstruction.contextBlock, /stable manifests/);
-  const observeReportBin = runInstalledCli(
-    [
-      "observe",
-      "--db",
-      binLowLevelDb,
-      "--profile",
-      "bin",
-      "--text",
-      "I prefer concise extraction reports.",
-      "--report",
-    ],
-  );
+      const observeReportBin = runInstalledCli(
+        [
+          "observe",
+          "--db",
+          binLowLevelDb,
+          "--profile",
+          "bin",
+          "--text",
+          "Do not remind me about concise extraction reports.",
+          "--report",
+        ],
+      );
   assert.equal(observeReportBin.status, 0, observeReportBin.stderr);
   const observeReportPayload = JSON.parse(observeReportBin.stdout);
   assert.equal(observeReportPayload.extraction?.acceptedCandidateCount, 1);

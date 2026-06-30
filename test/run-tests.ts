@@ -21,6 +21,7 @@ import {
   createMemoryOS,
   createOpenAICompatibleExtractor,
   getGmosRuntimeInfo,
+  type MemoryExtractor,
   type MemoryStore,
 } from "../src/index.js";
 import {
@@ -34,7 +35,12 @@ import {
   extractAssociationCues,
 } from "../src/kernel/associations.js";
 import { resolveWorldEntitySubject } from "../src/kernel/entities.js";
-import { extractRuleMemoryCandidates } from "../src/kernel/extraction.js";
+import {
+  extractRuleMemoryCandidates as extractDefaultRuleMemoryCandidates,
+} from "../src/kernel/extraction.js";
+import {
+  extractRuleMemoryCandidates as extractLegacyRuleMemoryCandidates,
+} from "./helpers/legacy-linguistic-extractor.fixture.js";
 import { externalBenchmarkGitInfoForPackageRoot } from "../src/gym/external.js";
 import {
   DEFAULT_GMOS_CLI_BINARIES,
@@ -124,6 +130,14 @@ import {
   normalizeExplicitTemporalInstant,
   temporalCueValuesFromText,
 } from "../src/kernel/temporal-validity.js";
+
+const extractRuleMemoryCandidates = extractLegacyRuleMemoryCandidates;
+const legacyRuleTestExtractor: MemoryExtractor = {
+  name: "legacy-rule-test-extractor",
+  extract(input) {
+    return extractLegacyRuleMemoryCandidates(input.event.content, input.event.metadata);
+  },
+};
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-sdk-test-"));
 const associationCueFixture = extractAssociationCues(
@@ -807,11 +821,11 @@ assert.match(upgradedRelationAssociation?.target_summary ?? "", /Emma/);
 assert.match(upgradedRelationAssociation?.target_summary ?? "", /daughter/);
 await legacyV6ProjectionUpgradeStore.close();
 
-await memory.observe({
-  type: "conversation.message",
+await memory.add({
   profileId: "test",
-  role: "user",
+  kind: "preference",
   content: "我喜欢直接、简洁的中文回答。",
+  confidence: 0.9,
   createdAt: "2026-06-25T00:00:00.000Z",
 });
 
@@ -838,7 +852,7 @@ const extractorMemory = createMemoryOS({
     extract(input) {
       assert.equal(input.profileId, "extractor");
       assert.equal(input.evidence.sourceType, "conversation.message");
-      assert.ok(input.ruleCandidates.length >= 1);
+      assert.equal(input.ruleCandidates.length, 0);
       return [
         {
           kind: "preference",
@@ -1463,6 +1477,7 @@ const projectRuleStore = createSqliteMemoryStore({
 const projectRuleMemory = createMemoryOS({
   profileId: "project_rule",
   store: projectRuleStore,
+  extractor: legacyRuleTestExtractor,
 });
 const projectOwnerAlphaReport = await projectRuleMemory.observeWithReport({
   type: "conversation.message",
@@ -3013,6 +3028,7 @@ assert.doesNotMatch(invalidObservedReconstruction.contextBlock, /observed=/);
 const relativeTemporalMemory = createMemoryOS({
   profileId: "relative-temporal",
   store: createSqliteMemoryStore({ path: path.join(tmp, "relative-temporal.db") }),
+  extractor: legacyRuleTestExtractor,
 });
 await relativeTemporalMemory.observeWithReport({
   type: "conversation.message",
@@ -3071,6 +3087,7 @@ const naturalDateTemporalStore = createSqliteMemoryStore({
 const naturalDateTemporalMemory = createMemoryOS({
   profileId: "natural-date-temporal",
   store: naturalDateTemporalStore,
+  extractor: legacyRuleTestExtractor,
 });
 const naturalDateObservation = await naturalDateTemporalMemory.observeWithReport({
   type: "conversation.message",
@@ -3267,6 +3284,7 @@ await directTemporalCueStore.close();
 const relativeTemporalNoCreatedAtMemory = createMemoryOS({
   profileId: "relative-temporal-no-created-at",
   store: createSqliteMemoryStore({ path: path.join(tmp, "relative-temporal-no-created-at.db") }),
+  extractor: legacyRuleTestExtractor,
 });
 const relativeTemporalNoCreatedAtReport = await relativeTemporalNoCreatedAtMemory.observeWithReport({
   type: "conversation.message",
@@ -3342,6 +3360,7 @@ const extractedTemporalStore = createSqliteMemoryStore({ path: extractedTemporal
 const extractedTemporalMemory = createMemoryOS({
   profileId: "temporal-extraction",
   store: extractedTemporalStore,
+  extractor: legacyRuleTestExtractor,
 });
 await extractedTemporalMemory.observeWithReport({
   type: "conversation.message",
@@ -3518,7 +3537,7 @@ const llmExtractorMemory = createMemoryOS({
                         content: "LLM extractor says the user prefers risk-first summaries.",
                         confidence: 0.92,
                         predicate: "user.preference",
-                        speaker: "MiraUser",
+                        speaker: "Mira User",
                         actionPolicyKind: "prefer",
                       },
                       {
@@ -3566,9 +3585,9 @@ const llmExtractionReport = await llmExtractorMemory.observeWithReport({
   role: "user",
   content: "我喜欢风险优先摘要；Mira 项目当前卡在 rollout audit。",
   metadata: {
-    speaker: "MiraUser",
-    speakerAliases: ["MiraAlias", { answer: "nested llm alias answer" }],
-    participants: ["MiraUser", { oracle: "nested llm participant oracle" }],
+    speaker: "Mira User",
+    speakerAliases: ["Mira Alias", { answer: "nested llm alias answer" }],
+    participants: ["Mira User", { oracle: "nested llm participant oracle" }],
     internalTrace: "sk-metadatashouldnotleave1234567890",
     answer: "leaked llm extractor answer",
     oracle: "leaked llm extractor oracle",
@@ -3585,7 +3604,7 @@ assert.equal(
       decision.decision === "accepted" &&
       decision.candidate.content.includes("risk-first summaries"),
   )?.candidate.speaker,
-  "MiraUser",
+  "Mira User",
 );
 assert.equal(llmExtractionReport.memoryIds.length, 2);
 assert.equal(llmExtractionReport.worldBeliefIds.length, 2);
@@ -3602,8 +3621,8 @@ assert.equal(llmExtractorRequest.headers?.["x-provider-fixture"], "enabled");
 assert.equal(llmExtractorRequest.body?.model, "fixture-memory-model");
 assert.deepEqual(llmExtractorRequest.body?.response_format, { type: "json_object" });
 assert.equal(JSON.stringify(llmExtractorRequest.body).includes("sk-metadatashouldnotleave"), false);
-assert.equal(JSON.stringify(llmExtractorRequest.body).includes("MiraUser"), true);
-assert.equal(JSON.stringify(llmExtractorRequest.body).includes("MiraAlias"), true);
+assert.equal(JSON.stringify(llmExtractorRequest.body).includes("Mira User"), true);
+assert.equal(JSON.stringify(llmExtractorRequest.body).includes("Mira Alias"), true);
 assert.equal(JSON.stringify(llmExtractorRequest.body).includes("nested llm alias answer"), false);
 assert.equal(JSON.stringify(llmExtractorRequest.body).includes("nested llm participant oracle"), false);
 assert.equal(JSON.stringify(llmExtractorRequest.body).includes("leaked llm extractor answer"), false);
@@ -3679,9 +3698,9 @@ try {
   const llmProjectSourceMetadata = llmProjectBeliefMetadata.sourceMetadata as
     | { speaker?: unknown; speakerAliases?: unknown; participants?: unknown }
     | undefined;
-  assert.equal(llmProjectSourceMetadata?.speaker, "MiraUser");
-  assert.deepEqual(llmProjectSourceMetadata?.speakerAliases, ["MiraAlias"]);
-  assert.deepEqual(llmProjectSourceMetadata?.participants, ["MiraUser"]);
+  assert.equal(llmProjectSourceMetadata?.speaker, "Mira User");
+  assert.deepEqual(llmProjectSourceMetadata?.speakerAliases, ["Mira Alias"]);
+  assert.deepEqual(llmProjectSourceMetadata?.participants, ["Mira User"]);
   const llmProjectBeliefMetadataJson = JSON.stringify(llmProjectBeliefMetadata);
   assert.equal(llmProjectBeliefMetadataJson.includes("sk-metadatashouldnotleave"), false);
   assert.equal(llmProjectBeliefMetadataJson.includes("nested llm alias answer"), false);
@@ -4064,23 +4083,15 @@ assert.equal(fallbackExtractionReport.extraction?.extractionSource, "rules");
 assert.equal(fallbackExtractionReport.extraction?.fallbackUsed, true);
 assert.equal(fallbackExtractionReport.extraction?.fallbackReason, "extractor_failed");
 assert.equal(fallbackExtractionReport.extraction?.extractorFailed, true);
-assert.equal(fallbackExtractionReport.extraction?.acceptedCandidateCount, 1);
-assert.equal(fallbackExtractionReport.extraction?.fallbackDurableCandidateCount, 1);
-assert.equal(fallbackExtractionReport.extraction?.decisions[0]?.decision, "accepted");
-assert.equal(
-  fallbackExtractionReport.extraction?.decisions[0]?.decision === "accepted"
-    ? fallbackExtractionReport.extraction.decisions[0].acceptanceClass
-    : undefined,
-  "fallbackDurableCandidate",
-);
-assert.equal(fallbackExtractionReport.memoryIds.length, 1);
+assert.equal(fallbackExtractionReport.extraction?.ruleCandidateCount, 0);
+assert.equal(fallbackExtractionReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(fallbackExtractionReport.extraction?.fallbackDurableCandidateCount, 0);
+assert.equal(fallbackExtractionReport.memoryIds.length, 0);
 const fallbackMatches = await fallbackExtractorMemory.search({
   profileId: "fallback_extractor",
   query: "fallback rule extraction",
 });
-assert.equal(fallbackMatches.length, 1);
-assert.equal(fallbackMatches[0]?.metadata.extractionSource, "rules");
-assert.equal(fallbackMatches[0]?.metadata.extractorFallback, true);
+assert.equal(fallbackMatches.length, 0);
 
 const rejectedCustomFallbackStore = createSqliteMemoryStore({
   path: path.join(tmp, "rejected-custom-fallback.db"),
@@ -4093,7 +4104,7 @@ const rejectedCustomFallbackMemory = createMemoryOS({
     extract() {
       return {
         kind: "preference",
-        content: "Weak structured extraction should not suppress rule fallback.",
+        content: "Weak structured extraction should not create fallback memory.",
         confidence: 0,
         predicate: "user.preference",
       };
@@ -4106,32 +4117,31 @@ const rejectedCustomFallbackReport = await rejectedCustomFallbackMemory.observeW
   role: "user",
   content: "I prefer fallback after weak custom extraction.",
 });
-assert.equal(rejectedCustomFallbackReport.extraction?.extractionSource, "rules");
-assert.equal(rejectedCustomFallbackReport.extraction?.fallbackUsed, true);
-assert.equal(rejectedCustomFallbackReport.extraction?.fallbackReason, "custom_candidates_rejected");
+assert.equal(rejectedCustomFallbackReport.extraction?.extractionSource, "custom");
+assert.equal(rejectedCustomFallbackReport.extraction?.fallbackUsed, false);
+assert.equal(rejectedCustomFallbackReport.extraction?.fallbackReason, undefined);
 assert.equal(rejectedCustomFallbackReport.extraction?.extractorFailed, false);
-assert.equal(rejectedCustomFallbackReport.extraction?.rawCandidateCount, 2);
-assert.equal(rejectedCustomFallbackReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(rejectedCustomFallbackReport.extraction?.ruleCandidateCount, 0);
+assert.equal(rejectedCustomFallbackReport.extraction?.rawCandidateCount, 1);
+assert.equal(rejectedCustomFallbackReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(rejectedCustomFallbackReport.extraction?.rejectedCandidateCount, 1);
 assert.equal(rejectedCustomFallbackReport.extraction?.softRejectCount, 1);
 assert.equal(rejectedCustomFallbackReport.extraction?.hardRejectCount, 0);
-assert.equal(rejectedCustomFallbackReport.extraction?.fallbackDurableCandidateCount, 1);
+assert.equal(rejectedCustomFallbackReport.extraction?.fallbackDurableCandidateCount, 0);
 assert.deepEqual(
   rejectedCustomFallbackReport.extraction?.decisions.map((decision) =>
     decision.decision === "accepted"
       ? `${decision.decision}:${decision.acceptanceClass}`
       : `${decision.decision}:${decision.rejectClass}:${decision.reason}`,
   ),
-  ["accepted:fallbackDurableCandidate", "rejected:softReject:low_confidence"],
+  ["rejected:softReject:low_confidence"],
 );
-assert.equal(rejectedCustomFallbackReport.memoryIds.length, 1);
+assert.equal(rejectedCustomFallbackReport.memoryIds.length, 0);
 const rejectedCustomFallbackMatches = await rejectedCustomFallbackMemory.search({
   profileId: "rejected_custom_fallback",
   query: "weak custom extraction",
 });
-assert.equal(rejectedCustomFallbackMatches.length, 1);
-assert.equal(rejectedCustomFallbackMatches[0]?.metadata.extractionSource, "rules");
-assert.equal(rejectedCustomFallbackMatches[0]?.metadata.extractorFallback, true);
+assert.equal(rejectedCustomFallbackMatches.length, 0);
 await rejectedCustomFallbackMemory.close();
 
 const hardRejectedCustomFallbackStore = createSqliteMemoryStore({
@@ -4346,7 +4356,7 @@ const hostAliasSpeakerExtractorReport = await hostAliasSpeakerExtractorMemory.ob
   role: "user",
   content: "I prefer compact implementation notes.",
   metadata: {
-    speaker: "MiraUser",
+    speaker: "Mira User",
   },
 });
 assert.equal(hostAliasSpeakerExtractorReport.extraction?.acceptedCandidateCount, 1);
@@ -4359,8 +4369,8 @@ const hostAliasSelfParticipantExtractorReport =
     role: "user",
     content: "I prefer compact QA notes.",
     metadata: {
-      speaker: "MiraUser",
-      participants: ["MiraUser"],
+      speaker: "Mira User",
+      participants: ["Mira User"],
     },
   });
 assert.equal(hostAliasSelfParticipantExtractorReport.extraction?.acceptedCandidateCount, 1);
@@ -4739,6 +4749,7 @@ const nonUserExtractionStore = createSqliteMemoryStore({ path: nonUserExtraction
 const nonUserExtractionMemory = createMemoryOS({
   profileId: "non_user_extraction",
   store: nonUserExtractionStore,
+  extractor: legacyRuleTestExtractor,
   extraction: {
     extractFromRoles: ["user", "assistant"],
   },
@@ -4874,6 +4885,7 @@ const rulesReportStore = createSqliteMemoryStore({ path: rulesReportPath });
 const rulesReportMemory = createMemoryOS({
   profileId: "rules_report",
   store: rulesReportStore,
+  extractor: legacyRuleTestExtractor,
 });
 const rulesReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
@@ -4881,7 +4893,7 @@ const rulesReport = await rulesReportMemory.observeWithReport({
   role: "user",
   content: "I prefer concise release summaries.",
 });
-assert.equal(rulesReport.extraction?.extractionSource, "rules");
+assert.equal(rulesReport.extraction?.extractionSource, "custom");
 assert.equal(rulesReport.extraction?.fallbackUsed, false);
 assert.equal(rulesReport.extraction?.extractorFailed, false);
 assert.equal(rulesReport.extraction?.acceptedCandidateCount, 1);
@@ -5532,6 +5544,12 @@ assert.equal(
   speakerMajorReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
     ?.candidate.metadata?.rule,
   "first_person_structured_attribute",
+);
+assert.equal(extractDefaultRuleMemoryCandidates("I work as a designer.").length, 0);
+assert.equal(extractDefaultRuleMemoryCandidates("我的女儿叫小红。").length, 0);
+assert.equal(
+  extractDefaultRuleMemoryCandidates("Please do not remind me about renewal emails.")[0]?.predicate,
+  "boundary.do_not_push",
 );
 assert.equal(extractRuleMemoryCandidates("I work as a designer.")[0]?.predicate, "person.role");
 assert.equal(extractRuleMemoryCandidates("I work as designer.")[0]?.object, "designer");
@@ -8802,6 +8820,81 @@ assert.match(underscoredSpeakerPrepared.contextBlock, /Helio/);
 assert.doesNotMatch(underscoredSpeakerPrepared.contextBlock, /Quartz/);
 await rulesReportMemory.close();
 
+const defaultSafeRuleModeStore = createSqliteMemoryStore({
+  path: path.join(tmp, "default-safe-rule-mode.db"),
+});
+const defaultSafeRuleModeMemory = createMemoryOS({
+  profileId: "safe_rule_mode",
+  store: defaultSafeRuleModeStore,
+});
+const defaultToolFactReport = await defaultSafeRuleModeMemory.observeWithReport({
+  type: "conversation.message",
+  role: "user",
+  content: "I use Chronos for travel planning.",
+});
+assert.equal(defaultToolFactReport.extraction?.ruleCandidateCount, 0);
+assert.equal(defaultToolFactReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(defaultToolFactReport.memoryIds.length, 0);
+assert.equal(defaultToolFactReport.worldBeliefIds.length, 0);
+const defaultRelationFactReport = await defaultSafeRuleModeMemory.observeWithReport({
+  type: "conversation.message",
+  role: "user",
+  content: "我的女儿叫小红。",
+});
+assert.equal(defaultRelationFactReport.extraction?.ruleCandidateCount, 0);
+assert.equal(defaultRelationFactReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(defaultRelationFactReport.memoryIds.length, 0);
+assert.equal(defaultRelationFactReport.worldBeliefIds.length, 0);
+const defaultBoundaryReport = await defaultSafeRuleModeMemory.observeWithReport({
+  type: "conversation.message",
+  role: "user",
+  content: "Please do not remind me about renewal emails.",
+});
+assert.equal(defaultBoundaryReport.extraction?.ruleCandidateCount, 1);
+assert.equal(defaultBoundaryReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(defaultBoundaryReport.memoryIds.length, 1);
+assert.equal(
+  defaultBoundaryReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.predicate,
+  "boundary.do_not_push",
+);
+const defaultFailingExtractorMemory = createMemoryOS({
+  profileId: "safe_rule_mode_extractor_failure",
+  store: createSqliteMemoryStore({ path: path.join(tmp, "default-safe-rule-mode-extractor.db") }),
+  extractor: {
+    name: "failing-test-extractor",
+    async extract() {
+      throw new Error("extractor unavailable");
+    },
+  },
+});
+const failingExtractorBroadFactReport = await defaultFailingExtractorMemory.observeWithReport({
+  type: "conversation.message",
+  role: "user",
+  content: "I work as a designer.",
+});
+assert.equal(failingExtractorBroadFactReport.extraction?.extractorFailed, true);
+assert.equal(failingExtractorBroadFactReport.extraction?.ruleCandidateCount, 0);
+assert.equal(failingExtractorBroadFactReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(failingExtractorBroadFactReport.memoryIds.length, 0);
+assert.equal(failingExtractorBroadFactReport.worldBeliefIds.length, 0);
+const failingExtractorBoundaryReport = await defaultFailingExtractorMemory.observeWithReport({
+  type: "conversation.message",
+  role: "user",
+  content: "Please do not push renewal reminders.",
+});
+assert.equal(failingExtractorBoundaryReport.extraction?.extractorFailed, true);
+assert.equal(failingExtractorBoundaryReport.extraction?.ruleCandidateCount, 1);
+assert.equal(failingExtractorBoundaryReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(failingExtractorBoundaryReport.memoryIds.length, 1);
+assert.equal(
+  failingExtractorBoundaryReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate.predicate,
+  "boundary.do_not_push",
+);
+await defaultFailingExtractorMemory.close();
+await defaultSafeRuleModeMemory.close();
+
 const lowLevelMemory = await memory.add({
   profileId: "test",
   kind: "preference",
@@ -11744,13 +11837,13 @@ const mcpObserve = await mcpServer.callTool("memory.observe", {
   conversationId: "conv_mcp",
   messageId: "msg_mcp_1",
   role: "user",
-  content: "我的代码方案沟通偏好是先讲风险。",
+  content: "请不要主动提醒我这个项目延期。",
   createdAt: "2026-06-25T00:03:00.000Z",
 });
 assert.equal((mcpObserve.structuredContent as { ok?: boolean }).ok, true);
 const mcpPrepared = await mcpServer.callTool("memory.prepare_context", {
   profileId: "mcp",
-  text: "代码方案沟通偏好",
+  text: "项目延期提醒边界",
   includeEvidence: true,
 });
 const mcpPreparedPayload = mcpPrepared.structuredContent as {
@@ -11759,20 +11852,21 @@ const mcpPreparedPayload = mcpPrepared.structuredContent as {
     contextBlock: string;
     evidence: unknown[];
     memories: Array<{ id: string; content: string }>;
+    actionPolicies: Array<{ sourceMemoryId?: string; text: string }>;
   };
 };
 assert.equal(mcpPreparedPayload.ok, true);
-assert.match(mcpPreparedPayload.prepared?.contextBlock ?? "", /先讲风险/);
+assert.match(mcpPreparedPayload.prepared?.contextBlock ?? "", /不要主动提醒/);
 assert.ok((mcpPreparedPayload.prepared?.evidence.length ?? 0) >= 1);
-const mcpMemoryId = mcpPreparedPayload.prepared?.memories.find((entry) =>
-  entry.content.includes("先讲风险"),
-)?.id;
+const mcpMemoryId = mcpPreparedPayload.prepared?.actionPolicies.find((entry) =>
+  entry.text.includes("不要主动提醒"),
+)?.sourceMemoryId;
 assert.equal(typeof mcpMemoryId, "string");
 const mcpExplanation = await mcpServer.callTool("memory.explain_belief", {
   profileId: "mcp",
   id: mcpMemoryId,
 });
-assert.match(JSON.stringify(mcpExplanation.structuredContent), /先讲风险/);
+assert.match(JSON.stringify(mcpExplanation.structuredContent), /不要主动提醒/);
 const mcpNestedOverride = await mcpServer.callTool("memory.prepare_context", {
   profileId: "mcp",
   messages: [
@@ -11801,7 +11895,7 @@ const metadataAuthSecret = "Bearer ghast-auth-secret-value";
 await mcpServer.callTool("memory.observe", {
   profileId: "mcp",
   role: "user",
-  content: "我的 metadata 偏好是先写测试。",
+  content: "请不要主动提醒我 metadata 例行检查。",
   metadata: {
     token: metadataSecret,
     auth: metadataAuthSecret,
@@ -11814,7 +11908,7 @@ await mcpServer.callTool("memory.observe", {
 });
 const mcpMetadataPrepared = await mcpServer.callTool("memory.prepare_context", {
   profileId: "mcp",
-  text: "metadata 偏好",
+  text: "metadata 例行检查提醒边界",
   includeEvidence: true,
 });
 assert.equal(mcpMetadataPrepared.isError, undefined);
@@ -11824,11 +11918,14 @@ assert.equal(
   false,
 );
 const mcpMetadataPreparedPayload = mcpMetadataPrepared.structuredContent as {
-  prepared?: { memories: Array<{ id: string; content: string }> };
+  prepared?: {
+    memories: Array<{ id: string; content: string }>;
+    actionPolicies: Array<{ sourceMemoryId?: string; text: string }>;
+  };
 };
-const metadataMemoryId = mcpMetadataPreparedPayload.prepared?.memories.find((entry) =>
-  entry.content.includes("metadata 偏好"),
-)?.id;
+const metadataMemoryId = mcpMetadataPreparedPayload.prepared?.actionPolicies.find((entry) =>
+  entry.text.includes("metadata 例行检查"),
+)?.sourceMemoryId;
 assert.equal(typeof metadataMemoryId, "string");
 const mcpMetadataExplanation = await mcpServer.callTool("memory.explain_belief", {
   profileId: "mcp",
@@ -12071,11 +12168,11 @@ try {
   assert.equal(httpRestoreRoute.status, 404);
   const preparedHttp = await postJson(`${httpAddress.url}/prepare`, {
     profileId: "http",
-    text: "HTTP adapter 应该怎么回答？",
+    text: "compact memory contracts",
     includeEvidence: true,
   });
   assert.equal(preparedHttp.status, 200);
-  assert.match(preparedHttp.text, /先讲风险/);
+  assert.match(preparedHttp.text, /compact memory contracts/);
   const preparedPayload = preparedHttp.body as {
     prepared?: { memories?: Array<{ id?: string }>; contextBlock?: string };
   };
@@ -12086,10 +12183,10 @@ try {
     id: httpMemoryId,
   });
   assert.equal(explanation.status, 200);
-  assert.match(explanation.text, /先讲风险/);
+  assert.match(explanation.text, /compact memory contracts/);
   const httpEvidencePath = await postJson(`${httpAddress.url}/explain-path`, {
     profileId: "http",
-    text: "HTTP adapter 应该怎么回答？",
+    text: "compact memory contracts",
     includePlannerTrace: true,
   });
   assert.equal(httpEvidencePath.status, 200);
@@ -12126,24 +12223,24 @@ try {
     tool: "memory.prepare_context",
     args: {
       profileId: "http",
-      text: "风险 方案",
+      text: "compact memory contracts",
     },
   });
   assert.equal(mcpCall.status, 200);
-  assert.match(mcpCall.text, /先讲风险/);
+  assert.match(mcpCall.text, /compact memory contracts/);
   const forget = await postJson(`${httpAddress.url}/forget`, {
     profileId: "http",
-    query: "HTTP adapter",
+    query: "compact memory contracts",
     reason: "test cleanup",
   });
   assert.equal(forget.status, 200);
   assert.match(forget.text, /archivedMemoryIds/);
   const afterForget = await postJson(`${httpAddress.url}/prepare`, {
     profileId: "http",
-    text: "HTTP adapter 应该怎么回答？",
+    text: "compact memory contracts",
   });
   assert.equal(afterForget.status, 200);
-  assert.equal(afterForget.text.includes("先讲风险"), false);
+  assert.equal(afterForget.text.includes("compact memory contracts"), false);
   const invalidJson = await fetch(`${httpAddress.url}/observe`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -12217,16 +12314,16 @@ try {
     { authorization: "Bearer wrong-token" },
   );
   assert.equal(wrongToken.status, 401);
-  const authorizedObserve = await postJson(
-    `${authedHttpAddress.url}/observe`,
+  const authorizedAdd = await postJson(
+    `${authedHttpAddress.url}/add`,
     {
       profileId: "http_auth",
-      role: "user",
-      content: "我喜欢 HTTP auth bearer-protected local calls.",
+      kind: "preference",
+      content: "HTTP auth bearer-protected local calls.",
     },
     { authorization: "Bearer local-test-token" },
   );
-  assert.equal(authorizedObserve.status, 200);
+  assert.equal(authorizedAdd.status, 200);
   const authorizedPrepare = await postJson(
     `${authedHttpAddress.url}/prepare`,
     {
@@ -12306,18 +12403,18 @@ try {
     content: "unauthorized CLI HTTP writes should fail.",
   });
   assert.equal(cliUnauthedObserve.status, 401);
-  const cliObserve = await postJson(`${cliHttpUrl}/observe`, {
+  const cliAdd = await postJson(`${cliHttpUrl}/add`, {
     profileId: "cli_http",
-    role: "user",
-    content: "我喜欢 CLI HTTP adapter 先讲测试结果。",
+    kind: "preference",
+    content: "CLI HTTP adapter should summarize test results first.",
   }, { authorization: "Bearer cli-local-token" });
-  assert.equal(cliObserve.status, 200);
+  assert.equal(cliAdd.status, 200);
   const cliPrepare = await postJson(`${cliHttpUrl}/prepare`, {
     profileId: "cli_http",
-    text: "CLI HTTP adapter 应该先讲什么？",
+    text: "CLI HTTP adapter should summarize",
   }, { authorization: "Bearer cli-local-token" });
   assert.equal(cliPrepare.status, 200);
-  assert.match(cliPrepare.text, /先讲测试结果/);
+  assert.match(cliPrepare.text, /summarize test results first/);
 } finally {
   cliHttp.kill("SIGTERM");
   await Promise.race([
@@ -14064,10 +14161,9 @@ assert.equal(
   JSON.stringify(secretTrajectoryBackup).includes("sk-reconstructiontrajectorysecret"),
   false,
 );
-await reconstructionMemory.observe({
-  type: "conversation.message",
+await reconstructionMemory.add({
   profileId: "recon",
-  role: "user",
+  kind: "project",
   content: "Orchid project v1 owner is AlphaTeam.",
 });
 const orchidMatch = (await reconstructionMemory.search({
@@ -14091,10 +14187,9 @@ const orchidAfterUpdate = await reconstructionMemory.reconstructContext({
 });
 assert.match(orchidAfterUpdate.contextBlock, /BetaTeam/);
 assert.equal(orchidAfterUpdate.contextBlock.includes("AlphaTeam"), false);
-await reconstructionMemory.observe({
-  type: "conversation.message",
+await reconstructionMemory.add({
   profileId: "recon",
-  role: "user",
+  kind: "project",
   content: "Moonbase 项目发布管理由 SongSuOwnerAlpha 负责。",
 });
 const moonbaseBeforeForget = await reconstructionMemory.reconstructContext({
@@ -14404,9 +14499,9 @@ const externalBenchmarkJsonl = [
     id: "speaker-metadata-source",
     events: [
       {
-        type: "message",
-        role: "user",
-        content: "I painted a ceramic moon in 2020 after class.",
+        type: "memory",
+        kind: "fact",
+        content: "Casey mentioned painting a ceramic moon in 2020 after class.",
         metadata: {
           speaker: "Casey",
           answer: "leaked external answer",
@@ -14502,6 +14597,12 @@ assert.equal(externalBenchmark.runManifest.dataset.caseCount, 8);
 assert.equal(externalBenchmark.runManifest.dataset.hash, null);
 assert.equal(externalBenchmark.runManifest.execution.caseGroupCount, 8);
 assert.equal(externalBenchmark.runManifest.execution.reusedProfileCaseCount, 0);
+assert.equal(
+  externalBenchmark.summary.slowestCaseGroups.some((group) =>
+    /project-next-step|external_project_next_step|external_project-next-step/u.test(group.groupKey),
+  ),
+  false,
+);
 assert.equal(externalBenchmark.runManifest.options.concurrency >= 1, true);
 assert.equal(externalBenchmark.runManifest.options.reuseProfiles, true);
 assert.equal(externalBenchmark.runManifest.options.requireConvergence, false);
@@ -14557,8 +14658,8 @@ const externalObservedDateBenchmark = await runExternalMemoryBenchmark({
     {
       id: "observed-date",
       events: [{
-        type: "message",
-        role: "user",
+        type: "memory",
+        kind: "fact",
         content: "I went to the project workshop yesterday and it helped.",
         createdAt: "2023-05-07T00:00:00.000Z",
       }],
@@ -14575,8 +14676,8 @@ const externalObservedDateWithoutTemporal = await runExternalMemoryBenchmark({
   cases: [{
     id: "observed-date-no-temporal",
     events: [{
-      type: "message",
-      role: "user",
+      type: "memory",
+      kind: "fact",
       content: "I went to the project workshop yesterday and it helped.",
       createdAt: "2023-05-07T00:00:00.000Z",
     }],
@@ -14588,14 +14689,15 @@ assert.equal(externalObservedDateWithoutTemporal.pass, false);
 assert.equal(externalObservedDateWithoutTemporal.runManifest.options.includeSensitive, false);
 assert.equal(externalObservedDateWithoutTemporal.runManifest.options.includeTemporalMetadata, false);
 const externalSensitiveDefaultBenchmark = await runExternalMemoryBenchmark({
-  cases: [{
-    id: "sensitive-default-filtered",
-    events: [{
-      type: "message",
-      role: "user",
-      content: "I went to a LGBTQ support group yesterday and it was powerful.",
-      createdAt: "2023-05-07T00:00:00.000Z",
-    }],
+	  cases: [{
+	    id: "sensitive-default-filtered",
+	    events: [{
+	      type: "memory",
+	      kind: "fact",
+	      content: "I went to a LGBTQ support group yesterday and it was powerful.",
+	      sensitivity: "sensitive",
+	      createdAt: "2023-05-07T00:00:00.000Z",
+	    }],
     question: "What group did I go to?",
     expectedAll: ["support group"],
   }],
@@ -14604,14 +14706,15 @@ assert.equal(externalSensitiveDefaultBenchmark.pass, false);
 assert.equal(externalSensitiveDefaultBenchmark.runManifest.options.includeSensitive, false);
 const externalSensitiveBenchmark = await runExternalMemoryBenchmark({
   includeSensitive: true,
-  cases: [{
-    id: "sensitive-recall",
-    events: [{
-      type: "message",
-      role: "user",
-      content: "I went to a LGBTQ support group yesterday and it was powerful.",
-      createdAt: "2023-05-07T00:00:00.000Z",
-    }],
+	  cases: [{
+	    id: "sensitive-recall",
+	    events: [{
+	      type: "memory",
+	      kind: "fact",
+	      content: "I went to a LGBTQ support group yesterday and it was powerful.",
+	      sensitivity: "sensitive",
+	      createdAt: "2023-05-07T00:00:00.000Z",
+	    }],
     question: "What group did I go to?",
     expectedAll: ["support group"],
   }],
@@ -14934,7 +15037,12 @@ const externalTaxonomyBenchmark = await runExternalMemoryBenchmark({
   cases: [
     {
       id: "policy-filtered-expired",
-      events: [{ type: "message", content: "I used PolicyFlag until 2000-01-01." }],
+      events: [{
+        type: "memory",
+        kind: "fact",
+        content: "I used PolicyFlag until 2000-01-01.",
+        metadata: { validTo: "2000-01-01T00:00:00.000Z" },
+      }],
       question: "What flag do I use now?",
       expectedAll: ["PolicyFlag"],
     },
@@ -15367,6 +15475,8 @@ assert.deepEqual(longMemEvalCases[0]?.slices, [
 assert.equal(longMemEvalCases[0]?.events.length, 2);
 assert.equal(JSON.stringify(longMemEvalCases[0]?.events).includes("has_answer"), false);
 assert.equal(JSON.stringify(longMemEvalCases[0]?.events).includes("answer_session_ids"), false);
+assert.equal(JSON.stringify(longMemEvalCases[0]?.events).includes("longmemeval"), false);
+assert.equal(JSON.stringify(longMemEvalCases[0]?.events).includes("sessionIndex"), false);
 const longMemEvalJsonlCases = parseLongMemEvalBenchmarkDataset(
   longMemEvalFixture.slice(1, -1),
 );
@@ -15397,6 +15507,35 @@ const parsedLongMemEvalDataset = parseExternalMemoryBenchmarkDataset(longMemEval
   adapter: "longmemeval",
 });
 assert.equal(parsedLongMemEvalDataset.datasetFormat, "longmemeval.json");
+function assertExternalRuntimePayloadHasNoDatasetTrace(cases: ExternalMemoryBenchmarkCase[]): void {
+  const forbiddenMetadataKeys = new Set([
+    "adapter",
+    "sampleId",
+    "sessionKey",
+    "rawSpeakerLabel",
+    "sessionIndex",
+    "answer",
+    "adversarial_answer",
+    "category",
+    "evidence",
+    "has_answer",
+    "question_id",
+    "sample_id",
+  ]);
+  const forbiddenMetadataValue = /longmemeval|locomo|lme-|qa-|sample|session_\d|session-\d/iu;
+  for (const benchmarkCase of cases) {
+    assert.doesNotMatch(benchmarkCase.profileId ?? "", forbiddenMetadataValue);
+    for (const event of benchmarkCase.events) {
+      for (const [key, value] of Object.entries(event.metadata ?? {})) {
+        assert.equal(forbiddenMetadataKeys.has(key), false, `external runtime metadata key leaked: ${key}`);
+        if (typeof value === "string") {
+          assert.doesNotMatch(value, forbiddenMetadataValue);
+        }
+      }
+    }
+  }
+}
+assertExternalRuntimePayloadHasNoDatasetTrace(parsedLongMemEvalDataset.cases);
 const longMemEvalBenchmark = await runExternalMemoryBenchmark({
   cases: parsedLongMemEvalDataset.cases,
   datasetFormat: parsedLongMemEvalDataset.datasetFormat,
@@ -15503,9 +15642,10 @@ const parsedLocomoDataset = parseExternalMemoryBenchmarkDataset(locomoFixture, {
 });
 assert.equal(parsedLocomoDataset.datasetFormat, "locomo.json");
 assert.equal(parsedLocomoDataset.cases.length, 3);
+assertExternalRuntimePayloadHasNoDatasetTrace(parsedLocomoDataset.cases);
 assert.deepEqual(parsedLocomoDataset.warnings, ["skipped_locomo_unscored_qa:locomo-atlas:qa-4"]);
-assert.equal(parsedLocomoDataset.cases[0]?.events[0]?.role, "user");
-assert.equal(parsedLocomoDataset.cases[0]?.events[1]?.role, "user");
+assert.equal(parsedLocomoDataset.cases[0]?.events[0]?.type, "memory");
+assert.equal(parsedLocomoDataset.cases[0]?.events[1]?.type, "memory");
 assert.match(parsedLocomoDataset.cases[0]?.events[0]?.content ?? "", /^Alex:/);
 assert.match(parsedLocomoDataset.cases[0]?.events[1]?.content ?? "", /^Blair:/);
 assert.equal(parsedLocomoDataset.cases[0]?.events[0]?.metadata?.speaker, "Alex");
@@ -15513,6 +15653,9 @@ assert.deepEqual(parsedLocomoDataset.cases[0]?.events[0]?.metadata?.participants
 assert.equal(parsedLocomoDataset.cases[0]?.events[1]?.metadata?.speaker, "Blair");
 assert.equal(JSON.stringify(parsedLocomoDataset.cases[0]?.events).includes("answer"), false);
 assert.equal(JSON.stringify(parsedLocomoDataset.cases[0]?.events).includes("adversarial"), false);
+assert.equal(JSON.stringify(parsedLocomoDataset.cases[0]?.events).includes("locomo"), false);
+assert.equal(JSON.stringify(parsedLocomoDataset.cases[0]?.events).includes("sampleId"), false);
+assert.equal(JSON.stringify(parsedLocomoDataset.cases[0]?.events).includes("sessionKey"), false);
 assert.throws(
   () =>
     parseLocomoBenchmarkDataset(
@@ -15596,7 +15739,7 @@ const locomoHumanSpeakerFixture = JSON.stringify([
   },
 ]);
 const locomoHumanSpeakerCases = parseLocomoBenchmarkDataset(locomoHumanSpeakerFixture);
-assert.equal(locomoHumanSpeakerCases[0]?.events[1]?.role, "user");
+assert.equal(locomoHumanSpeakerCases[0]?.events[1]?.type, "memory");
 assert.match(locomoHumanSpeakerCases[0]?.events[1]?.content ?? "", /^Blair:/);
 assert.deepEqual(locomoHumanSpeakerCases[0]?.slices, ["locomo:speaker_grounding"]);
 const locomoHumanSpeakerBenchmark = await runExternalMemoryBenchmark({
@@ -15627,7 +15770,7 @@ const locomoSpeakerLabelFixture = JSON.stringify([
       {
         question: "Which travel planning tool belongs to Blair?",
         answer: "Meridian",
-        adversarial_answer: "Alex",
+        adversarial_answer: "VectorPad",
       },
     ],
   },
@@ -15635,10 +15778,10 @@ const locomoSpeakerLabelFixture = JSON.stringify([
 const locomoSpeakerLabelCases = parseLocomoBenchmarkDataset(locomoSpeakerLabelFixture);
 assert.match(locomoSpeakerLabelCases[0]?.events[0]?.content ?? "", /^Alex:/);
 assert.equal(locomoSpeakerLabelCases[0]?.events[0]?.metadata?.speaker, "Alex");
-assert.equal(locomoSpeakerLabelCases[0]?.events[0]?.metadata?.rawSpeakerLabel, "A");
+assert.equal("rawSpeakerLabel" in (locomoSpeakerLabelCases[0]?.events[0]?.metadata ?? {}), false);
 assert.match(locomoSpeakerLabelCases[0]?.events[1]?.content ?? "", /^Blair:/);
 assert.equal(locomoSpeakerLabelCases[0]?.events[1]?.metadata?.speaker, "Blair");
-assert.equal(locomoSpeakerLabelCases[0]?.events[1]?.metadata?.rawSpeakerLabel, "B");
+assert.equal("rawSpeakerLabel" in (locomoSpeakerLabelCases[0]?.events[1]?.metadata ?? {}), false);
 const locomoSpeakerLabelBenchmark = await runExternalMemoryBenchmark({
   cases: locomoSpeakerLabelCases,
   datasetFormat: "locomo.json",
@@ -17701,13 +17844,13 @@ const cliMcpObserve = spawnSync(
     "call",
     "--db",
     mcpCliDb,
-    "--profile",
-    "cli_mcp",
-    "--tool",
-    "memory.observe",
-    "--input",
-    JSON.stringify({ content: "我偏好提交前先跑完整测试。", role: "user" }),
-  ],
+	    "--profile",
+	    "cli_mcp",
+	    "--tool",
+	    "memory.add",
+	    "--input",
+	    JSON.stringify({ kind: "preference", content: "我偏好提交前先跑完整测试。" }),
+	  ],
   { cwd: process.cwd(), encoding: "utf8" },
 );
 assert.equal(cliMcpObserve.status, 0, cliMcpObserve.stderr);
@@ -17878,24 +18021,16 @@ try {
   });
   assert.equal(stdioSearch.isError, undefined);
   assert.match(JSON.stringify(stdioSearch.structuredContent), /tool coverage/);
-  await stdioClient.callTool({
-    name: "memory.observe",
-    arguments: {
-      content: "我在 MCP stdio 模式下也偏好先讲风险。",
-      role: "user",
-      profileId: "stdio_mcp",
-    },
-  });
   const stdioPrepared = await stdioClient.callTool({
     name: "memory.prepare_context",
     arguments: {
       profileId: "stdio_mcp",
-      text: "stdio 模式下应该怎么回答？",
+      text: "tool coverage",
       includeEvidence: true,
     },
   });
   assert.equal(stdioPrepared.isError, undefined);
-  assert.match(JSON.stringify(stdioPrepared.structuredContent), /先讲风险/);
+  assert.match(JSON.stringify(stdioPrepared.structuredContent), /tool coverage/);
   const stdioNestedSensitive = await stdioClient.callTool({
     name: "memory.prepare_context",
     arguments: {

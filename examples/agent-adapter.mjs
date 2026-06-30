@@ -15,6 +15,34 @@ try {
   const memory = createMemoryOS({
     profileId: "agent-user",
     store,
+    extractor: {
+      name: "example-host-structured-extractor",
+      extract(input) {
+        if (input.event.content.includes("先列风险")) {
+          return {
+            kind: "preference",
+            content: "发布计划先列风险，再给最小可行步骤。",
+            confidence: 0.9,
+            predicate: "user.preference",
+            subject: "user",
+            object: "risk-first release planning",
+            actionPolicyKind: "prefer",
+          };
+        }
+        if (input.event.content.includes("不要主动推上线")) {
+          return {
+            kind: "boundary",
+            content: "Project Atlas 不要主动推上线，必须先等 rollback review。",
+            confidence: 0.95,
+            predicate: "boundary.do_not_push",
+            subject: "project:atlas",
+            object: "auto-push release",
+            actionPolicyKind: "do_not_push",
+          };
+        }
+        return [];
+      },
+    },
     host: {
       hostId: "generic-agent",
       capabilities: {

@@ -5,7 +5,7 @@ import type {
   WorldBeliefRecord,
 } from "./types.js";
 import { entityMentionCues } from "./entities.js";
-import { isReservedSpeakerIdentity, stableNamedPersonSubject } from "./extraction.js";
+import { isReservedSpeakerIdentity, stableNamedPersonSubject } from "./person-identity.js";
 import { classifySensitivity } from "./safety.js";
 import { normalizeExplicitTemporalInstant } from "./temporal-validity.js";
 
@@ -207,12 +207,11 @@ function entitySubjectCues(metadata: Record<string, unknown>): string[] {
 
 export function sourceContentEntityCues(content: string): string[] {
   const namePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}`;
+  const singleNamePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}`;
   const patterns = [
-    new RegExp(String.raw`^\s*(${namePattern})\s+uses\s+.{2,80}?\s+for\s+.{2,80}?\s*\.?\s*$`, "u"),
-    new RegExp(
-      String.raw`^\s*(${namePattern})[’']s\s+(?:preferred\s+)?(?:[\p{L}\p{N}_ -]{0,60}\s+)?tool\s+(?:is|=)\s+.{1,80}?\s*\.?\s*$`,
-      "iu",
-    ),
+    new RegExp(String.raw`^\s*(${namePattern})\s*:\s*.+$`, "u"),
+    new RegExp(String.raw`^\s*(${namePattern})[’']s\s+.+$`, "u"),
+    new RegExp(String.raw`^\s*(${singleNamePattern})\s+\p{Ll}[\p{L}\p{N}_-]*\b.+$`, "u"),
   ];
   for (const pattern of patterns) {
     const name = pattern.exec(content)?.[1]?.trim();
@@ -269,13 +268,18 @@ export function sourceMetadataEntityCues(metadata: Record<string, unknown>): str
   const sourceMetadata = metadata.sourceMetadata;
   const subjectCues = entitySubjectCues(metadata);
   const mentionCues = entityMentionCues(metadata);
+  const directSpeakerCues = [
+    sourceSpeakerCue(metadata.speaker).toLowerCase(),
+    ...sourceSpeakerAliasCues(metadata.speakerAliases),
+  ];
   if (!sourceMetadata || typeof sourceMetadata !== "object" || Array.isArray(sourceMetadata)) {
-    return unique([...subjectCues, ...mentionCues]);
+    return unique([...subjectCues, ...mentionCues, ...directSpeakerCues]);
   }
   const record = sourceMetadata as Record<string, unknown>;
   return unique([
     ...subjectCues,
     ...mentionCues,
+    ...directSpeakerCues,
     sourceSpeakerCue(record.speaker).toLowerCase(),
     ...sourceSpeakerAliasCues(record.speakerAliases),
   ]);

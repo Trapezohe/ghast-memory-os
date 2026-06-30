@@ -74,7 +74,13 @@ const adapter = createAgentMemoryAdapter({
 
 await adapter.observeMessage({
   role: "user",
-  content: "I prefer rollout plans that list risks first.",
+  content: "Let's plan the rollout.",
+});
+
+await memory.add({
+  profileId: "local-user",
+  kind: "preference",
+  content: "For rollout plans, list risks first.",
 });
 
 const turn = await adapter.prepareTurn({
@@ -158,9 +164,10 @@ Run the HTTP smoke example:
 npm run examples:http-adapter
 ```
 
-The example starts an ephemeral localhost server, verifies auth, observes a
-preference, prepares evidence-backed context, reads status, and deletes its
-temporary plaintext SQLite database.
+The example starts an ephemeral localhost server, verifies auth, records an
+ordinary observation, imports an explicit preference memory, prepares
+evidence-backed context, reads status, and deletes its temporary plaintext
+SQLite database.
 
 ## Host Contract Tests
 

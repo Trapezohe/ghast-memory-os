@@ -824,12 +824,15 @@ export interface MemoryStore {
   repairSearchIndex?(): Promise<RepairSearchIndexResult> | RepairSearchIndexResult;
 }
 
+export type RuleExtractionMode = "safe" | "none";
+
 export interface MemoryOSOptions {
   profileId?: string | undefined;
   store: MemoryStore;
   extractor?: MemoryExtractor | undefined;
   extraction?: {
     fallbackToRules?: boolean | undefined;
+    ruleMode?: RuleExtractionMode | undefined;
     minConfidence?: number | undefined;
     extractFromRoles?: MemoryRole[] | undefined;
   } | undefined;

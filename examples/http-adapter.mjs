@@ -65,6 +65,13 @@ try {
   });
   assert.equal(observed.response.status, 200);
 
+  await memory.add({
+    profileId,
+    kind: "preference",
+    content: "I prefer HTTP host integrations to include evidence-backed context.",
+    createdAt: "2026-06-25T00:00:00.000Z",
+  });
+
   const prepared = await jsonRequest("/prepare", {
     method: "POST",
     body: {
