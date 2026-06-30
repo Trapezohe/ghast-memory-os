@@ -14,7 +14,7 @@ current behavior.
 - Host applications own filesystem permissions and database placement.
 - gmOS memory policy rejects secret-like long-term memory by default.
 - Incognito/private events are not promoted to long-term memory.
-- Ordinary context excludes sensitive memory unless an internal trusted caller
+- Ordinary context excludes sensitive memory unless a trusted host caller
   explicitly requests it.
 - Public MCP/HTTP surfaces do not expose sensitive override switches.
 - Forget operations archive matching memory and remove it from future context.

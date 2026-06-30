@@ -11,10 +11,10 @@ finished digital twin product. This directory contains the stable integration
 docs shipped with the package. The root README is the project overview; these
 files are the working references for host applications.
 
-The root README also defines the external learning posture: gmOS should study
-strong open-source memory systems and adopt their general mechanisms only when
-they strengthen local-first, evidence-backed, forgettable memory behavior. It
-must not add benchmark-specific runtime branches.
+These docs define the public integration surface, safety boundaries, and
+benchmark claim rules for the alpha runtime. Benchmark scores should be used to
+diagnose general memory capability gaps, not to justify dataset-specific
+runtime branches.
 
 - [API reference](./API_REFERENCE.md): public SDK, CLI, MCP, HTTP, and store
   surfaces.
@@ -22,7 +22,7 @@ must not add benchmark-specific runtime branches.
   choices, public tool contracts, and local service smoke tests.
 - [Architecture guide](./ARCHITECTURE.md): source-of-truth boundaries and data
   flow.
-- [Benchmark guide](./BENCHMARKING.md): internal gates, external adapters, and
+- [Benchmark guide](./BENCHMARKING.md): SDK gates, external adapters, and
   claim boundaries.
 - [Migration guide](./MIGRATION.md): host snapshot import, profile backup, and
   safe rollout steps.

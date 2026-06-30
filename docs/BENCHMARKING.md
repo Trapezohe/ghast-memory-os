@@ -1,7 +1,8 @@
 # gmOS Benchmark Guide
 
-gmOS benchmarks are diagnostic tools. They are not the product goal and must not
-drive benchmark-specific runtime branches.
+gmOS benchmarks are diagnostic tools. They are not the product goal. Low scores
+should identify general memory capability gaps, not trigger dataset-specific
+runtime branches.
 
 ## Required PR Gate
 
@@ -48,7 +49,7 @@ flags exist only for local diagnostics and script smoke tests.
 
 ## Memory Gym
 
-Memory Gym checks internal architecture and safety contracts:
+Memory Gym checks SDK architecture and safety contracts:
 
 ```bash
 gmos gym run --db :memory: --generated-seeds 3 --format json
@@ -59,7 +60,7 @@ gmos gym scale --sizes 100,1000 --threshold-p95-ms 250 --format json
 It validates behavior such as preference recall, do-not-push policy,
 secret-like rejection, incognito exclusion, forget residue, read-path purity,
 active reconstruction, temporal current/history behavior, and host
-compatibility. It is an internal engineering gate, not proof of mature digital
+compatibility. It is an SDK engineering gate, not proof of mature digital
 twin capability.
 
 ## External Adapters

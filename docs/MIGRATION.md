@@ -42,7 +42,7 @@ gmos restore --db ./new-gmos.db --profile local-restored --input-file ./backup.j
 ```
 
 Safe backups exclude archived, sensitive, and person memories by default. Use
-`--mode full` only for explicit internal migration rehearsals with appropriate
+`--mode full` only for explicit trusted migration rehearsals with appropriate
 handling of local files.
 
 ## Index Repair
@@ -74,4 +74,3 @@ source rows. It must not create new user memory facts.
 Rollback should restore the previous host memory path and keep the gmOS database
 for diagnosis. Do not merge partially migrated SQLite rows back into a legacy
 store without an explicit host-owned migration script.
-

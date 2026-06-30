@@ -208,10 +208,10 @@ The GitHub Actions CI runs these gates on Linux and macOS with Node 20.19 and
 Node 24, and on Windows with Node 24. Windows Node 20.19 is not part of the
 official CI matrix because the current `better-sqlite3` prebuild coverage can
 fall back to native compilation on GitHub-hosted Windows runners. Remote CI is
-opt-in to control organization Actions minutes: use `workflow_dispatch` or add
-the `run-ci` / `full-ci` label on a pull request when remote matrix evidence is
-needed. Branch pushes and release tag pushes do not run CI by default. The
-benchmark jobs are deterministic SDK gates; they do not call an external LLM.
+opt-in: use `workflow_dispatch` or add the `run-ci` / `full-ci` label on a pull
+request when remote matrix evidence is needed. Branch pushes and release tag
+pushes do not run CI by default. The benchmark jobs are deterministic SDK gates;
+they do not call an external LLM.
 
 `gym run` is the deterministic SDK benchmark. It reports hard gates, coverage
 layers, a generalization view, roadmap suggestions, and a run manifest. It does
@@ -898,7 +898,7 @@ import { PUBLIC_MEMORY_HTTP_ROUTES } from "@ghast/memory/http";
 The HTTP adapter intentionally rejects `includeSensitive` on `/prepare`,
 `/reconstruct`, `/explain-path`, and `/search` through the same public-tool
 contract as MCP. Hosts that need sensitive/admin memory access should use the
-in-process SDK with an explicit internal trust boundary.
+in-process SDK behind a private host boundary.
 
 Profile backup/restore is intentionally not exposed as an MCP tool or HTTP
 route. It remains an in-process SQLite store API and CLI operation for trusted
