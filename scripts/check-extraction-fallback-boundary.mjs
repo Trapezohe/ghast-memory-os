@@ -14,6 +14,20 @@ const extraction = read("src/kernel/extraction.ts");
 const associations = read("src/kernel/associations.ts");
 const reconstruction = read("src/kernel/reconstruction.ts");
 const types = read("src/kernel/types.ts");
+const publicObserveBoundaryFiles = [
+  "README.md",
+  "docs/API_REFERENCE.md",
+  "docs/ARCHITECTURE.md",
+  "docs/BENCHMARKING.md",
+  "docs/INTEGRATION_GUIDE.md",
+  "docs/MIGRATION.md",
+  "docs/README.md",
+  "src/cli/gmos.ts",
+  "examples/agent-adapter.mjs",
+  "examples/http-adapter.mjs",
+  "examples/mcp-router.mjs",
+  "examples/quickstart.mjs",
+];
 
 const broadSemanticExtractionPatterns = [
   /extractLegacyRuleMemoryCandidates/u,
@@ -27,6 +41,34 @@ const broadSemanticExtractionPatterns = [
   /我的\\s\*/u,
   /predicate:\s*"person\.(?:tool|preference|location|hometown|role|relation)"/u,
 ];
+
+const publicObserveSemanticPatterns = [
+  /\b(?:gmos|node\s+dist\/cli\/gmos\.js)\s+observe\b[^\n]*(?:I\s+prefer|preference|prefer|我喜欢|偏好)/iu,
+  /\bobserveMessage\s*\(\s*\{[\s\S]{0,240}?content:\s*["'`][^"'`\n]*(?:I\s+prefer|preference|prefer|我喜欢|偏好)/iu,
+  /\bmemory\.observe\s*\(\s*\{[\s\S]{0,240}?content:\s*["'`][^"'`\n]*(?:I\s+prefer|preference|prefer|我喜欢|偏好)/iu,
+  /(?:records?|observes?)\s+(?:a\s+)?preference\s+(?:through|via)\s+[`'"]?\/?observe/iu,
+  /(?:records?|observes?)\s+(?:a\s+)?preference\s+(?:through|via)\s+[`'"]?memory\.observe/iu,
+];
+
+function publicObserveSemanticExampleMatches() {
+  const matches = [];
+  for (const relativePath of publicObserveBoundaryFiles) {
+    const content = read(relativePath);
+    const hasStructuredExtractor = /extractor\s*:\s*\{/u.test(content);
+    for (const pattern of publicObserveSemanticPatterns) {
+      if (pattern.test(content)) {
+        if (relativePath.startsWith("examples/") && hasStructuredExtractor) {
+          continue;
+        }
+        matches.push(relativePath);
+        break;
+      }
+    }
+  }
+  return matches;
+}
+
+const publicObserveSemanticExamples = publicObserveSemanticExampleMatches();
 
 const checks = [
   {
@@ -74,6 +116,15 @@ const checks = [
         reconstruction,
       ),
     detail: "Reconstruction must rely on generic source, cue, and intent coverage, not tool-use templates.",
+  },
+  {
+    name: "public-observe-examples-do-not-imply-semantic-preference-extraction",
+    pass: publicObserveSemanticExamples.length === 0,
+    detail:
+      "Public docs, examples, and CLI help must use observe for ordinary events or safe boundaries; ordinary preferences must use add() or a configured structured extractor." +
+      (publicObserveSemanticExamples.length > 0
+        ? ` Matched: ${publicObserveSemanticExamples.join(", ")}.`
+        : ""),
   },
 ];
 
