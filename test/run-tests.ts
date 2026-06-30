@@ -75,6 +75,7 @@ import {
 } from "../src/store/sqlite/index.js";
 import {
   classifyHostCompatibility,
+  createAgentMemoryAdapter,
   createPresetHostAdapter,
   exportMemorySnapshots,
   loadHostMemorySnapshotsIntoStore,
@@ -10339,6 +10340,55 @@ assert.equal(secretRuntimeBackupJson.includes("sk-trajectorysummarysecret"), fal
 assert.equal(secretRuntimeBackupJson.includes("sk-failedtrajectorysecret"), false);
 assert.equal(secretRuntimeBackupJson.includes("sk-observedtasksecret"), false);
 assert.equal(secretRuntimeBackupJson.includes("[redacted_secret]"), true);
+
+const agentAdapterStore = createSqliteMemoryStore({
+  path: path.join(tmp, "agent-adapter-boundary.db"),
+});
+const agentAdapterMemory = createMemoryOS({
+  profileId: "agent_adapter_boundary",
+  store: agentAdapterStore,
+});
+const agentAdapter = createAgentMemoryAdapter({
+  memory: agentAdapterMemory,
+  profileId: "agent_adapter_boundary",
+});
+try {
+  await agentAdapterMemory.add({
+    profileId: "agent_adapter_boundary",
+    kind: "preference",
+    content: "Agent adapter user prefers risk-first release plans.",
+  });
+  await agentAdapterMemory.add({
+    profileId: "agent_adapter_boundary",
+    kind: "fact",
+    content: "Agent adapter sensitive payroll note should stay out of ordinary context.",
+    sensitivity: "sensitive",
+  });
+  const agentAdapterMessages = [
+    { role: "user" as const, content: "How should we write the release plan?" },
+  ];
+  const agentAdapterMessagesBefore = JSON.stringify(agentAdapterMessages);
+  const agentAdapterTurn = await agentAdapter.prepareTurn({
+    messages: agentAdapterMessages,
+  });
+  assert.equal(JSON.stringify(agentAdapterMessages), agentAdapterMessagesBefore);
+  assert.notEqual(agentAdapterTurn.modelMessages, agentAdapterMessages);
+  assert.equal(agentAdapterTurn.modelMessages.length, 2);
+  assert.equal(agentAdapterTurn.modelMessages[1], agentAdapterMessages[0]);
+  assert.match(agentAdapterTurn.contextMessage?.content ?? "", /risk-first release plans/);
+  assert.equal(
+    agentAdapterTurn.contextMessage?.content.includes("sensitive payroll note"),
+    false,
+  );
+  assert.equal(
+    agentAdapterTurn.prepared.memories.some((entry) =>
+      entry.content.includes("sensitive payroll note"),
+    ),
+    false,
+  );
+} finally {
+  await agentAdapterMemory.close();
+}
 
 const compat = classifyHostCompatibility({
   hostId: "ghast",
