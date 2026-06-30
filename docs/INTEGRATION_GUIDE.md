@@ -66,10 +66,9 @@ lifecycle.
 
 If the host already has a trusted local or host-controlled calendar/task-time
 parser, pass it through `createMemoryOS({ temporal: { parser } })` and return
-structured `eventTime`, `validFrom`, or `validTo` values. Set
-`temporal.inferFromText: false` when the integration should rely only on host
-metadata and extractor output instead of gmOS' conservative built-in date text
-inference.
+structured `eventTime`, `validFrom`, or `validTo` values. Built-in language/date
+text inference is off by default; set `temporal.inferFromText: true` only when
+the integration explicitly wants gmOS' conservative date-text parser.
 
 For in-process Node agent runtimes, `@ghast/memory/host` includes a small
 framework-agnostic adapter that wires this lifecycle without depending on a

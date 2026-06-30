@@ -57,8 +57,9 @@ Hosts with a trusted local or host-controlled calendar/task-time parser can pass
 `temporal.parser`. The parser returns structured `eventTime`, `validFrom`, and
 `validTo` values; gmOS normalizes them, drops invalid or secret-like values, and
 applies the same current/history filtering used for extractor-supplied temporal
-fields. Set `temporal.inferFromText: false` when the host wants to avoid gmOS'
-conservative built-in text inference:
+fields. Built-in language/date text inference is disabled by default; set
+`temporal.inferFromText: true` only when the host explicitly wants gmOS'
+conservative date-text parser:
 
 ```ts
 const memory = createMemoryOS({

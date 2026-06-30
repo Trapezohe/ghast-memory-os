@@ -3328,6 +3328,7 @@ const relativeTemporalMemory = createMemoryOS({
   profileId: "relative-temporal",
   store: createSqliteMemoryStore({ path: path.join(tmp, "relative-temporal.db") }),
   extractor: legacyRuleTestExtractor,
+  temporal: { inferFromText: true },
 });
 await relativeTemporalMemory.observeWithReport({
   type: "conversation.message",
@@ -3380,6 +3381,30 @@ assert.match(relativeTemporalPrepared.contextBlock, /project workshop/);
 assert.doesNotMatch(relativeTemporalPrepared.contextBlock, /event_date=/);
 assert.doesNotMatch(relativeTemporalPrepared.contextBlock, /event_date_text=/);
 await relativeTemporalMemory.close();
+const defaultTemporalInferenceStore = createSqliteMemoryStore({
+  path: path.join(tmp, "default-temporal-inference-disabled.db"),
+});
+const defaultTemporalInferenceMemory = createMemoryOS({
+  profileId: "default-temporal-inference-disabled",
+  store: defaultTemporalInferenceStore,
+  extractor: legacyRuleTestExtractor,
+});
+const defaultTemporalInferenceObservation = await defaultTemporalInferenceMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "default-temporal-inference-disabled",
+  role: "user",
+  content: "I attended the default inference workshop on May 7, 2023.",
+});
+assert.equal(defaultTemporalInferenceObservation.extraction?.acceptedCandidateCount, 1);
+const defaultTemporalInferenceStoredMemory = await defaultTemporalInferenceMemory.get({
+  profileId: "default-temporal-inference-disabled",
+  id: defaultTemporalInferenceObservation.memoryIds[0]!,
+});
+assert.equal(defaultTemporalInferenceStoredMemory?.metadata.eventTime, undefined);
+assert.equal(defaultTemporalInferenceStoredMemory?.metadata.eventDate, undefined);
+assert.equal(defaultTemporalInferenceStoredMemory?.metadata.validFrom, undefined);
+assert.equal(defaultTemporalInferenceStoredMemory?.metadata.validTo, undefined);
+await defaultTemporalInferenceMemory.close();
 const naturalDateTemporalStore = createSqliteMemoryStore({
   path: path.join(tmp, "natural-date-temporal.db"),
 });
@@ -3387,6 +3412,7 @@ const naturalDateTemporalMemory = createMemoryOS({
   profileId: "natural-date-temporal",
   store: naturalDateTemporalStore,
   extractor: legacyRuleTestExtractor,
+  temporal: { inferFromText: true },
 });
 const naturalDateObservation = await naturalDateTemporalMemory.observeWithReport({
   type: "conversation.message",
@@ -3859,6 +3885,7 @@ const extractedTemporalMemory = createMemoryOS({
   profileId: "temporal-extraction",
   store: extractedTemporalStore,
   extractor: legacyRuleTestExtractor,
+  temporal: { inferFromText: true },
 });
 await extractedTemporalMemory.observeWithReport({
   type: "conversation.message",
@@ -5384,6 +5411,7 @@ const rulesReportMemory = createMemoryOS({
   profileId: "rules_report",
   store: rulesReportStore,
   extractor: legacyRuleTestExtractor,
+  temporal: { inferFromText: true },
 });
 const rulesReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",

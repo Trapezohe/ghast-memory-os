@@ -443,7 +443,7 @@ export async function extractMemoryCandidatePlan(input: {
   inferTemporalFromText?: boolean | undefined;
 }): Promise<MemoryExtractionPlan> {
   const minConfidence = input.minConfidence ?? 0.01;
-  const inferTemporalFromText = input.inferTemporalFromText ?? true;
+  const inferTemporalFromText = input.inferTemporalFromText ?? false;
   const ruleCandidates = input.extractionInput.ruleCandidates;
   let selected: MemoryExtractionCandidate[] | null = null;
   let extractorFailed = false;
