@@ -5626,6 +5626,15 @@ assert.equal(extractRuleMemoryCandidates("I live in Berlin.")[0]?.predicate, "pe
 assert.equal(extractRuleMemoryCandidates("I currently live in Berlin.")[0]?.predicate, "person.location");
 assert.equal(extractRuleMemoryCandidates("I am from Boston.")[0]?.predicate, "person.hometown");
 assert.equal(extractRuleMemoryCandidates("I'm from Boston.")[0]?.object, "Boston");
+assert.equal(extractRuleMemoryCandidates("我住在北京。")[0]?.predicate, "person.location");
+assert.equal(extractRuleMemoryCandidates("我目前住在北京。")[0]?.object, "北京");
+assert.equal(extractRuleMemoryCandidates("我来自上海。")[0]?.predicate, "person.hometown");
+assert.equal(extractRuleMemoryCandidates("我的家乡是杭州。")[0]?.object, "杭州");
+assert.equal(extractRuleMemoryCandidates("我的出生地是成都。")[0]?.predicate, "person.birthplace");
+assert.equal(extractRuleMemoryCandidates("我的生日是7月10日。")[0]?.predicate, "person.birthdate");
+assert.equal(extractRuleMemoryCandidates("我的职业是一名设计师。")[0]?.object, "设计师");
+assert.equal(extractRuleMemoryCandidates("我的姓名是王明。")[0]?.predicate, "person.name");
+assert.equal(extractRuleMemoryCandidates("我目前的城市是深圳。")[0]?.object, "深圳");
 for (const invalidLiveIn of [
   "I live in unknown.",
   "I currently live in unknown.",
@@ -5645,6 +5654,15 @@ for (const invalidLiveIn of [
   "i currently live in St. Louis. i was born in Seattle.",
   "I work as an architect and I am from Boston.",
   "i work as an architect and i am from Boston.",
+  "我住在未知。",
+  "我来自未知。",
+  "我的家乡是未知。",
+  "我的城市是未设置。",
+  "我的职业是未知。",
+  "我的生日是未设置。",
+  "我的姓名是未知。",
+  "我的职业是设计师。我的家乡是上海。",
+  "我的城市是北京，而且我的职业是设计师。",
   "I was born in Seattle and I live in Boston.",
   "i was born in Seattle and i live in Boston.",
   "I work as an architect, not a designer.",
@@ -8259,6 +8277,35 @@ const chineseCurrentToolCurrentlyCandidate =
 assert.equal(chineseCurrentToolCurrentlyCandidate?.predicate, "person.tool");
 assert.equal(chineseCurrentToolCurrentlyCandidate?.object, "Cursor");
 assert.equal(chineseCurrentToolCurrentlyCandidate?.cardinality, "single");
+const chineseSpeakerRoleReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "Mira: 我的职业是一名设计师。",
+  metadata: {
+    speaker: "Mira",
+    participants: ["Mira", "Blair"],
+  },
+});
+assert.equal(chineseSpeakerRoleReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(chineseSpeakerRoleReport.memoryIds.length, 1);
+assert.equal(chineseSpeakerRoleReport.worldBeliefIds.length, 1);
+const chineseSpeakerRoleCandidate =
+  chineseSpeakerRoleReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
+    ?.candidate;
+assert.equal(chineseSpeakerRoleCandidate?.predicate, "person.role");
+assert.equal(chineseSpeakerRoleCandidate?.subject, "person:Mira");
+assert.equal(chineseSpeakerRoleCandidate?.object, "设计师");
+assert.equal(chineseSpeakerRoleCandidate?.cardinality, "single");
+const chineseInvalidRoleReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_chinese_invalid_role",
+  role: "user",
+  content: "我的职业是未知。",
+});
+assert.equal(chineseInvalidRoleReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(chineseInvalidRoleReport.memoryIds.length, 0);
+assert.equal(chineseInvalidRoleReport.worldBeliefIds.length, 0);
 const chineseGeneralToolUseReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",

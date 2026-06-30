@@ -481,6 +481,48 @@ function chineseCurrentToolMatch(utterance: string): RegExpMatchArray | null {
   ].map((pattern) => pattern.exec(utterance)).find((match) => match !== null) ?? null;
 }
 
+function chinesePersonAttributeMatch(
+  utterance: string,
+): { field: string; value: string; rule: string } | null {
+  const fieldPattern = String.raw`城市|所在地|位置|居住地|住址|时区|语言|职业|职位|头衔|职称|姓名|名字|全名|专业|大学专业|家乡|故乡|出生地|生日|出生日期`;
+  const structured = [
+    new RegExp(
+      String.raw`^\s*我的\s*(?:当前|现在|目前)?\s*(${fieldPattern})\s*(?:是|为|=)\s*(.{1,80}?)\s*[。.!]?\s*$`,
+      "u",
+    ),
+    new RegExp(
+      String.raw`^\s*我(?:当前|现在|目前)的\s*(${fieldPattern})\s*(?:是|为|=)\s*(.{1,80}?)\s*[。.!]?\s*$`,
+      "u",
+    ),
+    new RegExp(
+      String.raw`^\s*(?:当前|现在|目前)\s*我的\s*(${fieldPattern})\s*(?:是|为|=)\s*(.{1,80}?)\s*[。.!]?\s*$`,
+      "u",
+    ),
+  ].map((pattern) => pattern.exec(utterance)).find((match) => match !== null);
+  if (structured) {
+    return { field: structured[1]!, value: structured[2]!, rule: "first_person_chinese_structured_attribute" };
+  }
+  const location = /^\s*我\s*(?:当前|现在|目前)?\s*(?:住在|居住在)\s*(.{1,80}?)\s*[。.!]?\s*$/u.exec(
+    utterance,
+  );
+  if (location) {
+    return { field: "位置", value: location[1]!, rule: "first_person_chinese_live_in" };
+  }
+  const hometown = /^\s*我\s*(?:当前|现在|目前)?\s*来自\s*(.{1,80}?)\s*[。.!]?\s*$/u.exec(
+    utterance,
+  );
+  if (hometown) {
+    return { field: "家乡", value: hometown[1]!, rule: "first_person_chinese_from_place" };
+  }
+  const birthplace = /^\s*我\s*(?:出生在|出生地是|出生地为)\s*(.{1,80}?)\s*[。.!]?\s*$/u.exec(
+    utterance,
+  );
+  if (birthplace) {
+    return { field: "出生地", value: birthplace[1]!, rule: "first_person_chinese_birthplace" };
+  }
+  return null;
+}
+
 function stableSpeakerPrefixedFirstPersonPreference(text: string): boolean {
   return Boolean(stableSpeakerPrefix(text) && firstPersonPreferenceStatement(stripSpeakerPrefix(text)));
 }
@@ -671,6 +713,24 @@ function firstPersonAttributeCandidate(
   }
   const namedRelation = firstPersonNamedRelationCandidate(text, metadata);
   if (namedRelation) return namedRelation;
+  const chineseStructuredAttribute = chinesePersonAttributeMatch(utterance);
+  if (chineseStructuredAttribute) {
+    const predicate = personCurrentAttributePredicate(chineseStructuredAttribute.field);
+    const object = personAttributeObject(chineseStructuredAttribute.field, chineseStructuredAttribute.value);
+    if (predicate && object && !unsafePersonAttributeObject(chineseStructuredAttribute.field, object)) {
+      return {
+        kind: "fact",
+        content: text,
+        confidence: 0.66,
+        predicate,
+        object,
+        cardinality: "single",
+        ...personSubject,
+        metadata: { rule: chineseStructuredAttribute.rule },
+      };
+    }
+    return null;
+  }
   const currentlyLiveIn = /^\s*I\s+(?:currently\s+)?live\s+in\s+(.{1,80}?)\s*\.?\s*$/iu.exec(utterance);
   if (currentlyLiveIn) {
     const object = projectBeliefObject(currentlyLiveIn[1]);
@@ -1123,37 +1183,57 @@ function namedPersonPreferenceCandidate(
 
 function personCurrentAttributePredicate(field: string | undefined): string | null {
   const normalized = field?.trim().toLowerCase().replace(/[-_]+/gu, " ").replace(/\s+/gu, " ");
-  return normalized === "city"
-    ? "person.city"
-    : normalized === "location"
-      ? "person.location"
-      : normalized === "timezone" || normalized === "time zone"
-        ? "person.timezone"
-        : normalized === "role" || normalized === "job" || normalized === "profession"
-          ? "person.role"
-          : normalized === "title"
-            ? "person.title"
-            : normalized === "language"
-              ? "person.language"
-              : normalized === "birthplace" || normalized === "birth place"
-                ? "person.birthplace"
-                : normalized === "birthdate" || normalized === "birth date" || normalized === "birthday" || normalized === "date of birth"
-                  ? "person.birthdate"
-              : normalized === "major" || normalized === "college major"
-                ? "person.major"
-                : normalized === "name" || normalized === "full name"
-                  ? "person.name"
-                : normalized === "hometown" || normalized === "home town"
-                  ? "person.hometown"
-                  : null;
+  if (normalized === "city" || normalized === "城市") return "person.city";
+  if (
+    normalized === "location" ||
+    normalized === "所在地" ||
+    normalized === "位置" ||
+    normalized === "居住地" ||
+    normalized === "住址"
+  ) {
+    return "person.location";
+  }
+  if (normalized === "timezone" || normalized === "time zone" || normalized === "时区") {
+    return "person.timezone";
+  }
+  if (normalized === "role" || normalized === "job" || normalized === "profession" || normalized === "职业") {
+    return "person.role";
+  }
+  if (normalized === "title" || normalized === "职位" || normalized === "头衔" || normalized === "职称") {
+    return "person.title";
+  }
+  if (normalized === "language" || normalized === "语言") return "person.language";
+  if (normalized === "birthplace" || normalized === "birth place" || normalized === "出生地") {
+    return "person.birthplace";
+  }
+  if (
+    normalized === "birthdate" ||
+    normalized === "birth date" ||
+    normalized === "birthday" ||
+    normalized === "date of birth" ||
+    normalized === "生日" ||
+    normalized === "出生日期"
+  ) {
+    return "person.birthdate";
+  }
+  if (normalized === "major" || normalized === "college major" || normalized === "专业" || normalized === "大学专业") {
+    return "person.major";
+  }
+  if (normalized === "name" || normalized === "full name" || normalized === "姓名" || normalized === "名字" || normalized === "全名") {
+    return "person.name";
+  }
+  if (normalized === "hometown" || normalized === "home town" || normalized === "家乡" || normalized === "故乡") {
+    return "person.hometown";
+  }
+  return null;
 }
 
 function personAttributeObject(field: string | undefined, value: string | undefined): string | undefined {
   const object = projectBeliefObject(value);
   if (!object) return undefined;
   const normalized = field?.trim().toLowerCase().replace(/[-_]+/gu, " ").replace(/\s+/gu, " ");
-  return normalized === "role" || normalized === "job" || normalized === "profession" || normalized === "title"
-    ? object.replace(/^(?:an?|the)\s+/iu, "").trim() || undefined
+  return normalized === "role" || normalized === "job" || normalized === "profession" || normalized === "title" || normalized === "职业" || normalized === "职位" || normalized === "头衔" || normalized === "职称"
+    ? object.replace(/^(?:(?:an?|the)\s+|一名|一个|一位)/iu, "").trim() || undefined
     : object;
 }
 
@@ -1182,6 +1262,16 @@ function malformedFirstPersonStructuredAttribute(text: string): boolean {
   const utterance = stripSpeakerPrefix(text);
   const chineseCurrentTool = chineseCurrentToolMatch(utterance);
   if (chineseCurrentTool && !stableToolObject(chineseCurrentTool[2])) return true;
+  const chineseAttribute = chinesePersonAttributeMatch(utterance);
+  if (
+    chineseAttribute &&
+    unsafePersonAttributeObject(
+      chineseAttribute.field,
+      personAttributeObject(chineseAttribute.field, chineseAttribute.value) ?? "",
+    )
+  ) {
+    return true;
+  }
   const currentTool = /^\s*my\s+current\s+(?:[\p{L}\p{N}_ -]{0,60}\s+)?(?:tool|app|application|editor|ide|browser|calendar|database)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
     utterance,
   );
@@ -1358,15 +1448,18 @@ function namedPersonDirectAttributeCandidate(
 }
 
 function unsafeDirectAttributeObject(field: string, object: string): boolean {
-  if (/;/u.test(object)) return true;
+  if (/[;；]/u.test(object)) return true;
   const namedPersonVerb = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}\s+(?:currently\s+)?(?:lives|works|was|is|comes)\b`;
   const namedPersonPossessive = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}[’']s\s+[\p{L}\p{N}_ -]{1,60}\s+(?:is|=)\b`;
   const firstPersonContinuation = String.raw`[Ii]\s+(?:(?:currently\s+)?live|work\s+as|was\s+born|use)\b|[Ii](?:'m|’m| am)\s+from\b`;
   const myToolContinuation = String.raw`[Mm]y\s+(?:current\s+)?(?:[\p{L}\p{N}_-]+\s+){0,8}(?:tool|app|application|editor|ide|browser|calendar|database)\s+(?:is|=)\b`;
   const myAttributeContinuation = String.raw`(?:${myToolContinuation}|[Mm]y\s+(?:current\s+)?(?:city|location|time\s+zone|timezone|role|job|profession|title|language|full\s+name|name|college\s+major|major|home\s+town|hometown|birth\s+date|birthdate|birthday|date\s+of\s+birth|birth\s+place|birthplace)\s+(?:is|=)\b)`;
-  const continuation = String.raw`(?:${namedPersonVerb}|${namedPersonPossessive}|${firstPersonContinuation}|${myAttributeContinuation})`;
-  if (new RegExp(String.raw`[.,]\s+${continuation}`, "u").test(object)) return true;
+  const chineseFirstPersonContinuation = String.raw`我\s*(?:当前|现在|目前)?\s*(?:住在|居住在|来自|出生在)`;
+  const chineseMyAttributeContinuation = String.raw`我的\s*(?:当前|现在|目前)?\s*(?:城市|所在地|位置|居住地|住址|时区|语言|职业|职位|头衔|职称|姓名|名字|全名|专业|大学专业|家乡|故乡|出生地|生日|出生日期)\s*(?:是|为|=)`;
+  const continuation = String.raw`(?:${namedPersonVerb}|${namedPersonPossessive}|${firstPersonContinuation}|${myAttributeContinuation}|${chineseFirstPersonContinuation}|${chineseMyAttributeContinuation})`;
+  if (new RegExp(String.raw`[.,。；，]\s*${continuation}`, "u").test(object)) return true;
   if (new RegExp(String.raw`\b(?:and|but)\s+${continuation}`, "u").test(object)) return true;
+  if (new RegExp(String.raw`(?:而且|但是)\s*${continuation}`, "u").test(object)) return true;
   if (/\bnot\s+(?:an?|the)?\b/iu.test(object)) return true;
   return field === "birthplace" && /\bin\s+\d{3,4}\b/iu.test(object);
 }
