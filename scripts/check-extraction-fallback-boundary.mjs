@@ -16,6 +16,7 @@ const entities = read("src/kernel/entities.ts");
 const personIdentity = read("src/kernel/person-identity.ts");
 const reconstruction = read("src/kernel/reconstruction.ts");
 const safety = read("src/kernel/safety.ts");
+const store = read("src/store/sqlite/index.ts");
 const types = read("src/kernel/types.ts");
 const publicObserveBoundaryFiles = [
   "README.md",
@@ -113,6 +114,48 @@ function publicBuiltInExtractorClaimMatches() {
 
 const publicBuiltInExtractorClaims = publicBuiltInExtractorClaimMatches();
 
+function ruleExtractorIsEmpty() {
+  return /export\s+function\s+extractSafeRuleMemoryCandidates\([^)]*\)\s*:\s*MemoryExtractionCandidate\[\]\s*\{\s*return\s*\[\];\s*\}/u.test(
+    extraction,
+  );
+}
+
+function runtimePassesTemporalInferOptionOnly() {
+  return /inferTemporalFromText:\s*(?:\(\s*)?options\.temporal\?\.inferFromText(?:\s*\))?\s*,/u.test(
+    runtime,
+  );
+}
+
+const forgetCoreSources = [
+  ["src/runtime/create-memory-os.ts", runtime],
+  ["src/store/sqlite/index.ts", store],
+];
+
+const forgetCommandStripperPatterns = [
+  /\b(?:strip|remove|trim|clean|sanitize)\w*(?:Forget|Delete|Remove)\w*(?:Command|Query|Prefix|Instruction)|\b(?:Forget|Delete|Remove)\w*(?:Command|Prefix)\w*(?:Terms?|Pattern|Regex)/u,
+  /(?:forget|delete|remove)[\w\s_-]*(?:command|prefix|verb)|(?:command|prefix|verb)[\w\s_-]*(?:forget|delete|remove)/iu,
+  /FORGET_COMMAND_TERMS|HAN_FORGET_COMMAND_PATTERN|forgetMatchTerms/u,
+  /\.replace\([^;\n]*(?:forget|delete|remove|忘记|删除|移除)[^;\n]*\)/iu,
+  /忘记|删除|移除|删掉|清除/u,
+  /please\s+(?:forget|delete|remove)|forget\s+what\s+i\s+said|delete\s+what\s+i\s+said|what\s+i\s+said\s+about/iu,
+  /(?:^|[^A-Za-z])(?:forget|delete|remove)\s+(?:my|the|old|stale|memory|contact|project|about)\b/iu,
+];
+
+function forgetCoreHasCommandStripper() {
+  const matches = [];
+  for (const [relativePath, content] of forgetCoreSources) {
+    for (const pattern of forgetCommandStripperPatterns) {
+      if (pattern.test(content)) {
+        matches.push(relativePath);
+        break;
+      }
+    }
+  }
+  return matches;
+}
+
+const forgetCommandStripperMatches = forgetCoreHasCommandStripper();
+
 const checks = [
   {
     name: "runtime-default-rule-mode-none",
@@ -133,6 +176,24 @@ const checks = [
     name: "runtime-no-implicit-rule-fallback",
     pass: /fallbackToRules:\s*options\.extraction\?\.fallbackToRules\s*\?\?\s*false/u.test(runtime),
     detail: "createMemoryOS must not implicitly enable rule fallback.",
+  },
+  {
+    name: "temporal-text-inference-default-off",
+    pass: /const\s+inferTemporalFromText\s*=\s*input\.inferTemporalFromText\s*\?\?\s*false/u.test(
+      extraction,
+    ),
+    detail: "Built-in language/date text inference must stay explicit opt-in.",
+  },
+  {
+    name: "runtime-passes-temporal-infer-option",
+    pass: runtimePassesTemporalInferOptionOnly(),
+    detail: "Runtime must pass only the host-provided temporal text inference option.",
+  },
+  {
+    name: "safe-rule-extractor-is-empty",
+    pass: ruleExtractorIsEmpty(),
+    detail:
+      "extractSafeRuleMemoryCandidates must stay empty; durable semantic extraction belongs to configured extractors, not built-in language templates.",
   },
   {
     name: "no-runtime-legacy-rule-mode",
@@ -211,6 +272,29 @@ const checks = [
       ),
     detail:
       "Reconstruction must not infer intent, recency, or history from language keyword lists; hosts should pass structured intent or temporal mode.",
+  },
+  {
+    name: "forget-has-no-language-command-stripper",
+    pass: forgetCommandStripperMatches.length === 0,
+    detail:
+      "Core forget paths must not strip hard-coded natural-language delete commands; hosts should pass targetTerms or forgetTargetParser." +
+      (forgetCommandStripperMatches.length > 0
+        ? ` Matched: ${forgetCommandStripperMatches.join(", ")}.`
+        : ""),
+  },
+  {
+    name: "forget-empty-terms-do-not-match-all",
+    pass: /function\s+memoryMatchesForgetQuery[\s\S]*if\s*\(\s*terms\.length\s*===\s*0\s*\)\s*return\s+false/u.test(
+      store,
+    ),
+    detail: "Empty forget terms must not match every candidate.",
+  },
+  {
+    name: "forget-empty-literal-query-archives-nothing",
+    pass: /const\s+terms\s*=\s*parsedTerms\s*\?\?\s*queryTerms\(input\.query\);[\s\S]{0,160}if\s*\(\s*terms\.length\s*===\s*0\s*\)\s*\{\s*return\s*\{\s*archivedMemoryIds:\s*\[\]\s*\}/u.test(
+      store,
+    ),
+    detail: "Blank or punctuation-only literal forget queries must archive nothing.",
   },
   {
     name: "public-observe-examples-do-not-imply-semantic-preference-extraction",
