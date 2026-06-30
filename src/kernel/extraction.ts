@@ -933,10 +933,56 @@ const NON_PERSON_SUBJECT_PATTERN =
 const OBVIOUS_TECH_NON_PERSON_NAME_PATTERN =
   /^(?:chatgpt|gpt(?:[-_ ]?\d[\w.-]*)?|llm(?:[-_ ]?\d[\w.-]*)?|(?:llama|qwen|mistral|gemini|deepseek|grok|glm)(?:[-_ ]?\d[\w.-]*)?|claude[-_ ]?\d[\w.-]*|(?:sonnet|opus|haiku)[-_ ]?\d[\w.-]*|(?:slack|discord|telegram|github|gitlab|linear|jira|notion)?bot)$/iu;
 
+const CHINESE_NON_PERSON_SINGLE_NAMES = new Set([
+  "项目",
+  "工具",
+  "应用",
+  "产品",
+  "模型",
+  "系统",
+  "服务",
+  "团队",
+  "公司",
+  "组织",
+  "群",
+  "群聊",
+  "仓库",
+  "代码库",
+  "平台",
+  "插件",
+  "机器人",
+  "助手",
+  "客户端",
+  "浏览器",
+  "编辑器",
+  "数据库",
+  "文档",
+  "笔记",
+  "微信",
+  "飞书",
+  "小红书",
+  "豆包",
+  "钉钉",
+  "通义",
+  "文心",
+  "智谱",
+]);
+
+const CHINESE_NON_PERSON_SUBJECT_PATTERN =
+  /(?:项目|工具|应用|产品|模型|系统|服务|团队|公司|组织|群聊|仓库|代码库|平台|插件|机器人|助手|客户端|浏览器|编辑器|数据库|文档|笔记|小程序)$/u;
+
+function explicitChineseNonPersonSubject(name: string): boolean {
+  const compact = name.trim().replace(/\s+/gu, "");
+  if (!compact) return false;
+  if (CHINESE_NON_PERSON_SINGLE_NAMES.has(compact)) return true;
+  return CHINESE_NON_PERSON_SUBJECT_PATTERN.test(compact);
+}
+
 function explicitNonPersonSubject(name: string): boolean {
   const normalized = name.trim().toLowerCase();
   if (!normalized) return false;
   if (NON_PERSON_SINGLE_NAMES.has(normalized)) return true;
+  if (explicitChineseNonPersonSubject(name)) return true;
   if (OBVIOUS_TECH_NON_PERSON_NAME_PATTERN.test(normalized)) return true;
   if (
     /^(?:project|team|company|org|organization|group|support|note|reminder|fact|example|preference|task|ticket|repo|repository|service|system|app|tool|product|model|agent|inc|corp|llc|ltd|labs|research|foundation|university|school|department|committee|platform|cloud)$/iu.test(
@@ -1591,6 +1637,8 @@ function namedPersonRelationCandidate(
   const namePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}`;
   const englishNameCore = String.raw`\p{Lu}[\p{L}0-9_-]{0,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{0,30}){0,2}`;
   const englishName = String.raw`(?:${englishNameCore}|"${englishNameCore}"|'${englishNameCore}')`;
+  const chineseNamedPerson = String.raw`[\p{Script=Han}]{2,6}`;
+  const chineseExplicitName = String.raw`(?:[\p{Script=Han}]{1,6}|[A-Z][A-Za-z0-9_-]{0,30})`;
   const possessiveMatch = new RegExp(
     String.raw`^\s*(${namePattern})[’']s\s+(${ENGLISH_RELATION_PATTERN})(?:'s)?\s+(?:[Nn]ame\s+[Ii]s|[Ii]s\s+[Nn]amed|[Ii]s\s+[Cc]alled)\s+(${englishName})\s*[.!?]?\s*$`,
     "u",
@@ -1607,18 +1655,36 @@ function namedPersonRelationCandidate(
     String.raw`^\s*(${namePattern})[’']s\s+(${ENGLISH_RELATION_PATTERN})\s*,?\s+(${englishName})(?:\s*,?\s+(.{1,120}?))?\s*[.!?]?\s*$`,
     "u",
   ).exec(utterance);
+  const chinesePossessiveMatch = new RegExp(
+    String.raw`^\s*(${chineseNamedPerson})\s*的\s*(${CHINESE_RELATION_PATTERN})\s*(?:名叫|名字是|姓名是|叫)\s*(${chineseExplicitName})\s*[。.!?]?\s*$`,
+    "u",
+  ).exec(utterance);
+  const chineseHasMatch = new RegExp(
+    String.raw`^\s*(${chineseNamedPerson})\s*有\s*(?:一个|一位|一名|个|位|名)?\s*(${CHINESE_RELATION_PATTERN})\s*(?:名叫|名字是|姓名是|叫)\s*(${chineseExplicitName})\s*[。.!?]?\s*$`,
+    "u",
+  ).exec(utterance);
+  const chineseInversePossessiveMatch = new RegExp(
+    String.raw`^\s*(${chineseExplicitName})\s*是\s*(${chineseNamedPerson})\s*的\s*(${CHINESE_RELATION_PATTERN})\s*[。.!?]?\s*$`,
+    "u",
+  ).exec(utterance);
   const name = (
     possessiveMatch?.[1] ??
     hasMatch?.[1] ??
     inversePossessiveMatch?.[2] ??
-    appositivePossessiveMatch?.[1]
+    appositivePossessiveMatch?.[1] ??
+    chinesePossessiveMatch?.[1] ??
+    chineseHasMatch?.[1] ??
+    chineseInversePossessiveMatch?.[2]
   )
     ?.trim();
   const relationType = (
     possessiveMatch?.[2] ??
     hasMatch?.[2] ??
     inversePossessiveMatch?.[3] ??
-    appositivePossessiveMatch?.[2]
+    appositivePossessiveMatch?.[2] ??
+    chinesePossessiveMatch?.[2] ??
+    chineseHasMatch?.[2] ??
+    chineseInversePossessiveMatch?.[3]
   )
     ?.trim()
     .toLowerCase();
@@ -1626,7 +1692,10 @@ function namedPersonRelationCandidate(
     possessiveMatch?.[3] ??
     hasMatch?.[3] ??
     inversePossessiveMatch?.[1] ??
-    appositivePossessiveMatch?.[3]
+    appositivePossessiveMatch?.[3] ??
+    chinesePossessiveMatch?.[3] ??
+    chineseHasMatch?.[3] ??
+    chineseInversePossessiveMatch?.[1]
   )
     ?.replace(/^["']|["']$/gu, "");
   const object = projectBeliefObject(rawObject);
@@ -1647,6 +1716,26 @@ function namedPersonRelationCandidate(
     cardinality: "multi",
     metadata: { rule: "named_person_relation", relationType },
   };
+}
+
+function looksLikeNamedPersonRelationUtterance(text: string): boolean {
+  const utterance = stripSpeakerPrefix(text);
+  const chineseSubject = String.raw`[\p{Script=Han}]{1,12}`;
+  const chineseObject = String.raw`(?:[\p{Script=Han}]{1,8}|[A-Z][A-Za-z0-9_-]{0,30})`;
+  return [
+    new RegExp(
+      String.raw`^\s*${chineseSubject}\s*的\s*${CHINESE_RELATION_PATTERN}\s*(?:名叫|名字是|姓名是|叫)\s*${chineseObject}\s*[。.!?]?\s*$`,
+      "u",
+    ),
+    new RegExp(
+      String.raw`^\s*${chineseSubject}\s*有\s*(?:一个|一位|一名|个|位|名)?\s*${CHINESE_RELATION_PATTERN}\s*(?:名叫|名字是|姓名是|叫)\s*${chineseObject}\s*[。.!?]?\s*$`,
+      "u",
+    ),
+    new RegExp(
+      String.raw`^\s*${chineseObject}\s*是\s*${chineseSubject}\s*的\s*${CHINESE_RELATION_PATTERN}\s*[。.!?]?\s*$`,
+      "u",
+    ),
+  ].some((pattern) => pattern.test(utterance));
 }
 
 function firstPersonNamedRelationCandidate(
@@ -2052,6 +2141,7 @@ export function extractRuleMemoryCandidates(
   if (personDirectAttributeCandidate) return [personDirectAttributeCandidate];
   const personRelationCandidate = namedPersonRelationCandidate(text, metadata);
   if (personRelationCandidate) return [personRelationCandidate];
+  if (looksLikeNamedPersonRelationUtterance(text)) return [];
   const personEventCandidate = namedPersonEventCandidate(text, metadata);
   if (personEventCandidate) return [personEventCandidate];
 

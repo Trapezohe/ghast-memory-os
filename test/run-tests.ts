@@ -6815,6 +6815,27 @@ assert.equal(directMotherRelationCandidate?.predicate, "person.relation");
 assert.equal(directMotherRelationCandidate?.subject, "person:Alex");
 assert.equal(directMotherRelationCandidate?.object, "Dana");
 assert.equal(directMotherRelationCandidate?.metadata?.relationType, "mother");
+const directChineseNamedRelationCandidate = extractRuleMemoryCandidates("李雷的女儿名叫小红。", {
+  participants: ["李雷", "韩梅梅"],
+})[0];
+assert.equal(directChineseNamedRelationCandidate?.predicate, "person.relation");
+assert.equal(directChineseNamedRelationCandidate?.subject, "person:李雷");
+assert.equal(directChineseNamedRelationCandidate?.object, "小红");
+assert.equal(directChineseNamedRelationCandidate?.metadata?.relationType, "女儿");
+const directChineseCalledRelationCandidate = extractRuleMemoryCandidates("李雷的猫叫小白。", {
+  participants: ["李雷", "韩梅梅"],
+})[0];
+assert.equal(directChineseCalledRelationCandidate?.predicate, "person.relation");
+assert.equal(directChineseCalledRelationCandidate?.subject, "person:李雷");
+assert.equal(directChineseCalledRelationCandidate?.object, "小白");
+assert.equal(directChineseCalledRelationCandidate?.metadata?.relationType, "猫");
+const directChineseHasNamedRelationCandidate = extractRuleMemoryCandidates("李雷有一个女儿叫小红。", {
+  participants: ["李雷", "韩梅梅"],
+})[0];
+assert.equal(directChineseHasNamedRelationCandidate?.predicate, "person.relation");
+assert.equal(directChineseHasNamedRelationCandidate?.subject, "person:李雷");
+assert.equal(directChineseHasNamedRelationCandidate?.object, "小红");
+assert.equal(directChineseHasNamedRelationCandidate?.metadata?.relationType, "女儿");
 const inverseNamedRelationCandidate = extractRuleMemoryCandidates("Emma is Alex's daughter.", {
   participants: ["Alex", "Blair"],
 })[0];
@@ -6822,6 +6843,13 @@ assert.equal(inverseNamedRelationCandidate?.predicate, "person.relation");
 assert.equal(inverseNamedRelationCandidate?.subject, "person:Alex");
 assert.equal(inverseNamedRelationCandidate?.object, "Emma");
 assert.equal(inverseNamedRelationCandidate?.metadata?.relationType, "daughter");
+const inverseChineseNamedRelationCandidate = extractRuleMemoryCandidates("小红是李雷的女儿。", {
+  participants: ["李雷", "韩梅梅"],
+})[0];
+assert.equal(inverseChineseNamedRelationCandidate?.predicate, "person.relation");
+assert.equal(inverseChineseNamedRelationCandidate?.subject, "person:李雷");
+assert.equal(inverseChineseNamedRelationCandidate?.object, "小红");
+assert.equal(inverseChineseNamedRelationCandidate?.metadata?.relationType, "女儿");
 const inverseRoommateRelationCandidate = extractRuleMemoryCandidates("Jordan is Alex's roommate.", {
   participants: ["Alex", "Blair"],
 })[0];
@@ -6869,6 +6897,9 @@ assert.equal(extractRuleMemoryCandidates("Alex's daughter is named Emma.").lengt
 assert.equal(extractRuleMemoryCandidates("Alex has a daughter named Emma.").length, 0);
 assert.equal(extractRuleMemoryCandidates("Emma is Alex's daughter.").length, 0);
 assert.equal(extractRuleMemoryCandidates("Alex's daughter Emma starts college in September.").length, 0);
+assert.equal(extractRuleMemoryCandidates("李雷的女儿名叫小红。").length, 0);
+assert.equal(extractRuleMemoryCandidates("李雷有一个女儿叫小红。").length, 0);
+assert.equal(extractRuleMemoryCandidates("小红是李雷的女儿。").length, 0);
 assert.equal(
   extractRuleMemoryCandidates("Alex has a daughter named Chrome.", {
     participants: ["Alex", "Blair"],
@@ -6939,6 +6970,42 @@ assert.equal(
   0,
 );
 assert.equal(
+  extractRuleMemoryCandidates("李雷的女儿名叫小红。", {
+    participants: ["韩梅梅", "王芳"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("李雷的女儿叫Chrome。", {
+    participants: ["李雷", "韩梅梅"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("李雷的女儿叫小红书。", {
+    participants: ["李雷", "韩梅梅"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("飞书是李雷的朋友。", {
+    participants: ["李雷", "韩梅梅"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("微信的女儿名叫小红。", {
+    participants: ["微信", "韩梅梅"],
+  }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("项目的女儿名叫小红。", {
+    participants: ["项目", "韩梅梅"],
+  }).length,
+  0,
+);
+assert.equal(
   extractRuleMemoryCandidates("Alex's daughter Emma starts college in September.", {
     participants: ["Blair", "Casey"],
   }).length,
@@ -6956,6 +7023,66 @@ const directNamedRelationReport = await rulesReportMemory.observeWithReport({
 assert.equal(directNamedRelationReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(directNamedRelationReport.memoryIds.length, 1);
 assert.equal(directNamedRelationReport.worldBeliefIds.length, 1);
+const directChineseNamedRelationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_direct_chinese_relation",
+  role: "user",
+  content: "李雷的女儿名叫小红。",
+  metadata: {
+    participants: ["李雷", "韩梅梅"],
+  },
+});
+assert.equal(directChineseNamedRelationReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(directChineseNamedRelationReport.memoryIds.length, 1);
+assert.equal(directChineseNamedRelationReport.worldBeliefIds.length, 1);
+const directChineseHasNamedRelationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_direct_chinese_has_relation",
+  role: "user",
+  content: "李雷有一个女儿叫小红。",
+  metadata: {
+    participants: ["李雷", "韩梅梅"],
+  },
+});
+assert.equal(directChineseHasNamedRelationReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(directChineseHasNamedRelationReport.memoryIds.length, 1);
+assert.equal(directChineseHasNamedRelationReport.worldBeliefIds.length, 1);
+const inverseChineseNamedPersonRelationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_inverse_chinese_relation",
+  role: "user",
+  content: "小红是李雷的女儿。",
+  metadata: {
+    participants: ["李雷", "韩梅梅"],
+  },
+});
+assert.equal(inverseChineseNamedPersonRelationReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(inverseChineseNamedPersonRelationReport.memoryIds.length, 1);
+assert.equal(inverseChineseNamedPersonRelationReport.worldBeliefIds.length, 1);
+const rejectedChineseProductSubjectRelationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_rejected_chinese_relation",
+  role: "user",
+  content: "微信的女儿名叫小红。",
+  metadata: {
+    participants: ["微信", "韩梅梅"],
+  },
+});
+assert.equal(rejectedChineseProductSubjectRelationReport.extraction?.acceptedCandidateCount ?? 0, 0);
+assert.equal(rejectedChineseProductSubjectRelationReport.memoryIds.length, 0);
+assert.equal(rejectedChineseProductSubjectRelationReport.worldBeliefIds.length, 0);
+const rejectedChineseProductObjectRelationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_rejected_chinese_relation",
+  role: "user",
+  content: "飞书是李雷的朋友。",
+  metadata: {
+    participants: ["李雷", "韩梅梅"],
+  },
+});
+assert.equal(rejectedChineseProductObjectRelationReport.extraction?.acceptedCandidateCount ?? 0, 0);
+assert.equal(rejectedChineseProductObjectRelationReport.memoryIds.length, 0);
+assert.equal(rejectedChineseProductObjectRelationReport.worldBeliefIds.length, 0);
 const directNamedRelationDistractorReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report_direct_relation",
@@ -7636,6 +7763,45 @@ try {
   assert.equal(directNamedRelationBelief?.predicate, "person.relation");
   assert.equal(directNamedRelationBelief?.object, "Emma");
   assert.equal(JSON.parse(directNamedRelationBelief?.metadata_json ?? "{}").relationType, "daughter");
+  const directChineseNamedRelationBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object, metadata_json
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(directChineseNamedRelationReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string; metadata_json: string }
+    | undefined;
+  assert.equal(directChineseNamedRelationBelief?.subject, "person:李雷");
+  assert.equal(directChineseNamedRelationBelief?.predicate, "person.relation");
+  assert.equal(directChineseNamedRelationBelief?.object, "小红");
+  assert.equal(JSON.parse(directChineseNamedRelationBelief?.metadata_json ?? "{}").relationType, "女儿");
+  const directChineseHasNamedRelationBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object, metadata_json
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(directChineseHasNamedRelationReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string; metadata_json: string }
+    | undefined;
+  assert.equal(directChineseHasNamedRelationBelief?.subject, "person:李雷");
+  assert.equal(directChineseHasNamedRelationBelief?.predicate, "person.relation");
+  assert.equal(directChineseHasNamedRelationBelief?.object, "小红");
+  assert.equal(JSON.parse(directChineseHasNamedRelationBelief?.metadata_json ?? "{}").relationType, "女儿");
+  const inverseChineseNamedPersonRelationBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object, metadata_json
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(inverseChineseNamedPersonRelationReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string; metadata_json: string }
+    | undefined;
+  assert.equal(inverseChineseNamedPersonRelationBelief?.subject, "person:李雷");
+  assert.equal(inverseChineseNamedPersonRelationBelief?.predicate, "person.relation");
+  assert.equal(inverseChineseNamedPersonRelationBelief?.object, "小红");
+  assert.equal(JSON.parse(inverseChineseNamedPersonRelationBelief?.metadata_json ?? "{}").relationType, "女儿");
   const directHasNamedRelationBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate, object, metadata_json
