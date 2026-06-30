@@ -473,6 +473,13 @@ function firstPersonPreferenceStatement(utterance: string): boolean {
   );
 }
 
+function chineseCurrentToolMatch(utterance: string): RegExpMatchArray | null {
+  return [
+    /^\s*我的\s*(?:当前|现在)\s*(?:[\p{Script=Han}\p{L}\p{N}_ -]{0,30}\s*)?(工具|应用|软件|编辑器|浏览器|日历|数据库|IDE|ide)\s*(?:是|为|=)\s*(.{1,80}?)\s*[。.!]?\s*$/u,
+    /^\s*我(?:当前|现在)的\s*(工具|应用|软件|编辑器|浏览器|日历|数据库|IDE|ide)\s*(?:是|为|=)\s*(.{1,80}?)\s*[。.!]?\s*$/u,
+  ].map((pattern) => pattern.exec(utterance)).find((match) => match !== null) ?? null;
+}
+
 function stableSpeakerPrefixedFirstPersonPreference(text: string): boolean {
   return Boolean(stableSpeakerPrefix(text) && firstPersonPreferenceStatement(stripSpeakerPrefix(text)));
 }
@@ -580,10 +587,7 @@ function firstPersonAttributeCandidate(
   const utterance = stripSpeakerPrefix(text);
   if (isQuestionLike(utterance)) return null;
   const personSubject = personSubjectFieldsForFirstPerson(text, metadata);
-  const chineseCurrentTool = [
-    /^\s*我的\s*(?:当前|现在)\s*(?:[\p{Script=Han}\p{L}\p{N}_ -]{0,30}\s*)?(工具|应用|软件|编辑器|浏览器|日历|数据库|IDE|ide)\s*(?:是|为|=)\s*(.{1,80}?)\s*[。.!]?\s*$/u,
-    /^\s*我(?:当前|现在)的\s*(工具|应用|软件|编辑器|浏览器|日历|数据库|IDE|ide)\s*(?:是|为|=)\s*(.{1,80}?)\s*[。.!]?\s*$/u,
-  ].map((pattern) => pattern.exec(utterance)).find((match) => match !== null);
+  const chineseCurrentTool = chineseCurrentToolMatch(utterance);
   if (chineseCurrentTool) {
     const object = stableToolObject(chineseCurrentTool[2]);
     if (object) {
@@ -1161,7 +1165,12 @@ function directPersonRoleObject(value: string | undefined): string | undefined {
 }
 
 function invalidPersonAttributeObject(object: string): boolean {
-  return /^(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(object);
+  return (
+    /^(?:(?:an?|the)\s+)?(?:not|unknown|none|n\/a)\b/iu.test(object) ||
+    /^(?:一个|一款|一种|某个)?(?:不可用|未知|没有|暂无|未设置|未指定|不确定|不清楚|不知道|无|空|无效)$/u.test(
+      object.trim(),
+    )
+  );
 }
 
 function unsafePersonAttributeObject(field: string | undefined, object: string): boolean {
@@ -1170,6 +1179,8 @@ function unsafePersonAttributeObject(field: string | undefined, object: string):
 
 function malformedFirstPersonStructuredAttribute(text: string): boolean {
   const utterance = stripSpeakerPrefix(text);
+  const chineseCurrentTool = chineseCurrentToolMatch(utterance);
+  if (chineseCurrentTool && !stableToolObject(chineseCurrentTool[2])) return true;
   const currentTool = /^\s*my\s+current\s+(?:[\p{L}\p{N}_ -]{0,60}\s+)?(?:tool|app|application|editor|ide|browser|calendar|database)\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$/iu.exec(
     utterance,
   );

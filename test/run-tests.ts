@@ -5606,6 +5606,11 @@ for (const invalidRoleAttribute of [
   "I use unknown for travel planning.",
   "I use unavailable for travel planning.",
   "I use Chronos and I use Meridian for travel planning.",
+  "我的当前工具是不可用。",
+  "我的当前工具是未知。",
+  "我的当前工具是没有。",
+  "我现在的浏览器是未设置。",
+  "我当前的编辑器是不确定。",
 ]) {
   assert.equal(extractRuleMemoryCandidates(invalidRoleAttribute).length, 0);
 }
