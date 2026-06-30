@@ -135,6 +135,7 @@ function snapshotCandidate(candidate: unknown): MemoryExtractionCandidateSnapsho
     ...(typeof record.predicate === "string" ? { predicate: publicString(record.predicate) } : {}),
     ...(typeof record.subject === "string" ? { subject: publicString(record.subject) } : {}),
     ...(subjectAliases ? { subjectAliases } : {}),
+    ...(typeof record.speaker === "string" ? { speaker: publicString(record.speaker) } : {}),
     ...(typeof record.object === "string" ? { object: publicString(record.object) } : {}),
     ...(typeof record.source === "string" ? { source: publicString(record.source) } : {}),
     ...(typeof record.eventTime === "string" ? { eventTime: publicString(record.eventTime) } : {}),
@@ -197,6 +198,7 @@ function hasSecretLikeAuxiliaryField(candidate: MemoryExtractionCandidate): bool
     candidate.predicate,
     candidate.subject,
     ...(normalizedStringArray((candidate as { subjectAliases?: unknown }).subjectAliases) ?? []),
+    candidate.speaker,
     candidate.object,
     candidate.source,
     candidate.eventTime,
@@ -243,11 +245,13 @@ function normalizeCandidate(
   if (confidence < options.minConfidence) return { reason: "low_confidence" };
   const object = typeof candidate.object === "string" ? normalize(candidate.object) : undefined;
   const source = typeof candidate.source === "string" ? normalize(candidate.source) : undefined;
+  const speaker = typeof candidate.speaker === "string" ? normalize(candidate.speaker) : undefined;
   const subjectAliases = normalizedSubjectAliases(candidate);
   const candidateWithoutAliases = { ...candidate };
   delete (candidateWithoutAliases as { subjectAliases?: unknown }).subjectAliases;
   delete (candidateWithoutAliases as { object?: unknown }).object;
   delete (candidateWithoutAliases as { source?: unknown }).source;
+  delete (candidateWithoutAliases as { speaker?: unknown }).speaker;
   return {
     candidate: {
       ...candidateWithoutAliases,
@@ -255,6 +259,7 @@ function normalizeCandidate(
       confidence,
       ...(object ? { object } : {}),
       ...(source ? { source } : {}),
+      ...(speaker ? { speaker } : {}),
       ...(subjectAliases ? { subjectAliases } : {}),
       metadata: mergeExplicitTemporalValidityMetadata(
         content,
@@ -276,6 +281,8 @@ function candidateKey(candidate: MemoryExtractionCandidate): string {
   return [
     candidate.kind,
     candidate.predicate ?? "",
+    candidate.subject ?? "",
+    candidate.speaker ?? "",
     candidate.content.toLowerCase(),
   ].join("\n");
 }
@@ -769,6 +776,14 @@ function nonPersonSpeakerCandidate(
   content: string,
 ): boolean {
   return metadataSpeakerIsNonPerson(metadata, content) || contentHasExplicitNonPersonSpeaker(content);
+}
+
+function candidateSpeakerIsNonPerson(candidate: MemoryExtractionCandidate): boolean {
+  if (typeof candidate.speaker !== "string") return false;
+  const speaker = candidate.speaker.trim();
+  if (!speaker || isReservedSpeakerIdentity(speaker)) return false;
+  if (classifySensitivity(speaker) !== "normal") return false;
+  return explicitNonPersonSubject(speaker);
 }
 
 function metadataConfirmsNamedPerson(
@@ -1809,7 +1824,8 @@ export async function extractMemoryCandidatePlan(input: {
         nonPersonSpeakerCandidate(
           input.extractionInput.event.metadata,
           input.extractionInput.event.content,
-        )
+        ) ||
+        candidateSpeakerIsNonPerson(result.candidate)
       ) {
         rejected.push(rejectDecision(rawCandidate, "non_person_speaker"));
         continue;

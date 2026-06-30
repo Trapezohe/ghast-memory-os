@@ -94,6 +94,27 @@ function sourceMetadataForEvent(event: Extract<HostEvent, { type: "conversation.
   return { ...explicit, speaker: inferredSpeaker };
 }
 
+function sourceMetadataForCandidate(
+  eventMetadata: Record<string, unknown>,
+  candidate: MemoryExtractionCandidate,
+): Record<string, unknown> {
+  if (typeof candidate.speaker !== "string" || candidate.speaker.trim().length === 0) {
+    return eventMetadata;
+  }
+  const candidateSpeaker = sanitizePublicSourceMetadata({ speaker: candidate.speaker }).speaker;
+  if (typeof candidateSpeaker !== "string" || candidateSpeaker.trim().length === 0) {
+    return eventMetadata;
+  }
+  const {
+    speaker: _eventSpeaker,
+    speakerId: _eventSpeakerId,
+    speakerAliases: _eventSpeakerAliases,
+    participants: _eventParticipants,
+    ...nonSpeakerEventMetadata
+  } = eventMetadata;
+  return { ...nonSpeakerEventMetadata, speaker: candidateSpeaker };
+}
+
 function sanitizeExternalMemoryMetadata(
   metadata: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
@@ -130,6 +151,7 @@ function structuredCandidateSensitivity(candidate: MemoryExtractionCandidate): S
     candidate.object,
     candidate.predicate,
     candidate.source,
+    candidate.speaker,
     candidate.subject,
     ...(candidate.subjectAliases ?? []),
     candidate.validFrom,
@@ -230,6 +252,8 @@ function worldBeliefSubjectForCandidate(input: {
   if (candidate.subject) return candidate.subject;
   const predicatePrefix = candidate.predicate?.split(".")[0]?.toLowerCase();
   if (predicatePrefix !== "user" && predicatePrefix !== "person") return "user";
+  const candidateSpeaker = publicSpeaker(candidate.speaker);
+  if (candidateSpeaker) return `person:${candidateSpeaker}`;
   const speaker = publicSpeaker(eventMetadata.speaker);
   return speaker && shouldRouteBeliefToSpeaker({ eventContent, eventMetadata, speaker })
     ? `person:${speaker}`
@@ -801,11 +825,12 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       ) {
         continue;
       }
+      const candidateSourceMetadata = sourceMetadataForCandidate(eventMetadata, candidate);
       const memoryEntityMentions = buildEntityMentions({
         subject: candidate.subject,
         predicate: candidate.predicate,
         subjectAliases: candidate.subjectAliases,
-        sourceMetadata: eventMetadata,
+        sourceMetadata: candidateSourceMetadata,
       });
       const memory = await store.addMemory({
         profileId,
@@ -822,7 +847,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           ...sanitizeExternalMemoryMetadata(candidate.metadata),
           ...structuredMetadata,
           sourceRole: event.role,
-          ...(Object.keys(eventMetadata).length > 0 ? { sourceMetadata: eventMetadata } : {}),
+          ...(Object.keys(candidateSourceMetadata).length > 0 ? { sourceMetadata: candidateSourceMetadata } : {}),
           ...(memoryEntityMentions.length > 0 ? { entityMentions: memoryEntityMentions } : {}),
         },
         createdAt: event.createdAt,
@@ -832,18 +857,18 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         const subject = worldBeliefSubjectForCandidate({
           candidate,
           eventContent: event.content,
-          eventMetadata,
+          eventMetadata: candidateSourceMetadata,
         });
         const subjectAliases = worldBeliefSubjectAliasesForCandidate({
           candidate,
           subject,
-          eventMetadata,
+          eventMetadata: candidateSourceMetadata,
         });
         const beliefEntityMentions = buildEntityMentions({
           subject,
           predicate: candidate.predicate,
           subjectAliases,
-          sourceMetadata: eventMetadata,
+          sourceMetadata: candidateSourceMetadata,
         });
         const belief = await store.addWorldBelief({
           profileId,
@@ -859,7 +884,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
             ...sanitizeExternalMemoryMetadata(candidate.metadata),
             ...structuredMetadata,
             sourceRole: event.role,
-            ...(Object.keys(eventMetadata).length > 0 ? { sourceMetadata: eventMetadata } : {}),
+            ...(Object.keys(candidateSourceMetadata).length > 0 ? { sourceMetadata: candidateSourceMetadata } : {}),
             ...(beliefEntityMentions.length > 0 ? { entityMentions: beliefEntityMentions } : {}),
           },
         });

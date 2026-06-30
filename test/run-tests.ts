@@ -3126,6 +3126,7 @@ const llmExtractorMemory = createMemoryOS({
                         content: "LLM extractor says the user prefers risk-first summaries.",
                         confidence: 0.92,
                         predicate: "user.preference",
+                        speaker: "MiraUser",
                         actionPolicyKind: "prefer",
                       },
                       {
@@ -3186,6 +3187,14 @@ const llmExtractionReport = await llmExtractorMemory.observeWithReport({
 assert.equal(llmExtractionReport.extraction?.extractorName, "fixture-openai-compatible-extractor");
 assert.equal(llmExtractionReport.extraction?.acceptedCandidateCount, 2);
 assert.equal(llmExtractionReport.extraction?.rejectedCandidateCount, 1);
+assert.equal(
+  llmExtractionReport.extraction?.decisions.find(
+    (decision) =>
+      decision.decision === "accepted" &&
+      decision.candidate.content.includes("risk-first summaries"),
+  )?.candidate.speaker,
+  "MiraUser",
+);
 assert.equal(llmExtractionReport.memoryIds.length, 2);
 assert.equal(llmExtractionReport.worldBeliefIds.length, 2);
 assert.deepEqual(
@@ -3360,6 +3369,173 @@ assert.equal(
 assert.equal(llmNonPersonSpeakerReport.memoryIds.length, 0);
 assert.equal(llmNonPersonSpeakerReport.worldBeliefIds.length, 0);
 await llmExtractorMemory.close();
+
+const customCandidateSpeakerPath = path.join(tmp, "custom-candidate-speaker.db");
+const customCandidateSpeakerStore = createSqliteMemoryStore({ path: customCandidateSpeakerPath });
+const customCandidateSpeakerMemory = createMemoryOS({
+  profileId: "custom_candidate_speaker",
+  store: customCandidateSpeakerStore,
+  extractor: () => [
+    {
+      kind: "preference",
+      content: "Prefers layered debugging.",
+      confidence: 0.92,
+      predicate: "user.preference",
+      speaker: " Casey Stone ",
+    },
+    {
+      kind: "preference",
+      content: "Prefers private reminders.",
+      confidence: 0.91,
+      predicate: "user.preference",
+      speaker: "SSN 123-45-6789",
+    },
+    {
+      kind: "preference",
+      content: "OpenAI prefers Azure.",
+      confidence: 0.93,
+      predicate: "user.preference",
+      speaker: "OpenAI",
+    },
+    {
+      kind: "preference",
+      content: "Prefers concise summaries.",
+      confidence: 0.9,
+      predicate: "user.preference",
+      speaker: "Alex Rivera",
+    },
+    {
+      kind: "preference",
+      content: "Prefers concise summaries.",
+      confidence: 0.9,
+      predicate: "user.preference",
+      speaker: "Blair Stone",
+    },
+  ],
+});
+const customCandidateSpeakerReport = await customCandidateSpeakerMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "custom_candidate_speaker",
+  role: "user",
+  content: "A transcript note contains speaker-scoped preferences.",
+  metadata: {
+    speaker: "Mira User",
+    speakerId: "mira-user-id",
+    speakerAliases: ["Mira Alias"],
+    participants: ["Mira User", "Casey Stone"],
+    sessionId: "candidate-speaker-session",
+  },
+});
+assert.equal(customCandidateSpeakerReport.extraction?.acceptedCandidateCount, 4);
+assert.equal(customCandidateSpeakerReport.extraction?.rejectedCandidateCount, 1);
+assert.equal(
+  customCandidateSpeakerReport.extraction?.decisions.some(
+    (decision) => decision.decision === "rejected" && decision.reason === "non_person_speaker",
+  ),
+  true,
+);
+assert.equal(customCandidateSpeakerReport.memoryIds.length, 4);
+assert.equal(customCandidateSpeakerReport.worldBeliefIds.length, 4);
+const customCandidateSpeakerMemories = await Promise.all(
+  customCandidateSpeakerReport.memoryIds.map((id) =>
+    customCandidateSpeakerMemory.get({
+      profileId: "custom_candidate_speaker",
+      id,
+      includeSensitive: true,
+    }),
+  ),
+);
+const caseySpeakerMemory = customCandidateSpeakerMemories.find((entry) =>
+  entry?.content.includes("layered debugging"),
+);
+assert.equal(
+  (caseySpeakerMemory?.metadata.sourceMetadata as Record<string, unknown> | undefined)?.speaker,
+  "Casey Stone",
+);
+const caseySourceMetadata = caseySpeakerMemory?.metadata.sourceMetadata as
+  | Record<string, unknown>
+  | undefined;
+assert.equal(caseySourceMetadata?.sessionId, "candidate-speaker-session");
+assert.equal(caseySourceMetadata?.speakerId, undefined);
+assert.equal(caseySourceMetadata?.speakerAliases, undefined);
+assert.equal(caseySourceMetadata?.participants, undefined);
+const caseySpeakerMentions = caseySpeakerMemory?.metadata.entityMentions as
+  | Array<{ role?: string; value?: string; kind?: string }>
+  | undefined;
+assert.equal(
+  caseySpeakerMentions?.some(
+    (mention) =>
+      mention.role === "source_speaker" &&
+      mention.value === "Casey Stone" &&
+      mention.kind === "person",
+  ),
+  true,
+);
+assert.equal(
+  caseySpeakerMentions?.some((mention) => mention.value === "Mira Alias" || mention.value === "Mira User"),
+  false,
+);
+const customCandidateSpeakerDb = new Database(customCandidateSpeakerPath, { readonly: true });
+try {
+  const caseyBelief = customCandidateSpeakerDb
+    .prepare(
+      `SELECT subject, metadata_json
+         FROM gmos_world_beliefs
+        WHERE profile_id = ?
+          AND source_memory_id = ?`,
+    )
+    .get("custom_candidate_speaker", caseySpeakerMemory?.id ?? "") as
+    | { subject: string; metadata_json: string }
+    | undefined;
+  assert.equal(caseyBelief?.subject, "person:casey-stone");
+  assert.equal(
+    (JSON.parse(caseyBelief?.metadata_json ?? "{}").sourceMetadata as Record<string, unknown> | undefined)
+      ?.speaker,
+    "Casey Stone",
+  );
+  const conciseBeliefs = customCandidateSpeakerDb
+    .prepare(
+      `SELECT subject
+         FROM gmos_world_beliefs
+        WHERE profile_id = ?
+          AND object = ?
+        ORDER BY subject`,
+    )
+    .all("custom_candidate_speaker", "Prefers concise summaries.") as Array<{ subject: string }>;
+  assert.deepEqual(
+    conciseBeliefs.map((entry) => entry.subject),
+    ["person:alex-rivera", "person:blair-stone"],
+  );
+} finally {
+  customCandidateSpeakerDb.close();
+}
+const caseyReconstruction = await customCandidateSpeakerMemory.reconstructContext({
+  profileId: "custom_candidate_speaker",
+  query: "Casey Stone preference",
+  maxSteps: 4,
+  maxBranch: 6,
+});
+assert.match(caseyReconstruction.contextBlock, /layered debugging/);
+const sensitiveSpeakerMemory = customCandidateSpeakerMemories.find((entry) =>
+  entry?.content.includes("private reminders"),
+);
+assert.equal(sensitiveSpeakerMemory?.sensitivity, "sensitive");
+assert.equal(
+  await customCandidateSpeakerMemory.get({
+    profileId: "custom_candidate_speaker",
+    id: sensitiveSpeakerMemory?.id ?? "",
+  }),
+  null,
+);
+assert.equal(
+  JSON.stringify(sensitiveSpeakerMemory?.metadata ?? {}).includes("123-45-6789"),
+  false,
+);
+assert.equal(
+  JSON.stringify(sensitiveSpeakerMemory?.metadata ?? {}).includes("[redacted_sensitive]"),
+  true,
+);
+await customCandidateSpeakerMemory.close();
 
 const customSubjectAliasPath = path.join(tmp, "custom-subject-alias.db");
 const customSubjectAliasStore = createSqliteMemoryStore({ path: customSubjectAliasPath });
@@ -3846,6 +4022,13 @@ const unsafeExtractorMemory = createMemoryOS({
       source: "sk-customsourcesecret1234567890",
     },
     {
+      kind: "preference",
+      content: "Custom extractor leaked secret-like speaker field.",
+      confidence: 0.99,
+      predicate: "user.preference",
+      speaker: "sk-customspeakersecret1234567890",
+    },
+    {
       kind: "fact",
       content: "PERSON:Alice: likes private side-channel memory.",
       confidence: 0.99,
@@ -3890,6 +4073,7 @@ assert.deepEqual(
     "secret_like",
     "secret_like",
     "secret_like",
+    "secret_like",
   ],
 );
 assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customextractorsecret"), false);
@@ -3898,6 +4082,7 @@ assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customtemporals
 assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customaliassecret"), false);
 assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customobjectsecret"), false);
 assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customsourcesecret"), false);
+assert.equal(JSON.stringify(unsafeExtractionReport).includes("sk-customspeakersecret"), false);
 const unsafeInvalidKindCandidate = unsafeExtractionReport.extraction?.decisions.find(
   (decision) => decision.decision === "rejected" && decision.reason === "invalid_kind",
 )?.candidate;
