@@ -15,7 +15,7 @@ import type {
   TurnMessage,
 } from "../kernel/types.js";
 import { readGmosPackageInfo, readGmosPackageRoot } from "../kernel/package-info.js";
-import { eligibleForLongTermMemory } from "../kernel/safety.js";
+import { eligibleForLongTermMemory, sanitizePublicPayload } from "../kernel/safety.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 
@@ -424,12 +424,54 @@ function optionalBoolean(value: unknown, field: string): boolean | undefined {
   return value;
 }
 
+const EXTERNAL_RUNTIME_STRING_METADATA_KEYS = new Set([
+  "eventDate",
+  "eventTime",
+  "expiresAt",
+  "speaker",
+  "speakerId",
+  "speakerKind",
+  "validFrom",
+  "validTo",
+]);
+
+const EXTERNAL_RUNTIME_STRING_ARRAY_METADATA_KEYS = new Set(["participants", "speakerAliases"]);
+
+function stringMetadataValue(value: unknown, field: string, key: string): string {
+  const sanitized = sanitizePublicPayload(value);
+  if (typeof sanitized !== "string" || sanitized.trim().length === 0) {
+    throw new Error(`External benchmark ${field} metadata key ${key} must be a public string`);
+  }
+  return sanitized.trim();
+}
+
+function stringArrayMetadataValue(value: unknown, field: string, key: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`External benchmark ${field} metadata key ${key} must be a public string array`);
+  }
+  const entries = value.map((entry) => stringMetadataValue(entry, field, key));
+  if (entries.length === 0) {
+    throw new Error(`External benchmark ${field} metadata key ${key} must not be empty`);
+  }
+  return entries;
+}
+
 function optionalMetadata(value: unknown, field: string): Record<string, unknown> | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error(`External benchmark ${field} must be an object`);
   }
-  return value as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (EXTERNAL_RUNTIME_STRING_METADATA_KEYS.has(key)) {
+      output[key] = stringMetadataValue(child, field, key);
+    } else if (EXTERNAL_RUNTIME_STRING_ARRAY_METADATA_KEYS.has(key)) {
+      output[key] = stringArrayMetadataValue(child, field, key);
+    } else {
+      throw new Error(`External benchmark ${field} metadata key ${key} is not runtime metadata`);
+    }
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
 }
 
 function optionalReconstructionIntent(value: unknown, field: string): ReconstructionIntentHint | undefined {

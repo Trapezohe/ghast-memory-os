@@ -264,9 +264,11 @@ function memoryEvent(input: {
   metadata?: Record<string, unknown> | undefined;
 }): ExternalMemoryBenchmarkMemoryEvent {
   const createdAt = stringValue(input.createdAt);
+  const { relativeDateSource: _relativeDateSource, ...relativeMetadata } =
+    relativeEventDateMetadata(input.content, createdAt ?? undefined);
   const metadata = {
     ...(input.metadata ?? {}),
-    ...relativeEventDateMetadata(input.content, createdAt ?? undefined),
+    ...relativeMetadata,
   };
   return {
     type: "memory",
@@ -305,9 +307,6 @@ function longMemEvalEvents(row: Record<string, unknown>, caseId: string): Extern
         memoryEvent({
           content,
           createdAt: dates[sessionIndex],
-          metadata: {
-            role: normalizeRole(record.role, "user"),
-          },
         }),
       );
     }

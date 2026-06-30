@@ -15918,19 +15918,12 @@ const externalBenchmarkJsonl = [
         content: "Casey mentioned painting a ceramic moon in 2020 after class.",
         metadata: {
           speaker: "Casey",
-          answer: "leaked external answer",
-          oracle: "leaked external oracle",
-          token: "sk-externalmetadata1234567890",
+          speakerKind: "person",
         },
       },
     ],
     question: "What did Casey mention?",
     expectedAny: ["ceramic moon"],
-    forbiddenAny: [
-      "leaked external answer",
-      "leaked external oracle",
-      "sk-externalmetadata1234567890",
-    ],
   }),
   JSON.stringify({
     id: "forget-event",
@@ -16920,6 +16913,7 @@ assert.equal(JSON.stringify(longMemEvalCases[0]?.events).includes("has_answer"),
 assert.equal(JSON.stringify(longMemEvalCases[0]?.events).includes("answer_session_ids"), false);
 assert.equal(JSON.stringify(longMemEvalCases[0]?.events).includes("longmemeval"), false);
 assert.equal(JSON.stringify(longMemEvalCases[0]?.events).includes("sessionIndex"), false);
+assert.equal(JSON.stringify(longMemEvalCases[0]?.events).includes('"role"'), false);
 const longMemEvalJsonlCases = parseLongMemEvalBenchmarkDataset(
   longMemEvalFixture.slice(1, -1),
 );
@@ -17909,6 +17903,142 @@ assert.throws(
     ),
   /forget event requires query/,
 );
+assert.throws(
+  () =>
+    parseExternalMemoryBenchmarkJsonl(
+      JSON.stringify({
+        id: "metadata-answer-leak",
+        events: [
+          {
+            type: "memory",
+            kind: "fact",
+            content: "Visible answer is Alpha.",
+            metadata: { answer: "Alpha" },
+          },
+        ],
+        question: "What is visible?",
+        expectedAny: ["Alpha"],
+      }),
+    ),
+  /metadata key answer is not runtime metadata/,
+);
+assert.throws(
+  () =>
+    parseExternalMemoryBenchmarkJsonl(
+      JSON.stringify({
+        id: "metadata-nested-question-id-leak",
+        events: [
+          {
+            type: "message",
+            content: "Visible answer is Alpha.",
+            metadata: { source: { question_id: "lme-1" } },
+          },
+        ],
+        question: "What is visible?",
+        expectedAny: ["Alpha"],
+      }),
+    ),
+  /metadata key source is not runtime metadata/,
+);
+assert.throws(
+  () =>
+    parseExternalMemoryBenchmarkJsonl(
+      JSON.stringify({
+        id: "metadata-dataset-value-leak",
+        events: [
+          {
+            type: "memory",
+            kind: "fact",
+            content: "Visible answer is Alpha.",
+            metadata: { source: "longmemeval:session-2" },
+          },
+        ],
+        question: "What is visible?",
+        expectedAny: ["Alpha"],
+      }),
+    ),
+  /metadata key source is not runtime metadata/,
+);
+assert.throws(
+  () =>
+    parseExternalMemoryBenchmarkJsonl(
+      JSON.stringify({
+        id: "metadata-question-type-leak",
+        events: [
+          {
+            type: "memory",
+            kind: "fact",
+            content: "Visible answer is Alpha.",
+            metadata: { questionType: "temporal_reasoning" },
+          },
+        ],
+        question: "What is visible?",
+        expectedAny: ["Alpha"],
+      }),
+    ),
+  /metadata key questionType is not runtime metadata/,
+);
+assert.throws(
+  () =>
+    parseExternalMemoryBenchmarkJsonl(
+      JSON.stringify({
+        id: "metadata-haystack-session-leak",
+        events: [
+          {
+            type: "memory",
+            kind: "fact",
+            content: "Visible answer is Alpha.",
+            metadata: { haystack_session_ids: ["session-2"] },
+          },
+        ],
+        question: "What is visible?",
+        expectedAny: ["Alpha"],
+      }),
+    ),
+  /metadata key haystack_session_ids is not runtime metadata/,
+);
+assert.throws(
+  () =>
+    parseExternalMemoryBenchmarkJsonl(
+      JSON.stringify({
+        id: "metadata-lme-value-leak",
+        events: [
+          {
+            type: "memory",
+            kind: "fact",
+            content: "Visible answer is Alpha.",
+            metadata: { source: "lme-mini-current-state" },
+          },
+        ],
+        question: "What is visible?",
+        expectedAny: ["Alpha"],
+      }),
+    ),
+  /metadata key source is not runtime metadata/,
+);
+const allowedExternalMetadataCase = parseExternalMemoryBenchmarkJsonl(
+  JSON.stringify({
+    id: "metadata-allowed-source-fields",
+    events: [
+      {
+        type: "memory",
+        kind: "fact",
+        content: "Alex filed the safe route on 2026-06-01.",
+        metadata: {
+          speaker: "Alex",
+          speakerKind: "person",
+          participants: ["Alex", "Blair"],
+          validFrom: "2026-06-01T00:00:00.000Z",
+          validTo: "2026-07-01T00:00:00.000Z",
+        },
+      },
+    ],
+    question: "Who filed the safe route?",
+    expectedAny: ["Alex"],
+  }),
+);
+assert.equal(allowedExternalMetadataCase[0]?.events[0]?.metadata?.speaker, "Alex");
+assert.equal(allowedExternalMetadataCase[0]?.events[0]?.metadata?.validTo, "2026-07-01T00:00:00.000Z");
 const escapedExternalMarkdown = renderExternalMemoryBenchmarkMarkdown({
   ...externalBenchmark,
   cases: [
