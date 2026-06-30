@@ -365,6 +365,100 @@ function personSubjectFieldsForFirstPerson(
     : {};
 }
 
+function metadataNamedSpeaker(metadata: Record<string, unknown> | undefined): string {
+  return typeof metadata?.speaker === "string" &&
+    !/^(?:current[-_ ]?user|user|self|me)$/iu.test(metadata.speaker.trim()) &&
+    stableNamedPersonSubject(metadata.speaker)
+    ? metadata.speaker.trim()
+    : "";
+}
+
+function stableSpeakerPrefix(text: string): string {
+  const prefix = speakerPrefixMatch(text)?.prefix;
+  return prefix && !isNonSpeakerPrefix(prefix) && stableNamedPersonSubject(prefix) ? prefix : "";
+}
+
+function speakerPrefixConflictsWithMetadata(
+  text: string,
+  metadata: Record<string, unknown> | undefined,
+): boolean {
+  const prefix = stableSpeakerPrefix(text);
+  const speaker = metadataNamedSpeaker(metadata);
+  if (!prefix || !speaker) return false;
+  return !new Set([speaker, ...metadataSpeakerAliases(metadata)].map(entityKey)).has(entityKey(prefix));
+}
+
+function metadataParticipantsOnlySpeaker(
+  metadata: Record<string, unknown> | undefined,
+  speaker: string,
+): boolean {
+  if (!Array.isArray(metadata?.participants)) return false;
+  const speakerKeys = new Set([speaker, ...metadataSpeakerAliases(metadata)].map(entityKey));
+  const participantKeys = metadata.participants
+    .filter((entry): entry is string => typeof entry === "string" && stableNamedPersonSubject(entry))
+    .map(entityKey)
+    .filter(Boolean);
+  return participantKeys.length > 0 && participantKeys.every((key) => speakerKeys.has(key));
+}
+
+function personSubjectFieldsForFirstPersonPreference(
+  text: string,
+  metadata: Record<string, unknown> | undefined,
+): Pick<MemoryExtractionCandidate, "subject" | "subjectAliases"> | null {
+  if (speakerPrefixConflictsWithMetadata(text, metadata)) return null;
+  const subjectFields = personSubjectFieldsForFirstPerson(text, metadata);
+  if (subjectFields.subject) return subjectFields;
+  const speaker = metadataNamedSpeaker(metadata);
+  const participants = publicStringArray(metadata?.participants) ?? [];
+  const onlySpeakerParticipant = speaker ? metadataParticipantsOnlySpeaker(metadata, speaker) : false;
+  if (
+    speaker &&
+    (participants.length === 0 || onlySpeakerParticipant) &&
+    !stableSpeakerPrefix(text) &&
+    hasFirstPersonAnchor(text)
+  ) {
+    return {
+      subject: `person:${speaker}`,
+      subjectAliases: uniqueStrings([speaker, ...metadataSpeakerAliases(metadata)]),
+    };
+  }
+  return {};
+}
+
+function firstPersonPreferenceObject(utterance: string): string | undefined {
+  const direct = /^\s*I\s+(?:prefer|like|love)\s+(.{1,120}?)\s*\.?\s*$/iu.exec(utterance);
+  const favorite = /^\s*my\s+favorite(?:\s+[\p{L}\p{N}_ -]{1,60})?\s+(?:is|=)\s+(.{1,120}?)\s*\.?\s*$/iu.exec(
+    utterance,
+  );
+  const preference = /^\s*my\s+preference\s+is\s+(.{1,120}?)\s*\.?\s*$/iu.exec(utterance);
+  const chinese = /^\s*我(?:最|更)?(?:喜欢|偏好)\s*(.{1,120}?)\s*[。.!]?\s*$/u.exec(utterance);
+  return stableToolObject(direct?.[1] ?? favorite?.[1] ?? preference?.[1] ?? chinese?.[1]);
+}
+
+function firstPersonPreferenceStatement(utterance: string): boolean {
+  return (
+    /^\s*I\s+(?:prefer|like|love)\s+.{1,120}?\s*\.?\s*$/iu.test(utterance) ||
+    /^\s*my\s+favorite(?:\s+[\p{L}\p{N}_ -]{1,60})?\s+(?:is|=)\s+.{1,120}?\s*\.?\s*$/iu.test(
+      utterance,
+    ) ||
+    /^\s*my\s+preference\s+is\s+.{1,120}?\s*\.?\s*$/iu.test(utterance) ||
+    /^\s*我(?:最|更)?(?:喜欢|偏好)\s*.{1,120}?\s*[。.!]?\s*$/u.test(utterance)
+  );
+}
+
+function stableSpeakerPrefixedFirstPersonPreference(text: string): boolean {
+  return Boolean(stableSpeakerPrefix(text) && firstPersonPreferenceStatement(stripSpeakerPrefix(text)));
+}
+
+function metadataSpeakerFirstPersonPreference(
+  text: string,
+  metadata: Record<string, unknown> | undefined,
+): boolean {
+  if (!metadataNamedSpeaker(metadata)) return false;
+  const subjectFields = personSubjectFieldsForFirstPersonPreference(text, metadata);
+  return Boolean(subjectFields?.subject && firstPersonPreferenceStatement(stripSpeakerPrefix(text)));
+}
+
 function hasFirstPersonAnchor(text: string): boolean {
   return (
     /\b(I|I'm|I’m|I've|I’ve|I'd|I’d|I'll|I’ll|my|mine|we|we're|we’re|we've|we’ve|our)\b/iu.test(
@@ -667,6 +761,28 @@ function firstPersonAttributeCandidate(
     };
   }
   return null;
+}
+
+function firstPersonPreferenceCandidate(
+  text: string,
+  metadata?: Record<string, unknown> | undefined,
+): MemoryExtractionCandidate | null {
+  const utterance = stripSpeakerPrefix(text);
+  if (isQuestionLike(utterance)) return null;
+  const subjectFields = personSubjectFieldsForFirstPersonPreference(text, metadata);
+  if (!subjectFields?.subject) return null;
+  const object = firstPersonPreferenceObject(utterance);
+  if (!object) return null;
+  return {
+    kind: "fact",
+    content: text,
+    confidence: 0.64,
+    predicate: "person.preference",
+    ...subjectFields,
+    object,
+    cardinality: "multi",
+    metadata: { rule: "first_person_preference" },
+  };
 }
 
 const NON_PERSON_SINGLE_NAMES = new Set([
@@ -1707,11 +1823,17 @@ export function extractRuleMemoryCandidates(
 
   if (isQuestionLike(stripSpeakerPrefix(text))) return [];
 
+  const personPreference = firstPersonPreferenceCandidate(text, metadata);
+  if (personPreference) return [personPreference];
+
   const preferenceUtterance = stripSpeakerPrefix(text);
   if (
     /我喜欢|我最喜欢|我偏好|我更喜欢/u.test(preferenceUtterance) ||
     /\b(?:I prefer|I like|my favorite|my preference is)\b/iu.test(preferenceUtterance)
   ) {
+    if (stableSpeakerPrefixedFirstPersonPreference(text) || metadataSpeakerFirstPersonPreference(text, metadata)) {
+      return [];
+    }
     return [
       {
         kind: "preference",

@@ -4506,11 +4506,17 @@ const favoritePreferenceReport = await rulesReportMemory.observeWithReport({
 assert.equal(favoritePreferenceReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(favoritePreferenceReport.memoryIds.length, 1);
 assert.equal(favoritePreferenceReport.worldBeliefIds.length, 1);
-assert.equal(
+const favoritePreferenceCandidate =
   favoritePreferenceReport.extraction?.decisions.find((decision) => decision.decision === "accepted")
-    ?.candidate.predicate,
-  "user.preference",
+    ?.candidate;
+assert.equal(favoritePreferenceCandidate?.kind, "fact");
+assert.equal(
+  favoritePreferenceCandidate?.predicate,
+  "person.preference",
 );
+assert.equal(favoritePreferenceCandidate?.subject, "person:Casey");
+assert.equal(favoritePreferenceCandidate?.object, "Noma");
+assert.equal(favoritePreferenceCandidate?.actionPolicyKind, undefined);
 const chineseFavoritePreferenceReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -4541,6 +4547,174 @@ const nonSpeakerPrefixedPreferenceMemory = await rulesReportMemory.get({
   id: nonSpeakerPrefixedPreferenceReport.memoryIds[0]!,
 });
 assert.equal(nonSpeakerPrefixedPreferenceMemory?.content, "I prefer traceable release plans.");
+const speakerScopedPreferenceReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_speaker_preference",
+  role: "user",
+  content: "Alex: I prefer green tea.",
+  metadata: {
+    speaker: "Alex",
+    participants: ["Alex", "Blair"],
+  },
+});
+const speakerScopedPreferenceCandidate =
+  speakerScopedPreferenceReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  )?.candidate;
+assert.equal(speakerScopedPreferenceReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(speakerScopedPreferenceReport.memoryIds.length, 1);
+assert.equal(speakerScopedPreferenceReport.worldBeliefIds.length, 1);
+assert.equal(speakerScopedPreferenceCandidate?.kind, "fact");
+assert.equal(speakerScopedPreferenceCandidate?.predicate, "person.preference");
+assert.equal(speakerScopedPreferenceCandidate?.subject, "person:Alex");
+assert.equal(speakerScopedPreferenceCandidate?.object, "green tea");
+assert.equal(speakerScopedPreferenceCandidate?.actionPolicyKind, undefined);
+const secondSpeakerScopedPreferenceReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_speaker_preference",
+  role: "user",
+  content: "Blair: I like window seats.",
+  metadata: {
+    speaker: "Blair",
+    participants: ["Alex", "Blair"],
+  },
+});
+assert.equal(secondSpeakerScopedPreferenceReport.extraction?.acceptedCandidateCount, 1);
+const metadataSpeakerOnlyPreferenceReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_speaker_preference",
+  role: "user",
+  content: "I prefer aisle seats.",
+  metadata: {
+    speaker: "Alex",
+  },
+});
+const metadataSpeakerOnlyPreferenceCandidate =
+  metadataSpeakerOnlyPreferenceReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  )?.candidate;
+assert.equal(metadataSpeakerOnlyPreferenceReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(metadataSpeakerOnlyPreferenceCandidate?.kind, "fact");
+assert.equal(metadataSpeakerOnlyPreferenceCandidate?.predicate, "person.preference");
+assert.equal(metadataSpeakerOnlyPreferenceCandidate?.subject, "person:Alex");
+assert.equal(metadataSpeakerOnlyPreferenceCandidate?.object, "aisle seats");
+const metadataSingleParticipantPreferenceReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_speaker_preference",
+  role: "user",
+  content: "I prefer quiet hotels.",
+  metadata: {
+    speaker: "Alex",
+    participants: ["Alex"],
+  },
+});
+const metadataSingleParticipantPreferenceCandidate =
+  metadataSingleParticipantPreferenceReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  )?.candidate;
+assert.equal(metadataSingleParticipantPreferenceReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(metadataSingleParticipantPreferenceCandidate?.kind, "fact");
+assert.equal(metadataSingleParticipantPreferenceCandidate?.predicate, "person.preference");
+assert.equal(metadataSingleParticipantPreferenceCandidate?.subject, "person:Alex");
+assert.equal(metadataSingleParticipantPreferenceCandidate?.object, "quiet hotels");
+const metadataAliasParticipantPreferenceReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_speaker_preference",
+  role: "user",
+  content: "I prefer aisle seats.",
+  metadata: {
+    speaker: "Alex Smith",
+    speakerAliases: ["Alex"],
+    participants: ["Alex"],
+  },
+});
+const metadataAliasParticipantPreferenceCandidate =
+  metadataAliasParticipantPreferenceReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  )?.candidate;
+assert.equal(metadataAliasParticipantPreferenceReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(metadataAliasParticipantPreferenceCandidate?.kind, "fact");
+assert.equal(metadataAliasParticipantPreferenceCandidate?.predicate, "person.preference");
+assert.equal(metadataAliasParticipantPreferenceCandidate?.subject, "person:Alex Smith");
+assert.equal(metadataAliasParticipantPreferenceCandidate?.object, "aisle seats");
+const speakerScopedPreferencePrepared = await rulesReportMemory.prepareTurn({
+  profileId: "rules_report_speaker_preference",
+  messages: [{ role: "user", content: "Help me plan travel." }],
+});
+assert.equal(speakerScopedPreferencePrepared.actionPolicies.length, 0);
+assert.doesNotMatch(speakerScopedPreferencePrepared.contextBlock, /Alex: I prefer green tea/);
+assert.doesNotMatch(speakerScopedPreferencePrepared.contextBlock, /Blair: I like window seats/);
+const speakerScopedPreferenceReconstruction = await rulesReportMemory.reconstructContext({
+  profileId: "rules_report_speaker_preference",
+  query: "What does Alex prefer?",
+  maxSteps: 3,
+  maxBranch: 3,
+  maxMemories: 3,
+});
+assert.match(speakerScopedPreferenceReconstruction.contextBlock, /green tea/);
+assert.doesNotMatch(speakerScopedPreferenceReconstruction.contextBlock, /window seats/);
+for (const unsafeSpeakerPreference of [
+  "Alex: I prefer unavailable.",
+  "Alex: I like not tea.",
+]) {
+  const unsafeSpeakerPreferenceReport = await rulesReportMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: "rules_report_speaker_preference_negative",
+    role: "user",
+    content: unsafeSpeakerPreference,
+    metadata: {
+      speaker: "Alex",
+      participants: ["Alex", "Blair"],
+    },
+  });
+  assert.equal(unsafeSpeakerPreferenceReport.extraction?.acceptedCandidateCount, 0);
+  assert.equal(unsafeSpeakerPreferenceReport.memoryIds.length, 0);
+  assert.equal(unsafeSpeakerPreferenceReport.worldBeliefIds.length, 0);
+}
+for (const unsafeMetadataSpeakerPreference of [
+  "I prefer unavailable.",
+  "I like not tea.",
+]) {
+  const unsafeMetadataSpeakerPreferenceReport = await rulesReportMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: "rules_report_speaker_preference_negative",
+    role: "user",
+    content: unsafeMetadataSpeakerPreference,
+    metadata: {
+      speaker: "Alex",
+    },
+  });
+  assert.equal(unsafeMetadataSpeakerPreferenceReport.extraction?.acceptedCandidateCount, 0);
+  assert.equal(unsafeMetadataSpeakerPreferenceReport.memoryIds.length, 0);
+  assert.equal(unsafeMetadataSpeakerPreferenceReport.worldBeliefIds.length, 0);
+  const unsafeSingleParticipantPreferenceReport = await rulesReportMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: "rules_report_speaker_preference_negative",
+    role: "user",
+    content: unsafeMetadataSpeakerPreference,
+    metadata: {
+      speaker: "Alex",
+      participants: ["Alex"],
+    },
+  });
+  assert.equal(unsafeSingleParticipantPreferenceReport.extraction?.acceptedCandidateCount, 0);
+  assert.equal(unsafeSingleParticipantPreferenceReport.memoryIds.length, 0);
+  assert.equal(unsafeSingleParticipantPreferenceReport.worldBeliefIds.length, 0);
+  const unsafeAliasParticipantPreferenceReport = await rulesReportMemory.observeWithReport({
+    type: "conversation.message",
+    profileId: "rules_report_speaker_preference_negative",
+    role: "user",
+    content: unsafeMetadataSpeakerPreference,
+    metadata: {
+      speaker: "Alex Smith",
+      speakerAliases: ["Alex"],
+      participants: ["Alex"],
+    },
+  });
+  assert.equal(unsafeAliasParticipantPreferenceReport.extraction?.acceptedCandidateCount, 0);
+  assert.equal(unsafeAliasParticipantPreferenceReport.memoryIds.length, 0);
+  assert.equal(unsafeAliasParticipantPreferenceReport.worldBeliefIds.length, 0);
+}
 for (const secretLikeFavoriteStatement of [
   "My favorite password is correcthorsebatterystaple.",
   "My favorite password is letmeinplease.",
@@ -5823,15 +5997,9 @@ const mismatchedSpeakerPrefixReport = await rulesReportMemory.observeWithReport(
     speakerAliases: ["Mira"],
   },
 });
-assert.equal(mismatchedSpeakerPrefixReport.extraction?.acceptedCandidateCount, 1);
-assert.equal(mismatchedSpeakerPrefixReport.worldBeliefIds.length, 1);
-assert.equal(
-  rulesReportWorldBeliefSubject(
-    mismatchedSpeakerPrefixReport.worldBeliefIds[0]!,
-    "rules_report_speaker_mismatch",
-  ),
-  "user",
-);
+assert.equal(mismatchedSpeakerPrefixReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(mismatchedSpeakerPrefixReport.memoryIds.length, 0);
+assert.equal(mismatchedSpeakerPrefixReport.worldBeliefIds.length, 0);
 const currentUserSpeakerOnlyReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -6863,7 +7031,7 @@ try {
     | { subject: string; predicate: string }
     | undefined;
   assert.equal(favoritePreferenceBelief?.subject, "person:casey");
-  assert.equal(favoritePreferenceBelief?.predicate, "user.preference");
+  assert.equal(favoritePreferenceBelief?.predicate, "person.preference");
   const namedRelationBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate, object, metadata_json
