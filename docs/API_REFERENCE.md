@@ -66,6 +66,9 @@ Primary methods:
 - `commitOutcome(input)`: record task outcome signals.
 - `recordFeedback(input)`: record user or host feedback into the failure loop.
 - `forget(input)`: archive matching memory and remove it from future context.
+  Prefer structured `targetTerms` when a host already knows the deletion target;
+  `query` remains required as a human-readable request and compatibility
+  fallback.
 - `explain(input)`: explain a memory or belief without exposing unsafe content.
 
 Low-level compatibility methods such as `add`, `search`, `history`, `list`,
@@ -144,7 +147,7 @@ gmos add --db ./gmos.db --profile local --kind boundary --text "Do not push rele
 gmos observe --db ./gmos.db --profile local --text "User opened the release planning thread."
 gmos prepare --db ./gmos.db --profile local --text "How should you answer me?"
 gmos reconstruct --db ./gmos.db --profile local --text "What is the project next step?"
-gmos forget --db ./gmos.db --profile local --query "old project"
+gmos forget --db ./gmos.db --profile local --query "delete old project" --target-term "old project"
 gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
 ```
 

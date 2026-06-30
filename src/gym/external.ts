@@ -48,6 +48,7 @@ export interface ExternalMemoryBenchmarkTaskEvent {
 export interface ExternalMemoryBenchmarkForgetEvent {
   type: "forget";
   query: string;
+  targetTerms?: string[] | undefined;
   reason?: string | undefined;
 }
 
@@ -534,9 +535,11 @@ function parseEvent(value: unknown, caseId: string): ExternalMemoryBenchmarkEven
     if (typeof event.query !== "string" || event.query.trim().length === 0) {
       throw new Error(`External benchmark case ${caseId} forget event requires query`);
     }
+    const targetTerms = stringArray(event.targetTerms, `${caseId}.event.targetTerms`);
     return {
       type: "forget",
       query: event.query.trim(),
+      ...(targetTerms ? { targetTerms } : {}),
       ...(typeof event.reason === "string" && event.reason.trim() ? { reason: event.reason.trim() } : {}),
     };
   }
@@ -1521,6 +1524,7 @@ async function applyBenchmarkEvent(
     await memory.forget({
       profileId,
       query: event.query,
+      targetTerms: event.targetTerms,
       reason: event.reason,
     });
   } else if (event.type === "memory") {

@@ -138,6 +138,7 @@ const recordFeedbackSchema = z.object({
 const forgetSchema = z.object({
   profileId: z.string().optional(),
   query: z.string().min(1),
+  targetTerms: z.array(z.string()).optional(),
   reason: z.string().optional(),
 }).strict();
 

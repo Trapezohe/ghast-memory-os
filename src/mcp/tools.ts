@@ -239,6 +239,7 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
         properties: {
           profileId: { type: "string" },
           query: { type: "string" },
+          targetTerms: { type: "array", items: { type: "string" } },
           reason: { type: "string" },
         },
       },

@@ -462,6 +462,11 @@ function forgetMatchTerms(query: string): string[] {
   );
 }
 
+function structuredForgetTargetTerms(targetTerms: string[] | undefined): string[] | null {
+  if (targetTerms === undefined) return null;
+  return queryTerms(targetTerms.join(" "));
+}
+
 function memoryMatchesForgetQuery(memory: MemoryRecord, terms: string[]): boolean {
   if (terms.length === 0) return true;
   const lower = memory.content.toLowerCase();
@@ -2311,7 +2316,11 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
 
   function forget(input: ForgetInput & { profileId: string }): ForgetResult {
     initialize();
-    const terms = forgetMatchTerms(input.query);
+    const structuredTerms = structuredForgetTargetTerms(input.targetTerms);
+    if (structuredTerms !== null && structuredTerms.length === 0) {
+      return { archivedMemoryIds: [] };
+    }
+    const terms = structuredTerms ?? forgetMatchTerms(input.query);
     const searchQuery = terms.length > 0 ? terms.join(" ") : input.query;
     const matches = searchMemories({
       profileId: input.profileId,

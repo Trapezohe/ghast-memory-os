@@ -515,12 +515,19 @@ function feedbackInput(args: Record<string, unknown>): FeedbackInput {
 }
 
 function forgetInput(args: Record<string, unknown>): ForgetInput {
+  assertAllowedKeys(
+    args,
+    new Set(["profileId", "query", "targetTerms", "reason"]),
+    "memory.forget",
+  );
   const input: ForgetInput = {
     query: requiredString(args, "query"),
   };
   const profileId = optionalString(args, "profileId");
+  const targetTerms = optionalStringArrayValue(args.targetTerms, "targetTerms");
   const reason = optionalString(args, "reason");
   if (profileId !== undefined) input.profileId = profileId;
+  if (targetTerms !== undefined) input.targetTerms = targetTerms;
   if (reason !== undefined) input.reason = reason;
   return input;
 }

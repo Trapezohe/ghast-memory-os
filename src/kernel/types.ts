@@ -42,6 +42,7 @@ export interface UserForgetEvent {
   type: "user.forget_request";
   profileId?: string | undefined;
   query: string;
+  targetTerms?: string[] | undefined;
   reason?: string | undefined;
   createdAt?: string | undefined;
 }
@@ -481,6 +482,7 @@ export interface FeedbackInput {
 export interface ForgetInput {
   profileId?: string | undefined;
   query: string;
+  targetTerms?: string[] | undefined;
   reason?: string | undefined;
 }
 

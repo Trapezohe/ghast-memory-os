@@ -826,7 +826,12 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     };
 
     if (event.type === "user.forget_request") {
-      await store.forget({ profileId, query: event.query, reason: event.reason });
+      await store.forget({
+        profileId,
+        query: event.query,
+        targetTerms: event.targetTerms,
+        reason: event.reason,
+      });
       return { ...result, skippedReason: "forget_request" };
     }
 
@@ -1171,6 +1176,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     return store.forget({
       profileId: profileIdFor(defaultProfileId, input.profileId),
       query: input.query,
+      targetTerms: input.targetTerms,
       reason: input.reason,
     });
   }

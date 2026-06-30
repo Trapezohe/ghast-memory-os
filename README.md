@@ -400,6 +400,14 @@ before they can enter the reconstruction frontier.
 `recallPurpose: "history"` and `recallPurpose: "context"` provide the same explicit boundary for
 current/history state; `temporalMode` remains the CLI/MCP-facing convenience
 option.
+
+`forget()` accepts optional structured `targetTerms`. Hosts that already know
+which user-visible subject should be forgotten should pass those terms instead
+of relying on gmOS to infer the deletion target from a natural-language query.
+The `query` remains required as a human-readable request and compatibility
+fallback; when `targetTerms` is present, empty target terms archive nothing
+rather than broadening into a whole-profile delete.
+
 `explainEvidencePath()` exposes the same reconstructed cue-tag-content evidence
 path as an audit object without returning `contextBlock` or a prompt-ready
 memory list. It is intended for host diagnostics, agent self-checks, Memory Gym

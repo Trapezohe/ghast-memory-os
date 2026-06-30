@@ -52,7 +52,8 @@ search:
 4. Commit task outcomes with `commitOutcome()` or `memory.commit_outcome`.
 5. Record user corrections with `recordFeedback()` or `memory.record_feedback`.
 6. Use `forget()` or `memory.forget` for user-requested deletion and residue
-   cleanup.
+   cleanup. When the host already knows the deletion subject, pass structured
+   `targetTerms`; keep the natural-language `query` for audit and compatibility.
 
 Low-level `add` and `search` are compatibility APIs. They are useful for import,
 admin tools, and simple hosts, but they are not a substitute for the full turn
@@ -153,6 +154,15 @@ Useful endpoints:
 - `POST /forget`
 - `POST /explain`
 - `POST /mcp/call`
+
+Example structured forget request:
+
+```bash
+curl -X POST -H "Authorization: Bearer local-dev-token" \
+  -H "Content-Type: application/json" \
+  --data '{"query":"delete old project memory","targetTerms":["old project"]}' \
+  http://127.0.0.1:4787/forget
+```
 
 `GET /health` is intentionally open and only reports service health plus whether
 auth is required. All other endpoints return `401` when `authToken` is set and

@@ -12286,6 +12286,43 @@ const mcpAfterForget = await mcpServer.callTool("memory.prepare_context", {
   text: "代码方案沟通偏好",
 });
 assert.equal(JSON.stringify(mcpAfterForget.structuredContent).includes("先讲风险"), false);
+await mcpServer.callTool("memory.add", {
+  profileId: "mcp",
+  kind: "project",
+  content: "MCP structured forget target is Lantern Gate.",
+});
+await mcpServer.callTool("memory.add", {
+  profileId: "mcp",
+  kind: "project",
+  content: "MCP structured keep target is Beacon Gate.",
+});
+const mcpEmptyStructuredForget = await mcpServer.callTool("memory.forget", {
+  profileId: "mcp",
+  query: "delete the stale target",
+  targetTerms: [],
+});
+assert.deepEqual(
+  (mcpEmptyStructuredForget.structuredContent as { result?: { archivedMemoryIds?: string[] } })
+    .result?.archivedMemoryIds,
+  [],
+);
+const mcpBeforeStructuredForget = await mcpServer.callTool("memory.search", {
+  profileId: "mcp",
+  query: "Gate target",
+});
+assert.equal(JSON.stringify(mcpBeforeStructuredForget.structuredContent).includes("Lantern Gate"), true);
+const mcpStructuredForget = await mcpServer.callTool("memory.forget", {
+  profileId: "mcp",
+  query: "delete the stale target",
+  targetTerms: ["Lantern Gate"],
+});
+assert.equal(mcpStructuredForget.isError, undefined);
+const mcpStructuredSearch = await mcpServer.callTool("memory.search", {
+  profileId: "mcp",
+  query: "Gate target",
+});
+assert.equal(JSON.stringify(mcpStructuredSearch.structuredContent).includes("Lantern Gate"), false);
+assert.equal(JSON.stringify(mcpStructuredSearch.structuredContent).includes("Beacon Gate"), true);
 await mcpServer.callTool("memory.record_feedback", {
   profileId: "mcp",
   content: "刚才错误召回了已删除偏好",
@@ -12819,6 +12856,101 @@ const cliSearch = spawnSync(
 );
 assert.equal(cliSearch.status, 0, cliSearch.stderr);
 assert.match(cliSearch.stdout, /CLI low-level add prefers concise answers/);
+const cliStructuredForgetAdd = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "add",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--kind",
+    "project",
+    "--text",
+    "CLI structured forget target is Copper Lantern.",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliStructuredForgetAdd.status, 0, cliStructuredForgetAdd.stderr);
+const cliStructuredForgetKeep = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "add",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--kind",
+    "project",
+    "--text",
+    "CLI structured forget keep value is Silver Lantern.",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliStructuredForgetKeep.status, 0, cliStructuredForgetKeep.stderr);
+const cliStructuredForget = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "forget",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--query",
+    "delete stale entry",
+    "--target-term",
+    "Copper Lantern",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliStructuredForget.status, 0, cliStructuredForget.stderr);
+const cliStructuredForgetMissingTarget = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "forget",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--query",
+    "delete stale entry",
+    "--target-term",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliStructuredForgetMissingTarget.status, 0);
+assert.match(cliStructuredForgetMissingTarget.stderr, /--target-term requires a value/);
+const cliStructuredForgetList = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "list",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--query",
+    "Lantern",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliStructuredForgetList.status, 0, cliStructuredForgetList.stderr);
+assert.equal(cliStructuredForgetList.stdout.includes("Copper Lantern"), false);
+assert.match(cliStructuredForgetList.stdout, /Silver Lantern/);
 const cliList = spawnSync(
   process.execPath,
   [
@@ -14768,6 +14900,36 @@ const moonbaseAfterRepair = await reconstructionMemory.reconstructContext({
   maxBranch: 6,
 });
 assert.equal(moonbaseAfterRepair.contextBlock.includes("SongSuOwnerAlpha"), false);
+await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "project",
+  content: "Project Lyra obsolete contact is Copper Gate.",
+});
+await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "project",
+  content: "Project Lyra current contact is Silver Gate.",
+});
+const structuredTargetEmptyForget = await reconstructionMemory.forget({
+  profileId: "recon",
+  query: "please delete the old contact",
+  targetTerms: ["   "],
+});
+assert.deepEqual(structuredTargetEmptyForget.archivedMemoryIds, []);
+const structuredTargetForgotten = await reconstructionMemory.forget({
+  profileId: "recon",
+  query: "please delete the old contact",
+  targetTerms: ["Copper Gate"],
+});
+assert.ok(structuredTargetForgotten.archivedMemoryIds.length > 0);
+const lyraAfterStructuredForget = await reconstructionMemory.reconstructContext({
+  profileId: "recon",
+  query: "Project Lyra contact",
+  maxSteps: 4,
+  maxBranch: 6,
+});
+assert.match(lyraAfterStructuredForget.contextBlock, /Silver Gate/);
+assert.equal(lyraAfterStructuredForget.contextBlock.includes("Copper Gate"), false);
 const personSourceMemory = await reconstructionMemory.add({
   profileId: "recon",
   kind: "person",
@@ -15106,6 +15268,17 @@ const externalBenchmarkJsonl = [
     forbiddenAny: ["West Pier"],
   }),
   JSON.stringify({
+    id: "forget-structured-target-event",
+    events: [
+      { type: "memory", kind: "project", content: "Project Lumen obsolete contact is Copper Pier." },
+      { type: "memory", kind: "project", content: "Project Lumen current contact is Silver Pier." },
+      { type: "forget", query: "delete stale contact", targetTerms: ["Copper Pier"] },
+    ],
+    question: "What is Project Lumen's current contact?",
+    expectedAny: ["Silver Pier"],
+    forbiddenAny: ["Copper Pier"],
+  }),
+  JSON.stringify({
     id: "forget-chinese-event",
     events: [
       { type: "memory", kind: "project", content: "Project Harbor obsolete contact is North Dock." },
@@ -15142,25 +15315,34 @@ const externalBenchmarkJsonl = [
 const externalBenchmarkFile = path.join(tmp, "external-long-memory-qa.jsonl");
 writeFileSync(externalBenchmarkFile, externalBenchmarkJsonl);
 const externalCases = parseExternalMemoryBenchmarkJsonl(externalBenchmarkJsonl);
-assert.equal(externalCases.length, 8);
+assert.equal(externalCases.length, 9);
 assert.deepEqual(externalCases[0]?.slices, ["gmos:project_procedure"]);
 assert.equal(externalCases[3]?.events[2]?.type, "forget");
+const structuredForgetExternalCase = externalCases.find(
+  (benchmarkCase) => benchmarkCase.id === "forget-structured-target-event",
+);
+assert.deepEqual(
+  structuredForgetExternalCase?.events[2]?.type === "forget"
+    ? structuredForgetExternalCase.events[2].targetTerms
+    : undefined,
+  ["Copper Pier"],
+);
 const parsedGmosExternalDataset = parseExternalMemoryBenchmarkDataset(externalBenchmarkJsonl, {
   adapter: "gmos",
 });
 assert.equal(parsedGmosExternalDataset.adapter, "gmos");
 assert.equal(parsedGmosExternalDataset.datasetFormat, "gmos.external_long_memory_qa.jsonl");
-assert.equal(parsedGmosExternalDataset.cases.length, 8);
+assert.equal(parsedGmosExternalDataset.cases.length, 9);
 const externalBenchmark = await runExternalMemoryBenchmark({ cases: externalCases });
 assert.equal(externalBenchmark.pass, true);
 assert.equal(externalBenchmark.score, 1);
 assert.equal(externalBenchmark.strictScore, 1);
 assert.equal(externalBenchmark.normalizedEvidenceScore, 1);
-assert.equal(externalBenchmark.normalizedEvidencePassedCount, 8);
+assert.equal(externalBenchmark.normalizedEvidencePassedCount, 9);
 assert.equal(externalBenchmark.runManifest.framework, "gmos-external-long-memory-qa");
-assert.equal(externalBenchmark.runManifest.dataset.caseCount, 8);
+assert.equal(externalBenchmark.runManifest.dataset.caseCount, 9);
 assert.equal(externalBenchmark.runManifest.dataset.hash, null);
-assert.equal(externalBenchmark.runManifest.execution.caseGroupCount, 8);
+assert.equal(externalBenchmark.runManifest.execution.caseGroupCount, 9);
 assert.equal(externalBenchmark.runManifest.execution.reusedProfileCaseCount, 0);
 assert.equal(
   externalBenchmark.summary.slowestCaseGroups.some((group) =>

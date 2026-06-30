@@ -74,6 +74,19 @@ function value(name: string, fallback?: string): string | undefined {
   return index === -1 ? fallback : process.argv[index + 1] ?? fallback;
 }
 
+function values(name: string): string[] {
+  const output: string[] = [];
+  for (let index = 0; index < process.argv.length; index += 1) {
+    if (process.argv[index] !== name) continue;
+    const next = process.argv[index + 1];
+    if (next === undefined || next.startsWith("--")) {
+      throw new Error(`${name} requires a value`);
+    }
+    output.push(next);
+  }
+  return output;
+}
+
 function strictOptionValue(name: string, fallback?: string): string | undefined {
   const index = process.argv.indexOf(name);
   if (index === -1) return fallback;
@@ -115,7 +128,7 @@ Usage:
   gmos prepare --db ./gmos.db --profile local --text "你知道我什么偏好吗？"
   gmos reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:atlas"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}'
   gmos explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:atlas"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}'
-  gmos forget --db ./gmos.db --profile local --query "Moonbase"
+  gmos forget --db ./gmos.db --profile local --query "delete request" --target-term "Moonbase"
   gmos explain --db ./gmos.db --profile local --id memory_xxx
   gmos mcp tools
   gmos mcp call --db ./gmos.db --tool memory.prepare_context --input '{"text":"你知道我什么偏好吗？"}'
@@ -1339,7 +1352,18 @@ async function main(): Promise<void> {
     if (command === "forget") {
       const query = value("--query");
       if (!query) usage();
-      console.log(JSON.stringify(await memory.forget({ profileId, query }), null, 2));
+      const targetTerms = values("--target-term");
+      console.log(
+        JSON.stringify(
+          await memory.forget({
+            profileId,
+            query,
+            ...(targetTerms.length > 0 ? { targetTerms } : {}),
+          }),
+          null,
+          2,
+        ),
+      );
       return;
     }
 
