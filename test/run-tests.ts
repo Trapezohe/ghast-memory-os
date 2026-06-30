@@ -1302,6 +1302,32 @@ for (const explicitWorldActionVariant of [
     expectedSubject: "project:atlas",
     expectedPredicate: "project.procedure",
   },
+  {
+    name: "natural_project_procedure_user_predicate",
+    subject: "Project Atlas",
+    predicate: "user.procedure",
+    expectedSubject: "project:atlas",
+    expectedPredicate: "project.procedure",
+  },
+  {
+    name: "project_phrase_procedure_no_predicate",
+    subject: "Atlas project",
+    expectedSubject: "project:atlas",
+    expectedPredicate: "project.procedure",
+  },
+  {
+    name: "bare_person_procedure_user_predicate",
+    subject: "Alex",
+    predicate: "user.procedure",
+    expectedSubject: "person:alex",
+    expectedPredicate: "person.procedure",
+  },
+  {
+    name: "bare_person_procedure_no_predicate",
+    subject: "Alex",
+    expectedSubject: "person:alex",
+    expectedPredicate: "person.procedure",
+  },
 ] as const) {
   const profileId = `explicit_world_action_${explicitWorldActionVariant.name}`;
   const dbPath = path.join(tmp, `${profileId}.db`);
@@ -1311,10 +1337,15 @@ for (const explicitWorldActionVariant of [
     store: explicitWorldActionStore,
     extractor: () => ({
       kind: "procedure",
-      content: "Project Atlas starts release work by drafting an outline.",
+      content:
+        explicitWorldActionVariant.expectedSubject === "person:alex"
+          ? "Alex starts release work by drafting an outline."
+          : "Project Atlas starts release work by drafting an outline.",
       confidence: 0.9,
       subject: explicitWorldActionVariant.subject,
-      predicate: explicitWorldActionVariant.predicate,
+      ...(explicitWorldActionVariant.predicate
+        ? { predicate: explicitWorldActionVariant.predicate }
+        : {}),
       cardinality: "single",
       actionPolicyKind: "procedure",
       metadata: { actionPolicyKind: "procedure" },
@@ -1324,7 +1355,10 @@ for (const explicitWorldActionVariant of [
     type: "conversation.message",
     profileId,
     role: "user",
-    content: "Project Atlas starts release work by drafting an outline.",
+    content:
+      explicitWorldActionVariant.expectedSubject === "person:alex"
+        ? "Alex starts release work by drafting an outline."
+        : "Project Atlas starts release work by drafting an outline.",
   });
   const explicitWorldActionPrepared = await explicitWorldActionMemory.prepareTurn({
     profileId,

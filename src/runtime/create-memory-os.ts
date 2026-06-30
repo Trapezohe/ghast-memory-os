@@ -8,7 +8,7 @@ import {
   sourceMetadataEntityCues,
 } from "../kernel/associations.js";
 import { composeTurnContext } from "../kernel/context-composer.js";
-import { buildEntityMentions } from "../kernel/entities.js";
+import { buildEntityMentions, resolveWorldEntitySubject } from "../kernel/entities.js";
 import { buildEvidencePathExplanation } from "../kernel/evidence-path.js";
 import {
   extractMemoryCandidatePlan,
@@ -307,6 +307,28 @@ function subjectPredicateNamespace(subject: string): string | undefined {
   return match?.[1]?.toLowerCase();
 }
 
+function explicitUserSubject(subject: string): boolean {
+  return subject.trim().toLowerCase() === "user";
+}
+
+function actionPredicateSubject(input: {
+  candidate: MemoryExtractionCandidate;
+  subject: string;
+}): string {
+  const { candidate, subject } = input;
+  const resolution = resolveWorldEntitySubject({
+    subject,
+    predicate: candidate.predicate,
+    aliases: candidate.subjectAliases,
+  });
+  if (resolution.entityKind && resolution.canonicalSubject !== "user") {
+    return resolution.canonicalSubject;
+  }
+  if (explicitUserSubject(subject)) return "user";
+  const person = publicSpeaker(subject);
+  return person ? `person:${person}` : subject;
+}
+
 function personScopedActionPredicate(candidate: MemoryExtractionCandidate): string {
   const predicate = candidate.predicate?.trim();
   if (predicate) {
@@ -376,7 +398,9 @@ function memoryWriteCandidateForSubject(input: {
   subject: string;
 }): MemoryExtractionCandidate {
   const { candidate, subject } = input;
-  if (subject === "user" || !isActionMemoryCandidate(candidate)) return candidate;
+  if (!isActionMemoryCandidate(candidate)) return candidate;
+  const predicateSubject = actionPredicateSubject({ candidate, subject });
+  if (predicateSubject === "user") return candidate;
 
   const { actionPolicyKind: _actionPolicyKind, ...candidateWithoutActionPolicy } = candidate;
   return {
@@ -387,7 +411,7 @@ function memoryWriteCandidateForSubject(input: {
       candidate.kind === "procedure"
         ? "fact"
         : candidate.kind,
-    predicate: subjectScopedActionPredicate({ candidate, subject }),
+    predicate: subjectScopedActionPredicate({ candidate, subject: predicateSubject }),
   };
 }
 
