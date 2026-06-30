@@ -18,6 +18,27 @@ export interface MemoryMcpTool {
   inputSchema: MemoryMcpJsonSchema;
 }
 
+const RECONSTRUCTION_INTENT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    expectedTags: { type: "array", items: { type: "string" } },
+    queryCues: { type: "array", items: { type: "string" } },
+    requiredTagGroups: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["tags"],
+        properties: {
+          name: { type: "string" },
+          tags: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+  },
+};
+
 export function listMemoryMcpTools(): MemoryMcpTool[] {
   const tools: Record<MemoryMcpToolName, MemoryMcpTool> = {
     "memory.runtime_info": {
@@ -137,6 +158,7 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
           evidenceConvergenceThreshold: { type: "number", minimum: 0 },
           includeTemporalMetadata: { type: "boolean" },
           temporalMode: { type: "string", enum: ["auto", "current", "history"] },
+          reconstructionIntent: RECONSTRUCTION_INTENT_SCHEMA,
         },
       },
     },
@@ -171,6 +193,7 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
           evidenceConvergenceThreshold: { type: "number", minimum: 0 },
           includeTemporalMetadata: { type: "boolean" },
           temporalMode: { type: "string", enum: ["auto", "current", "history"] },
+          reconstructionIntent: RECONSTRUCTION_INTENT_SCHEMA,
         },
       },
     },

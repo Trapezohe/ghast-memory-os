@@ -69,6 +69,15 @@ const messageSchema = z.object({
   content: z.string().min(1),
 }).strict();
 
+const reconstructionIntentSchema = z.object({
+  expectedTags: z.array(z.string()).optional(),
+  queryCues: z.array(z.string()).optional(),
+  requiredTagGroups: z.array(z.object({
+    name: z.string().optional(),
+    tags: z.array(z.string()),
+  }).strict()).optional(),
+}).strict();
+
 const prepareContextSchema = z.object({
   profileId: z.string().optional(),
   text: z.string().optional(),
@@ -90,6 +99,7 @@ const reconstructContextSchema = z.object({
   evidenceConvergenceThreshold: z.number().positive().optional(),
   includeTemporalMetadata: z.boolean().optional(),
   temporalMode: z.enum(["auto", "current", "history"]).optional(),
+  reconstructionIntent: reconstructionIntentSchema.optional(),
 }).strict();
 
 const explainEvidencePathSchema = z.object({
@@ -106,6 +116,7 @@ const explainEvidencePathSchema = z.object({
   evidenceConvergenceThreshold: z.number().positive().optional(),
   includeTemporalMetadata: z.boolean().optional(),
   temporalMode: z.enum(["auto", "current", "history"]).optional(),
+  reconstructionIntent: reconstructionIntentSchema.optional(),
 }).strict();
 
 const commitOutcomeSchema = z.object({

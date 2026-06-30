@@ -10,6 +10,7 @@ import type {
   MemoryOS,
   PrivacyMode,
   ReconstructedContext,
+  ReconstructionIntentHint,
   Sensitivity,
   TurnMessage,
 } from "../kernel/types.js";
@@ -74,6 +75,7 @@ export interface ExternalMemoryBenchmarkCase {
   events: ExternalMemoryBenchmarkEvent[];
   question: string;
   temporalMode?: ExternalMemoryBenchmarkTemporalMode | undefined;
+  reconstructionIntent?: ReconstructionIntentHint | undefined;
   expectedAny?: string[] | undefined;
   expectedAll?: string[] | undefined;
   forbiddenAny?: string[] | undefined;
@@ -429,6 +431,46 @@ function optionalMetadata(value: unknown, field: string): Record<string, unknown
   return value as Record<string, unknown>;
 }
 
+function optionalReconstructionIntent(value: unknown, field: string): ReconstructionIntentHint | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`External benchmark ${field} must be an object`);
+  }
+  const record = value as Record<string, unknown>;
+  const expectedTags = stringArray(record.expectedTags, `${field}.expectedTags`);
+  const queryCues = stringArray(record.queryCues, `${field}.queryCues`);
+  let requiredTagGroups: ReconstructionIntentHint["requiredTagGroups"] | undefined;
+  if (record.requiredTagGroups !== undefined) {
+    if (!Array.isArray(record.requiredTagGroups)) {
+      throw new Error(`External benchmark ${field}.requiredTagGroups must be an array`);
+    }
+    requiredTagGroups = record.requiredTagGroups.map((group, index) => {
+      if (typeof group !== "object" || group === null || Array.isArray(group)) {
+        throw new Error(`External benchmark ${field}.requiredTagGroups[${index}] must be an object`);
+      }
+      const groupRecord = group as Record<string, unknown>;
+      const tags = stringArray(groupRecord.tags, `${field}.requiredTagGroups[${index}].tags`);
+      if (!tags || tags.length === 0) {
+        throw new Error(`External benchmark ${field}.requiredTagGroups[${index}].tags is required`);
+      }
+      const name = groupRecord.name;
+      if (name !== undefined && typeof name !== "string") {
+        throw new Error(`External benchmark ${field}.requiredTagGroups[${index}].name must be a string`);
+      }
+      return {
+        ...(typeof name === "string" && name.trim() ? { name: name.trim() } : {}),
+        tags,
+      };
+    });
+  }
+  if (!expectedTags && !queryCues && !requiredTagGroups) return undefined;
+  return {
+    ...(expectedTags ? { expectedTags } : {}),
+    ...(queryCues ? { queryCues } : {}),
+    ...(requiredTagGroups ? { requiredTagGroups } : {}),
+  };
+}
+
 function parseEvent(value: unknown, caseId: string): ExternalMemoryBenchmarkEvent {
   if (typeof value !== "object" || value === null) {
     throw new Error(`External benchmark case ${caseId} events must be objects`);
@@ -547,6 +589,10 @@ function normalizeCase(
   const forbiddenAny = stringArray(row.forbiddenAny, `${id}.forbiddenAny`);
   const slices = stringArray(row.slices, `${id}.slices`);
   const temporalMode = normalizeTemporalMode(row.temporalMode, `${id}.temporalMode`);
+  const reconstructionIntent = optionalReconstructionIntent(
+    row.reconstructionIntent,
+    `${id}.reconstructionIntent`,
+  );
   const requireConvergence = optionalBoolean(row.requireConvergence, `${id}.requireConvergence`);
   if (
     (expectedAny?.length ?? 0) === 0 &&
@@ -568,6 +614,7 @@ function normalizeCase(
     events,
     question: row.question,
     ...(temporalMode ? { temporalMode } : {}),
+    ...(reconstructionIntent ? { reconstructionIntent } : {}),
     ...(expectedAny ? { expectedAny } : {}),
     ...(expectedAll ? { expectedAll } : {}),
     ...(forbiddenAny ? { forbiddenAny } : {}),
@@ -948,6 +995,7 @@ async function wideBudgetRunContainsTerm(input: {
   const reconstructed = await input.memory.reconstructContext({
     profileId: input.profileId,
     query: input.benchmarkCase.question,
+    reconstructionIntent: input.benchmarkCase.reconstructionIntent,
     maxSteps: input.options.maxSteps,
     maxBranch: input.options.maxBranch,
     maxMemories: input.options.maxMemories,
@@ -1532,6 +1580,7 @@ async function scoreCase(input: {
       ? await input.memory.reconstructContext({
           profileId,
           query: input.benchmarkCase.question,
+          reconstructionIntent: input.benchmarkCase.reconstructionIntent,
           maxSteps: input.options.maxSteps,
           maxBranch: input.options.maxBranch,
           maxMemories: input.options.maxMemories,

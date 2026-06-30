@@ -143,11 +143,12 @@ const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-sdk-test-"));
 const associationCueFixture = extractAssociationCues(
   "What did Blair mention about benchmark answer?",
 );
-assert.equal(associationCueFixture.some((cue) => cue.cue === "mention"), false);
-assert.equal(associationCueFixture[0]?.cue, "blair");
+assert.equal(associationCueFixture[0]?.cue, "benchmark");
+assert.equal(associationCueFixture.filter((cue) => cue.cue === "blair").length, 1);
+assert.equal(associationCueFixture.find((cue) => cue.cue === "blair")?.cueKind, "lexical");
 assert.equal(
-  associationCueFixture.findIndex((cue) => cue.cue === "answer") <
-    associationCueFixture.findIndex((cue) => cue.cue === "benchmark"),
+  associationCueFixture.findIndex((cue) => cue.cue === "benchmark") <
+    associationCueFixture.findIndex((cue) => cue.cue === "answer"),
   true,
 );
 const beliefAssociationCueFixture = associationCuesForBelief({
@@ -2094,9 +2095,16 @@ for (const historicalPlanQuery of [
   const historicalPlanReconstruction = await projectRuleMemory.reconstructContext({
     profileId: "project_history_rule",
     query: historicalPlanQuery,
+    temporalMode: "history",
   });
   assert.match(historicalPlanReconstruction.contextBlock, /Bluepath/);
 }
+const projectHistoricalKeywordDefaultReconstruction = await projectRuleMemory.reconstructContext({
+  profileId: "project_history_rule",
+  query: "What plan did Project Iris previously use?",
+});
+assert.match(projectHistoricalKeywordDefaultReconstruction.contextBlock, /Greenline/);
+assert.doesNotMatch(projectHistoricalKeywordDefaultReconstruction.contextBlock, /Bluepath/);
 const projectPassiveUsedToCurrentPlanReconstruction = await projectRuleMemory.reconstructContext({
   profileId: "project_history_rule",
   query: "What is Project Iris used to track currently?",
@@ -2425,6 +2433,10 @@ await extractorStore.rebuildAssociations({ profileId: "extractor" });
 const currentProjectState = await extractorMemory.reconstructContext({
   profileId: "extractor",
   query: "Helio current state",
+  reconstructionIntent: {
+    queryCues: ["Helio"],
+    requiredTagGroups: [{ name: "current_state", tags: ["project.state", "world_belief"] }],
+  },
 });
 assert.match(currentProjectState.contextBlock, /rollout review/);
 assert.doesNotMatch(currentProjectState.contextBlock, /migration probe/);
@@ -2458,11 +2470,12 @@ assert.equal(
   historyStaleCurrentStateSearch.some((entry) => entry.content.includes("migration probe")),
   true,
 );
-const historicalProjectState = await extractorMemory.reconstructContext({
+const defaultPreviousWordProjectState = await extractorMemory.reconstructContext({
   profileId: "extractor",
   query: "What was Helio previous state?",
 });
-assert.match(historicalProjectState.contextBlock, /migration probe/);
+assert.match(defaultPreviousWordProjectState.contextBlock, /rollout review/);
+assert.doesNotMatch(defaultPreviousWordProjectState.contextBlock, /migration probe/);
 const forcedHistoricalProjectState = await extractorMemory.reconstructContext({
   profileId: "extractor",
   query: "Helio state",
@@ -2779,6 +2792,7 @@ const fallbackSourceScopeMemory = createMemoryOS({
 const fallbackSourceScopeReconstruction = await fallbackSourceScopeMemory.reconstructContext({
   profileId: "fallback-source-scope",
   query: "Which travel planning tool belongs to Nora?",
+  reconstructionIntent: { queryCues: ["Nora"] },
   maxMemories: 3,
 });
 assert.match(fallbackSourceScopeReconstruction.contextBlock, /Aster/);
@@ -2787,6 +2801,7 @@ assert.doesNotMatch(fallbackSourceScopeReconstruction.contextBlock, /Brisk/);
 const multiwordFallbackSourceScopeReconstruction = await fallbackSourceScopeMemory.reconstructContext({
   profileId: "fallback-source-scope",
   query: "Which travel planning tool belongs to Mary Jane?",
+  reconstructionIntent: { queryCues: ["Mary Jane"] },
   maxMemories: 3,
 });
 assert.match(multiwordFallbackSourceScopeReconstruction.contextBlock, /Helio/);
@@ -2795,6 +2810,7 @@ assert.doesNotMatch(multiwordFallbackSourceScopeReconstruction.contextBlock, /Ve
 const underscoredFallbackSourceScopeReconstruction = await fallbackSourceScopeMemory.reconstructContext({
   profileId: "fallback-source-scope",
   query: "Which travel planning tool belongs to mary_jane?",
+  reconstructionIntent: { queryCues: ["mary_jane"] },
   maxMemories: 3,
 });
 assert.match(underscoredFallbackSourceScopeReconstruction.contextBlock, /Helio/);
@@ -2802,6 +2818,7 @@ assert.doesNotMatch(underscoredFallbackSourceScopeReconstruction.contextBlock, /
 const directContentFallbackSourceScopeReconstruction = await fallbackSourceScopeMemory.reconstructContext({
   profileId: "fallback-source-scope",
   query: "Which travel planning tool belongs to Alex?",
+  reconstructionIntent: { queryCues: ["Alex"] },
   maxMemories: 3,
 });
 assert.match(directContentFallbackSourceScopeReconstruction.contextBlock, /Chronos/);
@@ -11480,15 +11497,12 @@ assert.equal(
   "; valid_from=2023-05-07; valid_from_text=7 May 2023; valid_to=2023-06-01; valid_to_text=1 June 2023; valid_to_utc=12:30",
 );
 assert.deepEqual(temporalCueValuesFromText("What happened on May 7, 2023?"), [
-  "2023-05-07T00:00:00.000Z",
   "2023-05-07",
 ]);
 assert.deepEqual(temporalCueValuesFromText("2023年5月7日发生了什么？"), [
-  "2023-05-07T00:00:00.000Z",
   "2023-05-07",
 ]);
 assert.deepEqual(temporalCueValuesFromText("在2023-05-07发生了什么？"), [
-  "2023-05-07T00:00:00.000Z",
   "2023-05-07",
 ]);
 assert.deepEqual(temporalCueValuesFromText("What happened near foo2023-05-07?"), []);
@@ -13603,6 +13617,15 @@ await reconstructionMemory.commitOutcome({
 const reconstructed = await reconstructionMemory.reconstructContext({
   profileId: "recon",
   query: "我之前说的那个计划，先做什么？",
+  reconstructionIntent: {
+    queryCues: ["Helio"],
+    requiredTagGroups: [
+      {
+        name: "procedure_or_next_step",
+        tags: ["procedure", "task_trajectory", "project.state", "world_belief"],
+      },
+    ],
+  },
   includeEvidence: true,
   maxSteps: 4,
   maxBranch: 6,
@@ -13633,6 +13656,15 @@ assert.match(reconstructionReadAudit.tables.gmos_memories_fts?.stateHash ?? "", 
 const evidencePathExplanation = await reconstructionMemory.explainEvidencePath({
   profileId: "recon",
   query: "我之前说的那个计划，先做什么？",
+  reconstructionIntent: {
+    queryCues: ["Helio"],
+    requiredTagGroups: [
+      {
+        name: "procedure_or_next_step",
+        tags: ["procedure", "task_trajectory", "project.state", "world_belief"],
+      },
+    ],
+  },
   includePlannerTrace: true,
   maxSteps: 4,
   maxBranch: 6,
@@ -13649,6 +13681,15 @@ assert.equal(JSON.stringify(evidencePathRowsBefore), JSON.stringify(await recons
 const evidencePathWithoutEvidence = await reconstructionMemory.explainEvidencePath({
   profileId: "recon",
   query: "我之前说的那个计划，先做什么？",
+  reconstructionIntent: {
+    queryCues: ["Helio"],
+    requiredTagGroups: [
+      {
+        name: "procedure_or_next_step",
+        tags: ["procedure", "task_trajectory", "project.state", "world_belief"],
+      },
+    ],
+  },
   includeEvidence: false,
   maxSteps: 4,
   maxBranch: 6,
@@ -13824,36 +13865,41 @@ await assertReadAuditRejectsFtsSameRowMutation("prepareTurn");
 await assertReadAuditRejectsFtsSameRowMutation("reconstructContext");
 await assertReadAuditRejectsFtsSameRowMutation("explainEvidencePath");
 
-const multiIntentReconstructed = await reconstructionMemory.reconstructContext({
+const associativeKeywordReconstructed = await reconstructionMemory.reconstructContext({
   profileId: "recon",
-  query: "我之前说的那个计划，先做什么，哪些不要主动做？",
+  query: "Helio 计划，先做什么，哪些不要主动做？",
   maxSteps: 5,
   maxBranch: 6,
   maxMemories: 6,
 });
-assert.match(multiIntentReconstructed.contextBlock, /Helio 项目推进时先写复现报告/);
-assert.match(multiIntentReconstructed.contextBlock, /不要主动催促用户/);
-assert.equal(multiIntentReconstructed.stats.evidenceConvergence?.reached, true);
-assert.ok(
-  (multiIntentReconstructed.stats.evidenceConvergence?.requiredIntentGroupCount ?? 0) >= 2,
-);
+assert.match(associativeKeywordReconstructed.contextBlock, /Helio 项目推进时先写复现报告/);
+assert.match(associativeKeywordReconstructed.contextBlock, /不要主动催促用户/);
+assert.equal(associativeKeywordReconstructed.plannerTrace?.intentReason, "associative");
 assert.equal(
-  multiIntentReconstructed.stats.evidenceConvergence?.coveredIntentGroupCount,
-  multiIntentReconstructed.stats.evidenceConvergence?.requiredIntentGroupCount,
+  associativeKeywordReconstructed.stats.evidenceConvergence?.requiredIntentGroupCount,
+  0,
 );
-assert.deepEqual(
-  multiIntentReconstructed.stats.evidenceConvergence?.missingRequiredIntentGroups,
-  [],
-);
+const secretStructuredCue = "api key sk-structuredintentsecret1234567890";
+const secretStructuredTag = "api key sk-structuredtagsecret1234567890";
+const secretStructuredGroupTag = "api key sk-structuredgroupsecret1234567890";
+const longStructuredCue = "LongCueNormalValue-" + "x".repeat(96);
+const cappedStructuredCue = longStructuredCue.slice(0, 80).toLowerCase();
 const structuredIntentReconstructed = await reconstructionMemory.reconstructContext({
   profileId: "recon",
   query: "packet request",
   reconstructionIntent: {
-    queryCues: ["Helio"],
+    queryCues: ["Helio", secretStructuredCue, longStructuredCue],
+    expectedTags: [secretStructuredTag],
     requiredTagGroups: [
       {
         name: "procedure_or_next_step",
-        tags: ["procedure", "task_trajectory", "project.state", "world_belief"],
+        tags: [
+          "procedure",
+          "task_trajectory",
+          "project.state",
+          "world_belief",
+          secretStructuredGroupTag,
+        ],
       },
       { name: "boundary", tags: ["boundary", "do_not_push"] },
     ],
@@ -13865,6 +13911,11 @@ const structuredIntentReconstructed = await reconstructionMemory.reconstructCont
 assert.match(structuredIntentReconstructed.contextBlock, /Helio 项目推进时先写复现报告/);
 assert.match(structuredIntentReconstructed.contextBlock, /不要主动催促用户/);
 assert.match(structuredIntentReconstructed.plannerTrace?.intentReason ?? "", /structured:/);
+assert.doesNotMatch(JSON.stringify(structuredIntentReconstructed), /sk-structuredintentsecret/);
+assert.doesNotMatch(JSON.stringify(structuredIntentReconstructed), /sk-structuredtagsecret/);
+assert.doesNotMatch(JSON.stringify(structuredIntentReconstructed), /sk-structuredgroupsecret/);
+assert.equal(JSON.stringify(structuredIntentReconstructed).includes(longStructuredCue), false);
+assert.equal(JSON.stringify(structuredIntentReconstructed).includes(cappedStructuredCue), true);
 assert.equal(
   structuredIntentReconstructed.stats.evidenceConvergence?.requiredIntentGroupCount,
   2,
@@ -13883,11 +13934,18 @@ const structuredIntentShadow = await reconstructionMemory.prepareTurn({
   reconstruction: {
     mode: "shadow",
     reconstructionIntent: {
-      queryCues: ["Helio"],
+      queryCues: ["Helio", secretStructuredCue, longStructuredCue],
+      expectedTags: [secretStructuredTag],
       requiredTagGroups: [
         {
           name: "procedure_or_next_step",
-          tags: ["procedure", "task_trajectory", "project.state", "world_belief"],
+          tags: [
+            "procedure",
+            "task_trajectory",
+            "project.state",
+            "world_belief",
+            secretStructuredGroupTag,
+          ],
         },
         { name: "boundary", tags: ["boundary", "do_not_push"] },
       ],
@@ -13900,6 +13958,11 @@ const structuredIntentShadow = await reconstructionMemory.prepareTurn({
 assert.match(structuredIntentShadow.reconstruction?.contextBlock ?? "", /Helio 项目推进时先写复现报告/);
 assert.match(structuredIntentShadow.reconstruction?.contextBlock ?? "", /不要主动催促用户/);
 assert.match(structuredIntentShadow.reconstruction?.plannerTrace?.intentReason ?? "", /structured:/);
+assert.doesNotMatch(JSON.stringify(structuredIntentShadow.reconstruction ?? {}), /sk-structuredintentsecret/);
+assert.doesNotMatch(JSON.stringify(structuredIntentShadow.reconstruction ?? {}), /sk-structuredtagsecret/);
+assert.doesNotMatch(JSON.stringify(structuredIntentShadow.reconstruction ?? {}), /sk-structuredgroupsecret/);
+assert.equal(JSON.stringify(structuredIntentShadow.reconstruction ?? {}).includes(longStructuredCue), false);
+assert.equal(JSON.stringify(structuredIntentShadow.reconstruction ?? {}).includes(cappedStructuredCue), true);
 const exhaustiveReconstructed = await reconstructionMemory.reconstructContext({
   profileId: "recon",
   query: "我之前说的那个计划，先做什么？",
@@ -13941,6 +14004,15 @@ for (const content of [
 const intentReranked = await reconstructionMemory.reconstructContext({
   profileId: "recon",
   query: "Vega 这个发布计划下一步先做什么？",
+  reconstructionIntent: {
+    queryCues: ["Vega"],
+    requiredTagGroups: [
+      {
+        name: "procedure_or_next_step",
+        tags: ["procedure", "task_trajectory", "project.state", "world_belief"],
+      },
+    ],
+  },
   maxSteps: 4,
   maxBranch: 2,
   maxMemories: 3,
@@ -14014,6 +14086,15 @@ const preparedWithShadow = await reconstructionMemory.prepareTurn({
   messages: [{ role: "user", content: "我之前说的那个计划，先做什么？" }],
   reconstruction: {
     mode: "shadow",
+    reconstructionIntent: {
+      queryCues: ["Helio"],
+      requiredTagGroups: [
+        {
+          name: "procedure_or_next_step",
+          tags: ["procedure", "task_trajectory", "project.state", "world_belief"],
+        },
+      ],
+    },
     maxSteps: 4,
     maxBranch: 6,
     maxMemories: 6,
@@ -14094,11 +14175,28 @@ const preparedWithSensitiveTaskHint = await reconstructionMemory.prepareTurn({
 assert.doesNotMatch(preparedWithSensitiveTaskHint.contextBlock, /SafeguardOnly/);
 assert.doesNotMatch(preparedWithSensitiveTaskHint.reconstruction?.contextBlock ?? "", /SafeguardOnly/);
 assert.equal(preparedWithSensitiveTaskHint.reconstruction?.plannerTrace, undefined);
+const helioProcedureReconstructionIntent = {
+  queryCues: ["Helio"],
+  expectedTags: [secretStructuredTag],
+  requiredTagGroups: [
+    {
+      name: "procedure_or_next_step",
+      tags: [
+        "procedure",
+        "task_trajectory",
+        "project.state",
+        "world_belief",
+        secretStructuredGroupTag,
+      ],
+    },
+  ],
+};
 const mcpReconstruct = await createMemoryMcpServer(reconstructionMemory).callTool(
   "memory.reconstruct_context",
   {
     profileId: "recon",
     text: "我之前说的那个计划，先做什么？",
+    reconstructionIntent: helioProcedureReconstructionIntent,
     includeEvidence: true,
     includeTemporalMetadata: true,
     maxSteps: 4,
@@ -14111,11 +14209,14 @@ assert.match(JSON.stringify(mcpReconstruct.structuredContent), /Helio 项目推�
 assert.match(JSON.stringify(mcpReconstruct.structuredContent), /stopWhenEvidenceEnough/);
 assert.match(JSON.stringify(mcpReconstruct.structuredContent), /false/);
 assert.match(JSON.stringify(mcpReconstruct.structuredContent), /observed=/);
+assert.doesNotMatch(JSON.stringify(mcpReconstruct.structuredContent), /sk-structuredtagsecret/);
+assert.doesNotMatch(JSON.stringify(mcpReconstruct.structuredContent), /sk-structuredgroupsecret/);
 const mcpDefaultReconstruct = await createMemoryMcpServer(reconstructionMemory).callTool(
   "memory.reconstruct_context",
   {
     profileId: "recon",
     text: "我之前说的那个计划，先做什么？",
+    reconstructionIntent: helioProcedureReconstructionIntent,
     maxSteps: 4,
   },
 );
@@ -14130,6 +14231,7 @@ const mcpExplainEvidencePath = await createMemoryMcpServer(reconstructionMemory)
   {
     profileId: "recon",
     text: "我之前说的那个计划，先做什么？",
+    reconstructionIntent: helioProcedureReconstructionIntent,
     includePlannerTrace: true,
     maxSteps: 4,
   },
@@ -14138,6 +14240,8 @@ assert.equal(mcpExplainEvidencePath.isError, undefined);
 assert.match(JSON.stringify(mcpExplainEvidencePath.structuredContent), /gmos\.evidence_path_explanation\.v1/);
 assert.equal(JSON.stringify(mcpExplainEvidencePath.structuredContent).includes("contextBlock"), false);
 assert.match(JSON.stringify(mcpExplainEvidencePath.structuredContent), /plannerTrace/);
+assert.doesNotMatch(JSON.stringify(mcpExplainEvidencePath.structuredContent), /sk-structuredtagsecret/);
+assert.doesNotMatch(JSON.stringify(mcpExplainEvidencePath.structuredContent), /sk-structuredgroupsecret/);
 const mcpExplainSensitive = await createMemoryMcpServer(reconstructionMemory).callTool(
   "memory.explain_evidence_path",
   {
@@ -14167,6 +14271,7 @@ try {
 } finally {
   associationInspectDb.close();
 }
+const cliHelioReconstructionIntent = JSON.stringify(helioProcedureReconstructionIntent);
 const cliReconstruct = spawnSync(
   process.execPath,
   [
@@ -14180,6 +14285,8 @@ const cliReconstruct = spawnSync(
     "recon",
     "--text",
     "我之前说的那个计划，先做什么？",
+    "--reconstruction-intent-json",
+    cliHelioReconstructionIntent,
     "--max-steps",
     "4",
     "--max-branch",
@@ -14189,6 +14296,8 @@ const cliReconstruct = spawnSync(
 );
 assert.equal(cliReconstruct.status, 0, cliReconstruct.stderr);
 assert.match(cliReconstruct.stdout, /Helio 项目推进时先写复现报告/);
+assert.doesNotMatch(cliReconstruct.stdout, /sk-structuredtagsecret/);
+assert.doesNotMatch(cliReconstruct.stdout, /sk-structuredgroupsecret/);
 const cliExplainPath = spawnSync(
   process.execPath,
   [
@@ -14202,6 +14311,8 @@ const cliExplainPath = spawnSync(
     "recon",
     "--text",
     "我之前说的那个计划，先做什么？",
+    "--reconstruction-intent-json",
+    cliHelioReconstructionIntent,
     "--include-trace",
     "--max-steps",
     "4",
@@ -14221,6 +14332,8 @@ assert.equal(cliExplainPathJson.summary?.convergenceReached, true);
 assert.ok((cliExplainPathJson.summary?.evidenceCount ?? 0) >= 2);
 assert.equal(JSON.stringify(cliExplainPathJson).includes("contextBlock"), false);
 assert.ok(cliExplainPathJson.plannerTrace);
+assert.doesNotMatch(JSON.stringify(cliExplainPathJson), /sk-structuredtagsecret/);
+assert.doesNotMatch(JSON.stringify(cliExplainPathJson), /sk-structuredgroupsecret/);
 const corruptAssociationsDb = new Database(reconstructionDb);
 try {
   corruptAssociationsDb.prepare("DELETE FROM gmos_associations WHERE profile_id = 'recon'").run();
@@ -14597,6 +14710,15 @@ const externalBenchmarkJsonl = [
       { type: "memory", kind: "fact", content: "Lantern Run 的会议室记录在七楼。" },
     ],
     question: "Vega 这个发布计划下一步先做什么？",
+    reconstructionIntent: {
+      queryCues: ["Vega"],
+      requiredTagGroups: [
+        {
+          name: "procedure_or_next_step",
+          tags: ["procedure", "task_trajectory", "project.state", "world_belief"],
+        },
+      ],
+    },
     expectedAll: ["rollback matrix"],
     forbiddenAny: ["sk-external-secret"],
   }),
@@ -14854,6 +14976,15 @@ const sparseExternalConvergence = await runExternalMemoryBenchmark({
         },
       ],
       question: "Vega 这个发布计划下一步先做什么？",
+      reconstructionIntent: {
+        queryCues: ["Vega"],
+        requiredTagGroups: [
+          {
+            name: "procedure_or_next_step",
+            tags: ["procedure", "task_trajectory", "project.state", "world_belief"],
+          },
+        ],
+      },
       expectedAll: ["rollback matrix"],
       forbiddenAny: ["会议室"],
     },
@@ -16508,6 +16639,16 @@ const externalConvergenceFailure = await runExternalMemoryBenchmark({
         },
       ],
       question: "Vega 这个发布计划下一步先做什么，哪些不要主动做？",
+      reconstructionIntent: {
+        queryCues: ["Vega"],
+        requiredTagGroups: [
+          {
+            name: "procedure_or_next_step",
+            tags: ["procedure", "task_trajectory", "project.state", "world_belief"],
+          },
+          { name: "boundary", tags: ["boundary", "do_not_push"] },
+        ],
+      },
       expectedAll: ["rollback matrix"],
     },
   ],

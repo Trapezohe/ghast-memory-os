@@ -16,6 +16,7 @@ import type {
   PrepareTurnInput,
   PrivacyMode,
   ReconstructContextInput,
+  ReconstructionIntentHint,
   TurnMessage,
 } from "../kernel/types.js";
 import {
@@ -131,6 +132,52 @@ function optionalTemporalMode(
     throw new Error(`${key} must be one of: auto, current, history`);
   }
   return value;
+}
+
+function optionalStringArrayValue(value: unknown, key: string): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+    throw new Error(`${key} must be an array of strings`);
+  }
+  return value;
+}
+
+function optionalReconstructionIntent(
+  args: Record<string, unknown>,
+  key: string,
+): ReconstructionIntentHint | undefined {
+  const value = args[key];
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${key} must be an object`);
+  }
+  const record = value as Record<string, unknown>;
+  const expectedTags = optionalStringArrayValue(record.expectedTags, `${key}.expectedTags`);
+  const queryCues = optionalStringArrayValue(record.queryCues, `${key}.queryCues`);
+  let requiredTagGroups: ReconstructionIntentHint["requiredTagGroups"];
+  if (record.requiredTagGroups !== undefined) {
+    if (!Array.isArray(record.requiredTagGroups)) {
+      throw new Error(`${key}.requiredTagGroups must be an array`);
+    }
+    requiredTagGroups = record.requiredTagGroups.map((group, index) => {
+      if (!group || typeof group !== "object" || Array.isArray(group)) {
+        throw new Error(`${key}.requiredTagGroups[${index}] must be an object`);
+      }
+      const groupRecord = group as Record<string, unknown>;
+      const tags = optionalStringArrayValue(
+        groupRecord.tags,
+        `${key}.requiredTagGroups[${index}].tags`,
+      );
+      if (!tags) throw new Error(`${key}.requiredTagGroups[${index}].tags is required`);
+      const name = optionalString(groupRecord, "name");
+      return { ...(name !== undefined ? { name } : {}), tags };
+    });
+  }
+  return {
+    ...(expectedTags !== undefined ? { expectedTags } : {}),
+    ...(requiredTagGroups !== undefined ? { requiredTagGroups } : {}),
+    ...(queryCues !== undefined ? { queryCues } : {}),
+  };
 }
 
 function optionalPublicSearchPurpose(
@@ -330,6 +377,7 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
       "evidenceConvergenceThreshold",
       "includeTemporalMetadata",
       "temporalMode",
+      "reconstructionIntent",
     ]),
     "memory.reconstruct_context",
   );
@@ -348,6 +396,7 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
   const stopWhenEvidenceEnough = optionalBoolean(args, "stopWhenEvidenceEnough");
   const includeTemporalMetadata = optionalBoolean(args, "includeTemporalMetadata");
   const temporalMode = optionalTemporalMode(args, "temporalMode");
+  const reconstructionIntent = optionalReconstructionIntent(args, "reconstructionIntent");
   const evidenceConvergenceThreshold = optionalPositiveNumber(
     args,
     "evidenceConvergenceThreshold",
@@ -368,6 +417,7 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
     input.includeTemporalMetadata = includeTemporalMetadata;
   }
   if (temporalMode !== undefined) input.temporalMode = temporalMode;
+  if (reconstructionIntent !== undefined) input.reconstructionIntent = reconstructionIntent;
   return input;
 }
 
@@ -389,6 +439,7 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
       "evidenceConvergenceThreshold",
       "includeTemporalMetadata",
       "temporalMode",
+      "reconstructionIntent",
     ]),
     "memory.explain_evidence_path",
   );
@@ -408,6 +459,7 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
   const stopWhenEvidenceEnough = optionalBoolean(args, "stopWhenEvidenceEnough");
   const includeTemporalMetadata = optionalBoolean(args, "includeTemporalMetadata");
   const temporalMode = optionalTemporalMode(args, "temporalMode");
+  const reconstructionIntent = optionalReconstructionIntent(args, "reconstructionIntent");
   const evidenceConvergenceThreshold = optionalPositiveNumber(
     args,
     "evidenceConvergenceThreshold",
@@ -429,6 +481,7 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
     input.includeTemporalMetadata = includeTemporalMetadata;
   }
   if (temporalMode !== undefined) input.temporalMode = temporalMode;
+  if (reconstructionIntent !== undefined) input.reconstructionIntent = reconstructionIntent;
   return input;
 }
 

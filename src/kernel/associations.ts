@@ -26,73 +26,12 @@ export interface TaskTrajectoryAssociationSource {
   createdAt: string;
 }
 
-const STOP_TERMS = new Set([
-  "the",
-  "and",
-  "for",
-  "to",
-  "in",
-  "of",
-  "on",
-  "at",
-  "from",
-  "by",
-  "as",
-  "is",
-  "are",
-  "was",
-  "were",
-  "do",
-  "does",
-  "did",
-  "with",
-  "you",
-  "your",
-  "what",
-  "when",
-  "where",
-  "how",
-  "this",
-  "that",
-  "about",
-  "mention",
-  "mentioned",
-  "现在",
-  "什么",
-  "怎么",
-  "那个",
-  "这个",
-  "之前",
-  "上次",
-  "应该",
-  "可以",
-  "一下",
-]);
-
-const PRIORITY_TERMS = new Set([
-  "项目",
-  "计划",
-  "边界",
-  "偏好",
-  "流程",
-  "步骤",
-  "下一步",
-  "报告",
-  "复现",
-  "实现",
-  "风险",
-  "发布",
-  "任务",
-  "目标",
-  "answer",
-]);
-
 function unique(values: string[]): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
   for (const value of values) {
     const normalized = value.trim().toLowerCase();
-    if (normalized.length < 2 || STOP_TERMS.has(normalized) || seen.has(normalized)) continue;
+    if (normalized.length < 2 || seen.has(normalized)) continue;
     seen.add(normalized);
     result.push(normalized);
   }
@@ -135,25 +74,59 @@ function hanFragments(text: string): string[] {
   return fragments;
 }
 
+function cueInformationScore(cue: AssociationCue): number {
+  const value = cue.cue.trim();
+  if (!value) return Number.NEGATIVE_INFINITY;
+  let score = 0;
+  if (cue.cueKind === "entity") score += 20;
+  if (cue.cueKind === "temporal") score += 18;
+  if (cue.cueKind === "predicate" || cue.cueKind === "kind" || cue.cueKind === "scope") {
+    score += 12;
+  }
+  if (cue.cueKind === "task") score += 10;
+  score += Math.min([...value].length, 32) / 4;
+  if (/\d/u.test(value)) score += 3;
+  if (/[-_:/]/u.test(value)) score += 2;
+  if (/[A-Z]/u.test(value) && /[a-z]/u.test(value)) score += 1.5;
+  score += Math.min(new Set([...value.toLowerCase()]).size, 16) / 16;
+  return score;
+}
+
+function uniqueAssociationCues(cues: AssociationCue[]): AssociationCue[] {
+  const seen = new Set<string>();
+  const result: AssociationCue[] = [];
+  for (const cue of cues) {
+    const key = associationCueKey(cue.cue);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(cue);
+  }
+  return result;
+}
+
 export function extractAssociationCues(text: string, max = 32): AssociationCue[] {
   const lexical = [
     ...(text.toLowerCase().match(/[\p{L}\p{N}_][\p{L}\p{N}_-]{1,}/gu) ?? []),
     ...hanFragments(text),
   ];
-  const entities = text.match(/\b[A-Z][A-Za-z0-9_-]{2,}\b/g) ?? [];
+  const entities = [
+    ...(text.match(/\b[A-Z][a-z0-9]+(?:\s+[A-Z][a-z0-9]+)+\b/g) ?? []),
+    ...(text.match(/\b[A-Z0-9]{2,}(?:[-_][A-Z0-9]+)*\b/g) ?? []),
+    ...(text.match(/\b[A-Za-z0-9]+[-_][A-Za-z0-9_-]+\b/g) ?? []),
+    ...(text.match(/\b[A-Za-z]*\d[A-Za-z0-9_-]*\b/g) ?? []),
+    ...(text.match(/\b[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]*\b/g) ?? []),
+  ];
   const cues = [
     ...unique(entities).map((cue) => ({ cue, cueKind: "entity" as const })),
     ...unique(lexical).map((cue) => ({ cue, cueKind: "lexical" as const })),
   ];
-  return cues
-    .sort((a, b) => {
-      const entity = Number(b.cueKind === "entity") - Number(a.cueKind === "entity");
-      if (entity !== 0) return entity;
-      const priority = Number(PRIORITY_TERMS.has(b.cue)) - Number(PRIORITY_TERMS.has(a.cue));
-      if (priority !== 0) return priority;
+  return uniqueAssociationCues(
+    cues.sort((a, b) => {
+      const information = cueInformationScore(b) - cueInformationScore(a);
+      if (information !== 0) return information;
       return b.cue.length - a.cue.length;
-    })
-    .slice(0, max);
+    }),
+  ).slice(0, max);
 }
 
 function normalizedMetadataValue(metadata: Record<string, unknown>, key: string): string | null {

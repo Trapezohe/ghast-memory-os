@@ -5,7 +5,7 @@ import {
   sourceMetadataEntityCues,
 } from "./associations.js";
 import type { AssociationCue } from "./associations.js";
-import { sanitizeEvidenceForPublicOutput } from "./safety.js";
+import { classifySensitivity, sanitizeEvidenceForPublicOutput } from "./safety.js";
 import { observedAtSegment, temporalMetadataSegment } from "./temporal-format.js";
 import { temporalCueValuesFromText } from "./temporal-validity.js";
 import type {
@@ -120,6 +120,7 @@ interface ReconstructionIntent {
     tags: Set<string>;
   }>;
   queryCues: Set<string>;
+  explicitQueryCues: Set<string>;
   reason: string;
 }
 
@@ -141,7 +142,6 @@ interface RankedMemoryCandidate {
   routeReason: string;
 }
 
-const GENERATED_CUE_STOP_TERMS = new Set(["fact", "memory", "after", "before"]);
 function normalizedText(value: string): string {
   return value.toLowerCase();
 }
@@ -171,11 +171,6 @@ function queryCueSet(query: string): Set<string> {
   return new Set(queryAssociationCues(query, 48).map((cue) => cue.cue));
 }
 
-function includesAny(text: string, needles: string[]): boolean {
-  const normalized = normalizedText(text);
-  return needles.some((needle) => normalized.includes(normalizedText(needle)));
-}
-
 function normalizedIntentToken(value: string): string {
   return value
     .trim()
@@ -189,6 +184,8 @@ function normalizedIntentTokens(values: string[] | undefined, max: number): stri
   return uniqueStrings(
     values
       .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter((value) => classifySensitivity(value) === "normal")
       .map(normalizedIntentToken)
       .filter(Boolean),
   ).slice(0, max);
@@ -200,19 +197,10 @@ function normalizedCueHints(values: string[] | undefined, max: number): string[]
     values
       .filter((value): value is string => typeof value === "string")
       .map((value) => value.trim())
+      .filter((value) => classifySensitivity(value) === "normal")
+      .map((value) => value.slice(0, 80))
       .filter(Boolean),
   ).slice(0, max);
-}
-
-function hasHistoricalUsedToCue(query: string): boolean {
-  if (/\b(?:am|are|be|been|being|is|was|were)\s+used\s+to\b/iu.test(query)) return false;
-  return (
-    /\b(?:did|do|does)\b[^?.!\n]{0,80}\buse\s+to\b/iu.test(query) ||
-    /\b(?:how|what|when|where|which|who)\b[^?.!\n]{0,80}\bused\s+to\s+(?:be|belong|call|have|live|mean|own|use|work)\b/iu.test(
-      query,
-    ) ||
-    /\b(?:formerly|originally|previously)\b[^?.!\n]{0,80}\bused\s+to\b/iu.test(query)
-  );
 }
 
 type ReconstructionEvidenceCoverage = NonNullable<
@@ -337,10 +325,13 @@ function uncertaintyForReconstruction(input: {
 
 function coverageIsSufficient(coverage: ReconstructionEvidenceCoverage): boolean {
   if (coverage.queryCueCount === 0) return coverage.coveredCueCount > 0;
-  return (
-    coverage.coverageRate >= 0.45 ||
-    coverage.coveredCueCount >= Math.min(2, coverage.queryCueCount)
-  );
+  if (coverage.queryCueCount <= 3) {
+    return (
+      coverage.coverageRate >= 0.45 ||
+      coverage.coveredCueCount >= Math.min(2, coverage.queryCueCount)
+    );
+  }
+  return coverage.coverageRate >= 0.45;
 }
 
 function hasIntentEvidence(
@@ -481,6 +472,7 @@ function explicitReconstructionIntent(
     expectedTags,
     requiredTagGroups,
     queryCues: new Set([...queryCueSet(query), ...explicitQueryCues]),
+    explicitQueryCues: new Set(explicitQueryCues),
     reason:
       requiredTagGroups.length > 0
         ? `structured:${requiredTagGroups.map((group) => group.name).join("+")}`
@@ -496,50 +488,12 @@ function inferReconstructionIntent(
 ): ReconstructionIntent {
   const explicit = explicitReconstructionIntent(query, hint);
   if (explicit) return explicit;
-  const expectedTags = new Set<string>();
-  const requiredTagGroups: ReconstructionIntent["requiredTagGroups"] = [];
-  const reasons: string[] = [];
-  function addGroup(name: string, tags: string[]): void {
-    addIntentGroup(requiredTagGroups, expectedTags, name, tags);
-  }
-  if (
-    includesAny(query, [
-      "下一步",
-      "先做",
-      "怎么做",
-      "步骤",
-      "流程",
-      "procedure",
-      "next",
-      "step",
-      "should",
-    ])
-  ) {
-    addGroup("procedure_or_next_step", [
-      "procedure",
-      "task_trajectory",
-      "project.state",
-      "world_belief",
-    ]);
-    reasons.push("procedure_or_next_step");
-  }
-  if (includesAny(query, ["当前", "现在", "状态", "current", "state", "status"])) {
-    addGroup("current_state", ["project.state", "world_belief", "project", "task_trajectory"]);
-    reasons.push("current_state");
-  }
-  if (includesAny(query, ["不要", "不能", "边界", "boundary", "avoid", "do not", "don't"])) {
-    addGroup("boundary", ["boundary", "do_not_push"]);
-    reasons.push("boundary");
-  }
-  if (includesAny(query, ["偏好", "喜欢", "习惯", "preference", "prefer"])) {
-    addGroup("preference", ["preference"]);
-    reasons.push("preference");
-  }
   return {
-    expectedTags,
-    requiredTagGroups,
+    expectedTags: new Set<string>(),
+    requiredTagGroups: [],
     queryCues: queryCueSet(query),
-    reason: reasons.length > 0 ? reasons.join("+") : "associative",
+    explicitQueryCues: new Set<string>(),
+    reason: "associative",
   };
 }
 
@@ -551,60 +505,6 @@ function inferTemporalRecallPurpose(
   if (recallPurpose === "history" || recallPurpose === "context") return recallPurpose;
   if (temporalMode === "history") return "history";
   if (temporalMode === "current") return "context";
-  if (
-    includesAny(query, [
-      "下一步",
-      "先做",
-      "怎么做",
-      "步骤",
-      "流程",
-      "procedure",
-      "next",
-      "step",
-      "should",
-    ]) &&
-    !includesAny(query, [
-      "之前的状态",
-      "以前的状态",
-      "历史状态",
-      "上一版",
-      "上一个状态",
-      "previous state",
-      "previous status",
-      "old state",
-      "old status",
-    ])
-  ) {
-    return "context";
-  }
-  if (
-    includesAny(query, [
-      "之前",
-      "以前",
-      "过去",
-      "历史",
-      "曾经",
-      "原来",
-      "上一个",
-      "上一版",
-      "earlier",
-      "previous",
-      "previously",
-      "prior",
-      "past",
-      "history",
-      "historical",
-      "before",
-      "formerly",
-      "originally",
-      "at the time",
-      "old state",
-      "old status",
-    ]) ||
-    hasHistoricalUsedToCue(query)
-  ) {
-    return "history";
-  }
   return "context";
 }
 
@@ -616,7 +516,7 @@ function seedFrontier(query: string, intent: ReconstructionIntent): FrontierCue[
   const frontier = queryCues.map((cue, index) => {
     let priority = 10 - index * 0.1;
     if (cue.cueKind === "entity") priority += 4;
-    if (cue.cueKind === "temporal") priority += 3;
+    if (cue.cueKind === "temporal") priority += 8;
     if (intent.expectedTags.has(cue.cue)) priority += 2;
     return {
       cue: cue.cue,
@@ -752,6 +652,16 @@ function contentHasNonSourceQueryEntity(
   intent: ReconstructionIntent,
   sourceCueKeys: Set<string>,
 ): boolean {
+  for (const queryCue of intent.explicitQueryCues) {
+    const key = associationCueKey(queryCue);
+    if (
+      key.length > 0 &&
+      !sourceCueKeys.has(key) &&
+      normalizedText(content).includes(normalizedText(queryCue))
+    ) {
+      return true;
+    }
+  }
   return extractAssociationCues(content, 64).some((cue) => {
     if (cue.cueKind !== "entity") return false;
     const key = associationCueKey(cue.cue);
@@ -791,6 +701,22 @@ function pathMatchesTagGroup(path: ReconstructedEvidencePath, tags: Set<string>)
 
 function reciprocalRankScore(rank: number): number {
   return 1 / (60 + rank);
+}
+
+function exactTemporalCue(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}(?:t\d{2}:\d{2}:\d{2}\.\d{3}z)?$/iu.test(value.trim());
+}
+
+function memoryRouteSearchableText(memory: MemoryRecord): string {
+  return normalizedText(
+    `${memory.kind} ${memory.scope} ${memory.content} ${JSON.stringify(memory.metadata)}`,
+  );
+}
+
+function memoryMatchesTemporalConstraint(memory: MemoryRecord, temporalCues: string[]): boolean {
+  if (temporalCues.length === 0) return true;
+  const searchable = memoryRouteSearchableText(memory);
+  return temporalCues.some((cue) => searchable.includes(normalizedText(cue)));
 }
 
 function rankAssociation(
@@ -840,7 +766,6 @@ function rankAssociation(
 function rankDirectMemory(
   memory: MemoryRecord,
   rank: number,
-  query: string,
   intent: ReconstructionIntent,
 ): RankedMemoryCandidate {
   const reasons = [`hybrid_direct_memory_rrf:${rank}`];
@@ -849,7 +774,7 @@ function rankDirectMemory(
     routeScore += 6;
     reasons.push(`intent:${intent.reason}`);
   }
-  const searchable = normalizedText(`${memory.kind} ${memory.scope} ${memory.content}`);
+  const searchable = memoryRouteSearchableText(memory);
   let overlapCount = 0;
   for (const queryCue of intent.queryCues) {
     if (searchable.includes(normalizedText(queryCue))) overlapCount += 1;
@@ -857,10 +782,6 @@ function rankDirectMemory(
   if (overlapCount > 0) {
     routeScore += overlapCount * 0.75;
     reasons.push(`query_overlap:${overlapCount}`);
-  }
-  if (includesAny(query, ["最近", "刚才", "上次", "latest", "recent", "last"])) {
-    routeScore += 0.5;
-    reasons.push("temporal_recent_hint");
   }
   return { memory, routeScore, routeReason: reasons.join(",") };
 }
@@ -972,8 +893,9 @@ async function fuseDirectMemorySearch(input: {
     limit: Math.min(input.maxMemories * 4, 48),
   });
   const rankedCandidates = directMemoryCandidates
-    .map((memory, index) => rankDirectMemory(memory, index + 1, input.query, input.intent))
+    .map((memory, index) => rankDirectMemory(memory, index + 1, input.intent))
     .sort((a, b) => b.routeScore - a.routeScore);
+  const temporalConstraints = [...input.intent.queryCues].filter(exactTemporalCue);
   const reinforcedPaths: ReconstructedEvidencePath[] = [];
   const selectedNewPaths: ReconstructedEvidencePath[] = [];
   for (const candidate of rankedCandidates) {
@@ -993,6 +915,7 @@ async function fuseDirectMemorySearch(input: {
   for (const candidate of rankedCandidates) {
     if (input.memories.length >= input.maxMemories) break;
     if (input.seenMemoryIds.has(candidate.memory.id)) continue;
+    if (!memoryMatchesTemporalConstraint(candidate.memory, temporalConstraints)) continue;
     const sourceRejectReason = sourceScopeRejectReason(
       candidate.memory,
       input.intent,
@@ -1414,12 +1337,19 @@ export async function reconstructMemoryContext(input: {
         const nextCues = extractAssociationCues(
           `${association.tag} ${association.targetSummary}`,
           8,
-        ).filter((nextCue) => !GENERATED_CUE_STOP_TERMS.has(nextCue.cue));
+        ).filter((nextCue) =>
+          nextCue.cueKind === "entity" ||
+          nextCue.cueKind === "temporal" ||
+          [...nextCue.cue].length >= 4
+        );
         for (const nextCue of nextCues) {
           if (explored.has(nextCue.cue)) continue;
+          const structuralCueBoost =
+            (nextCue.cueKind === "entity" || nextCue.cueKind === "temporal" ? 4 : 0) +
+            Math.min([...nextCue.cue].length, 16) / 8;
           enqueueFrontierCue(frontier, {
             cue: nextCue.cue,
-            priority: ranked.routeScore * 0.7 + (nextCue.cueKind === "entity" ? 4 : 0),
+            priority: ranked.routeScore * 0.9 + structuralCueBoost,
             reason: `from:${association.tag}`,
           });
           stepGeneratedCues.add(nextCue.cue);

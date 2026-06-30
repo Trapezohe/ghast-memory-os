@@ -35,6 +35,7 @@ import type {
   WorldBeliefRecord,
 } from "../../kernel/types.js";
 import {
+  associationCueKey,
   associationCuesForBelief,
   associationCuesForMemory,
   associationCuesForTaskTrajectory,
@@ -467,6 +468,9 @@ function memoryMatchesForgetQuery(memory: MemoryRecord, terms: string[]): boolea
 function scoreAssociation(association: MemoryAssociationRecord, query: string): number {
   const terms = queryTerms(query);
   if (terms.length === 0) return association.confidence;
+  const queryKey = associationCueKey(query);
+  const associationKey = associationCueKey(association.cue);
+  const termKeys = new Set(terms.map(associationCueKey).filter(Boolean));
   const haystack = [
     association.cue,
     association.tag,
@@ -474,7 +478,9 @@ function scoreAssociation(association: MemoryAssociationRecord, query: string): 
     association.targetSummary,
   ].join(" ").toLowerCase();
   const hits = terms.filter((term) => haystack.includes(term)).length;
-  return hits + association.confidence;
+  const exactCueScore = queryKey && queryKey === associationKey ? 8 : 0;
+  const termCueScore = associationKey && termKeys.has(associationKey) ? 3 : 0;
+  return hits + exactCueScore + termCueScore + association.confidence;
 }
 
 function limit(input: number | undefined, fallback: number, maximum: number): number {

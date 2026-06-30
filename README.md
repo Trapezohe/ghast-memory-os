@@ -140,16 +140,16 @@ node dist/cli/gmos.js restore --db ./new-gmos.db --profile local-restored --inpu
 node dist/cli/gmos.js add --db ./gmos.db --profile local --kind boundary --text "不要再提醒我这个项目延期了。"
 node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "记录一条普通会话事件。" --report
 node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
-node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？"
+node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:atlas"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}'
 node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "这个项目之前是什么状态？" --temporal-mode history
-node dist/cli/gmos.js explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --include-trace
+node dist/cli/gmos.js explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:atlas"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}' --include-trace
 node dist/cli/gmos.js mcp tools
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.add --input '{"kind":"preference","content":"我喜欢先讲风险"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.search --input '{"query":"先讲风险"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.search --input '{"query":"之前的状态","purpose":"history"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.prepare_context --input '{"text":"你之后怎么回答我？"}'
-node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.reconstruct_context --input '{"text":"我之前说的项目下一步是什么？"}'
-node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.explain_evidence_path --input '{"text":"我之前说的项目下一步是什么？","includePlannerTrace":true}'
+node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.reconstruct_context --input '{"text":"我之前说的项目下一步是什么？","reconstructionIntent":{"queryCues":["project:atlas"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}}'
+node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.explain_evidence_path --input '{"text":"我之前说的项目下一步是什么？","includePlannerTrace":true,"reconstructionIntent":{"queryCues":["project:atlas"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}}'
 node dist/cli/gmos.js mcp serve --db ./gmos.db --profile local
 node dist/cli/gmos.js http serve --db ./gmos.db --profile local --port 4787 --host ghast --auth-token local-dev-token
 node dist/cli/gmos.js evolution report --db ./gmos.db --profile local --format markdown
@@ -223,7 +223,7 @@ for LongMemEval original/cleaned JSON/JSONL and LoCoMo JSON/JSONL through
 those datasets. In native gmOS JSONL, each line is one deterministic case:
 
 ```jsonl
-{"id":"project-next-step","events":[{"type":"memory","kind":"project","content":"代号 Vega 的发布计划叫做 Lantern Run。"},{"type":"memory","kind":"procedure","content":"Lantern Run 下一步先更新 rollback matrix，再做发布实现。"}],"question":"Vega 这个发布计划下一步先做什么？","expectedAll":["rollback matrix"],"forbiddenAny":["会议室"]}
+{"id":"project-next-step","events":[{"type":"memory","kind":"project","content":"代号 Vega 的发布计划叫做 Lantern Run。"},{"type":"memory","kind":"procedure","content":"Lantern Run 下一步先更新 rollback matrix，再做发布实现。"}],"question":"Vega 这个发布计划下一步先做什么？","reconstructionIntent":{"queryCues":["Vega"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]},"expectedAll":["rollback matrix"],"forbiddenAny":["会议室"]}
 ```
 
 The LongMemEval adapter maps each instance's `haystack_sessions` turns into a
@@ -359,14 +359,16 @@ only rebuilds derived search indexes.
 `reconstructContext()` is the active reconstruction API. It starts from the
 current turn's cue terms, explores bounded cue-tag-content associations, fetches
 matching memory content, generates new cues from intermediate evidence, and
-reranks noisy branches by query intent before spending context budget. For
-example, a "next step" query prefers procedure and task-trajectory paths over
-high-confidence but generic facts; a boundary query prefers boundary and
-`do_not_push` paths. The planner also blends association paths with direct
-memory-search hits using a bounded reciprocal-rank signal, so explicit entity or
-temporal clues can reinforce the chosen evidence path without replacing the
-cue-tag-content graph. Returned paths include `routeScore` and `routeReason` so
-a host can explain why a branch was selected. Returned paths also expose
+reranks noisy branches by structured intent before spending context budget. The
+planner does not synthesize procedure, boundary, preference, or current-state
+intent from language keyword lists. Hosts that already know the turn route should
+pass `reconstructionIntent` so procedure paths, task trajectories, boundaries, or
+current-state beliefs can receive explicit intent support. The planner also
+blends association paths with direct memory-search hits using a bounded
+reciprocal-rank signal, so explicit entity or temporal clues can reinforce the
+chosen evidence path without replacing the cue-tag-content graph. Returned paths
+include `routeScore` and `routeReason` so a host can explain why a branch was
+selected. Returned paths also expose
 `informationGain`, and returned stats include evidence convergence, coverage,
 and reconstruction uncertainty. This lets hosts distinguish "we found enough
 supporting evidence" from "we only retrieved plausible nearby memories".
@@ -375,22 +377,22 @@ with selected cues, branch decisions, pruned branches, and evidence-driven new
 cue activation. This trace is for host diagnostics, benchmark verification, and
 offline regression reports; it is not injected into the default prompt context
 and should not be forwarded directly to an LLM or end user.
-When a query carries multiple intents, such as "what is the next step and what
-should I avoid?", convergence requires every detected intent group to be covered
-by evidence; a procedure path alone is not enough if the query also asks for a
-boundary.
+When a host declares multiple intent groups, such as procedure plus boundary,
+convergence requires every declared group to be covered by evidence; a procedure
+path alone is not enough if the structured route also requires a boundary.
 `stopWhenEvidenceEnough` defaults to true; set it to false for diagnostics when
 you want the planner to spend the full step budget and inspect additional
 branches. `evidenceConvergenceThreshold` can be raised for stricter release
 gates or lowered for exploratory tooling.
 Hosts that already know the turn intent can pass `reconstructionIntent` with
 structured `queryCues`, `expectedTags`, and required tag groups. gmOS uses those
-host-owned signals before falling back to language keyword inference, so
-integrations do not need to grow language-specific phrase lists just to request
+host-owned signals instead of growing language-specific phrase lists for
 procedure, boundary, preference, or current-state evidence.
-Pass only content-safe retrieval cues in `queryCues`; do not pass private route
-ids, debug labels, or host-only control names because planner traces can expose
-selected cues to diagnostics.
+Pass only content-safe retrieval cues and tags in `reconstructionIntent`; do not
+pass private route ids, debug labels, or host-only control names because planner
+traces can expose selected cues to diagnostics. gmOS ignores sensitive or
+secret-like cue hints and intent tags, and caps cue hints before they can enter
+the reconstruction frontier.
 `recallPurpose: "history"` and `recallPurpose: "context"` provide the same explicit boundary for
 current/history state; `temporalMode` remains the CLI/MCP-facing convenience
 option.
@@ -410,10 +412,10 @@ out-of-window memories so hosts can audit, repair, or forget them explicitly.
 History search and reconstruction are separate from management: `purpose:
 "history"` and `temporalMode: "history"` let agents answer "what was true
 before?" without treating the request as an admin/delete operation. The default
-`temporalMode: "auto"` infers history mode from cues such as "previous",
-"before", "历史", or "之前"; `temporalMode: "current"` forces ordinary current
-context behavior even when the query contains historical wording. History mode
-does not bypass sensitive or person-memory defaults.
+`temporalMode: "auto"` uses ordinary current-context behavior; hosts should pass
+`recallPurpose: "history"` or `temporalMode: "history"` when their controller or
+model has classified the turn as historical recall. History mode does not bypass
+sensitive or person-memory defaults.
 Rule and host extractor candidates can also pick up conservative validity
 metadata from explicit ISO-date text such as `until 2026-07-01`, `expires on
 2026-07-01`, `valid from 2026-01-01`, or `从 2026-01-01 开始`. When a message has

@@ -551,6 +551,15 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   const reconstructed = await memory.reconstructContext({
     profileId: "gym_reconstruct",
     query: "我之前说的那个计划，先做什么？",
+    reconstructionIntent: {
+      queryCues: ["Helio"],
+      requiredTagGroups: [
+        {
+          name: "procedure_or_next_step",
+          tags: ["procedure", "task_trajectory", "project.state", "world_belief"],
+        },
+      ],
+    },
     includeEvidence: true,
     maxSteps: 4,
     maxBranch: 6,
@@ -592,7 +601,7 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     result,
     "active_reconstruction_planner_trace",
     plannerTrace?.mode === "associative" &&
-      plannerTrace.intentReason === "procedure_or_next_step" &&
+      plannerTrace.intentReason === "structured:procedure_or_next_step" &&
       plannerTrace.stopReason === reconstructed.stats.stopReason &&
       plannerTrace.initialCues.length > 0 &&
       plannerTrace.steps.length >= 2 &&
@@ -642,6 +651,16 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   const multiIntentReconstructed = await memory.reconstructContext({
     profileId: "gym_reconstruct",
     query: "我之前说的那个计划，先做什么，哪些不要主动做？",
+    reconstructionIntent: {
+      queryCues: ["Helio"],
+      requiredTagGroups: [
+        {
+          name: "procedure_or_next_step",
+          tags: ["procedure", "task_trajectory", "project.state", "world_belief"],
+        },
+        { name: "boundary", tags: ["boundary", "do_not_push"] },
+      ],
+    },
     maxSteps: 5,
     maxBranch: 6,
     maxMemories: 6,
@@ -658,7 +677,7 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
         multiIntentReconstructed.stats.evidenceConvergence?.requiredIntentGroupCount &&
       (multiIntentReconstructed.stats.evidenceConvergence?.missingRequiredIntentGroups
         .length ?? 1) === 0,
-    "reconstructContext should require every detected intent group to converge, not just any matching tag",
+    "reconstructContext should require every structured intent group to converge, not just any matching tag",
     "reconstruction",
   );
   await memory.add({
@@ -689,6 +708,15 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   const intentReranked = await memory.reconstructContext({
     profileId: "gym_reconstruct",
     query: "Vega 这个发布计划下一步先做什么？",
+    reconstructionIntent: {
+      queryCues: ["Vega"],
+      requiredTagGroups: [
+        {
+          name: "procedure_or_next_step",
+          tags: ["procedure", "task_trajectory", "project.state", "world_belief"],
+        },
+      ],
+    },
     maxSteps: 4,
     maxBranch: 2,
     maxMemories: 3,
@@ -704,7 +732,7 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
       /intent/.test(intentProcedurePath?.routeReason ?? "") &&
       /gain:/.test(intentProcedurePath?.routeReason ?? "") &&
       (intentProcedurePath?.informationGain ?? 0) > 0,
-    "reconstructContext should rerank noisy association branches by query intent, not raw confidence",
+    "reconstructContext should rerank noisy association branches by explicit intent, not raw confidence",
     "reconstruction",
   );
   await memory.add({
@@ -752,7 +780,21 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   const reconstructedPrepared = await memory.prepareTurn({
     profileId: "gym_reconstruct",
     messages: [{ role: "user", content: "我之前说的那个计划，先做什么？" }],
-    reconstruction: { mode: "shadow", maxSteps: 4, maxBranch: 6, maxMemories: 6 },
+    reconstruction: {
+      mode: "shadow",
+      reconstructionIntent: {
+        queryCues: ["Helio"],
+        requiredTagGroups: [
+          {
+            name: "procedure_or_next_step",
+            tags: ["procedure", "task_trajectory", "project.state", "world_belief"],
+          },
+        ],
+      },
+      maxSteps: 4,
+      maxBranch: 6,
+      maxMemories: 6,
+    },
   });
   gate(
     result,
@@ -1094,6 +1136,7 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   const historicalSourceStateReconstruction = await memory.reconstructContext({
     profileId: "gym_reconstruct",
     query: "what was atlas source previous state?",
+    temporalMode: "history",
     maxSteps: 4,
     maxBranch: 8,
     maxMemories: 8,

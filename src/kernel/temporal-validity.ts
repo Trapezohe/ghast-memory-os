@@ -135,7 +135,10 @@ function uniqueValues(values: string[]): string[] {
 function addTemporalCueValues(values: string[], value: string): void {
   const normalized = normalizeExplicitTemporalInstant(value);
   if (!normalized) return;
-  values.push(normalized, normalized.slice(0, 10));
+  values.push(normalized.slice(0, 10));
+  if (/(?:T\d{2}:\d{2}|[+-]\d{2}:?\d{2}|Z)\s*$/iu.test(value.trim())) {
+    values.push(normalized);
+  }
 }
 
 function hasDateTextLeftBoundary(text: string, index: number): boolean {

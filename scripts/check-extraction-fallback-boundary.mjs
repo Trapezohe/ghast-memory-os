@@ -185,12 +185,32 @@ const checks = [
     detail: "Association cue extraction may parse entity prefixes, not tool-use benchmark templates.",
   },
   {
+    name: "association-cues-have-no-language-term-lists",
+    pass:
+      !/\b(?:STOP_TERMS|PRIORITY_TERMS)\b/u.test(associations) &&
+      !/现在|什么|怎么|那个|这个|之前|上次|项目|计划|边界|偏好|下一步|answer/u.test(
+        associations,
+      ),
+    detail:
+      "Production association cue extraction must use structural information signals, not expanding language-specific stopword or priority lists.",
+  },
+  {
     name: "reconstruction-has-no-tool-use-template-filter",
     pass:
       !/SPECIFIC_TOOL|tool_scope_mismatch|memorySpecificToolCueRejectReason|associationSpecificToolCueRejectReason|I\\s\+use|uses\\s\+.*for/u.test(
         reconstruction,
       ),
     detail: "Reconstruction must rely on generic source, cue, and intent coverage, not tool-use templates.",
+  },
+  {
+    name: "reconstruction-has-no-language-intent-fallback",
+    pass:
+      !/\bincludesAny\s*\(/u.test(reconstruction) &&
+      !/temporal_recent_hint|GENERATED_CUE_STOP_TERMS|["'`][^"'`\n]*(?:最近|刚才|上次|latest|recent|last)[^"'`\n]*["'`]/iu.test(
+        reconstruction,
+      ),
+    detail:
+      "Reconstruction must not infer intent, recency, or history from language keyword lists; hosts should pass structured intent or temporal mode.",
   },
   {
     name: "public-observe-examples-do-not-imply-semantic-preference-extraction",

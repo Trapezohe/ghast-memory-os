@@ -90,12 +90,15 @@ gmOS methods: `observe`, `prepareTurn`, `reconstructContext`, `commitOutcome`,
 Advanced hosts can pass `reconstructionIntent` to `reconstructContext()` or
 shadow `prepareTurn()` reconstruction when the host/controller already knows the
 turn needs procedure, boundary, preference, or current-state evidence. These
-structured `queryCues`, `expectedTags`, and required tag groups take precedence
-over gmOS' language-keyword fallback. Use `recallPurpose: "history"` or
-`"context"` when the host already knows whether the turn asks for historical or
-current state. `queryCues` should be content-safe retrieval cues, not private
+structured `queryCues`, `expectedTags`, and required tag groups are the semantic
+route contract; gmOS does not infer these route groups from language keyword
+lists. Use `recallPurpose: "history"` or `"context"` when the host already knows
+whether the turn asks for historical or current state. `queryCues`, expected
+tags, and required tag groups should be content-safe route signals, not private
 route ids, debug labels, or host-only control names, because planner traces can
-surface selected cues to diagnostics.
+surface selected cues to diagnostics. gmOS ignores sensitive or secret-like cue
+hints and intent tags, and caps cue hints before they can enter the
+reconstruction frontier.
 
 ## CLI
 

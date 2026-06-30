@@ -64,6 +64,7 @@ import type {
   LowLevelSearchInput,
   MemoryKind,
   ReadAuditSnapshot,
+  ReconstructionIntentHint,
   SearchIndexStatus,
 } from "../kernel/types.js";
 import { getGmosRuntimeInfo, type GmosRuntimeInfo } from "../runtime-info.js";
@@ -112,8 +113,8 @@ Usage:
   gmos add --db ./gmos.db --profile local --kind boundary --text "不要再提醒我这个项目延期了。"
   gmos observe --db ./gmos.db --profile local --text "记录一条普通会话事件。" --report
   gmos prepare --db ./gmos.db --profile local --text "你知道我什么偏好吗？"
-  gmos reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？"
-  gmos explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？"
+  gmos reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:atlas"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}'
+  gmos explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:atlas"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}'
   gmos forget --db ./gmos.db --profile local --query "Moonbase"
   gmos explain --db ./gmos.db --profile local --id memory_xxx
   gmos mcp tools
@@ -481,6 +482,27 @@ function parseJsonInput(raw: string | undefined): unknown {
       `--input must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+}
+
+function parseJsonOption(name: string): unknown {
+  const raw = value(name);
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch (error) {
+    throw new Error(
+      `${name} must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function reconstructionIntentOption(): ReconstructionIntentHint | undefined {
+  const parsed = parseJsonOption("--reconstruction-intent-json");
+  if (parsed === undefined) return undefined;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("--reconstruction-intent-json must be a JSON object");
+  }
+  return parsed as ReconstructionIntentHint;
 }
 
 function readJsonFileOption(name: string): unknown {
@@ -1264,6 +1286,7 @@ async function main(): Promise<void> {
                 maxMemories: positiveIntegerOption("--max-memories", 8),
                 includeTemporalMetadata: has("--temporal-metadata"),
                 temporalMode: temporalModeOption(),
+                reconstructionIntent: reconstructionIntentOption(),
               },
             }
           : {}),
@@ -1286,6 +1309,7 @@ async function main(): Promise<void> {
         maxMemories: positiveIntegerOption("--max-memories", 8),
         includeTemporalMetadata: has("--temporal-metadata"),
         temporalMode: temporalModeOption(),
+        reconstructionIntent: reconstructionIntentOption(),
       });
       console.log(JSON.stringify(reconstructed, null, 2));
       return;
@@ -1306,6 +1330,7 @@ async function main(): Promise<void> {
         maxMemories: positiveIntegerOption("--max-memories", 8),
         includeTemporalMetadata: has("--temporal-metadata"),
         temporalMode: temporalModeOption(),
+        reconstructionIntent: reconstructionIntentOption(),
       });
       console.log(JSON.stringify(explanation, null, 2));
       return;
