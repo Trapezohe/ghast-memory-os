@@ -23,7 +23,7 @@ import {
   sanitizePublicPayloadRecord,
   stripGmosOwnedMetadataFields,
 } from "../../src/kernel/safety.js";
-import { relativeEventDateMetadataFromOffset } from "../../src/kernel/temporal-format.js";
+import { eventDateMetadataFromTrustedOffset } from "../../src/kernel/temporal-format.js";
 import {
   explicitEventTimeMetadata,
   mergeExplicitTemporalValidityMetadata,
@@ -47,7 +47,7 @@ function legacyRelativeEventDateMetadata(
   ].filter((value): value is -1 | 0 | 1 => value !== null);
   if (new Set(matches).size !== 1) return {};
   const dayOffset = matches[0]!;
-  return relativeEventDateMetadataFromOffset(
+  return eventDateMetadataFromTrustedOffset(
     createdAt,
     dayOffset,
     dayOffset === -1 ? "yesterday" : dayOffset === 1 ? "tomorrow" : "today",

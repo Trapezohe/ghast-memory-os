@@ -72,10 +72,10 @@ function shiftedUtcDate(createdAt: string | undefined, dayOffset: number): Date 
   return shifted;
 }
 
-export function relativeEventDateMetadataFromOffset(
+export function eventDateMetadataFromTrustedOffset(
   createdAt: string | undefined,
   dayOffset: -1 | 0 | 1,
-  source = "relative",
+  source = "trusted_offset",
 ): Record<string, string> {
   const date = shiftedUtcDate(createdAt, dayOffset);
   if (!date) return {};

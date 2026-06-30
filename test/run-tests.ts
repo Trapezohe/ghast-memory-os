@@ -120,9 +120,9 @@ import {
   sanitizePublicSourceMetadata,
 } from "../src/kernel/safety.js";
 import {
+  eventDateMetadataFromTrustedOffset,
   eventTimeSegment,
   observedAtMetadata,
-  relativeEventDateMetadataFromOffset,
   temporalMetadataSegment,
 } from "../src/kernel/temporal-format.js";
 import {
@@ -3445,6 +3445,49 @@ const hostRelativeParserReconstruction = await hostRelativeParserMemory.reconstr
 assert.match(hostRelativeParserReconstruction.contextBlock, /Host relative workshop/);
 assert.match(hostRelativeParserReconstruction.contextBlock, /event_date=2023-05-07/);
 await hostRelativeParserMemory.close();
+const unsafeEventDateParserMemory = createMemoryOS({
+  profileId: "unsafe-event-date-parser",
+  store: createSqliteMemoryStore({ path: path.join(tmp, "unsafe-event-date-parser.db") }),
+  temporal: {
+    parser: (input) => {
+      if (input.content.includes("HOST_INVALID_EVENT_DATE")) return { eventDate: "31 February 2023" };
+      if (input.content.includes("HOST_SECRET_EVENT_DATE")) {
+        return { eventDate: "api key sk-parser-eventdate-secret1234567890" };
+      }
+      return undefined;
+    },
+  },
+  extractor: (input) => ({
+    kind: "fact",
+    content: input.event.content,
+    confidence: 0.9,
+  }),
+});
+const invalidEventDateReport = await unsafeEventDateParserMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "unsafe-event-date-parser",
+  role: "user",
+  content: "HOST_INVALID_EVENT_DATE should not persist an event date.",
+  createdAt: "2023-05-08T13:56:00.000Z",
+});
+const invalidEventDateMemory = await unsafeEventDateParserMemory.get({
+  profileId: "unsafe-event-date-parser",
+  id: invalidEventDateReport.memoryIds[0]!,
+});
+assert.equal(invalidEventDateMemory?.metadata.eventDate, undefined);
+const secretEventDateReport = await unsafeEventDateParserMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "unsafe-event-date-parser",
+  role: "user",
+  content: "HOST_SECRET_EVENT_DATE should not persist an event date.",
+  createdAt: "2023-05-08T13:56:00.000Z",
+});
+const secretEventDateMemory = await unsafeEventDateParserMemory.get({
+  profileId: "unsafe-event-date-parser",
+  id: secretEventDateReport.memoryIds[0]!,
+});
+assert.equal(secretEventDateMemory?.metadata.eventDate, undefined);
+await unsafeEventDateParserMemory.close();
 const defaultTemporalInferencePath = path.join(tmp, "default-temporal-inference-disabled.db");
 const defaultTemporalInferenceStore = createSqliteMemoryStore({
   path: defaultTemporalInferencePath,
@@ -11876,16 +11919,16 @@ assert.equal(observedAtMetadata("2023-02-31"), "");
 assert.equal(observedAtMetadata("2023-02-31T00:00:00.000Z"), "");
 assert.equal(observedAtMetadata("31 February, 2023"), "");
 assert.deepEqual(
-  relativeEventDateMetadataFromOffset("2023-05-08T13:56:00.000Z", -1, "host_calendar"),
+  eventDateMetadataFromTrustedOffset("2023-05-08T13:56:00.000Z", -1, "host_calendar"),
   {
     eventDate: "2023-05-07",
     relativeDateSource: "host_calendar",
   },
 );
-assert.deepEqual(relativeEventDateMetadataFromOffset(undefined, -1, "host_calendar"), {});
-assert.deepEqual(relativeEventDateMetadataFromOffset("2023-02-31", -1, "host_calendar"), {});
-assert.deepEqual(relativeEventDateMetadataFromOffset("2023-02-31T00:00:00.000Z", -1, "host_calendar"), {});
-assert.deepEqual(relativeEventDateMetadataFromOffset("31 February, 2023", -1, "host_calendar"), {});
+assert.deepEqual(eventDateMetadataFromTrustedOffset(undefined, -1, "host_calendar"), {});
+assert.deepEqual(eventDateMetadataFromTrustedOffset("2023-02-31", -1, "host_calendar"), {});
+assert.deepEqual(eventDateMetadataFromTrustedOffset("2023-02-31T00:00:00.000Z", -1, "host_calendar"), {});
+assert.deepEqual(eventDateMetadataFromTrustedOffset("31 February, 2023", -1, "host_calendar"), {});
 assert.deepEqual(explicitEventTimeMetadata("On 2024-06-05, I went camping."), {
   eventTime: "2024-06-05T00:00:00.000Z",
 });
