@@ -12,9 +12,6 @@ world beliefs, reconstructive recall, action policies, safety gates, release
 evidence, and benchmark harness needed for stable integration. It is not a
 finished digital twin product and it is not a vector-memory CRUD wrapper.
 
-This repository is the SDK/runtime extraction target for Ghast's memory system.
-The public path is:
-
 Project docs: [API reference](./docs/API_REFERENCE.md),
 [integration guide](./docs/INTEGRATION_GUIDE.md),
 [architecture](./docs/ARCHITECTURE.md), [benchmarking](./docs/BENCHMARKING.md),
@@ -112,17 +109,12 @@ const prepared = await memory.prepareTurn({
 - The built-in extractor is a conservative rule fallback. Production-grade
   broad extraction should use a host-provided structured extractor and keep the
   same gmOS write-path guards.
-- External LongMemEval and LoCoMo numbers in this README are deterministic
-  adapter/context dry-runs. They are not official benchmark scores, official
-  LLM-judge scores, or SOTA claims.
-- Current public external scores are intentionally weak baselines. They expose
-  gaps in durable extraction, speaker/person/entity grounding, temporal/event
-  reconstruction, and large-history runtime.
+- External LongMemEval and LoCoMo numbers are deterministic local adapter
+  baselines for engineering comparison. Official benchmark claims require the
+  upstream protocol, fixed model/judge settings, and public reproduction data.
 - STATE-Bench, Mem2ActBench, BEAM, and similar action-memory claims require
-  their unchanged official runners, fixed model/judge settings, and public
-  reproduction bundles.
-- ghast_desktop should not replace its production memory path with gmOS until
-  the SDK release evidence and app-side Electron E2E migration proof both pass.
+  their unchanged official runners before they should be presented as comparable
+  benchmark results.
 
 ## CLI
 
@@ -196,9 +188,8 @@ node dist/cli/gmos.js repair --db ./gmos.db --associations
 ```
 
 `gate:pr` is the local and CI PR gate. It runs build/test, published examples,
-the core no-benchmark-special-casing scan, consumer install smoke,
-deterministic Memory Gym smoke, external fixtures, the SDK release gate, scale
-smoke, and a pack dry run.
+benchmark-integrity checks, consumer install smoke, deterministic Memory Gym
+smoke, external fixtures, the SDK release gate, scale smoke, and a pack dry run.
 
 `release:evidence` is the release-candidate evidence bundler. It requires a
 clean worktree by default, runs `gate:pr`, packs the SDK tarball, installs that
@@ -230,10 +221,8 @@ capability.
 `gym external` runs a local long-memory QA adapter over a user-provided file.
 gmOS supports its native deterministic JSONL format plus direct local adapters
 for LongMemEval original/cleaned JSON/JSONL and LoCoMo JSON/JSONL through
-`--dataset-format gmos|longmemeval|locomo`. It is meant for converted external
-datasets such as long-memory QA or multi-session recall corpora, but gmOS does
-not download or vendor those datasets. In native gmOS JSONL, each line is one
-deterministic case:
+`--dataset-format gmos|longmemeval|locomo`. gmOS does not download or vendor
+those datasets. In native gmOS JSONL, each line is one deterministic case:
 
 ```jsonl
 {"id":"project-next-step","events":[{"type":"memory","kind":"project","content":"代号 Vega 的发布计划叫做 Lantern Run。"},{"type":"memory","kind":"procedure","content":"Lantern Run 下一步先更新 rollback matrix，再做发布实现。"}],"question":"Vega 这个发布计划下一步先做什么？","expectedAll":["rollback matrix"],"forbiddenAny":["会议室"]}
@@ -251,154 +240,22 @@ LoCoMo QA annotations without an official `answer` are skipped as unscorable
 and reported in the dataset warnings instead of being treated as correct.
 
 `gym external-suite` runs several external benchmark files from one manifest and
-writes per-run JSON/Markdown reports when `--output-dir` is provided. By default
-it is a dry-run baseline tool: failed benchmark runs set `benchmarkPass=false`
-but keep the command status successful so teams can record weak baselines. Add
-`--fail-on-benchmark-fail` when using the same suite as a release gate.
-External benchmark reports include both deterministic failure reasons and a
-coarser failure-stage taxonomy so low external scores can be separated into
-answer-label/input mismatch, extraction/filtering, retrieval policy filtering,
-reconstruction misses, context composer or budget drops, forbidden context
-inclusion, and convergence failures. `failureStages` counts whether a stage
-appears in a failed case; the per-case taxonomy entries carry the matched terms.
-Reports also include `scoreAttribution`, a capability-level rollup derived from
-those failure stages. It groups failures into areas such as adapter/source answer
-alignment, scorer normalization, extraction/update, retrieval/reconstruction,
-context budget, temporal/policy filtering, and safety/privacy. This is diagnostic
-only and does not change pass/fail.
-The legacy `score` field is the strict deterministic adapter score and is also
-reported explicitly as `strictScore`. Reports also include
-`normalizedEvidenceScore`, which counts cases where the reconstructed context
-contains the expected evidence after conservative punctuation, date-order, or
-number-format normalization. This normalized view is diagnostic only; it is not
-an official benchmark score and does not change pass/fail. It still respects
-forbidden matches and required convergence; it is not a loose hit-rate that can
-override safety or convergence failures.
-External run and suite manifests include `scoreSemantics` so generated JSON and
-Markdown artifacts identify these numbers as deterministic adapter/context
-scores, not official protocol scores.
-Suite Markdown reports also include a diagnostic summary of the slowest runs,
-weakest slice scores, and top failure stages/reasons. That summary is derived
-from existing run statistics only; it does not change scoring, adapter behavior,
-or runtime behavior.
-Single-run external reports include slowest case and case-group timing
-diagnostics. Case timing measures scoring/reconstruction for one question, while
-case-group timing separates profile setup from scoring so long-history datasets
-can show whether time is spent ingesting events or answering questions. These
-timing fields are diagnostic only and do not affect pass/fail scoring. Runtime
-is split into setup/ingestion, core scoring, taxonomy, and wide-budget
-diagnostic probes so expensive diagnostics do not get mistaken for core memory
-runtime.
-Use `--diagnostics-level off|basic|full` on `gym external`, or
-`diagnosticsLevel` in an external-suite manifest, to control diagnostic cost.
-`off` records strict scoring without failure taxonomy, `basic` records taxonomy
-without wide-budget recovery probes, and `full` runs the full taxonomy used for
-deep failure analysis. The default is `full` for backward-compatible reports.
-`wideBudgetDiagnosticRuntimeMs` is a subset of taxonomy runtime, not an
-additional runtime bucket to add on top of `taxonomyRuntimeMs`.
-When an expected answer is not an exact substring but is present after simple
-punctuation/spacing/date-format-or-order/number-grouping normalization, the report uses
-`answer_normalization_mismatch` instead of `answer_not_in_input` so adapter
-label issues stay separate from missing source evidence.
-Per-run `sliceScores` are diagnostic tag buckets, not unique-case totals or
-official benchmark scores; use them to locate weak slices, not to claim SOTA.
+writes per-run JSON/Markdown reports when `--output-dir` is provided. Add
+`--fail-on-benchmark-fail` when using a suite as a release gate. Reports include
+strict deterministic scores, normalized evidence scores, timing, manifests, and
+failure-stage taxonomy for debugging extraction, grounding, reconstruction,
+context budget, temporal policy, and safety behavior. See
+[benchmarking](./docs/BENCHMARKING.md) for scoring semantics and claim rules.
 
 The repository also includes a small CI-safe fixture suite at
 `test/fixtures/external-benchmark/suite.json`. `npm run test:external-fixtures`
 runs it with `--fail-on-benchmark-fail` and covers gmOS native JSONL,
 LongMemEval adapter abstention handling, LoCoMo adapter unscored-QA handling,
 profile reuse, incognito filtering, history recall, task trajectory reuse, and
-boundary-aware prepare mode. The curated native fixture set has 43 cases covering
-current/history recall, current-state suppression of historical project fields,
-direct, speaker-prefixed, possessive, and current-state person grounding,
-speaker-prefixed, possessive, and has-relation person grounding,
-temporal recall, secret-like and sensitive filtering, project aliases, procedures,
-task trajectories, forgetting, and forbidden action boundaries. A separate low-budget native run
-covers critical fact retention under context pressure. Full LongMemEval/LoCoMo
-datasets remain manual or nightly baselines because they are too large and slow
-for ordinary PR CI.
-
-Latest external benchmark dry-run snapshot, alpha.67, 2026-06-29:
-
-These runs were executed on the `@ghast/memory@0.1.0-alpha.67` local build from
-commit `3e6afeae3b5395ec60734f8414e6abd6274a1276` with the suite invocation
-`gmos gym external-suite --suite-file external-suite-alpha67.json --output-dir results/alpha67-external-suite --format json`
-with `concurrency: 2` and `failureSampleLimit: 20` in the suite defaults. They
-are deterministic adapter dry-runs for finding retrieval and reconstruction
-gaps, not the official LongMemEval/LoCoMo LLM-judge score and not a SOTA claim.
-The suite manifest recorded `@ghast/memory@0.1.0-alpha.67`, git branch `main`,
-git SHA `3e6afeae3b5395ec60734f8414e6abd6274a1276`, `dirty=false`,
-Node `v24.16.0`, and platform `darwin/arm64`.
-The suite files and datasets were kept in an external benchmark work directory;
-the invocation paths above are relative to that directory, not to the repository
-root. Suite summary: `benchmarkPass=false`, `scoreMean=0.2009`,
-`scoreWeighted=0.1612`, total cases `400/2482`, total runtime `1676.4s`.
-
-| Dataset file | Source format | Scored cases | Pass | Fail | Deterministic adapter score | Case groups | Reused profile cases | Warnings | Runtime |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `longmemeval_oracle.json` | LongMemEval cleaned oracle | 470 | 113 | 357 | `0.2404` | 470 | 0 | 30 | 26.3s |
-| `longmemeval_s_cleaned.json` | LongMemEval cleaned S | 470 | 119 | 351 | `0.2532` | 470 | 0 | 30 | 1284.2s |
-| `locomo10.json` | LoCoMo full history | 1542 | 168 | 1374 | `0.1089` | 10 | 1532 | 444 | 363.4s |
-
-Failure-stage taxonomy:
-
-| Dataset file | `answer_not_in_input` | `not_extracted_or_filtered` | `retrieval_or_reconstruction_miss` | `answer_normalization_mismatch` | `context_composer_or_budget_drop` |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `longmemeval_oracle.json` | 219 | 128 | 4 | 6 | 0 |
-| `longmemeval_s_cleaned.json` | 194 | 119 | 27 | 7 | 4 |
-| `locomo10.json` | 946 | 272 | 149 | 7 | 0 |
-
-Dataset hashes:
-
-- `longmemeval_oracle.json`:
-  `sha256:821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c`
-- `longmemeval_s_cleaned.json`:
-  `sha256:d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442`
-- `locomo10.json`:
-  `sha256:79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4`
-
-The suite-level result was `benchmarkPass=false`, which is expected for this
-alpha baseline, while the dry-run command itself stayed successful so the weak
-baseline can be recorded and compared over time. The runner skips official
-LongMemEval abstention cases by default. The LoCoMo adapter also skips QA
-annotations that lack an official `answer`; in this run, 444 such annotations
-were reported as warnings and not counted as scored cases. Compared with the
-alpha.66 snapshot, LongMemEval oracle moved from `0.2787` to `0.2404`,
-LongMemEval cleaned S moved from `0.2787` to `0.2532`, and LoCoMo10 moved from
-`0.0687` to `0.1089`. Runtime also increased materially: cleaned S moved from
-`543.3s` to `1284.2s`, and LoCoMo10 moved from `88.3s` to `363.4s`. This is a
-real baseline, not a filtered success report: the current branch improved some
-multi-party LoCoMo recall while regressing LongMemEval score and large-input
-runtime. The taxonomy shows three immediate work streams: dataset/adapter answer
-normalization for `answer_normalization_mismatch` / `answer_not_in_input`,
-stronger durable observation extraction for `not_extracted_or_filtered`, and
-better speaker/entity/time/event reconstruction for
-`retrieval_or_reconstruction_miss`. LoCoMo remains the clearest pressure test
-for multi-party entity grounding and exact event recall.
-Many failed cases carried medium or high uncertainty, and many did not reach
-evidence convergence, which makes this a useful baseline for active
-reconstruction, hybrid retrieval, entity resolution, and temporal current-state
-work. The `longmemeval_s_cleaned.json` run is intentionally recorded with
-runtime because it is much larger than the oracle file: the local copy is about
-265 MB and contains roughly 246k message turns, so it is also a scale warning
-for external benchmark execution. The LoCoMo run demonstrates why profile/event
-grouping matters: all scored QA cases share only 10 conversation histories, so
-the benchmark can reuse prepared profiles without writing answer labels,
-evidence ids, category labels, or `has_answer` labels into memory.
-
-Previous historical snapshot, alpha.66, 2026-06-27:
-
-| Dataset file | Deterministic adapter score | Runtime |
-| --- | ---: | ---: |
-| `longmemeval_oracle.json` | `0.2787` | 14.5s |
-| `longmemeval_s_cleaned.json` | `0.2787` | 543.3s |
-| `locomo10.json` | `0.0687` | 88.3s |
-
-Dataset source pointers used for this dry-run:
-[LongMemEval cleaned](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned),
-[LongMemEval GitHub](https://github.com/xiaowu0162/longmemeval), and
-[LoCoMo GitHub](https://github.com/snap-research/locomo). The datasets are not
-vendored in this repository.
+boundary-aware prepare mode. Full LongMemEval/LoCoMo datasets remain manual or
+scheduled baselines because they are too large and slow for ordinary PR CI.
+Current adapter baseline snapshots are documented in
+[benchmarking](./docs/BENCHMARKING.md).
 
 `gym statebench` is a protocol bridge for the STATE-Bench Agent Learning Track,
 not a replacement for the official runner. `build-learnings` reads only
@@ -786,8 +643,8 @@ prints only sanitized integration metadata.
 
 `examples/external-mini-benchmark.mjs` runs the native deterministic external
 mini fixture in `examples/external-mini-fixture.jsonl`. It is a reproducibility
-smoke for the external adapter report path, not an official benchmark score or
-SOTA claim. The output keeps only aggregate scores, score semantics, and slice
+smoke for the external adapter report path, not a comparable external benchmark
+report. The output keeps only aggregate scores, score semantics, and slice
 scores.
 
 ## Low-Level Compatibility APIs
@@ -1176,5 +1033,5 @@ memory set for that `profileId` and `sourceType`.
 
 ## Status
 
-This is an alpha SDK extraction repository. The first target is a stable local
-TypeScript/Node runtime that Ghast Desktop can consume through a host adapter.
+This is an alpha TypeScript/Node SDK and local runtime for host applications
+that need user-owned, evidence-backed memory.

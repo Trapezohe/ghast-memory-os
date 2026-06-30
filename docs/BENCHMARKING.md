@@ -99,6 +99,23 @@ gmos gym external \
   --progress
 ```
 
+## Adapter Baseline Snapshot
+
+Latest local deterministic adapter baseline, alpha.67, 2026-06-29:
+
+| Dataset file | Source format | Scored cases | Deterministic adapter score | Runtime |
+| --- | --- | ---: | ---: | ---: |
+| `longmemeval_oracle.json` | LongMemEval cleaned oracle | 470 | `0.2404` | 26.3s |
+| `longmemeval_s_cleaned.json` | LongMemEval cleaned S | 470 | `0.2532` | 1284.2s |
+| `locomo10.json` | LoCoMo full history | 1542 | `0.1089` | 363.4s |
+
+These are local deterministic adapter scores, not official LongMemEval or
+LoCoMo protocol scores. Dataset sources:
+[LongMemEval cleaned](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned),
+[LongMemEval GitHub](https://github.com/xiaowu0162/longmemeval), and
+[LoCoMo GitHub](https://github.com/snap-research/locomo). Datasets are not
+vendored in this repository.
+
 ## Report Interpretation
 
 External reports should separate:
