@@ -772,6 +772,7 @@ Run the examples after installing dependencies:
 
 ```bash
 npm run examples:quickstart
+npm run examples:agent-adapter
 npm run examples:host-adapter
 npm run examples:http-adapter
 npm run examples:mcp-router
@@ -782,6 +783,12 @@ npm run examples:external-mini
 preference, prepares memory context, exercises low-level
 `add/update/search/archive`, prints a content-free diagnostics summary, and removes
 the temporary database.
+
+`examples/agent-adapter.mjs` uses the framework-agnostic
+`createAgentMemoryAdapter()` helper from `@ghast/memory/host`. It observes
+conversation events, prepares memory-injected model messages, exposes action
+policies and evidence counts, commits an outcome, records feedback, and runs a
+forget cleanup without depending on a specific agent framework.
 
 `examples/host-adapter.mjs` shows the host migration path: project an existing
 host memory snapshot into gmOS, skip secret-like and person-routed memories,

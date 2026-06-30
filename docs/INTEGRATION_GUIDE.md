@@ -58,6 +58,38 @@ Low-level `add` and `search` are compatibility APIs. They are useful for import,
 admin tools, and simple hosts, but they are not a substitute for the full turn
 lifecycle.
 
+For in-process Node agent runtimes, `@ghast/memory/host` includes a small
+framework-agnostic adapter that wires this lifecycle without depending on a
+specific agent framework:
+
+```ts
+import { createAgentMemoryAdapter } from "@ghast/memory/host";
+
+const adapter = createAgentMemoryAdapter({
+  memory,
+  profileId: "local-user",
+  includeEvidence: true,
+  reconstruction: { mode: "shadow", maxSteps: 2 },
+});
+
+await adapter.observeMessage({
+  role: "user",
+  content: "I prefer rollout plans that list risks first.",
+});
+
+const turn = await adapter.prepareTurn({
+  messages: [{ role: "user", content: "How should we proceed?" }],
+});
+
+// Send turn.modelMessages to the host's model call.
+```
+
+Run the smoke example:
+
+```bash
+npm run examples:agent-adapter
+```
+
 ## MCP Contract
 
 Public MCP tools are:

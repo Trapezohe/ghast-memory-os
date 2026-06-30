@@ -1677,6 +1677,27 @@ try {
   assert.equal(quickstartOutput.importedSearchHit, true);
   assert.equal(quickstartOutput.schemaVersion, 7);
   assert.equal(quickstartOutput.hostLevel, "L4");
+  const installedAgentAdapterExample = path.join(
+    consumerDir,
+    "node_modules",
+    "@ghast",
+    "memory",
+    "examples",
+    "agent-adapter.mjs",
+  );
+  assert.equal(existsSync(installedAgentAdapterExample), true);
+  const agentAdapterExample = spawnSync(process.execPath, [installedAgentAdapterExample], {
+    cwd: consumerDir,
+    encoding: "utf8",
+  });
+  assert.equal(agentAdapterExample.status, 0, agentAdapterExample.stderr);
+  const agentAdapterOutput = JSON.parse(agentAdapterExample.stdout);
+  assert.equal(agentAdapterOutput.ok, true);
+  assert.equal(agentAdapterOutput.contextInjected, true);
+  assert.equal(agentAdapterOutput.modelMessageCount > 1, true);
+  assert.equal(agentAdapterOutput.actionPolicyCount > 0, true);
+  assert.equal(agentAdapterOutput.evidenceCount > 0, true);
+  assert.equal(agentAdapterOutput.archivedMemoryCount > 0, true);
   const installedPackageRoot = path.join(consumerDir, "node_modules", "@ghast", "memory");
   for (const [docFile, heading] of [
     ["docs/API_REFERENCE.md", "# gmOS API Reference"],

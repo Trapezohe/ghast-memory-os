@@ -28,5 +28,5 @@ must not add benchmark-specific runtime branches.
   safe rollout steps.
 
 Runnable examples are shipped under `examples/`: `quickstart.mjs`,
-`host-adapter.mjs`, `http-adapter.mjs`, `mcp-router.mjs`, and
-`external-mini-benchmark.mjs`.
+`agent-adapter.mjs`, `host-adapter.mjs`, `http-adapter.mjs`,
+`mcp-router.mjs`, and `external-mini-benchmark.mjs`.

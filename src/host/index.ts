@@ -10,6 +10,7 @@ export {
   exportMemorySnapshots,
   parseMemorySnapshotExport,
 } from "./snapshot-export.js";
+export { createAgentMemoryAdapter } from "./agent-adapter.js";
 export type {
   HostMemorySnapshot,
   HostMemorySnapshotImportInput,
@@ -21,6 +22,13 @@ export type {
   MemorySnapshotExport,
   MemorySnapshotExportInput,
 } from "./snapshot-export.js";
+export type {
+  AgentMemoryAdapter,
+  AgentMemoryAdapterOptions,
+  AgentMemoryMessageInput,
+  AgentMemoryPreparedTurn,
+  AgentMemoryPrepareInput,
+} from "./agent-adapter.js";
 
 export interface HostCapabilities {
   canObserveConversation: boolean;

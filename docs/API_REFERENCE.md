@@ -11,7 +11,8 @@ package exports listed here and avoid importing files under `dist/` or `src/`.
   backup/restore helpers.
 - `@ghast/memory/mcp`: in-process MCP-style router and stdio server helpers.
 - `@ghast/memory/http`: local HTTP adapter.
-- `@ghast/memory/host`: host compatibility and snapshot import/export helpers.
+- `@ghast/memory/host`: host compatibility, generic agent-turn adapter, and
+  snapshot import/export helpers.
 - `@ghast/memory/diagnostics`: read-only status reports.
 - `@ghast/memory/gym`: deterministic gates and benchmark adapters.
 - `@ghast/memory/evolution`: report-only failure review control plane.
@@ -46,6 +47,38 @@ Low-level compatibility methods such as `add`, `search`, `history`, `list`,
 `get`, `update`, `delete`, `backup`, and `restore` exist for migration,
 administration, and host adapters that cannot emit full events yet. Prefer
 `observe()` and `prepareTurn()` for agent runtime integration.
+
+## Agent Turn Adapter
+
+`@ghast/memory/host` exports `createAgentMemoryAdapter()` for Node-based agent
+runtimes that want the full lifecycle without copying gmOS internals:
+
+```ts
+import { createAgentMemoryAdapter } from "@ghast/memory/host";
+
+const adapter = createAgentMemoryAdapter({
+  memory,
+  profileId: "local-user",
+  includeEvidence: true,
+  reconstruction: { mode: "shadow", maxSteps: 2 },
+});
+
+await adapter.observeMessage({
+  role: "user",
+  content: "I prefer release plans that list rollback risk first.",
+});
+
+const turn = await adapter.prepareTurn({
+  messages: [{ role: "user", content: "How should we plan this release?" }],
+});
+
+// Pass turn.modelMessages to the host's model call.
+```
+
+The adapter is framework-agnostic. It does not depend on LangGraph, Vercel AI
+SDK, OpenAI Agents SDK, or any other agent runtime. It wraps the same public
+gmOS methods: `observe`, `prepareTurn`, `reconstructContext`, `commitOutcome`,
+`recordFeedback`, and `forget`.
 
 ## CLI
 
