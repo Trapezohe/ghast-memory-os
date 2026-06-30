@@ -156,6 +156,7 @@ export type MemoryExtractor =
     };
 
 export interface MemoryTemporalMetadata {
+  eventDate?: string | undefined;
   eventTime?: string | undefined;
   validFrom?: string | undefined;
   validTo?: string | undefined;

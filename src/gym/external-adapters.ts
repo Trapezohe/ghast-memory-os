@@ -6,7 +6,6 @@ import {
   type ExternalMemoryBenchmarkMessageEvent,
   type ExternalMemoryBenchmarkMemoryEvent,
 } from "./external.js";
-import { relativeEventDateMetadata } from "../kernel/temporal-format.js";
 
 export type ExternalMemoryBenchmarkDatasetAdapter = "gmos" | "longmemeval" | "locomo";
 
@@ -264,12 +263,7 @@ function memoryEvent(input: {
   metadata?: Record<string, unknown> | undefined;
 }): ExternalMemoryBenchmarkMemoryEvent {
   const createdAt = stringValue(input.createdAt);
-  const { relativeDateSource: _relativeDateSource, ...relativeMetadata } =
-    relativeEventDateMetadata(input.content, createdAt ?? undefined);
-  const metadata = {
-    ...(input.metadata ?? {}),
-    ...relativeMetadata,
-  };
+  const metadata = input.metadata ?? {};
   return {
     type: "memory",
     kind: "fact",

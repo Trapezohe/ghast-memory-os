@@ -208,7 +208,7 @@ if (locomoUncertaintyCount !== 8 || locomoConvergenceCount !== 8) {
 for (const [id, expected] of [
   ["locomo-mini-atlas:qa-1", "evidence chain"],
   ["locomo-mini-atlas:qa-2", "2022"],
-  ["locomo-mini-relative-date:qa-1", "7 May 2023"],
+  ["locomo-mini-explicit-date:qa-1", "7 May 2023"],
   ["locomo-mini-speaker-grounding:qa-1", "Meridian"],
   ["locomo-mini-speaker-grounding:qa-2", "architect"],
   ["locomo-mini-speaker-tool-use:qa-1", "Chronos"],

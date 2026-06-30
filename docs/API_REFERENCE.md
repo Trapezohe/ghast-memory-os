@@ -54,12 +54,13 @@ const memory = createMemoryOS({ profileId: "local-user", store, entityResolver }
 ```
 
 Hosts with a trusted local or host-controlled calendar/task-time parser can pass
-`temporal.parser`. The parser returns structured `eventTime`, `validFrom`, and
-`validTo` values; gmOS normalizes them, drops invalid or secret-like values, and
-applies the same current/history filtering used for extractor-supplied temporal
-fields. Built-in language/date text inference is disabled by default; set
-`temporal.inferFromText: true` only when the host explicitly wants gmOS'
-conservative date-text parser:
+`temporal.parser`. The parser returns structured `eventTime`, `eventDate`,
+`validFrom`, and `validTo` values; gmOS normalizes them, drops invalid or
+secret-like values, and applies the same current/history filtering used for
+extractor-supplied temporal fields. Built-in date-text inference is disabled by
+default; set `temporal.inferFromText: true` only when the host explicitly wants
+gmOS to parse explicit date text. Relative calendar phrases should be resolved
+by the host parser with trusted calendar context.
 
 ```ts
 const memory = createMemoryOS({

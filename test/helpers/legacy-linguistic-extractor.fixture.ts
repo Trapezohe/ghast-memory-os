@@ -23,7 +23,7 @@ import {
   sanitizePublicPayloadRecord,
   stripGmosOwnedMetadataFields,
 } from "../../src/kernel/safety.js";
-import { relativeEventDateMetadata } from "../../src/kernel/temporal-format.js";
+import { relativeEventDateMetadataFromOffset } from "../../src/kernel/temporal-format.js";
 import {
   explicitEventTimeMetadata,
   mergeExplicitTemporalValidityMetadata,
@@ -33,6 +33,25 @@ import {
 interface MemoryExtractionPlan {
   report: MemoryExtractionReport;
   candidates: MemoryExtractionCandidate[];
+}
+
+function legacyRelativeEventDateMetadata(
+  content: string,
+  createdAt: string | undefined,
+): Record<string, string> {
+  const text = content.toLowerCase();
+  const matches = [
+    /\b(yesterday)\b/u.test(text) || /昨天/u.test(content) ? -1 : null,
+    /\b(today)\b/u.test(text) || /今天/u.test(content) ? 0 : null,
+    /\b(tomorrow)\b/u.test(text) || /明天/u.test(content) ? 1 : null,
+  ].filter((value): value is -1 | 0 | 1 => value !== null);
+  if (new Set(matches).size !== 1) return {};
+  const dayOffset = matches[0]!;
+  return relativeEventDateMetadataFromOffset(
+    createdAt,
+    dayOffset,
+    dayOffset === -1 ? "yesterday" : dayOffset === 1 ? "tomorrow" : "today",
+  );
 }
 
 const NON_SPEAKER_PREFIXES = new Set([
@@ -323,7 +342,7 @@ function normalizeCandidate(
       metadata: mergeExplicitTemporalValidityMetadata(
         content,
         {
-          ...relativeEventDateMetadata(content, options.createdAt),
+          ...legacyRelativeEventDateMetadata(content, options.createdAt),
           ...explicitEventTimeMetadata(content),
           ...sanitizePublicPayloadRecord({
             ...(candidate.metadata ?? {}),

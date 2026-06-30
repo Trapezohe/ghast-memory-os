@@ -122,7 +122,7 @@ import {
 import {
   eventTimeSegment,
   observedAtMetadata,
-  relativeEventDateMetadata,
+  relativeEventDateMetadataFromOffset,
   temporalMetadataSegment,
 } from "../src/kernel/temporal-format.js";
 import {
@@ -3347,8 +3347,8 @@ const relativeTemporalReconstruction = await relativeTemporalMemory.reconstructC
   maxMemories: 8,
 });
 assert.match(relativeTemporalReconstruction.contextBlock, /project workshop/);
-assert.match(relativeTemporalReconstruction.contextBlock, /event_date=2023-05-07/);
-assert.match(relativeTemporalReconstruction.contextBlock, /event_date_text=7 May 2023/);
+assert.doesNotMatch(relativeTemporalReconstruction.contextBlock, /event_date=2023-05-07/);
+assert.doesNotMatch(relativeTemporalReconstruction.contextBlock, /event_date_text=7 May 2023/);
 const relativeTemporalDateCueReconstruction = await relativeTemporalMemory.reconstructContext({
   profileId: "relative-temporal",
   query: "What happened on 2023-05-07?",
@@ -3357,8 +3357,7 @@ const relativeTemporalDateCueReconstruction = await relativeTemporalMemory.recon
   maxBranch: 8,
   maxMemories: 8,
 });
-assert.match(relativeTemporalDateCueReconstruction.contextBlock, /project workshop/);
-assert.match(relativeTemporalDateCueReconstruction.contextBlock, /event_date=2023-05-07/);
+assert.doesNotMatch(relativeTemporalDateCueReconstruction.contextBlock, /event_date=2023-05-07/);
 const relativeTemporalDefaultReconstruction = await relativeTemporalMemory.reconstructContext({
   profileId: "relative-temporal",
   query: "When did I go to the project workshop?",
@@ -3382,6 +3381,70 @@ assert.match(relativeTemporalPrepared.contextBlock, /project workshop/);
 assert.doesNotMatch(relativeTemporalPrepared.contextBlock, /event_date=/);
 assert.doesNotMatch(relativeTemporalPrepared.contextBlock, /event_date_text=/);
 await relativeTemporalMemory.close();
+const coreRelativeTextInferenceMemory = createMemoryOS({
+  profileId: "core-relative-text-inference",
+  store: createSqliteMemoryStore({ path: path.join(tmp, "core-relative-text-inference.db") }),
+  temporal: { inferFromText: true },
+  extractor: () => ({
+    kind: "fact",
+    content: "Core workshop happened yesterday.",
+    confidence: 0.9,
+  }),
+});
+const coreRelativeTextInferenceReport = await coreRelativeTextInferenceMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "core-relative-text-inference",
+  role: "user",
+  content: "Core workshop happened yesterday.",
+  createdAt: "2023-05-08T13:56:00.000Z",
+});
+assert.equal(coreRelativeTextInferenceReport.extraction?.acceptedCandidateCount, 1);
+const coreRelativeTextInferenceStored = await coreRelativeTextInferenceMemory.get({
+  profileId: "core-relative-text-inference",
+  id: coreRelativeTextInferenceReport.memoryIds[0]!,
+});
+assert.equal(coreRelativeTextInferenceStored?.metadata.eventDate, undefined);
+assert.equal(coreRelativeTextInferenceStored?.metadata.relativeDateSource, undefined);
+await coreRelativeTextInferenceMemory.close();
+const hostRelativeParserMemory = createMemoryOS({
+  profileId: "host-relative-parser",
+  store: createSqliteMemoryStore({ path: path.join(tmp, "host-relative-parser.db") }),
+  temporal: {
+    parser: (input) =>
+      input.content.includes("HOST_RELATIVE_WORKSHOP")
+        ? { eventDate: "2023-05-07" }
+        : undefined,
+  },
+  extractor: () => ({
+    kind: "fact",
+    content: "Host relative workshop happened via HOST_RELATIVE_WORKSHOP.",
+    confidence: 0.9,
+  }),
+});
+const hostRelativeParserReport = await hostRelativeParserMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "host-relative-parser",
+  role: "user",
+  content: "Host relative workshop happened via HOST_RELATIVE_WORKSHOP.",
+  createdAt: "2023-05-08T13:56:00.000Z",
+});
+assert.equal(hostRelativeParserReport.extraction?.acceptedCandidateCount, 1);
+const hostRelativeParserStored = await hostRelativeParserMemory.get({
+  profileId: "host-relative-parser",
+  id: hostRelativeParserReport.memoryIds[0]!,
+});
+assert.equal(hostRelativeParserStored?.metadata.eventDate, "2023-05-07");
+const hostRelativeParserReconstruction = await hostRelativeParserMemory.reconstructContext({
+  profileId: "host-relative-parser",
+  query: "What happened on 2023-05-07?",
+  includeTemporalMetadata: true,
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.match(hostRelativeParserReconstruction.contextBlock, /Host relative workshop/);
+assert.match(hostRelativeParserReconstruction.contextBlock, /event_date=2023-05-07/);
+await hostRelativeParserMemory.close();
 const defaultTemporalInferencePath = path.join(tmp, "default-temporal-inference-disabled.db");
 const defaultTemporalInferenceStore = createSqliteMemoryStore({
   path: defaultTemporalInferencePath,
@@ -11813,18 +11876,16 @@ assert.equal(observedAtMetadata("2023-02-31"), "");
 assert.equal(observedAtMetadata("2023-02-31T00:00:00.000Z"), "");
 assert.equal(observedAtMetadata("31 February, 2023"), "");
 assert.deepEqual(
-  relativeEventDateMetadata("I went to the archive yesterday.", "2023-05-08T13:56:00.000Z"),
+  relativeEventDateMetadataFromOffset("2023-05-08T13:56:00.000Z", -1, "host_calendar"),
   {
     eventDate: "2023-05-07",
-    relativeDateSource: "yesterday",
+    relativeDateSource: "host_calendar",
   },
 );
-assert.deepEqual(relativeEventDateMetadata("I went to the archive yesterday.", undefined), {});
-assert.deepEqual(relativeEventDateMetadata("I went to the archive yesterday.", "2023-02-31"), {});
-assert.deepEqual(relativeEventDateMetadata("I went to the archive yesterday.", "2023-02-31T00:00:00.000Z"), {});
-assert.deepEqual(relativeEventDateMetadata("I went to the archive yesterday.", "31 February, 2023"), {});
-assert.deepEqual(relativeEventDateMetadata("I went yesterday and today.", "2023-05-08T13:56:00.000Z"), {});
-assert.deepEqual(relativeEventDateMetadata("I may go next week.", "2023-05-08T13:56:00.000Z"), {});
+assert.deepEqual(relativeEventDateMetadataFromOffset(undefined, -1, "host_calendar"), {});
+assert.deepEqual(relativeEventDateMetadataFromOffset("2023-02-31", -1, "host_calendar"), {});
+assert.deepEqual(relativeEventDateMetadataFromOffset("2023-02-31T00:00:00.000Z", -1, "host_calendar"), {});
+assert.deepEqual(relativeEventDateMetadataFromOffset("31 February, 2023", -1, "host_calendar"), {});
 assert.deepEqual(explicitEventTimeMetadata("On 2024-06-05, I went camping."), {
   eventTime: "2024-06-05T00:00:00.000Z",
 });
@@ -17225,9 +17286,9 @@ const locomoSpeakerLabelBenchmark = await runExternalMemoryBenchmark({
 });
 assert.equal(locomoSpeakerLabelBenchmark.pass, true);
 assert.deepEqual(locomoSpeakerLabelBenchmark.cases[0]?.expectedAnyMatched, ["Meridian"]);
-const locomoRelativeDateFixture = JSON.stringify([
+const locomoExplicitDateFixture = JSON.stringify([
   {
-    sample_id: "locomo-relative-date",
+    sample_id: "locomo-explicit-date",
     conversation: {
       speaker_a: "Caroline",
       speaker_b: "Melanie",
@@ -17235,7 +17296,7 @@ const locomoRelativeDateFixture = JSON.stringify([
       session_1: [
         {
           speaker: "Caroline",
-          text: "I went to the project workshop yesterday and it helped.",
+          text: "I went to the project workshop on 7 May 2023 and it helped.",
         },
       ],
     },
@@ -17247,15 +17308,15 @@ const locomoRelativeDateFixture = JSON.stringify([
     ],
   },
 ]);
-const locomoRelativeDateCases = parseLocomoBenchmarkDataset(locomoRelativeDateFixture);
-assert.equal(locomoRelativeDateCases[0]?.events[0]?.createdAt, "2023-05-08T13:56:00.000Z");
-const locomoRelativeDateBenchmark = await runExternalMemoryBenchmark({
-  cases: locomoRelativeDateCases,
+const locomoExplicitDateCases = parseLocomoBenchmarkDataset(locomoExplicitDateFixture);
+assert.equal(locomoExplicitDateCases[0]?.events[0]?.createdAt, "2023-05-08T13:56:00.000Z");
+const locomoExplicitDateBenchmark = await runExternalMemoryBenchmark({
+  cases: locomoExplicitDateCases,
   datasetFormat: "locomo.json",
   includeTemporalMetadata: true,
 });
-assert.equal(locomoRelativeDateBenchmark.pass, true);
-assert.deepEqual(locomoRelativeDateBenchmark.cases[0]?.expectedAnyMatched, ["7 May 2023"]);
+assert.equal(locomoExplicitDateBenchmark.pass, true);
+assert.deepEqual(locomoExplicitDateBenchmark.cases[0]?.expectedAnyMatched, ["7 May 2023"]);
 const locomoInvalidDateFixture = JSON.stringify([
   {
     sample_id: "locomo-invalid-date",
@@ -17266,7 +17327,7 @@ const locomoInvalidDateFixture = JSON.stringify([
       session_1: [
         {
           speaker: "Caroline",
-          text: "I went to the project workshop yesterday and it helped.",
+          text: "I went to the project workshop and it helped.",
         },
       ],
     },

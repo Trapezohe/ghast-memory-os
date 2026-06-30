@@ -452,17 +452,17 @@ gmOS does not enable built-in language/date text inference by default. Hosts tha
 want the conservative built-in parser can set `temporal.inferFromText: true`;
 then rule and host extractor candidates can pick up validity metadata from
 explicit date text such as `until 2026-07-01`, `expires on 2026-07-01`, `valid
-from 2026-01-01`, or `从 2026-01-01 开始`. When a message has a trusted ISO
-`createdAt`, that opt-in path can also record event-date metadata for `today`,
-`yesterday`, `tomorrow`, `今天`, `昨天`, and `明天`. Hosts with their own calendar
-logic should keep the default and pass a `temporal.parser` that returns
-structured `eventTime`, `validFrom`, or `validTo` values. Parser output is
-normalized and safety-filtered before it enters memory metadata. gmOS still does
-not try to resolve ambiguous relative dates such as "next week" inside the rule
-extractor; hosts should pass structured metadata when they have a trusted
-calendar parser. The same validity metadata is written to the derived world
-belief when a candidate creates one, so reconstruction does not reintroduce an
-expired belief through the association graph.
+from 2026-01-01`, or `从 2026-01-01 开始`. gmOS core does not maintain a
+language-specific relative-date vocabulary for phrases such as "yesterday" or
+"明天"; hosts with calendar context should keep the default and pass a
+`temporal.parser` that returns structured `eventTime`, `eventDate`, `validFrom`,
+or `validTo` values. Parser output is normalized and safety-filtered before it
+enters memory metadata. gmOS still does not try to resolve ambiguous relative
+dates such as "next week" inside the rule extractor; hosts should pass
+structured metadata when they have a trusted calendar parser. The same validity
+metadata is written to the derived world belief when a candidate creates one, so
+reconstruction does not reintroduce an expired belief through the association
+graph.
 Active reconstruction can render observation time and resolved event dates as
 metadata on memory, evidence, and reconstructed path lines when
 `includeTemporalMetadata: true` is set, for example `observed=2026-06-03` or

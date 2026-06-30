@@ -22,7 +22,6 @@ import {
   sanitizePublicPayloadRecord,
   stripGmosOwnedMetadataFields,
 } from "./safety.js";
-import { relativeEventDateMetadata } from "./temporal-format.js";
 import {
   explicitEventTimeMetadata,
   mergeExplicitTemporalValidityMetadata,
@@ -240,6 +239,10 @@ function normalizedTemporalMetadata(metadata: MemoryTemporalMetadata | null | un
     ["validTo", metadata?.validTo],
   ] as const;
   const normalizedMetadata: Record<string, string> = {};
+  if (typeof metadata?.eventDate === "string" && classifySensitivity(metadata.eventDate) !== "secret_like") {
+    const normalizedEventDate = normalizeExplicitTemporalInstant(metadata.eventDate);
+    if (normalizedEventDate) normalizedMetadata.eventDate = normalizedEventDate.slice(0, 10);
+  }
   for (const [key, value] of entries) {
     if (typeof value !== "string" || classifySensitivity(value) === "secret_like") continue;
     const normalized = normalizeExplicitTemporalInstant(value);
@@ -327,7 +330,6 @@ function normalizeCandidate(
   const metadata: Record<string, unknown> = {
     ...(options.inferTemporalFromText
       ? {
-          ...relativeEventDateMetadata(content, options.createdAt),
           ...explicitEventTimeMetadata(content),
         }
       : {}),
