@@ -21,31 +21,6 @@ Project docs: [API reference](./docs/API_REFERENCE.md),
 [migration](./docs/MIGRATION.md), [contributing](./CONTRIBUTING.md),
 [security and privacy](./SECURITY.md), [release checklist](./RELEASE_CHECKLIST.md).
 
-## External Learning Posture
-
-gmOS should not rebuild agent memory in isolation. Low external benchmark scores
-are evidence about real capability gaps, not targets for dataset-specific
-patches. The project should continuously study strong open-source and publicly
-documented memory systems, then translate their useful mechanisms into gmOS'
-local-first architecture.
-
-Reference systems worth learning from include:
-
-- [Mem0](https://github.com/mem0ai/mem0): personalization-oriented memory
-  extraction, consolidation, retrieval, and agent memory lifecycle design.
-- [Graphiti by Zep](https://github.com/getzep/graphiti): temporal context
-  graphs, provenance, evolving facts, and hybrid semantic/keyword/graph search.
-- [LangMem](https://langchain-ai.github.io/langmem/): LLM-assisted memory
-  extraction, prompt/behavior refinement, and storage-agnostic memory
-  primitives.
-
-The adoption rule is strict: borrow proven ideas, not benchmark shortcuts. A
-borrowed pattern must become a general gmOS capability such as better
-extraction, entity grounding, temporal current/history state, reconstructive
-retrieval, failure feedback, or host adapter ergonomics. It must still preserve
-plaintext local SQLite by default, evidence-backed writes, read-path purity,
-forgetting semantics, and the no-benchmark-special-casing gate.
-
 ```ts
 import { createMemoryOS } from "@ghast/memory";
 import { createSqliteMemoryStore } from "@ghast/memory/store/sqlite";
