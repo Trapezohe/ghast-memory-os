@@ -8,6 +8,7 @@ import {
 } from "../kernel/associations.js";
 import { composeTurnContext } from "../kernel/context-composer.js";
 import { buildEntityMentions, resolveWorldEntitySubject } from "../kernel/entities.js";
+import type { EntityResolver } from "../kernel/entities.js";
 import { buildEvidencePathExplanation } from "../kernel/evidence-path.js";
 import {
   extractMemoryCandidatePlan,
@@ -276,13 +277,14 @@ function explicitUserSubject(subject: string): boolean {
 function actionPredicateSubject(input: {
   candidate: MemoryExtractionCandidate;
   subject: string;
+  entityResolver?: EntityResolver | undefined;
 }): string {
   const { candidate, subject } = input;
   const resolution = resolveWorldEntitySubject({
     subject,
     predicate: candidate.predicate,
     aliases: candidate.subjectAliases,
-  });
+  }, input.entityResolver);
   if (resolution.entityKind && resolution.canonicalSubject !== "user") {
     return resolution.canonicalSubject;
   }
@@ -357,10 +359,15 @@ function personScopedPreferencePredicate(predicate: string | undefined): string 
 function memoryWriteCandidateForSubject(input: {
   candidate: MemoryExtractionCandidate;
   subject: string;
+  entityResolver?: EntityResolver | undefined;
 }): MemoryExtractionCandidate {
   const { candidate, subject } = input;
   if (!isActionMemoryCandidate(candidate)) return candidate;
-  const predicateSubject = actionPredicateSubject({ candidate, subject });
+  const predicateSubject = actionPredicateSubject({
+    candidate,
+    subject,
+    entityResolver: input.entityResolver,
+  });
   if (predicateSubject === "user") return candidate;
 
   const { actionPolicyKind: _actionPolicyKind, ...candidateWithoutActionPolicy } = candidate;
@@ -916,6 +923,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       const writeCandidate = memoryWriteCandidateForSubject({
         candidate,
         subject,
+        entityResolver: options.entityResolver,
       });
       const candidateSensitivity = classifySensitivity(writeCandidate.content);
       const candidateStructuredSensitivity = structuredCandidateSensitivity(writeCandidate);
@@ -933,6 +941,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         predicate: writeCandidate.predicate,
         subjectAliases: writeCandidate.subjectAliases,
         sourceMetadata: candidateSourceMetadata,
+        entityResolver: options.entityResolver,
       });
       const memory = await store.addMemory({
         profileId,
@@ -966,6 +975,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           predicate: writeCandidate.predicate,
           subjectAliases,
           sourceMetadata: candidateSourceMetadata,
+          entityResolver: options.entityResolver,
         });
         const belief = await store.addWorldBelief({
           profileId,

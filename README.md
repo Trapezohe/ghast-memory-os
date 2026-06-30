@@ -55,6 +55,9 @@ const prepared = await memory.prepareTurn({
 - Deterministic world-entity normalization for current-state beliefs. Equivalent
   subjects such as `Atlas project`, `project:atlas`, and `Project Atlas`
   converge before single-cardinality invalidation runs.
+- Optional host-provided `entityResolver` support for product-specific entities.
+  Hosts can canonicalize workspaces, accounts, repositories, or other domain
+  objects without adding language-specific entity templates to gmOS core.
 - Entity mention metadata for accepted memories and world beliefs. gmOS records
   explicit subjects and aliases, and only treats source speaker metadata as a
   person cue when the host or extractor marks it with `speakerKind: "person"`
@@ -489,6 +492,30 @@ but all of them are rejected by the gmOS write-path validator, gmOS records the
 hard/soft reject audit and produces no fallback memory by default. Hosts should
 use a structured extractor for durable semantic memory, or call low-level `add`
 when they already have an explicit memory record.
+
+Hosts that already own entity resolution can pass the same `entityResolver` to
+both `createSqliteMemoryStore()` and `createMemoryOS()`. The resolver receives a
+structured subject/predicate/alias input and returns a raw canonical subject,
+entity kind, entity key, and aliases. gmOS sanitizes those values, applies
+sensitivity filters, and falls back to the built-in resolver when the custom resolver returns
+`null` or an unsafe result:
+
+```ts
+const entityResolver = (input) => {
+  if (!input.subject.startsWith("workspace:")) return null;
+  const key = input.subject.slice("workspace:".length).trim().toLowerCase();
+  return {
+    canonicalSubject: `workspace:${key}`,
+    originalSubject: input.subject,
+    entityKind: "workspace",
+    entityKey: key,
+    aliases: [input.subject, key, ...(input.aliases ?? [])],
+  };
+};
+
+const store = createSqliteMemoryStore({ path: "./gmos.db", entityResolver });
+const memory = createMemoryOS({ profileId: "local-user", store, entityResolver });
+```
 
 `observe()` remains the stable fire-and-forget observation API. Use
 `observeWithReport()` when a host or benchmark needs an `ObserveResult` to

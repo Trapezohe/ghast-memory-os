@@ -29,6 +29,30 @@ const store = createSqliteMemoryStore({ path: "./gmos.db" });
 const memory = createMemoryOS({ profileId: "local-user", store });
 ```
 
+Hosts with their own entity model can pass an `entityResolver` to both the
+SQLite store and runtime facade. This keeps current-state invalidation,
+association projection, entity mentions, and evidence explanations aligned
+without adding product-specific entity words to gmOS core. Resolver output is
+treated as untrusted input; gmOS sanitizes it and falls back to the built-in
+resolver when the custom result is unsafe:
+
+```ts
+const entityResolver = (input) => {
+  if (!input.subject.startsWith("account:")) return null;
+  const key = input.subject.slice("account:".length).trim().toLowerCase();
+  return {
+    canonicalSubject: `account:${key}`,
+    originalSubject: input.subject,
+    entityKind: "account",
+    entityKey: key,
+    aliases: [input.subject, key, ...(input.aliases ?? [])],
+  };
+};
+
+const store = createSqliteMemoryStore({ path: "./gmos.db", entityResolver });
+const memory = createMemoryOS({ profileId: "local-user", store, entityResolver });
+```
+
 Primary methods:
 
 - `observe(event)`: record a host event, attach evidence, and extract eligible

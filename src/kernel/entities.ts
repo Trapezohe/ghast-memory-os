@@ -15,6 +15,10 @@ export interface EntityResolutionResult {
   aliases: string[];
 }
 
+export type EntityResolver = (
+  input: EntityResolutionInput,
+) => EntityResolutionResult | null | undefined;
+
 export type EntityMentionRole =
   | "subject"
   | "subject_alias"
@@ -35,6 +39,7 @@ export interface EntityMentionInput {
   predicate?: string | undefined;
   subjectAliases?: string[] | undefined;
   sourceMetadata?: Record<string, unknown> | undefined;
+  entityResolver?: EntityResolver | undefined;
 }
 
 const ASSOCIATION_CUE_ENTITY_MENTION_ROLES = new Set<EntityMentionRole>([
@@ -131,7 +136,41 @@ function projectPhraseSubject(subject: string): string | null {
   return null;
 }
 
-export function resolveWorldEntitySubject(input: EntityResolutionInput): EntityResolutionResult {
+function sanitizedEntityKind(value: string | null | undefined): string | null {
+  const publicValue = publicEntityValue(value);
+  return publicValue ? key(publicValue) || null : null;
+}
+
+function sanitizedEntityKey(value: string | null | undefined): string | null {
+  const publicValue = publicEntityValue(value);
+  return publicValue ? key(publicValue) || null : null;
+}
+
+function sanitizedEntityResolution(
+  input: EntityResolutionInput,
+  result: EntityResolutionResult,
+): EntityResolutionResult | null {
+  const originalSubject = publicEntityValue(result.originalSubject) || compact(input.subject) || "user";
+  const canonicalSubject = publicEntityValue(result.canonicalSubject);
+  if (!canonicalSubject) return null;
+  const entityKind = sanitizedEntityKind(result.entityKind);
+  const entityKey = sanitizedEntityKey(result.entityKey);
+  return {
+    canonicalSubject,
+    originalSubject,
+    entityKind,
+    entityKey,
+    aliases: unique([
+      originalSubject,
+      canonicalSubject,
+      ...(input.aliases ?? []),
+      ...result.aliases,
+      entityKey ?? "",
+    ].map(publicAlias)),
+  };
+}
+
+export function defaultWorldEntityResolver(input: EntityResolutionInput): EntityResolutionResult {
   const originalSubject = compact(input.subject) || "user";
   const isExplicitUserSubject = key(originalSubject) === "user";
   const explicit = prefixedSubject(originalSubject);
@@ -167,6 +206,18 @@ export function resolveWorldEntitySubject(input: EntityResolutionInput): EntityR
     entityKey: entityKey || null,
     aliases,
   };
+}
+
+export function resolveWorldEntitySubject(
+  input: EntityResolutionInput,
+  resolver?: EntityResolver | undefined,
+): EntityResolutionResult {
+  if (resolver) {
+    const resolved = resolver(input);
+    const sanitized = resolved ? sanitizedEntityResolution(input, resolved) : null;
+    if (sanitized) return sanitized;
+  }
+  return defaultWorldEntityResolver(input);
 }
 
 export function entityResolutionMetadata(
@@ -224,7 +275,7 @@ export function buildEntityMentions(input: EntityMentionInput): EntityMention[] 
       subject: input.subject,
       predicate: input.predicate,
       aliases: input.subjectAliases,
-    });
+    }, input.entityResolver);
     if (resolution.entityKind && resolution.entityKind !== "user") {
       const subjectValue =
         resolution.entityKind === "person"

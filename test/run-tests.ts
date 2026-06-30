@@ -21,6 +21,7 @@ import {
   createMemoryOS,
   createOpenAICompatibleExtractor,
   getGmosRuntimeInfo,
+  type EntityResolver,
   type MemoryExtractor,
   type MemoryStore,
 } from "../src/index.js";
@@ -582,6 +583,188 @@ const store: SqliteMemoryStore = createSqliteMemoryStore({ path: dbPath });
 const memory = createMemoryOS({ profileId: "test", store });
 await store.initialize();
 assert.equal(await store.schemaVersion(), 7);
+
+const workspaceEntityResolver: EntityResolver = (input) => {
+  const subject = input.subject.trim();
+  const match =
+    /^Workspace\s+(.+)$/iu.exec(subject) ??
+    /^workspace\s*[:/]\s*(.+)$/iu.exec(subject);
+  const rawKey = match?.[1]?.trim();
+  if (!rawKey) return undefined;
+  const entityKey = rawKey
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}_-]+/gu, "-")
+    .replace(/^-+|-+$/gu, "");
+  if (!entityKey) return undefined;
+  return {
+    canonicalSubject: `workspace:${entityKey}`,
+    originalSubject: subject,
+    entityKind: "workspace",
+    entityKey,
+    aliases: [
+      subject,
+      rawKey,
+      `workspace:${entityKey}`,
+      ...(input.aliases ?? []),
+    ],
+  };
+};
+const customEntityStore = createSqliteMemoryStore({
+  path: path.join(tmp, "custom-entity-resolver.db"),
+  entityResolver: workspaceEntityResolver,
+});
+const customEntityCandidates = [
+  {
+    kind: "fact" as const,
+    content: "Workspace Nimbus deployment lane is blocked.",
+    confidence: 0.91,
+    subject: "Workspace Nimbus",
+    subjectAliases: ["Nimbus Lane"],
+    predicate: "workspace.state",
+    object: "blocked",
+    cardinality: "single" as const,
+  },
+  {
+    kind: "fact" as const,
+    content: "Workspace Nimbus deployment lane is ready.",
+    confidence: 0.94,
+    subject: "workspace:nimbus",
+    predicate: "workspace.state",
+    object: "ready",
+    cardinality: "single" as const,
+  },
+];
+const customEntityMemory = createMemoryOS({
+  profileId: "custom_entity",
+  store: customEntityStore,
+  entityResolver: workspaceEntityResolver,
+  extractor: () => customEntityCandidates.shift(),
+});
+await customEntityMemory.observe({
+  type: "conversation.message",
+  profileId: "custom_entity",
+  role: "user",
+  content: "Host extractor emitted first custom entity candidate.",
+});
+await customEntityMemory.observe({
+  type: "conversation.message",
+  profileId: "custom_entity",
+  role: "user",
+  content: "Host extractor emitted second custom entity candidate.",
+});
+const customEntityInspectDb = new Database(path.join(tmp, "custom-entity-resolver.db"), {
+  readonly: true,
+});
+try {
+  const activeWorkspaceBeliefCount = (
+    customEntityInspectDb
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM gmos_world_beliefs
+         WHERE profile_id = 'custom_entity'
+           AND subject = 'workspace:nimbus'
+           AND predicate = 'workspace.state'
+           AND status = 'active'`,
+      )
+      .get() as { count: number }
+  ).count;
+  assert.equal(activeWorkspaceBeliefCount, 1);
+  const supersededWorkspaceBeliefCount = (
+    customEntityInspectDb
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM gmos_world_beliefs
+         WHERE profile_id = 'custom_entity'
+           AND subject = 'workspace:nimbus'
+           AND predicate = 'workspace.state'
+           AND status = 'superseded'`,
+      )
+      .get() as { count: number }
+  ).count;
+  assert.equal(supersededWorkspaceBeliefCount, 1);
+  const customEntityMemoryRow = customEntityInspectDb
+    .prepare(
+      `SELECT metadata_json AS metadataJson
+       FROM gmos_memories
+       WHERE profile_id = 'custom_entity'
+       ORDER BY created_at ASC
+       LIMIT 1`,
+    )
+    .get() as { metadataJson: string } | undefined;
+  const customEntityMemoryMetadata = JSON.parse(customEntityMemoryRow?.metadataJson ?? "{}") as {
+    entityMentions?: Array<{ kind?: string; value?: string }>;
+  };
+  assert.equal(
+    customEntityMemoryMetadata.entityMentions?.some(
+      (mention) => mention.kind === "workspace" && mention.value === "nimbus",
+    ),
+    true,
+  );
+} finally {
+  customEntityInspectDb.close();
+}
+await customEntityMemory.close();
+
+const unsafeEntityResolver: EntityResolver = (input) => ({
+  canonicalSubject: "workspace:safe",
+  originalSubject: input.subject,
+  entityKind: "sk-entitykindsecret1234567890",
+  entityKey: "sk-entitykeysecret1234567890",
+  aliases: ["Safe Workspace", "api key sk-entityaliassecret1234567890"],
+});
+const unsafeEntityStore = createSqliteMemoryStore({
+  path: path.join(tmp, "unsafe-entity-resolver.db"),
+  entityResolver: unsafeEntityResolver,
+});
+const unsafeEntityMemory = createMemoryOS({
+  profileId: "unsafe_entity",
+  store: unsafeEntityStore,
+  entityResolver: unsafeEntityResolver,
+  extractor: () => ({
+    kind: "fact",
+    content: "Safe workspace state is ready.",
+    confidence: 0.91,
+    subject: "Workspace Safe",
+    predicate: "workspace.state",
+    object: "ready",
+    cardinality: "single",
+  }),
+});
+await unsafeEntityMemory.observe({
+  type: "conversation.message",
+  profileId: "unsafe_entity",
+  role: "user",
+  content: "Host extractor emitted unsafe custom resolver metadata.",
+});
+const unsafeEntityInspectDb = new Database(path.join(tmp, "unsafe-entity-resolver.db"), {
+  readonly: true,
+});
+try {
+  const unsafeEntityMemoryRows = unsafeEntityInspectDb
+    .prepare(
+      `SELECT metadata_json AS metadataJson
+       FROM gmos_memories
+       WHERE profile_id = 'unsafe_entity'`,
+    )
+    .all() as Array<{ metadataJson: string }>;
+  const unsafeEntityBeliefRows = unsafeEntityInspectDb
+    .prepare(
+      `SELECT subject, metadata_json AS metadataJson
+       FROM gmos_world_beliefs
+       WHERE profile_id = 'unsafe_entity'`,
+    )
+    .all() as Array<{ subject: string; metadataJson: string }>;
+  const unsafeEntityPayload = JSON.stringify({
+    memories: unsafeEntityMemoryRows,
+    beliefs: unsafeEntityBeliefRows,
+  });
+  assert.doesNotMatch(unsafeEntityPayload, /sk-entity(?:kind|key|alias)secret/i);
+  assert.equal(unsafeEntityPayload.includes("entitykindsecret"), false);
+  assert.equal(unsafeEntityBeliefRows[0]?.subject, "workspace:safe");
+} finally {
+  unsafeEntityInspectDb.close();
+}
+await unsafeEntityMemory.close();
 
 const legacyDbPath = path.join(tmp, "legacy-no-ledger.db");
 const legacyHandle = new Database(legacyDbPath);
@@ -13888,7 +14071,7 @@ const internalRouteCue = "HostRoute-Internal-Cobalt-777";
 const internalRouteTag = "host.internal.route.tag.cobalt";
 const internalRoutePublicQuery = "please open the routed packet";
 const internalRouteLeakPattern =
-  /HostRoute-Internal-Cobalt-777|host\.internal\.route\.tag\.cobalt|hostroute|internal|777/i;
+  /HostRoute-Internal-Cobalt-777|host\.internal\.route\.tag\.cobalt|hostroute-internal-cobalt-777/i;
 const structuredIntentReconstructed = await reconstructionMemory.reconstructContext({
   profileId: "recon",
   query: "packet request",

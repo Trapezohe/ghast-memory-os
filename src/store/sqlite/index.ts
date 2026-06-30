@@ -47,6 +47,8 @@ import {
   type TaskTrajectoryAssociationSource,
 } from "../../kernel/associations.js";
 import {
+  type EntityResolutionResult,
+  type EntityResolver,
   entityResolutionMetadata,
   resolveWorldEntitySubject,
 } from "../../kernel/entities.js";
@@ -88,6 +90,7 @@ export interface SqliteMemoryStoreOptions {
   handle?: Database.Database;
   readonly?: boolean | undefined;
   fileMustExist?: boolean | undefined;
+  entityResolver?: EntityResolver | undefined;
 }
 
 export interface SqliteMemoryStore extends MemoryStore {
@@ -352,7 +355,10 @@ function beliefSubjectAliases(belief: WorldBeliefRecord): string[] {
   return stringArrayFromUnknown(beliefEntityResolutionMetadata(belief).aliases);
 }
 
-function canonicalSubjectForBelief(belief: WorldBeliefRecord): string {
+function canonicalSubjectForBelief(
+  belief: WorldBeliefRecord,
+  resolver?: EntityResolver | undefined,
+): string {
   const storedSubject = belief.subject.trim();
   if (storedSubject) return storedSubject;
   const existing = beliefEntityResolutionMetadata(belief).canonicalSubject;
@@ -362,11 +368,11 @@ function canonicalSubjectForBelief(belief: WorldBeliefRecord): string {
         subject: belief.subject,
         predicate: belief.predicate,
         aliases: beliefSubjectAliases(belief),
-      }).canonicalSubject;
+      }, resolver).canonicalSubject;
 }
 
 function publicEntityResolutionMetadata(
-  resolution: ReturnType<typeof resolveWorldEntitySubject>,
+  resolution: EntityResolutionResult,
 ): Record<string, unknown> {
   const entityResolution = sanitizePublicPayloadRecord({
     entityResolution: entityResolutionMetadata(resolution),
@@ -379,7 +385,7 @@ function publicEntityResolutionMetadata(
 function worldBeliefMetadata(input: {
   inputMetadata?: Record<string, unknown> | undefined;
   existingMetadata?: Record<string, unknown> | undefined;
-  resolution: ReturnType<typeof resolveWorldEntitySubject>;
+  resolution: EntityResolutionResult;
 }): Record<string, unknown> {
   const existing = input.existingMetadata ?? {};
   const sanitizedInput = sanitizePublicPayloadRecord(input.inputMetadata ?? {});
@@ -538,6 +544,8 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   const db =
     options.handle ??
     new Database(options.path, sqliteOptions);
+  const resolveEntity = (input: Parameters<typeof resolveWorldEntitySubject>[0]): EntityResolutionResult =>
+    resolveWorldEntitySubject(input, options.entityResolver);
   let initialized = false;
   let ftsAvailableCache: boolean | null = null;
   let vectorIndexAvailableCache: boolean | null = null;
@@ -1803,7 +1811,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     const operationAt = nowIso();
     const createdAt = input.createdAt ?? operationAt;
     const tx = db.transaction((): WorldBeliefRecord => {
-      const resolution = resolveWorldEntitySubject({
+      const resolution = resolveEntity({
         subject: input.subject,
         predicate: input.predicate,
         aliases: input.subjectAliases,
@@ -1862,7 +1870,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           .all(input.profileId, input.predicate) as Record<string, unknown>[];
         const activeBeliefs = activeRows
           .map(normalizeWorldBelief)
-          .filter((belief) => canonicalSubjectForBelief(belief) === canonicalSubject);
+          .filter((belief) => canonicalSubjectForBelief(belief, options.entityResolver) === canonicalSubject);
         const sameObjectRows = activeBeliefs.filter((belief) => belief.object === input.object);
         const sameObject = sameObjectRows[0];
         const incomingInstant = parseInstant(createdAt);

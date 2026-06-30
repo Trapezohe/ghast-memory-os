@@ -1,3 +1,5 @@
+import type { EntityResolver } from "./entities.js";
+
 export type MemoryRole = "system" | "user" | "assistant" | "tool";
 
 export type PrivacyMode = "normal" | "incognito";
@@ -847,6 +849,7 @@ export interface MemoryOSOptions {
   profileId?: string | undefined;
   store: MemoryStore;
   extractor?: MemoryExtractor | undefined;
+  entityResolver?: EntityResolver | undefined;
   extraction?: {
     fallbackToRules?: boolean | undefined;
     ruleMode?: RuleExtractionMode | undefined;
