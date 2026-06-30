@@ -1366,10 +1366,17 @@ function namedPersonStableAttributeCandidate(
   if (isQuestionLike(utterance)) return null;
   const namePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}`;
   const fieldPattern = String.raw`full\s+name|name|college\s+major|major|home\s+town|hometown|birth\s+date|birthdate|birthday|date\s+of\s+birth|birth\s+place|birthplace|role|job|profession|title`;
-  const match = new RegExp(
+  const englishMatch = new RegExp(
     String.raw`^\s*(${namePattern})[’']s\s+(${fieldPattern})\s+(?:is|=)\s+(.{1,80}?)\s*\.?\s*$`,
     "iu",
   ).exec(utterance);
+  const chineseNamePattern = String.raw`[\p{Script=Han}]{2,6}|[A-Z][A-Za-z0-9_-]{1,30}`;
+  const chineseFieldPattern = String.raw`城市|所在地|位置|居住地|住址|时区|语言|职业|职位|头衔|职称|姓名|名字|全名|专业|大学专业|家乡|故乡|出生地|生日|出生日期`;
+  const chineseMatch = new RegExp(
+    String.raw`^\s*(${chineseNamePattern})\s*的\s*(?:当前|现在|目前)?\s*(${chineseFieldPattern})\s*(?:是|为|=)\s*(.{1,80}?)\s*[。.!]?\s*$`,
+    "u",
+  ).exec(utterance);
+  const match = englishMatch ?? chineseMatch;
   const name = match?.[1]?.trim();
   if (!name || !stableNamedPersonSubject(name) || !metadataParticipantsConfirmNamedPerson(name, metadata)) {
     return null;
@@ -1397,6 +1404,7 @@ function namedPersonDirectAttributeCandidate(
   const utterance = stripSpeakerPrefix(text);
   if (isQuestionLike(utterance)) return null;
   const namePattern = String.raw`\p{Lu}[\p{L}0-9_-]{1,30}(?:[ '-]\p{Lu}[\p{L}0-9_-]{1,30}){0,2}`;
+  const chineseNamePattern = String.raw`[\p{Script=Han}]{2,6}|[A-Z][A-Za-z0-9_-]{1,30}`;
   const entry = [
     {
       field: "location",
@@ -1422,6 +1430,27 @@ function namedPersonDirectAttributeCandidate(
       field: "role",
       match: new RegExp(String.raw`^\s*(${namePattern})\s+is\s+(?:(?:an?|the)\s+)(.{1,80}?)\s*\.?\s*$`, "u").exec(utterance),
       directRole: true,
+    },
+    {
+      field: "location",
+      match: new RegExp(
+        String.raw`^\s*(${chineseNamePattern})\s*(?:当前|现在|目前)?\s*(?:住在|居住在)\s*(.{1,80}?)\s*[。.!]?\s*$`,
+        "u",
+      ).exec(utterance),
+    },
+    {
+      field: "hometown",
+      match: new RegExp(
+        String.raw`^\s*(${chineseNamePattern})\s*(?:当前|现在|目前)?\s*来自\s*(.{1,80}?)\s*[。.!]?\s*$`,
+        "u",
+      ).exec(utterance),
+    },
+    {
+      field: "birthplace",
+      match: new RegExp(
+        String.raw`^\s*(${chineseNamePattern})\s*(?:出生在|出生地是|出生地为)\s*(.{1,80}?)\s*[。.!]?\s*$`,
+        "u",
+      ).exec(utterance),
     },
   ].find((entry) => entry.match !== null);
   if (!entry?.match) return null;
@@ -1836,7 +1865,7 @@ function isGenericProjectReference(project: string): boolean {
     /^(?:a|an|some|another|any|each|every|one)(?:\s+(?:new|current|existing|other|old|next|previous|prior|same))*$/iu.test(
       normalized,
     ) ||
-    /^(?:这个|那个|我|我的|我们|我们的|你|你的|你们|你们的|您|您的|他|他的|他们|他们的|她|她的|她们|她们的|它|它的|它们|它们的|其|该|此|一个|某个|某|某些|一些|任一|任何|新|当前|已有|其他|旧|下个|上个|同一个)$/u.test(
+    /^(?:这个|那个|的|我|我的|我们|我们的|你|你的|你们|你们的|您|您的|他|他的|他们|他们的|她|她的|她们|她们的|它|它的|它们|它们的|其|该|此|一个|某个|某|某些|一些|任一|任何|新|当前|已有|其他|旧|下个|上个|同一个)$/u.test(
       trimmed,
     ) ||
     /^(?:一个|某个|某|某些|一些|任一|任何)(?:新|当前|已有|其他|旧|下个|上个|同一个)?$/u.test(

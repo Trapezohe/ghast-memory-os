@@ -5843,6 +5843,44 @@ assert.equal(
   }).length,
   0,
 );
+const chineseNamedPersonAttributeMeta = { participants: ["李雷", "韩梅梅"] };
+assert.equal(
+  extractRuleMemoryCandidates("李雷的职业是设计师。", chineseNamedPersonAttributeMeta)[0]?.predicate,
+  "person.role",
+);
+assert.equal(
+  extractRuleMemoryCandidates("李雷的职业是一名设计师。", chineseNamedPersonAttributeMeta)[0]?.object,
+  "设计师",
+);
+assert.equal(
+  extractRuleMemoryCandidates("李雷住在北京。", chineseNamedPersonAttributeMeta)[0]?.predicate,
+  "person.location",
+);
+assert.equal(
+  extractRuleMemoryCandidates("李雷来自上海。", chineseNamedPersonAttributeMeta)[0]?.predicate,
+  "person.hometown",
+);
+assert.equal(
+  extractRuleMemoryCandidates("李雷的生日是7月10日。", chineseNamedPersonAttributeMeta)[0]?.predicate,
+  "person.birthdate",
+);
+assert.equal(
+  extractRuleMemoryCandidates("李雷的出生地是成都。", chineseNamedPersonAttributeMeta)[0]?.predicate,
+  "person.birthplace",
+);
+assert.equal(
+  extractRuleMemoryCandidates("李雷的职业是未知。", chineseNamedPersonAttributeMeta).length,
+  0,
+);
+assert.equal(extractRuleMemoryCandidates("李雷的职业是设计师。").length, 0);
+assert.equal(
+  extractRuleMemoryCandidates("李雷的职业是设计师。", { participants: ["韩梅梅", "王芳"] }).length,
+  0,
+);
+assert.equal(
+  extractRuleMemoryCandidates("项目的状态是延期。", { participants: ["李雷", "韩梅梅"] }).length,
+  0,
+);
 const namedPersonToolReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
@@ -5894,6 +5932,39 @@ const namedPersonJobReport = await rulesReportMemory.observeWithReport({
 assert.equal(namedPersonJobReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(namedPersonJobReport.memoryIds.length, 1);
 assert.equal(namedPersonJobReport.worldBeliefIds.length, 1);
+const chineseNamedPersonJobReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_named_person_attribute",
+  role: "user",
+  content: "李雷的职业是一名设计师。",
+  metadata: {
+    participants: ["李雷", "韩梅梅"],
+  },
+});
+assert.equal(chineseNamedPersonJobReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(chineseNamedPersonJobReport.memoryIds.length, 1);
+assert.equal(chineseNamedPersonJobReport.worldBeliefIds.length, 1);
+const chineseNamedPersonLocationReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_named_person_attribute",
+  role: "user",
+  content: "李雷住在北京。",
+  metadata: {
+    participants: ["李雷", "韩梅梅"],
+  },
+});
+assert.equal(chineseNamedPersonLocationReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(chineseNamedPersonLocationReport.memoryIds.length, 1);
+assert.equal(chineseNamedPersonLocationReport.worldBeliefIds.length, 1);
+const chineseNamedPersonUnconfirmedReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report_named_person_attribute_unconfirmed",
+  role: "user",
+  content: "李雷的职业是一名设计师。",
+});
+assert.equal(chineseNamedPersonUnconfirmedReport.extraction?.acceptedCandidateCount, 0);
+assert.equal(chineseNamedPersonUnconfirmedReport.memoryIds.length, 0);
+assert.equal(chineseNamedPersonUnconfirmedReport.worldBeliefIds.length, 0);
 const namedPersonDirectLocationReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report_named_person_attribute",
@@ -7142,6 +7213,30 @@ try {
   assert.equal(namedPersonJobBelief?.subject, "person:blair");
   assert.equal(namedPersonJobBelief?.predicate, "person.role");
   assert.equal(namedPersonJobBelief?.object, "architect");
+  const chineseNamedPersonJobBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(chineseNamedPersonJobReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string }
+    | undefined;
+  assert.equal(chineseNamedPersonJobBelief?.subject, "person:李雷");
+  assert.equal(chineseNamedPersonJobBelief?.predicate, "person.role");
+  assert.equal(chineseNamedPersonJobBelief?.object, "设计师");
+  const chineseNamedPersonLocationBelief = speakerAttributeDb
+    .prepare(
+      `SELECT subject, predicate, object
+         FROM gmos_world_beliefs
+        WHERE id = ?`,
+    )
+    .get(chineseNamedPersonLocationReport.worldBeliefIds[0]!) as
+    | { subject: string; predicate: string; object: string }
+    | undefined;
+  assert.equal(chineseNamedPersonLocationBelief?.subject, "person:李雷");
+  assert.equal(chineseNamedPersonLocationBelief?.predicate, "person.location");
+  assert.equal(chineseNamedPersonLocationBelief?.object, "北京");
   const namedPersonDirectLocationBelief = speakerAttributeDb
     .prepare(
       `SELECT subject, predicate, object
