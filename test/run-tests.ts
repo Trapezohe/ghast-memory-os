@@ -13886,6 +13886,8 @@ const longStructuredCue = "LongCueNormalValue-" + "x".repeat(96);
 const cappedStructuredCue = longStructuredCue.slice(0, 80).toLowerCase();
 const internalRouteCue = "HostRoute-Internal-Cobalt-777";
 const internalRouteTag = "host.internal.route.tag.cobalt";
+const internalRouteLeakPattern =
+  /HostRoute-Internal-Cobalt-777|host\.internal\.route\.tag\.cobalt|hostroute|internal|777/i;
 const structuredIntentReconstructed = await reconstructionMemory.reconstructContext({
   profileId: "recon",
   query: "packet request",
@@ -13985,9 +13987,7 @@ const internalRouteReconstructed = await reconstructionMemory.reconstructContext
 });
 assert.match(internalRouteReconstructed.contextBlock, /Cobalt checklist/);
 const internalRouteJson = JSON.stringify(internalRouteReconstructed);
-assert.doesNotMatch(internalRouteJson, new RegExp(internalRouteCue, "i"));
-assert.doesNotMatch(internalRouteJson, new RegExp(internalRouteTag, "i"));
-assert.doesNotMatch(internalRouteJson, /hostroute|internal|777/i);
+assert.doesNotMatch(internalRouteJson, internalRouteLeakPattern);
 assert.equal(
   internalRouteReconstructed.plannerTrace?.initialCues.includes("retrieval_hint"),
   true,
@@ -14240,6 +14240,24 @@ assert.match(JSON.stringify(mcpReconstruct.structuredContent), /false/);
 assert.match(JSON.stringify(mcpReconstruct.structuredContent), /observed=/);
 assert.doesNotMatch(JSON.stringify(mcpReconstruct.structuredContent), /sk-structuredtagsecret/);
 assert.doesNotMatch(JSON.stringify(mcpReconstruct.structuredContent), /sk-structuredgroupsecret/);
+const privateRouteIntent = {
+  queryCues: [internalRouteCue],
+  expectedTags: [internalRouteTag],
+};
+const mcpPrivateRouteReconstruct = await createMemoryMcpServer(reconstructionMemory).callTool(
+  "memory.reconstruct_context",
+  {
+    profileId: "recon",
+    text: "please reconstruct the selected working set",
+    reconstructionIntent: privateRouteIntent,
+    maxSteps: 4,
+    maxBranch: 6,
+  },
+);
+assert.equal(mcpPrivateRouteReconstruct.isError, undefined);
+assert.match(JSON.stringify(mcpPrivateRouteReconstruct.structuredContent), /Cobalt checklist/);
+assert.match(JSON.stringify(mcpPrivateRouteReconstruct.structuredContent), /retrieval_hint/);
+assert.doesNotMatch(JSON.stringify(mcpPrivateRouteReconstruct.structuredContent), internalRouteLeakPattern);
 const mcpDefaultReconstruct = await createMemoryMcpServer(reconstructionMemory).callTool(
   "memory.reconstruct_context",
   {
@@ -14271,6 +14289,21 @@ assert.equal(JSON.stringify(mcpExplainEvidencePath.structuredContent).includes("
 assert.match(JSON.stringify(mcpExplainEvidencePath.structuredContent), /plannerTrace/);
 assert.doesNotMatch(JSON.stringify(mcpExplainEvidencePath.structuredContent), /sk-structuredtagsecret/);
 assert.doesNotMatch(JSON.stringify(mcpExplainEvidencePath.structuredContent), /sk-structuredgroupsecret/);
+const mcpPrivateRouteExplainPath = await createMemoryMcpServer(reconstructionMemory).callTool(
+  "memory.explain_evidence_path",
+  {
+    profileId: "recon",
+    text: "please reconstruct the selected working set",
+    reconstructionIntent: privateRouteIntent,
+    includePlannerTrace: true,
+    maxSteps: 4,
+    maxBranch: 6,
+  },
+);
+assert.equal(mcpPrivateRouteExplainPath.isError, undefined);
+assert.match(JSON.stringify(mcpPrivateRouteExplainPath.structuredContent), /Cobalt checklist/);
+assert.match(JSON.stringify(mcpPrivateRouteExplainPath.structuredContent), /retrieval_hint/);
+assert.doesNotMatch(JSON.stringify(mcpPrivateRouteExplainPath.structuredContent), internalRouteLeakPattern);
 const mcpExplainSensitive = await createMemoryMcpServer(reconstructionMemory).callTool(
   "memory.explain_evidence_path",
   {
@@ -14327,6 +14360,33 @@ assert.equal(cliReconstruct.status, 0, cliReconstruct.stderr);
 assert.match(cliReconstruct.stdout, /Helio 项目推进时先写复现报告/);
 assert.doesNotMatch(cliReconstruct.stdout, /sk-structuredtagsecret/);
 assert.doesNotMatch(cliReconstruct.stdout, /sk-structuredgroupsecret/);
+const cliPrivateRouteIntent = JSON.stringify(privateRouteIntent);
+const cliPrivateRouteReconstruct = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "reconstruct",
+    "--db",
+    reconstructionDb,
+    "--profile",
+    "recon",
+    "--text",
+    "please reconstruct the selected working set",
+    "--reconstruction-intent-json",
+    cliPrivateRouteIntent,
+    "--max-steps",
+    "4",
+    "--max-branch",
+    "6",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliPrivateRouteReconstruct.status, 0, cliPrivateRouteReconstruct.stderr);
+assert.match(cliPrivateRouteReconstruct.stdout, /Cobalt checklist/);
+assert.match(cliPrivateRouteReconstruct.stdout, /retrieval_hint/);
+assert.doesNotMatch(cliPrivateRouteReconstruct.stdout, internalRouteLeakPattern);
 const cliExplainPath = spawnSync(
   process.execPath,
   [
@@ -14363,6 +14423,33 @@ assert.equal(JSON.stringify(cliExplainPathJson).includes("contextBlock"), false)
 assert.ok(cliExplainPathJson.plannerTrace);
 assert.doesNotMatch(JSON.stringify(cliExplainPathJson), /sk-structuredtagsecret/);
 assert.doesNotMatch(JSON.stringify(cliExplainPathJson), /sk-structuredgroupsecret/);
+const cliPrivateRouteExplainPath = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "explain-path",
+    "--db",
+    reconstructionDb,
+    "--profile",
+    "recon",
+    "--text",
+    "please reconstruct the selected working set",
+    "--reconstruction-intent-json",
+    cliPrivateRouteIntent,
+    "--include-trace",
+    "--max-steps",
+    "4",
+    "--max-branch",
+    "6",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliPrivateRouteExplainPath.status, 0, cliPrivateRouteExplainPath.stderr);
+assert.match(cliPrivateRouteExplainPath.stdout, /Cobalt checklist/);
+assert.match(cliPrivateRouteExplainPath.stdout, /retrieval_hint/);
+assert.doesNotMatch(cliPrivateRouteExplainPath.stdout, internalRouteLeakPattern);
 const corruptAssociationsDb = new Database(reconstructionDb);
 try {
   corruptAssociationsDb.prepare("DELETE FROM gmos_associations WHERE profile_id = 'recon'").run();

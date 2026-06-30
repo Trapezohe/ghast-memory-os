@@ -388,11 +388,12 @@ Hosts that already know the turn intent can pass `reconstructionIntent` with
 structured `queryCues`, `expectedTags`, and required tag groups. gmOS uses those
 host-owned signals instead of growing language-specific phrase lists for
 procedure, boundary, preference, or current-state evidence.
-Pass only content-safe retrieval cues and tags in `reconstructionIntent`; do not
-pass private route ids, debug labels, or host-only control names because planner
-traces can expose selected cues to diagnostics. gmOS ignores sensitive or
-secret-like cue hints and intent tags, and caps cue hints before they can enter
-the reconstruction frontier.
+Private route ids, debug labels, or host-only control names can be used as
+retrieval hints, but they are not treated as user-facing memory facts: if they do
+not appear in the public query, gmOS renders them as `retrieval_hint` in prompt
+context, evidence paths, planner traces, and explain-path output. gmOS still
+ignores sensitive or secret-like cue hints and intent tags, and caps cue hints
+before they can enter the reconstruction frontier.
 `recallPurpose: "history"` and `recallPurpose: "context"` provide the same explicit boundary for
 current/history state; `temporalMode` remains the CLI/MCP-facing convenience
 option.
