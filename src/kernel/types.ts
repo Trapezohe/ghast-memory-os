@@ -155,6 +155,29 @@ export type MemoryExtractor =
       ): Promise<MemoryExtractionResult> | MemoryExtractionResult;
     };
 
+export interface MemoryTemporalMetadata {
+  eventTime?: string | undefined;
+  validFrom?: string | undefined;
+  validTo?: string | undefined;
+}
+
+export interface MemoryTemporalParserInput {
+  content: string;
+  metadata?: Record<string, unknown> | undefined;
+  createdAt?: string | undefined;
+}
+
+export type MemoryTemporalParser =
+  | ((
+      input: MemoryTemporalParserInput,
+    ) => Promise<MemoryTemporalMetadata | null | undefined> | MemoryTemporalMetadata | null | undefined)
+  | {
+      name?: string | undefined;
+      parse(
+        input: MemoryTemporalParserInput,
+      ): Promise<MemoryTemporalMetadata | null | undefined> | MemoryTemporalMetadata | null | undefined;
+    };
+
 export type MemoryExtractionRejectReason =
   | "empty_content"
   | "invalid_kind"
@@ -852,6 +875,10 @@ export interface MemoryOSOptions {
   store: MemoryStore;
   extractor?: MemoryExtractor | undefined;
   entityResolver?: EntityResolver | undefined;
+  temporal?: {
+    parser?: MemoryTemporalParser | undefined;
+    inferFromText?: boolean | undefined;
+  } | undefined;
   extraction?: {
     fallbackToRules?: boolean | undefined;
     ruleMode?: RuleExtractionMode | undefined;

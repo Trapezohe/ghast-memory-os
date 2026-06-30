@@ -53,6 +53,27 @@ const store = createSqliteMemoryStore({ path: "./gmos.db", entityResolver });
 const memory = createMemoryOS({ profileId: "local-user", store, entityResolver });
 ```
 
+Hosts with a trusted local or host-controlled calendar/task-time parser can pass
+`temporal.parser`. The parser returns structured `eventTime`, `validFrom`, and
+`validTo` values; gmOS normalizes them, drops invalid or secret-like values, and
+applies the same current/history filtering used for extractor-supplied temporal
+fields. Set `temporal.inferFromText: false` when the host wants to avoid gmOS'
+conservative built-in text inference:
+
+```ts
+const memory = createMemoryOS({
+  profileId: "local-user",
+  store,
+  temporal: {
+    inferFromText: false,
+    parser: ({ content }) =>
+      content.includes("billing rollover")
+        ? { validFrom: "2026-07-01", validTo: "2026-08-01" }
+        : undefined,
+  },
+});
+```
+
 Primary methods:
 
 - `observe(event)`: record a host event, attach evidence, and extract eligible

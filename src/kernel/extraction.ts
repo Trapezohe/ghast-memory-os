@@ -10,6 +10,8 @@ import type {
   MemoryExtractionRejectReason,
   MemoryExtractionResult,
   MemoryExtractor,
+  MemoryTemporalMetadata,
+  MemoryTemporalParser,
   RuleExtractionMode,
 } from "./types.js";
 import { isReservedSpeakerIdentity, stableNamedPersonSubject } from "./person-identity.js";
@@ -231,9 +233,74 @@ function structuredTemporalMetadata(candidate: MemoryExtractionCandidate): Recor
   return metadata;
 }
 
+function normalizedTemporalMetadata(metadata: MemoryTemporalMetadata | null | undefined): Record<string, string> {
+  const entries = [
+    ["eventTime", metadata?.eventTime],
+    ["validFrom", metadata?.validFrom],
+    ["validTo", metadata?.validTo],
+  ] as const;
+  const normalizedMetadata: Record<string, string> = {};
+  for (const [key, value] of entries) {
+    if (typeof value !== "string" || classifySensitivity(value) === "secret_like") continue;
+    const normalized = normalizeExplicitTemporalInstant(value);
+    if (normalized) normalizedMetadata[key] = normalized;
+  }
+  return normalizedMetadata;
+}
+
+async function parsedTemporalMetadata(input: {
+  parser?: MemoryTemporalParser | undefined;
+  content: string;
+  metadata?: Record<string, unknown> | undefined;
+  createdAt?: string | undefined;
+}): Promise<Record<string, string>> {
+  if (!input.parser) return {};
+  try {
+    const parsed =
+      typeof input.parser === "function"
+        ? await input.parser({
+            content: input.content,
+            metadata: input.metadata,
+            createdAt: input.createdAt,
+          })
+        : await input.parser.parse({
+            content: input.content,
+            metadata: input.metadata,
+            createdAt: input.createdAt,
+          });
+    return normalizedTemporalMetadata(parsed);
+  } catch {
+    return {};
+  }
+}
+
+function temporalParserInputForCandidate(
+  candidate: MemoryExtractionCandidate,
+  options: { content: string; minConfidence: number },
+): { content: string; metadata: Record<string, unknown> } | null {
+  if (!KNOWN_MEMORY_KINDS.has(String(candidate.kind))) return null;
+  if (!options.content) return null;
+  if (candidate.kind === "person") return null;
+  if (isPersonRoutedMemory(options.content)) return null;
+  if (classifySensitivity(options.content) === "secret_like") return null;
+  if (hasSecretLikeAuxiliaryField(candidate)) return null;
+  if (!allowedActionPolicyKind(candidate.actionPolicyKind)) return null;
+  if (!allowedCardinality(candidate.cardinality)) return null;
+  if (boundedConfidence(candidate.confidence, 0) < options.minConfidence) return null;
+  return {
+    content: options.content,
+    metadata: sanitizePublicPayloadRecord(candidate.metadata ?? {}),
+  };
+}
+
 function normalizeCandidate(
   candidate: MemoryExtractionCandidate,
-  options: { minConfidence: number; createdAt?: string | undefined },
+  options: {
+    minConfidence: number;
+    createdAt?: string | undefined;
+    parserTemporalMetadata?: Record<string, string> | undefined;
+    inferTemporalFromText: boolean;
+  },
 ):
   | { candidate: MemoryExtractionCandidate }
   | { reason: MemoryExtractionRejectReason } {
@@ -257,6 +324,20 @@ function normalizeCandidate(
   delete (candidateWithoutAliases as { object?: unknown }).object;
   delete (candidateWithoutAliases as { source?: unknown }).source;
   delete (candidateWithoutAliases as { speaker?: unknown }).speaker;
+  const metadata: Record<string, unknown> = {
+    ...(options.inferTemporalFromText
+      ? {
+          ...relativeEventDateMetadata(content, options.createdAt),
+          ...explicitEventTimeMetadata(content),
+        }
+      : {}),
+    ...sanitizePublicPayloadRecord({
+      ...(candidate.metadata ?? {}),
+      ...(source ? { source } : {}),
+    }),
+    ...(options.parserTemporalMetadata ?? {}),
+    ...structuredTemporalMetadata(candidate),
+  };
   return {
     candidate: {
       ...candidateWithoutAliases,
@@ -266,18 +347,9 @@ function normalizeCandidate(
       ...(source ? { source } : {}),
       ...(speaker ? { speaker } : {}),
       ...(subjectAliases ? { subjectAliases } : {}),
-      metadata: mergeExplicitTemporalValidityMetadata(
-        content,
-        {
-          ...relativeEventDateMetadata(content, options.createdAt),
-          ...explicitEventTimeMetadata(content),
-          ...sanitizePublicPayloadRecord({
-            ...(candidate.metadata ?? {}),
-            ...(source ? { source } : {}),
-          }),
-          ...structuredTemporalMetadata(candidate),
-        },
-      ),
+      metadata: options.inferTemporalFromText
+        ? mergeExplicitTemporalValidityMetadata(content, metadata)
+        : metadata,
     },
   };
 }
@@ -345,6 +417,8 @@ export async function extractMemoryCandidates(input: {
   extractionInput: MemoryExtractionInput;
   fallbackToRules?: boolean | undefined;
   minConfidence?: number | undefined;
+  temporalParser?: MemoryTemporalParser | undefined;
+  inferTemporalFromText?: boolean | undefined;
 }): Promise<MemoryExtractionCandidate[]> {
   return (await extractMemoryCandidatePlan(input)).candidates;
 }
@@ -354,6 +428,8 @@ export async function extractMemoryCandidateReport(input: {
   extractionInput: MemoryExtractionInput;
   fallbackToRules?: boolean | undefined;
   minConfidence?: number | undefined;
+  temporalParser?: MemoryTemporalParser | undefined;
+  inferTemporalFromText?: boolean | undefined;
 }): Promise<MemoryExtractionReport> {
   return (await extractMemoryCandidatePlan(input)).report;
 }
@@ -363,8 +439,11 @@ export async function extractMemoryCandidatePlan(input: {
   extractionInput: MemoryExtractionInput;
   fallbackToRules?: boolean | undefined;
   minConfidence?: number | undefined;
+  temporalParser?: MemoryTemporalParser | undefined;
+  inferTemporalFromText?: boolean | undefined;
 }): Promise<MemoryExtractionPlan> {
   const minConfidence = input.minConfidence ?? 0.01;
+  const inferTemporalFromText = input.inferTemporalFromText ?? true;
   const ruleCandidates = input.extractionInput.ruleCandidates;
   let selected: MemoryExtractionCandidate[] | null = null;
   let extractorFailed = false;
@@ -393,15 +472,15 @@ export async function extractMemoryCandidatePlan(input: {
   let rawCandidateCount = 0;
   const rejected: MemoryExtractionDecision[] = [];
 
-  function normalizeSourceCandidates(
+  async function normalizeSourceCandidates(
     source: MemoryExtractionCandidate[],
     sourceKind: MemoryExtractionReport["extractionSource"],
     acceptanceClass: MemoryExtractionAcceptanceClass,
-  ): Array<{
+  ): Promise<Array<{
     raw: MemoryExtractionCandidate;
     candidate: MemoryExtractionCandidate;
     acceptanceClass: MemoryExtractionAcceptanceClass;
-  }> {
+  }>> {
     const normalized: Array<{
       raw: MemoryExtractionCandidate;
       candidate: MemoryExtractionCandidate;
@@ -409,9 +488,24 @@ export async function extractMemoryCandidatePlan(input: {
     }> = [];
     rawCandidateCount += source.length;
     for (const rawCandidate of source) {
+      const content = normalize(rawCandidate.content);
+      const temporalParserInput = temporalParserInputForCandidate(rawCandidate, {
+        content,
+        minConfidence,
+      });
+      const parserTemporalMetadata = temporalParserInput
+        ? await parsedTemporalMetadata({
+            parser: input.temporalParser,
+            content: temporalParserInput.content,
+            metadata: temporalParserInput.metadata,
+            createdAt: input.extractionInput.event.createdAt,
+          })
+        : {};
       const result = normalizeCandidate(rawCandidate, {
         minConfidence,
         createdAt: input.extractionInput.event.createdAt,
+        parserTemporalMetadata,
+        inferTemporalFromText,
       });
       if ("reason" in result) {
         rejected.push(rejectDecision(rawCandidate, result.reason));
@@ -436,10 +530,10 @@ export async function extractMemoryCandidatePlan(input: {
 
   let normalized =
     useRules
-      ? normalizeSourceCandidates(ruleCandidates, "rules", fallbackUsed ? "fallbackDurableCandidate" : "structured")
+      ? await normalizeSourceCandidates(ruleCandidates, "rules", fallbackUsed ? "fallbackDurableCandidate" : "structured")
       : selected === null
         ? []
-        : normalizeSourceCandidates(selected, "custom", "structured");
+        : await normalizeSourceCandidates(selected, "custom", "structured");
 
   const shouldFallbackAfterRejectedCustomCandidates =
     Boolean(input.extractor) &&
@@ -458,7 +552,7 @@ export async function extractMemoryCandidatePlan(input: {
     extractionSource = "rules";
     normalized = [
       ...normalized,
-      ...normalizeSourceCandidates(ruleCandidates, "rules", "fallbackDurableCandidate"),
+      ...(await normalizeSourceCandidates(ruleCandidates, "rules", "fallbackDurableCandidate")),
     ];
   }
 

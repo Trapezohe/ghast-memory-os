@@ -3504,6 +3504,205 @@ const malformedValidityMemory = await naturalDateTemporalMemory.get({
 assert.equal(malformedValidityMemory?.metadata.validFrom, undefined);
 assert.equal(malformedValidityMemory?.metadata.validTo, undefined);
 await naturalDateTemporalMemory.close();
+const noInferTemporalMemory = createMemoryOS({
+  profileId: "no-infer-temporal",
+  store: createSqliteMemoryStore({ path: path.join(tmp, "no-infer-temporal.db") }),
+  temporal: { inferFromText: false },
+  extractor: () => ({
+    kind: "fact",
+    content: "No-infer workshop happened on May 7, 2023.",
+    confidence: 0.9,
+  }),
+});
+const noInferTemporalReport = await noInferTemporalMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "no-infer-temporal",
+  role: "user",
+  content: "No-infer workshop happened on May 7, 2023.",
+});
+assert.equal(noInferTemporalReport.extraction?.acceptedCandidateCount, 1);
+const noInferTemporalStored = await noInferTemporalMemory.get({
+  profileId: "no-infer-temporal",
+  id: noInferTemporalReport.memoryIds[0]!,
+});
+assert.equal(noInferTemporalStored?.metadata.eventTime, undefined);
+assert.equal(noInferTemporalStored?.metadata.validFrom, undefined);
+assert.equal(noInferTemporalStored?.metadata.validTo, undefined);
+await noInferTemporalMemory.close();
+const parserTemporalMemory = createMemoryOS({
+  profileId: "parser-temporal",
+  store: createSqliteMemoryStore({ path: path.join(tmp, "parser-temporal.db") }),
+  temporal: {
+    inferFromText: false,
+    parser: (input) =>
+      input.content.includes("HOST_CALENDAR_OBSIDIAN_END")
+        ? { validTo: "2000-01-01" }
+        : undefined,
+  },
+  extractor: () => ({
+    kind: "project",
+    content: "Parser temporal owner is ObsidianOwner via HOST_CALENDAR_OBSIDIAN_END.",
+    confidence: 0.9,
+    predicate: "project.state",
+    subject: "Project Parser Temporal",
+  }),
+});
+const parserTemporalReport = await parserTemporalMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "parser-temporal",
+  role: "user",
+  content: "Parser temporal owner is ObsidianOwner via HOST_CALENDAR_OBSIDIAN_END.",
+});
+const parserTemporalStored = await parserTemporalMemory.get({
+  profileId: "parser-temporal",
+  id: parserTemporalReport.memoryIds[0]!,
+});
+assert.equal(parserTemporalStored?.metadata.validTo, "2000-01-01T00:00:00.000Z");
+const parserTemporalContext = await parserTemporalMemory.search({
+  profileId: "parser-temporal",
+  query: "ObsidianOwner",
+  purpose: "context",
+  limit: 10,
+});
+assert.equal(parserTemporalContext.some((entry) => entry.content.includes("ObsidianOwner")), false);
+const parserTemporalManage = await parserTemporalMemory.search({
+  profileId: "parser-temporal",
+  query: "ObsidianOwner",
+  purpose: "manage",
+  limit: 10,
+});
+assert.equal(parserTemporalManage.some((entry) => entry.content.includes("ObsidianOwner")), true);
+await parserTemporalMemory.close();
+const unsafeParserTemporalMemory = createMemoryOS({
+  profileId: "unsafe-parser-temporal",
+  store: createSqliteMemoryStore({ path: path.join(tmp, "unsafe-parser-temporal.db") }),
+  temporal: {
+    parser: () => ({
+      eventTime: "2026-02-30",
+      validFrom: "sk-temporalparsersecret1234567890",
+      validTo: "not-a-date",
+    }),
+  },
+  extractor: () => ({
+    kind: "fact",
+    content: "Unsafe parser temporal metadata should be ignored without rejecting content.",
+    confidence: 0.9,
+  }),
+});
+const unsafeParserTemporalReport = await unsafeParserTemporalMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "unsafe-parser-temporal",
+  role: "user",
+  content: "Unsafe parser temporal metadata should be ignored without rejecting content.",
+});
+assert.equal(unsafeParserTemporalReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(JSON.stringify(unsafeParserTemporalReport).includes("sk-temporalparsersecret"), false);
+const unsafeParserTemporalStored = await unsafeParserTemporalMemory.get({
+  profileId: "unsafe-parser-temporal",
+  id: unsafeParserTemporalReport.memoryIds[0]!,
+});
+assert.equal(unsafeParserTemporalStored?.metadata.eventTime, undefined);
+assert.equal(unsafeParserTemporalStored?.metadata.validFrom, undefined);
+assert.equal(unsafeParserTemporalStored?.metadata.validTo, undefined);
+await unsafeParserTemporalMemory.close();
+let parserInputCallCount = 0;
+let parserInputContent = "";
+let parserInputMetadata: Record<string, unknown> = {};
+const parserInputSafetyMemory = createMemoryOS({
+  profileId: "parser-input-safety",
+  store: createSqliteMemoryStore({ path: path.join(tmp, "parser-input-safety.db") }),
+  temporal: {
+    parser: (input) => {
+      parserInputCallCount += 1;
+      parserInputContent = input.content;
+      parserInputMetadata = input.metadata ?? {};
+      return { validTo: "2999-01-01" };
+    },
+  },
+  extractor: () => [
+    {
+      kind: "fact",
+      content: "Parser input unsafe candidate carries sk-parserinputsecret1234567890.",
+      confidence: 0.9,
+      metadata: { ordinaryKey: "unsafe candidate metadata should not be parsed" },
+    },
+    {
+      kind: "fact",
+      content: "Parser input safe candidate should receive sanitized metadata.",
+      confidence: 0.9,
+      metadata: {
+        ordinaryKey: "ordinary",
+        apiKey: "sk-parsermetasecret1234567890",
+        nested: { token: "sk-parsernestedsecret1234567890" },
+      },
+    },
+  ],
+});
+const parserInputSafetyReport = await parserInputSafetyMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "parser-input-safety",
+  role: "user",
+  content: "Parser input safety fixture.",
+});
+assert.equal(parserInputSafetyReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(parserInputSafetyReport.extraction?.rejectedCandidateCount, 1);
+assert.equal(parserInputCallCount, 1);
+assert.equal(parserInputContent.includes("sk-parserinputsecret"), false);
+assert.equal(parserInputMetadata.ordinaryKey, "ordinary");
+assert.equal("apiKey" in parserInputMetadata, false);
+assert.equal(JSON.stringify(parserInputMetadata).includes("sk-parsermetasecret"), false);
+assert.equal(JSON.stringify(parserInputMetadata).includes("sk-parsernestedsecret"), false);
+assert.equal(JSON.stringify(parserInputSafetyReport).includes("sk-parserinputsecret"), false);
+assert.equal(JSON.stringify(parserInputSafetyReport).includes("sk-parsermetasecret"), false);
+await parserInputSafetyMemory.close();
+const parserPriorityMemory = createMemoryOS({
+  profileId: "parser-priority",
+  store: createSqliteMemoryStore({ path: path.join(tmp, "parser-priority.db") }),
+  temporal: {
+    parser: (input) =>
+      input.content.includes("top-level temporal field")
+        ? { validTo: "2003-01-01" }
+        : { validTo: "2004-01-01" },
+  },
+  extractor: (input) =>
+    input.event.content.includes("top-level temporal field")
+      ? {
+          kind: "fact",
+          content: "Parser priority top-level temporal field is valid until 2001-01-01.",
+          confidence: 0.9,
+          metadata: { validTo: "2002-01-01T00:00:00.000Z" },
+          validTo: "2005-01-01",
+        }
+      : {
+          kind: "fact",
+          content: "Parser priority metadata temporal field is valid until 2001-01-01.",
+          confidence: 0.9,
+          metadata: { validTo: "2002-01-01T00:00:00.000Z" },
+        },
+});
+const parserPriorityMetadataReport = await parserPriorityMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "parser-priority",
+  role: "user",
+  content: "Parser priority metadata temporal field.",
+});
+const parserPriorityMetadataMemory = await parserPriorityMemory.get({
+  profileId: "parser-priority",
+  id: parserPriorityMetadataReport.memoryIds[0]!,
+});
+assert.equal(parserPriorityMetadataMemory?.metadata.validTo, "2004-01-01T00:00:00.000Z");
+const parserPriorityTopLevelReport = await parserPriorityMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "parser-priority",
+  role: "user",
+  content: "Parser priority top-level temporal field.",
+});
+const parserPriorityTopLevelMemory = await parserPriorityMemory.get({
+  profileId: "parser-priority",
+  id: parserPriorityTopLevelReport.memoryIds[0]!,
+});
+assert.equal(parserPriorityTopLevelMemory?.metadata.validTo, "2005-01-01T00:00:00.000Z");
+await parserPriorityMemory.close();
 const directTemporalCueStore = createSqliteMemoryStore({
   path: path.join(tmp, "direct-temporal-cue.db"),
 });

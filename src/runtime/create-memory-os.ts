@@ -909,6 +909,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const ruleMode = options.extraction?.ruleMode ?? "none";
     const extraction = await extractMemoryCandidatePlan({
       extractor: options.extractor,
+      temporalParser: options.temporal?.parser,
+      inferTemporalFromText: options.temporal?.inferFromText,
       extractionInput: {
         profileId,
         event: { ...event, metadata: eventMetadata },

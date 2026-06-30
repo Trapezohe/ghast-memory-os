@@ -59,6 +59,13 @@ Low-level `add` and `search` are compatibility APIs. They are useful for import,
 admin tools, and simple hosts, but they are not a substitute for the full turn
 lifecycle.
 
+If the host already has a trusted local or host-controlled calendar/task-time
+parser, pass it through `createMemoryOS({ temporal: { parser } })` and return
+structured `eventTime`, `validFrom`, or `validTo` values. Set
+`temporal.inferFromText: false` when the integration should rely only on host
+metadata and extractor output instead of gmOS' conservative built-in date text
+inference.
+
 For in-process Node agent runtimes, `@ghast/memory/host` includes a small
 framework-agnostic adapter that wires this lifecycle without depending on a
 specific agent framework:
