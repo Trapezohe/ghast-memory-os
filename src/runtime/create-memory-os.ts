@@ -338,11 +338,9 @@ function eventTextHasProjectCueForCandidate(input: {
   if (!candidateContent || !input.eventContent.trim()) return false;
 
   const boundary = "[^\\p{L}\\p{N}_-]";
-  const candidateStartsWithSubject = new RegExp(
-    `^\\s*${input.subjectPattern}(?=$|${boundary})`,
-    "iu",
-  ).test(candidateContent);
-  if (!candidateStartsWithSubject) return false;
+  const subjectStartPattern = new RegExp(`^\\s*${input.subjectPattern}(?=$|${boundary})`, "iu");
+  if (!subjectStartPattern.test(candidateContent)) return false;
+  const candidateTail = candidateContent.replace(subjectStartPattern, "");
 
   const normalizedCandidate = candidateContent.toLowerCase();
   const normalizedEvent = input.eventContent.toLowerCase();
@@ -365,7 +363,22 @@ function eventTextHasProjectCueForCandidate(input: {
     searchFrom = index + Math.max(normalizedCandidate.length, 1);
   }
 
-  return foundProjectAdjacent && !foundNonProjectAdjacent;
+  if (foundProjectAdjacent && !foundNonProjectAdjacent) return true;
+  if (foundNonProjectAdjacent) return false;
+
+  const candidateTailPattern = flexibleLiteralPattern(candidateTail);
+  if (!candidateTailPattern) return false;
+  const suffixCuePatterns = [
+    new RegExp(
+      `(?:^|${boundary})${input.subjectPattern}\\s+(?:project|repo|repository)\\s+${candidateTailPattern}(?=$|${boundary})`,
+      "iu",
+    ),
+    new RegExp(
+      `(?:^|${boundary})${input.subjectPattern}\\s*项目\\s*${candidateTailPattern}(?=$|${boundary})`,
+      "iu",
+    ),
+  ];
+  return suffixCuePatterns.some((pattern) => pattern.test(input.eventContent));
 }
 
 function inferredProjectSubjectFromActionText(input: {

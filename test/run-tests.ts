@@ -1332,6 +1332,15 @@ for (const explicitWorldActionVariant of [
     expectedPredicate: "project.procedure",
   },
   {
+    name: "bare_project_subject_from_event_suffix_cue_user_predicate",
+    subject: "Atlas",
+    predicate: "user.procedure",
+    candidateContent: "Atlas starts release work by drafting an outline.",
+    eventContent: "Atlas project starts release work by drafting an outline.",
+    expectedSubject: "project:atlas",
+    expectedPredicate: "project.procedure",
+  },
+  {
     name: "bare_person_procedure_user_predicate",
     subject: "Alex",
     predicate: "user.procedure",
@@ -1351,6 +1360,23 @@ for (const explicitWorldActionVariant of [
     eventContent:
       "Project Alex is blocked on compliance. Alex starts release work by drafting an outline.",
     expectedSubject: "person:alex",
+    expectedPredicate: "person.procedure",
+  },
+  {
+    name: "bare_person_subject_ignores_unrelated_suffix_project_event_cue",
+    subject: "Alex",
+    candidateContent: "Alex starts release work by drafting an outline.",
+    eventContent:
+      "Alex project is blocked on compliance. Alex starts release work by drafting an outline.",
+    expectedSubject: "person:alex",
+    expectedPredicate: "person.procedure",
+  },
+  {
+    name: "bare_person_subject_avoids_suffix_tail_prefix_match",
+    subject: "Atlas",
+    candidateContent: "Atlas uses Go",
+    eventContent: "Atlas project uses Google Calendar.",
+    expectedSubject: "person:atlas",
     expectedPredicate: "person.procedure",
   },
 ] as const) {
