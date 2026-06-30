@@ -1,5 +1,7 @@
 import type {
+  MemoryAssociationCueKind,
   MemoryAssociationRecord,
+  MemoryCue,
   MemoryKind,
   MemoryRecord,
   WorldBeliefRecord,
@@ -9,12 +11,8 @@ import { isReservedSpeakerIdentity } from "./person-identity.js";
 import { classifySensitivity, sourceMetadataSpeakerIsPerson } from "./safety.js";
 import { normalizeExplicitTemporalInstant } from "./temporal-validity.js";
 
-export type AssociationCueKind = MemoryAssociationRecord["cueKind"];
-
-export interface AssociationCue {
-  cue: string;
-  cueKind: AssociationCueKind;
-}
+export type AssociationCueKind = MemoryAssociationCueKind;
+export type AssociationCue = MemoryCue;
 
 export interface TaskTrajectoryAssociationSource {
   id: string;

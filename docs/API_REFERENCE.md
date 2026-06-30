@@ -152,6 +152,15 @@ explain-path output. Sensitive or secret-like cue hints and intent tags are stil
 ignored, and cue hints are capped before they can enter the reconstruction
 frontier.
 
+Hosts with their own entity, calendar, or route parser can configure
+`createMemoryOS({ reconstruction: { cueExtractor } })`. The extractor returns
+bounded `{ cue, cueKind }` values for query and intermediate evidence text; gmOS
+merges them with the local fallback and still filters secret-like cues. Use this
+to bridge host-owned semantics into reconstruction instead of adding
+language-specific cue rules to gmOS core. The extractor is a trusted, synchronous
+host callback: gmOS audits its own store read path and sanitizes returned cues,
+but it cannot police external side effects inside host callback code.
+
 ## CLI
 
 The npm package exposes two binaries:

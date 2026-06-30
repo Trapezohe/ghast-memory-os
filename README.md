@@ -391,6 +391,14 @@ Hosts that already know the turn intent can pass `reconstructionIntent` with
 structured `queryCues`, `expectedTags`, and required tag groups. gmOS uses those
 host-owned signals instead of growing language-specific phrase lists for
 procedure, boundary, preference, or current-state evidence.
+Hosts that own entity, calendar, or route parsing can also pass
+`createMemoryOS({ reconstruction: { cueExtractor } })`. A cue extractor receives
+bounded query/evidence text and returns sanitized `{ cue, cueKind }` values for
+the reconstruction planner. gmOS merges those cues with its local fallback,
+filters secret-like values, and keeps the same evidence, privacy, and read-path
+purity gates. This is the preferred integration point for product-specific
+entity aliases or temporal parsers; do not add language-specific cue word lists
+to gmOS core.
 Private route ids, debug labels, or host-only control names can be used as
 retrieval hints, but they are not treated as user-facing memory facts: if they do
 not appear in the public query, gmOS renders them as `retrieval_hint` in prompt

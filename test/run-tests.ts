@@ -22,6 +22,7 @@ import {
   createOpenAICompatibleExtractor,
   getGmosRuntimeInfo,
   type EntityResolver,
+  type MemoryCueExtractor,
   type MemoryExtractor,
   type MemoryStore,
 } from "../src/index.js";
@@ -14471,6 +14472,90 @@ assert.equal(
   associativeKeywordReconstructed.stats.evidenceConvergence?.requiredIntentGroupCount,
   0,
 );
+const customCueDb = path.join(tmp, "custom-cue-extractor.db");
+const customCueStore = createSqliteMemoryStore({ path: customCueDb });
+const customCuePhases: string[] = [];
+const customRouteCue = "AtlasCueCustom";
+const customRouteLeakPattern = /AtlasCueCustom|customcueextractorsecret/iu;
+const customCueExtractor: MemoryCueExtractor = ({ text, phase }) => {
+  customCuePhases.push(phase);
+  if (phase === "query" && text.includes("opaque handoff")) {
+    return [
+      { cue: customRouteCue, cueKind: "entity" },
+      { cue: "api key sk-customcueextractorsecret1234567890", cueKind: "entity" },
+    ];
+  }
+  if (phase === "evidence" && text.includes(customRouteCue)) {
+    return [{ cue: customRouteCue, cueKind: "entity" }];
+  }
+  return [];
+};
+const customCueMemory = createMemoryOS({
+  profileId: "custom_cue",
+  store: customCueStore,
+  reconstruction: { cueExtractor: customCueExtractor },
+});
+await customCueMemory.add({
+  profileId: "custom_cue",
+  kind: "project",
+  content: "Saffron Desk owns the routed handoff packet.",
+  metadata: { predicate: customRouteCue },
+});
+const customCueReconstructed = await customCueMemory.reconstructContext({
+  profileId: "custom_cue",
+  query: "opaque handoff owner?",
+  maxSteps: 3,
+  maxBranch: 4,
+  maxMemories: 3,
+});
+assert.match(customCueReconstructed.contextBlock, /Saffron Desk/);
+assert.equal(customCueReconstructed.plannerTrace?.initialCues.includes("retrieval_hint"), true);
+assert.equal(customCuePhases.includes("query"), true);
+assert.equal(customCuePhases.includes("evidence"), true);
+assert.doesNotMatch(JSON.stringify(customCueReconstructed), customRouteLeakPattern);
+await customCueMemory.close();
+const sourceScopeCueDb = path.join(tmp, "source-scope-cue-extractor.db");
+const sourceScopeCueStore = createSqliteMemoryStore({ path: sourceScopeCueDb });
+const sourceScopeCueExtractor: MemoryCueExtractor = ({ text, phase }) => {
+  if (phase === "evidence" && text.includes("Bob owns")) {
+    return [{ cue: "Alice", cueKind: "entity" }];
+  }
+  return [];
+};
+const sourceScopeCueMemory = createMemoryOS({
+  profileId: "source_scope_cue",
+  store: sourceScopeCueStore,
+  extractor: ({ event }) => ({
+    kind: "fact",
+    content: event.content,
+    confidence: 0.9,
+  }),
+  reconstruction: { cueExtractor: sourceScopeCueExtractor },
+});
+await sourceScopeCueMemory.observe({
+  type: "conversation.message",
+  profileId: "source_scope_cue",
+  role: "user",
+  content: "Alice owns the Meridian release plan.",
+  metadata: { speaker: "Alice", speakerKind: "person" },
+});
+await sourceScopeCueMemory.observe({
+  type: "conversation.message",
+  profileId: "source_scope_cue",
+  role: "user",
+  content: "Bob owns the budget lane.",
+  metadata: { speaker: "Bob", speakerKind: "person" },
+});
+const sourceScopeCueReconstructed = await sourceScopeCueMemory.reconstructContext({
+  profileId: "source_scope_cue",
+  query: "Alice owner lane",
+  maxSteps: 4,
+  maxBranch: 6,
+  maxMemories: 3,
+});
+assert.match(sourceScopeCueReconstructed.contextBlock, /Meridian release plan/);
+assert.doesNotMatch(JSON.stringify(sourceScopeCueReconstructed), /Bob owns the budget lane/);
+await sourceScopeCueMemory.close();
 const secretStructuredCue = "api key sk-structuredintentsecret1234567890";
 const secretStructuredTag = "api key sk-structuredtagsecret1234567890";
 const secretStructuredGroupTag = "api key sk-structuredgroupsecret1234567890";

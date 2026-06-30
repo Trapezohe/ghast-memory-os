@@ -1075,6 +1075,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         ? await reconstructMemoryContext({
             store,
             defaultProfileId,
+            cueExtractor: options.reconstruction?.cueExtractor,
             request: {
               profileId,
               query: displayQuery,
@@ -1108,6 +1109,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const reconstructed = await reconstructMemoryContext({
       store,
       defaultProfileId,
+      cueExtractor: options.reconstruction?.cueExtractor,
       request: input,
     });
     assertNoReadSideEffects({
@@ -1126,6 +1128,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const reconstructed = await reconstructMemoryContext({
       store,
       defaultProfileId,
+      cueExtractor: options.reconstruction?.cueExtractor,
       request: {
         ...input,
         includeEvidence: input.includeEvidence ?? true,

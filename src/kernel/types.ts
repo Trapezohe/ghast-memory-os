@@ -178,6 +178,33 @@ export type MemoryTemporalParser =
       ): Promise<MemoryTemporalMetadata | null | undefined> | MemoryTemporalMetadata | null | undefined;
     };
 
+export type MemoryAssociationCueKind =
+  | "lexical"
+  | "kind"
+  | "scope"
+  | "predicate"
+  | "task"
+  | "entity"
+  | "temporal";
+
+export interface MemoryCue {
+  cue: string;
+  cueKind: MemoryAssociationCueKind;
+}
+
+export interface MemoryCueExtractorInput {
+  text: string;
+  phase: "query" | "evidence";
+  maxCues: number;
+}
+
+export type MemoryCueExtractor =
+  | ((input: MemoryCueExtractorInput) => MemoryCue[] | null | undefined)
+  | {
+      name?: string | undefined;
+      extract(input: MemoryCueExtractorInput): MemoryCue[] | null | undefined;
+    };
+
 export type MemoryExtractionRejectReason =
   | "empty_content"
   | "invalid_kind"
@@ -621,7 +648,7 @@ export interface MemoryAssociationRecord {
   id: string;
   profileId: string;
   cue: string;
-  cueKind: "lexical" | "kind" | "scope" | "predicate" | "task" | "entity" | "temporal";
+  cueKind: MemoryAssociationCueKind;
   tag: string;
   targetType: MemoryAssociationTargetType;
   targetId: string;
@@ -884,6 +911,9 @@ export interface MemoryOSOptions {
     ruleMode?: RuleExtractionMode | undefined;
     minConfidence?: number | undefined;
     extractFromRoles?: MemoryRole[] | undefined;
+  } | undefined;
+  reconstruction?: {
+    cueExtractor?: MemoryCueExtractor | undefined;
   } | undefined;
   host?: {
     hostId?: string | undefined;

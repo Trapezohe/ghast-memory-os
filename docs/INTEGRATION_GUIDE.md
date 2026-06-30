@@ -70,6 +70,14 @@ structured `eventTime`, `validFrom`, or `validTo` values. Built-in language/date
 text inference is off by default; set `temporal.inferFromText: true` only when
 the integration explicitly wants gmOS' conservative date-text parser.
 
+If the host already owns entity aliases, calendar cues, or route parsing for
+active reconstruction, pass them through
+`createMemoryOS({ reconstruction: { cueExtractor } })`. The extractor returns
+bounded `{ cue, cueKind }` values for query/evidence text. gmOS still filters
+secret-like cues and merges host cues with its local structural fallback, so
+product-specific semantics stay in the host instead of becoming language-specific
+word lists in gmOS core.
+
 For in-process Node agent runtimes, `@ghast/memory/host` includes a small
 framework-agnostic adapter that wires this lifecycle without depending on a
 specific agent framework:
