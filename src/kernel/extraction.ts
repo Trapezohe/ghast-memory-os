@@ -475,8 +475,9 @@ function firstPersonPreferenceStatement(utterance: string): boolean {
 
 function chineseCurrentToolMatch(utterance: string): RegExpMatchArray | null {
   return [
-    /^\s*我的\s*(?:当前|现在)\s*(?:[\p{Script=Han}\p{L}\p{N}_ -]{0,30}\s*)?(工具|应用|软件|编辑器|浏览器|日历|数据库|IDE|ide)\s*(?:是|为|=)\s*(.{1,80}?)\s*[。.!]?\s*$/u,
-    /^\s*我(?:当前|现在)的\s*(工具|应用|软件|编辑器|浏览器|日历|数据库|IDE|ide)\s*(?:是|为|=)\s*(.{1,80}?)\s*[。.!]?\s*$/u,
+    /^\s*我的\s*(?:当前|现在|目前)\s*(?:[\p{Script=Han}\p{L}\p{N}_ -]{0,30}\s*)?(工具|应用|软件|编辑器|浏览器|日历|数据库|IDE|ide)\s*(?:是|为|=)\s*(.{1,80}?)\s*[。.!]?\s*$/u,
+    /^\s*我(?:当前|现在|目前)的\s*(工具|应用|软件|编辑器|浏览器|日历|数据库|IDE|ide)\s*(?:是|为|=)\s*(.{1,80}?)\s*[。.!]?\s*$/u,
+    /^\s*(?:当前|现在|目前)\s*我的\s*(工具|应用|软件|编辑器|浏览器|日历|数据库|IDE|ide)\s*(?:是|为|=)\s*(.{1,80}?)\s*[。.!]?\s*$/u,
   ].map((pattern) => pattern.exec(utterance)).find((match) => match !== null) ?? null;
 }
 

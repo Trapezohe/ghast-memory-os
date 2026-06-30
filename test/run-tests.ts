@@ -5574,6 +5574,9 @@ const speakerAliasUseToolCandidate = extractRuleMemoryCandidates(
 assert.equal(speakerAliasUseToolCandidate?.subject, "person:Mira Stone");
 assert.deepEqual(speakerAliasUseToolCandidate?.subjectAliases, ["Mira Stone", "Mira"]);
 assert.equal(extractRuleMemoryCandidates("My current browser is Chrome.")[0]?.object, "Chrome");
+assert.equal(extractRuleMemoryCandidates("我目前的浏览器是 Arc。")[0]?.object, "Arc");
+assert.equal(extractRuleMemoryCandidates("目前我的编辑器是 Cursor。")[0]?.object, "Cursor");
+assert.equal(extractRuleMemoryCandidates("我的当前工具是无界。")[0]?.object, "无界");
 for (const invalidWorkAs of [
   "I work as unknown.",
   "I work as not designer.",
@@ -5611,6 +5614,8 @@ for (const invalidRoleAttribute of [
   "我的当前工具是没有。",
   "我现在的浏览器是未设置。",
   "我当前的编辑器是不确定。",
+  "我目前的浏览器是未设置。",
+  "目前我的编辑器是未知。",
 ]) {
   assert.equal(extractRuleMemoryCandidates(invalidRoleAttribute).length, 0);
 }
@@ -8240,6 +8245,20 @@ const chinesePossessiveCurrentToolMemory = await rulesReportMemory.get({
   id: chinesePossessiveCurrentToolReport.memoryIds[0]!,
 });
 assert.equal(chinesePossessiveCurrentToolMemory?.content, "我当前的浏览器是 Arc。");
+const chineseCurrentToolCurrentlyReport = await rulesReportMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "rules_report",
+  role: "user",
+  content: "目前我的编辑器是 Cursor。",
+});
+assert.equal(chineseCurrentToolCurrentlyReport.extraction?.acceptedCandidateCount, 1);
+const chineseCurrentToolCurrentlyCandidate =
+  chineseCurrentToolCurrentlyReport.extraction?.decisions.find(
+    (decision) => decision.decision === "accepted",
+  )?.candidate;
+assert.equal(chineseCurrentToolCurrentlyCandidate?.predicate, "person.tool");
+assert.equal(chineseCurrentToolCurrentlyCandidate?.object, "Cursor");
+assert.equal(chineseCurrentToolCurrentlyCandidate?.cardinality, "single");
 const chineseGeneralToolUseReport = await rulesReportMemory.observeWithReport({
   type: "conversation.message",
   profileId: "rules_report",
