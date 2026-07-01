@@ -13,23 +13,31 @@ export function composeTurnContext(input: {
   includeEvidence?: boolean | undefined;
   contextBudgetTokens?: number | undefined;
 }): PreparedTurn {
+  const memories = input.memories.map((memory) => ({
+    ...memory,
+    kind: safePublicLabel(memory.kind) as MemoryRecord["kind"],
+  }));
+  const actionPolicies = input.actionPolicies.map((policy) => ({
+    ...policy,
+    kind: safePublicLabel(policy.kind) as ActionPolicy["kind"],
+  }));
   const publicEvidence = input.includeEvidence
     ? input.evidence.map(sanitizeEvidenceForPublicOutput)
     : [];
-  const directives = input.actionPolicies
+  const directives = actionPolicies
     .filter((policy) => policy.kind === "do_not_push")
     .map((policy) => `Respect user boundary: ${policy.text}`);
 
   const lines = [
     "<gmos-context>",
     "User-world memory:",
-    ...input.memories.map(
+    ...memories.map(
       (memory) =>
-        `- [${safePublicLabel(memory.kind)}; confidence=${memory.confidence.toFixed(2)}] ${memory.content}`,
+        `- [${memory.kind}; confidence=${memory.confidence.toFixed(2)}] ${memory.content}`,
     ),
     "Action policies:",
-    ...input.actionPolicies.map(
-      (policy) => `- [${safePublicLabel(policy.kind)}; priority=${policy.priority}] ${policy.text}`,
+    ...actionPolicies.map(
+      (policy) => `- [${policy.kind}; priority=${policy.priority}] ${policy.text}`,
     ),
   ];
 
@@ -46,18 +54,18 @@ export function composeTurnContext(input: {
   lines.push("</gmos-context>");
   let contextBlock = lines.join("\n");
   const budget = input.contextBudgetTokens ?? 1800;
-  while (estimateTokens(contextBlock) > budget && input.memories.length > 0) {
-    input.memories.pop();
+  while (estimateTokens(contextBlock) > budget && memories.length > 0) {
+    memories.pop();
     contextBlock = [
       "<gmos-context>",
       "User-world memory:",
-      ...input.memories.map(
+      ...memories.map(
         (memory) =>
-          `- [${safePublicLabel(memory.kind)}; confidence=${memory.confidence.toFixed(2)}] ${memory.content}`,
+          `- [${memory.kind}; confidence=${memory.confidence.toFixed(2)}] ${memory.content}`,
       ),
       "Action policies:",
-      ...input.actionPolicies.map(
-        (policy) => `- [${safePublicLabel(policy.kind)}; priority=${policy.priority}] ${policy.text}`,
+      ...actionPolicies.map(
+        (policy) => `- [${policy.kind}; priority=${policy.priority}] ${policy.text}`,
       ),
       "</gmos-context>",
     ].join("\n");
@@ -66,13 +74,13 @@ export function composeTurnContext(input: {
   return {
     profileId: input.profileId,
     contextBlock,
-    memories: input.memories,
-    actionPolicies: input.actionPolicies,
+    memories,
+    actionPolicies,
     directives,
     evidence: publicEvidence,
     stats: {
-      retrievedMemoryCount: input.memories.length,
-      actionPolicyCount: input.actionPolicies.length,
+      retrievedMemoryCount: memories.length,
+      actionPolicyCount: actionPolicies.length,
       promptTokenEstimate: estimateTokens(contextBlock),
     },
   };
