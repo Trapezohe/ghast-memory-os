@@ -848,7 +848,7 @@ const saved = await memory.add({
 
 const matches = await memory.search({
   profileId: "local-user",
-  query: "风险 方案",
+  query: "结论 方案",
 });
 
 await memory.update({
