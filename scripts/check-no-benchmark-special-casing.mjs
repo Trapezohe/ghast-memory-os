@@ -28,14 +28,18 @@ const coreRuntimeScanRoots = [
 ];
 const benchmarkSurfaceScanRoots = [
   "src/cli/gmos.ts",
+  "src/cli/gmos-inspect.ts",
   "src/gym/external-adapters.ts",
   "src/gym/external.ts",
   "src/gym/external-suite.ts",
+  "src/gym/report.ts",
   "src/gym/state-bench.ts",
   "dist/cli/gmos.js",
+  "dist/cli/gmos-inspect.js",
   "dist/gym/external-adapters.js",
   "dist/gym/external.js",
   "dist/gym/external-suite.js",
+  "dist/gym/report.js",
   "dist/gym/state-bench.js",
   "scripts/create-release-evidence.mjs",
   "examples",
@@ -45,6 +49,7 @@ const publicExampleScanRoots = [
   "docs/API_REFERENCE.md",
   "docs/INTEGRATION_GUIDE.md",
   "src/cli/gmos.ts",
+  "src/cli/gmos-inspect.ts",
   "scripts/create-release-evidence.mjs",
   "examples",
 ];
