@@ -50,12 +50,32 @@ function boundedNumber(input: number | undefined, fallback: number, min: number,
   return Math.max(min, Math.min(input, max));
 }
 
+function textFromContent(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value.map(textFromContent).filter(Boolean).join("\n");
+  }
+  if (!value || typeof value !== "object") return "";
+  const record = value as Record<string, unknown>;
+  if (typeof record.text === "string") return record.text;
+  if (typeof record.output_text === "string") return record.output_text;
+  if (record.content !== undefined) return textFromContent(record.content);
+  return "";
+}
+
 function contentFromCompletion(payload: unknown): string {
-  const choices = (payload as { choices?: unknown }).choices;
+  if (!payload || typeof payload !== "object") return "";
+  const record = payload as Record<string, unknown>;
+  if (typeof record.output_text === "string") return record.output_text;
+  if (Array.isArray(record.output)) {
+    const text = textFromContent(record.output);
+    if (text) return text;
+  }
+  const choices = record.choices;
   if (!Array.isArray(choices)) return "";
   const first = choices[0] as { message?: { content?: unknown }; text?: unknown } | undefined;
   const content = first?.message?.content ?? first?.text;
-  return typeof content === "string" ? content : "";
+  return textFromContent(content);
 }
 
 function parseJsonObject(text: string): unknown {

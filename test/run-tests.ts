@@ -23,6 +23,7 @@ import {
   getGmosRuntimeInfo,
   type EntityResolver,
   type MemoryCueExtractor,
+  type MemoryExtractionInput,
   type MemoryExtractor,
   type MemoryStore,
 } from "../src/index.js";
@@ -140,6 +141,11 @@ const legacyRuleTestExtractor: MemoryExtractor = {
     return extractLegacyRuleMemoryCandidates(input.event.content, input.event.metadata);
   },
 };
+
+async function runExtractorForTest(extractor: MemoryExtractor, input: MemoryExtractionInput) {
+  const result = typeof extractor === "function" ? await extractor(input) : await extractor.extract(input);
+  return Array.isArray(result) ? result : result ? [result] : [];
+}
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-sdk-test-"));
 const associationCueFixture = extractAssociationCues(
@@ -4321,6 +4327,139 @@ const llmExtractorPromptText =
 assert.equal(typeof llmExtractorPromptText, "string");
 assert.match(llmExtractorPromptText, /same language as the source event/u);
 assert.match(llmExtractorPromptText, /do not translate non-English events into fixed English storage phrases/u);
+const openAICompatibleExtractorInput: MemoryExtractionInput = {
+  profileId: "llm_extractor_parser",
+  event: {
+    type: "conversation.message",
+    profileId: "llm_extractor_parser",
+    role: "user",
+    content: "Extractor response parser compatibility check.",
+    privacyMode: "normal",
+  },
+  evidence: {
+    id: "evidence_llm_extractor_parser",
+    eventKey: "llm-extractor-parser",
+    profileId: "llm_extractor_parser",
+    sourceType: "conversation.message",
+    content: "Extractor response parser compatibility check.",
+    sensitivity: "normal",
+    eligibleForLongTermMemory: true,
+    payload: {},
+    createdAt: "2026-06-20T00:00:00.000Z",
+  },
+  ruleCandidates: [],
+};
+const chatPartsExtractor = createOpenAICompatibleExtractor({
+  model: "fixture-chat-parts-model",
+  fetch: async () => ({
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    text: async () =>
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    memories: [
+                      {
+                        kind: "fact",
+                        content: "Chat content parts are parsed as extractor JSON.",
+                        confidence: 0.8,
+                      },
+                    ],
+                  }),
+                },
+              ],
+            },
+          },
+        ],
+      }),
+  }),
+});
+const chatPartsCandidates = await runExtractorForTest(
+  chatPartsExtractor,
+  openAICompatibleExtractorInput,
+);
+assert.equal(chatPartsCandidates[0]?.content, "Chat content parts are parsed as extractor JSON.");
+assert.equal(chatPartsCandidates[0]?.metadata?.llmExtractorModel, "fixture-chat-parts-model");
+const responsesOutputTextExtractor = createOpenAICompatibleExtractor({
+  model: "fixture-responses-output-text-model",
+  fetch: async () => ({
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    text: async () =>
+      JSON.stringify({
+        output_text: JSON.stringify({
+          memories: [
+            {
+              kind: "procedure",
+              content: "Responses output_text is parsed as extractor JSON.",
+              confidence: 0.81,
+            },
+          ],
+        }),
+      }),
+  }),
+});
+const responsesOutputTextCandidates = await runExtractorForTest(
+  responsesOutputTextExtractor,
+  openAICompatibleExtractorInput,
+);
+assert.equal(
+  responsesOutputTextCandidates[0]?.content,
+  "Responses output_text is parsed as extractor JSON.",
+);
+assert.equal(
+  responsesOutputTextCandidates[0]?.metadata?.llmExtractorModel,
+  "fixture-responses-output-text-model",
+);
+const responsesOutputContentExtractor = createOpenAICompatibleExtractor({
+  model: "fixture-responses-output-content-model",
+  fetch: async () => ({
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    text: async () =>
+      JSON.stringify({
+        output: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text: JSON.stringify({
+                  memories: [
+                    {
+                      kind: "project",
+                      content: "Responses output content text is parsed as extractor JSON.",
+                      confidence: 0.82,
+                    },
+                  ],
+                }),
+              },
+            ],
+          },
+        ],
+      }),
+  }),
+});
+const responsesOutputContentCandidates = await runExtractorForTest(
+  responsesOutputContentExtractor,
+  openAICompatibleExtractorInput,
+);
+assert.equal(
+  responsesOutputContentCandidates[0]?.content,
+  "Responses output content text is parsed as extractor JSON.",
+);
+assert.equal(
+  responsesOutputContentCandidates[0]?.metadata?.llmExtractorModel,
+  "fixture-responses-output-content-model",
+);
 assert.equal(JSON.stringify(llmExtractorRequest.body).includes("sk-metadatashouldnotleave"), false);
 assert.equal(JSON.stringify(llmExtractorRequest.body).includes("Mira User"), true);
 assert.equal(JSON.stringify(llmExtractorRequest.body).includes("Mira Alias"), true);
