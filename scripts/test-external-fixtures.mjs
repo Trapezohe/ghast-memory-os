@@ -48,7 +48,11 @@ function caseById(runReport, id) {
 }
 
 function matched(caseReport, value) {
-  return caseReport?.expectedAnyMatched?.includes(value) || caseReport?.expectedAllMatched?.includes(value);
+  if (caseReport?.expectedAnyMatched?.includes(value)) return true;
+  if (Array.isArray(caseReport?.expectedAllMissing)) {
+    return !caseReport.expectedAllMissing.includes(value);
+  }
+  return false;
 }
 
 function hasDiagnostics(caseReport) {
@@ -258,58 +262,93 @@ try {
   );
   writeFileSync(
     failingSuite,
-    JSON.stringify({
-      schema: "gmos.external_benchmark_suite.v1",
-      defaults: { failureSampleLimit: 2 },
-      runs: [{ id: "failing-report", inputFile: path.basename(failingJsonl), datasetFormat: "gmos" }],
-    }),
+    JSON.stringify(
+      {
+        runs: [
+          {
+            id: "failure-run",
+            inputFile: failingJsonl,
+            datasetFormat: "gmos",
+            mode: "reconstruct",
+            failureSampleLimit: 2,
+          },
+        ],
+      },
+      null,
+      2,
+    ),
   );
-  const failingResult = runCli([
+  const failureResult = runCli([
     "gym",
     "external-suite",
     "--suite-file",
     failingSuite,
     "--output-dir",
     outputDir,
+    "--format",
+    "json",
     "--json-file",
     suiteJson,
     "--markdown-file",
     suiteMarkdown,
-    "--format",
-    "json",
   ]);
-  if (failingResult.status !== 0) {
-    process.stderr.write(failingResult.stderr);
-    process.stderr.write(failingResult.stdout);
-    failures.push(`failure smoke command exited ${failingResult.status ?? 1}`);
-  } else {
-    const failingReport = JSON.parse(failingResult.stdout);
-    const perRunReport = JSON.parse(readFileSync(path.join(outputDir, "failing-report.json"), "utf8"));
-    const markdown = readFileSync(path.join(outputDir, "failing-report.md"), "utf8");
-    const suiteMarkdownText = readFileSync(suiteMarkdown, "utf8");
-    if (failingReport.benchmarkPass !== false) failures.push("failure smoke benchmarkPass was not false");
-    if (!failingReport.totalFailureStages?.some((entry) => entry.name === "answer_not_in_input" && entry.count === 1)) {
-      failures.push("failure smoke missing answer_not_in_input stage");
-    }
-    if (!failingReport.totalFailureStages?.some((entry) => entry.name === "answer_normalization_mismatch" && entry.count === 1)) {
-      failures.push("failure smoke missing answer_normalization_mismatch stage");
-    }
-    if (perRunReport.summary?.failureSamples?.[0]?.id !== "fixture-failure-report") {
-      failures.push("failure smoke missing per-run failure sample");
-    }
-    if (
-      !/## Failure Samples/.test(markdown) ||
-      !/answer_not_in_input/.test(markdown) ||
-      !/answer_normalization_mismatch/.test(markdown)
-    ) {
-      failures.push("failure smoke markdown missing failure sample details");
-    }
-    if (
-      !/BenchmarkStatus: FAIL/.test(suiteMarkdownText) ||
-      !/answer_normalization_mismatch/.test(suiteMarkdownText)
-    ) {
-      failures.push("failure smoke suite markdown missing failed benchmark status or normalization stage");
-    }
+  if (failureResult.status !== 0) {
+    process.stderr.write(failureResult.stderr);
+    process.stderr.write(failureResult.stdout);
+    process.exit(failureResult.status ?? 1);
+  }
+  const failureReport = JSON.parse(failureResult.stdout);
+  const failureRun = failureReport.runs?.find((run) => run.id === "failure-run");
+  const failureRunJson = readJsonFile(path.join(outputDir, "failure-run.json"));
+  const failingCase = caseById(failureRunJson, "fixture-failure-report");
+  const normalizationCase = caseById(failureRunJson, "fixture-normalization-report");
+  const markdown = readFileSync(suiteMarkdown, "utf8");
+  const jsonArtifact = readJsonFile(suiteJson);
+  const artifactManifest = jsonArtifact.runs?.[0]?.manifest;
+  if (failureReport.pass !== true) failures.push("failure suite dry-run command did not pass");
+  if (failureReport.benchmarkPass !== false) failures.push("failure suite benchmarkPass did not stay false");
+  if (failureRun?.pass !== false) failures.push("failure run pass did not stay false");
+  if (failureRun?.failureStages?.not_extracted_or_filtered < 1) {
+    failures.push("failure run missing not_extracted_or_filtered stage");
+  }
+  if (failureRun?.failureStages?.answer_normalization_mismatch < 1) {
+    failures.push("failure run missing answer_normalization_mismatch stage");
+  }
+  if (failureRun?.scoreAttribution?.extraction_or_memory_update < 1) {
+    failures.push("failure run missing extraction_or_memory_update attribution");
+  }
+  if (failureRun?.scoreAttribution?.scorer_normalization < 1) {
+    failures.push("failure run missing scorer_normalization attribution");
+  }
+  if (!failingCase?.failureTaxonomy?.some((entry) => entry.stage === "not_extracted_or_filtered")) {
+    failures.push("failing case missing not_extracted_or_filtered taxonomy");
+  }
+  if (!normalizationCase?.failureTaxonomy?.some((entry) => entry.stage === "answer_normalization_mismatch")) {
+    failures.push("normalization case missing answer_normalization_mismatch taxonomy");
+  }
+  if (normalizationCase?.strictPass !== false || normalizationCase?.normalizedEvidencePass !== true) {
+    failures.push("normalization case did not keep strict/normalized score split");
+  }
+  if (artifactManifest?.inputHash?.algorithm !== "sha256") {
+    failures.push("json artifact missing input sha256 manifest");
+  }
+  if (artifactManifest?.scoreSemantics?.primaryScore !== "strictScore") {
+    failures.push("json artifact missing score semantics");
+  }
+  if (artifactManifest?.scoreSemantics?.officialProtocol !== "not_run") {
+    failures.push("json artifact did not mark official protocol as not_run");
+  }
+  if (artifactManifest?.runtime?.diagnosticsRuntimeMs === undefined) {
+    failures.push("json artifact missing diagnostics runtime split");
+  }
+  if (!markdown.includes("## Diagnostic Summary") || !markdown.includes("Weakest slice scores")) {
+    failures.push("suite markdown missing diagnostic summary");
+  }
+  if (!markdown.includes("not_extracted_or_filtered") || !markdown.includes("answer_normalization_mismatch")) {
+    failures.push("suite markdown missing failure stages");
+  }
+  if (!markdown.includes("strictScore") || !markdown.includes("normalizedEvidenceScore")) {
+    failures.push("suite markdown missing score semantics fields");
   }
 } finally {
   rmSync(failureTmp, { recursive: true, force: true });
@@ -317,10 +356,7 @@ try {
 
 if (failures.length > 0) {
   process.stderr.write(`External fixture gate failed: ${failures.join("; ")}\n`);
-  process.stderr.write(`${JSON.stringify(report, null, 2)}\n`);
   process.exit(1);
 }
 
-process.stdout.write(
-  `External fixture gate passed: ${report.totalPassedCount}/${report.totalCaseCount} cases across ${report.runCount} runs\n`,
-);
+console.log("[gmos] external fixture gate passed");
