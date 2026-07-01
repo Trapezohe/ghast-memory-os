@@ -1285,6 +1285,7 @@ function pathFromDirectMemory(
     confidence: candidate.memory.confidence,
     routeScore: candidate.routeScore,
     routeReason: candidate.routeReason,
+    routeSources: ["hybrid_direct_memory"],
     informationGain: Math.max(0.1, candidate.memory.confidence),
     sourceMemoryId: candidate.memory.id,
     sourceEvidenceId: candidate.memory.sourceEventId,
@@ -1308,6 +1309,7 @@ function directMemoryCue(
 function addRouteSignal(path: ReconstructedEvidencePath, score: number, reason: string): void {
   path.routeScore = (path.routeScore ?? path.confidence) + score;
   path.routeReason = path.routeReason ? `${path.routeReason},${reason}` : reason;
+  path.routeSources = [...new Set([...(path.routeSources ?? []), "hybrid_direct_memory"])];
 }
 
 function informationGainForPath(input: {
@@ -1404,7 +1406,7 @@ async function fuseDirectMemorySearch(input: {
       (path) => path.targetType === "memory" && path.targetId === candidate.memory.id,
     );
     if (!existingPath) continue;
-    if (!existingPath.routeReason?.includes("hybrid_direct_memory_rrf")) {
+    if (!existingPath.routeSources?.includes("hybrid_direct_memory")) {
       addRouteSignal(existingPath, candidate.routeScore, candidate.routeReason);
       reinforcedPaths.push({ ...existingPath });
     }

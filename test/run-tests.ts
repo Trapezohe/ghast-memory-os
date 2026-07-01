@@ -15959,6 +15959,7 @@ const hybridPath = hybridReconstruction.paths.find((path) =>
 );
 assert.ok(hybridPath);
 assert.match(hybridPath.routeReason ?? "", /hybrid_(direct_memory_rrf|memory)/);
+assert.ok(hybridPath.routeSources?.includes("hybrid_direct_memory"));
 assert.ok((hybridPath.informationGain ?? 0) > 0);
 await reconstructionMemory.add({
   profileId: "recon",

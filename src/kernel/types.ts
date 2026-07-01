@@ -405,6 +405,7 @@ export interface ReconstructedEvidencePath {
   confidence: number;
   routeScore?: number | undefined;
   routeReason?: string | undefined;
+  routeSources?: string[] | undefined;
   informationGain?: number | undefined;
   sourceMemoryId?: string | null | undefined;
   sourceEvidenceId?: string | null | undefined;
