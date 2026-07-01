@@ -62,8 +62,8 @@ export interface ConversationSourceMetadata extends Record<string, unknown> {
   speaker?: string | undefined;
   speakerKind?: ConversationSpeakerKind | undefined;
   speakerId?: string | undefined;
-  speakerAliases?: string[] | undefined;
-  participants?: string[] | undefined;
+  speakerAliases?: readonly string[] | undefined;
+  participants?: readonly string[] | undefined;
   sessionId?: string | undefined;
   sessionKey?: string | undefined;
   sourceId?: string | undefined;

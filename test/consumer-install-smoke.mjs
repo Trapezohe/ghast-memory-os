@@ -707,8 +707,8 @@ try {
       const sourceMetadata: ConversationSourceMetadata = {
         speaker: "Mira",
         speakerKind,
-        speakerAliases: ["mira-local"],
-        participants: ["Mira", "Blair"],
+        speakerAliases: ["mira-local"] as const,
+        participants: ["Mira", "Blair"] as const,
       };
       const typedConversationEvent: ConversationMessageEvent = {
         type: "conversation.message",
