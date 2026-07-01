@@ -242,6 +242,14 @@ const manifest = {
   },
 };
 
+if ((skipGate || skipFreshInstall) && !dryRun && !allowDirty) {
+  failAfterWriting(
+    manifest,
+    outputDir,
+    "release evidence cannot skip pr_gate or fresh_install_smoke unless this is an explicit diagnostic run with --dry-run or --allow-dirty",
+  );
+}
+
 if (gitInfo.dirty && !allowDirty) {
   failAfterWriting(
     manifest,

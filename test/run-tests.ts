@@ -20787,5 +20787,23 @@ const releaseEvidenceSummary = readFileSync(
 );
 assert.match(releaseEvidenceSummary, /Known limitations/);
 assert.match(releaseEvidenceDryRun.stdout, /gmos.release_evidence.v1/);
+
+const skippedReleaseEvidenceDir = path.join(tmp, "release-evidence-skipped-public");
+const skippedReleaseEvidence = spawnSync(
+  process.execPath,
+  [
+    "scripts/create-release-evidence.mjs",
+    "--skip-gate",
+    "--output-dir",
+    skippedReleaseEvidenceDir,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(skippedReleaseEvidence.status, 0);
+assert.match(
+  skippedReleaseEvidence.stderr,
+  /release evidence cannot skip pr_gate or fresh_install_smoke/,
+);
+assert.equal(existsSync(path.join(skippedReleaseEvidenceDir, "manifest.json")), true);
 rmSync(tmp, { recursive: true, force: true });
 console.log("[gmos-sdk] tests passed");
