@@ -92,15 +92,21 @@ const memory = createMemoryOS({
 });
 ```
 
-Run the packaged smoke example:
+Run the packaged smoke examples:
 
 ```bash
 npm run examples:structured-extractor
+npm run examples:openai-compatible-extractor
 ```
 
-That example demonstrates host-owned candidate generation, host-owned cue
-extraction, gmOS evidence recording, action-policy projection, context
-preparation, and active reconstruction.
+`examples/structured-extractor.mjs` demonstrates host-owned candidate generation,
+host-owned cue extraction, gmOS evidence recording, action-policy projection,
+context preparation, and active reconstruction.
+
+`examples/openai-compatible-extractor.mjs` exercises
+`createOpenAICompatibleExtractor()` with a fake `/chat/completions` response, so
+hosts can verify provider-shaped JSON parsing and write-path validation without
+network access or API keys.
 
 ## Validation Checklist
 
