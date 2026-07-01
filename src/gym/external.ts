@@ -108,6 +108,14 @@ export interface ExternalMemoryBenchmarkFailureTaxonomyEntry {
   terms: string[];
 }
 
+export interface ExternalMemoryBenchmarkCaseMatched {
+  expectedAny: string[];
+  expectedAnyNormalized: string[];
+  expectedAll: string[];
+  expectedAllNormalized: string[];
+  forbidden: string[];
+}
+
 export type ExternalMemoryBenchmarkScoreAttributionArea =
   | "adapter_or_source_answer_alignment"
   | "scorer_normalization"
@@ -134,6 +142,7 @@ export interface ExternalMemoryBenchmarkCaseResult {
   expectedAllMissing: string[];
   expectedAllNormalizedMissing: string[];
   forbiddenMatches: string[];
+  matched: ExternalMemoryBenchmarkCaseMatched;
   failureReasons: string[];
   failureTaxonomy?: ExternalMemoryBenchmarkFailureTaxonomyEntry[] | undefined;
   warnings: string[];
@@ -201,6 +210,7 @@ export interface ExternalMemoryBenchmarkFailureSample {
   expectedAnyMissing: string[];
   expectedAllMissing: string[];
   forbiddenMatches: string[];
+  matched: ExternalMemoryBenchmarkCaseMatched;
   missingRequiredIntentGroups: string[];
   evidenceConvergenceScore: number | null;
   evidenceConvergenceReached: boolean | null;
@@ -1363,6 +1373,7 @@ function failureSampleForCase(
     expectedAnyMissing: entry.expectedAnyMissing,
     expectedAllMissing: entry.expectedAllMissing,
     forbiddenMatches: entry.forbiddenMatches,
+    matched: entry.matched,
     missingRequiredIntentGroups: entry.diagnostics.missingRequiredIntentGroups,
     evidenceConvergenceScore: entry.diagnostics.evidenceConvergenceScore,
     evidenceConvergenceReached: entry.diagnostics.evidenceConvergenceReached,
@@ -1644,11 +1655,22 @@ async function scoreCase(input: {
   const expectedAnyNormalizedMatched = expectedAny.filter((term) =>
     contextContainsTermOrNormalizedAnswer(context, term),
   );
+  const expectedAllMatched = expectedAll.filter((term) => includesTerm(context, term));
+  const expectedAllNormalizedMatched = expectedAll.filter((term) =>
+    contextContainsTermOrNormalizedAnswer(context, term),
+  );
   const expectedAllMissing = expectedAll.filter((term) => !includesTerm(context, term));
   const expectedAllNormalizedMissing = expectedAll.filter(
     (term) => !contextContainsTermOrNormalizedAnswer(context, term),
   );
   const forbiddenMatches = forbiddenAny.filter((term) => includesTerm(context, term));
+  const matched: ExternalMemoryBenchmarkCaseMatched = {
+    expectedAny: expectedAnyMatched,
+    expectedAnyNormalized: expectedAnyNormalizedMatched,
+    expectedAll: expectedAllMatched,
+    expectedAllNormalized: expectedAllNormalizedMatched,
+    forbidden: forbiddenMatches,
+  };
   const expectedAnyMissing =
     expectedAny.length > 0 && expectedAnyMatched.length === 0 ? expectedAny : [];
   const expectedAnyNormalizedMissing =
@@ -1705,6 +1727,7 @@ async function scoreCase(input: {
     expectedAllMissing,
     expectedAllNormalizedMissing,
     forbiddenMatches,
+    matched,
     failureReasons,
     failureTaxonomy: taxonomyResult.entries,
     warnings,

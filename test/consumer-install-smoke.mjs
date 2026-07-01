@@ -646,6 +646,7 @@ try {
         type StateBenchPreparedRunManifest,
         type ExternalMemoryBenchmarkDatasetAdapter,
         type ExternalMemoryBenchmarkDatasetFormat,
+        type ExternalMemoryBenchmarkCaseMatched,
         type ExternalMemoryBenchmarkResult,
         type ExternalMemoryBenchmarkSliceScore,
         type ExternalMemoryBenchmarkSuiteExecution,
@@ -884,6 +885,10 @@ try {
         }],
       });
       if (!externalResult.pass) throw new Error("typed external benchmark failed");
+      const typedMatched: ExternalMemoryBenchmarkCaseMatched | undefined = externalResult.cases[0]?.matched;
+      if (typedMatched?.expectedAll[0] !== "rollback matrix") {
+        throw new Error("typed external matched diagnostics failed");
+      }
       const typedSliceScore: ExternalMemoryBenchmarkSliceScore | undefined = externalResult.summary.sliceScores?.[0];
       if (typedSliceScore?.name !== "consumer:typed") {
         throw new Error("typed external slice score failed");

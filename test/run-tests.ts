@@ -17268,6 +17268,8 @@ assert.equal(externalBenchmark.summary.failureSamples.length, 0);
 assert.equal(externalBenchmark.cases[0]?.failureReasons.length, 0);
 assert.equal(externalBenchmark.cases[0]?.strictPass, true);
 assert.equal(externalBenchmark.cases[0]?.normalizedEvidencePass, true);
+assert.deepEqual(externalBenchmark.cases[0]?.matched.expectedAll, ["rollback matrix"]);
+assert.deepEqual(externalBenchmark.cases[0]?.matched.forbidden, []);
 assert.equal((externalBenchmark.cases[0]?.scoringRuntimeMs ?? -1) >= 0, true);
 assert.equal((externalBenchmark.cases[0]?.taxonomyRuntimeMs ?? -1) >= 0, true);
 assert.equal((externalBenchmark.cases[0]?.wideBudgetDiagnosticRuntimeMs ?? -1) >= 0, true);
@@ -17389,7 +17391,7 @@ const externalFailureSummaryBenchmark = await runExternalMemoryBenchmark({
       temporalMode: "history",
       events: [{ type: "memory", kind: "fact", content: "Visible answer is Alpha." }],
       question: "What is visible?",
-      expectedAll: ["Missing Alpha"],
+      expectedAll: ["Alpha", "Missing Alpha"],
     },
     {
       id: "missing-two",
@@ -17440,9 +17442,16 @@ assert.equal(
   externalFailureSummaryBenchmark.summary.failureSamples[0]?.expectedAllMissing[0],
   "Missing Alpha",
 );
+assert.deepEqual(externalFailureSummaryBenchmark.summary.failureSamples[0]?.matched.expectedAll, [
+  "Alpha",
+]);
 assert.deepEqual(externalFailureSummaryBenchmark.summary.failureSamples[0]?.failureTaxonomy, [
   { stage: "answer_not_in_input", terms: ["Missing Alpha"] },
 ]);
+assert.match(
+  renderExternalMemoryBenchmarkMarkdown(externalFailureSummaryBenchmark),
+  /missing-one.*Alpha.*Missing Alpha/,
+);
 const externalAnswerNormalizationBenchmark = await runExternalMemoryBenchmark({
   cases: [
     {
@@ -17586,6 +17595,10 @@ assert.equal(
   externalAnswerNormalizationBenchmark.normalizedEvidenceScore,
   10 / externalAnswerNormalizationBenchmark.caseCount,
 );
+assert.deepEqual(externalAnswerNormalizationBenchmark.cases[0]?.matched.expectedAll, []);
+assert.deepEqual(externalAnswerNormalizationBenchmark.cases[0]?.matched.expectedAllNormalized, [
+  "Alpha Beta",
+]);
 assert.deepEqual(externalAnswerNormalizationBenchmark.summary.failureStages, [
   { name: "answer_not_in_input", count: 12 },
   { name: "answer_normalization_mismatch", count: 10 },
@@ -18015,6 +18028,8 @@ assert.match(
 assert.match(renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!), /Duration ms/);
 assert.match(renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!), /Strict score:/);
 assert.match(renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!), /Normalized evidence score:/);
+assert.match(renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!), /Matched expectedAny/);
+assert.match(renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!), /Matched expectedAll/);
 assert.match(
   renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!),
   /Score attribution: adapter_or_source_answer_alignment=1/,
