@@ -579,10 +579,12 @@ function outcomeInput(args: Record<string, unknown>): CommitOutcomeInput {
   const profileId = optionalString(args, "profileId");
   const taskId = optionalString(args, "taskId");
   const summary = optionalString(args, "summary");
+  const failureKind = optionalFailureKind(args);
   const createdAt = optionalString(args, "createdAt");
   if (profileId !== undefined) input.profileId = profileId;
   if (taskId !== undefined) input.taskId = taskId;
   if (summary !== undefined) input.summary = summary;
+  if (failureKind !== undefined) input.failureKind = failureKind;
   if (createdAt !== undefined) input.createdAt = createdAt;
   return input;
 }

@@ -138,6 +138,7 @@ const commitOutcomeSchema = z.object({
   objective: z.string().min(1),
   status: z.enum(["completed", "failed"]),
   summary: z.string().optional(),
+  failureKind: failureKindSchema.optional(),
   createdAt: z.string().optional(),
 }).strict();
 

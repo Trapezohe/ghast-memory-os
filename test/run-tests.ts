@@ -5760,6 +5760,14 @@ await hostSafetyMemory.commitOutcome({
   objective: "HostTaskOnlySecret failed objective",
   status: "failed",
   summary: "HostTaskOnlySecret failed summary.",
+  failureKind: "privacy_leak",
+});
+await hostSafetyMemory.commitOutcome({
+  profileId: "host_safety",
+  objective: "HostTaskCompletedNoFailure failed-looking objective",
+  status: "completed",
+  summary: "HostTaskCompletedNoFailure summary.",
+  failureKind: "wrong_recall",
 });
 await hostSafetyMemory.commitOutcome({
   profileId: "host_safety",
@@ -5782,6 +5790,17 @@ await hostSafetyMemory.observeWithReport({
   objective: "HostTaskOnlySensitive observe failed objective",
   summary: "HostTaskOnlySensitive observe failed summary.",
 });
+const hostPrivacyLeakFailures = await hostSafetyStore.listFailures?.({
+  profileId: "host_safety",
+  failureKind: "privacy_leak",
+});
+assert.equal(JSON.stringify(hostPrivacyLeakFailures).includes("HostTaskOnlySecret"), false);
+assert.equal(JSON.stringify(hostPrivacyLeakFailures).includes("[redacted_secret]"), true);
+const completedNoFailureRows = await hostSafetyStore.listFailures?.({
+  profileId: "host_safety",
+  failureKind: "wrong_recall",
+});
+assert.equal(JSON.stringify(completedNoFailureRows).includes("HostTaskCompletedNoFailure"), false);
 const hostCrossSurfaceFailures = await hostSafetyStore.listFailures?.({
   profileId: "host_safety",
   failureKind: "task_failure",
@@ -13488,7 +13507,14 @@ await mcpServer.callTool("memory.commit_outcome", {
   objective: "verify mcp server",
   status: "failed",
   summary: "mcp fixture failure",
+  failureKind: "privacy_leak",
 });
+const mcpPrivacyLeakFailures = await store.listFailures?.({
+  profileId: "mcp",
+  failureKind: "privacy_leak",
+});
+assert.equal(mcpPrivacyLeakFailures?.length, 1);
+assert.equal(mcpPrivacyLeakFailures?.[0]?.content, "mcp fixture failure");
 const mcpCounts = await store.rowCounts();
 assert.ok(mcpCounts.gmos_failure_events >= 3);
 

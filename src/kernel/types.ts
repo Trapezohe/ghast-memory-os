@@ -532,6 +532,7 @@ export interface CommitOutcomeInput {
   objective: string;
   status: "completed" | "failed";
   summary?: string | undefined;
+  failureKind?: FailureKind | undefined;
   createdAt?: string | undefined;
 }
 

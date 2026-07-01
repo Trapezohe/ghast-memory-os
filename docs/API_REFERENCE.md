@@ -94,7 +94,8 @@ Primary methods:
 - `reconstructContext(input)`: run bounded cue/tag/content reconstruction with
   evidence convergence and planner trace metadata.
 - `explainEvidencePath(input)`: explain why evidence was selected for a query.
-- `commitOutcome(input)`: record task outcome signals.
+- `commitOutcome(input)`: record task outcome signals. Failed outcomes may pass
+  `failureKind`; omitted values default to `task_failure`.
 - `recordFeedback(input)`: record user or host feedback into the failure loop.
 - `forget(input)`: archive matching memory and remove it from future context.
   Prefer structured `targetTerms` when a host already knows the deletion target;

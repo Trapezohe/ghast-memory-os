@@ -39,6 +39,19 @@ const RECONSTRUCTION_INTENT_SCHEMA = {
   },
 };
 
+const FAILURE_KIND_SCHEMA = {
+  type: "string",
+  enum: [
+    "missed_recall",
+    "wrong_recall",
+    "privacy_leak",
+    "forget_failure",
+    "controller_route_error",
+    "action_policy_missing",
+    "task_failure",
+  ],
+};
+
 const PREPARE_RECONSTRUCTION_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -228,6 +241,7 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
           objective: { type: "string" },
           status: { type: "string", enum: ["completed", "failed"] },
           summary: { type: "string" },
+          failureKind: FAILURE_KIND_SCHEMA,
           createdAt: { type: "string" },
         },
       },
@@ -242,7 +256,7 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
         properties: {
           profileId: { type: "string" },
           content: { type: "string" },
-          failureKind: { type: "string" },
+          failureKind: FAILURE_KIND_SCHEMA,
           createdAt: { type: "string" },
         },
       },

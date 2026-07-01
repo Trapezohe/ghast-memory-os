@@ -1337,12 +1337,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       objective: input.objective,
       status: input.status,
       summary: input.summary,
+      failureKind: input.failureKind,
       createdAt: input.createdAt,
     }, classifyRuntimeSensitivity);
     if (taskOutcomeResult === "recorded" && input.status === "failed") {
       await recordRuntimeFailure(store, {
         profileId,
-        failureKind: "task_failure",
+        failureKind: input.failureKind ?? "task_failure",
         content: input.summary ?? input.objective,
         createdAt: input.createdAt,
         additionalSurfaces: ["task_trajectory"],

@@ -96,6 +96,7 @@ export async function recordRuntimeTaskOutcome(
     objective: string;
     status: "completed" | "failed";
     summary?: string | undefined;
+    failureKind?: FailureKind | undefined;
     createdAt?: string | undefined;
   },
   classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
@@ -109,7 +110,7 @@ export async function recordRuntimeTaskOutcome(
   );
   if (sensitivity !== "secret_like") {
     await store.recordTaskTrajectory({
-      ...input,
+      profileId: input.profileId,
       taskId: input.taskId
         ? taskTrajectoryTextForStorage(
             input.taskId,
@@ -129,6 +130,8 @@ export async function recordRuntimeTaskOutcome(
             additionalSurfaces,
           )
         : undefined,
+      status: input.status,
+      createdAt: input.createdAt,
     });
     return "recorded";
   }
@@ -137,7 +140,7 @@ export async function recordRuntimeTaskOutcome(
       store,
       {
         profileId: input.profileId,
-        failureKind: "task_failure",
+        failureKind: input.failureKind ?? "task_failure",
         content: input.summary ?? input.objective,
         createdAt: input.createdAt,
         metadata: { taskTrajectorySkippedReason: "secret_like" },
