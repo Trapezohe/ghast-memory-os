@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const coreRuntimeScanRoots = [
   "src/index.ts",
+  "src/runtime-info.ts",
   "src/kernel",
   "src/runtime",
   "src/store",
@@ -14,6 +15,16 @@ const coreRuntimeScanRoots = [
   "src/host",
   "src/diagnostics",
   "src/evolution",
+  "dist/index.js",
+  "dist/runtime-info.js",
+  "dist/kernel",
+  "dist/runtime",
+  "dist/store",
+  "dist/mcp",
+  "dist/http",
+  "dist/host",
+  "dist/diagnostics",
+  "dist/evolution",
 ];
 const benchmarkSurfaceScanRoots = [
   "src/cli/gmos.ts",
@@ -21,6 +32,11 @@ const benchmarkSurfaceScanRoots = [
   "src/gym/external.ts",
   "src/gym/external-suite.ts",
   "src/gym/state-bench.ts",
+  "dist/cli/gmos.js",
+  "dist/gym/external-adapters.js",
+  "dist/gym/external.js",
+  "dist/gym/external-suite.js",
+  "dist/gym/state-bench.js",
   "scripts/create-release-evidence.mjs",
   "examples",
 ];
@@ -67,6 +83,7 @@ if (selfCheckSamples.some((sample) => !forbidden.test(sample) && !datasetShortcu
 }
 
 function filesUnder(dir) {
+  if (!existsSync(dir)) return [];
   if (statSync(dir).isFile()) return /\.(?:ts|js|mjs|json|jsonl|md)$/u.test(dir) ? [dir] : [];
   return readdirSync(dir).flatMap((entry) => {
     const fullPath = path.join(dir, entry);
@@ -156,7 +173,16 @@ function relative(file) {
 
 const coreFiles = uniqueFiles(
   coreRuntimeScanRoots.flatMap((relativeRoot) => filesUnder(path.join(root, relativeRoot))),
-).filter((file) => file.endsWith(".ts"));
+).filter((file) => /\.(?:ts|js|mjs)$/u.test(file));
+const coreRelativeFiles = new Set(coreFiles.map(relative));
+if (
+  existsSync(path.join(root, "dist")) &&
+  (!coreRelativeFiles.has("dist/runtime/create-memory-os.js") ||
+    !coreRelativeFiles.has("dist/kernel/reconstruction.js") ||
+    !coreRelativeFiles.has("dist/runtime-info.js"))
+) {
+  throw new Error("compiled runtime scanner did not include expected dist files");
+}
 const benchmarkSurfaceFiles = uniqueFiles(
   benchmarkSurfaceScanRoots.flatMap((relativeRoot) => filesUnder(path.join(root, relativeRoot))),
 ).filter((file) => !benchmarkSurfaceExcludes.has(relative(file)));
