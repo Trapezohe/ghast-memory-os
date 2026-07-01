@@ -193,7 +193,7 @@ export function sanitizeEvidenceForPublicOutput(evidence: EvidenceEvent): Eviden
     id: redactForReport(evidence.id),
     eventKey: redactForReport(evidence.eventKey),
     profileId: redactForReport(evidence.profileId),
-    sourceType: redactForReport(evidence.sourceType),
+    sourceType: safePublicLabel(evidence.sourceType),
     sourceUri: evidence.sourceUri == null ? evidence.sourceUri : redactForReport(evidence.sourceUri),
     content: redactForReport(evidence.content),
     payload: sanitizePublicPayloadRecord(evidence.payload),

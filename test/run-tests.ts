@@ -1071,6 +1071,7 @@ const unsafeSourceLabelPrepared = await memory.prepareTurn({
   messages: [{ role: "user", content: "safe evidence label" }],
   includeEvidence: true,
 });
+assert.equal(unsafeSourceLabelPrepared.evidence[0]?.sourceType, "other");
 assert.match(unsafeSourceLabelPrepared.contextBlock, /\[other; normal; eligible=true\]/);
 assert.doesNotMatch(unsafeSourceLabelPrepared.contextBlock, /source-type-injected/);
 const unsafeSourceLabelReconstructed = await memory.reconstructContext({
