@@ -4313,6 +4313,14 @@ assert.equal(llmExtractorRequest.headers?.authorization, "Bearer test-key");
 assert.equal(llmExtractorRequest.headers?.["x-provider-fixture"], "enabled");
 assert.equal(llmExtractorRequest.body?.model, "fixture-memory-model");
 assert.deepEqual(llmExtractorRequest.body?.response_format, { type: "json_object" });
+const llmExtractorMessages = llmExtractorRequest.body?.messages;
+assert.equal(Array.isArray(llmExtractorMessages), true);
+assert.equal((llmExtractorMessages as Array<{ role?: unknown }>)[0]?.role, "system");
+const llmExtractorPromptText =
+  (llmExtractorMessages as Array<{ content?: unknown }>)[0]?.content;
+assert.equal(typeof llmExtractorPromptText, "string");
+assert.match(llmExtractorPromptText, /same language as the source event/u);
+assert.match(llmExtractorPromptText, /do not translate non-English events into fixed English storage phrases/u);
 assert.equal(JSON.stringify(llmExtractorRequest.body).includes("sk-metadatashouldnotleave"), false);
 assert.equal(JSON.stringify(llmExtractorRequest.body).includes("Mira User"), true);
 assert.equal(JSON.stringify(llmExtractorRequest.body).includes("Mira Alias"), true);

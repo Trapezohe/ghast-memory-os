@@ -156,6 +156,7 @@ function systemPrompt(maxCandidates: number): string {
     "Do not emit person memory or PERSON-routed facts.",
     "Do not emit API keys, passwords, tokens, private keys, SSNs, or other secret-like content.",
     "Only extract durable user-world information that is useful in future turns.",
+    "Write candidate content in the same language as the source event. Preserve source wording where it carries meaning; do not translate non-English events into fixed English storage phrases.",
     "Use confidence from 0 to 1. Use cardinality='single' only for current-state beliefs.",
     "Use subject, subjectAliases, predicate, and object for world-state facts; object should be the concise current value. Use speaker only when the fact belongs to a named human speaker and subject is not already explicit. Use source only for a concise public source label. Use eventTime, validFrom, and validTo as ISO dates or instants when the text gives time bounds.",
   ].join("\n");
