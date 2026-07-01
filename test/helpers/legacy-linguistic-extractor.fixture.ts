@@ -4,17 +4,9 @@
 // can exercise world-belief/update/materialization paths without requiring a
 // network LLM. It must never be imported from src/ or exposed as SDK fallback.
 import type {
-  MemoryExtractionAcceptanceClass,
   MemoryExtractionCandidate,
-  MemoryExtractionCandidateSnapshot,
-  MemoryExtractionDecision,
-  MemoryExtractionFallbackReason,
-  MemoryExtractionInput,
-  MemoryExtractionReport,
   MemoryExtractionRejectClass,
   MemoryExtractionRejectReason,
-  MemoryExtractionResult,
-  MemoryExtractor,
 } from "../../src/kernel/types.js";
 import {
   classifySensitivity,
@@ -29,11 +21,6 @@ import {
   mergeExplicitTemporalValidityMetadata,
   normalizeExplicitTemporalInstant,
 } from "../../src/kernel/temporal-validity.js";
-
-interface MemoryExtractionPlan {
-  report: MemoryExtractionReport;
-  candidates: MemoryExtractionCandidate[];
-}
 
 function legacyRelativeEventDateMetadata(
   content: string,
@@ -123,24 +110,9 @@ const KNOWN_MEMORY_KINDS = new Set([
   "task_trajectory",
 ]);
 
-function extractorName(extractor: MemoryExtractor | undefined): string | undefined {
-  if (!extractor) return undefined;
-  if (typeof extractor === "function") return extractor.name || undefined;
-  return extractor.name;
-}
-
-function asCandidateArray(result: MemoryExtractionResult): MemoryExtractionCandidate[] | null {
-  if (result === null || result === undefined) return null;
-  return Array.isArray(result) ? result : [result];
-}
-
 function boundedConfidence(input: number, fallback: number): number {
   if (!Number.isFinite(input)) return fallback;
   return Math.max(0, Math.min(1, input));
-}
-
-function publicString(value: string): string {
-  return redactForReport(normalize(value));
 }
 
 function normalizedStringArray(value: unknown): string[] | undefined {
@@ -153,12 +125,7 @@ function normalizedStringArray(value: unknown): string[] | undefined {
 }
 
 function publicStringArray(value: unknown): string[] | undefined {
-  const output = normalizedStringArray(value)?.map(publicString);
-  return output && output.length > 0 ? output : undefined;
-}
-
-function sanitizeCandidateReportMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
-  return stripGmosOwnedMetadataFields(sanitizePublicPayloadRecord(metadata));
+  return normalizedStringArray(value);
 }
 
 function subjectKey(input: string): string {
@@ -193,61 +160,6 @@ function normalizedSubjectAliases(candidate: MemoryExtractionCandidate): string[
     ? rawAliases.filter((alias) => stableNamedPersonSubject(alias))
     : rawAliases;
   return uniqueStrings(aliases);
-}
-
-function snapshotCandidate(candidate: unknown): MemoryExtractionCandidateSnapshot {
-  const record = candidate && typeof candidate === "object" && !Array.isArray(candidate)
-    ? (candidate as Record<string, unknown>)
-    : {};
-  const content = typeof record.content === "string" ? normalize(record.content) : "";
-  const confidence = Number(record.confidence);
-  const subjectAliases = publicStringArray(record.subjectAliases);
-  const metadata =
-    record.metadata && typeof record.metadata === "object" && !Array.isArray(record.metadata)
-      ? sanitizeCandidateReportMetadata(record.metadata as Record<string, unknown>)
-      : undefined;
-  return {
-    ...(typeof record.kind === "string" ? { kind: publicString(record.kind) } : {}),
-    content: publicString(content),
-    ...(Number.isFinite(confidence) ? { confidence } : {}),
-    ...(typeof record.predicate === "string" ? { predicate: publicString(record.predicate) } : {}),
-    ...(typeof record.subject === "string" ? { subject: publicString(record.subject) } : {}),
-    ...(subjectAliases ? { subjectAliases } : {}),
-    ...(typeof record.speaker === "string" ? { speaker: publicString(record.speaker) } : {}),
-    ...(typeof record.object === "string" ? { object: publicString(record.object) } : {}),
-    ...(typeof record.source === "string" ? { source: publicString(record.source) } : {}),
-    ...(typeof record.eventTime === "string" ? { eventTime: publicString(record.eventTime) } : {}),
-    ...(typeof record.validFrom === "string" ? { validFrom: publicString(record.validFrom) } : {}),
-    ...(typeof record.validTo === "string" ? { validTo: publicString(record.validTo) } : {}),
-    ...(typeof record.cardinality === "string" ? { cardinality: publicString(record.cardinality) } : {}),
-    ...(typeof record.actionPolicyKind === "string"
-      ? { actionPolicyKind: publicString(record.actionPolicyKind) }
-      : {}),
-    ...(metadata && Object.keys(metadata).length > 0 ? { metadata } : {}),
-  };
-}
-
-function rejectDecision(
-  candidate: unknown,
-  reason: MemoryExtractionRejectReason,
-): MemoryExtractionDecision {
-  return {
-    decision: "rejected",
-    rejectClass: rejectClassForReason(reason),
-    reason,
-    candidate: snapshotCandidate(candidate),
-  };
-}
-
-function acceptDecision(
-  candidate: MemoryExtractionCandidate,
-  acceptanceClass: MemoryExtractionAcceptanceClass,
-): MemoryExtractionDecision {
-  return {
-    decision: "accepted",
-    acceptanceClass,
-    candidate: snapshotCandidate(candidate),
-  };
 }
 
 function rejectClassForReason(reason: MemoryExtractionRejectReason): MemoryExtractionRejectClass {
@@ -353,30 +265,6 @@ function normalizeCandidate(
       ),
     },
   };
-}
-
-function candidateKey(candidate: MemoryExtractionCandidate): string {
-  return [
-    candidate.kind,
-    candidate.predicate ?? "",
-    candidate.subject ?? "",
-    candidate.speaker ?? "",
-    candidate.content.toLowerCase(),
-  ].join("\n");
-}
-
-function uniqueCandidatesWithDecisions(
-  candidates: MemoryExtractionCandidate[],
-): MemoryExtractionCandidate[] {
-  const seen = new Set<string>();
-  const result: MemoryExtractionCandidate[] = [];
-  for (const candidate of candidates) {
-    const key = candidateKey(candidate);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push(candidate);
-  }
-  return result;
 }
 
 function stripCorrectionLeadIn(text: string): string {
@@ -2359,187 +2247,4 @@ export function extractRuleMemoryCandidates(
   }
 
   return [];
-}
-
-export function extractMemoryCandidate(content: string): MemoryExtractionCandidate | null {
-  return extractRuleMemoryCandidates(content)[0] ?? null;
-}
-
-export async function extractMemoryCandidates(input: {
-  extractor?: MemoryExtractor | undefined;
-  extractionInput: MemoryExtractionInput;
-  fallbackToRules?: boolean | undefined;
-  minConfidence?: number | undefined;
-}): Promise<MemoryExtractionCandidate[]> {
-  return (await extractMemoryCandidatePlan(input)).candidates;
-}
-
-export async function extractMemoryCandidateReport(input: {
-  extractor?: MemoryExtractor | undefined;
-  extractionInput: MemoryExtractionInput;
-  fallbackToRules?: boolean | undefined;
-  minConfidence?: number | undefined;
-}): Promise<MemoryExtractionReport> {
-  return (await extractMemoryCandidatePlan(input)).report;
-}
-
-export async function extractMemoryCandidatePlan(input: {
-  extractor?: MemoryExtractor | undefined;
-  extractionInput: MemoryExtractionInput;
-  fallbackToRules?: boolean | undefined;
-  minConfidence?: number | undefined;
-}): Promise<MemoryExtractionPlan> {
-  const minConfidence = input.minConfidence ?? 0.01;
-  const ruleCandidates = input.extractionInput.ruleCandidates;
-  let selected: MemoryExtractionCandidate[] | null = null;
-  let extractorFailed = false;
-
-  if (input.extractor) {
-    try {
-      const raw =
-        typeof input.extractor === "function"
-          ? await input.extractor(input.extractionInput)
-          : await input.extractor.extract(input.extractionInput);
-      selected = asCandidateArray(raw);
-    } catch {
-      extractorFailed = true;
-      selected = null;
-    }
-  }
-
-  const fallbackToRules = input.fallbackToRules ?? true;
-  const useRules = selected === null && fallbackToRules;
-  let fallbackUsed = Boolean(input.extractor && useRules);
-  let fallbackReason: MemoryExtractionFallbackReason | undefined =
-    fallbackUsed && extractorFailed ? "extractor_failed" : undefined;
-  let extractionSource: MemoryExtractionReport["extractionSource"] =
-    useRules ? "rules" : selected === null ? "none" : "custom";
-  const extractor = extractorName(input.extractor);
-  let rawCandidateCount = 0;
-  const rejected: MemoryExtractionDecision[] = [];
-
-  function normalizeSourceCandidates(
-    source: MemoryExtractionCandidate[],
-    sourceKind: MemoryExtractionReport["extractionSource"],
-    acceptanceClass: MemoryExtractionAcceptanceClass,
-  ): Array<{
-    raw: MemoryExtractionCandidate;
-    candidate: MemoryExtractionCandidate;
-    acceptanceClass: MemoryExtractionAcceptanceClass;
-  }> {
-    const normalized: Array<{
-      raw: MemoryExtractionCandidate;
-      candidate: MemoryExtractionCandidate;
-      acceptanceClass: MemoryExtractionAcceptanceClass;
-    }> = [];
-    rawCandidateCount += source.length;
-    for (const rawCandidate of source) {
-      const result = normalizeCandidate(rawCandidate, {
-        minConfidence,
-        createdAt: input.extractionInput.event.createdAt,
-      });
-      if ("reason" in result) {
-        rejected.push(rejectDecision(rawCandidate, result.reason));
-        continue;
-      }
-      if (
-        nonPersonSpeakerCandidate(
-          input.extractionInput.event.metadata,
-          input.extractionInput.event.content,
-        ) ||
-        candidateSpeakerIsNonPerson(result.candidate)
-      ) {
-        rejected.push(rejectDecision(rawCandidate, "non_person_speaker"));
-        continue;
-      }
-      const candidate: MemoryExtractionCandidate = {
-        ...result.candidate,
-        metadata: {
-          ...(result.candidate.metadata ?? {}),
-          extractionSource: sourceKind,
-          ...(acceptanceClass === "fallbackDurableCandidate" && input.extractor
-            ? { extractorFallback: true, extractorName: extractor }
-            : input.extractor && sourceKind === "custom"
-              ? { extractorName: extractor }
-              : {}),
-        },
-      };
-      normalized.push({ raw: rawCandidate, candidate, acceptanceClass });
-    }
-    return normalized;
-  }
-
-  let normalized =
-    useRules
-      ? normalizeSourceCandidates(ruleCandidates, "rules", fallbackUsed ? "fallbackDurableCandidate" : "structured")
-      : selected === null
-        ? []
-        : normalizeSourceCandidates(selected, "custom", "structured");
-
-  const shouldFallbackAfterRejectedCustomCandidates =
-    Boolean(input.extractor) &&
-    !useRules &&
-    fallbackToRules &&
-    selected !== null &&
-    selected.length > 0 &&
-    normalized.length === 0 &&
-    ruleCandidates.length > 0 &&
-    rejected.every(
-      (decision) => decision.decision === "rejected" && decision.rejectClass === "softReject",
-    );
-  if (shouldFallbackAfterRejectedCustomCandidates) {
-    fallbackUsed = true;
-    fallbackReason = "custom_candidates_rejected";
-    extractionSource = "rules";
-    normalized = [
-      ...normalized,
-      ...normalizeSourceCandidates(ruleCandidates, "rules", "fallbackDurableCandidate"),
-    ];
-  }
-
-  const deduped = uniqueCandidatesWithDecisions(normalized.map((entry) => entry.candidate));
-  const acceptedKeys = new Set(deduped.map(candidateKey));
-  const decisions: MemoryExtractionDecision[] = [];
-  const candidates: MemoryExtractionCandidate[] = [];
-  for (const entry of normalized) {
-    const key = candidateKey(entry.candidate);
-    if (!acceptedKeys.has(key)) {
-      decisions.push(rejectDecision(entry.raw, "duplicate"));
-      continue;
-    }
-    acceptedKeys.delete(key);
-    candidates.push(entry.candidate);
-    decisions.push(acceptDecision(entry.candidate, entry.acceptanceClass));
-  }
-  decisions.push(...rejected);
-  const hardRejectCount = decisions.filter(
-    (decision) => decision.decision === "rejected" && decision.rejectClass === "hardReject",
-  ).length;
-  const softRejectCount = decisions.filter(
-    (decision) => decision.decision === "rejected" && decision.rejectClass === "softReject",
-  ).length;
-  const fallbackDurableCandidateCount = decisions.filter(
-    (decision) =>
-      decision.decision === "accepted" &&
-      decision.acceptanceClass === "fallbackDurableCandidate",
-  ).length;
-
-  return {
-    candidates,
-    report: {
-      ...(extractor ? { extractorName: extractor } : {}),
-      extractionSource,
-      fallbackUsed,
-      extractorFailed,
-      ruleCandidateCount: ruleCandidates.length,
-      rawCandidateCount,
-      acceptedCandidateCount: candidates.length,
-      rejectedCandidateCount: decisions.filter((decision) => decision.decision === "rejected").length,
-      hardRejectCount,
-      softRejectCount,
-      fallbackDurableCandidateCount,
-      ...(fallbackReason ? { fallbackReason } : {}),
-      decisions,
-    },
-  };
 }

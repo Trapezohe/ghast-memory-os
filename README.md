@@ -71,7 +71,7 @@ const prepared = await memory.prepareTurn({
 - Pluggable extraction pipeline for host-provided structured extractors. gmOS
   keeps write-path authority for evidence, PERSON, secret-like, incognito, and
   forgetting gates, but it does not synthesize durable semantic memory from
-  hard-coded linguistic rule fallback.
+  built-in natural-language templates.
 - Durable facts, preferences, boundaries, project state, people, and procedures
   should come from a host-provided structured extractor or an explicit low-level
   import.
@@ -453,8 +453,8 @@ model has classified the turn as historical recall. History mode does not bypass
 sensitive or person-memory defaults.
 gmOS does not enable built-in language/date text inference by default. Hosts that
 want the conservative built-in parser for memory writes can set
-`temporal.inferFromText: true`; then rule and host extractor candidates can pick
-up validity metadata from explicit date text such as `until 2026-07-01`,
+`temporal.inferFromText: true`; then host extractor candidates can pick up
+validity metadata from explicit date text such as `until 2026-07-01`,
 `expires on 2026-07-01`, `valid from 2026-01-01`, or `从 2026-01-01 开始`.
 Hosts that want the same conservative date parser for reconstruction queries
 must also explicitly set `reconstruction.inferTemporalCuesFromText: true`, or
@@ -464,7 +464,7 @@ as "yesterday" or "明天"; hosts with calendar context should keep the default 
 pass a `temporal.parser` that returns structured `eventTime`, `eventDate`,
 `validFrom`, or `validTo` values. Parser output is normalized and safety-filtered
 before it enters memory metadata. gmOS still does not try to resolve ambiguous
-relative dates such as "next week" inside the rule extractor; hosts should pass
+relative dates such as "next week" through the built-in parser; hosts should pass
 structured metadata when they have a trusted calendar parser. The same validity
 metadata is written to the derived world belief when a candidate creates one, so
 reconstruction does not reintroduce an expired belief through the association
@@ -526,9 +526,9 @@ routed candidates, bounds confidence, deduplicates candidates, and writes world
 beliefs only from accepted candidates that carry a structured predicate.
 Returning `[]` means "extract nothing". Returning `null` or throwing does not
 cause gmOS to synthesize user facts, preferences, boundaries, people, or project
-state from hard-coded linguistic rules. If a custom extractor returns candidates
+state on its own. If a custom extractor returns candidates
 but all of them are rejected by the gmOS write-path validator, gmOS records the
-hard/soft reject audit and produces no fallback memory by default. Hosts should
+hard/soft reject audit and does not produce fallback memory. Hosts should
 use a structured extractor for durable semantic memory, or call low-level `add`
 when they already have an explicit memory record.
 
@@ -572,9 +572,10 @@ console.log(report.extraction?.decisions);
 ```
 
 The report includes the evidence id, accepted memory ids, world belief ids,
-custom/rule candidate counts, fallback status, hard/soft reject counts,
-fallback candidate counts, and accepted/rejected candidate decisions after
-candidates enter gmOS write-path validation. It is not a raw
+custom extractor status, hard/soft reject counts, and accepted/rejected
+candidate decisions after candidates enter gmOS write-path validation. gmOS core
+does not synthesize replacement candidates when an extractor returns nothing or
+fails. It is not a raw
 LLM-output transcript. Candidate snapshots are sanitized; rejected secret-like
 fields and sensitive metadata are redacted or omitted so the report can be
 logged by a host without becoming a credential side channel.
@@ -649,8 +650,8 @@ that expose `output_text` / `output[].content[].text`. It does not switch the
 request body to the Responses API. Parsed candidates then pass through the same
 gmOS write-path guards as every other extractor: incognito events are skipped
 before extraction, secret-like and PERSON-routed candidates are rejected,
-confidence is bounded, and provider failure does not enable broad rule-based
-semantic extraction. Event metadata is not sent to the provider unless
+confidence is bounded, and provider failure does not enable built-in semantic
+synthesis. Event metadata is not sent to the provider unless
 `includeEventMetadata: true` is set. Structured candidates may include
 `subject`, `predicate`, `object`, `source`, `eventTime`, `validFrom`, `validTo`,
 and `cardinality`; `source` is only a short public label for the extracted

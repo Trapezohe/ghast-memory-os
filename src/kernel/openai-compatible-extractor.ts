@@ -197,7 +197,6 @@ function userPrompt(input: MemoryExtractionInput, options: OpenAICompatibleExtra
       eligibleForLongTermMemory: input.evidence.eligibleForLongTermMemory,
       sensitivity: input.evidence.sensitivity,
     },
-    ruleCandidates: input.ruleCandidates,
   });
 }
 

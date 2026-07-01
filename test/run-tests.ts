@@ -39,9 +39,6 @@ import {
 } from "../src/kernel/associations.js";
 import { resolveWorldEntitySubject } from "../src/kernel/entities.js";
 import {
-  extractRuleMemoryCandidates as extractDefaultRuleMemoryCandidates,
-} from "../src/kernel/extraction.js";
-import {
   extractRuleMemoryCandidates as extractLegacyRuleMemoryCandidates,
 } from "./helpers/legacy-linguistic-extractor.fixture.js";
 import { externalBenchmarkGitInfoForPackageRoot } from "../src/gym/external.js";
@@ -1059,7 +1056,6 @@ const extractorMemory = createMemoryOS({
     extract(input) {
       assert.equal(input.profileId, "extractor");
       assert.equal(input.evidence.sourceType, "conversation.message");
-      assert.equal(input.ruleCandidates.length, 0);
       return [
         {
           kind: "preference",
@@ -4347,7 +4343,6 @@ const openAICompatibleExtractorInput: MemoryExtractionInput = {
     payload: {},
     createdAt: "2026-06-20T00:00:00.000Z",
   },
-  ruleCandidates: [],
 };
 const chatPartsExtractor = createOpenAICompatibleExtractor({
   model: "fixture-chat-parts-model",
@@ -4907,19 +4902,15 @@ const fallbackExtractionReport = await fallbackExtractorMemory.observeWithReport
   type: "conversation.message",
   profileId: "fallback_extractor",
   role: "user",
-  content: "我喜欢 fallback rule extraction.",
+  content: "我喜欢 provider extraction.",
 });
 assert.equal(fallbackExtractionReport.extraction?.extractionSource, "none");
-assert.equal(fallbackExtractionReport.extraction?.fallbackUsed, false);
-assert.equal(fallbackExtractionReport.extraction?.fallbackReason, undefined);
 assert.equal(fallbackExtractionReport.extraction?.extractorFailed, true);
-assert.equal(fallbackExtractionReport.extraction?.ruleCandidateCount, 0);
 assert.equal(fallbackExtractionReport.extraction?.acceptedCandidateCount, 0);
-assert.equal(fallbackExtractionReport.extraction?.fallbackDurableCandidateCount, 0);
 assert.equal(fallbackExtractionReport.memoryIds.length, 0);
 const fallbackMatches = await fallbackExtractorMemory.search({
   profileId: "fallback_extractor",
-  query: "fallback rule extraction",
+  query: "provider extraction",
 });
 assert.equal(fallbackMatches.length, 0);
 
@@ -4948,20 +4939,16 @@ const rejectedCustomFallbackReport = await rejectedCustomFallbackMemory.observeW
   content: "I prefer fallback after weak custom extraction.",
 });
 assert.equal(rejectedCustomFallbackReport.extraction?.extractionSource, "custom");
-assert.equal(rejectedCustomFallbackReport.extraction?.fallbackUsed, false);
-assert.equal(rejectedCustomFallbackReport.extraction?.fallbackReason, undefined);
 assert.equal(rejectedCustomFallbackReport.extraction?.extractorFailed, false);
-assert.equal(rejectedCustomFallbackReport.extraction?.ruleCandidateCount, 0);
 assert.equal(rejectedCustomFallbackReport.extraction?.rawCandidateCount, 1);
 assert.equal(rejectedCustomFallbackReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(rejectedCustomFallbackReport.extraction?.rejectedCandidateCount, 1);
 assert.equal(rejectedCustomFallbackReport.extraction?.softRejectCount, 1);
 assert.equal(rejectedCustomFallbackReport.extraction?.hardRejectCount, 0);
-assert.equal(rejectedCustomFallbackReport.extraction?.fallbackDurableCandidateCount, 0);
 assert.deepEqual(
   rejectedCustomFallbackReport.extraction?.decisions.map((decision) =>
     decision.decision === "accepted"
-      ? `${decision.decision}:${decision.acceptanceClass}`
+      ? decision.decision
       : `${decision.decision}:${decision.rejectClass}:${decision.reason}`,
   ),
   ["rejected:softReject:low_confidence"],
@@ -5000,17 +4987,14 @@ const hardRejectedCustomFallbackReport =
     content: "I prefer fallback after unsafe custom extraction.",
   });
 assert.equal(hardRejectedCustomFallbackReport.extraction?.extractionSource, "custom");
-assert.equal(hardRejectedCustomFallbackReport.extraction?.fallbackUsed, false);
-assert.equal(hardRejectedCustomFallbackReport.extraction?.fallbackReason, undefined);
 assert.equal(hardRejectedCustomFallbackReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(hardRejectedCustomFallbackReport.extraction?.rejectedCandidateCount, 1);
 assert.equal(hardRejectedCustomFallbackReport.extraction?.hardRejectCount, 1);
 assert.equal(hardRejectedCustomFallbackReport.extraction?.softRejectCount, 0);
-assert.equal(hardRejectedCustomFallbackReport.extraction?.fallbackDurableCandidateCount, 0);
 assert.deepEqual(
   hardRejectedCustomFallbackReport.extraction?.decisions.map((decision) =>
     decision.decision === "accepted"
-      ? `${decision.decision}:${decision.acceptanceClass}`
+      ? decision.decision
       : `${decision.decision}:${decision.rejectClass}:${decision.reason}`,
   ),
   ["rejected:hardReject:secret_like"],
@@ -6284,7 +6268,6 @@ const rulesReport = await rulesReportMemory.observeWithReport({
   content: "I prefer concise release summaries.",
 });
 assert.equal(rulesReport.extraction?.extractionSource, "custom");
-assert.equal(rulesReport.extraction?.fallbackUsed, false);
 assert.equal(rulesReport.extraction?.extractorFailed, false);
 assert.equal(rulesReport.extraction?.acceptedCandidateCount, 1);
 const favoritePreferenceReport = await rulesReportMemory.observeWithReport({
@@ -6941,9 +6924,6 @@ assert.equal(
     ?.candidate.metadata?.rule,
   "first_person_structured_attribute",
 );
-assert.equal(extractDefaultRuleMemoryCandidates("I work as a designer.").length, 0);
-assert.equal(extractDefaultRuleMemoryCandidates("我的女儿叫小红。").length, 0);
-assert.equal(extractDefaultRuleMemoryCandidates("Please do not remind me about renewal emails.").length, 0);
 assert.equal(extractRuleMemoryCandidates("I work as a designer.")[0]?.predicate, "person.role");
 assert.equal(extractRuleMemoryCandidates("I work as designer.")[0]?.object, "designer");
 assert.equal(extractRuleMemoryCandidates("I work as an engineer.")[0]?.object, "engineer");
@@ -10215,43 +10195,40 @@ assert.match(underscoredSpeakerPrepared.contextBlock, /Helio/);
 assert.doesNotMatch(underscoredSpeakerPrepared.contextBlock, /Quartz/);
 await rulesReportMemory.close();
 
-const defaultNoRuleModeStore = createSqliteMemoryStore({
-  path: path.join(tmp, "default-no-rule-mode.db"),
+const defaultNoBuiltInSynthesisStore = createSqliteMemoryStore({
+  path: path.join(tmp, "default-no-built-in-synthesis.db"),
 });
-const defaultNoRuleModeMemory = createMemoryOS({
-  profileId: "no_rule_mode",
-  store: defaultNoRuleModeStore,
+const defaultNoBuiltInSynthesisMemory = createMemoryOS({
+  profileId: "no_built_in_synthesis",
+  store: defaultNoBuiltInSynthesisStore,
 });
-const defaultToolFactReport = await defaultNoRuleModeMemory.observeWithReport({
+const defaultToolFactReport = await defaultNoBuiltInSynthesisMemory.observeWithReport({
   type: "conversation.message",
   role: "user",
   content: "I use Chronos for travel planning.",
 });
-assert.equal(defaultToolFactReport.extraction?.ruleCandidateCount, 0);
 assert.equal(defaultToolFactReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(defaultToolFactReport.memoryIds.length, 0);
 assert.equal(defaultToolFactReport.worldBeliefIds.length, 0);
-const defaultRelationFactReport = await defaultNoRuleModeMemory.observeWithReport({
+const defaultRelationFactReport = await defaultNoBuiltInSynthesisMemory.observeWithReport({
   type: "conversation.message",
   role: "user",
   content: "我的女儿叫小红。",
 });
-assert.equal(defaultRelationFactReport.extraction?.ruleCandidateCount, 0);
 assert.equal(defaultRelationFactReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(defaultRelationFactReport.memoryIds.length, 0);
 assert.equal(defaultRelationFactReport.worldBeliefIds.length, 0);
-const defaultBoundaryReport = await defaultNoRuleModeMemory.observeWithReport({
+const defaultBoundaryReport = await defaultNoBuiltInSynthesisMemory.observeWithReport({
   type: "conversation.message",
   role: "user",
   content: "Please do not remind me about renewal emails.",
 });
-assert.equal(defaultBoundaryReport.extraction?.ruleCandidateCount, 0);
 assert.equal(defaultBoundaryReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(defaultBoundaryReport.memoryIds.length, 0);
 assert.equal(defaultBoundaryReport.worldBeliefIds.length, 0);
 const defaultFailingExtractorMemory = createMemoryOS({
-  profileId: "no_rule_mode_extractor_failure",
-  store: createSqliteMemoryStore({ path: path.join(tmp, "default-no-rule-mode-extractor.db") }),
+  profileId: "no_built_in_synthesis_extractor_failure",
+  store: createSqliteMemoryStore({ path: path.join(tmp, "default-no-built-in-synthesis-extractor.db") }),
   extractor: {
     name: "failing-test-extractor",
     async extract() {
@@ -10265,7 +10242,6 @@ const failingExtractorBroadFactReport = await defaultFailingExtractorMemory.obse
   content: "I work as a designer.",
 });
 assert.equal(failingExtractorBroadFactReport.extraction?.extractorFailed, true);
-assert.equal(failingExtractorBroadFactReport.extraction?.ruleCandidateCount, 0);
 assert.equal(failingExtractorBroadFactReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(failingExtractorBroadFactReport.memoryIds.length, 0);
 assert.equal(failingExtractorBroadFactReport.worldBeliefIds.length, 0);
@@ -10275,13 +10251,11 @@ const failingExtractorBoundaryReport = await defaultFailingExtractorMemory.obser
   content: "Please do not push renewal reminders.",
 });
 assert.equal(failingExtractorBoundaryReport.extraction?.extractorFailed, true);
-assert.equal(failingExtractorBoundaryReport.extraction?.fallbackUsed, false);
-assert.equal(failingExtractorBoundaryReport.extraction?.ruleCandidateCount, 0);
 assert.equal(failingExtractorBoundaryReport.extraction?.acceptedCandidateCount, 0);
 assert.equal(failingExtractorBoundaryReport.memoryIds.length, 0);
 assert.equal(failingExtractorBoundaryReport.worldBeliefIds.length, 0);
 await defaultFailingExtractorMemory.close();
-await defaultNoRuleModeMemory.close();
+await defaultNoBuiltInSynthesisMemory.close();
 
 const lowLevelMemory = await memory.add({
   profileId: "test",

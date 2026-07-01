@@ -103,9 +103,27 @@ const publicBuiltInExtractorClaimPatterns = [
   /built-in\s+extractor/iu,
   /built-in\s+safe\s+boundary\s+rules?/iu,
   /safe\s+rule\s+candidates?/iu,
+  /rule\s+(?:and\s+host\s+)?extractor\s+candidates?/iu,
+  /inside\s+the\s+rule\s+extractor/iu,
+  /\brule\s+extractor\b/iu,
+  /\brule\s+candidates?\b/iu,
   /narrow\s+safe\s+rule/iu,
   /rule\s+fallback\s+is\s+limited/iu,
   /observe\(\)\s+.*built-in/iu,
+];
+const removedRuleFallbackPatterns = [
+  /\bextractSafeRuleMemoryCandidates\b/u,
+  /\bextractRuleMemoryCandidates\b/u,
+  /\bRuleExtractionMode\b/u,
+  /\bfallbackToRules\b/u,
+  /\bruleMode\b/u,
+  /\bruleCandidates\b/u,
+  /\bfallbackUsed\b/u,
+  /\bfallbackReason\b/u,
+  /\bruleCandidateCount\b/u,
+  /\bfallbackDurableCandidateCount\b/u,
+  /\bfallbackDurableCandidate\b/u,
+  /extractionSource\s*:\s*"rules"/u,
 ];
 const fixedProfileStorageTemplatePatterns = [
   /User'?s\s+(?:name|occupation|profession|hometown|location|native language)\s+is/iu,
@@ -129,6 +147,16 @@ if (
   fixedProfileStorageTemplatePatterns.every((pattern) => !pattern.test("我喜欢中文回答"))
 ) {
   throw new Error("fixed profile storage template scanner self-check failed");
+}
+if (
+  removedRuleFallbackPatterns.every((pattern) => !pattern.test("fallbackToRules")) ||
+  removedRuleFallbackPatterns.every((pattern) => !pattern.test("extractRuleMemoryCandidates")) ||
+  removedRuleFallbackPatterns.every((pattern) => !pattern.test("ruleCandidates")) ||
+  removedRuleFallbackPatterns.every((pattern) => !pattern.test("fallbackUsed")) ||
+  removedRuleFallbackPatterns.every((pattern) => !pattern.test("ruleCandidateCount")) ||
+  removedRuleFallbackPatterns.every((pattern) => !pattern.test('extractionSource: "rules"'))
+) {
+  throw new Error("removed rule fallback scanner self-check failed");
 }
 
 function posixRelativePath(relativePath) {
@@ -260,12 +288,6 @@ function publicLlmExtractorHasNoFixedProfileTemplates() {
   );
 }
 
-function ruleExtractorIsEmpty() {
-  return /export\s+function\s+extractSafeRuleMemoryCandidates\([^)]*\)\s*:\s*MemoryExtractionCandidate\[\]\s*\{\s*return\s*\[\];\s*\}/u.test(
-    extraction,
-  );
-}
-
 function runtimePassesTemporalInferOptionOnly() {
   return /inferTemporalFromText:\s*(?:\(\s*)?options\.temporal\?\.inferFromText(?:\s*\))?\s*,/u.test(
     runtime,
@@ -323,27 +345,20 @@ const productionSemanticFallbackMatches = patternMatchesInFiles(
   productionRuntimeSourceFiles(),
   productionSemanticFallbackPatterns,
 );
+const removedRuleFallbackSymbolMatches = patternMatchesInFiles(
+  productionRuntimeSourceFiles(),
+  removedRuleFallbackPatterns,
+);
 
 const checks = [
   {
-    name: "runtime-default-rule-mode-none",
-    pass: /options\.extraction\?\.ruleMode\s*\?\?\s*"none"/u.test(runtime),
-    detail: "createMemoryOS must default rule extraction to none.",
-  },
-  {
-    name: "runtime-passes-rule-mode-to-extractor",
-    pass: /extractRuleMemoryCandidates\([^)]*\{\s*mode:\s*ruleMode\s*\}/su.test(runtime),
-    detail: "createMemoryOS must pass the configured rule mode into rule candidate generation.",
-  },
-  {
-    name: "kernel-plan-no-implicit-rule-fallback",
-    pass: /input\.fallbackToRules\s*\?\?\s*false/u.test(extraction),
-    detail: "extractMemoryCandidatePlan must not default to rule fallback.",
-  },
-  {
-    name: "runtime-no-implicit-rule-fallback",
-    pass: /fallbackToRules:\s*options\.extraction\?\.fallbackToRules\s*\?\?\s*false/u.test(runtime),
-    detail: "createMemoryOS must not implicitly enable rule fallback.",
+    name: "production-has-no-rule-fallback-symbols",
+    pass: removedRuleFallbackSymbolMatches.length === 0,
+    detail:
+      "Production runtime must not expose ruleMode, fallbackToRules, ruleCandidates, or rule extractor symbols; durable semantic extraction belongs to configured extractors." +
+      (removedRuleFallbackSymbolMatches.length > 0
+        ? ` Matched: ${removedRuleFallbackSymbolMatches.join("; ")}.`
+        : ""),
   },
   {
     name: "temporal-text-inference-default-off",
@@ -362,12 +377,6 @@ const checks = [
     pass: reconstructionTemporalCueInferenceIsExplicit(),
     detail:
       "Reconstruction must not parse natural-language temporal query cues by default; hosts should opt in or pass cueExtractor output.",
-  },
-  {
-    name: "safe-rule-extractor-is-empty",
-    pass: ruleExtractorIsEmpty(),
-    detail:
-      "extractSafeRuleMemoryCandidates must stay empty; durable semantic extraction belongs to configured extractors, not built-in language templates.",
   },
   {
     name: "public-llm-extractor-preserves-source-language",

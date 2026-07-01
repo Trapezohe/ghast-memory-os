@@ -1,9 +1,7 @@
 import type {
-  MemoryExtractionAcceptanceClass,
   MemoryExtractionCandidate,
   MemoryExtractionCandidateSnapshot,
   MemoryExtractionDecision,
-  MemoryExtractionFallbackReason,
   MemoryExtractionInput,
   MemoryExtractionReport,
   MemoryExtractionRejectClass,
@@ -12,7 +10,6 @@ import type {
   MemoryExtractor,
   MemoryTemporalMetadata,
   MemoryTemporalParser,
-  RuleExtractionMode,
 } from "./types.js";
 import { isReservedSpeakerIdentity, stableNamedPersonSubject } from "./person-identity.js";
 import {
@@ -31,10 +28,6 @@ import {
 interface MemoryExtractionPlan {
   report: MemoryExtractionReport;
   candidates: MemoryExtractionCandidate[];
-}
-
-export interface RuleMemoryExtractionOptions {
-  mode?: RuleExtractionMode | undefined;
 }
 
 const KNOWN_MEMORY_KINDS = new Set([
@@ -169,11 +162,9 @@ function rejectDecision(
 
 function acceptDecision(
   candidate: MemoryExtractionCandidate,
-  acceptanceClass: MemoryExtractionAcceptanceClass,
 ): MemoryExtractionDecision {
   return {
     decision: "accepted",
-    acceptanceClass,
     candidate: snapshotCandidate(candidate),
   };
 }
@@ -393,31 +384,9 @@ function uniqueStrings(values: string[]): string[] {
   return result;
 }
 
-export function extractSafeRuleMemoryCandidates(
-  _content: string,
-  _metadata?: Record<string, unknown> | undefined,
-): MemoryExtractionCandidate[] {
-  return [];
-}
-
-export function extractRuleMemoryCandidates(
-  content: string,
-  metadata?: Record<string, unknown> | undefined,
-  options?: RuleMemoryExtractionOptions | undefined,
-): MemoryExtractionCandidate[] {
-  const mode = options?.mode ?? "none";
-  if (mode === "none") return [];
-  return extractSafeRuleMemoryCandidates(content, metadata);
-}
-
-export function extractMemoryCandidate(content: string): MemoryExtractionCandidate | null {
-  return extractRuleMemoryCandidates(content)[0] ?? null;
-}
-
 export async function extractMemoryCandidates(input: {
   extractor?: MemoryExtractor | undefined;
   extractionInput: MemoryExtractionInput;
-  fallbackToRules?: boolean | undefined;
   minConfidence?: number | undefined;
   temporalParser?: MemoryTemporalParser | undefined;
   inferTemporalFromText?: boolean | undefined;
@@ -428,7 +397,6 @@ export async function extractMemoryCandidates(input: {
 export async function extractMemoryCandidateReport(input: {
   extractor?: MemoryExtractor | undefined;
   extractionInput: MemoryExtractionInput;
-  fallbackToRules?: boolean | undefined;
   minConfidence?: number | undefined;
   temporalParser?: MemoryTemporalParser | undefined;
   inferTemporalFromText?: boolean | undefined;
@@ -439,14 +407,12 @@ export async function extractMemoryCandidateReport(input: {
 export async function extractMemoryCandidatePlan(input: {
   extractor?: MemoryExtractor | undefined;
   extractionInput: MemoryExtractionInput;
-  fallbackToRules?: boolean | undefined;
   minConfidence?: number | undefined;
   temporalParser?: MemoryTemporalParser | undefined;
   inferTemporalFromText?: boolean | undefined;
 }): Promise<MemoryExtractionPlan> {
   const minConfidence = input.minConfidence ?? 0.01;
   const inferTemporalFromText = input.inferTemporalFromText ?? false;
-  const ruleCandidates = input.extractionInput.ruleCandidates;
   let selected: MemoryExtractionCandidate[] | null = null;
   let extractorFailed = false;
 
@@ -463,30 +429,21 @@ export async function extractMemoryCandidatePlan(input: {
     }
   }
 
-  const fallbackToRules = input.fallbackToRules ?? false;
-  const useRules = selected === null && fallbackToRules;
-  let fallbackUsed = Boolean(input.extractor && useRules);
-  let fallbackReason: MemoryExtractionFallbackReason | undefined =
-    fallbackUsed && extractorFailed ? "extractor_failed" : undefined;
-  let extractionSource: MemoryExtractionReport["extractionSource"] =
-    useRules ? "rules" : selected === null ? "none" : "custom";
+  const extractionSource: MemoryExtractionReport["extractionSource"] =
+    selected === null ? "none" : "custom";
   const extractor = extractorName(input.extractor);
   let rawCandidateCount = 0;
   const rejected: MemoryExtractionDecision[] = [];
 
   async function normalizeSourceCandidates(
     source: MemoryExtractionCandidate[],
-    sourceKind: MemoryExtractionReport["extractionSource"],
-    acceptanceClass: MemoryExtractionAcceptanceClass,
   ): Promise<Array<{
     raw: MemoryExtractionCandidate;
     candidate: MemoryExtractionCandidate;
-    acceptanceClass: MemoryExtractionAcceptanceClass;
   }>> {
     const normalized: Array<{
       raw: MemoryExtractionCandidate;
       candidate: MemoryExtractionCandidate;
-      acceptanceClass: MemoryExtractionAcceptanceClass;
     }> = [];
     rawCandidateCount += source.length;
     for (const rawCandidate of source) {
@@ -517,46 +474,16 @@ export async function extractMemoryCandidatePlan(input: {
         ...result.candidate,
         metadata: {
           ...(result.candidate.metadata ?? {}),
-          extractionSource: sourceKind,
-          ...(acceptanceClass === "fallbackDurableCandidate" && input.extractor
-            ? { extractorFallback: true, extractorName: extractor }
-            : input.extractor && sourceKind === "custom"
-              ? { extractorName: extractor }
-              : {}),
+          extractionSource: "custom",
+          ...(input.extractor ? { extractorName: extractor } : {}),
         },
       };
-      normalized.push({ raw: rawCandidate, candidate, acceptanceClass });
+      normalized.push({ raw: rawCandidate, candidate });
     }
     return normalized;
   }
 
-  let normalized =
-    useRules
-      ? await normalizeSourceCandidates(ruleCandidates, "rules", fallbackUsed ? "fallbackDurableCandidate" : "structured")
-      : selected === null
-        ? []
-        : await normalizeSourceCandidates(selected, "custom", "structured");
-
-  const shouldFallbackAfterRejectedCustomCandidates =
-    Boolean(input.extractor) &&
-    !useRules &&
-    fallbackToRules &&
-    selected !== null &&
-    selected.length > 0 &&
-    normalized.length === 0 &&
-    ruleCandidates.length > 0 &&
-    rejected.every(
-      (decision) => decision.decision === "rejected" && decision.rejectClass === "softReject",
-    );
-  if (shouldFallbackAfterRejectedCustomCandidates) {
-    fallbackUsed = true;
-    fallbackReason = "custom_candidates_rejected";
-    extractionSource = "rules";
-    normalized = [
-      ...normalized,
-      ...(await normalizeSourceCandidates(ruleCandidates, "rules", "fallbackDurableCandidate")),
-    ];
-  }
+  const normalized = selected === null ? [] : await normalizeSourceCandidates(selected);
 
   const deduped = uniqueCandidatesWithDecisions(normalized.map((entry) => entry.candidate));
   const acceptedKeys = new Set(deduped.map(candidateKey));
@@ -570,7 +497,7 @@ export async function extractMemoryCandidatePlan(input: {
     }
     acceptedKeys.delete(key);
     candidates.push(entry.candidate);
-    decisions.push(acceptDecision(entry.candidate, entry.acceptanceClass));
+    decisions.push(acceptDecision(entry.candidate));
   }
   decisions.push(...rejected);
   const hardRejectCount = decisions.filter(
@@ -579,27 +506,17 @@ export async function extractMemoryCandidatePlan(input: {
   const softRejectCount = decisions.filter(
     (decision) => decision.decision === "rejected" && decision.rejectClass === "softReject",
   ).length;
-  const fallbackDurableCandidateCount = decisions.filter(
-    (decision) =>
-      decision.decision === "accepted" &&
-      decision.acceptanceClass === "fallbackDurableCandidate",
-  ).length;
-
   return {
     candidates,
     report: {
       ...(extractor ? { extractorName: extractor } : {}),
       extractionSource,
-      fallbackUsed,
       extractorFailed,
-      ruleCandidateCount: ruleCandidates.length,
       rawCandidateCount,
       acceptedCandidateCount: candidates.length,
       rejectedCandidateCount: decisions.filter((decision) => decision.decision === "rejected").length,
       hardRejectCount,
       softRejectCount,
-      fallbackDurableCandidateCount,
-      ...(fallbackReason ? { fallbackReason } : {}),
       decisions,
     },
   };

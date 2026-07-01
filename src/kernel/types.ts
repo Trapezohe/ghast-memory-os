@@ -157,7 +157,6 @@ export interface MemoryExtractionInput {
   profileId: string;
   event: ConversationMessageEvent;
   evidence: EvidenceEvent;
-  ruleCandidates: MemoryExtractionCandidate[];
 }
 
 export type MemoryExtractionResult =
@@ -239,10 +238,6 @@ export type MemoryExtractionRejectReason =
   | "duplicate";
 
 export type MemoryExtractionRejectClass = "hardReject" | "softReject";
-export type MemoryExtractionAcceptanceClass = "structured" | "fallbackDurableCandidate";
-export type MemoryExtractionFallbackReason =
-  | "extractor_failed"
-  | "custom_candidates_rejected";
 
 export interface MemoryExtractionCandidateSnapshot {
   kind?: string | undefined;
@@ -264,7 +259,6 @@ export interface MemoryExtractionCandidateSnapshot {
 
 export interface AcceptedMemoryExtractionDecision {
   decision: "accepted";
-  acceptanceClass: MemoryExtractionAcceptanceClass;
   candidate: MemoryExtractionCandidateSnapshot;
 }
 
@@ -281,17 +275,13 @@ export type MemoryExtractionDecision =
 
 export interface MemoryExtractionReport {
   extractorName?: string | undefined;
-  extractionSource: "rules" | "custom" | "none";
-  fallbackUsed: boolean;
+  extractionSource: "custom" | "none";
   extractorFailed: boolean;
-  ruleCandidateCount: number;
   rawCandidateCount: number;
   acceptedCandidateCount: number;
   rejectedCandidateCount: number;
   hardRejectCount: number;
   softRejectCount: number;
-  fallbackDurableCandidateCount: number;
-  fallbackReason?: MemoryExtractionFallbackReason | undefined;
   decisions: MemoryExtractionDecision[];
 }
 
@@ -918,8 +908,6 @@ export interface MemoryStore {
   repairSearchIndex?(): Promise<RepairSearchIndexResult> | RepairSearchIndexResult;
 }
 
-export type RuleExtractionMode = "safe" | "none";
-
 export interface MemoryOSOptions {
   profileId?: string | undefined;
   store: MemoryStore;
@@ -930,8 +918,6 @@ export interface MemoryOSOptions {
     inferFromText?: boolean | undefined;
   } | undefined;
   extraction?: {
-    fallbackToRules?: boolean | undefined;
-    ruleMode?: RuleExtractionMode | undefined;
     minConfidence?: number | undefined;
     extractFromRoles?: MemoryRole[] | undefined;
   } | undefined;

@@ -13,7 +13,6 @@ import type { EntityResolver } from "../kernel/entities.js";
 import { buildEvidencePathExplanation } from "../kernel/evidence-path.js";
 import {
   extractMemoryCandidatePlan,
-  extractRuleMemoryCandidates,
 } from "../kernel/extraction.js";
 import { isReservedSpeakerIdentity } from "../kernel/person-identity.js";
 import { reconstructMemoryContext } from "../kernel/reconstruction.js";
@@ -1038,7 +1037,6 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       return { ...result, skippedReason: "non_user_message" };
     }
     if (isPersonRoutedMemory(event.content)) return { ...result, skippedReason: "person_routed" };
-    const ruleMode = options.extraction?.ruleMode ?? "none";
     const extraction = await extractMemoryCandidatePlan({
       extractor: options.extractor,
       temporalParser: options.temporal?.parser,
@@ -1047,9 +1045,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         profileId,
         event: { ...event, metadata: eventMetadata },
         evidence,
-        ruleCandidates: extractRuleMemoryCandidates(event.content, eventMetadata, { mode: ruleMode }),
       },
-      fallbackToRules: options.extraction?.fallbackToRules ?? false,
       minConfidence: options.extraction?.minConfidence,
     });
     result.extraction = sanitizeRuntimeExtractionReport(

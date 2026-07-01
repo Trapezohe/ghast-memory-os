@@ -105,8 +105,8 @@ notes until the underlying capability is proven by current evidence:
 
 - gmOS is plaintext local SQLite by design. It does not provide database
   encryption, cloud custody, or hosted synchronization.
-- Built-in extraction remains a conservative rule fallback; broad production
-  extraction requires a host-provided structured extractor profile.
+- Built-in extraction does not synthesize durable semantic memory; broad
+  production extraction requires a host-provided structured extractor profile.
 - Deterministic LongMemEval and LoCoMo adapter scores are weak diagnostic
   baselines, not official LLM-judge or leaderboard results.
 - STATE-Bench, Mem2ActBench, BEAM, and similar claims require their unchanged

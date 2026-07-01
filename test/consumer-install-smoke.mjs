@@ -761,7 +761,6 @@ try {
           payload: {},
           createdAt: new Date().toISOString(),
         },
-        ruleCandidates: [],
       });
       if (!Array.isArray(emptyExtraction)) throw new Error("typed openai-compatible extractor failed");
       await memory.add({
