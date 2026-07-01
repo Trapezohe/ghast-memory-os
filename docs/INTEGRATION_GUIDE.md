@@ -117,6 +117,18 @@ reconstruction, and read-path safety. Use it as the starting point for integrati
 an LLM extractor, local model extractor, or domain parser without moving semantic
 rules into gmOS core.
 
+For the packaged OpenAI-compatible extractor factory, run the offline smoke:
+
+```bash
+npm run examples:openai-compatible-extractor
+```
+
+That example uses a fake `/chat/completions` response, so it does not call the
+network or require an API key. It validates the provider-shaped JSON parser,
+structured candidate normalization, action-policy projection, and reconstruction
+path while keeping the same gmOS write-path safety gates that a real provider
+would use.
+
 For in-process Node agent runtimes, `@ghast/memory/host` includes a small
 framework-agnostic adapter that wires this lifecycle without depending on a
 specific agent framework:
