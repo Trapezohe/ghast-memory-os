@@ -44,6 +44,7 @@ export interface MemoryHttpServerHandle {
 }
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+const STATUS_QUERY_PARAMS = new Set(["profileId"]);
 
 function writeJson(
   response: ServerResponse,
@@ -108,6 +109,21 @@ function optionalString(searchParams: URLSearchParams, key: string): string | un
   const raw = searchParams.get(key);
   if (raw === null || raw.trim().length === 0) return undefined;
   return raw;
+}
+
+function assertAllowedSearchParams(
+  searchParams: URLSearchParams,
+  allowed: ReadonlySet<string>,
+  route: string,
+): void {
+  const unsupported = [...new Set([...searchParams.keys()].filter((key) => !allowed.has(key)))];
+  if (unsupported.length > 0) {
+    throw new HttpError(
+      400,
+      "unsupported_query",
+      `${route} contains unsupported query parameters: ${unsupported.join(", ")}`,
+    );
+  }
 }
 
 function ok(payload: Record<string, unknown> = { ok: true }): Record<string, unknown> {
@@ -233,6 +249,7 @@ export function createMemoryHttpServer(
       }
 
       if (route.route === "GET /status") {
+        assertAllowedSearchParams(url.searchParams, STATUS_QUERY_PARAMS, "GET /status");
         if (!options.store) {
           throw new HttpError(503, "diagnostics_store_unavailable", "status requires a store");
         }

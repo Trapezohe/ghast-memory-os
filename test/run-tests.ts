@@ -13624,6 +13624,10 @@ try {
     getGmosRuntimeInfo(),
   );
   assert.equal(status.text.includes("mcp fixture failure"), false);
+  const statusUnknownQuery = await httpJson(`${httpAddress.url}/status?profileId=http&unsupported=true`);
+  assert.equal(statusUnknownQuery.status, 400);
+  assert.equal((statusUnknownQuery.body.error as { code?: string }).code, "unsupported_query");
+  assert.match(statusUnknownQuery.text, /GET \/status contains unsupported query parameters: unsupported/);
   const httpContextHistorySearch = await postJson(`${httpAddress.url}/search`, {
     profileId: "mcp",
     query: "QuartzBridgeOwner",
@@ -13846,6 +13850,12 @@ try {
   });
   assert.equal(authorizedRuntimeInfo.status, 200);
   assert.deepEqual(authorizedRuntimeInfo.body.runtimeInfo, getGmosRuntimeInfo());
+  const authorizedStatusUnknownQuery = await httpJson(
+    `${authedHttpAddress.url}/status?unsupported=true`,
+    { headers: { authorization: "Bearer local-test-token" } },
+  );
+  assert.equal(authorizedStatusUnknownQuery.status, 400);
+  assert.equal((authorizedStatusUnknownQuery.body.error as { code?: string }).code, "unsupported_query");
   const wrongToken = await postJson(
     `${authedHttpAddress.url}/observe`,
     {
