@@ -18,6 +18,7 @@ import { isReservedSpeakerIdentity } from "../kernel/person-identity.js";
 import { reconstructMemoryContext } from "../kernel/reconstruction.js";
 import {
   isPersonRoutedMemory,
+  safePublicLabel,
   sanitizePublicPayloadRecord,
   sourceMetadataSpeakerIsPerson,
 } from "../kernel/safety.js";
@@ -71,6 +72,13 @@ import type { RuntimeSensitivityClassifier } from "./runtime-safety.js";
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function publicMemoryRecord(memory: MemoryRecord): MemoryRecord {
+  return {
+    ...memory,
+    kind: safePublicLabel(memory.kind) as MemoryRecord["kind"],
+  };
 }
 
 function profileIdFor(defaultProfileId: string, profileId?: string): string {
@@ -752,13 +760,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       sensitivity,
       eligibleForLongTermMemory: true,
       payload: {
-        kind,
+        kind: safePublicLabel(kind),
         scope: input.scope ?? "global",
         metadata: redactRuntimeSourceMetadataRecord(input.metadata, classifyRuntimeSensitivity),
       },
       createdAt,
     });
-    return store.addMemory({
+    return publicMemoryRecord(await store.addMemory({
       profileId,
       kind,
       content,
@@ -771,7 +779,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       createdAt,
       ...(input.scope !== undefined ? { scope: input.scope } : {}),
       ...(input.confidence !== undefined ? { confidence: input.confidence } : {}),
-    });
+    }));
   }
 
   async function update(input: LowLevelUpdateMemoryInput): Promise<MemoryRecord | null> {
@@ -822,14 +830,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       eligibleForLongTermMemory: true,
       payload: {
         memoryId: input.id,
-        previousKind: existing.kind,
-        kind,
+        previousKind: safePublicLabel(existing.kind),
+        kind: safePublicLabel(kind),
         scope: input.scope ?? existing.scope,
         metadata: redactRuntimeSourceMetadataRecord(input.metadata, classifyRuntimeSensitivity),
       },
       createdAt: updatedAt,
     });
-    return updateMemory({
+    const updated = await updateMemory({
       profileId,
       id: input.id,
       kind,
@@ -845,6 +853,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       },
       updatedAt,
     });
+    return updated ? publicMemoryRecord(updated) : updated;
   }
 
   async function archive(input: LowLevelArchiveMemoryInput): Promise<ForgetResult> {
@@ -891,21 +900,21 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
 
   async function search(input: LowLevelSearchInput = {}): Promise<MemoryRecord[]> {
     await initialize();
-    return store.searchMemories({
+    return (await store.searchMemories({
       profileId: profileIdFor(defaultProfileId, input.profileId),
       purpose: input.purpose ?? "context",
       ...(input.query !== undefined ? { query: input.query } : {}),
       ...(input.limit !== undefined ? { limit: input.limit } : {}),
       ...(input.includeSensitive !== undefined ? { includeSensitive: input.includeSensitive } : {}),
       ...(input.includePerson !== undefined ? { includePerson: input.includePerson } : {}),
-    });
+    })).map(publicMemoryRecord);
   }
 
   async function list(input: LowLevelListMemoriesInput = {}): Promise<MemoryRecord[]> {
     await initialize();
     const profileId = profileIdFor(defaultProfileId, input.profileId);
     if (store.listMemories) {
-      return store.listMemories({
+      return (await store.listMemories({
         profileId,
         ...(input.query !== undefined ? { query: input.query } : {}),
         ...(input.limit !== undefined ? { limit: input.limit } : {}),
@@ -916,7 +925,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           ? { includeSensitive: input.includeSensitive }
           : {}),
         ...(input.includePerson !== undefined ? { includePerson: input.includePerson } : {}),
-      });
+      })).map(publicMemoryRecord);
     }
     if (input.status && input.status !== "active") {
       throw new Error("gmOS store does not support archived memory listing");
@@ -924,23 +933,24 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     if (input.kind || input.scope) {
       throw new Error("gmOS store does not support filtered memory listing");
     }
-    return store.searchMemories({
+    return (await store.searchMemories({
       profileId,
       purpose: "context",
       ...(input.query !== undefined ? { query: input.query } : {}),
       ...(input.limit !== undefined ? { limit: input.limit } : {}),
       ...(input.includeSensitive !== undefined ? { includeSensitive: input.includeSensitive } : {}),
       ...(input.includePerson !== undefined ? { includePerson: input.includePerson } : {}),
-    });
+    })).map(publicMemoryRecord);
   }
 
   async function get(input: LowLevelGetMemoryInput): Promise<MemoryRecord | null> {
     await initialize();
-    return store.getMemoryById(profileIdFor(defaultProfileId, input.profileId), input.id, {
+    const memory = await store.getMemoryById(profileIdFor(defaultProfileId, input.profileId), input.id, {
       includeSensitive: input.includeSensitive,
       includePerson: input.includePerson,
       includeArchived: input.includeArchived,
     });
+    return memory ? publicMemoryRecord(memory) : memory;
   }
 
   async function observe(event: HostEvent): Promise<void> {
@@ -1385,7 +1395,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     return {
       id: memory.id,
       kind: "memory",
-      memoryKind: memory.kind,
+      memoryKind: safePublicLabel(memory.kind) as MemoryRecord["kind"],
       sensitivity: memory.sensitivity,
       text: memory.content,
       evidence,
