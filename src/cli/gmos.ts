@@ -178,6 +178,8 @@ function printReport(json: unknown, markdown: string): void {
   console.log(output);
 }
 
+const REDACTED_PLAINTEXT_SQLITE_PATH = "[plaintext sqlite path redacted]";
+
 function writeExternalSuiteOutputs(input: {
   outputDir: string;
   result: Awaited<ReturnType<typeof runExternalMemoryBenchmarkSuite>>["result"];
@@ -1019,7 +1021,7 @@ async function main(): Promise<void> {
       await store.initialize();
       const report: CliDoctorReport = {
         ok: true,
-        dbPath,
+        dbPath: REDACTED_PLAINTEXT_SQLITE_PATH,
         encrypted: false,
         runtimeInfo: getGmosRuntimeInfo(),
         schema: {

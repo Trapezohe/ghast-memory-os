@@ -20263,6 +20263,7 @@ for (const [host, expectedLevel] of [
   ["mcp", "L2"],
   ["search_only", "L1"],
 ] as const) {
+  const doctorDbPath = path.join(tmp, `doctor-${host}.db`);
   const doctor = spawnSync(
     process.execPath,
     [
@@ -20271,7 +20272,7 @@ for (const [host, expectedLevel] of [
       "src/cli/gmos.ts",
       "doctor",
       "--db",
-      path.join(tmp, `doctor-${host}.db`),
+      doctorDbPath,
       "--host",
       host,
     ],
@@ -20304,8 +20305,11 @@ for (const [host, expectedLevel] of [
     };
     hostCompatibility?: { level?: string; gaps?: string[] };
     searchIndex?: { status?: string; missingEntryCount?: number; vectorIndex?: { status?: string } };
+    dbPath?: string;
   };
   assert.equal(doctorJson.encrypted, false);
+  assert.equal(doctorJson.dbPath, "[plaintext sqlite path redacted]");
+  assert.equal(doctor.stdout.includes(doctorDbPath), false);
   assert.equal(doctorJson.runtimeInfo?.schema, "gmos.runtime_info.v1");
   assert.equal(doctorJson.runtimeInfo?.cli?.binaries?.includes("gmos"), true);
   assert.equal(doctorJson.runtimeInfo?.packageExports?.includes("."), true);
@@ -20336,6 +20340,8 @@ for (const [host, expectedLevel] of [
 }
 const doctorMarkdownFile = path.join(tmp, "doctor.md");
 const doctorJsonFile = path.join(tmp, "doctor.json");
+const doctorReportFile = path.join(tmp, "doctor-report.md");
+const doctorMarkdownDbPath = path.join(tmp, "doctor-markdown.db");
 const doctorMarkdown = spawnSync(
   process.execPath,
   [
@@ -20344,7 +20350,7 @@ const doctorMarkdown = spawnSync(
     "src/cli/gmos.ts",
     "doctor",
     "--db",
-    path.join(tmp, "doctor-markdown.db"),
+    doctorMarkdownDbPath,
     "--host",
     "ghast",
     "--format",
@@ -20353,6 +20359,8 @@ const doctorMarkdown = spawnSync(
     doctorMarkdownFile,
     "--json-file",
     doctorJsonFile,
+    "--report-file",
+    doctorReportFile,
   ],
   { cwd: process.cwd(), encoding: "utf8" },
 );
@@ -20367,13 +20375,20 @@ assert.match(doctorMarkdown.stdout, /Search index: ok/);
 assert.match(doctorMarkdown.stdout, /## Host Compatibility/);
 assert.match(doctorMarkdown.stdout, /Host: ghast/);
 assert.doesNotMatch(doctorMarkdown.stdout, /stateHash/);
+assert.equal(doctorMarkdown.stdout.includes(doctorMarkdownDbPath), false);
 assert.equal(readFileSync(doctorMarkdownFile, "utf8").trimEnd(), doctorMarkdown.stdout.trimEnd());
+assert.equal(readFileSync(doctorReportFile, "utf8").trimEnd(), doctorMarkdown.stdout.trimEnd());
 const doctorJsonFilePayload = JSON.parse(readFileSync(doctorJsonFile, "utf8")) as {
   runtimeInfo?: { schema?: string };
   readAudit?: { stateHash?: string };
+  dbPath?: string;
 };
 assert.equal(doctorJsonFilePayload.runtimeInfo?.schema, "gmos.runtime_info.v1");
 assert.equal(doctorJsonFilePayload.readAudit?.stateHash, undefined);
+assert.equal(doctorJsonFilePayload.dbPath, "[plaintext sqlite path redacted]");
+assert.equal(readFileSync(doctorMarkdownFile, "utf8").includes(doctorMarkdownDbPath), false);
+assert.equal(readFileSync(doctorReportFile, "utf8").includes(doctorMarkdownDbPath), false);
+assert.equal(readFileSync(doctorJsonFile, "utf8").includes(doctorMarkdownDbPath), false);
 const missingEvolutionDb = path.join(tmp, "evolution-missing.db");
 assert.equal(existsSync(missingEvolutionDb), false);
 const cliEvolutionReport = spawnSync(

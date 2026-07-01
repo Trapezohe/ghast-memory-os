@@ -417,7 +417,7 @@ Hosts can generate a read-only status report for integration checks and support
 bundles. The report includes package version, public SDK/CLI/MCP/HTTP runtime
 surface, SQLite schema version, row counts, read-audit coverage, failure counts
 by kind, and optional host compatibility. It does not include memory content,
-failure samples, or table state hashes.
+failure samples, real SQLite paths, or table state hashes.
 
 ```bash
 gmos doctor --db ./gmos.db --host ghast --format markdown
