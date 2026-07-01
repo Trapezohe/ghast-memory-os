@@ -234,7 +234,7 @@ export async function loadHostMemorySnapshotsIntoStore(
       eligibleForLongTermMemory: sensitivity !== "secret_like",
       payload: {
         hostMemoryId: snapshot.id,
-        hostMemoryKind: snapshot.kind ?? null,
+        hostMemoryKind: kind,
       },
       createdAt: snapshot.createdAt ?? nowIso,
     });
@@ -250,7 +250,7 @@ export async function loadHostMemorySnapshotsIntoStore(
         hostImportKey: importKey,
         hostImportSourceType: sourceType,
         hostMemoryId: snapshot.id,
-        hostMemoryKind: snapshot.kind ?? null,
+        hostMemoryKind: kind,
         hostContentHash: contentHash(content),
         hostSnapshotImport: true,
       },
