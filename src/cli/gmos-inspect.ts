@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { writeFileSync } from "node:fs";
 
+import type { EvidenceEvent } from "../kernel/types.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 
@@ -44,6 +45,28 @@ function healthSignals(rowCounts: Record<string, number>): InspectReport["health
   };
 }
 
+function increment(map: Record<string, number>, key: string): void {
+  map[key] = (map[key] ?? 0) + 1;
+}
+
+function evidenceSummary(evidence: EvidenceEvent[]): InspectReport["evidenceSummary"] {
+  const bySensitivity: Record<string, number> = {};
+  const bySourceType: Record<string, number> = {};
+  let eligibleForLongTermMemory = 0;
+  for (const event of evidence) {
+    if (event.eligibleForLongTermMemory) eligibleForLongTermMemory += 1;
+    increment(bySensitivity, event.sensitivity);
+    increment(bySourceType, event.sourceType);
+  }
+  return {
+    inspected: evidence.length,
+    eligibleForLongTermMemory,
+    ineligibleForLongTermMemory: evidence.length - eligibleForLongTermMemory,
+    bySensitivity,
+    bySourceType,
+  };
+}
+
 function requireValue(name: string): string {
   const selected = value(name);
   if (!selected) throw new Error(`${name} is required`);
@@ -65,6 +88,14 @@ function renderMarkdown(report: InspectReport): string {
     `- active memories: ${report.counts.activeMemories}`,
     `- archived memories: ${report.counts.archivedMemories}`,
     `- row count tables: ${Object.keys(report.rowCounts).length}`,
+    "",
+    "## Evidence Summary",
+    "",
+    `- inspected evidence events: ${report.evidenceSummary.inspected}`,
+    `- eligible for long-term memory: ${report.evidenceSummary.eligibleForLongTermMemory}`,
+    `- ineligible for long-term memory: ${report.evidenceSummary.ineligibleForLongTermMemory}`,
+    `- sensitivity counts: ${JSON.stringify(report.evidenceSummary.bySensitivity)}`,
+    `- source type counts: ${JSON.stringify(report.evidenceSummary.bySourceType)}`,
     "",
     "## Health Signals",
     "",
@@ -124,6 +155,13 @@ interface InspectReport {
     memoryVectors: number;
     memoryVectorTerms: number;
   };
+  evidenceSummary: {
+    inspected: number;
+    eligibleForLongTermMemory: number;
+    ineligibleForLongTermMemory: number;
+    bySensitivity: Record<string, number>;
+    bySourceType: Record<string, number>;
+  };
   reconstruction: null | {
     pathCount: number;
     retrievedMemoryCount: number;
@@ -142,7 +180,7 @@ async function main(): Promise<void> {
     process.stdout.write([
       "Usage: gmos-inspect --db <path> [--profile <id>] [--query <text>] [--format json|markdown] [--output-file <path>]",
       "",
-      "Creates a content-safe local inspection report with counts and optional reconstruction diagnostics.",
+      "Creates a content-safe local inspection report with counts, evidence summaries, and optional reconstruction diagnostics.",
       "The report does not print memory content, evidence text, table hashes, or context blocks.",
       "",
     ].join("\n"));
@@ -184,6 +222,7 @@ async function main(): Promise<void> {
       },
       rowCounts,
       health: healthSignals(rowCounts),
+      evidenceSummary: evidenceSummary(evidence),
       reconstruction: reconstructed
         ? {
             pathCount: reconstructed.paths.length,

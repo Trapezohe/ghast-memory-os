@@ -16970,6 +16970,7 @@ assert.equal(cliInspect.status, 0, cliInspect.stderr);
 const cliInspectPayload = JSON.parse(cliInspect.stdout) as {
   schema?: string;
   dbPath?: string;
+  counts?: { evidence?: number };
   rowCounts?: Record<string, number>;
   health?: {
     evidenceEvents?: number;
@@ -16980,6 +16981,13 @@ const cliInspectPayload = JSON.parse(cliInspect.stdout) as {
     failureEvents?: number;
     memoryVectors?: number;
     memoryVectorTerms?: number;
+  };
+  evidenceSummary?: {
+    inspected?: number;
+    eligibleForLongTermMemory?: number;
+    ineligibleForLongTermMemory?: number;
+    bySensitivity?: Record<string, number>;
+    bySourceType?: Record<string, number>;
   };
   reconstruction?: { pathCount?: number; retrievedMemoryCount?: number } | null;
 };
@@ -16993,6 +17001,14 @@ assert.equal(cliInspectPayload.health?.taskTrajectories, cliInspectPayload.rowCo
 assert.equal(cliInspectPayload.health?.failureEvents, cliInspectPayload.rowCounts?.gmos_failure_events);
 assert.equal(cliInspectPayload.health?.memoryVectors, cliInspectPayload.rowCounts?.gmos_memory_vectors);
 assert.equal(cliInspectPayload.health?.memoryVectorTerms, cliInspectPayload.rowCounts?.gmos_memory_vector_terms);
+assert.equal(cliInspectPayload.evidenceSummary?.inspected, cliInspectPayload.counts?.evidence);
+assert.equal(
+  (cliInspectPayload.evidenceSummary?.eligibleForLongTermMemory ?? 0) +
+    (cliInspectPayload.evidenceSummary?.ineligibleForLongTermMemory ?? 0),
+  cliInspectPayload.evidenceSummary?.inspected,
+);
+assert.equal(typeof cliInspectPayload.evidenceSummary?.bySensitivity?.normal, "number");
+assert.equal(typeof cliInspectPayload.evidenceSummary?.bySourceType, "object");
 assert.equal(cliInspect.stdout.includes("身份证"), false);
 assert.equal(cliInspect.stdout.includes(dbPath), false);
 const cliInspectMarkdown = spawnSync(
@@ -17013,6 +17029,8 @@ const cliInspectMarkdown = spawnSync(
 assert.equal(cliInspectMarkdown.status, 0, cliInspectMarkdown.stderr);
 assert.match(cliInspectMarkdown.stdout, /# gmOS Inspect Report/);
 assert.match(cliInspectMarkdown.stdout, /## Health Signals/);
+assert.match(cliInspectMarkdown.stdout, /## Evidence Summary/);
+assert.match(cliInspectMarkdown.stdout, /eligible for long-term memory:/);
 assert.match(cliInspectMarkdown.stdout, /world beliefs:/);
 assert.match(cliInspectMarkdown.stdout, /associations:/);
 assert.equal(cliInspectMarkdown.stdout.includes("身份证"), false);
