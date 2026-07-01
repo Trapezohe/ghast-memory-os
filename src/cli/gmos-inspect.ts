@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { writeFileSync } from "node:fs";
 
+import Database from "better-sqlite3";
+
 import type { EvidenceEvent } from "../kernel/types.js";
 import { safePublicLabel, safePublicSensitivity } from "../kernel/safety.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
@@ -68,6 +70,89 @@ function evidenceSummary(evidence: EvidenceEvent[]): InspectReport["evidenceSumm
   };
 }
 
+function sqliteTableExists(db: Database.Database, table: string): boolean {
+  return Boolean(
+    db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table),
+  );
+}
+
+function count(db: Database.Database, sql: string, ...params: unknown[]): number {
+  const row = db.prepare(sql).get(...params) as { count?: number } | undefined;
+  return Number(row?.count ?? 0);
+}
+
+function forgetSummary(dbPath: string, profileId: string): InspectReport["forgetSummary"] {
+  if (dbPath === ":memory:") {
+    return {
+      archivedMemories: 0,
+      activeWorldBeliefResidue: 0,
+      activeAssociationResidue: 0,
+      derivedResidue: 0,
+    };
+  }
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    if (
+      !sqliteTableExists(db, "gmos_memories") ||
+      !sqliteTableExists(db, "gmos_world_beliefs") ||
+      !sqliteTableExists(db, "gmos_associations")
+    ) {
+      return {
+        archivedMemories: 0,
+        activeWorldBeliefResidue: 0,
+        activeAssociationResidue: 0,
+        derivedResidue: 0,
+      };
+    }
+    const archivedMemories = count(
+      db,
+      "SELECT COUNT(*) AS count FROM gmos_memories WHERE profile_id = ? AND status = 'archived'",
+      profileId,
+    );
+    const activeWorldBeliefResidue = count(
+      db,
+      `SELECT COUNT(*) AS count
+       FROM gmos_world_beliefs
+       WHERE profile_id = ?
+         AND status = 'active'
+         AND source_memory_id IN (
+           SELECT id FROM gmos_memories WHERE profile_id = ? AND status = 'archived'
+         )`,
+      profileId,
+      profileId,
+    );
+    const activeAssociationResidue = count(
+      db,
+      `SELECT COUNT(*) AS count
+       FROM gmos_associations
+       WHERE profile_id = ?
+         AND status = 'active'
+         AND (
+           source_memory_id IN (
+             SELECT id FROM gmos_memories WHERE profile_id = ? AND status = 'archived'
+           )
+           OR (
+             target_type = 'memory'
+             AND target_id IN (
+               SELECT id FROM gmos_memories WHERE profile_id = ? AND status = 'archived'
+             )
+           )
+         )`,
+      profileId,
+      profileId,
+      profileId,
+    );
+    return {
+      archivedMemories,
+      activeWorldBeliefResidue,
+      activeAssociationResidue,
+      derivedResidue: activeWorldBeliefResidue + activeAssociationResidue,
+    };
+  } finally {
+    db.close();
+  }
+}
+
 function requireValue(name: string): string {
   const selected = value(name);
   if (!selected) throw new Error(`${name} is required`);
@@ -97,6 +182,13 @@ function renderMarkdown(report: InspectReport): string {
     `- ineligible for long-term memory: ${report.evidenceSummary.ineligibleForLongTermMemory}`,
     `- sensitivity counts: ${JSON.stringify(report.evidenceSummary.bySensitivity)}`,
     `- source type counts: ${JSON.stringify(report.evidenceSummary.bySourceType)}`,
+    "",
+    "## Forget Summary",
+    "",
+    `- archived memories: ${report.forgetSummary.archivedMemories}`,
+    `- active world belief residue: ${report.forgetSummary.activeWorldBeliefResidue}`,
+    `- active association residue: ${report.forgetSummary.activeAssociationResidue}`,
+    `- derived residue: ${report.forgetSummary.derivedResidue}`,
     "",
     "## Health Signals",
     "",
@@ -163,6 +255,12 @@ interface InspectReport {
     bySensitivity: Record<string, number>;
     bySourceType: Record<string, number>;
   };
+  forgetSummary: {
+    archivedMemories: number;
+    activeWorldBeliefResidue: number;
+    activeAssociationResidue: number;
+    derivedResidue: number;
+  };
   reconstruction: null | {
     pathCount: number;
     retrievedMemoryCount: number;
@@ -224,6 +322,7 @@ async function main(): Promise<void> {
       rowCounts,
       health: healthSignals(rowCounts),
       evidenceSummary: evidenceSummary(evidence),
+      forgetSummary: forgetSummary(dbPath, profileId),
       reconstruction: reconstructed
         ? {
             pathCount: reconstructed.paths.length,

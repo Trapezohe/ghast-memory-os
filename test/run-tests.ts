@@ -17625,6 +17625,123 @@ await store.recordEvidence({
   sensitivity: "normal",
   eligibleForLongTermMemory: true,
 });
+const cliInspectResidueMemory = await store.addMemory({
+  profileId: "cli_inspect_residue",
+  kind: "fact",
+  content: "Inspector residue memory should stay content-safe.",
+  confidence: 0.9,
+});
+assert.equal(
+  await store.archiveMemoryById?.({
+    profileId: "cli_inspect_residue",
+    id: cliInspectResidueMemory.id,
+    reason: "inspector residue fixture",
+  }),
+  true,
+);
+const cliInspectResidueDb = new Database(dbPath);
+try {
+  cliInspectResidueDb
+    .prepare(
+      `INSERT INTO gmos_world_beliefs (
+        id, profile_id, subject, predicate, object, confidence, status,
+        source_memory_id, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      "belief_cli_inspect_archived_memory_residue",
+      "cli_inspect_residue",
+      "inspector",
+      "residue",
+      "present",
+      0.9,
+      "active",
+      cliInspectResidueMemory.id,
+      "{}",
+      "2026-06-25T00:00:00.000Z",
+      "2026-06-25T00:00:00.000Z",
+    );
+  const insertResidueAssociation = cliInspectResidueDb.prepare(
+    `INSERT INTO gmos_associations (
+      id, profile_id, cue, cue_kind, tag, target_type, target_id, target_kind,
+      target_summary, sensitivity, status, confidence, source_memory_id,
+      source_belief_id, source_task_trajectory_id, source_evidence_id,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  cliInspectResidueDb.transaction(() => {
+    insertResidueAssociation.run(
+      "assoc_cli_inspect_archived_memory_target_residue",
+      "cli_inspect_residue",
+      "target residue",
+      "lexical",
+      "diagnostic",
+      "memory",
+      cliInspectResidueMemory.id,
+      "fact",
+      "Safe target residue.",
+      "normal",
+      "active",
+      0.9,
+      null,
+      null,
+      null,
+      null,
+      "2026-06-25T00:00:00.000Z",
+      "2026-06-25T00:00:00.000Z",
+    );
+    insertResidueAssociation.run(
+      "assoc_cli_inspect_archived_memory_source_residue",
+      "cli_inspect_residue",
+      "source residue",
+      "lexical",
+      "diagnostic",
+      "world_belief",
+      "belief_non_archived_target",
+      "fact",
+      "Safe source residue.",
+      "normal",
+      "active",
+      0.9,
+      cliInspectResidueMemory.id,
+      null,
+      null,
+      null,
+      "2026-06-25T00:00:00.000Z",
+      "2026-06-25T00:00:00.000Z",
+    );
+  })();
+} finally {
+  cliInspectResidueDb.close();
+}
+const cliInspectResidue = spawnSync(
+  process.execPath,
+  [
+    path.join(process.cwd(), "dist/cli/gmos-inspect.js"),
+    "--db",
+    dbPath,
+    "--profile",
+    "cli_inspect_residue",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliInspectResidue.status, 0, cliInspectResidue.stderr);
+const cliInspectResiduePayload = JSON.parse(cliInspectResidue.stdout) as {
+  forgetSummary?: {
+    archivedMemories?: number;
+    activeWorldBeliefResidue?: number;
+    activeAssociationResidue?: number;
+    derivedResidue?: number;
+  };
+};
+assert.equal(cliInspectResiduePayload.forgetSummary?.archivedMemories, 1);
+assert.equal(cliInspectResiduePayload.forgetSummary?.activeWorldBeliefResidue, 1);
+assert.equal(cliInspectResiduePayload.forgetSummary?.activeAssociationResidue, 2);
+assert.equal(cliInspectResiduePayload.forgetSummary?.derivedResidue, 3);
+assert.equal(cliInspectResidue.stdout.includes("Inspector residue memory"), false);
+assert.equal(cliInspectResidue.stdout.includes(dbPath), false);
 const cliInspect = spawnSync(
   process.execPath,
   [
@@ -17663,6 +17780,12 @@ const cliInspectPayload = JSON.parse(cliInspect.stdout) as {
     bySensitivity?: Record<string, number>;
     bySourceType?: Record<string, number>;
   };
+  forgetSummary?: {
+    archivedMemories?: number;
+    activeWorldBeliefResidue?: number;
+    activeAssociationResidue?: number;
+    derivedResidue?: number;
+  };
   reconstruction?: { pathCount?: number; retrievedMemoryCount?: number } | null;
 };
 assert.equal(cliInspectPayload.schema, "gmos.inspect_report.v1");
@@ -17686,7 +17809,13 @@ assert.equal(typeof cliInspectPayload.evidenceSummary?.bySourceType, "object");
 assert.equal(cliInspectPayload.evidenceSummary?.bySourceType?.other, 1);
 assert.equal(cliInspectPayload.evidenceSummary?.bySourceType?.constructor, 1);
 assert.equal(JSON.stringify(cliInspectPayload.evidenceSummary?.bySourceType).includes("身份证"), false);
+assert.equal(
+  cliInspectPayload.forgetSummary?.derivedResidue,
+  (cliInspectPayload.forgetSummary?.activeWorldBeliefResidue ?? 0) +
+    (cliInspectPayload.forgetSummary?.activeAssociationResidue ?? 0),
+);
 assert.equal(cliInspect.stdout.includes("身份证"), false);
+assert.equal(cliInspect.stdout.includes("Inspector residue memory"), false);
 assert.equal(cliInspect.stdout.includes(dbPath), false);
 const cliInspectMarkdown = spawnSync(
   process.execPath,
@@ -17707,11 +17836,29 @@ assert.equal(cliInspectMarkdown.status, 0, cliInspectMarkdown.stderr);
 assert.match(cliInspectMarkdown.stdout, /# gmOS Inspect Report/);
 assert.match(cliInspectMarkdown.stdout, /## Health Signals/);
 assert.match(cliInspectMarkdown.stdout, /## Evidence Summary/);
+assert.match(cliInspectMarkdown.stdout, /## Forget Summary/);
 assert.match(cliInspectMarkdown.stdout, /eligible for long-term memory:/);
+assert.match(cliInspectMarkdown.stdout, /derived residue:/);
 assert.match(cliInspectMarkdown.stdout, /world beliefs:/);
 assert.match(cliInspectMarkdown.stdout, /associations:/);
 assert.equal(cliInspectMarkdown.stdout.includes("身份证"), false);
+assert.equal(cliInspectMarkdown.stdout.includes("Inspector residue memory"), false);
 assert.equal(cliInspectMarkdown.stdout.includes(dbPath), false);
+const cliInspectMemoryDb = spawnSync(
+  process.execPath,
+  [
+    path.join(process.cwd(), "dist/cli/gmos-inspect.js"),
+    "--db",
+    ":memory:",
+    "--profile",
+    "test",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliInspectMemoryDb.status, 0, cliInspectMemoryDb.stderr);
+assert.equal(JSON.parse(cliInspectMemoryDb.stdout).forgetSummary?.derivedResidue, 0);
 const missingStatusDb = path.join(tmp, "missing-status.db");
 assert.equal(existsSync(missingStatusDb), false);
 const cliMissingStatus = spawnSync(
