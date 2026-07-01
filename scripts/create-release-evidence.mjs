@@ -345,6 +345,16 @@ function recordInspectorContentSafety(result, forbiddenValues) {
     if (report.dbPath !== "[plaintext sqlite path redacted]") {
       throw new Error("inspector report did not redact dbPath");
     }
+    const forgetSummary = report.forgetSummary;
+    if (
+      !forgetSummary ||
+      !Number.isFinite(forgetSummary.archivedMemories) ||
+      !Number.isFinite(forgetSummary.activeWorldBeliefResidue) ||
+      !Number.isFinite(forgetSummary.activeAssociationResidue) ||
+      !Number.isFinite(forgetSummary.derivedResidue)
+    ) {
+      throw new Error("inspector report did not include numeric forgetSummary");
+    }
     const stdout = result.stdout;
     for (const [index, value] of forbiddenValues.entries()) {
       if (value && stdout.includes(value)) {
