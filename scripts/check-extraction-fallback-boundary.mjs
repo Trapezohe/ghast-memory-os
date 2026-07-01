@@ -11,6 +11,7 @@ function read(relativePath) {
 
 const runtime = read("src/runtime/create-memory-os.ts");
 const extraction = read("src/kernel/extraction.ts");
+const openAICompatibleExtractor = read("src/kernel/openai-compatible-extractor.ts");
 const associations = read("src/kernel/associations.ts");
 const entities = read("src/kernel/entities.ts");
 const personIdentity = read("src/kernel/person-identity.ts");
@@ -106,6 +107,13 @@ const publicBuiltInExtractorClaimPatterns = [
   /rule\s+fallback\s+is\s+limited/iu,
   /observe\(\)\s+.*built-in/iu,
 ];
+const fixedProfileStorageTemplatePatterns = [
+  /User'?s\s+(?:name|occupation|profession|hometown|location|native language)\s+is/iu,
+  /User\s+(?:likes|prefers|works|lives|uses|is from)\b/iu,
+  /User\s+is\s+[^"'\n]{0,120}\b(?:who\s+prefers|and\s+prefers|and\s+works)\b/iu,
+  /用户(?:叫|喜欢|偏好|住在|工作|来自)/u,
+  /我(?:叫|喜欢|偏好|住在|工作|来自)/u,
+];
 
 if (!legacyLinguisticFixturePattern.test("test/helpers/legacy-linguistic-extractor.fixture.js")) {
   throw new Error("legacy linguistic fixture boundary scanner self-check failed");
@@ -115,6 +123,12 @@ if (
   productionSemanticFallbackPatterns.every((pattern) => !pattern.test("NON_PERSON"))
 ) {
   throw new Error("production semantic fallback scanner self-check failed");
+}
+if (
+  fixedProfileStorageTemplatePatterns.every((pattern) => !pattern.test("User prefers TypeScript")) ||
+  fixedProfileStorageTemplatePatterns.every((pattern) => !pattern.test("我喜欢中文回答"))
+) {
+  throw new Error("fixed profile storage template scanner self-check failed");
 }
 
 function posixRelativePath(relativePath) {
@@ -231,6 +245,21 @@ function publicBuiltInExtractorClaimMatches() {
 
 const publicBuiltInExtractorClaims = publicBuiltInExtractorClaimMatches();
 
+function publicLlmExtractorPreservesSourceLanguage() {
+  return (
+    /same language as the source event/u.test(openAICompatibleExtractor) &&
+    /do not translate non-English events into fixed English storage phrases/u.test(
+      openAICompatibleExtractor,
+    )
+  );
+}
+
+function publicLlmExtractorHasNoFixedProfileTemplates() {
+  return fixedProfileStorageTemplatePatterns.every(
+    (pattern) => !pattern.test(openAICompatibleExtractor),
+  );
+}
+
 function ruleExtractorIsEmpty() {
   return /export\s+function\s+extractSafeRuleMemoryCandidates\([^)]*\)\s*:\s*MemoryExtractionCandidate\[\]\s*\{\s*return\s*\[\];\s*\}/u.test(
     extraction,
@@ -339,6 +368,18 @@ const checks = [
     pass: ruleExtractorIsEmpty(),
     detail:
       "extractSafeRuleMemoryCandidates must stay empty; durable semantic extraction belongs to configured extractors, not built-in language templates.",
+  },
+  {
+    name: "public-llm-extractor-preserves-source-language",
+    pass: publicLlmExtractorPreservesSourceLanguage(),
+    detail:
+      "The public OpenAI-compatible extractor prompt must preserve source-event language instead of normalizing memories into fixed English storage phrases.",
+  },
+  {
+    name: "public-llm-extractor-has-no-fixed-profile-templates",
+    pass: publicLlmExtractorHasNoFixedProfileTemplates(),
+    detail:
+      "The public OpenAI-compatible extractor prompt must not teach fixed user-profile storage templates; hosts should provide a structured extractor, not a phrasebook.",
   },
   {
     name: "no-runtime-legacy-rule-mode",
