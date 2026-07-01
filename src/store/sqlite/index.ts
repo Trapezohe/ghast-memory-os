@@ -496,9 +496,19 @@ function visibleMemory(input: {
 }): boolean {
   if (!input.includePerson && input.memory.kind === "person") return false;
   return !shouldHideFromOrdinaryContext({
-    sensitivity: input.memory.sensitivity,
+    sensitivity: effectiveMemorySensitivity(input.memory),
     includeSensitive: input.includeSensitive,
   });
+}
+
+function maxSensitivity(left: Sensitivity, right: Sensitivity): Sensitivity {
+  if (left === "secret_like" || right === "secret_like") return "secret_like";
+  if (left === "sensitive" || right === "sensitive") return "sensitive";
+  return "normal";
+}
+
+function effectiveMemorySensitivity(memory: MemoryRecord): Sensitivity {
+  return maxSensitivity(memory.sensitivity, classifySensitivity(memory.content));
 }
 
 function visibleAssociation(input: {
@@ -2101,9 +2111,13 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .filter((item) => !hiddenContextMemoryIds.has(item.memory.id))
       .filter(
         (item) =>
+          input.includeSecretLike || effectiveMemorySensitivity(item.memory) !== "secret_like",
+      )
+      .filter(
+        (item) =>
           !ordinaryRecallPurpose ||
           !shouldHideFromOrdinaryContext({
-            sensitivity: item.memory.sensitivity,
+            sensitivity: effectiveMemorySensitivity(item.memory),
             includeSensitive: input.includeSensitive,
           }),
       )
@@ -2238,7 +2252,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .filter(
         (memory) =>
           !shouldHideFromOrdinaryContext({
-            sensitivity: memory.sensitivity,
+            sensitivity: effectiveMemorySensitivity(memory),
             includeSensitive: options.includeSensitive,
           }),
       )
@@ -2327,6 +2341,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       query: searchQuery,
       purpose: "delete",
       includeSensitive: true,
+      includeSecretLike: true,
       includePerson: true,
       limit: 100,
     }).filter((memory) => memoryMatchesForgetQuery(memory, terms));

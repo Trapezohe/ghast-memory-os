@@ -1190,6 +1190,75 @@ assert.equal(JSON.stringify(unsafeMetadataSearch).includes("sk-dirtymetadata"), 
 assert.equal(JSON.stringify(unsafeMetadataList).includes("sk-dirtymetadata"), false);
 assert.equal(JSON.stringify(unsafeMetadataGet).includes("sk-dirtymetadata"), false);
 assert.equal(unsafeMetadataGet?.metadata.visibleNote, "safe metadata note");
+const unsafeContentMemory = await store.addMemory({
+  profileId: "unsafe_content_visibility",
+  kind: "fact",
+  content: "api key: sk-dirtycontentsecret1234567890",
+  sensitivity: "normal",
+});
+await store.addMemory({
+  profileId: "unsafe_content_visibility",
+  kind: "boundary",
+  content: "Do not push token sk-dirtypolicysecret1234567890",
+  sensitivity: "normal",
+});
+assert.equal(
+  (await memory.search({
+    profileId: "unsafe_content_visibility",
+    query: "dirtycontentsecret",
+    includeSensitive: true,
+  })).some((entry) => entry.id === unsafeContentMemory.id),
+  false,
+);
+assert.equal(
+  (await memory.list({
+    profileId: "unsafe_content_visibility",
+    query: "dirtycontentsecret",
+    includeSensitive: true,
+  })).some((entry) => entry.id === unsafeContentMemory.id),
+  false,
+);
+assert.equal(
+  await memory.get({
+    profileId: "unsafe_content_visibility",
+    id: unsafeContentMemory.id,
+    includeSensitive: true,
+  }),
+  null,
+);
+for (const purpose of ["manage", "delete"] as const) {
+  assert.equal(
+    (await memory.search({
+      profileId: "unsafe_content_visibility",
+      query: "dirtycontentsecret",
+      purpose,
+      includeSensitive: true,
+    })).some((entry) => entry.id === unsafeContentMemory.id),
+    false,
+  );
+}
+const unsafeContentPrepared = await memory.prepareTurn({
+  profileId: "unsafe_content_visibility",
+  messages: [{ role: "user", content: "dirtycontentsecret dirtypolicysecret" }],
+  includeSensitive: true,
+});
+assert.equal(JSON.stringify(unsafeContentPrepared).includes("sk-dirtycontentsecret"), false);
+assert.equal(JSON.stringify(unsafeContentPrepared).includes("sk-dirtypolicysecret"), false);
+assert.ok(
+  store.searchMemories({
+    profileId: "unsafe_content_visibility",
+    query: "dirtycontentsecret",
+    purpose: "delete",
+    includeSensitive: true,
+    includeSecretLike: true,
+  }).some((entry) => entry.id === unsafeContentMemory.id),
+);
+const unsafeContentForget = await memory.forget({
+  profileId: "unsafe_content_visibility",
+  query: "forget dirty content secret",
+  targetTerms: ["sk-dirtycontentsecret1234567890"],
+});
+assert.ok(unsafeContentForget.archivedMemoryIds.includes(unsafeContentMemory.id));
 const unsafeKindReconstructed = await memory.reconstructContext({
   profileId: "unsafe_kind_reconstruction_label",
   query: "safe reconstruction memory kind content",

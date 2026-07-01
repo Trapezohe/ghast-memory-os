@@ -677,6 +677,7 @@ export interface MemorySearchInput {
   purpose?: "context" | "history" | "delete" | "manage";
   includeSensitive?: boolean | undefined;
   includePerson?: boolean | undefined;
+  includeSecretLike?: boolean | undefined;
 }
 
 export type MemoryAssociationTargetType = "memory" | "world_belief" | "task_trajectory";
