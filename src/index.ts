@@ -7,6 +7,7 @@ export { createOpenAICompatibleExtractor } from "./kernel/openai-compatible-extr
 export {
   classifySensitivity,
   eligibleForLongTermMemory,
+  isSecretLikeMemoryContent,
   redactForReport,
 } from "./kernel/safety.js";
 export { getGmosRuntimeInfo } from "./runtime-info.js";

@@ -57,12 +57,16 @@ export function classifySensitivity(content: string): Sensitivity {
   return "normal";
 }
 
+export function isSecretLikeMemoryContent(content: string): boolean {
+  return classifySensitivity(content) === "secret_like";
+}
+
 export function eligibleForLongTermMemory(input: {
   content: string;
   privacyMode?: PrivacyMode | undefined;
 }): boolean {
   if (input.privacyMode === "incognito") return false;
-  return classifySensitivity(input.content) !== "secret_like";
+  return !isSecretLikeMemoryContent(input.content);
 }
 
 export function isPersonRoutedMemory(content: string): boolean {

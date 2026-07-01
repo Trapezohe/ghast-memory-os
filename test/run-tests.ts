@@ -23,6 +23,7 @@ import {
   createOpenAICompatibleExtractor,
   eligibleForLongTermMemory as publicEligibleForLongTermMemory,
   getGmosRuntimeInfo,
+  isSecretLikeMemoryContent as isPublicSecretLikeMemoryContent,
   redactForReport as publicRedactForReport,
   type EntityResolver,
   type MemoryCueExtractor,
@@ -12634,6 +12635,7 @@ for (const [credentialFixture, leakedFragment] of [
   assert.equal(classifySensitivity(credentialFixture), "secret_like");
   assert.equal(redactForReport(credentialFixture).includes(leakedFragment), false);
   assert.equal(classifyPublicSensitivity(credentialFixture), "secret_like");
+  assert.equal(isPublicSecretLikeMemoryContent(credentialFixture), true);
   assert.equal(publicEligibleForLongTermMemory({ content: credentialFixture }), false);
   assert.equal(publicRedactForReport(credentialFixture).includes(leakedFragment), false);
 }
