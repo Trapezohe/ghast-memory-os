@@ -19,21 +19,16 @@ const reconstruction = read("src/kernel/reconstruction.ts");
 const safety = read("src/kernel/safety.ts");
 const store = read("src/store/sqlite/index.ts");
 const types = read("src/kernel/types.ts");
-const publicObserveBoundaryFiles = [
+const publicObserveBoundaryRoots = [
   "README.md",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
   "docs/API_REFERENCE.md",
-  "docs/ARCHITECTURE.md",
-  "docs/BENCHMARKING.md",
-  "docs/INTEGRATION_GUIDE.md",
-  "docs/MIGRATION.md",
-  "docs/README.md",
+  "docs",
   "RELEASE_CHECKLIST.md",
-  "src/cli/gmos.ts",
+  "src/cli",
   "scripts/create-release-evidence.mjs",
-  "examples/agent-adapter.mjs",
-  "examples/http-adapter.mjs",
-  "examples/mcp-router.mjs",
-  "examples/quickstart.mjs",
+  "examples",
 ];
 const productionSurfaceRoots = [
   "README.md",
@@ -211,6 +206,12 @@ function productionSurfaceFiles() {
     .filter((relativePath) => relativePath !== selfFile);
 }
 
+function publicObserveBoundaryFiles() {
+  return [...new Set(publicObserveBoundaryRoots.flatMap(filesUnder))]
+    .filter((relativePath) => relativePath !== selfFile)
+    .sort();
+}
+
 function productionRuntimeSourceFiles() {
   return productionRuntimeSourceRoots
     .flatMap(filesUnder)
@@ -272,7 +273,7 @@ function packageDoesNotExposeTestFixtures() {
 
 function publicObserveSemanticExampleMatches() {
   const matches = [];
-  for (const relativePath of publicObserveBoundaryFiles) {
+  for (const relativePath of publicObserveBoundaryFiles()) {
     const content = read(relativePath);
     const hasStructuredExtractor = /extractor\s*:\s*\{/u.test(content);
     for (const pattern of publicObserveSemanticPatterns) {
@@ -292,7 +293,7 @@ const publicObserveSemanticExamples = publicObserveSemanticExampleMatches();
 
 function publicBuiltInExtractorClaimMatches() {
   const matches = [];
-  for (const relativePath of publicObserveBoundaryFiles) {
+  for (const relativePath of publicObserveBoundaryFiles()) {
     const content = read(relativePath);
     for (const pattern of publicBuiltInExtractorClaimPatterns) {
       if (!pattern.test(content)) continue;
@@ -305,9 +306,20 @@ function publicBuiltInExtractorClaimMatches() {
 
 const publicBuiltInExtractorClaims = publicBuiltInExtractorClaimMatches();
 const publicSemanticFallbackClaims = patternMatchesInFiles(
-  publicObserveBoundaryFiles,
+  publicObserveBoundaryFiles(),
   publicSemanticFallbackClaimPatterns,
 );
+const publicObserveBoundaryFileList = publicObserveBoundaryFiles();
+const expectedPublicObserveBoundaryFiles = [
+  "README.md",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  "RELEASE_CHECKLIST.md",
+  "scripts/create-release-evidence.mjs",
+  ...filesUnder("docs"),
+  ...filesUnder("examples"),
+  ...filesUnder("src/cli"),
+].sort();
 
 function publicLlmExtractorPreservesSourceLanguage() {
   return (
@@ -391,6 +403,15 @@ const removedRuleFallbackSymbolMatches = patternMatchesInFiles(
 );
 
 const checks = [
+  {
+    name: "public-observe-boundary-scan-covers-docs-and-examples",
+    pass:
+      expectedPublicObserveBoundaryFiles.every((relativePath) =>
+        publicObserveBoundaryFileList.includes(relativePath),
+      ) && !publicObserveBoundaryFileList.includes(selfFile),
+    detail:
+      "The public semantic-extraction boundary scan must automatically cover README, docs, examples, CLI, and release docs.",
+  },
   {
     name: "production-has-no-rule-fallback-symbols",
     pass: removedRuleFallbackSymbolMatches.length === 0,
