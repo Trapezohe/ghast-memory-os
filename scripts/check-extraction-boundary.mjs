@@ -90,6 +90,12 @@ const productionSemanticFallbackPatterns = [
   /NON_SPEAKER_PREFIX/u,
 ];
 
+const naturalLanguageMemoryCommandFallbackPatterns = [
+  /记住|记一下|记下来|别忘了|不要忘记|忘记我的|删除记忆|清除记忆/u,
+  /remember\s+(?:that|this|it)|please\s+remember|don't\s+forget|do\s+not\s+forget|save\s+this\s+memory/iu,
+  /forget\s+(?:this|my|that|what\s+i\s+said)|delete\s+memory|do\s+not\s+remember|don't\s+remember/iu,
+];
+
 const publicObserveSemanticPatterns = [
   /\b(?:gmos|node\s+dist\/cli\/gmos\.js)\s+observe\b[^\n]*(?:I\s+prefer|preference|prefer|我喜欢|偏好)/iu,
   /\bobserveMessage\s*\(\s*\{[\s\S]{0,240}?content:\s*["'`][^"'`\n]*(?:I\s+prefer|preference|prefer|我喜欢|偏好)/iu,
@@ -141,6 +147,13 @@ if (
   productionSemanticFallbackPatterns.every((pattern) => !pattern.test("NON_PERSON"))
 ) {
   throw new Error("production semantic fallback scanner self-check failed");
+}
+if (
+  naturalLanguageMemoryCommandFallbackPatterns.every((pattern) => !pattern.test("请记住这个")) ||
+  naturalLanguageMemoryCommandFallbackPatterns.every((pattern) => !pattern.test("remember that I prefer compact diffs")) ||
+  naturalLanguageMemoryCommandFallbackPatterns.every((pattern) => !pattern.test("forget my old preference"))
+) {
+  throw new Error("natural-language memory command fallback scanner self-check failed");
 }
 if (
   fixedProfileStorageTemplatePatterns.every((pattern) => !pattern.test("User prefers TypeScript")) ||
@@ -345,6 +358,10 @@ const productionSemanticFallbackMatches = patternMatchesInFiles(
   productionRuntimeSourceFiles(),
   productionSemanticFallbackPatterns,
 );
+const naturalLanguageMemoryCommandFallbackMatches = patternMatchesInFiles(
+  productionRuntimeSourceFiles(),
+  naturalLanguageMemoryCommandFallbackPatterns,
+);
 const removedRuleFallbackSymbolMatches = patternMatchesInFiles(
   productionRuntimeSourceFiles(),
   removedRuleFallbackPatterns,
@@ -419,6 +436,15 @@ const checks = [
       "Production runtime must not infer speaker/person/project identity from content templates or expanding non-person word lists." +
       (productionSemanticFallbackMatches.length > 0
         ? ` Matched: ${productionSemanticFallbackMatches.join("; ")}.`
+        : ""),
+  },
+  {
+    name: "production-has-no-natural-language-memory-command-fallback",
+    pass: naturalLanguageMemoryCommandFallbackMatches.length === 0,
+    detail:
+      "Production runtime must not infer remember/forget/write priority from hard-coded natural-language command phrases; hosts should pass structured events, structured operations, or configured extractors." +
+      (naturalLanguageMemoryCommandFallbackMatches.length > 0
+        ? ` Matched: ${naturalLanguageMemoryCommandFallbackMatches.join("; ")}.`
         : ""),
   },
   {
