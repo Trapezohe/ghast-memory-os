@@ -1131,11 +1131,28 @@ function contentHasNonSourceQueryEntity(
 }
 
 function associationPersonCue(association: MemoryAssociationRecord): string | null {
-  const personMatch = /^person:([^\s]+)/iu.exec(association.targetSummary);
-  const userMatch = /^user\b/iu.exec(association.targetSummary);
+  const summary = association.targetSummary.trim();
+  const userMatch = /^user\b/iu.exec(summary);
+  if (userMatch) return userMatch[0].trim().toLowerCase();
+
+  const personMatch = /^person\s*:\s*(.+)$/iu.exec(summary);
+  if (!personMatch) return null;
+  const rawSubject = personMatch[1]?.trim() ?? "";
+  if (!rawSubject) return null;
+
+  const lowerSubject = rawSubject.toLowerCase();
+  const associationTag = association.tag.trim().toLowerCase();
+  if (associationTag && associationTag !== "world_belief") {
+    const tagOffset = lowerSubject.indexOf(` ${associationTag}`);
+    if (tagOffset > 0) return rawSubject.slice(0, tagOffset).trim().toLowerCase();
+  }
+  const predicateOffset =
+    /\s+[a-z][a-z0-9_-]*\.[a-z0-9_.-]+(?:\s|$)/iu.exec(rawSubject)?.index;
+  if (predicateOffset !== undefined && predicateOffset > 0) {
+    return rawSubject.slice(0, predicateOffset).trim().toLowerCase();
+  }
   return (
-    personMatch?.[1]?.trim().toLowerCase() ??
-    userMatch?.[0]?.trim().toLowerCase() ??
+    rawSubject.split(/\s+/u)[0]?.trim().toLowerCase() ??
     null
   );
 }

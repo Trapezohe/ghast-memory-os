@@ -15469,6 +15469,63 @@ const sourceScopeCueReconstructed = await sourceScopeCueMemory.reconstructContex
 assert.match(sourceScopeCueReconstructed.contextBlock, /Meridian release plan/);
 assert.doesNotMatch(JSON.stringify(sourceScopeCueReconstructed), /Bob owns the budget lane/);
 await sourceScopeCueMemory.close();
+const spacedPersonSubjectResolver: EntityResolver = (input) => {
+  const match = /^person\s*[:/]\s*(.+)$/iu.exec(input.subject.trim());
+  if (!match) return null;
+  const name = match[1]!.trim();
+  return {
+    canonicalSubject: `person:${name}`,
+    originalSubject: input.subject,
+    entityKind: "person",
+    entityKey: name,
+    aliases: [name, input.subject, ...(input.aliases ?? [])],
+  };
+};
+const spacedPersonScopeDb = path.join(tmp, "spaced-person-world-belief-source-scope.db");
+const spacedPersonScopeMemory = createMemoryOS({
+  profileId: "spaced_person_scope",
+  store: createSqliteMemoryStore({
+    path: spacedPersonScopeDb,
+    entityResolver: spacedPersonSubjectResolver,
+  }),
+  entityResolver: spacedPersonSubjectResolver,
+  extractor: ({ event }) => {
+    const speaker =
+      typeof event.metadata?.speaker === "string" ? event.metadata.speaker : "Unknown Speaker";
+    const tool = speaker === "Alex Smith" ? "Atlas" : "DecoyPad";
+    return {
+      kind: "fact",
+      subject: `person:${speaker}`,
+      predicate: "person.tool",
+      object: tool,
+      content: `${speaker} uses ${tool} for planning.`,
+      confidence: 0.9,
+    };
+  },
+});
+for (const speaker of ["Alex Smith", "Alex Stone"]) {
+  await spacedPersonScopeMemory.observe({
+    type: "conversation.message",
+    profileId: "spaced_person_scope",
+    role: "user",
+    content: `${speaker} uses a planning tool.`,
+    metadata: { speaker, speakerKind: "person" },
+  });
+}
+const spacedPersonScopeReconstructed = await spacedPersonScopeMemory.reconstructContext({
+  profileId: "spaced_person_scope",
+  query: "Which planning tool belongs to Alex Smith?",
+  reconstructionIntent: {
+    queryCues: ["Alex Smith"],
+    expectedTags: ["person.tool"],
+  },
+  maxSteps: 4,
+  maxBranch: 12,
+  maxMemories: 6,
+});
+assert.match(spacedPersonScopeReconstructed.contextBlock, /Atlas/);
+assert.doesNotMatch(JSON.stringify(spacedPersonScopeReconstructed), /DecoyPad/);
+await spacedPersonScopeMemory.close();
 const secretStructuredCue = "api key sk-structuredintentsecret1234567890";
 const secretStructuredTag = "api key sk-structuredtagsecret1234567890";
 const secretStructuredGroupTag = "api key sk-structuredgroupsecret1234567890";
