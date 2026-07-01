@@ -13587,6 +13587,13 @@ try {
   });
   assert.equal(httpMcpRuntimeInfo.status, 200);
   assert.deepEqual(httpMcpRuntimeInfo.body.runtimeInfo, getGmosRuntimeInfo());
+  const httpMcpCallUnknownField = await postJson(`${httpAddress.url}/mcp/call`, {
+    tool: "memory.runtime_info",
+    args: {},
+    unsupported: true,
+  });
+  assert.equal(httpMcpCallUnknownField.status, 400);
+  assert.match(httpMcpCallUnknownField.text, /POST \/mcp\/call contains unsupported fields: unsupported/);
   assert.deepEqual(PUBLIC_MEMORY_HTTP_ROUTES, [
     "GET /health",
     "GET /runtime-info",

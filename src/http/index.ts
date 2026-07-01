@@ -247,6 +247,14 @@ export function createMemoryHttpServer(
 
       if (route.route === "POST /mcp/call") {
         const body = assertObjectBody(await readJsonBody(request, maxBodyBytes));
+        const unsupported = Object.keys(body).filter((key) => key !== "tool" && key !== "args");
+        if (unsupported.length > 0) {
+          throw new HttpError(
+            400,
+            "unsupported_fields",
+            `POST /mcp/call contains unsupported fields: ${unsupported.join(", ")}`,
+          );
+        }
         const tool = body.tool;
         if (typeof tool !== "string" || tool.trim().length === 0) {
           throw new HttpError(400, "invalid_tool", "tool must be a non-empty string");
