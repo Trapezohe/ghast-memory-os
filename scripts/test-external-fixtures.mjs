@@ -69,6 +69,10 @@ function hasDiagnostics(caseReport) {
   );
 }
 
+function counterCount(counters, name) {
+  return counters?.find((entry) => entry.name === name)?.count ?? 0;
+}
+
 const mainTmp = mkdtempSync(path.join(os.tmpdir(), "gmos-external-main-"));
 process.on("exit", () => rmSync(mainTmp, { recursive: true, force: true }));
 const mainOutputDir = path.join(mainTmp, "reports");
@@ -307,24 +311,24 @@ try {
   const normalizationCase = caseById(failureRunJson, "fixture-normalization-report");
   const markdown = readFileSync(suiteMarkdown, "utf8");
   const jsonArtifact = readJsonFile(suiteJson);
-  const artifactManifest = jsonArtifact.runs?.[0]?.manifest;
+  const artifactManifest = jsonArtifact.runManifest;
   if (failureReport.pass !== true) failures.push("failure suite dry-run command did not pass");
   if (failureReport.benchmarkPass !== false) failures.push("failure suite benchmarkPass did not stay false");
   if (failureRun?.pass !== false) failures.push("failure run pass did not stay false");
-  if (failureRun?.failureStages?.not_extracted_or_filtered < 1) {
-    failures.push("failure run missing not_extracted_or_filtered stage");
+  if (counterCount(failureRun?.failureStages, "answer_not_in_input") < 1) {
+    failures.push("failure run missing answer_not_in_input stage");
   }
-  if (failureRun?.failureStages?.answer_normalization_mismatch < 1) {
+  if (counterCount(failureRun?.failureStages, "answer_normalization_mismatch") < 1) {
     failures.push("failure run missing answer_normalization_mismatch stage");
   }
-  if (failureRun?.scoreAttribution?.extraction_or_memory_update < 1) {
-    failures.push("failure run missing extraction_or_memory_update attribution");
+  if (counterCount(failureRun?.scoreAttribution, "adapter_or_source_answer_alignment") < 1) {
+    failures.push("failure run missing adapter_or_source_answer_alignment attribution");
   }
-  if (failureRun?.scoreAttribution?.scorer_normalization < 1) {
+  if (counterCount(failureRun?.scoreAttribution, "scorer_normalization") < 1) {
     failures.push("failure run missing scorer_normalization attribution");
   }
-  if (!failingCase?.failureTaxonomy?.some((entry) => entry.stage === "not_extracted_or_filtered")) {
-    failures.push("failing case missing not_extracted_or_filtered taxonomy");
+  if (!failingCase?.failureTaxonomy?.some((entry) => entry.stage === "answer_not_in_input")) {
+    failures.push("failing case missing answer_not_in_input taxonomy");
   }
   if (!normalizationCase?.failureTaxonomy?.some((entry) => entry.stage === "answer_normalization_mismatch")) {
     failures.push("normalization case missing answer_normalization_mismatch taxonomy");
@@ -332,8 +336,8 @@ try {
   if (normalizationCase?.strictPass !== false || normalizationCase?.normalizedEvidencePass !== true) {
     failures.push("normalization case did not keep strict/normalized score split");
   }
-  if (artifactManifest?.inputHash?.algorithm !== "sha256") {
-    failures.push("json artifact missing input sha256 manifest");
+  if (!/^sha256:[a-f0-9]{64}$/u.test(artifactManifest?.suiteHash ?? "")) {
+    failures.push("json artifact missing suite sha256 manifest");
   }
   if (artifactManifest?.scoreSemantics?.primaryScore !== "strictScore") {
     failures.push("json artifact missing score semantics");
@@ -341,16 +345,16 @@ try {
   if (artifactManifest?.scoreSemantics?.officialProtocol !== "not_run") {
     failures.push("json artifact did not mark official protocol as not_run");
   }
-  if (artifactManifest?.runtime?.diagnosticsRuntimeMs === undefined) {
+  if (jsonArtifact.runs?.[0]?.runtime?.diagnosticRuntimeMs === undefined) {
     failures.push("json artifact missing diagnostics runtime split");
   }
-  if (!markdown.includes("## Diagnostic Summary") || !markdown.includes("Weakest slice scores")) {
+  if (!markdown.includes("## Diagnostic Summary") || !markdown.includes("Weakest slices")) {
     failures.push("suite markdown missing diagnostic summary");
   }
-  if (!markdown.includes("not_extracted_or_filtered") || !markdown.includes("answer_normalization_mismatch")) {
+  if (!markdown.includes("answer_not_in_input") || !markdown.includes("answer_normalization_mismatch")) {
     failures.push("suite markdown missing failure stages");
   }
-  if (!markdown.includes("strictScore") || !markdown.includes("normalizedEvidenceScore")) {
+  if (!markdown.includes("primary=strictScore") || !markdown.includes("normalizedEvidence=diagnostic_only")) {
     failures.push("suite markdown missing score semantics fields");
   }
 } finally {

@@ -16,11 +16,11 @@ function exampleStructuredExtractor(input) {
   if (/release planning thread/iu.test(text)) {
     candidates.push({
       kind: "preference",
-      content: "Release planning response style: risk first, then options.",
+      content: "Release planning response style: constraints first, then options.",
       confidence: 0.9,
       predicate: "user.preference",
       subject: "user",
-      object: "risk first, then options",
+      object: "constraints first, then options",
       actionPolicyKind: "prefer",
     });
   }
@@ -78,7 +78,7 @@ try {
     type: "conversation.message",
     profileId: "structured-user",
     role: "user",
-    content: "User opened the release planning thread and requested a risk-first outline.",
+    content: "User opened the release planning thread and requested a constraints-first outline.",
     createdAt: "2026-06-25T00:00:00.000Z",
   });
   await memory.observe({
@@ -102,7 +102,7 @@ try {
     includeEvidence: true,
   });
 
-  assert.match(prepared.contextBlock, /risk first|code freeze|owner approval/iu);
+  assert.match(prepared.contextBlock, /constraints first|code freeze|owner approval/iu);
   assert.equal(prepared.actionPolicies.length >= 1, true);
   assert.equal(prepared.evidence.length >= 1, true);
 
@@ -123,7 +123,7 @@ try {
     includeEvidence: true,
   });
 
-  assert.match(reconstructed.contextBlock, /code freeze|owner approval|risk first/iu);
+  assert.match(reconstructed.contextBlock, /code freeze|owner approval|constraints first/iu);
   assert.equal(reconstructed.paths.length > 0, true);
 
   await memory.close();

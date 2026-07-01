@@ -18,11 +18,11 @@ function fakeOpenAICompatibleFetch(_url, init) {
   if (/release planning/iu.test(content)) {
     memories.push({
       kind: "preference",
-      content: "Release planning response style: risk first, then options.",
+      content: "Release planning response style: constraints first, then options.",
       confidence: 0.91,
       predicate: "user.preference",
       subject: "user",
-      object: "risk first, then options",
+      object: "constraints first, then options",
       actionPolicyKind: "prefer",
     });
   }
@@ -40,14 +40,14 @@ function fakeOpenAICompatibleFetch(_url, init) {
     });
   }
 
-  if (/do not auto-send/iu.test(content)) {
+  if (/approval before delivery/iu.test(content)) {
     memories.push({
       kind: "boundary",
-      content: "project:vega status updates must not be auto-sent without approval.",
+      content: "project:vega status updates require approval before delivery.",
       confidence: 0.94,
       predicate: "boundary.do_not_push",
       subject: "project:vega",
-      object: "auto-send status updates without approval",
+      object: "status update delivery before approval",
       actionPolicyKind: "do_not_push",
     });
   }
@@ -94,7 +94,7 @@ try {
     type: "conversation.message",
     profileId: "openai-compatible-user",
     role: "user",
-    content: "For release planning, use risk first, then options.",
+    content: "For release planning, use constraints first, then options.",
     metadata: { speaker: "Mira", speakerKind: "person" },
     createdAt: "2026-06-25T00:00:00.000Z",
   });
@@ -112,7 +112,7 @@ try {
     type: "conversation.message",
     profileId: "openai-compatible-user",
     role: "user",
-    content: "For Project Vega status updates, do not auto-send without approval.",
+    content: "For Project Vega status updates, require approval before delivery.",
     createdAt: "2026-06-25T00:02:00.000Z",
   });
 
@@ -122,7 +122,7 @@ try {
     includeEvidence: true,
   });
 
-  assert.match(prepared.contextBlock, /Avery Stone|risk first|auto-sent|approval/iu);
+  assert.match(prepared.contextBlock, /Avery Stone|constraints first|delivery|approval/iu);
   assert.equal(prepared.actionPolicies.length >= 1, true);
   assert.equal(prepared.evidence.length >= 1, true);
 
@@ -141,7 +141,7 @@ try {
     includeEvidence: true,
   });
 
-  assert.match(reconstructed.contextBlock, /Avery Stone|auto-sent|approval/iu);
+  assert.match(reconstructed.contextBlock, /Avery Stone|delivery|approval/iu);
   assert.equal(reconstructed.paths.length > 0, true);
 
   await memory.close();
