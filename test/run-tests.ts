@@ -13508,6 +13508,10 @@ const mcpFeedbackUnknownField = await mcpServer.callTool("memory.record_feedback
   unsupported: true,
 });
 assert.equal(mcpFeedbackUnknownField.isError, true);
+assert.match(
+  String((mcpFeedbackUnknownField.structuredContent as { error?: unknown }).error ?? ""),
+  /memory\.record_feedback contains unsupported fields: unsupported/,
+);
 await mcpServer.callTool("memory.commit_outcome", {
   profileId: "mcp",
   objective: "verify mcp server",
@@ -13522,6 +13526,10 @@ const mcpOutcomeUnknownField = await mcpServer.callTool("memory.commit_outcome",
   unsupported: true,
 });
 assert.equal(mcpOutcomeUnknownField.isError, true);
+assert.match(
+  String((mcpOutcomeUnknownField.structuredContent as { error?: unknown }).error ?? ""),
+  /memory\.commit_outcome contains unsupported fields: unsupported/,
+);
 const mcpPrivacyLeakFailures = await store.listFailures?.({
   profileId: "mcp",
   failureKind: "privacy_leak",
