@@ -46,61 +46,61 @@ try {
   structuredCandidateQueue.push([
     {
       kind: "preference",
-      content: "发布计划回答风格：先列风险，再给最小可行步骤。",
+      content: "发布计划回答风格：先列约束，再给最小可行步骤。",
       confidence: 0.9,
       predicate: "user.preference",
       subject: "user",
-      object: "risk-first release planning",
+      object: "constraint-first release planning",
       actionPolicyKind: "prefer",
     },
   ]);
   await adapter.observeMessage({
     role: "user",
-    content: "发布计划请求：请使用风险优先的最小步骤格式。",
+    content: "发布计划请求：请使用约束优先的最小步骤格式。",
   });
   structuredCandidateQueue.push([
     {
       kind: "boundary",
-      content: "Project Atlas 不要主动推上线，必须先等 rollback review。",
+      content: "project:release-demo 不要主动进入发布执行，必须先等 owner approval。",
       confidence: 0.95,
       predicate: "boundary.do_not_push",
-      subject: "project:atlas",
-      object: "auto-push release",
+      subject: "project:release-demo",
+      object: "auto-start release execution",
       actionPolicyKind: "do_not_push",
     },
   ]);
   await adapter.observeMessage({
     role: "user",
-    content: "Project Atlas 不要主动推上线，必须先等 rollback review。",
+    content: "project:release-demo 不要主动进入发布执行，必须先等 owner approval。",
   });
 
   const turn = await adapter.prepareTurn({
     messages: [
       {
         role: "user",
-        content: "Atlas 发布计划下一步怎么做？",
+        content: "release-demo 发布计划下一步怎么做？",
       },
     ],
-    task: { intent: "release planning", topic: "Project Atlas" },
+    task: { intent: "release planning", topic: "project:release-demo" },
   });
 
   assert.equal(turn.modelMessages[0]?.role, "system");
-  assert.match(turn.modelMessages[0]?.content ?? "", /风险|rollback review|不要主动推上线/);
+  assert.match(turn.modelMessages[0]?.content ?? "", /约束|owner approval|不要主动进入发布执行/);
   assert.equal(turn.prepared.evidence.length > 0, true);
   assert.equal(turn.actionPolicies.length > 0, true);
 
   await adapter.commitOutcome({
     taskId: "agent-example-release-plan",
-    objective: "Draft a safe Project Atlas release plan",
+    objective: "Draft a safe project:release-demo release plan",
     status: "completed",
-    summary: "The agent proposed a risk-first plan and waited for rollback review.",
+    summary: "The agent proposed a constraint-first plan and waited for owner approval.",
   });
   await adapter.recordFeedback({
-    content: "这个节奏对，之后 Atlas 相关计划继续先列风险。",
+    content: "这个节奏对，之后 release-demo 相关计划继续先列约束。",
   });
 
   const forgetResult = await adapter.forget({
-    query: "先列风险",
+    query: "先列约束",
     reason: "example cleanup",
   });
   assert.equal(forgetResult.archivedMemoryIds.length > 0, true);

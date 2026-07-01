@@ -53,7 +53,7 @@ const prepared = await memory.prepareTurn({
   cue-tag-content edges from existing memory, world belief, and task trajectory
   rows; those associations are an index, not a second source of truth.
 - Deterministic world-entity normalization for current-state beliefs. Structured
-  subjects such as `project:atlas`, `project/atlas`, or subject `Atlas` with
+  subjects such as `project:release-demo`, `project/release-demo`, or subject `release-demo` with
   predicate `project.state` converge before single-cardinality invalidation runs.
 - Optional host-provided `entityResolver` support for product-specific entities.
   Hosts can canonicalize workspaces, accounts, repositories, or other domain
@@ -128,7 +128,7 @@ node dist/cli/gmos.js repair --db ./gmos.db --search-index
 node dist/cli/gmos.js repair --db ./gmos.db --associations
 node dist/cli/gmos.js status --db ./gmos.db --profile local --host ghast --format markdown
 node dist/cli/gmos.js add --db ./gmos.db --profile local --kind preference --text "回答风格：简洁，先给结论"
-node dist/cli/gmos.js update --db ./gmos.db --profile local --id memory_xxx --text "回答风格：先讲风险，再给方案"
+node dist/cli/gmos.js update --db ./gmos.db --profile local --id memory_xxx --text "回答风格：先给结论，再列方案"
 node dist/cli/gmos.js delete --db ./gmos.db --profile local --id memory_xxx
 node dist/cli/gmos.js clear --db ./gmos.db --profile local --scope global
 node dist/cli/gmos.js search --db ./gmos.db --profile local --query "简洁"
@@ -143,16 +143,16 @@ node dist/cli/gmos.js restore --db ./new-gmos.db --profile local-restored --inpu
 node dist/cli/gmos.js add --db ./gmos.db --profile local --kind boundary --text "不要再提醒我这个项目延期了。"
 node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "记录一条普通会话事件。" --report
 node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
-node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:atlas"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}'
+node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:release-demo"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}'
 node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "这个项目之前是什么状态？" --temporal-mode history
-node dist/cli/gmos.js explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:atlas"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}' --include-trace
+node dist/cli/gmos.js explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:release-demo"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}' --include-trace
 node dist/cli/gmos.js mcp tools
-node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.add --input '{"kind":"preference","content":"回答风格：先讲风险"}'
-node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.search --input '{"query":"先讲风险"}'
+node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.add --input '{"kind":"preference","content":"回答风格：先给结论"}'
+node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.search --input '{"query":"先给结论"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.search --input '{"query":"之前的状态","purpose":"history"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.prepare_context --input '{"text":"你之后怎么回答我？"}'
-node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.reconstruct_context --input '{"text":"我之前说的项目下一步是什么？","reconstructionIntent":{"queryCues":["project:atlas"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}}'
-node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.explain_evidence_path --input '{"text":"我之前说的项目下一步是什么？","includePlannerTrace":true,"reconstructionIntent":{"queryCues":["project:atlas"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}}'
+node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.reconstruct_context --input '{"text":"我之前说的项目下一步是什么？","reconstructionIntent":{"queryCues":["project:release-demo"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}}'
+node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.explain_evidence_path --input '{"text":"我之前说的项目下一步是什么？","includePlannerTrace":true,"reconstructionIntent":{"queryCues":["project:release-demo"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}}'
 node dist/cli/gmos.js mcp serve --db ./gmos.db --profile local
 node dist/cli/gmos.js http serve --db ./gmos.db --profile local --port 4787 --host ghast --auth-token local-dev-token
 node dist/cli/gmos.js evolution report --db ./gmos.db --profile local --format markdown
@@ -226,7 +226,7 @@ for LongMemEval original/cleaned JSON/JSONL and LoCoMo JSON/JSONL through
 those datasets. In native gmOS JSONL, each line is one deterministic case:
 
 ```jsonl
-{"id":"project-next-step","events":[{"type":"memory","kind":"project","content":"代号 Vega 的发布计划叫做 Lantern Run。"},{"type":"memory","kind":"procedure","content":"Lantern Run 下一步先更新 rollback matrix，再做发布实现。"}],"question":"Vega 这个发布计划下一步先做什么？","reconstructionIntent":{"queryCues":["Vega"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]},"expectedAll":["rollback matrix"],"forbiddenAny":["会议室"]}
+{"id":"demo-project-next-step","events":[{"type":"memory","kind":"project","content":"project:release-demo 的公开别名是 demo release。"},{"type":"memory","kind":"procedure","content":"demo release 下一步先完成 preflight checklist，再做实现。"}],"question":"demo release 这个项目下一步先做什么？","reconstructionIntent":{"queryCues":["project:release-demo"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]},"expectedAll":["preflight checklist"],"forbiddenAny":["venue booking"]}
 ```
 
 The LongMemEval adapter maps each instance's `haystack_sessions` turns into a
@@ -501,16 +501,16 @@ const memory = createMemoryOS({
       return [
         {
           kind: "preference",
-          content: "Release plan response style: risk first, then options.",
+          content: "Release plan response style: summary first, then options.",
           confidence: 0.9,
           predicate: "user.preference",
           actionPolicyKind: "prefer",
         },
         {
           kind: "project",
-          subject: "project:helio",
+          subject: "project:release-demo",
           predicate: "project.state",
-          content: "Helio is blocked on the migration probe.",
+          content: "project:release-demo is blocked on the integration dry run.",
           confidence: 0.86,
           cardinality: "single",
         },
@@ -663,10 +663,10 @@ tables.
 Use `cardinality: "single"` only for current-state beliefs where one active
 value should replace the previous one, such as a project's current owner,
 status, or next step. gmOS first resolves the subject into a canonical entity
-key; for example, `project:atlas`, `project/atlas`, or subject `Atlas` with
-predicate `project.state` converge to a stable project entity. `repo:atlas` and
-`repository:atlas` normalize as repository entities, not project entities.
-Natural-language aliases such as "Atlas project" are host-specific and should
+key; for example, `project:release-demo`, `project/release-demo`, or subject `release-demo` with
+predicate `project.state` converge to a stable project entity. `repo:release-demo` and
+`repository:release-demo` normalize as repository entities, not project entities.
+Natural-language aliases such as "release demo project" are host-specific and should
 come from `entityResolver`, not from gmOS core. It then marks the previous active world
 belief for the same `profileId + canonical subject + predicate` as
 `superseded` and removes its association projection from active reconstruction.
@@ -843,7 +843,7 @@ store.restoreProfileBackup({
 const saved = await memory.add({
   profileId: "local-user",
   kind: "preference",
-  content: "回答风格：先讲风险，再给方案。",
+  content: "回答风格：先给结论，再列方案。",
 });
 
 const matches = await memory.search({
@@ -854,7 +854,7 @@ const matches = await memory.search({
 await memory.update({
   profileId: "local-user",
   id: saved.id,
-  content: "回答风格：先讲风险，最后列方案。",
+  content: "回答风格：先给结论，最后列方案。",
 });
 
 await memory.archive({
@@ -1124,7 +1124,7 @@ await syncHostMemorySnapshotsIntoStore({
   memories: [
     {
       id: "host-memory-1",
-      content: "回答风格：先讲风险。",
+      content: "回答风格：先给结论。",
       kind: "preference",
       updatedAt: new Date().toISOString(),
     },

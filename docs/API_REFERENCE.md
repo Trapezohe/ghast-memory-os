@@ -133,7 +133,7 @@ await adapter.observeMessage({
 await memory.add({
   profileId: "local-user",
   kind: "preference",
-  content: "Release plan response style: rollback risk first.",
+  content: "Release plan response style: summary first, then options.",
 });
 
 const turn = await adapter.prepareTurn({

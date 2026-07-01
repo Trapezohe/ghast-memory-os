@@ -15,7 +15,7 @@ try {
   const preference = await memory.add({
     profileId: "quickstart",
     kind: "preference",
-    content: "回答风格：先讲风险，再给方案。",
+    content: "回答风格：先给结论，再列方案。",
     createdAt: "2026-06-25T00:00:00.000Z",
   });
 
@@ -53,7 +53,7 @@ try {
 
   const output = {
     ok: true,
-    contextHasPreference: prepared.contextBlock.includes("先讲风险"),
+    contextHasPreference: prepared.contextBlock.includes("先给结论"),
     evidenceCount: prepared.evidence.length,
     preferenceMemoryId: preference.id,
     importedMemoryId: imported.id,

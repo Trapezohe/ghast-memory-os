@@ -28,7 +28,7 @@ const hostMemories = [
   {
     id: "host_boundary_1",
     kind: "boundary",
-    content: "Do not proactively push delay reminders for Project Atlas.",
+    content: "Do not proactively start release execution for project:release-demo.",
     confidence: 0.94,
     updatedAt: nowIso,
   },
@@ -82,13 +82,13 @@ try {
     messages: [
       {
         role: "user",
-        content: "How should you answer Project Atlas planning questions?",
+        content: "How should you answer project:release-demo planning questions?",
       },
     ],
     includeEvidence: true,
   });
   assert.match(prepared.contextBlock, /concise engineering answers/);
-  assert.match(prepared.contextBlock, /Do not proactively push delay reminders/);
+  assert.match(prepared.contextBlock, /Do not proactively start release execution/);
   assert.equal(prepared.contextBlock.includes("sk-hostadaptersecret"), false);
   assert.equal(prepared.contextBlock.includes("PERSON: Alice"), false);
   assert.ok(prepared.actionPolicies.some((policy) => policy.kind === "do_not_push"));
@@ -126,7 +126,7 @@ try {
           memoryCount: prepared.memories.length,
           actionPolicyCount: prepared.actionPolicies.length,
           evidenceCount: prepared.evidence.length,
-          contextHasBoundary: prepared.contextBlock.includes("Do not proactively push"),
+          contextHasBoundary: prepared.contextBlock.includes("Do not proactively start release execution"),
         },
         secondSync: {
           archivedCount: secondSync.archivedCount,

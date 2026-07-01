@@ -24,6 +24,14 @@ const benchmarkSurfaceScanRoots = [
   "scripts/create-release-evidence.mjs",
   "examples",
 ];
+const publicExampleScanRoots = [
+  "README.md",
+  "docs/API_REFERENCE.md",
+  "docs/INTEGRATION_GUIDE.md",
+  "src/cli/gmos.ts",
+  "scripts/create-release-evidence.mjs",
+  "examples",
+];
 const benchmarkSurfaceExcludes = new Set([
   "examples/external-mini-fixture.jsonl",
   "examples/external-mini-benchmark.mjs",
@@ -56,12 +64,12 @@ if (selfCheckSamples.some((sample) => !forbidden.test(sample) && !datasetShortcu
 }
 
 function filesUnder(dir) {
-  if (statSync(dir).isFile()) return /\.(?:ts|js|mjs|json|jsonl)$/u.test(dir) ? [dir] : [];
+  if (statSync(dir).isFile()) return /\.(?:ts|js|mjs|json|jsonl|md)$/u.test(dir) ? [dir] : [];
   return readdirSync(dir).flatMap((entry) => {
     const fullPath = path.join(dir, entry);
     const stat = statSync(fullPath);
     if (stat.isDirectory()) return filesUnder(fullPath);
-    return /\.(?:ts|js|mjs|json|jsonl)$/u.test(fullPath) ? [fullPath] : [];
+    return /\.(?:ts|js|mjs|json|jsonl|md)$/u.test(fullPath) ? [fullPath] : [];
   });
 }
 
@@ -138,6 +146,19 @@ const coreFiles = uniqueFiles(
 const benchmarkSurfaceFiles = uniqueFiles(
   benchmarkSurfaceScanRoots.flatMap((relativeRoot) => filesUnder(path.join(root, relativeRoot))),
 ).filter((file) => !benchmarkSurfaceExcludes.has(relative(file)));
+const publicExampleFiles = uniqueFiles(
+  publicExampleScanRoots.flatMap((relativeRoot) => filesUnder(path.join(root, relativeRoot))),
+).filter((file) => !benchmarkSurfaceExcludes.has(relative(file)));
+const publicExampleRelativeFiles = new Set(publicExampleFiles.map(relative));
+for (const expectedPublicExampleFile of [
+  "README.md",
+  "docs/API_REFERENCE.md",
+  "docs/INTEGRATION_GUIDE.md",
+]) {
+  if (!publicExampleRelativeFiles.has(expectedPublicExampleFile)) {
+    throw new Error(`public example scanner did not include ${expectedPublicExampleFile}`);
+  }
+}
 
 const findings = coreFiles.flatMap((file) =>
   readFileSync(file, "utf8")
@@ -183,13 +204,28 @@ const benchmarkSurfaceFindings = benchmarkSurfaceFiles.flatMap((file) =>
       ],
     ),
 );
+const publicExampleFindings = publicExampleFiles.flatMap((file) =>
+  readFileSync(file, "utf8")
+    .split(/\r?\n/u)
+    .flatMap((line, index) =>
+      guardedSurfaceTerms
+        .filter((term) => line.includes(term))
+        .map((term) => `${relative(file)}:${index + 1}: public example fixture term "${term}"`),
+    ),
+);
 
-if (findings.length > 0 || fixtureAnswerFindings.length > 0 || benchmarkSurfaceFindings.length > 0) {
+if (
+  findings.length > 0 ||
+  fixtureAnswerFindings.length > 0 ||
+  benchmarkSurfaceFindings.length > 0 ||
+  publicExampleFindings.length > 0
+) {
   process.stderr.write(
     `Benchmark special-casing terms are not allowed in runtime or public benchmark integration paths:\n${[
       ...findings,
       ...fixtureAnswerFindings,
       ...benchmarkSurfaceFindings,
+      ...publicExampleFindings,
     ].join("\n")}\n`,
   );
   process.exit(1);

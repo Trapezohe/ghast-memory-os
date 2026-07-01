@@ -330,14 +330,14 @@ if (skipFreshInstall) {
       await memory.add({
         profileId: "fresh-install",
         kind: "preference",
-        content: "Release note response style: risk first.",
+        content: "Release note response style: summary first.",
       });
       const prepared = await memory.prepareTurn({
         profileId: "fresh-install",
         messages: [{ role: "user", content: "How should this release note be written?" }],
         includeEvidence: true,
       });
-      assert.match(prepared.contextBlock, /risk first/);
+      assert.match(prepared.contextBlock, /summary first/);
       assert.equal(prepared.evidence.length >= 1, true);
       await memory.close();
       console.log(JSON.stringify({ ok: true, package: runtimeInfo.package }));
