@@ -126,8 +126,8 @@ Usage:
   gmos add --db ./gmos.db --profile local --kind boundary --text "不要再提醒我这个项目延期了。"
   gmos observe --db ./gmos.db --profile local --text "记录一条普通会话事件。" --report
   gmos prepare --db ./gmos.db --profile local --text "你知道我什么偏好吗？"
-  gmos reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:release-demo"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}'
-  gmos explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:release-demo"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}'
+  gmos reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:<project-id>"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}'
+  gmos explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:<project-id>"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}'
   gmos forget --db ./gmos.db --profile local --query "delete request" --target-term "Moonbase"
   gmos explain --db ./gmos.db --profile local --id memory_xxx
   gmos mcp tools

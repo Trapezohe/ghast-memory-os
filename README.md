@@ -53,7 +53,7 @@ const prepared = await memory.prepareTurn({
   cue-tag-content edges from existing memory, world belief, and task trajectory
   rows; those associations are an index, not a second source of truth.
 - Deterministic world-entity normalization for current-state beliefs. Structured
-  subjects such as `project:release-demo`, `project/release-demo`, or subject `release-demo` with
+  subjects such as `project:<project-id>`, `project/<project-id>`, or subject `<project-id>` with
   predicate `project.state` converge before single-cardinality invalidation runs.
 - Optional host-provided `entityResolver` support for product-specific entities.
   Hosts can canonicalize workspaces, accounts, repositories, or other domain
@@ -143,16 +143,16 @@ node dist/cli/gmos.js restore --db ./new-gmos.db --profile local-restored --inpu
 node dist/cli/gmos.js add --db ./gmos.db --profile local --kind boundary --text "不要再提醒我这个项目延期了。"
 node dist/cli/gmos.js observe --db ./gmos.db --profile local --text "记录一条普通会话事件。" --report
 node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
-node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:release-demo"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}'
+node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:<project-id>"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}'
 node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "这个项目之前是什么状态？" --temporal-mode history
-node dist/cli/gmos.js explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:release-demo"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}' --include-trace
+node dist/cli/gmos.js explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:<project-id>"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}' --include-trace
 node dist/cli/gmos.js mcp tools
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.add --input '{"kind":"preference","content":"回答风格：先给结论"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.search --input '{"query":"先给结论"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.search --input '{"query":"之前的状态","purpose":"history"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.prepare_context --input '{"text":"你之后怎么回答我？"}'
-node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.reconstruct_context --input '{"text":"我之前说的项目下一步是什么？","reconstructionIntent":{"queryCues":["project:release-demo"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}}'
-node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.explain_evidence_path --input '{"text":"我之前说的项目下一步是什么？","includePlannerTrace":true,"reconstructionIntent":{"queryCues":["project:release-demo"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}}'
+node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.reconstruct_context --input '{"text":"我之前说的项目下一步是什么？","reconstructionIntent":{"queryCues":["project:<project-id>"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}}'
+node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.explain_evidence_path --input '{"text":"我之前说的项目下一步是什么？","includePlannerTrace":true,"reconstructionIntent":{"queryCues":["project:<project-id>"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}}'
 node dist/cli/gmos.js mcp serve --db ./gmos.db --profile local
 node dist/cli/gmos.js http serve --db ./gmos.db --profile local --port 4787 --host ghast --auth-token local-dev-token
 node dist/cli/gmos.js evolution report --db ./gmos.db --profile local --format markdown
@@ -219,7 +219,7 @@ for LongMemEval original/cleaned JSON/JSONL and LoCoMo JSON/JSONL through
 those datasets. In native gmOS JSONL, each line is one deterministic case:
 
 ```jsonl
-{"id":"demo-project-next-step","events":[{"type":"memory","kind":"project","content":"project:release-demo 的公开别名是 demo release。"},{"type":"memory","kind":"procedure","content":"demo release 下一步先完成 preflight checklist，再做实现。"}],"question":"demo release 这个项目下一步先做什么？","reconstructionIntent":{"queryCues":["project:release-demo"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]},"expectedAll":["preflight checklist"],"forbiddenAny":["catering schedule"]}
+{"id":"sample-project-next-step","events":[{"type":"memory","kind":"project","content":"project:sample-project 的公开别名是 sample project。"},{"type":"memory","kind":"procedure","content":"sample project 下一步先完成 recorded preflight item，再做实现。"}],"question":"sample project 这个项目下一步先做什么？","reconstructionIntent":{"queryCues":["project:sample-project"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]},"expectedAll":["recorded preflight item"],"forbiddenAny":["unrelated schedule"]}
 ```
 
 The LongMemEval adapter maps each instance's `haystack_sessions` turns into a
@@ -474,9 +474,9 @@ const memory = createMemoryOS({
         },
         {
           kind: "project",
-          subject: "project:release-demo",
+          subject: "project:sample-project",
           predicate: "project.state",
-          content: "project:release-demo is blocked on the integration dry run.",
+          content: "project:sample-project is blocked on the integration dry run.",
           confidence: 0.86,
           cardinality: "single",
         },
@@ -630,10 +630,10 @@ tables.
 Use `cardinality: "single"` only for current-state beliefs where one active
 value should replace the previous one, such as a project's current owner,
 status, or next step. gmOS first resolves the subject into a canonical entity
-key; for example, `project:release-demo`, `project/release-demo`, or subject `release-demo` with
-predicate `project.state` converge to a stable project entity. `repo:release-demo` and
-`repository:release-demo` normalize as repository entities, not project entities.
-Natural-language aliases such as "release demo project" are host-specific and should
+key; for example, `project:<project-id>`, `project/<project-id>`, or subject `<project-id>` with
+predicate `project.state` converge to a stable project entity. `repo:<repo-id>` and
+`repository:<repo-id>` normalize as repository entities, not project entities.
+Natural-language aliases such as "sample project alias" are host-specific and should
 come from `entityResolver`, not from gmOS core. It then marks the previous active world
 belief for the same `profileId + canonical subject + predicate` as
 `superseded` and removes its association projection from active reconstruction.
