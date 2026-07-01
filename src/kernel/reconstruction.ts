@@ -6,7 +6,12 @@ import {
   sourceMetadataEntityCues,
 } from "./associations.js";
 import type { AssociationCue } from "./associations.js";
-import { classifySensitivity, safePublicLabel, sanitizeEvidenceForPublicOutput } from "./safety.js";
+import {
+  classifySensitivity,
+  safePublicInlineField,
+  safePublicLabel,
+  sanitizeEvidenceForPublicOutput,
+} from "./safety.js";
 import { observedAtSegment, temporalMetadataSegment } from "./temporal-format.js";
 import { temporalCueValuesFromText } from "./temporal-validity.js";
 import type {
@@ -94,7 +99,8 @@ function publicPath(
         ...path,
         id: redactPrivateRouteSignals(path.id, privateOutputSignalKeys),
         cue: "retrieval_hint",
-        tag: path.targetKind ?? path.targetType,
+        tag: safePublicLabel(path.targetKind ?? path.targetType),
+        targetKind: path.targetKind === undefined ? path.targetKind : safePublicLabel(path.targetKind),
         targetId: redactPrivateRouteSignals(path.targetId, privateOutputSignalKeys),
         targetSummary: redactPrivateRouteSignals(path.targetSummary, privateOutputSignalKeys),
         sourceEvidenceId: path.sourceEvidenceId
@@ -102,7 +108,12 @@ function publicPath(
           : path.sourceEvidenceId,
         routeReason: publicRouteReason(path.routeReason, privateSignalKeys),
       }
-    : path;
+    : {
+        ...path,
+        cue: safePublicInlineField(path.cue),
+        tag: safePublicLabel(path.tag),
+        targetKind: path.targetKind === undefined ? path.targetKind : safePublicLabel(path.targetKind),
+      };
   if (includeTemporalMetadata || routeSafePath.createdAt === undefined) return routeSafePath;
   const { createdAt: _createdAt, ...publicPathWithoutTemporalMetadata } = routeSafePath;
   return publicPathWithoutTemporalMetadata;
@@ -113,9 +124,13 @@ function publicMemory(
   hideRouteSignals: boolean,
   privateOutputSignalKeys = new Set<string>(),
 ): MemoryRecord {
-  if (!hideRouteSignals) return memory;
-  return {
+  const publicRecord = {
     ...memory,
+    kind: safePublicLabel(memory.kind) as MemoryRecord["kind"],
+  };
+  if (!hideRouteSignals) return publicRecord;
+  return {
+    ...publicRecord,
     scope: "global",
     content: redactPrivateRouteSignals(memory.content, privateOutputSignalKeys),
     metadata: {},
@@ -143,12 +158,12 @@ function publicPlannerBranch(
   branch: ReconstructedPlannerBranch,
   privateSignalKeys: Set<string>,
 ): ReconstructedPlannerBranch {
-  if (privateSignalKeys.size === 0) return branch;
   return {
     ...branch,
     pathId: redactPrivateRouteSignals(branch.pathId, privateSignalKeys),
     targetId: redactPrivateRouteSignals(branch.targetId, privateSignalKeys),
-    tag: publicRouteSignal(branch.tag, privateSignalKeys),
+    targetKind: branch.targetKind === undefined ? branch.targetKind : safePublicLabel(branch.targetKind),
+    tag: safePublicLabel(publicRouteSignal(branch.tag, privateSignalKeys)),
     reason: publicRouteReason(branch.reason, privateSignalKeys) ?? branch.reason,
     generatedCues: publicRouteSignals(branch.generatedCues, privateSignalKeys),
   };
@@ -180,7 +195,6 @@ function publicPlannerStep(
   step: ReconstructedPlannerStep,
   privateSignalKeys: Set<string>,
 ): ReconstructedPlannerStep {
-  if (privateSignalKeys.size === 0) return step;
   const branches = publicPlannerBranches(step.branches, privateSignalKeys);
   const selectedBranchCount = branches.filter((branch) => branch.decision !== "pruned").length;
   const prunedBranchCount = branches.filter((branch) => branch.decision === "pruned").length;
@@ -202,7 +216,6 @@ function publicPlannerTrace(
   privateSignalKeys: Set<string>,
   stopReason: ReconstructedContext["stats"]["stopReason"],
 ): ReconstructedPlannerTrace {
-  if (privateSignalKeys.size === 0) return { ...trace, stopReason };
   const steps: ReconstructedPlannerStep[] = [];
   const seenSteps = new Set<string>();
   for (const step of trace.steps.map((item) => publicPlannerStep(item, privateSignalKeys))) {
@@ -495,7 +508,8 @@ function privateRouteSignalKeys(
 
 function publicRouteSignal(value: string, privateSignalKeys: Set<string>): string {
   const key = associationCueKey(value);
-  return key && privateSignalKeys.has(key) ? "retrieval_hint" : value;
+  const publicValue = key && privateSignalKeys.has(key) ? "retrieval_hint" : value;
+  return safePublicInlineField(publicValue);
 }
 
 function uniqueDisplayValues(values: string[]): string[] {
@@ -512,13 +526,12 @@ function uniqueDisplayValues(values: string[]): string[] {
 }
 
 function publicRouteSignals(values: string[], privateSignalKeys: Set<string>): string[] {
-  if (privateSignalKeys.size === 0) return values;
   return uniqueDisplayValues(values.map((value) => publicRouteSignal(value, privateSignalKeys)));
 }
 
 function publicRouteReason(value: string | undefined, privateSignalKeys: Set<string>): string | undefined {
-  if (!value || privateSignalKeys.size === 0) return value;
-  return redactPrivateRouteSignals(value, privateSignalKeys, "retrieval-hint");
+  if (!value) return value;
+  return safePublicInlineField(redactPrivateRouteSignals(value, privateSignalKeys, "retrieval-hint"));
 }
 
 function privateOutputSignalKeys(input: {
@@ -592,7 +605,6 @@ function publicEvidenceCoverage(
   coverage: ReconstructionEvidenceCoverage,
   privateSignalKeys: Set<string>,
 ): ReconstructionEvidenceCoverage {
-  if (privateSignalKeys.size === 0) return coverage;
   const coveredCues = publicRouteSignals(coverage.coveredCues, privateSignalKeys);
   const coveredCueKeys = new Set(coveredCues.map(normalizedText));
   const uncoveredCues = publicRouteSignals(coverage.uncoveredCues, privateSignalKeys)
@@ -852,7 +864,13 @@ function publicEvidenceConvergence(input: {
   paths: ReconstructedEvidencePath[];
   privateSignalKeys: Set<string>;
 }): ReconstructionEvidenceConvergence {
-  if (input.privateSignalKeys.size === 0) return input.convergence;
+  const selectedTags = uniqueDisplayValues(input.paths.map((path) => safePublicLabel(path.tag))).slice(0, 12);
+  if (input.privateSignalKeys.size === 0) {
+    return {
+      ...input.convergence,
+      selectedTags,
+    };
+  }
   const fallbackScore = input.convergence.reached
     ? Math.max(input.convergence.threshold, input.coverage.coverageRate)
     : Math.min(input.convergence.threshold - 0.01, input.coverage.coverageRate);
@@ -862,7 +880,7 @@ function publicEvidenceConvergence(input: {
     prunedBranchCount: 0,
     frontierRemaining: 0,
     selectedPathCount: input.paths.length,
-    selectedTags: uniqueDisplayValues(input.paths.map((path) => path.tag)).slice(0, 12),
+    selectedTags,
   };
 }
 
@@ -1754,7 +1772,7 @@ function composeReconstructedContext(input: {
         publicMemory(memory, hideInternalRouteSignals, privateOutputSignalKeySet)
       ).map(
         (memory) =>
-          `- [${memory.kind}; confidence=${memory.confidence.toFixed(2)}${input.includeTemporalMetadata ? temporalMetadataSegment(memory.createdAt, memory.metadata) : ""}] ${memory.content}`,
+          `- [${safePublicLabel(memory.kind)}; confidence=${memory.confidence.toFixed(2)}${input.includeTemporalMetadata ? temporalMetadataSegment(memory.createdAt, memory.metadata) : ""}] ${memory.content}`,
       ),
     ];
     if (input.includeEvidence) {
@@ -2127,8 +2145,9 @@ export async function reconstructMemoryContext(input: {
       }
       const generatedCues: string[] = [];
       const enqueueGeneratedCues = (): void => {
+        const associationTagForGeneratedCues = safePublicLabel(association.tag);
         const nextCues = evidenceAssociationCues(
-          `${association.tag} ${association.targetSummary}`,
+          `${associationTagForGeneratedCues} ${association.targetSummary}`,
           8,
           input.cueExtractor,
         ).filter((nextCue) =>
@@ -2144,7 +2163,7 @@ export async function reconstructMemoryContext(input: {
           enqueueFrontierCue(frontier, {
             cue: nextCue.cue,
             priority: ranked.routeScore * 0.9 + structuralCueBoost,
-            reason: `from:${association.tag}`,
+            reason: `from:${associationTagForGeneratedCues}`,
           });
           stepGeneratedCues.add(nextCue.cue);
           generatedCues.push(nextCue.cue);

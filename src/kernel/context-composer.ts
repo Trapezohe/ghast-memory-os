@@ -25,11 +25,11 @@ export function composeTurnContext(input: {
     "User-world memory:",
     ...input.memories.map(
       (memory) =>
-        `- [${memory.kind}; confidence=${memory.confidence.toFixed(2)}] ${memory.content}`,
+        `- [${safePublicLabel(memory.kind)}; confidence=${memory.confidence.toFixed(2)}] ${memory.content}`,
     ),
     "Action policies:",
     ...input.actionPolicies.map(
-      (policy) => `- [${policy.kind}; priority=${policy.priority}] ${policy.text}`,
+      (policy) => `- [${safePublicLabel(policy.kind)}; priority=${policy.priority}] ${policy.text}`,
     ),
   ];
 
@@ -53,11 +53,11 @@ export function composeTurnContext(input: {
       "User-world memory:",
       ...input.memories.map(
         (memory) =>
-          `- [${memory.kind}; confidence=${memory.confidence.toFixed(2)}] ${memory.content}`,
+          `- [${safePublicLabel(memory.kind)}; confidence=${memory.confidence.toFixed(2)}] ${memory.content}`,
       ),
       "Action policies:",
       ...input.actionPolicies.map(
-        (policy) => `- [${policy.kind}; priority=${policy.priority}] ${policy.text}`,
+        (policy) => `- [${safePublicLabel(policy.kind)}; priority=${policy.priority}] ${policy.text}`,
       ),
       "</gmos-context>",
     ].join("\n");

@@ -86,6 +86,12 @@ export function safePublicLabel(value: string): string {
   return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/u.test(value) ? value : "other";
 }
 
+export function safePublicInlineField(value: string): string {
+  const redacted = redactForReport(value).replace(/\s+/gu, " ").trim();
+  if (!redacted || /[\u0000-\u001F\u007F;[\]]/u.test(redacted)) return "other";
+  return redacted.length <= 128 ? redacted : `${redacted.slice(0, 125)}...`;
+}
+
 export function safePublicSensitivity(value: unknown): Sensitivity {
   return value === "normal" || value === "sensitive" || value === "secret_like" ? value : "sensitive";
 }
