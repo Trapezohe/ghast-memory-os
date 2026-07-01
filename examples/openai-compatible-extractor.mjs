@@ -30,12 +30,12 @@ function fakeOpenAICompatibleFetch(_url, init) {
   if (/Project Vega owner/iu.test(content)) {
     memories.push({
       kind: "project",
-      content: "project:vega current owner is Priya.",
+      content: "project:vega current owner is Avery Stone.",
       confidence: 0.9,
       predicate: "project.owner",
       subject: "project:vega",
       subjectAliases: ["Vega"],
-      object: "Priya",
+      object: "Avery Stone",
       cardinality: "single",
     });
   }
@@ -104,7 +104,7 @@ try {
     type: "conversation.message",
     profileId: "openai-compatible-user",
     role: "user",
-    content: "Project Vega owner is Priya.",
+    content: "Project Vega owner is Avery Stone.",
     createdAt: "2026-06-25T00:01:00.000Z",
   });
 
@@ -122,7 +122,7 @@ try {
     includeEvidence: true,
   });
 
-  assert.match(prepared.contextBlock, /Priya|risk first|auto-sent|approval/iu);
+  assert.match(prepared.contextBlock, /Avery Stone|risk first|auto-sent|approval/iu);
   assert.equal(prepared.actionPolicies.length >= 1, true);
   assert.equal(prepared.evidence.length >= 1, true);
 
@@ -141,7 +141,7 @@ try {
     includeEvidence: true,
   });
 
-  assert.match(reconstructed.contextBlock, /Priya|auto-sent|approval/iu);
+  assert.match(reconstructed.contextBlock, /Avery Stone|auto-sent|approval/iu);
   assert.equal(reconstructed.paths.length > 0, true);
 
   await memory.close();
