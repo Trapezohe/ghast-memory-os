@@ -78,33 +78,64 @@ function inspectGit() {
 }
 
 function inspectCiPolicy() {
-  const ciFile = path.join(root, ".github", "workflows", "ci.yml");
-  if (!existsSync(ciFile)) {
+  const workflowsDir = path.join(root, ".github", "workflows");
+  if (!existsSync(workflowsDir)) {
     return {
       workflowFile: ".github/workflows/ci.yml",
+      workflowFiles: [],
+      workflows: [],
       present: false,
+      triggerNames: [],
       pushTriggerPresent: false,
+      branchPushTriggerPresent: false,
       pullRequestTriggerPresent: false,
       workflowDispatchPresent: false,
+      nonOptInTriggerPresent: false,
       optInRemoteCi: false,
     };
   }
-  const content = readFileSync(ciFile, "utf8");
-  const policy = inspectGithubActionsTriggerPolicy(content);
-  const labelGated = workflowRequiresRunCiLabel(content);
+  const workflows = readdirSync(workflowsDir)
+    .filter((entry) => /\.ya?ml$/u.test(entry))
+    .sort()
+    .map((entry) => {
+      const workflowFile = path.posix.join(".github/workflows", entry);
+      const content = readFileSync(path.join(workflowsDir, entry), "utf8");
+      const policy = inspectGithubActionsTriggerPolicy(content);
+      const labelGated = workflowRequiresRunCiLabel(content);
+      return {
+        workflowFile,
+        ...policy,
+        labelGated,
+        optInRemoteCi:
+          !policy.nonOptInTriggerPresent &&
+          (policy.workflowDispatchPresent || policy.pullRequestTriggerPresent) &&
+          (!policy.pullRequestTriggerPresent ||
+            (policy.pullRequestLabeledOnly && labelGated)),
+      };
+    });
+  const workflowFiles = workflows.map((workflow) => workflow.workflowFile);
+  const workflowFile = workflowFiles.includes(".github/workflows/ci.yml")
+    ? ".github/workflows/ci.yml"
+    : workflowFiles[0] ?? ".github/workflows/ci.yml";
+  const pushTriggerPresent = workflows.some((workflow) => workflow.pushTriggerPresent);
+  const pullRequestTriggerPresent = workflows.some((workflow) => workflow.pullRequestTriggerPresent);
+  const nonOptInTriggerPresent = workflows.some((workflow) => workflow.nonOptInTriggerPresent);
   return {
-    workflowFile: ".github/workflows/ci.yml",
-    present: true,
-    pushTriggerPresent: policy.pushTriggerPresent,
-    branchPushTriggerPresent: policy.branchPushTriggerPresent,
-    pullRequestTriggerPresent: policy.pullRequestTriggerPresent,
-    workflowDispatchPresent: policy.workflowDispatchPresent,
+    workflowFile,
+    workflowFiles,
+    workflows,
+    present: workflows.length > 0,
+    triggerNames: [...new Set(workflows.flatMap((workflow) => workflow.triggerNames ?? []))].sort(),
+    pushTriggerPresent,
+    branchPushTriggerPresent: workflows.some((workflow) => workflow.branchPushTriggerPresent),
+    pullRequestTriggerPresent,
+    workflowDispatchPresent: workflows.some((workflow) => workflow.workflowDispatchPresent),
+    nonOptInTriggerPresent,
     optInRemoteCi:
-      !policy.pushTriggerPresent &&
-      policy.workflowDispatchPresent &&
-      policy.pullRequestTriggerPresent &&
-      policy.pullRequestLabeledOnly &&
-      labelGated,
+      workflows.length > 0 &&
+      !nonOptInTriggerPresent &&
+      workflows.some((workflow) => workflow.workflowDispatchPresent) &&
+      workflows.every((workflow) => workflow.optInRemoteCi),
   };
 }
 
@@ -162,7 +193,11 @@ function renderSummary(manifest) {
     "",
     "## CI Policy",
     "",
+    `Workflow files: ${manifest.ci.workflowFiles?.length ? manifest.ci.workflowFiles.join(", ") : "none"}`,
+    `Trigger names: ${manifest.ci.triggerNames?.length ? manifest.ci.triggerNames.join(", ") : "none"}`,
     `Push trigger present: ${manifest.ci.pushTriggerPresent ? "yes" : "no"}`,
+    `Branch push trigger present: ${manifest.ci.branchPushTriggerPresent ? "yes" : "no"}`,
+    `Non-opt-in trigger present: ${manifest.ci.nonOptInTriggerPresent ? "yes" : "no"}`,
     `Workflow dispatch present: ${manifest.ci.workflowDispatchPresent ? "yes" : "no"}`,
     `Opt-in remote CI: ${manifest.ci.optInRemoteCi ? "yes" : "no"}`,
     "",

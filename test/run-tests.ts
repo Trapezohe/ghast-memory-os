@@ -20930,53 +20930,192 @@ assert.match(invalidHost.stderr, /--host must be one of/);
 assert.equal(existsSync(invalidHostDb), false);
 
 const releaseEvidenceDir = path.join(tmp, "release-evidence-dry-run");
-const releaseEvidenceDryRun = spawnSync(
-  process.execPath,
+const releaseEvidenceExtraWorkflow = path.join(
+  process.cwd(),
+  ".github",
+  "workflows",
+  "release-evidence-extra.yaml",
+);
+writeFileSync(
+  releaseEvidenceExtraWorkflow,
   [
-    "scripts/create-release-evidence.mjs",
-    "--dry-run",
-    "--allow-dirty",
-    "--skip-gate",
-    "--skip-fresh-install",
-    "--output-dir",
-    releaseEvidenceDir,
-  ],
-  { cwd: process.cwd(), encoding: "utf8" },
+    "name: Release Evidence Extra",
+    "on:",
+    "  pull_request:",
+    "    types: [labeled]",
+    "  workflow_dispatch:",
+    "jobs:",
+    "  noop:",
+    "    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'run-ci' || github.event.label.name == 'full-ci'",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - run: true",
+    "",
+  ].join("\n"),
 );
-assert.equal(releaseEvidenceDryRun.status, 0, releaseEvidenceDryRun.stderr);
-const releaseEvidenceManifest = JSON.parse(
-  readFileSync(path.join(releaseEvidenceDir, "manifest.json"), "utf8"),
-) as {
-  schema?: string;
-  package?: { name?: string; version?: string };
-  ci?: { pushTriggerPresent?: boolean; workflowDispatchPresent?: boolean; optInRemoteCi?: boolean };
-  checks?: Array<{ name?: string; status?: string }>;
-  claimBoundaries?: { deterministicAdapterIsOfficialScore?: boolean; sotaClaimAllowed?: boolean };
-};
-assert.equal(releaseEvidenceManifest.schema, "gmos.release_evidence.v1");
-assert.deepEqual(releaseEvidenceManifest.package, {
-  name: packageJson.name,
-  version: packageJson.version,
-});
-assert.equal(releaseEvidenceManifest.ci?.pushTriggerPresent, false);
-assert.equal(releaseEvidenceManifest.ci?.workflowDispatchPresent, true);
-assert.equal(releaseEvidenceManifest.ci?.optInRemoteCi, true);
-assert.equal(
-  releaseEvidenceManifest.checks?.find((check) => check.name === "pr_gate")?.status,
-  "skipped",
+try {
+  const releaseEvidenceDryRun = spawnSync(
+    process.execPath,
+    [
+      "scripts/create-release-evidence.mjs",
+      "--dry-run",
+      "--allow-dirty",
+      "--skip-gate",
+      "--skip-fresh-install",
+      "--output-dir",
+      releaseEvidenceDir,
+    ],
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  assert.equal(releaseEvidenceDryRun.status, 0, releaseEvidenceDryRun.stderr);
+  const releaseEvidenceManifest = JSON.parse(
+    readFileSync(path.join(releaseEvidenceDir, "manifest.json"), "utf8"),
+  ) as {
+    schema?: string;
+    package?: { name?: string; version?: string };
+    ci?: {
+      workflowFile?: string;
+      workflowFiles?: string[];
+      present?: boolean;
+      workflows?: Array<{
+        workflowFile?: string;
+        triggerNames?: string[];
+        pushTriggerPresent?: boolean;
+        branchPushTriggerPresent?: boolean;
+        pullRequestTriggerPresent?: boolean;
+        workflowDispatchPresent?: boolean;
+        nonOptInTriggerPresent?: boolean;
+        optInRemoteCi?: boolean;
+      }>;
+      triggerNames?: string[];
+      pushTriggerPresent?: boolean;
+      branchPushTriggerPresent?: boolean;
+      workflowDispatchPresent?: boolean;
+      nonOptInTriggerPresent?: boolean;
+      optInRemoteCi?: boolean;
+    };
+    checks?: Array<{ name?: string; status?: string }>;
+    claimBoundaries?: { deterministicAdapterIsOfficialScore?: boolean; sotaClaimAllowed?: boolean };
+  };
+  assert.equal(releaseEvidenceManifest.schema, "gmos.release_evidence.v1");
+  assert.deepEqual(releaseEvidenceManifest.package, {
+    name: packageJson.name,
+    version: packageJson.version,
+  });
+  assert.equal(releaseEvidenceManifest.ci?.workflowFile, ".github/workflows/ci.yml");
+  assert.equal(releaseEvidenceManifest.ci?.present, true);
+  assert.deepEqual(releaseEvidenceManifest.ci?.workflowFiles, [
+    ".github/workflows/ci.yml",
+    ".github/workflows/release-evidence-extra.yaml",
+  ]);
+  assert.equal(releaseEvidenceManifest.ci?.workflows?.length, 2);
+  assert.deepEqual(releaseEvidenceManifest.ci?.triggerNames, [
+    "pull_request",
+    "workflow_dispatch",
+  ]);
+  assert.equal(releaseEvidenceManifest.ci?.pushTriggerPresent, false);
+  assert.equal(releaseEvidenceManifest.ci?.branchPushTriggerPresent, false);
+  assert.equal(releaseEvidenceManifest.ci?.nonOptInTriggerPresent, false);
+  assert.equal(releaseEvidenceManifest.ci?.workflowDispatchPresent, true);
+  assert.equal(releaseEvidenceManifest.ci?.optInRemoteCi, true);
+  assert.equal(releaseEvidenceManifest.ci?.workflows?.[0]?.workflowFile, ".github/workflows/ci.yml");
+  assert.equal(releaseEvidenceManifest.ci?.workflows?.[0]?.nonOptInTriggerPresent, false);
+  assert.equal(releaseEvidenceManifest.ci?.workflows?.[0]?.optInRemoteCi, true);
+  assert.equal(
+    releaseEvidenceManifest.ci?.workflows?.[1]?.workflowFile,
+    ".github/workflows/release-evidence-extra.yaml",
+  );
+  assert.equal(releaseEvidenceManifest.ci?.workflows?.[1]?.nonOptInTriggerPresent, false);
+  assert.equal(releaseEvidenceManifest.ci?.workflows?.[1]?.optInRemoteCi, true);
+  assert.equal(
+    releaseEvidenceManifest.checks?.find((check) => check.name === "pr_gate")?.status,
+    "skipped",
+  );
+  assert.equal(
+    releaseEvidenceManifest.checks?.find((check) => check.name === "fresh_install_smoke")?.status,
+    "skipped",
+  );
+  assert.equal(releaseEvidenceManifest.claimBoundaries?.deterministicAdapterIsOfficialScore, false);
+  assert.equal(releaseEvidenceManifest.claimBoundaries?.sotaClaimAllowed, false);
+  const releaseEvidenceSummary = readFileSync(
+    path.join(releaseEvidenceDir, "SUMMARY.md"),
+    "utf8",
+  );
+  assert.match(releaseEvidenceSummary, /Known limitations/);
+  assert.match(releaseEvidenceDryRun.stdout, /gmos.release_evidence.v1/);
+} finally {
+  rmSync(releaseEvidenceExtraWorkflow, { force: true });
+}
+
+const releaseEvidenceScheduledDir = path.join(tmp, "release-evidence-scheduled-dry-run");
+const releaseEvidenceScheduledWorkflow = path.join(
+  process.cwd(),
+  ".github",
+  "workflows",
+  "release-evidence-scheduled.yaml",
 );
-assert.equal(
-  releaseEvidenceManifest.checks?.find((check) => check.name === "fresh_install_smoke")?.status,
-  "skipped",
+writeFileSync(
+  releaseEvidenceScheduledWorkflow,
+  [
+    "name: Release Evidence Scheduled",
+    "on:",
+    "  schedule:",
+    "    - cron: '0 0 * * *'",
+    "  workflow_dispatch:",
+    "jobs:",
+    "  noop:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - run: true",
+    "",
+  ].join("\n"),
 );
-assert.equal(releaseEvidenceManifest.claimBoundaries?.deterministicAdapterIsOfficialScore, false);
-assert.equal(releaseEvidenceManifest.claimBoundaries?.sotaClaimAllowed, false);
-const releaseEvidenceSummary = readFileSync(
-  path.join(releaseEvidenceDir, "SUMMARY.md"),
-  "utf8",
-);
-assert.match(releaseEvidenceSummary, /Known limitations/);
-assert.match(releaseEvidenceDryRun.stdout, /gmos.release_evidence.v1/);
+try {
+  const releaseEvidenceScheduledDryRun = spawnSync(
+    process.execPath,
+    [
+      "scripts/create-release-evidence.mjs",
+      "--dry-run",
+      "--allow-dirty",
+      "--skip-gate",
+      "--skip-fresh-install",
+      "--output-dir",
+      releaseEvidenceScheduledDir,
+    ],
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  assert.equal(releaseEvidenceScheduledDryRun.status, 0, releaseEvidenceScheduledDryRun.stderr);
+  const scheduledManifest = JSON.parse(
+    readFileSync(path.join(releaseEvidenceScheduledDir, "manifest.json"), "utf8"),
+  ) as {
+    ci?: {
+      triggerNames?: string[];
+      nonOptInTriggerPresent?: boolean;
+      optInRemoteCi?: boolean;
+      workflows?: Array<{
+        workflowFile?: string;
+        triggerNames?: string[];
+        nonOptInTriggerPresent?: boolean;
+        optInRemoteCi?: boolean;
+      }>;
+    };
+  };
+  const scheduledWorkflow = scheduledManifest.ci?.workflows?.find(
+    (workflow) => workflow.workflowFile === ".github/workflows/release-evidence-scheduled.yaml",
+  );
+  assert.deepEqual(scheduledWorkflow?.triggerNames, ["schedule", "workflow_dispatch"]);
+  assert.equal(scheduledWorkflow?.nonOptInTriggerPresent, true);
+  assert.equal(scheduledWorkflow?.optInRemoteCi, false);
+  assert.deepEqual(scheduledManifest.ci?.triggerNames, [
+    "pull_request",
+    "schedule",
+    "workflow_dispatch",
+  ]);
+  assert.equal(scheduledManifest.ci?.nonOptInTriggerPresent, true);
+  assert.equal(scheduledManifest.ci?.optInRemoteCi, false);
+} finally {
+  rmSync(releaseEvidenceScheduledWorkflow, { force: true });
+}
 
 const skippedReleaseEvidenceDir = path.join(tmp, "release-evidence-skipped-public");
 const skippedReleaseEvidence = spawnSync(

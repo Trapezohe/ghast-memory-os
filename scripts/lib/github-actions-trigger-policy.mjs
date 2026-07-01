@@ -20,12 +20,76 @@ function parseList(value) {
     .filter(Boolean);
 }
 
+function parseBlockList(lines) {
+  const itemIndent = firstChildIndent(lines);
+  if (itemIndent === null) return null;
+  const values = [];
+  for (const line of lines) {
+    if (indentOf(line) !== itemIndent) continue;
+    const item = /^-\s*(.*?)\s*$/u.exec(line.trim());
+    if (!item) return null;
+    values.push(unquote(item[1]));
+  }
+  return values;
+}
+
+function splitTopLevelInlineEntries(value) {
+  const entries = [];
+  let start = 0;
+  let curlyDepth = 0;
+  let bracketDepth = 0;
+  let quote = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    const previous = value[index - 1];
+    if (quote) {
+      if (char === quote && previous !== "\\") quote = "";
+      continue;
+    }
+    if (char === "\"" || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "{") curlyDepth += 1;
+    if (char === "}") curlyDepth -= 1;
+    if (char === "[") bracketDepth += 1;
+    if (char === "]") bracketDepth -= 1;
+    if (char !== "," || curlyDepth !== 0 || bracketDepth !== 0) continue;
+    const entry = value.slice(start, index).trim();
+    if (entry) entries.push(entry);
+    start = index + 1;
+  }
+  const tail = value.slice(start).trim();
+  if (tail) entries.push(tail);
+  return entries;
+}
+
+function parseInlineMapEntry(entry) {
+  const match = /^['"]?([A-Za-z_-][\w-]*)['"]?\s*:\s*(.*)$/u.exec(entry.trim());
+  return match ? { key: match[1], value: match[2].trim() } : null;
+}
+
+function parseInlineOptions(value) {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return true;
+  const options = {};
+  for (const entry of splitTopLevelInlineEntries(trimmed.slice(1, -1))) {
+    const parsed = parseInlineMapEntry(entry);
+    if (!parsed) continue;
+    options[parsed.key] = parsed.value ? parseList(parsed.value) : true;
+  }
+  return options;
+}
+
 function parseInlineOn(value) {
   const triggers = new Map();
   const trimmed = value.trim();
   if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-    for (const match of trimmed.matchAll(/([A-Za-z_-][\w-]*)\s*:/gu)) {
-      triggers.set(match[1], true);
+    for (const entry of splitTopLevelInlineEntries(trimmed.slice(1, -1))) {
+      const parsed = parseInlineMapEntry(entry);
+      if (!parsed) continue;
+      triggers.set(parsed.key, parseInlineOptions(parsed.value));
     }
     return triggers;
   }
@@ -53,13 +117,19 @@ function parseOptions(lines) {
   const options = {};
   const childIndent = firstChildIndent(lines);
   if (childIndent === null) return options;
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     if (indentOf(line) !== childIndent) continue;
     const match = /^([A-Za-z_-][\w-]*)\s*:\s*(.*)$/u.exec(line.trim());
     if (!match) continue;
     const key = match[1];
     const value = match[2].trim();
-    options[key] = value ? parseList(value) : true;
+    if (value) {
+      options[key] = parseList(value);
+      continue;
+    }
+    const nestedList = parseBlockList(childLines(lines, index, childIndent));
+    options[key] = nestedList ?? true;
   }
   return options;
 }
@@ -133,12 +203,15 @@ export function inspectGithubActionsTriggerPolicy(content) {
   const triggers = parseTriggers(content);
   const pushTrigger = triggers.get("push");
   const pullRequestTrigger = triggers.get("pull_request");
+  const triggerNames = [...triggers.keys()].sort();
   return {
+    triggerNames,
     pushTriggerPresent: pushTrigger !== undefined,
     branchPushTriggerPresent: isBranchPushTrigger(pushTrigger),
     pullRequestTriggerPresent: pullRequestTrigger !== undefined,
     pullRequestLabeledOnly: isPullRequestLabeledOnly(pullRequestTrigger),
     workflowDispatchPresent: triggers.has("workflow_dispatch"),
+    nonOptInTriggerPresent: triggerNames.some((triggerName) => !["pull_request", "workflow_dispatch"].includes(triggerName)),
   };
 }
 
@@ -149,8 +222,13 @@ export function assertGithubActionsTriggerPolicySelfCheck() {
     ["'on':\n  push:", { pushTriggerPresent: true, branchPushTriggerPresent: true }],
     ["on: [push, workflow_dispatch]", { pushTriggerPresent: true, branchPushTriggerPresent: true }],
     ["on: { push: {}, workflow_dispatch: {} }", { pushTriggerPresent: true, branchPushTriggerPresent: true }],
+    ['on: { "push": {}, workflow_dispatch: {} }', { pushTriggerPresent: true, branchPushTriggerPresent: true }],
+    ['on: { "push": { tags: ["v*"] }, workflow_dispatch: {} }', { pushTriggerPresent: true, branchPushTriggerPresent: false }],
+    ['on: { workflow_dispatch: { inputs: { "push": { description: test } } } }', { pushTriggerPresent: false, workflowDispatchPresent: true }],
     ["on:\n  push:\n    tags: ['v*']", { pushTriggerPresent: true, branchPushTriggerPresent: false }],
+    ["on:\n  push:\n    tags:\n      - 'v*'", { pushTriggerPresent: true, branchPushTriggerPresent: false }],
     ["on:\n  push:\n    branches: [main]", { pushTriggerPresent: true, branchPushTriggerPresent: true }],
+    ["on:\n  schedule:\n    - cron: '0 0 * * *'\n  workflow_dispatch:", { workflowDispatchPresent: true, nonOptInTriggerPresent: true }],
     [
       "on:\n  pull_request:\n    types: [labeled]\n  workflow_dispatch:",
       {

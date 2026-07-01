@@ -19,6 +19,9 @@ for (const file of readdirSync(workflowDir).filter((entry) => /\.ya?ml$/u.test(e
   if (policy.pushTriggerPresent) {
     throw new Error(`${relativePath} must not define push triggers; use workflow_dispatch or label-gated PR CI`);
   }
+  if (policy.nonOptInTriggerPresent) {
+    throw new Error(`${relativePath} must not define automatic CI triggers; use workflow_dispatch or label-gated PR CI`);
+  }
   if (policy.pullRequestTriggerPresent && !policy.pullRequestLabeledOnly) {
     throw new Error(`${relativePath} pull_request trigger must use types: [labeled]`);
   }
