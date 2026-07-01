@@ -361,8 +361,8 @@ procedure, boundary, preference, or current-state evidence.
 Hosts that own entity, calendar, or route parsing can also pass
 `createMemoryOS({ reconstruction: { cueExtractor } })`. A cue extractor receives
 bounded query/evidence text and returns sanitized `{ cue, cueKind }` values for
-the reconstruction planner. gmOS merges those cues with its local fallback,
-filters secret-like values, and keeps the same evidence, privacy, and read-path
+the reconstruction planner. gmOS merges those cues with built-in lexical/date
+cues, filters secret-like values, and keeps the same evidence, privacy, and read-path
 purity gates. This is the preferred integration point for product-specific
 entity aliases or temporal parsers; do not add language-specific cue word lists
 to gmOS core. Natural-language temporal query cues are also off by default; a
@@ -494,7 +494,7 @@ Returning `[]` means "extract nothing". Returning `null` or throwing does not
 cause gmOS to synthesize user facts, preferences, boundaries, people, or project
 state on its own. If a custom extractor returns candidates
 but all of them are rejected by the gmOS write-path validator, gmOS records the
-hard/soft reject audit and does not produce fallback memory. Hosts should
+hard/soft reject audit and does not synthesize replacement memory. Hosts should
 use a structured extractor for durable semantic memory, or call low-level `add`
 when they already have an explicit memory record.
 

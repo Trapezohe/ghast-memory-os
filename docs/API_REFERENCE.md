@@ -171,7 +171,7 @@ frontier.
 Hosts with their own entity, calendar, or route parser can configure
 `createMemoryOS({ reconstruction: { cueExtractor } })`. The extractor returns
 bounded `{ cue, cueKind }` values for query and intermediate evidence text; gmOS
-merges them with the local fallback and still filters secret-like cues. Use this
+merges them with built-in lexical/date cues and still filters secret-like cues. Use this
 to bridge host-owned semantics into reconstruction instead of adding
 language-specific cue rules to gmOS core. The extractor is a trusted, synchronous
 host callback: gmOS audits its own store read path and sanitizes returned cues,

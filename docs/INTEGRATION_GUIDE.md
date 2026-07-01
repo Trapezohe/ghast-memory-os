@@ -101,7 +101,7 @@ If the host already owns entity aliases, calendar cues, or route parsing for
 active reconstruction, pass them through
 `createMemoryOS({ reconstruction: { cueExtractor } })`. The extractor returns
 bounded `{ cue, cueKind }` values for query/evidence text. gmOS still filters
-secret-like cues and merges host cues with its local structural fallback, so
+secret-like cues and merges host cues with built-in lexical/date cues, so
 product-specific semantics stay in the host instead of becoming language-specific
 word lists in gmOS core.
 
