@@ -1122,6 +1122,21 @@ const unsafeEvidenceFields = [
   "payload_json",
   "created_at",
 ] as const;
+const unsafeLinkedEvidence = await store.recordEvidence({
+  profileId: "unsafe_evidence_for_memory",
+  eventKey: "unsafe-linked-evidence",
+  sourceType: "conversation.message",
+  content: "Safe linked evidence content.",
+  sensitivity: "normal",
+  eligibleForLongTermMemory: true,
+});
+const unsafeLinkedMemory = await store.addMemory({
+  profileId: "unsafe_evidence_for_memory",
+  kind: "fact",
+  content: "Safe linked evidence content.",
+  confidence: 0.9,
+  sourceEventId: unsafeLinkedEvidence.id,
+});
 const unsafeEvidenceDb = new Database(dbPath);
 try {
   const insertEvidence = unsafeEvidenceDb.prepare(
@@ -1189,6 +1204,17 @@ try {
     "{}",
     "2026-06-25T00:00:00.000Z",
   );
+  unsafeEvidenceDb
+    .prepare("UPDATE gmos_evidence_events SET id = ?, content = ?, sensitivity = ? WHERE id = ?")
+    .run(
+      "dirty-linked-evidence-api-key-sk-dirtylinkedevidenceid1234567890",
+      "Safe linked evidence content with api key sk-dirtylinkedevidencecontent1234567890",
+      "normal",
+      unsafeLinkedEvidence.id,
+    );
+  unsafeEvidenceDb
+    .prepare("UPDATE gmos_memories SET source_event_id = ? WHERE id = ?")
+    .run("dirty-linked-evidence-api-key-sk-dirtylinkedevidenceid1234567890", unsafeLinkedMemory.id);
 } finally {
   unsafeEvidenceDb.close();
 }
@@ -1219,6 +1245,66 @@ const sensitiveSourceTypeEvidence = await memory.listEvidence({
 });
 assert.equal(sensitiveSourceTypeEvidence.length, 1);
 assert.equal(sensitiveSourceTypeEvidence[0]?.sourceType, "other");
+assert.equal(store.listEvidenceForMemory(unsafeLinkedMemory.id).length, 0);
+assert.equal(
+  (
+    await memory.list({
+      profileId: "unsafe_evidence_for_memory",
+      includeSensitive: true,
+      limit: 20,
+    })
+  ).some((entry) => entry.id === unsafeLinkedMemory.id),
+  false,
+);
+assert.equal(
+  (
+    await memory.search({
+      profileId: "unsafe_evidence_for_memory",
+      query: "linked evidence content",
+      includeSensitive: true,
+      limit: 20,
+    })
+  ).some((entry) => entry.id === unsafeLinkedMemory.id),
+  false,
+);
+assert.equal(
+  await memory.get({
+    profileId: "unsafe_evidence_for_memory",
+    id: unsafeLinkedMemory.id,
+    includeSensitive: true,
+  }),
+  null,
+);
+const unsafeLinkedPrepared = await memory.prepareTurn({
+  profileId: "unsafe_evidence_for_memory",
+  messages: [{ role: "user", content: "linked evidence content" }],
+  includeEvidence: true,
+});
+assert.equal(JSON.stringify(unsafeLinkedPrepared).includes("sk-dirtylinkedevidence"), false);
+assert.equal(unsafeLinkedPrepared.memories.some((entry) => entry.id === unsafeLinkedMemory.id), false);
+assert.doesNotMatch(unsafeLinkedPrepared.contextBlock, /Safe linked evidence content/);
+assert.equal(unsafeLinkedPrepared.evidence.length, 0);
+const unsafeLinkedReconstructed = await memory.reconstructContext({
+  profileId: "unsafe_evidence_for_memory",
+  query: "linked evidence content",
+  includeEvidence: true,
+});
+assert.equal(JSON.stringify(unsafeLinkedReconstructed).includes("sk-dirtylinkedevidence"), false);
+assert.doesNotMatch(unsafeLinkedReconstructed.contextBlock, /Safe linked evidence content/);
+assert.equal(unsafeLinkedReconstructed.evidence.length, 0);
+const unsafeLinkedEvidencePath = await memory.explainEvidencePath({
+  profileId: "unsafe_evidence_for_memory",
+  query: "linked evidence content",
+  includeEvidence: true,
+});
+assert.equal(JSON.stringify(unsafeLinkedEvidencePath).includes("sk-dirtylinkedevidence"), false);
+assert.equal(unsafeLinkedEvidencePath.evidence.length, 0);
+const unsafeLinkedExplanation = await memory.explain(
+  unsafeLinkedMemory.id,
+  "unsafe_evidence_for_memory",
+);
+assert.equal(JSON.stringify(unsafeLinkedExplanation).includes("sk-dirtylinkedevidence"), false);
+assert.equal(unsafeLinkedExplanation, null);
 const unsafeKindContext = composeTurnContext({
   profileId: "unsafe_kind_label",
   memories: [

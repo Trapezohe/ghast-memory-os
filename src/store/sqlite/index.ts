@@ -508,7 +508,10 @@ function maxSensitivity(left: Sensitivity, right: Sensitivity): Sensitivity {
 }
 
 function effectiveMemorySensitivity(memory: MemoryRecord): Sensitivity {
-  return maxSensitivity(memory.sensitivity, classifySensitivity(memory.content));
+  return maxSensitivity(
+    memory.sensitivity,
+    classifySensitivity([memory.content, memory.sourceEventId ?? ""].join(" ")),
+  );
 }
 
 function effectiveEvidenceSensitivity(event: EvidenceEvent): Sensitivity {
@@ -2372,7 +2375,9 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       db
         .prepare("SELECT * FROM gmos_evidence_events WHERE id = ?")
         .all(row.source_event_id) as Record<string, unknown>[]
-    ).map(normalizeEvidence);
+    )
+      .map(normalizeEvidence)
+      .filter((event) => effectiveEvidenceSensitivity(event) !== "secret_like");
   }
 
   function forget(input: ForgetInput & { profileId: string }): ForgetResult {

@@ -60,6 +60,7 @@ import {
   recordRuntimeTaskOutcome,
 } from "./runtime-outcomes.js";
 import {
+  redactRuntimePayloadString,
   redactRuntimePayloadRecord,
   redactRuntimeSourceMetadataRecord,
   runtimeSensitivityClassifier,
@@ -81,6 +82,13 @@ function publicMemoryRecord(
   return {
     ...memory,
     kind: safePublicLabel(memory.kind) as MemoryRecord["kind"],
+    sourceEventId: memory.sourceEventId == null
+      ? memory.sourceEventId
+      : redactRuntimePayloadString(
+          memory.sourceEventId,
+          classifyRuntimeSensitivity,
+          "metadata",
+        ),
     metadata: redactRuntimePayloadRecord(memory.metadata, classifyRuntimeSensitivity),
   };
 }

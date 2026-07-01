@@ -123,7 +123,7 @@ function redactRuntimeString(
   return sensitivity === "secret_like" ? "[redacted_secret]" : "[redacted_sensitive]";
 }
 
-function redactRuntimePayloadString(
+export function redactRuntimePayloadString(
   value: string,
   classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
   surface: MemorySensitivityClassifierInput["surface"],
