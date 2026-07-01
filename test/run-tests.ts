@@ -15525,6 +15525,19 @@ const spacedPersonScopeReconstructed = await spacedPersonScopeMemory.reconstruct
 });
 assert.match(spacedPersonScopeReconstructed.contextBlock, /Atlas/);
 assert.doesNotMatch(JSON.stringify(spacedPersonScopeReconstructed), /DecoyPad/);
+const spacedPersonWorldBeliefReconstructed = await spacedPersonScopeMemory.reconstructContext({
+  profileId: "spaced_person_scope",
+  query: "Which planning tool belongs to Alex Smith?",
+  reconstructionIntent: {
+    queryCues: ["Alex Smith"],
+    expectedTags: ["world_belief"],
+  },
+  maxSteps: 4,
+  maxBranch: 12,
+  maxMemories: 6,
+});
+assert.match(spacedPersonWorldBeliefReconstructed.contextBlock, /Atlas/);
+assert.doesNotMatch(JSON.stringify(spacedPersonWorldBeliefReconstructed), /DecoyPad/);
 await spacedPersonScopeMemory.close();
 const secretStructuredCue = "api key sk-structuredintentsecret1234567890";
 const secretStructuredTag = "api key sk-structuredtagsecret1234567890";

@@ -1143,8 +1143,10 @@ function associationPersonCue(association: MemoryAssociationRecord): string | nu
   const lowerSubject = rawSubject.toLowerCase();
   const associationTag = association.tag.trim().toLowerCase();
   if (associationTag && associationTag !== "world_belief") {
-    const tagOffset = lowerSubject.indexOf(` ${associationTag}`);
-    if (tagOffset > 0) return rawSubject.slice(0, tagOffset).trim().toLowerCase();
+    const tagMatch = associationCueTextPattern(associationTag)?.exec(lowerSubject);
+    if (tagMatch && tagMatch.index > 0) {
+      return rawSubject.slice(0, tagMatch.index).trim().toLowerCase();
+    }
   }
   const predicateOffset =
     /\s+[a-z][a-z0-9_-]*\.[a-z0-9_.-]+(?:\s|$)/iu.exec(rawSubject)?.index;
