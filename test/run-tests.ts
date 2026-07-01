@@ -3548,6 +3548,7 @@ const naturalDateTemporalMemory = createMemoryOS({
   store: naturalDateTemporalStore,
   extractor: legacyRuleTestExtractor,
   temporal: { inferFromText: true },
+  reconstruction: { inferTemporalCuesFromText: true },
 });
 const naturalDateObservation = await naturalDateTemporalMemory.observeWithReport({
   type: "conversation.message",
@@ -3617,6 +3618,34 @@ assert.equal(
   ),
   true,
 );
+const defaultTemporalCueStore = createSqliteMemoryStore({
+  path: path.join(tmp, "default-temporal-cue-disabled.db"),
+});
+const defaultTemporalCueMemory = createMemoryOS({
+  profileId: "default-temporal-cue-disabled",
+  store: defaultTemporalCueStore,
+  temporal: { inferFromText: true },
+});
+await defaultTemporalCueMemory.add({
+  profileId: "default-temporal-cue-disabled",
+  kind: "fact",
+  content: "Default temporal cue guard produced the silver marker.",
+  metadata: { eventTime: "2023-05-07T00:00:00.000Z" },
+});
+const defaultTemporalCueReconstruction = await defaultTemporalCueMemory.reconstructContext({
+  profileId: "default-temporal-cue-disabled",
+  query: "What happened on 7 May 2023?",
+  includeTemporalMetadata: true,
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.equal(
+  defaultTemporalCueReconstruction.plannerTrace?.initialCues.some((cue) => cue === "2023-05-07"),
+  false,
+);
+assert.equal(defaultTemporalCueReconstruction.stats.evidenceConvergence?.reached, false);
+await defaultTemporalCueMemory.close();
 await naturalDateTemporalMemory.add({
   profileId: "natural-date-temporal",
   kind: "fact",
@@ -12622,6 +12651,10 @@ assert.equal(
 assert.deepEqual(temporalCueValuesFromText("What happened on May 7, 2023?"), [
   "2023-05-07",
 ]);
+assert.equal(
+  extractAssociationCues("What happened on May 7, 2023?").some((cue) => cue.cue === "2023-05-07"),
+  false,
+);
 assert.deepEqual(temporalCueValuesFromText("2023年5月7日发生了什么？"), [
   "2023-05-07",
 ]);

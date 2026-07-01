@@ -243,6 +243,23 @@ function runtimePassesTemporalInferOptionOnly() {
   );
 }
 
+function reconstructionTemporalCueInferenceIsExplicit() {
+  const queryTemporalCueCalls =
+    reconstruction.match(/temporalCueValuesFromText\s*\(\s*query\s*\)/gu) ?? [];
+  return (
+    queryTemporalCueCalls.length === 1 &&
+    /inferTemporalCuesFromText\s*=\s*input\.inferTemporalCuesFromText\s*===\s*true/u.test(
+      reconstruction,
+    ) &&
+    /\.\.\.\(inferTemporalCuesFromText\s*\?\s*temporalCueValuesFromText\(query\)/u.test(
+      reconstruction,
+    ) &&
+    /inferTemporalCuesFromText:\s*options\.reconstruction\?\.inferTemporalCuesFromText/u.test(
+      runtime,
+    )
+  );
+}
+
 const forgetCoreSources = [
   ["src/runtime/create-memory-os.ts", runtime],
   ["src/store/sqlite/index.ts", store],
@@ -310,6 +327,12 @@ const checks = [
     name: "runtime-passes-temporal-infer-option",
     pass: runtimePassesTemporalInferOptionOnly(),
     detail: "Runtime must pass only the host-provided temporal text inference option.",
+  },
+  {
+    name: "reconstruction-temporal-query-cues-explicit-opt-in",
+    pass: reconstructionTemporalCueInferenceIsExplicit(),
+    detail:
+      "Reconstruction must not parse natural-language temporal query cues by default; hosts should opt in or pass cueExtractor output.",
   },
   {
     name: "safe-rule-extractor-is-empty",

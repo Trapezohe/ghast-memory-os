@@ -937,6 +937,7 @@ export interface MemoryOSOptions {
   } | undefined;
   reconstruction?: {
     cueExtractor?: MemoryCueExtractor | undefined;
+    inferTemporalCuesFromText?: boolean | undefined;
   } | undefined;
   safety?: {
     /**

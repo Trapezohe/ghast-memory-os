@@ -68,7 +68,10 @@ If the host already has a trusted local or host-controlled calendar/task-time
 parser, pass it through `createMemoryOS({ temporal: { parser } })` and return
 structured `eventTime`, `eventDate`, `validFrom`, or `validTo` values. Built-in
 date-text inference is off by default; set `temporal.inferFromText: true` only
-when the integration explicitly wants gmOS to parse explicit date text. Relative
+when the integration explicitly wants gmOS to parse explicit date text during
+memory writes. Reconstruction query date text is also off by default; set
+`reconstruction.inferTemporalCuesFromText: true` only when the integration
+explicitly wants the conservative built-in date parser for query cues. Relative
 calendar phrases should be resolved by the host parser with trusted calendar
 context, not by gmOS core language templates.
 

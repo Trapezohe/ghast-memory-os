@@ -1250,6 +1250,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
             store,
             defaultProfileId,
             cueExtractor: options.reconstruction?.cueExtractor,
+            inferTemporalCuesFromText: options.reconstruction?.inferTemporalCuesFromText,
             sanitizeEvidenceForOutput: (event) =>
               sanitizeRuntimeEvidenceForPublicOutput(event, classifyRuntimeSensitivity),
             request: {
@@ -1290,6 +1291,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       store,
       defaultProfileId,
       cueExtractor: options.reconstruction?.cueExtractor,
+      inferTemporalCuesFromText: options.reconstruction?.inferTemporalCuesFromText,
       sanitizeEvidenceForOutput: (event) =>
         sanitizeRuntimeEvidenceForPublicOutput(event, classifyRuntimeSensitivity),
       request: sanitizedReconstructRequest(input, classifyRuntimeSensitivity),
@@ -1311,6 +1313,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       store,
       defaultProfileId,
       cueExtractor: options.reconstruction?.cueExtractor,
+      inferTemporalCuesFromText: options.reconstruction?.inferTemporalCuesFromText,
       sanitizeEvidenceForOutput: (event) =>
         sanitizeRuntimeEvidenceForPublicOutput(event, classifyRuntimeSensitivity),
       request: sanitizedReconstructRequest({

@@ -362,6 +362,7 @@ function queryAssociationCues(
   query: string,
   max: number,
   cueExtractor?: MemoryCueExtractor | undefined,
+  inferTemporalCuesFromText = false,
 ): AssociationCue[] {
   return uniqueCues([
     ...customCueExtractorCues({
@@ -370,7 +371,9 @@ function queryAssociationCues(
       phase: "query",
       maxCues: max,
     }),
-    ...temporalCueValuesFromText(query).map((cue) => ({ cue, cueKind: "temporal" as const })),
+    ...(inferTemporalCuesFromText
+      ? temporalCueValuesFromText(query).map((cue) => ({ cue, cueKind: "temporal" as const }))
+      : []),
     ...extractAssociationCues(query, max),
   ], max);
 }
@@ -391,8 +394,14 @@ function evidenceAssociationCues(
   ], max);
 }
 
-function queryCueSet(query: string, cueExtractor?: MemoryCueExtractor | undefined): Set<string> {
-  return new Set(queryAssociationCues(query, 48, cueExtractor).map((cue) => cue.cue));
+function queryCueSet(
+  query: string,
+  cueExtractor?: MemoryCueExtractor | undefined,
+  inferTemporalCuesFromText = false,
+): Set<string> {
+  return new Set(
+    queryAssociationCues(query, 48, cueExtractor, inferTemporalCuesFromText).map((cue) => cue.cue),
+  );
 }
 
 function normalizedIntentToken(value: string): string {
@@ -653,8 +662,14 @@ function stepCountForTrace(paths: ReconstructedEvidencePath[]): number {
   return Math.max(...paths.map((path) => path.step)) + 1;
 }
 
-function coverageCues(query: string, cueExtractor?: MemoryCueExtractor | undefined): string[] {
-  return uniqueStrings(queryAssociationCues(query, 16, cueExtractor).map((cue) => cue.cue)).slice(0, 8);
+function coverageCues(
+  query: string,
+  cueExtractor?: MemoryCueExtractor | undefined,
+  inferTemporalCuesFromText = false,
+): string[] {
+  return uniqueStrings(
+    queryAssociationCues(query, 16, cueExtractor, inferTemporalCuesFromText).map((cue) => cue.cue),
+  ).slice(0, 8);
 }
 
 function pathCoversCue(
@@ -681,8 +696,9 @@ function evidenceCoverageForPaths(
   query: string,
   paths: ReconstructedEvidencePath[],
   cueExtractor?: MemoryCueExtractor | undefined,
+  inferTemporalCuesFromText = false,
 ): ReconstructionEvidenceCoverage {
-  const cues = coverageCues(query, cueExtractor);
+  const cues = coverageCues(query, cueExtractor, inferTemporalCuesFromText);
   const coveredCues = cues.filter((cue) =>
     paths.some((path) => pathCoversCue(path, cue, cueExtractor))
   );
@@ -878,6 +894,7 @@ function explicitReconstructionIntent(
   query: string,
   hint: ReconstructionIntentHint | undefined,
   cueExtractor?: MemoryCueExtractor | undefined,
+  inferTemporalCuesFromText = false,
 ): ReconstructionIntent | null {
   if (!hint) return null;
   const expectedTags = new Set(normalizedIntentTokens(hint.expectedTags, 32));
@@ -902,7 +919,10 @@ function explicitReconstructionIntent(
   return {
     expectedTags,
     requiredTagGroups,
-    queryCues: new Set([...queryCueSet(query, cueExtractor), ...explicitQueryCues]),
+    queryCues: new Set([
+      ...queryCueSet(query, cueExtractor, inferTemporalCuesFromText),
+      ...explicitQueryCues,
+    ]),
     explicitQueryCues: new Set(explicitQueryCues),
     reason:
       requiredTagGroups.length > 0
@@ -917,13 +937,14 @@ function inferReconstructionIntent(
   query: string,
   hint?: ReconstructionIntentHint | undefined,
   cueExtractor?: MemoryCueExtractor | undefined,
+  inferTemporalCuesFromText = false,
 ): ReconstructionIntent {
-  const explicit = explicitReconstructionIntent(query, hint, cueExtractor);
+  const explicit = explicitReconstructionIntent(query, hint, cueExtractor, inferTemporalCuesFromText);
   if (explicit) return explicit;
   return {
     expectedTags: new Set<string>(),
     requiredTagGroups: [],
-    queryCues: queryCueSet(query, cueExtractor),
+    queryCues: queryCueSet(query, cueExtractor, inferTemporalCuesFromText),
     explicitQueryCues: new Set<string>(),
     reason: "associative",
   };
@@ -944,8 +965,9 @@ function seedFrontier(
   query: string,
   intent: ReconstructionIntent,
   cueExtractor?: MemoryCueExtractor | undefined,
+  inferTemporalCuesFromText = false,
 ): FrontierCue[] {
-  const cues = queryAssociationCues(query, 12, cueExtractor);
+  const cues = queryAssociationCues(query, 12, cueExtractor, inferTemporalCuesFromText);
   const queryCues = cues.length === 0
     ? [{ cue: query, cueKind: "lexical" as const }]
     : cues;
@@ -1230,11 +1252,12 @@ function pathFromDirectMemory(
   step: number,
   query: string,
   cueExtractor?: MemoryCueExtractor | undefined,
+  inferTemporalCuesFromText = false,
 ): ReconstructedEvidencePath {
   return {
     id: `hybrid:${candidate.memory.id}`,
     step,
-    cue: directMemoryCue(candidate.memory, query, cueExtractor),
+    cue: directMemoryCue(candidate.memory, query, cueExtractor, inferTemporalCuesFromText),
     tag: "hybrid_memory",
     targetType: "memory",
     targetId: candidate.memory.id,
@@ -1254,9 +1277,10 @@ function directMemoryCue(
   memory: MemoryRecord,
   query: string,
   cueExtractor?: MemoryCueExtractor | undefined,
+  inferTemporalCuesFromText = false,
 ): string {
   const searchable = normalizedText(`${memory.kind} ${memory.scope} ${memory.content}`);
-  for (const cue of coverageCues(query, cueExtractor)) {
+  for (const cue of coverageCues(query, cueExtractor, inferTemporalCuesFromText)) {
     if (searchable.includes(normalizedText(cue))) return cue;
   }
   return memory.kind;
@@ -1273,9 +1297,20 @@ function informationGainForPath(input: {
   path: ReconstructedEvidencePath;
   intent: ReconstructionIntent;
   cueExtractor?: MemoryCueExtractor | undefined;
+  inferTemporalCuesFromText?: boolean | undefined;
 }): { gain: number; reasons: string[] } {
-  const before = evidenceCoverageForPaths(input.query, input.paths, input.cueExtractor);
-  const after = evidenceCoverageForPaths(input.query, [...input.paths, input.path], input.cueExtractor);
+  const before = evidenceCoverageForPaths(
+    input.query,
+    input.paths,
+    input.cueExtractor,
+    input.inferTemporalCuesFromText,
+  );
+  const after = evidenceCoverageForPaths(
+    input.query,
+    [...input.paths, input.path],
+    input.cueExtractor,
+    input.inferTemporalCuesFromText,
+  );
   const coverageGain = Math.max(0, after.coverageRate - before.coverageRate);
   const coveredCueGain = Math.max(0, after.coveredCueCount - before.coveredCueCount);
   const newTarget = !input.paths.some(
@@ -1326,6 +1361,7 @@ async function fuseDirectMemorySearch(input: {
   seenMemoryIds: Set<string>;
   selectedSourceCues: Set<string>;
   cueExtractor?: MemoryCueExtractor | undefined;
+  inferTemporalCuesFromText?: boolean | undefined;
 }): Promise<{
   candidateCount: number;
   reinforcedPaths: ReconstructedEvidencePath[];
@@ -1370,7 +1406,13 @@ async function fuseDirectMemorySearch(input: {
     if (sourceRejectReason) continue;
     input.seenMemoryIds.add(candidate.memory.id);
     input.memories.push(candidate.memory);
-    const path = pathFromDirectMemory(candidate, directStep, input.query, input.cueExtractor);
+    const path = pathFromDirectMemory(
+      candidate,
+      directStep,
+      input.query,
+      input.cueExtractor,
+      input.inferTemporalCuesFromText,
+    );
     input.paths.push(path);
     selectedNewPaths.push({ ...path });
   }
@@ -1399,6 +1441,7 @@ function composeReconstructedContext(input: {
   displayQuery?: string | undefined;
   plannerTrace?: ReconstructedPlannerTrace | undefined;
   cueExtractor?: MemoryCueExtractor | undefined;
+  inferTemporalCuesFromText?: boolean | undefined;
   privateRouteSignals?: string[] | undefined;
   sanitizeEvidenceForOutput?: EvidenceOutputSanitizer | undefined;
 }): ReconstructedContext {
@@ -1430,7 +1473,12 @@ function composeReconstructedContext(input: {
         ))
     : [];
   let evidence = [...publicEvidence];
-  let coverage = evidenceCoverageForPaths(publicQuery, paths, input.cueExtractor);
+  let coverage = evidenceCoverageForPaths(
+    publicQuery,
+    paths,
+    input.cueExtractor,
+    input.inferTemporalCuesFromText,
+  );
   let evidenceConvergence = evidenceConvergenceForPaths({
     coverage,
     memories,
@@ -1505,7 +1553,12 @@ function composeReconstructedContext(input: {
     };
   };
   const render = (): string => {
-    coverage = evidenceCoverageForPaths(publicQuery, paths, input.cueExtractor);
+    coverage = evidenceCoverageForPaths(
+      publicQuery,
+      paths,
+      input.cueExtractor,
+      input.inferTemporalCuesFromText,
+    );
     evidenceConvergence = evidenceConvergenceForPaths({
       coverage,
       memories,
@@ -1621,6 +1674,7 @@ async function fallbackReconstruction(input: {
   targetMemoryCount: number;
   includeTemporalMetadata?: boolean | undefined;
   cueExtractor?: MemoryCueExtractor | undefined;
+  inferTemporalCuesFromText?: boolean | undefined;
   privateRouteSignals?: string[] | undefined;
   sanitizeEvidenceForOutput?: EvidenceOutputSanitizer | undefined;
 }): Promise<ReconstructedContext> {
@@ -1635,7 +1689,12 @@ async function fallbackReconstruction(input: {
   const paths = memories.map((memory, index) => ({
     id: `fallback:${memory.id}`,
     step: 1,
-    cue: directMemoryCue(memory, input.query, input.cueExtractor),
+    cue: directMemoryCue(
+      memory,
+      input.query,
+      input.cueExtractor,
+      input.inferTemporalCuesFromText,
+    ),
     tag: memory.kind,
     targetType: "memory" as const,
     targetId: memory.id,
@@ -1647,7 +1706,12 @@ async function fallbackReconstruction(input: {
     sourceEvidenceId: memory.sourceEventId,
     createdAt: memory.createdAt,
   }));
-  const fallbackCoverage = evidenceCoverageForPaths(input.query, paths, input.cueExtractor);
+  const fallbackCoverage = evidenceCoverageForPaths(
+    input.query,
+    paths,
+    input.cueExtractor,
+    input.inferTemporalCuesFromText,
+  );
   const fallbackConvergence = evidenceConvergenceForPaths({
     coverage: fallbackCoverage,
     memories,
@@ -1715,6 +1779,7 @@ async function fallbackReconstruction(input: {
     includeTemporalMetadata: input.includeTemporalMetadata === true,
     plannerTrace,
     cueExtractor: input.cueExtractor,
+    inferTemporalCuesFromText: input.inferTemporalCuesFromText,
     privateRouteSignals: input.privateRouteSignals,
     sanitizeEvidenceForOutput: input.sanitizeEvidenceForOutput,
   });
@@ -1725,6 +1790,7 @@ export async function reconstructMemoryContext(input: {
   defaultProfileId: string;
   request: ReconstructMemoryContextRequest;
   cueExtractor?: MemoryCueExtractor | undefined;
+  inferTemporalCuesFromText?: boolean | undefined;
   sanitizeEvidenceForOutput?: EvidenceOutputSanitizer | undefined;
 }): Promise<ReconstructedContext> {
   const profileId = input.request.profileId ?? input.defaultProfileId;
@@ -1744,7 +1810,13 @@ export async function reconstructMemoryContext(input: {
     0.35,
     0.95,
   );
-  const intent = inferReconstructionIntent(query, input.request.reconstructionIntent, input.cueExtractor);
+  const inferTemporalCuesFromText = input.inferTemporalCuesFromText === true;
+  const intent = inferReconstructionIntent(
+    query,
+    input.request.reconstructionIntent,
+    input.cueExtractor,
+    inferTemporalCuesFromText,
+  );
   const recallPurpose = inferTemporalRecallPurpose(
     query,
     input.request.temporalMode,
@@ -1768,12 +1840,13 @@ export async function reconstructMemoryContext(input: {
       targetMemoryCount,
       includeTemporalMetadata,
       cueExtractor: input.cueExtractor,
+      inferTemporalCuesFromText,
       privateRouteSignals: input.request.privateRouteSignals,
       sanitizeEvidenceForOutput: input.sanitizeEvidenceForOutput,
     });
   }
 
-  const frontier = seedFrontier(query, intent, input.cueExtractor);
+  const frontier = seedFrontier(query, intent, input.cueExtractor, inferTemporalCuesFromText);
   const initialCues = frontier.map((cue) => cue.cue);
   const explored = new Set<string>();
   const seenAssociationIds = new Set<string>();
@@ -1847,6 +1920,7 @@ export async function reconstructMemoryContext(input: {
         path,
         intent,
         cueExtractor: input.cueExtractor,
+        inferTemporalCuesFromText,
       });
       path.informationGain = gain.gain;
       path.routeReason = path.routeReason
@@ -1923,7 +1997,7 @@ export async function reconstructMemoryContext(input: {
     plannerSteps.push(stepTrace);
     if (stopReason === "evidence_sufficient") break;
     const convergence = evidenceConvergenceForPaths({
-      coverage: evidenceCoverageForPaths(query, paths, input.cueExtractor),
+      coverage: evidenceCoverageForPaths(query, paths, input.cueExtractor, inferTemporalCuesFromText),
       memories,
       paths,
       intent,
@@ -1944,7 +2018,12 @@ export async function reconstructMemoryContext(input: {
     stopReason = "budget_exhausted";
   }
 
-  const finalCoverageBeforeHybrid = evidenceCoverageForPaths(query, paths, input.cueExtractor);
+  const finalCoverageBeforeHybrid = evidenceCoverageForPaths(
+    query,
+    paths,
+    input.cueExtractor,
+    inferTemporalCuesFromText,
+  );
   if (
     memories.length < maxMemories &&
     ((recallPurpose === "history" && memories.length < targetMemoryCount) ||
@@ -1966,6 +2045,7 @@ export async function reconstructMemoryContext(input: {
       seenMemoryIds,
       selectedSourceCues,
       cueExtractor: input.cueExtractor,
+      inferTemporalCuesFromText,
     });
     if (hybridTrace.candidateCount > 0) {
       const hybridPaths = [
@@ -2007,7 +2087,7 @@ export async function reconstructMemoryContext(input: {
       });
     }
     const convergence = evidenceConvergenceForPaths({
-      coverage: evidenceCoverageForPaths(query, paths, input.cueExtractor),
+      coverage: evidenceCoverageForPaths(query, paths, input.cueExtractor, inferTemporalCuesFromText),
       memories,
       paths,
       intent,
@@ -2043,6 +2123,7 @@ export async function reconstructMemoryContext(input: {
     stopReason,
     includeTemporalMetadata,
     cueExtractor: input.cueExtractor,
+    inferTemporalCuesFromText,
     privateRouteSignals: input.request.privateRouteSignals,
     sanitizeEvidenceForOutput: input.sanitizeEvidenceForOutput,
     plannerTrace: {

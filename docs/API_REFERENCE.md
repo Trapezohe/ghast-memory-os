@@ -59,8 +59,11 @@ Hosts with a trusted local or host-controlled calendar/task-time parser can pass
 secret-like values, and applies the same current/history filtering used for
 extractor-supplied temporal fields. Built-in date-text inference is disabled by
 default; set `temporal.inferFromText: true` only when the host explicitly wants
-gmOS to parse explicit date text. Relative calendar phrases should be resolved
-by the host parser with trusted calendar context.
+gmOS to parse explicit date text during memory writes. Reconstruction query date
+text is also disabled by default; set
+`reconstruction.inferTemporalCuesFromText: true` only when the host explicitly
+wants the conservative built-in date parser for query cues. Relative calendar
+phrases should be resolved by the host parser with trusted calendar context.
 
 ```ts
 const memory = createMemoryOS({

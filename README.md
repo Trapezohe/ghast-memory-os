@@ -398,7 +398,10 @@ the reconstruction planner. gmOS merges those cues with its local fallback,
 filters secret-like values, and keeps the same evidence, privacy, and read-path
 purity gates. This is the preferred integration point for product-specific
 entity aliases or temporal parsers; do not add language-specific cue word lists
-to gmOS core.
+to gmOS core. Natural-language temporal query cues are also off by default; a
+host that explicitly wants gmOS to parse conservative date text in reconstruction
+queries can set `reconstruction.inferTemporalCuesFromText: true`, or preferably
+return trusted temporal cues from its own `cueExtractor`.
 Private route ids, debug labels, or host-only control names can be used as
 retrieval hints, but they are not treated as user-facing memory facts: if they do
 not appear in the public query, gmOS renders them as `retrieval_hint` in prompt
@@ -449,16 +452,19 @@ before?" without treating the request as an admin/delete operation. The default
 model has classified the turn as historical recall. History mode does not bypass
 sensitive or person-memory defaults.
 gmOS does not enable built-in language/date text inference by default. Hosts that
-want the conservative built-in parser can set `temporal.inferFromText: true`;
-then rule and host extractor candidates can pick up validity metadata from
-explicit date text such as `until 2026-07-01`, `expires on 2026-07-01`, `valid
-from 2026-01-01`, or `从 2026-01-01 开始`. gmOS core does not maintain a
-language-specific relative-date vocabulary for phrases such as "yesterday" or
-"明天"; hosts with calendar context should keep the default and pass a
-`temporal.parser` that returns structured `eventTime`, `eventDate`, `validFrom`,
-or `validTo` values. Parser output is normalized and safety-filtered before it
-enters memory metadata. gmOS still does not try to resolve ambiguous relative
-dates such as "next week" inside the rule extractor; hosts should pass
+want the conservative built-in parser for memory writes can set
+`temporal.inferFromText: true`; then rule and host extractor candidates can pick
+up validity metadata from explicit date text such as `until 2026-07-01`,
+`expires on 2026-07-01`, `valid from 2026-01-01`, or `从 2026-01-01 开始`.
+Hosts that want the same conservative date parser for reconstruction queries
+must also explicitly set `reconstruction.inferTemporalCuesFromText: true`, or
+provide trusted temporal cues through `reconstruction.cueExtractor`. gmOS core
+does not maintain a language-specific relative-date vocabulary for phrases such
+as "yesterday" or "明天"; hosts with calendar context should keep the default and
+pass a `temporal.parser` that returns structured `eventTime`, `eventDate`,
+`validFrom`, or `validTo` values. Parser output is normalized and safety-filtered
+before it enters memory metadata. gmOS still does not try to resolve ambiguous
+relative dates such as "next week" inside the rule extractor; hosts should pass
 structured metadata when they have a trusted calendar parser. The same validity
 metadata is written to the derived world belief when a candidate creates one, so
 reconstruction does not reintroduce an expired belief through the association
