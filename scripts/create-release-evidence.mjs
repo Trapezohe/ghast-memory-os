@@ -331,6 +331,35 @@ function recordCommand(name, command, args, options = {}) {
   return result;
 }
 
+function recordInspectorContentSafety(result, forbiddenValues) {
+  const check = {
+    name: "fresh_install_inspect_content_safety",
+    status: "pass",
+    command: "validate fresh_install_inspect_smoke stdout",
+  };
+  try {
+    const report = JSON.parse(result.stdout);
+    if (report.schema !== "gmos.inspect_report.v1") {
+      throw new Error("unexpected inspector report schema");
+    }
+    if (report.dbPath !== "[plaintext sqlite path redacted]") {
+      throw new Error("inspector report did not redact dbPath");
+    }
+    const stdout = result.stdout;
+    for (const [index, value] of forbiddenValues.entries()) {
+      if (value && stdout.includes(value)) {
+        throw new Error(`inspector report leaked forbidden value #${index + 1}`);
+      }
+    }
+  } catch (error) {
+    check.status = "fail";
+    check.reason = error instanceof Error ? error.message : String(error);
+    manifest.checks.push(check);
+    failAfterWriting(manifest, outputDir, `${check.name} failed`);
+  }
+  manifest.checks.push(check);
+}
+
 if (skipGate) {
   recordSkipped("pr_gate", "--skip-gate");
 } else {
@@ -404,7 +433,7 @@ if (skipFreshInstall) {
     ".bin",
     process.platform === "win32" ? "gmos-inspect.cmd" : "gmos-inspect",
   );
-  recordCommand(
+  const inspectResult = recordCommand(
     "fresh_install_inspect_smoke",
     inspectBin,
     [
@@ -421,6 +450,11 @@ if (skipFreshInstall) {
       cwd: freshInstallDir,
     },
   );
+  recordInspectorContentSafety(inspectResult, [
+    "Release note response style",
+    "summary first",
+    path.join(freshInstallDir, "consumer.db"),
+  ]);
   manifest.artifacts.freshInstallDir = path.relative(root, freshInstallDir);
 }
 
