@@ -105,6 +105,18 @@ secret-like cues and merges host cues with built-in lexical/date cues, so
 product-specific semantics stay in the host instead of becoming language-specific
 word lists in gmOS core.
 
+For a minimal end-to-end structured extractor smoke, run:
+
+```bash
+npm run examples:structured-extractor
+```
+
+The example supplies host-owned memory candidates and reconstruction cues, then
+lets gmOS handle evidence recording, validation, action-policy projection,
+reconstruction, and read-path safety. Use it as the starting point for integrating
+an LLM extractor, local model extractor, or domain parser without moving semantic
+rules into gmOS core.
+
 For in-process Node agent runtimes, `@ghast/memory/host` includes a small
 framework-agnostic adapter that wires this lifecycle without depending on a
 specific agent framework:
