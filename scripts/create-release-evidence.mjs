@@ -142,16 +142,49 @@ function inspectCiPolicy() {
 function writeCommandLogs(logDir, name, result) {
   mkdirSync(logDir, { recursive: true });
   const safeName = name.replace(/[^a-z0-9_.-]+/giu, "-");
-  writeFileSync(path.join(logDir, `${safeName}.stdout.log`), result.stdout);
-  writeFileSync(path.join(logDir, `${safeName}.stderr.log`), result.stderr);
+  writeFileSync(path.join(logDir, `${safeName}.stdout.log`), redactEvidenceText(result.stdout));
+  writeFileSync(path.join(logDir, `${safeName}.stderr.log`), redactEvidenceText(result.stderr));
   return {
     stdoutLog: path.relative(root, path.join(logDir, `${safeName}.stdout.log`)),
     stderrLog: path.relative(root, path.join(logDir, `${safeName}.stderr.log`)),
   };
 }
 
+function redactEvidenceText(value) {
+  const credentialKey =
+    "api[\\s_.-]?key|access[\\s_.-]?token|refresh[\\s_.-]?token|id[\\s_.-]?token|client[\\s_.-]?secret|token|password|secret|auth(?:entication)?(?:[\\s_.-]?token)?|authorization|cookies?|credentials?(?:[\\s_.-]?id)?|session(?:[\\s_.-]?(?:id|token))?";
+  return value
+    .replace(/(^|[^A-Za-z0-9])sk-[A-Za-z0-9_-]{8,}(?=$|[^A-Za-z0-9])/gu, "$1[redacted_secret]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/giu, "Bearer [redacted_secret]")
+    .replace(/\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/gu, "[redacted_secret]")
+    .replace(
+      new RegExp(`\\b(${credentialKey})\\b(\\s*["']?\\s*[:=]\\s*)"(?:\\\\.|[^"\\\\])*"`, "giu"),
+      '$1$2"[redacted_secret]"',
+    )
+    .replace(
+      new RegExp(`\\b(${credentialKey})\\b(\\s*["']?\\s*[:=]\\s*)'(?:\\\\.|[^'\\\\])*'`, "giu"),
+      "$1$2'[redacted_secret]'",
+    )
+    .replace(
+      new RegExp(`\\b(${credentialKey})\\b(\\s*["']?\\s*[:=]\\s*)(?!["'\\[])([^\\s"',}\\]\\)\\[]){8,}`, "giu"),
+      "$1$2[redacted_secret]",
+    );
+}
+
 function commandForDisplay(command, args) {
-  return [command, ...args].join(" ").replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gu, "[redacted_secret]");
+  return redactEvidenceText([command, ...args].join(" "));
+}
+
+const redactionSelfCheck = redactEvidenceText(
+  '{"token":"abcdefghijkl","ok":true} access_token=abcdefghijkl api_key_sk-redactorsecret1234567890 Bearer abcdefghijkl aaaaaaaaaa.bbbbbbbbbb.cccccccccc',
+);
+if (
+  redactionSelfCheck.includes("abcdefghijkl") ||
+  redactionSelfCheck.includes("sk-redactorsecret") ||
+  redactionSelfCheck.includes("aaaaaaaaaa.bbbbbbbbbb.cccccccccc") ||
+  !redactionSelfCheck.includes('{"token":"[redacted_secret]","ok":true}')
+) {
+  throw new Error("release evidence redaction self-check failed");
 }
 
 function statusForResult(result) {
