@@ -86,6 +86,10 @@ export function safePublicLabel(value: string): string {
   return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/u.test(value) ? value : "other";
 }
 
+export function safePublicSensitivity(value: unknown): Sensitivity {
+  return value === "normal" || value === "sensitive" || value === "secret_like" ? value : "sensitive";
+}
+
 export function redactForReport(content: string): string {
   const redacted = content
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gu, "[redacted_secret]")
@@ -194,6 +198,7 @@ export function sanitizeEvidenceForPublicOutput(evidence: EvidenceEvent): Eviden
     eventKey: redactForReport(evidence.eventKey),
     profileId: redactForReport(evidence.profileId),
     sourceType: safePublicLabel(evidence.sourceType),
+    sensitivity: safePublicSensitivity(evidence.sensitivity),
     sourceUri: evidence.sourceUri == null ? evidence.sourceUri : redactForReport(evidence.sourceUri),
     content: redactForReport(evidence.content),
     payload: sanitizePublicPayloadRecord(evidence.payload),
