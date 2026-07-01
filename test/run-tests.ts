@@ -13314,6 +13314,16 @@ const mcpExplanation = await mcpServer.callTool("memory.explain_belief", {
   id: mcpMemoryId,
 });
 assert.match(JSON.stringify(mcpExplanation.structuredContent), /不要主动提醒/);
+const mcpExplanationUnknownField = await mcpServer.callTool("memory.explain_belief", {
+  profileId: "mcp",
+  id: mcpMemoryId,
+  unsupported: true,
+});
+assert.equal(mcpExplanationUnknownField.isError, true);
+assert.match(
+  String((mcpExplanationUnknownField.structuredContent as { error?: unknown }).error ?? ""),
+  /memory\.explain_belief contains unsupported fields: unsupported/,
+);
 const mcpNestedOverride = await mcpServer.callTool("memory.prepare_context", {
   profileId: "mcp",
   messages: [
@@ -13702,6 +13712,13 @@ try {
   });
   assert.equal(explanation.status, 200);
   assert.match(explanation.text, /compact memory contracts/);
+  const httpExplanationUnknownField = await postJson(`${httpAddress.url}/explain`, {
+    profileId: "http",
+    id: httpMemoryId,
+    unsupported: true,
+  });
+  assert.equal(httpExplanationUnknownField.status, 400);
+  assert.match(httpExplanationUnknownField.text, /memory\.explain_belief contains unsupported fields/);
   const httpEvidencePath = await postJson(`${httpAddress.url}/explain-path`, {
     profileId: "http",
     text: "compact memory contracts",

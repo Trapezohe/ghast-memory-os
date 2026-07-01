@@ -740,6 +740,7 @@ export function createMemoryMcpServer(memory: MemoryOS): MemoryMcpServer {
     "memory.forget": async (object) =>
       ok({ ok: true, result: await memory.forget(forgetInput(object)) }),
     "memory.explain_belief": async (object) => {
+      assertAllowedKeys(object, new Set(["profileId", "id"]), "memory.explain_belief");
       const id = requiredString(object, "id");
       const explanation = await memory.explain(id, optionalString(object, "profileId"));
       if (!explanationIsMcpSafe(explanation)) {
