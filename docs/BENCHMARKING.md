@@ -18,7 +18,7 @@ The gate runs:
 - quickstart, host adapter, HTTP adapter, MCP router, and external mini
   examples;
 - no-benchmark-special-casing scan;
-- extraction fallback boundary scan;
+- extraction boundary scan;
 - consumer install smoke;
 - deterministic Memory Gym smoke;
 - external fixture smoke;

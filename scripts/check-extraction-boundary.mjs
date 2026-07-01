@@ -57,7 +57,7 @@ const productionRuntimeSourceRoots = [
   "src/evolution",
 ];
 const productionRuntimeSourceFilePattern = /\.(?:ts|js|mjs)$/u;
-const selfFile = "scripts/check-extraction-fallback-boundary.mjs";
+const selfFile = "scripts/check-extraction-boundary.mjs";
 const legacyLinguisticFixturePattern =
   /legacy-linguistic-extractor\.fixture|test\/helpers\/legacy-linguistic-extractor/iu;
 const exposedTestPathPattern = /(?:^|\/|\*\*\/)test(?:\/|\*|$)/iu;
@@ -524,11 +524,11 @@ const checks = [
 const failures = checks.filter((check) => !check.pass);
 if (failures.length > 0) {
   process.stderr.write(
-    `Extraction fallback boundary check failed:\n${failures
+    `Extraction boundary check failed:\n${failures
       .map((failure) => `- ${failure.name}: ${failure.detail}`)
       .join("\n")}\n`,
   );
   process.exit(1);
 }
 
-process.stdout.write("[gmos] extraction fallback boundary scan passed\n");
+process.stdout.write("[gmos] extraction boundary scan passed\n");

@@ -188,7 +188,7 @@ node dist/cli/gmos.js repair --db ./gmos.db --associations
 ```
 
 `gate:pr` is the local and CI PR gate. It runs build/test, published examples,
-benchmark-integrity checks, extraction fallback boundary checks, consumer
+benchmark-integrity checks, extraction boundary checks, consumer
 install smoke, deterministic Memory Gym smoke, external fixtures, the SDK
 release gate, scale smoke, and a pack dry run.
 
