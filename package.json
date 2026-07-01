@@ -87,6 +87,7 @@
     "test": "node --import tsx test/run-tests.ts",
     "test:consumer": "node test/consumer-install-smoke.mjs",
     "test:external-fixtures": "node scripts/test-external-fixtures.mjs",
+    "check:ci-trigger-policy": "node scripts/check-ci-trigger-policy.mjs",
     "check:no-benchmark-special-casing": "node scripts/check-no-benchmark-special-casing.mjs",
     "check:extraction-boundary": "node scripts/check-extraction-boundary.mjs",
     "release:evidence": "node scripts/create-release-evidence.mjs",
@@ -97,7 +98,7 @@
     "examples:http-adapter": "node examples/http-adapter.mjs",
     "examples:mcp-router": "node examples/mcp-router.mjs",
     "examples:external-mini": "node examples/external-mini-benchmark.mjs",
-    "check": "npm run build && npm test && npm run examples:quickstart && npm run examples:agent-adapter && npm run examples:host-adapter && npm run examples:http-adapter && npm run examples:mcp-router && npm run examples:external-mini",
+    "check": "npm run check:ci-trigger-policy && npm run build && npm test && npm run examples:quickstart && npm run examples:agent-adapter && npm run examples:host-adapter && npm run examples:http-adapter && npm run examples:mcp-router && npm run examples:external-mini",
     "prepare": "npm run build",
     "prepack": "npm run build",
     "gym": "node --import tsx src/cli/gmos.ts gym run --db :memory:"

@@ -3,6 +3,10 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {
+  inspectGithubActionsTriggerPolicy,
+  workflowRequiresRunCiLabel,
+} from "./lib/github-actions-trigger-policy.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
@@ -86,18 +90,21 @@ function inspectCiPolicy() {
     };
   }
   const content = readFileSync(ciFile, "utf8");
-  const pushTriggerPresent = /^\s*push\s*:/mu.test(content);
-  const pullRequestTriggerPresent = /^\s*pull_request\s*:/mu.test(content);
-  const workflowDispatchPresent = /^\s*workflow_dispatch\s*:/mu.test(content);
-  const labeledOnly = /types:\s*\[labeled\]/u.test(content);
-  const labelGated = /run-ci/u.test(content) && /full-ci/u.test(content);
+  const policy = inspectGithubActionsTriggerPolicy(content);
+  const labelGated = workflowRequiresRunCiLabel(content);
   return {
     workflowFile: ".github/workflows/ci.yml",
     present: true,
-    pushTriggerPresent,
-    pullRequestTriggerPresent,
-    workflowDispatchPresent,
-    optInRemoteCi: !pushTriggerPresent && workflowDispatchPresent && labeledOnly && labelGated,
+    pushTriggerPresent: policy.pushTriggerPresent,
+    branchPushTriggerPresent: policy.branchPushTriggerPresent,
+    pullRequestTriggerPresent: policy.pullRequestTriggerPresent,
+    workflowDispatchPresent: policy.workflowDispatchPresent,
+    optInRemoteCi:
+      !policy.pushTriggerPresent &&
+      policy.workflowDispatchPresent &&
+      policy.pullRequestTriggerPresent &&
+      policy.pullRequestLabeledOnly &&
+      labelGated,
   };
 }
 
