@@ -15987,6 +15987,70 @@ assert.ok(hybridPath);
 assert.match(hybridPath.routeReason ?? "", /hybrid_(direct_memory_rrf|memory)/);
 assert.ok(hybridPath.routeSources?.includes("hybrid_direct_memory"));
 assert.ok((hybridPath.informationGain ?? 0) > 0);
+for (let index = 0; index < 10; index += 1) {
+  await reconstructionMemory.add({
+    profileId: "recon",
+    kind: "fact",
+    content:
+      `Distractor ${index}: what did the previous rollout discussion answer say before deploy after review?`,
+    confidence: 0.99,
+  });
+}
+await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "fact",
+  content: "QuasarTicket escalation answer was Daisy-chain rollback.",
+  confidence: 0.2,
+});
+const originalReconstructionSearchAssociations =
+  reconstructionStore.searchAssociations?.bind(reconstructionStore);
+assert.ok(originalReconstructionSearchAssociations);
+reconstructionStore.searchAssociations = (() => []) as typeof reconstructionStore.searchAssociations;
+try {
+  const cueHybridReconstruction = await reconstructionMemory.reconstructContext({
+    profileId: "recon",
+    query:
+      "What did the QuasarTicket escalation answer mention after the previous rollout discussion?",
+    maxSteps: 1,
+    maxBranch: 1,
+    maxMemories: 1,
+  });
+  assert.match(cueHybridReconstruction.contextBlock, /Daisy-chain rollback/);
+  const cueHybridPath = cueHybridReconstruction.paths.find((path) =>
+    path.targetSummary.includes("Daisy-chain rollback"),
+  );
+  assert.ok(cueHybridPath);
+  assert.match(cueHybridPath.routeReason ?? "", /cue_search/);
+  assert.ok(cueHybridPath.routeSources?.includes("hybrid_direct_memory"));
+} finally {
+  reconstructionStore.searchAssociations =
+    originalReconstructionSearchAssociations as typeof reconstructionStore.searchAssociations;
+}
+const privateHybridCue = "PrivateHybridRoute-Zephyr-8842";
+const privateHybridLeakPattern = /PrivateHybridRoute-Zephyr-8842|privatehybridroute-zephyr-8842/iu;
+await reconstructionMemory.add({
+  profileId: "recon",
+  kind: "fact",
+  content: "PrivateHybridRoute-Zephyr-8842 resolves to Aster Plain.",
+  confidence: 0.5,
+});
+reconstructionStore.searchAssociations = (() => []) as typeof reconstructionStore.searchAssociations;
+try {
+  const privateCueHybridReconstruction = await reconstructionMemory.reconstructContext({
+    profileId: "recon",
+    query: "what should I use?",
+    reconstructionIntent: { queryCues: [privateHybridCue] },
+    maxSteps: 1,
+    maxBranch: 1,
+    maxMemories: 1,
+  });
+  assert.match(privateCueHybridReconstruction.contextBlock, /Aster Plain/);
+  assert.doesNotMatch(JSON.stringify(privateCueHybridReconstruction), privateHybridLeakPattern);
+  assert.match(JSON.stringify(privateCueHybridReconstruction), /cue_search/);
+} finally {
+  reconstructionStore.searchAssociations =
+    originalReconstructionSearchAssociations as typeof reconstructionStore.searchAssociations;
+}
 await reconstructionMemory.add({
   profileId: "recon",
   kind: "fact",

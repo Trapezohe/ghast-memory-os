@@ -262,6 +262,7 @@ interface RankedAssociation {
 
 interface RankedMemoryCandidate {
   memory: MemoryRecord;
+  matchedQuery?: string | undefined;
   routeScore: number;
   routeReason: string;
 }
@@ -1243,13 +1244,80 @@ function rankAssociation(
   };
 }
 
+interface DirectMemoryCandidate {
+  memory: MemoryRecord;
+  matchedQuery?: string | undefined;
+  searchRank: number;
+}
+
+function directMemorySearchQueries(
+  query: string,
+  intent: ReconstructionIntent,
+  cueExtractor?: MemoryCueExtractor | undefined,
+  inferTemporalCuesFromText = false,
+): string[] {
+  const cues = queryAssociationCues(query, 12, cueExtractor, inferTemporalCuesFromText)
+    .filter((cue) =>
+      cue.cueKind === "entity" ||
+      cue.cueKind === "temporal" ||
+      [...cue.cue].length >= 8
+    )
+    .map((cue) => cue.cue);
+  return uniqueDisplayValues([query, ...intent.explicitQueryCues, ...cues]).slice(0, 10);
+}
+
+async function searchDirectMemoryCandidates(input: {
+  store: MemoryStore;
+  profileId: string;
+  query: string;
+  intent: ReconstructionIntent;
+  recallPurpose: ReconstructionRecallPurpose;
+  includeSensitive?: boolean | undefined;
+  maxMemories: number;
+  cueExtractor?: MemoryCueExtractor | undefined;
+  inferTemporalCuesFromText?: boolean | undefined;
+}): Promise<DirectMemoryCandidate[]> {
+  const candidates = new Map<string, DirectMemoryCandidate>();
+  const limit = Math.min(input.maxMemories * 4, 48);
+  for (const [queryIndex, searchQuery] of directMemorySearchQueries(
+    input.query,
+    input.intent,
+    input.cueExtractor,
+    input.inferTemporalCuesFromText,
+  ).entries()) {
+    const memories = await input.store.searchMemories({
+      profileId: input.profileId,
+      query: searchQuery,
+      purpose: input.recallPurpose,
+      includeSensitive: input.includeSensitive,
+      limit,
+    });
+    for (const [memoryIndex, memory] of memories.entries()) {
+      const existing = candidates.get(memory.id);
+      const searchRank = queryIndex * limit + memoryIndex + 1;
+      if (existing && existing.searchRank <= searchRank) continue;
+      candidates.set(memory.id, {
+        memory,
+        matchedQuery: searchQuery === input.query ? undefined : searchQuery,
+        searchRank,
+      });
+    }
+  }
+  return [...candidates.values()].sort((a, b) => a.searchRank - b.searchRank);
+}
+
 function rankDirectMemory(
-  memory: MemoryRecord,
+  candidate: DirectMemoryCandidate,
   rank: number,
   intent: ReconstructionIntent,
 ): RankedMemoryCandidate {
+  const memory = candidate.memory;
   const reasons = [`hybrid_direct_memory_rrf:${rank}`];
   let routeScore = memory.confidence + reciprocalRankScore(rank) * 100;
+  if (candidate.matchedQuery) {
+    routeScore += 5;
+    reasons.push("cue_search");
+  }
   if (memoryMatchesIntent(memory, intent)) {
     routeScore += 6;
     reasons.push(`intent:${intent.reason}`);
@@ -1263,7 +1331,7 @@ function rankDirectMemory(
     routeScore += overlapCount * 0.75;
     reasons.push(`query_overlap:${overlapCount}`);
   }
-  return { memory, routeScore, routeReason: reasons.join(",") };
+  return { memory, matchedQuery: candidate.matchedQuery, routeScore, routeReason: reasons.join(",") };
 }
 
 function pathFromDirectMemory(
@@ -1388,12 +1456,16 @@ async function fuseDirectMemorySearch(input: {
   reinforcedPaths: ReconstructedEvidencePath[];
   selectedNewPaths: ReconstructedEvidencePath[];
 }> {
-  const directMemoryCandidates = await input.store.searchMemories({
+  const directMemoryCandidates = await searchDirectMemoryCandidates({
+    store: input.store,
     profileId: input.profileId,
     query: input.query,
-    purpose: input.recallPurpose,
+    intent: input.intent,
+    recallPurpose: input.recallPurpose,
     includeSensitive: input.includeSensitive,
-    limit: Math.min(input.maxMemories * 4, 48),
+    maxMemories: input.maxMemories,
+    cueExtractor: input.cueExtractor,
+    inferTemporalCuesFromText: input.inferTemporalCuesFromText,
   });
   const rankedCandidates = directMemoryCandidates
     .map((memory, index) => rankDirectMemory(memory, index + 1, input.intent))
