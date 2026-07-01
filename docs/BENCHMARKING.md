@@ -103,22 +103,33 @@ gmos gym external \
   --progress
 ```
 
-## Adapter Baseline Snapshot
+## Adapter Baseline Archives
 
-Latest local deterministic adapter baseline, alpha.67, 2026-06-29:
+Public docs should describe how to reproduce a run and how to interpret its
+score. Current baseline numbers belong in release evidence or a benchmark run
+archive with the git SHA, dataset hash, command, options, and failure samples.
+Older snapshots that lack those fields must mark them as not recorded.
+Do not treat local deterministic adapter scores as official LongMemEval or
+LoCoMo protocol scores. Datasets are not vendored in this repository. See
+[benchmark runs](./BENCHMARK_RUNS.md) for tracked local baseline snapshots.
 
-| Dataset file | Source format | Scored cases | Deterministic adapter score | Runtime |
-| --- | --- | ---: | ---: | ---: |
-| `longmemeval_oracle.json` | LongMemEval cleaned oracle | 470 | `0.2404` | 26.3s |
-| `longmemeval_s_cleaned.json` | LongMemEval cleaned S | 470 | `0.2532` | 1284.2s |
-| `locomo10.json` | LoCoMo full history | 1542 | `0.1089` | 363.4s |
+## Protocol Bridges
 
-These are local deterministic adapter scores, not official LongMemEval or
-LoCoMo protocol scores. Dataset sources:
-[LongMemEval cleaned](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned),
-[LongMemEval GitHub](https://github.com/xiaowu0162/longmemeval), and
-[LoCoMo GitHub](https://github.com/snap-research/locomo). Datasets are not
-vendored in this repository.
+`gmos gym statebench` prepares an optional STATE-Bench Agent Learning Track hook
+and result summary. It is a bridge, not a replacement for the official runner:
+comparable numbers still require the unchanged STATE-Bench protocol, fixed
+evaluator/simulator setup, and a reproducible manifest.
+
+Minimal bridge flow:
+
+```bash
+gmos gym statebench build-learnings --domain <domain> --input-dir ./STATE-Bench/datasets/train_task_trajectories/<domain> --output-file ./outputs/gmos-learnings/<domain>.json
+gmos gym statebench prepare --checkout-dir ./STATE-Bench --domain <domain> --agent-model-name <model-name> --manifest-file ./outputs/gmos-learnings/<domain>.prepare.json
+gmos gym statebench summarize --checkout-dir ./STATE-Bench --domain <domain> --metrics-file ./outputs/<domain>/metrics.json --prepare-manifest ./outputs/gmos-learnings/<domain>.prepare.json
+```
+
+Run the official STATE-Bench `run_batch` and `compute_metrics` commands from
+the prepare manifest before publishing comparable results.
 
 ## Report Interpretation
 
@@ -143,7 +154,7 @@ state, reconstruction, context composition, safety, action policy, or feedback.
 - Do not claim SOTA without the official dataset, official or strictly
   equivalent runner, fixed model/judge settings, and a public reproduction
   bundle.
-- Do not hide weak baseline results when they are the current reproducible
+- Do not omit current reproducible baseline results when they are the current
   state.
 - Do not improve scores by weakening secret, incognito, PERSON, forget,
   sensitive, or do-not-push gates.

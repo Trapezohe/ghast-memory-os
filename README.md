@@ -164,10 +164,6 @@ node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --dataset
 node dist/cli/gmos.js gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
 node dist/cli/gmos.js gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --progress
 node dist/cli/gmos.js gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format json --markdown-file ./external-suite.md
-node dist/cli/gmos.js gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
-node dist/cli/gmos.js gym statebench write-agent --output-file ./STATE-Bench/agents/gmos_memory_agent.py
-node dist/cli/gmos.js gym statebench prepare --checkout-dir ./STATE-Bench --domain travel --agent-model-name gpt-5.1 --num-workers 2 --manifest-file outputs/gmos-learnings/travel.prepare.json
-node dist/cli/gmos.js gym statebench summarize --checkout-dir ./STATE-Bench --domain travel --metrics-file outputs/travel/metrics.json --prepare-manifest outputs/gmos-learnings/travel.prepare.json
 node dist/cli/gmos.js gym gate --generated-seeds 3 --scale-sizes 100,1000 --format json
 node dist/cli/gmos.js gym host --hosts ghast,mcp,mock_l3,search_only --format markdown
 node dist/cli/gmos.js gym host --hosts ghast --actual-report ./ghast-memory-status.json --format markdown
@@ -180,9 +176,6 @@ npm run gate:pr
 npm run release:evidence -- --output-dir ./release-evidence/alpha68-local
 node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format json --require-convergence --progress
 node dist/cli/gmos.js gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format json
-node dist/cli/gmos.js gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
-node dist/cli/gmos.js gym statebench prepare --checkout-dir ./STATE-Bench --domain travel --agent-model-name gpt-5.1 --manifest-file outputs/gmos-learnings/travel.prepare.json
-node dist/cli/gmos.js gym statebench summarize --checkout-dir ./STATE-Bench --domain travel --metrics-file outputs/travel/metrics.json --output-file outputs/gmos-learnings/travel.summary.json
 node dist/cli/gmos.js repair --db ./gmos.db --search-index
 node dist/cli/gmos.js repair --db ./gmos.db --associations
 ```
@@ -215,7 +208,7 @@ pushes do not run CI by default. The benchmark jobs are deterministic SDK gates;
 they do not call an external LLM.
 
 `gym run` is the deterministic SDK benchmark. It reports hard gates, coverage
-layers, a generalization view, roadmap suggestions, and a run manifest. It does
+layers, a generalization view, diagnostic suggestions, and a run manifest. It does
 not run an LLM judge and should not be treated as proof of mature digital-twin
 capability.
 
@@ -257,37 +250,10 @@ LongMemEval adapter abstention handling, LoCoMo adapter unscored-QA handling,
 profile reuse, incognito filtering, history recall, task trajectory reuse, and
 boundary-aware prepare mode. Full LongMemEval/LoCoMo datasets remain manual or
 scheduled baselines because they are too large and slow for ordinary PR CI.
-Current adapter baseline snapshots are documented in
-[benchmarking](./docs/BENCHMARKING.md).
 
 `gym statebench` is a protocol bridge for the STATE-Bench Agent Learning Track,
-not a replacement for the official runner. `build-learnings` reads only
-`datasets/train_task_trajectories/<domain>` style JSON files, extracts compact
-procedural learnings from prior successful tool-call trajectories, and writes a
-`gmos.state_bench_learnings.v1` artifact. It does not read held-out test tasks,
-judge labels, or simulator state. By default the builder refuses paths that do
-not end in `datasets/train_task_trajectories/<domain>`; `--allow-non-train-input`
-is intended only for isolated fixtures and local smoke tests. `write-agent`
-writes a Python
-`GmosMemoryAgent(StateBenchAgent)` hook that implements the official
-`retrieve_learnings(query, top_k=3) -> list[str]` interface and refuses to
-overwrite existing files unless `--force` is passed. `prepare` combines the two
-steps inside a STATE-Bench checkout and emits a
-`gmos.state_bench_prepare_run.v1` manifest with relative artifact paths, the
-exact `uv run python -m state_bench.scripts.run_batch ...` command, and the
-matching `compute_metrics` command. The manifest intentionally omits absolute
-local paths and train trajectory content. Officially comparable STATE-Bench
-numbers still require running the unchanged STATE-Bench protocol, fixed
-evaluator/simulator setup, and `--retrieve-learnings-top-k 3` inside a
-STATE-Bench checkout.
-
-After the official `compute_metrics` command writes `metrics.json`,
-`gym statebench summarize` can archive a gmOS-side
-`gmos.state_bench_results_summary.v1` report. It reads the official metrics
-artifact and optional prepare manifest, counts run output files, and keeps all
-paths relative to the checkout root. It does not inspect held-out task
-definitions, read evaluator labels, re-score trajectories, or claim a score
-that STATE-Bench did not produce.
+not a replacement for the official runner. See
+[benchmarking](./docs/BENCHMARKING.md) for protocol boundaries and claim rules.
 
 This adapter targets the original/cleaned LongMemEval schema, not the newer
 LongMemEval-V2 trajectory/haystack schema. It is deterministic context and

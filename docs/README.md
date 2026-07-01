@@ -24,6 +24,8 @@ runtime branches.
   flow.
 - [Benchmark guide](./BENCHMARKING.md): SDK gates, external adapters, and
   claim boundaries.
+- [Benchmark runs](./BENCHMARK_RUNS.md): archived local deterministic baseline
+  snapshots.
 - [Migration guide](./MIGRATION.md): host snapshot import, profile backup, and
   safe rollout steps.
 

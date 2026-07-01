@@ -107,12 +107,10 @@ notes until the underlying capability is proven by current evidence:
   encryption, cloud custody, or hosted synchronization.
 - Built-in extraction does not synthesize durable semantic memory; broad
   production extraction requires a host-provided structured extractor profile.
-- Deterministic LongMemEval and LoCoMo adapter scores are weak diagnostic
+- Deterministic LongMemEval and LoCoMo adapter scores are local diagnostic
   baselines, not official LLM-judge or leaderboard results.
 - STATE-Bench, Mem2ActBench, BEAM, and similar claims require their unchanged
   official runners, fixed model/judge settings, and public reproduction bundle.
-- ghast_desktop production replacement requires SDK release evidence plus
-  app-side Electron E2E migration evidence.
 
 ## Official Benchmark Claims
 
@@ -136,5 +134,5 @@ After publish:
 - run quickstart and consumer smoke against the published package;
 - tag the release commit;
 - update the README baseline only if the new report is reproducible;
-- keep weak external benchmark baselines visible instead of replacing them with
+- keep current external benchmark baselines visible instead of replacing them with
   only aggregate scores.
