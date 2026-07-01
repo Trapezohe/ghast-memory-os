@@ -1,5 +1,5 @@
 import type { ActionPolicy, EvidenceEvent, MemoryRecord, PreparedTurn } from "./types.js";
-import { sanitizeEvidenceForPublicOutput } from "./safety.js";
+import { safePublicLabel, sanitizeEvidenceForPublicOutput } from "./safety.js";
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
@@ -38,7 +38,7 @@ export function composeTurnContext(input: {
     lines.push(
       ...publicEvidence.map(
         (event) =>
-          `- [${event.sourceType}; ${event.sensitivity}; eligible=${event.eligibleForLongTermMemory}] ${event.content}`,
+          `- [${safePublicLabel(event.sourceType)}; ${event.sensitivity}; eligible=${event.eligibleForLongTermMemory}] ${event.content}`,
       ),
     );
   }

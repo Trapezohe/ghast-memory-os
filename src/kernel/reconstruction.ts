@@ -6,7 +6,7 @@ import {
   sourceMetadataEntityCues,
 } from "./associations.js";
 import type { AssociationCue } from "./associations.js";
-import { classifySensitivity, sanitizeEvidenceForPublicOutput } from "./safety.js";
+import { classifySensitivity, safePublicLabel, sanitizeEvidenceForPublicOutput } from "./safety.js";
 import { observedAtSegment, temporalMetadataSegment } from "./temporal-format.js";
 import { temporalCueValuesFromText } from "./temporal-validity.js";
 import type {
@@ -1762,7 +1762,7 @@ function composeReconstructedContext(input: {
       lines.push(
         ...evidence.map(
           (event) =>
-            `- [${event.sourceType}; ${event.sensitivity}; eligible=${event.eligibleForLongTermMemory}${input.includeTemporalMetadata ? observedAtSegment(event.createdAt) : ""}] ${event.content}`,
+            `- [${safePublicLabel(event.sourceType)}; ${event.sensitivity}; eligible=${event.eligibleForLongTermMemory}${input.includeTemporalMetadata ? observedAtSegment(event.createdAt) : ""}] ${event.content}`,
         ),
       );
     }

@@ -82,6 +82,10 @@ export function shouldHideFromOrdinaryContext(input: {
   return false;
 }
 
+export function safePublicLabel(value: string): string {
+  return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/u.test(value) ? value : "other";
+}
+
 export function redactForReport(content: string): string {
   const redacted = content
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gu, "[redacted_secret]")

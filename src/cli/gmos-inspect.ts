@@ -2,6 +2,7 @@
 import { writeFileSync } from "node:fs";
 
 import type { EvidenceEvent } from "../kernel/types.js";
+import { safePublicLabel } from "../kernel/safety.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 
@@ -49,10 +50,6 @@ function increment(map: Record<string, number>, key: string): void {
   map[key] = (map[key] ?? 0) + 1;
 }
 
-function safeSummaryKey(value: string): string {
-  return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/u.test(value) ? value : "other";
-}
-
 function evidenceSummary(evidence: EvidenceEvent[]): InspectReport["evidenceSummary"] {
   const bySensitivity = Object.create(null) as Record<string, number>;
   const bySourceType = Object.create(null) as Record<string, number>;
@@ -60,7 +57,7 @@ function evidenceSummary(evidence: EvidenceEvent[]): InspectReport["evidenceSumm
   for (const event of evidence) {
     if (event.eligibleForLongTermMemory) eligibleForLongTermMemory += 1;
     increment(bySensitivity, event.sensitivity);
-    increment(bySourceType, safeSummaryKey(event.sourceType));
+    increment(bySourceType, safePublicLabel(event.sourceType));
   }
   return {
     inspected: evidence.length,
