@@ -5194,12 +5194,30 @@ const hostAliasSelfParticipantExtractorReport =
     content: "I prefer compact QA notes.",
     metadata: {
       speaker: "Mira User",
+      speakerKind: "person",
       participants: ["Mira User"],
     },
   });
 assert.equal(hostAliasSelfParticipantExtractorReport.extraction?.acceptedCandidateCount, 1);
 assert.equal(hostAliasSelfParticipantExtractorReport.memoryIds.length, 1);
 assert.equal(hostAliasSelfParticipantExtractorReport.worldBeliefIds.length, 1);
+const hostAliasSelfParticipantMemory = await hostAliasSpeakerExtractorMemory.get({
+  profileId: "host_alias_speaker_extractor",
+  id: hostAliasSelfParticipantExtractorReport.memoryIds[0]!,
+});
+const hostAliasSelfParticipantMentions = hostAliasSelfParticipantMemory?.metadata.entityMentions as
+  | Array<{ role?: string; value?: string; kind?: string; cueEligible?: boolean }>
+  | undefined;
+assert.equal(
+  hostAliasSelfParticipantMentions?.some(
+    (mention) =>
+      mention.role === "participant" &&
+      mention.value === "Mira User" &&
+      mention.kind === "person" &&
+      mention.cueEligible === false,
+  ),
+  true,
+);
 await hostAliasSpeakerExtractorMemory.close();
 
 const unsafeExtractorStore = createSqliteMemoryStore({

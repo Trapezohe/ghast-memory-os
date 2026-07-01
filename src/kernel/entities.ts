@@ -298,6 +298,15 @@ export function buildEntityMentions(input: EntityMentionInput): EntityMention[] 
         cueEligible: true,
       });
     }
+    for (const participant of publicStringArray(sourceMetadata.participants)) {
+      if (!stableNamedPersonSubject(participant)) continue;
+      addMention(mentions, {
+        role: "participant",
+        value: participant,
+        kind: "person",
+        cueEligible: false,
+      });
+    }
   }
   return mentions;
 }
