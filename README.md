@@ -177,7 +177,7 @@ node dist/cli/gmos.js gym host --hosts ghast --actual-report ./ghast-memory-stat
 
 ```bash
 npm run gate:pr
-npm run release:evidence -- --output-dir ./release-evidence/alpha67-local
+npm run release:evidence -- --output-dir ./release-evidence/alpha68-local
 node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format json --require-convergence --progress
 node dist/cli/gmos.js gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format json
 node dist/cli/gmos.js gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json

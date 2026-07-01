@@ -1,6 +1,6 @@
 {
   "name": "@ghast/memory",
-  "version": "0.1.0-alpha.67",
+  "version": "0.1.0-alpha.68",
   "description": "Ghast Memory OS: a local-first Memory OS runtime kernel for personal agents.",
   "type": "module",
   "license": "Apache-2.0",
