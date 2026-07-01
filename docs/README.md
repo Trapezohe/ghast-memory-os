@@ -20,6 +20,8 @@ runtime branches.
   surfaces.
 - [MCP and HTTP integration guide](./INTEGRATION_GUIDE.md): host boundary
   choices, public tool contracts, and local service smoke tests.
+- [Structured extraction contract](./STRUCTURED_EXTRACTION.md): host-owned memory
+  candidates, entity/time cues, and validation responsibilities.
 - [Architecture guide](./ARCHITECTURE.md): source-of-truth boundaries and data
   flow.
 - [Benchmark guide](./BENCHMARKING.md): SDK gates, external adapters, and
@@ -30,5 +32,5 @@ runtime branches.
   safe rollout steps.
 
 Runnable examples are shipped under `examples/`: `quickstart.mjs`,
-`agent-adapter.mjs`, `host-adapter.mjs`, `http-adapter.mjs`,
-`mcp-router.mjs`, and `external-mini-benchmark.mjs`.
+`structured-extractor.mjs`, `agent-adapter.mjs`, `host-adapter.mjs`,
+`http-adapter.mjs`, `mcp-router.mjs`, and `external-mini-benchmark.mjs`.
