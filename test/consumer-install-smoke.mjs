@@ -66,7 +66,7 @@ try {
       import { strict as assert } from "node:assert";
       import { readFileSync, writeFileSync } from "node:fs";
       import path from "node:path";
-      import { createMemoryOS, getGmosRuntimeInfo } from "@ghast/memory";
+      import { createMemoryOS, getGmosRuntimeInfo, isSecretLikeMemoryContent } from "@ghast/memory";
       import { createMemoryStatusReport } from "@ghast/memory/diagnostics";
       import { createEvolutionControlPlane } from "@ghast/memory/evolution";
       import {
@@ -109,6 +109,8 @@ try {
 
       const store = createSqliteMemoryStore({ path: path.join(process.cwd(), "consumer.db") });
       const memory = createMemoryOS({ profileId: "consumer", store });
+      assert.equal(isSecretLikeMemoryContent("api key: sk-consumersmokesecret1234567890"), true);
+      assert.equal(isSecretLikeMemoryContent("User prefers concise answers."), false);
       const initialReadAudit = store.readAuditSnapshot();
       assert.equal(initialReadAudit.schema, "gmos.read_audit_snapshot.v1");
       assert.equal(initialReadAudit.tables.gmos_memories.rowCount, 0);
@@ -602,6 +604,7 @@ try {
         createMemoryOS,
         createOpenAICompatibleExtractor,
         getGmosRuntimeInfo,
+        isSecretLikeMemoryContent,
         type GmosRuntimeInfo,
         type MemoryExtractionCandidate,
         type EvidencePathExplanation,
@@ -686,6 +689,8 @@ try {
       const localFirstContract: true = runtimeInfo.trustContract.localFirst;
       void runtimeInfoSchema;
       void localFirstContract;
+      const secretLikeDetected: boolean = isSecretLikeMemoryContent("api key: sk-consumertypessecret1234567890");
+      void secretLikeDetected;
 
       const sqliteStore: SqliteMemoryStore = createSqliteMemoryStore({ path: ":memory:" });
       const genericStore: MemoryStore = sqliteStore;
