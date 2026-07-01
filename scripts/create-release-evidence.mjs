@@ -151,7 +151,7 @@ function writeCommandLogs(logDir, name, result) {
 }
 
 function commandForDisplay(command, args) {
-  return [command, ...args].join(" ");
+  return [command, ...args].join(" ").replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gu, "[redacted_secret]");
 }
 
 function statusForResult(result) {
@@ -355,6 +355,9 @@ function recordInspectorContentSafety(result, forbiddenValues) {
     ) {
       throw new Error("inspector report did not include numeric forgetSummary");
     }
+    if (typeof report.query !== "string" || !report.query.includes("[redacted_secret]")) {
+      throw new Error("inspector report did not redact secret-like query");
+    }
     const stdout = result.stdout;
     for (const [index, value] of forbiddenValues.entries()) {
       if (value && stdout.includes(value)) {
@@ -452,7 +455,7 @@ if (skipFreshInstall) {
       "--profile",
       "fresh-install",
       "--query",
-      "release note",
+      "release note api key: sk-releaseevidencequerysecret1234567890",
       "--format",
       "json",
     ],
@@ -463,6 +466,7 @@ if (skipFreshInstall) {
   recordInspectorContentSafety(inspectResult, [
     "Release note response style",
     "summary first",
+    "sk-releaseevidencequerysecret",
     path.join(freshInstallDir, "consumer.db"),
   ]);
   manifest.artifacts.freshInstallDir = path.relative(root, freshInstallDir);
