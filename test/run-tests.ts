@@ -1112,6 +1112,113 @@ const unsafeSensitivityReconstructed = await memory.reconstructContext({
 });
 assert.match(unsafeSensitivityReconstructed.contextBlock, /\[conversation.message; sensitive; eligible=true\]/);
 assert.doesNotMatch(unsafeSensitivityReconstructed.contextBlock, /sensitivity-injected/);
+const unsafeEvidenceFields = [
+  "id",
+  "event_key",
+  "source_type",
+  "source_uri",
+  "content",
+  "sensitivity",
+  "payload_json",
+  "created_at",
+] as const;
+const unsafeEvidenceDb = new Database(dbPath);
+try {
+  const insertEvidence = unsafeEvidenceDb.prepare(
+    `INSERT INTO gmos_evidence_events (
+      id, event_key, profile_id, source_type, source_uri, content, sensitivity,
+      eligible_for_long_term_memory, payload_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  for (const field of unsafeEvidenceFields) {
+    const marker = `sk-dirtyevidence${field.replaceAll("_", "")}1234567890`;
+    const row = {
+      id: `evidence_dirty_secret_visibility_${field}`,
+      eventKey: `dirty-evidence-${field}`,
+      profileId: "unsafe_evidence_visibility",
+      sourceType: "conversation.message",
+      sourceUri: "conversation://safe",
+      content: "Safe dirty evidence content.",
+      sensitivity: "normal",
+      payloadJson: "{}",
+      createdAt: "2026-06-25T00:00:00.000Z",
+    };
+    if (field === "id") row.id = `evidence_dirty_secret_visibility api key ${marker}`;
+    if (field === "event_key") row.eventKey = `dirty-evidence api key ${marker}`;
+    if (field === "source_type") row.sourceType = `conversation.message api key ${marker}`;
+    if (field === "source_uri") row.sourceUri = `conversation://safe/api key ${marker}`;
+    if (field === "content") row.content = `Safe dirty evidence content with api key ${marker}`;
+    if (field === "sensitivity") row.sensitivity = `normal api key ${marker}`;
+    if (field === "payload_json") row.payloadJson = JSON.stringify({ note: `api key ${marker}` });
+    if (field === "created_at") row.createdAt = `2026-06-25T00:00:00.000Z api key ${marker}`;
+    insertEvidence.run(
+      row.id,
+      row.eventKey,
+      row.profileId,
+      row.sourceType,
+      row.sourceUri,
+      row.content,
+      row.sensitivity,
+      1,
+      row.payloadJson,
+      row.createdAt,
+    );
+  }
+  const dirtyEvidenceProfileId = "unsafe_evidence_visibility api key sk-dirtyevidenceprofileid1234567890";
+  insertEvidence.run(
+    "evidence_dirty_secret_visibility_profile_id",
+    "dirty-evidence-profile-id",
+    dirtyEvidenceProfileId,
+    "conversation.message",
+    "conversation://safe",
+    "Safe dirty evidence content.",
+    "normal",
+    1,
+    "{}",
+    "2026-06-25T00:00:00.000Z",
+  );
+  insertEvidence.run(
+    "evidence_sensitive_source_type_visibility",
+    "sensitive-source-type-evidence",
+    "sensitive_source_type_evidence_visibility",
+    "身份证-source-type",
+    "conversation://safe",
+    "Safe sensitive source type evidence content.",
+    "normal",
+    1,
+    "{}",
+    "2026-06-25T00:00:00.000Z",
+  );
+} finally {
+  unsafeEvidenceDb.close();
+}
+assert.equal(
+  (
+    await memory.listEvidence({
+      profileId: "unsafe_evidence_visibility",
+      includeSensitive: true,
+      limit: 20,
+    })
+  ).length,
+  0,
+);
+assert.equal(
+  (
+    await memory.listEvidence({
+      profileId: "unsafe_evidence_visibility api key sk-dirtyevidenceprofileid1234567890",
+      includeSensitive: true,
+      limit: 20,
+    })
+  ).length,
+  0,
+);
+const sensitiveSourceTypeEvidence = await memory.listEvidence({
+  profileId: "sensitive_source_type_evidence_visibility",
+  includeSensitive: true,
+  limit: 20,
+});
+assert.equal(sensitiveSourceTypeEvidence.length, 1);
+assert.equal(sensitiveSourceTypeEvidence[0]?.sourceType, "other");
 const unsafeKindContext = composeTurnContext({
   profileId: "unsafe_kind_label",
   memories: [
@@ -13070,6 +13177,7 @@ for (const [credentialFixture, leakedFragment] of [
   ["token is abcdefghijklmnop", "abcdefghijklmnop"],
   ["secret=abc:defgh", "abc:defgh"],
   ["api_key=abc&defgh", "abc&defgh"],
+  ["api_key_sk-secretvalue1234567890", "sk-secretvalue"],
   ["clientSecret=abcdefghijkl", "abcdefghijkl"],
   ["idToken=abcdefghijkl", "abcdefghijkl"],
   ["sessionToken=abcdefghijkl", "abcdefghijkl"],

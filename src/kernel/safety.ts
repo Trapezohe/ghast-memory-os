@@ -1,7 +1,7 @@
 import type { EvidenceEvent, PrivacyMode, Sensitivity } from "./types.js";
 
 const SECRET_PATTERNS = [
-  /\bsk-[A-Za-z0-9_-]{16,}\b/u,
+  /(^|[^A-Za-z0-9])sk-[A-Za-z0-9_-]{16,}(?=$|[^A-Za-z0-9])/u,
   /\b(api[\s_.-]?key|token|password|secret)\b\s*["']?\s*[:=]\s*["']?\S{8,}/iu,
   /\b(password|secret)\b\s*(?:is|are|was|were|equals?|called)\s+\S{4,}/iu,
   /\b(api[\s_.-]?key|token)\b\s*(?:is|are|was|were|equals?|called)\s+(?:[A-Za-z0-9._~+/=@!#$%^&*?%-]{16,}|(?=[A-Za-z0-9._~+/=@!#$%^&*?%-]*\d)[A-Za-z0-9._~+/=@!#$%^&*?%-]{8,})/iu,
@@ -98,7 +98,7 @@ export function safePublicSensitivity(value: unknown): Sensitivity {
 
 export function redactForReport(content: string): string {
   const redacted = content
-    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gu, "[redacted_secret]")
+    .replace(/(^|[^A-Za-z0-9])sk-[A-Za-z0-9_-]{8,}(?=$|[^A-Za-z0-9])/gu, "$1[redacted_secret]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/giu, "Bearer [redacted_secret]")
     .replace(
       /\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/gu,

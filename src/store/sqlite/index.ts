@@ -511,6 +511,26 @@ function effectiveMemorySensitivity(memory: MemoryRecord): Sensitivity {
   return maxSensitivity(memory.sensitivity, classifySensitivity(memory.content));
 }
 
+function effectiveEvidenceSensitivity(event: EvidenceEvent): Sensitivity {
+  const sourceTypeSensitivity =
+    classifySensitivity(event.sourceType) === "secret_like" ? "secret_like" : "normal";
+  return maxSensitivity(
+    maxSensitivity(event.sensitivity, sourceTypeSensitivity),
+    classifySensitivity(
+      [
+        event.id,
+        event.eventKey,
+        event.profileId,
+        event.sourceUri ?? "",
+        event.content,
+        event.sensitivity,
+        JSON.stringify(event.payload),
+        event.createdAt,
+      ].join(" "),
+    ),
+  );
+}
+
 function visibleAssociation(input: {
   association: MemoryAssociationRecord;
   includeSensitive?: boolean | undefined;
@@ -2319,6 +2339,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     const requestedLimit =
       typeof rawLimit === "number" && Number.isFinite(rawLimit) ? Math.trunc(rawLimit) : 50;
     const limit = Math.max(1, Math.min(500, requestedLimit));
+    const candidateLimit = 500;
     return (
       db
         .prepare(
@@ -2328,8 +2349,17 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
            ORDER BY created_at DESC, id DESC
            LIMIT ?`,
         )
-        .all(...params, limit) as Record<string, unknown>[]
-    ).map(normalizeEvidence);
+        .all(...params, candidateLimit) as Record<string, unknown>[]
+    )
+      .map(normalizeEvidence)
+      .filter(
+        (event) =>
+          !shouldHideFromOrdinaryContext({
+            sensitivity: effectiveEvidenceSensitivity(event),
+            includeSensitive: input.includeSensitive,
+          }),
+      )
+      .slice(0, limit);
   }
 
   function listEvidenceForMemory(memoryId: string): EvidenceEvent[] {
