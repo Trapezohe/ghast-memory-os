@@ -49,14 +49,18 @@ function increment(map: Record<string, number>, key: string): void {
   map[key] = (map[key] ?? 0) + 1;
 }
 
+function safeSummaryKey(value: string): string {
+  return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/u.test(value) ? value : "other";
+}
+
 function evidenceSummary(evidence: EvidenceEvent[]): InspectReport["evidenceSummary"] {
-  const bySensitivity: Record<string, number> = {};
-  const bySourceType: Record<string, number> = {};
+  const bySensitivity = Object.create(null) as Record<string, number>;
+  const bySourceType = Object.create(null) as Record<string, number>;
   let eligibleForLongTermMemory = 0;
   for (const event of evidence) {
     if (event.eligibleForLongTermMemory) eligibleForLongTermMemory += 1;
     increment(bySensitivity, event.sensitivity);
-    increment(bySourceType, event.sourceType);
+    increment(bySourceType, safeSummaryKey(event.sourceType));
   }
   return {
     inspected: evidence.length,

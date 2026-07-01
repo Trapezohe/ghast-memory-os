@@ -16951,6 +16951,22 @@ assert.equal(cliStatusPayload.storage?.searchIndex?.missingEntryCount, 0);
 assert.equal(cliStatusPayload.failureSummary?.inspectedFailureCount, 3);
 assert.equal(cliStatusPayload.hostCompatibility?.level, "L4");
 assert.equal(cliStatus.stdout.includes("身份证"), false);
+await store.recordEvidence({
+  profileId: "test",
+  eventKey: "cli-inspect-unsafe-source-type",
+  sourceType: "身份证-source-type",
+  content: "safe content for unsafe source type summary",
+  sensitivity: "normal",
+  eligibleForLongTermMemory: true,
+});
+await store.recordEvidence({
+  profileId: "test",
+  eventKey: "cli-inspect-constructor-source-type",
+  sourceType: "constructor",
+  content: "safe content for prototype source type summary",
+  sensitivity: "normal",
+  eligibleForLongTermMemory: true,
+});
 const cliInspect = spawnSync(
   process.execPath,
   [
@@ -17009,6 +17025,9 @@ assert.equal(
 );
 assert.equal(typeof cliInspectPayload.evidenceSummary?.bySensitivity?.normal, "number");
 assert.equal(typeof cliInspectPayload.evidenceSummary?.bySourceType, "object");
+assert.equal(cliInspectPayload.evidenceSummary?.bySourceType?.other, 1);
+assert.equal(cliInspectPayload.evidenceSummary?.bySourceType?.constructor, 1);
+assert.equal(JSON.stringify(cliInspectPayload.evidenceSummary?.bySourceType).includes("身份证"), false);
 assert.equal(cliInspect.stdout.includes("身份证"), false);
 assert.equal(cliInspect.stdout.includes(dbPath), false);
 const cliInspectMarkdown = spawnSync(
