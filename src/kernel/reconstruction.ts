@@ -1057,6 +1057,10 @@ function sourceScopeRejectReason(
   const sourceCues = sourceEntityCuesForMemory(memory);
   const sourceCueKeys = new Set(sourceCues.map(associationCueKey).filter(Boolean));
   if (sourceCues.length === 0) {
+    if (contentHasNonSourceQueryEntity(memory.content, intent, sourceCueKeys)) return null;
+    if (contentMentionsStructuredQueryParticipant(memory.content, memory, intent, sourceCueKeys)) {
+      return null;
+    }
     return selectedSourceCues.size > 0
       ? `source_scope_mismatch:${[...selectedSourceCues].join("|")}`
       : null;
@@ -1067,6 +1071,9 @@ function sourceScopeRejectReason(
     return null;
   }
   if (contentHasNonSourceQueryEntity(memory.content, intent, sourceCueKeys)) return null;
+  if (contentMentionsStructuredQueryParticipant(memory.content, memory, intent, sourceCueKeys)) {
+    return null;
+  }
   return selectedSourceCues.size > 0 &&
     !sourceCues.some((cue) => selectedSourceCues.has(associationCueKey(cue)))
     ? `source_scope_mismatch:${[...selectedSourceCues].join("|")}`
@@ -1090,21 +1097,50 @@ function sourceScopedFallbackMemories(
 }
 
 function associationSourceRejectReason(
-  association: MemoryAssociationRecord,
+  associationCue: string,
+  sourceCues: string[],
+  sourceMemory: MemoryRecord | null,
+  targetSummary: string,
   intent: ReconstructionIntent,
   selectedSourceCues: Set<string>,
 ): string | null {
-  const personCue = associationPersonCue(association);
-  if (!personCue) return null;
-  const personCueKey = associationCueKey(personCue);
-  if (entityCueMatchesQuery(personCue, intent)) {
-    selectedSourceCues.add(personCueKey);
+  const sourceCueKeys = new Set<string>();
+  for (const sourceCue of sourceCues) {
+    const sourceCueKey = associationCueKey(sourceCue);
+    if (!sourceCueKey) continue;
+    sourceCueKeys.add(sourceCueKey);
+    if (entityCueMatchesQuery(sourceCue, intent)) {
+      selectedSourceCues.add(sourceCueKey);
+      return null;
+    }
+  }
+  if (sourceCues.length === 0) {
+    if (contentHasNonSourceQueryEntity(targetSummary, intent, sourceCueKeys)) return null;
+    if (
+      sourceMemory &&
+      contentMentionsStructuredQueryParticipant(targetSummary, sourceMemory, intent, sourceCueKeys)
+    ) {
+      return null;
+    }
+    return selectedSourceCues.size > 0
+      ? `source_scope_mismatch:${[...selectedSourceCues].join("|")}`
+      : null;
+  }
+  if (contentHasNonSourceQueryEntity(targetSummary, intent, sourceCueKeys)) {
     return null;
   }
-  if (contentHasNonSourceQueryEntity(association.targetSummary, intent, new Set([personCueKey]))) {
+  if (
+    sourceMemory &&
+    contentMentionsStructuredQueryParticipant(targetSummary, sourceMemory, intent, sourceCueKeys)
+  ) {
     return null;
   }
-  return selectedSourceCues.size > 0 && !selectedSourceCues.has(personCueKey)
+  const associationCueKeyValue = associationCueKey(associationCue);
+  if (associationCueKeyValue && selectedSourceCues.has(associationCueKeyValue)) {
+    return null;
+  }
+  return selectedSourceCues.size > 0 &&
+      ![...sourceCueKeys].some((sourceCueKey) => selectedSourceCues.has(sourceCueKey))
     ? `source_scope_mismatch:${[...selectedSourceCues].join("|")}`
     : null;
 }
@@ -1131,37 +1167,71 @@ function contentHasNonSourceQueryEntity(
   });
 }
 
-function associationPersonCue(association: MemoryAssociationRecord): string | null {
-  const summary = association.targetSummary.trim();
-  const userMatch = /^user\b/iu.exec(summary);
-  if (userMatch) return userMatch[0].trim().toLowerCase();
+function publicMetadataCue(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed || /^\[redacted_[a-z_]+\]$/iu.test(trimmed)) return "";
+  return classifySensitivity(trimmed) === "normal" ? trimmed : "";
+}
 
-  const personMatch = /^person\s*:\s*(.+)$/iu.exec(summary);
-  if (!personMatch) return null;
-  const rawSubject = personMatch[1]?.trim() ?? "";
-  if (!rawSubject) return null;
+function metadataRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
 
-  const lowerSubject = rawSubject.toLowerCase();
-  const associationTag = association.tag.trim().toLowerCase();
-  if (associationTag && associationTag !== "world_belief") {
-    const tagMatch = associationCueTextPattern(associationTag)?.exec(lowerSubject);
-    if (tagMatch && tagMatch.index > 0) {
-      return rawSubject.slice(0, tagMatch.index).trim().toLowerCase();
-    }
+function metadataStringArray(record: Record<string, unknown>, key: string): string[] {
+  const value = record[key];
+  return Array.isArray(value) ? value.map(publicMetadataCue).filter(Boolean) : [];
+}
+
+function structuredParticipantCuesForMemory(memory: MemoryRecord): string[] {
+  const metadata = memory.metadata;
+  const sourceMetadata = metadataRecord(metadata.sourceMetadata);
+  const mentionCues = Array.isArray(metadata.entityMentions)
+    ? metadata.entityMentions.flatMap((entry) => {
+        const record = metadataRecord(entry);
+        if (!record || record.role !== "participant") return [];
+        return [publicMetadataCue(record.value)];
+      })
+    : [];
+  return uniqueDisplayValues([
+    ...metadataStringArray(metadata, "participants"),
+    ...(sourceMetadata ? metadataStringArray(sourceMetadata, "participants") : []),
+    ...mentionCues,
+  ]);
+}
+
+function contentMentionsStructuredQueryParticipant(
+  content: string,
+  memory: MemoryRecord,
+  intent: ReconstructionIntent,
+  sourceCueKeys: Set<string>,
+): boolean {
+  for (const participantCue of structuredParticipantCuesForMemory(memory)) {
+    const participantKey = associationCueKey(participantCue);
+    if (!participantKey || sourceCueKeys.has(participantKey)) continue;
+    if (!entityCueMatchesQuery(participantCue, intent)) continue;
+    const pattern = associationCueTextPattern(participantCue);
+    if (pattern?.test(content)) return true;
   }
-  const predicateOffset =
-    /\s+[a-z][a-z0-9_-]*\.[a-z0-9_.-]+(?:\s|$)/iu.exec(rawSubject)?.index;
-  if (predicateOffset !== undefined && predicateOffset > 0) {
-    return rawSubject.slice(0, predicateOffset).trim().toLowerCase();
-  }
-  return (
-    rawSubject.split(/\s+/u)[0]?.trim().toLowerCase() ??
-    null
-  );
+  return false;
 }
 
 function sourceEntityCuesForMemory(memory: MemoryRecord): string[] {
   return sourceMetadataEntityCues(memory.metadata);
+}
+
+function structuredSubjectCuesForAssociation(association: MemoryAssociationRecord): string[] {
+  if (association.targetType !== "world_belief") return [];
+  const summary = association.targetSummary.trim();
+  const match =
+    /^(user|person:.+?)\s+[a-z][a-z0-9_-]*\./iu.exec(summary) ??
+    /^(user|person:[^\s]+)/iu.exec(summary);
+  const subject = match?.[1];
+  if (!subject) return [];
+  const barePerson = /^person:(.+)$/iu.exec(subject)?.[1]?.trim();
+  return barePerson ? [subject, barePerson] : [subject];
 }
 
 function pathMatchesIntent(path: ReconstructedEvidencePath, intent: ReconstructionIntent): boolean {
@@ -1948,6 +2018,7 @@ export async function reconstructMemoryContext(input: {
   const memories: MemoryRecord[] = [];
   const paths: ReconstructedEvidencePath[] = [];
   const plannerSteps: ReconstructedPlannerStep[] = [];
+  const sourceMemoryCache = new Map<string, MemoryRecord | null>();
   let associationCount = 0;
   let prunedBranchCount = 0;
   let stopReason: ReconstructedContext["stats"]["stopReason"] = "no_frontier";
@@ -1985,10 +2056,30 @@ export async function reconstructMemoryContext(input: {
       .map((association) => rankAssociation(association, cue, intent))
       .sort((a, b) => b.routeScore - a.routeScore)
       .slice(0, maxBranch);
+    async function sourceMemoryForAssociation(
+      association: MemoryAssociationRecord,
+    ): Promise<MemoryRecord | null> {
+      const memoryId = association.targetType === "memory"
+        ? association.targetId
+        : association.sourceMemoryId ?? "";
+      if (!memoryId) return null;
+      if (sourceMemoryCache.has(memoryId)) return sourceMemoryCache.get(memoryId) ?? null;
+      const memory = await input.store.getMemoryById(profileId, memoryId, {
+        includeSensitive: input.request.includeSensitive,
+      });
+      sourceMemoryCache.set(memoryId, memory);
+      return memory;
+    }
     for (const ranked of rankedAssociations) {
-      const personCue = associationPersonCue(ranked.association);
-      if (personCue && entityCueMatchesQuery(personCue, intent)) {
-        selectedSourceCues.add(associationCueKey(personCue));
+      const sourceMemory = await sourceMemoryForAssociation(ranked.association);
+      const sourceCues = [
+        ...(sourceMemory ? sourceEntityCuesForMemory(sourceMemory) : []),
+        ...structuredSubjectCuesForAssociation(ranked.association),
+      ];
+      for (const sourceCue of sourceCues) {
+        if (entityCueMatchesQuery(sourceCue, intent)) {
+          selectedSourceCues.add(associationCueKey(sourceCue));
+        }
       }
     }
     for (const ranked of rankedAssociations) {
@@ -1996,8 +2087,15 @@ export async function reconstructMemoryContext(input: {
       if (seenAssociationIds.has(association.id)) continue;
       seenAssociationIds.add(association.id);
       const path = pathFromAssociation(association, step, ranked.routeScore, ranked.routeReason);
+      const sourceMemory = await sourceMemoryForAssociation(association);
       const associationRejectReason = associationSourceRejectReason(
-        association,
+        association.cue,
+        [
+          ...(sourceMemory ? sourceEntityCuesForMemory(sourceMemory) : []),
+          ...structuredSubjectCuesForAssociation(association),
+        ],
+        sourceMemory,
+        association.targetSummary,
         intent,
         selectedSourceCues,
       );
@@ -2062,9 +2160,7 @@ export async function reconstructMemoryContext(input: {
         continue;
       }
       if (seenMemoryIds.has(association.targetId)) continue;
-      const memory = await input.store.getMemoryById(profileId, association.targetId, {
-        includeSensitive: input.request.includeSensitive,
-      });
+      const memory = await sourceMemoryForAssociation(association);
       if (!memory) continue;
       const sourceRejectReason = sourceScopeRejectReason(memory, intent, selectedSourceCues);
       if (sourceRejectReason) {

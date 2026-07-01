@@ -293,8 +293,6 @@ export function associationCuesForBelief(belief: WorldBeliefRecord): Association
     belief.predicate === "person.relation"
       ? safeMetadataDisplayValue(belief.metadata, "relationType")
       : "",
-    safeMetadataDisplayValue(belief.metadata, "toolPurpose"),
-    safeMetadataDisplayValue(belief.metadata, "toolScope"),
   ];
   return [
     ...sourceMetadataEntityCues(belief.metadata).map((cue) => ({ cue, cueKind: "entity" as const })),
@@ -319,8 +317,6 @@ export function associationSummaryForBelief(belief: WorldBeliefRecord): string {
     belief.predicate === "person.relation"
       ? safeMetadataDisplayValue(belief.metadata, "relationType")
       : "",
-    safeMetadataDisplayValue(belief.metadata, "toolPurpose"),
-    safeMetadataDisplayValue(belief.metadata, "toolScope"),
   ]
     .filter(Boolean)
     .join(" ");

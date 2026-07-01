@@ -254,7 +254,7 @@ function worldBeliefSubjectForCandidate(input: {
   candidate: MemoryExtractionCandidate;
   eventMetadata: Record<string, unknown>;
   classifyRuntimeSensitivity: RuntimeSensitivityClassifier;
-}): string {
+}): string | null {
   const { candidate, eventMetadata } = input;
   if (candidate.subject) return candidate.subject;
   const predicatePrefix = candidate.predicate?.split(".")[0]?.toLowerCase();
@@ -263,7 +263,7 @@ function worldBeliefSubjectForCandidate(input: {
     predicatePrefix !== "user" &&
     predicatePrefix !== "person"
   ) {
-    return "user";
+    return null;
   }
   const candidateSpeaker = publicSpeaker(candidate.speaker, input.classifyRuntimeSensitivity);
   if (candidateSpeaker) return `person:${candidateSpeaker}`;
@@ -1065,7 +1065,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       });
       const writeCandidate = memoryWriteCandidateForSubject({
         candidate,
-        subject,
+        subject: subject ?? "user",
         entityResolver: options.entityResolver,
       });
       const candidateSensitivity = classifyRuntimeSensitivity(writeCandidate.content, "content");
@@ -1088,7 +1088,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         continue;
       }
       const memoryEntityMentions = buildEntityMentions({
-        subject: writeCandidate.subject ?? (subject !== "user" ? subject : undefined),
+        subject: writeCandidate.subject ?? (subject && subject !== "user" ? subject : undefined),
         predicate: writeCandidate.predicate,
         subjectAliases: writeCandidate.subjectAliases,
         sourceMetadata: candidateSourceMetadata,
@@ -1119,7 +1119,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         createdAt: event.createdAt,
       });
       result.memoryIds.push(memory.id);
-      if (writeCandidate.predicate) {
+      if (writeCandidate.predicate && subject) {
         const subjectAliases = worldBeliefSubjectAliasesForCandidate({
           candidate: writeCandidate,
           subject,

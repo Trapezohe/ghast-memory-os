@@ -458,8 +458,25 @@ const checks = [
   },
   {
     name: "association-cues-are-not-tool-use-templates",
-    pass: !/I\\s\+use|uses\\s\+.*for|preferred\\s\+.*tool|tool\\s\+\(\?:is\|=\)/u.test(associations),
-    detail: "Association cue extraction may parse entity prefixes, not tool-use benchmark templates.",
+    pass:
+      !/I\\s\+use|uses\\s\+.*for|preferred\\s\+.*tool|tool\\s\+\(\?:is\|=\)/u.test(
+        associations,
+      ) &&
+      !/toolPurpose|toolScope/u.test(associations),
+    detail:
+      "Association cue extraction may parse entity prefixes, not tool-use benchmark templates or narrow tool metadata keys.",
+  },
+  {
+    name: "world-belief-subject-requires-structured-subject",
+    pass:
+      /function\s+worldBeliefSubjectForCandidate[\s\S]*\):\s*string\s*\|\s*null/u.test(
+        runtime,
+      ) &&
+      /predicatePrefix\s*!==\s*"user"[\s\S]{0,160}predicatePrefix\s*!==\s*"person"[\s\S]{0,160}return\s+null/u.test(
+        runtime,
+      ),
+    detail:
+      "Non-action world beliefs without explicit user/person subject must stay as memories instead of falling back to user.",
   },
   {
     name: "association-cues-have-no-language-term-lists",
@@ -488,6 +505,15 @@ const checks = [
       ),
     detail:
       "Reconstruction must not infer intent, recency, or history from language keyword lists; hosts should pass structured intent or temporal mode.",
+  },
+  {
+    name: "reconstruction-source-scope-uses-structured-cues",
+    pass:
+      !/associationPersonCue|personMatch|predicateOffset|rawSubject\.split/u.test(
+        reconstruction,
+      ) && !/targetSummaryMentionsSelectedSourceCue/u.test(reconstruction),
+    detail:
+      "Reconstruction source-scope filtering must use structured source metadata cues, gmOS subject prefixes, or explicit query entities; it must not infer source scope from target summary text.",
   },
   {
     name: "forget-has-no-language-command-stripper",

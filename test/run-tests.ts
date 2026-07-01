@@ -356,7 +356,7 @@ assert.equal(
   true,
 );
 assert.equal(redactedBeliefMetadataAssociationSummary.includes("daughter"), true);
-assert.equal(redactedBeliefMetadataAssociationSummary.includes("CleanPurpose"), true);
+assert.equal(redactedBeliefMetadataAssociationSummary.includes("CleanPurpose"), false);
 assert.equal(
   JSON.stringify(redactedBeliefMetadataAssociationCues).includes("[redacted_sensitive]"),
   false,
@@ -4061,14 +4061,14 @@ await extractedTemporalMemory.observeWithReport({
   type: "conversation.message",
   profileId: "temporal-extraction",
   role: "user",
-  content: "My Atlas project owner is ExpiredOwner until 2000-01-01.",
+  content: "Project Atlas owner is ExpiredOwner until 2000-01-01.",
   createdAt: "1999-12-01T00:00:00.000Z",
 });
 await extractedTemporalMemory.observeWithReport({
   type: "conversation.message",
   profileId: "temporal-extraction",
   role: "user",
-  content: "My Atlas project owner is ActiveOwner until 2999-01-01.",
+  content: "Project Atlas owner is ActiveOwner until 2999-01-01.",
   createdAt: "2026-06-03T00:00:00.000Z",
 });
 const temporalExtractionDb = new Database(extractedTemporalPath, { readonly: true });
