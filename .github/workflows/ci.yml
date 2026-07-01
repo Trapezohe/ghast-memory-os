@@ -12,7 +12,6 @@ on:
     paths:
       - ".github/workflows/ci.yml"
       - "examples/**"
-      - "package-lock.json"
       - "package.json"
       - "scripts/**"
       - "src/**"
@@ -70,10 +69,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-          cache: npm
 
       - name: Install
-        run: npm ci
+        run: npm install --package-lock=false
 
       - name: PR gate
         run: npm run gate:pr
