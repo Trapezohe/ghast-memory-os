@@ -33,5 +33,5 @@ runtime branches.
 
 Runnable examples are shipped under `examples/`: `quickstart.mjs`,
 `structured-extractor.mjs`, `openai-compatible-extractor.mjs`,
-`agent-adapter.mjs`, `host-adapter.mjs`, `http-adapter.mjs`, `mcp-router.mjs`,
-and `external-mini-benchmark.mjs`.
+`memory-inspector.mjs`, `agent-adapter.mjs`, `host-adapter.mjs`,
+`http-adapter.mjs`, `mcp-router.mjs`, and `external-mini-benchmark.mjs`.
