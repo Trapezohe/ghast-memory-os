@@ -17791,7 +17791,7 @@ const cliInspect = spawnSync(
     "--profile",
     "test",
     "--query",
-    "project release",
+    "project release api key: sk-inspectquerysecret1234567890",
     "--format",
     "json",
   ],
@@ -17801,6 +17801,7 @@ assert.equal(cliInspect.status, 0, cliInspect.stderr);
 const cliInspectPayload = JSON.parse(cliInspect.stdout) as {
   schema?: string;
   dbPath?: string;
+  query?: string | null;
   counts?: { evidence?: number };
   rowCounts?: Record<string, number>;
   health?: {
@@ -17830,6 +17831,8 @@ const cliInspectPayload = JSON.parse(cliInspect.stdout) as {
 };
 assert.equal(cliInspectPayload.schema, "gmos.inspect_report.v1");
 assert.equal(cliInspectPayload.dbPath, "[plaintext sqlite path redacted]");
+assert.equal(cliInspectPayload.query?.includes("sk-inspectquerysecret"), false);
+assert.equal(cliInspectPayload.query?.includes("[redacted_secret]"), true);
 assert.equal(cliInspectPayload.health?.evidenceEvents, cliInspectPayload.rowCounts?.gmos_evidence_events);
 assert.equal(cliInspectPayload.health?.memories, cliInspectPayload.rowCounts?.gmos_memories);
 assert.equal(cliInspectPayload.health?.worldBeliefs, cliInspectPayload.rowCounts?.gmos_world_beliefs);
@@ -17855,6 +17858,7 @@ assert.equal(
     (cliInspectPayload.forgetSummary?.activeAssociationResidue ?? 0),
 );
 assert.equal(cliInspect.stdout.includes("身份证"), false);
+assert.equal(cliInspect.stdout.includes("sk-inspectquerysecret"), false);
 assert.equal(cliInspect.stdout.includes("Inspector residue memory"), false);
 assert.equal(cliInspect.stdout.includes(dbPath), false);
 const cliInspectMarkdown = spawnSync(
@@ -17866,7 +17870,7 @@ const cliInspectMarkdown = spawnSync(
     "--profile",
     "test",
     "--query",
-    "project release",
+    "project release api key: sk-inspectquerysecret1234567890",
     "--format",
     "markdown",
   ],
@@ -17882,6 +17886,8 @@ assert.match(cliInspectMarkdown.stdout, /derived residue:/);
 assert.match(cliInspectMarkdown.stdout, /world beliefs:/);
 assert.match(cliInspectMarkdown.stdout, /associations:/);
 assert.equal(cliInspectMarkdown.stdout.includes("身份证"), false);
+assert.equal(cliInspectMarkdown.stdout.includes("sk-inspectquerysecret"), false);
+assert.equal(cliInspectMarkdown.stdout.includes("[redacted_secret]"), true);
 assert.equal(cliInspectMarkdown.stdout.includes("Inspector residue memory"), false);
 assert.equal(cliInspectMarkdown.stdout.includes(dbPath), false);
 const cliInspectMemoryDb = spawnSync(

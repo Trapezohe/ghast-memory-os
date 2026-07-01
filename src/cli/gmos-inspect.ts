@@ -4,7 +4,7 @@ import { writeFileSync } from "node:fs";
 import Database from "better-sqlite3";
 
 import type { EvidenceEvent } from "../kernel/types.js";
-import { safePublicLabel, safePublicSensitivity } from "../kernel/safety.js";
+import { redactForReport, safePublicLabel, safePublicSensitivity } from "../kernel/safety.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 
@@ -299,6 +299,7 @@ async function main(): Promise<void> {
   const dbPath = requireValue("--db");
   const profileId = value("--profile", "default") ?? "default";
   const query = value("--query") ?? null;
+  const reportQuery = query ? redactForReport(query) : null;
   const outputFormat = format();
   const evidenceLimit = numberValue("--evidence-limit", 100);
   const store = createSqliteMemoryStore({ path: dbPath });
@@ -323,7 +324,7 @@ async function main(): Promise<void> {
       generatedAt: new Date().toISOString(),
       profileId,
       dbPath: "[plaintext sqlite path redacted]",
-      query,
+      query: reportQuery,
       counts: {
         evidence: evidence.length,
         activeMemories: activeMemories.length,
