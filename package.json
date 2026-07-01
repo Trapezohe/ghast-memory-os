@@ -26,7 +26,8 @@
   "types": "./dist/index.d.ts",
   "bin": {
     "gmos": "dist/cli/gmos.js",
-    "ghast-memory": "dist/cli/gmos.js"
+    "ghast-memory": "dist/cli/gmos.js",
+    "gmos-inspect": "dist/cli/gmos-inspect.js"
   },
   "files": [
     "dist",
