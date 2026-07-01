@@ -1168,6 +1168,28 @@ assert.equal(JSON.stringify(unsafeKindSearch).includes("reconstruction-kind-inje
 assert.equal(JSON.stringify(unsafeKindList).includes("reconstruction-kind-injected"), false);
 assert.equal(JSON.stringify(unsafeKindGet).includes("reconstruction-kind-injected"), false);
 assert.equal(JSON.stringify(unsafeKindExplain).includes("reconstruction-kind-injected"), false);
+const unsafeMetadataMemory = await store.addMemory({
+  profileId: "unsafe_metadata_public_record",
+  kind: "fact",
+  content: "Safe dirty metadata public record content.",
+  metadata: {
+    apiKey: "sk-dirtymetadatasecret123456",
+    visibleNote: "safe metadata note",
+  },
+});
+const unsafeMetadataSearch = await memory.search({
+  profileId: "unsafe_metadata_public_record",
+  query: "dirty metadata public record",
+});
+const unsafeMetadataList = await memory.list({ profileId: "unsafe_metadata_public_record" });
+const unsafeMetadataGet = await memory.get({
+  profileId: "unsafe_metadata_public_record",
+  id: unsafeMetadataMemory.id,
+});
+assert.equal(JSON.stringify(unsafeMetadataSearch).includes("sk-dirtymetadata"), false);
+assert.equal(JSON.stringify(unsafeMetadataList).includes("sk-dirtymetadata"), false);
+assert.equal(JSON.stringify(unsafeMetadataGet).includes("sk-dirtymetadata"), false);
+assert.equal(unsafeMetadataGet?.metadata.visibleNote, "safe metadata note");
 const unsafeKindReconstructed = await memory.reconstructContext({
   profileId: "unsafe_kind_reconstruction_label",
   query: "safe reconstruction memory kind content",

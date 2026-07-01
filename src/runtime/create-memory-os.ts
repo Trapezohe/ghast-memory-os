@@ -74,10 +74,14 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function publicMemoryRecord(memory: MemoryRecord): MemoryRecord {
+function publicMemoryRecord(
+  memory: MemoryRecord,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+): MemoryRecord {
   return {
     ...memory,
     kind: safePublicLabel(memory.kind) as MemoryRecord["kind"],
+    metadata: redactRuntimePayloadRecord(memory.metadata, classifyRuntimeSensitivity),
   };
 }
 
@@ -779,7 +783,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       createdAt,
       ...(input.scope !== undefined ? { scope: input.scope } : {}),
       ...(input.confidence !== undefined ? { confidence: input.confidence } : {}),
-    }));
+    }), classifyRuntimeSensitivity);
   }
 
   async function update(input: LowLevelUpdateMemoryInput): Promise<MemoryRecord | null> {
@@ -853,7 +857,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       },
       updatedAt,
     });
-    return updated ? publicMemoryRecord(updated) : updated;
+    return updated ? publicMemoryRecord(updated, classifyRuntimeSensitivity) : updated;
   }
 
   async function archive(input: LowLevelArchiveMemoryInput): Promise<ForgetResult> {
@@ -907,7 +911,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       ...(input.limit !== undefined ? { limit: input.limit } : {}),
       ...(input.includeSensitive !== undefined ? { includeSensitive: input.includeSensitive } : {}),
       ...(input.includePerson !== undefined ? { includePerson: input.includePerson } : {}),
-    })).map(publicMemoryRecord);
+    })).map((memory) => publicMemoryRecord(memory, classifyRuntimeSensitivity));
   }
 
   async function list(input: LowLevelListMemoriesInput = {}): Promise<MemoryRecord[]> {
@@ -925,7 +929,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           ? { includeSensitive: input.includeSensitive }
           : {}),
         ...(input.includePerson !== undefined ? { includePerson: input.includePerson } : {}),
-      })).map(publicMemoryRecord);
+      })).map((memory) => publicMemoryRecord(memory, classifyRuntimeSensitivity));
     }
     if (input.status && input.status !== "active") {
       throw new Error("gmOS store does not support archived memory listing");
@@ -940,7 +944,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       ...(input.limit !== undefined ? { limit: input.limit } : {}),
       ...(input.includeSensitive !== undefined ? { includeSensitive: input.includeSensitive } : {}),
       ...(input.includePerson !== undefined ? { includePerson: input.includePerson } : {}),
-    })).map(publicMemoryRecord);
+    })).map((memory) => publicMemoryRecord(memory, classifyRuntimeSensitivity));
   }
 
   async function get(input: LowLevelGetMemoryInput): Promise<MemoryRecord | null> {
@@ -950,7 +954,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       includePerson: input.includePerson,
       includeArchived: input.includeArchived,
     });
-    return memory ? publicMemoryRecord(memory) : memory;
+    return memory ? publicMemoryRecord(memory, classifyRuntimeSensitivity) : memory;
   }
 
   async function observe(event: HostEvent): Promise<void> {
