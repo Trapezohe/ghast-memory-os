@@ -48,7 +48,10 @@ function caseById(runReport, id) {
 }
 
 function matched(caseReport, value) {
-  if (caseReport?.expectedAnyMatched?.includes(value)) return true;
+  const expectedAnyMatched = caseReport?.expectedAnyMatched ?? [];
+  const expectedAnyMissing = caseReport?.expectedAnyMissing ?? [];
+  if (expectedAnyMatched.includes(value)) return true;
+  if (expectedAnyMissing.includes(value)) return false;
   if (Array.isArray(caseReport?.expectedAllMissing)) {
     return !caseReport.expectedAllMissing.includes(value);
   }
