@@ -215,10 +215,11 @@ gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
 ```
 
 `gmos-inspect` emits a content-safe local inspection report. It reports counts,
-evidence eligibility/source summaries, row-count summaries, and optional
-reconstruction diagnostics without printing memory content, evidence text,
-prompt context, table hashes, or private database paths. Use it for support
-bundles and local integration checks before building a host UI.
+evidence eligibility/source summaries, row-count summaries, forget residue
+counts for archived-memory derived world-belief/association residue, and
+optional reconstruction diagnostics without printing memory content, evidence
+text, prompt context, table hashes, or private database paths. Use it for
+support bundles and local integration checks before building a host UI.
 
 `doctor`, `status`, `gate`, and report-style gym commands support JSON output by
 default and markdown output with `--format markdown`. Use `--json-file` and
