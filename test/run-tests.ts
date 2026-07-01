@@ -1259,6 +1259,178 @@ const unsafeContentForget = await memory.forget({
   targetTerms: ["sk-dirtycontentsecret1234567890"],
 });
 assert.ok(unsafeContentForget.archivedMemoryIds.includes(unsafeContentMemory.id));
+const unsafeAssociationFields = [
+  "id",
+  "cue",
+  "cue_kind",
+  "tag",
+  "target_type",
+  "target_id",
+  "target_kind",
+  "target_summary",
+  "sensitivity",
+  "source_memory_id",
+  "source_belief_id",
+  "source_task_trajectory_id",
+  "source_evidence_id",
+  "created_at",
+  "updated_at",
+] as const;
+const unsafeAssociationDb = new Database(dbPath);
+try {
+  const insertAssociation = unsafeAssociationDb.prepare(
+    `INSERT INTO gmos_associations (
+      id, profile_id, cue, cue_kind, tag, target_type, target_id, target_kind,
+      target_summary, sensitivity, status, confidence, source_memory_id,
+      source_belief_id, source_task_trajectory_id, source_evidence_id,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const insertAssociationFts = unsafeAssociationDb.prepare(
+    `INSERT INTO gmos_associations_fts(id, profile_id, status, target_type, cue, tag, target_summary)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  );
+  for (const field of unsafeAssociationFields) {
+    const marker = `sk-dirtyassociation${field.replaceAll("_", "")}1234567890`;
+    const row = {
+      id: `assoc_dirty_secret_visibility_${field}`,
+      profileId: "unsafe_association_visibility",
+      cue: "dirtyassociationcandidate",
+      cueKind: "query",
+      tag: "dirtyassociationcandidate",
+      targetType: "memory",
+      targetId: `memory_dirty_association_target_${field}`,
+      targetKind: "fact",
+      targetSummary: "Safe dirtyassociationcandidate target.",
+      sensitivity: "normal",
+      status: "active",
+      confidence: 0.9,
+      sourceMemoryId: null as string | null,
+      sourceBeliefId: null as string | null,
+      sourceTaskTrajectoryId: null as string | null,
+      sourceEvidenceId: null as string | null,
+      createdAt: "2026-06-25T00:00:00.000Z",
+      updatedAt: "2026-06-25T00:00:00.000Z",
+    };
+    if (field === "id") row.id = `assoc_dirty_secret_visibility api key ${marker}`;
+    if (field === "cue") row.cue = `dirtyassociationcandidate api key ${marker}`;
+    if (field === "cue_kind") row.cueKind = `query api key ${marker}`;
+    if (field === "tag") row.tag = `dirtyassociationcandidate api key ${marker}`;
+    if (field === "target_type") row.targetType = `memory api key ${marker}`;
+    if (field === "target_id") row.targetId = `memory_dirty_association_target api key ${marker}`;
+    if (field === "target_kind") row.targetKind = `fact api key ${marker}`;
+    if (field === "target_summary") {
+      row.targetSummary = `Safe dirtyassociationcandidate target with api key ${marker}`;
+    }
+    if (field === "sensitivity") row.sensitivity = `normal api key ${marker}`;
+    if (field === "source_memory_id") row.sourceMemoryId = `memory_source api key ${marker}`;
+    if (field === "source_belief_id") row.sourceBeliefId = `belief_source api key ${marker}`;
+    if (field === "source_task_trajectory_id") {
+      row.sourceTaskTrajectoryId = `trajectory_source api key ${marker}`;
+    }
+    if (field === "source_evidence_id") row.sourceEvidenceId = `evidence_source api key ${marker}`;
+    if (field === "created_at") row.createdAt = `2026-06-25T00:00:00.000Z api key ${marker}`;
+    if (field === "updated_at") row.updatedAt = `2026-06-25T00:00:00.000Z api key ${marker}`;
+    insertAssociation.run(
+      row.id,
+      row.profileId,
+      row.cue,
+      row.cueKind,
+      row.tag,
+      row.targetType,
+      row.targetId,
+      row.targetKind,
+      row.targetSummary,
+      row.sensitivity,
+      row.status,
+      row.confidence,
+      row.sourceMemoryId,
+      row.sourceBeliefId,
+      row.sourceTaskTrajectoryId,
+      row.sourceEvidenceId,
+      row.createdAt,
+      row.updatedAt,
+    );
+    insertAssociationFts.run(
+      row.id,
+      row.profileId,
+      row.status,
+      row.targetType,
+      row.cue,
+      row.tag,
+      row.targetSummary,
+    );
+  }
+  const dirtyProfileMarker = "sk-dirtyassociationprofileid1234567890";
+  const dirtyAssociationProfileId = `unsafe_association_visibility api key ${dirtyProfileMarker}`;
+  insertAssociation.run(
+    "assoc_dirty_secret_visibility_profile_id",
+    dirtyAssociationProfileId,
+    "dirtyassociationcandidate",
+    "query",
+    "dirtyassociationcandidate",
+    "memory",
+    "memory_dirty_association_target_profile_id",
+    "fact",
+    "Safe dirtyassociationcandidate target.",
+    "normal",
+    "active",
+    0.9,
+    null,
+    null,
+    null,
+    null,
+    "2026-06-25T00:00:00.000Z",
+    "2026-06-25T00:00:00.000Z",
+  );
+  insertAssociationFts.run(
+    "assoc_dirty_secret_visibility_profile_id",
+    dirtyAssociationProfileId,
+    "active",
+    "memory",
+    "dirtyassociationcandidate",
+    "dirtyassociationcandidate",
+    "Safe dirtyassociationcandidate target.",
+  );
+} finally {
+  unsafeAssociationDb.close();
+}
+assert.equal(
+  (
+    await store.searchAssociations({
+      profileId: "unsafe_association_visibility",
+      query: "dirtyassociationcandidate",
+      includeSensitive: true,
+    })
+  ).length,
+  0,
+);
+assert.equal(
+  (
+    await store.searchAssociations({
+      profileId: "unsafe_association_visibility api key sk-dirtyassociationprofileid1234567890",
+      query: "dirtyassociationcandidate",
+      includeSensitive: true,
+    })
+  ).length,
+  0,
+);
+const unsafeAssociationReconstructed = await memory.reconstructContext({
+  profileId: "unsafe_association_visibility",
+  query: "dirtyassociationcandidate",
+  includeEvidence: true,
+});
+assert.equal(JSON.stringify(unsafeAssociationReconstructed).includes("sk-dirtyassociation"), false);
+const unsafeAssociationProfileReconstructed = await memory.reconstructContext({
+  profileId: "unsafe_association_visibility api key sk-dirtyassociationprofileid1234567890",
+  query: "dirtyassociationcandidate",
+  includeEvidence: true,
+});
+assert.equal(unsafeAssociationProfileReconstructed.paths.length, 0);
+assert.equal(
+  unsafeAssociationProfileReconstructed.contextBlock.includes("sk-dirtyassociation"),
+  false,
+);
 const unsafeKindReconstructed = await memory.reconstructContext({
   profileId: "unsafe_kind_reconstruction_label",
   query: "safe reconstruction memory kind content",

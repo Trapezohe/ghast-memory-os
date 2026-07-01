@@ -518,9 +518,36 @@ function visibleAssociation(input: {
 }): boolean {
   if (!input.includePerson && input.association.targetKind === "person") return false;
   return !shouldHideFromOrdinaryContext({
-    sensitivity: input.association.sensitivity,
+    sensitivity: effectiveAssociationSensitivity(input.association),
     includeSensitive: input.includeSensitive,
   });
+}
+
+function effectiveAssociationSensitivity(association: MemoryAssociationRecord): Sensitivity {
+  return maxSensitivity(
+    association.sensitivity,
+    classifySensitivity(
+      [
+        association.id,
+        association.profileId,
+        association.cue,
+        association.cueKind,
+        association.tag,
+        association.targetType,
+        association.targetId,
+        association.targetKind,
+        association.targetSummary,
+        association.sensitivity,
+        association.status,
+        association.sourceMemoryId ?? "",
+        association.sourceBeliefId ?? "",
+        association.sourceTaskTrajectoryId ?? "",
+        association.sourceEvidenceId ?? "",
+        association.createdAt,
+        association.updatedAt,
+      ].join(" "),
+    ),
+  );
 }
 
 function queryTerms(query: string): string[] {
