@@ -607,6 +607,9 @@ try {
         isSecretLikeMemoryContent,
         type GmosRuntimeInfo,
         type MemoryExtractionCandidate,
+        type ConversationMessageEvent,
+        type ConversationSourceMetadata,
+        type ConversationSpeakerKind,
         type EvidencePathExplanation,
         type ExplainEvidencePathInput,
         type MemoryExtractor,
@@ -700,6 +703,21 @@ try {
         async observe() {},
       };
       void observeOnlyHost;
+      const speakerKind: ConversationSpeakerKind = "person";
+      const sourceMetadata: ConversationSourceMetadata = {
+        speaker: "Mira",
+        speakerKind,
+        speakerAliases: ["mira-local"],
+        participants: ["Mira", "Blair"],
+      };
+      const typedConversationEvent: ConversationMessageEvent = {
+        type: "conversation.message",
+        profileId: "consumer-types",
+        role: "user",
+        content: "Mira opened the rollout planning thread.",
+        metadata: sourceMetadata,
+      };
+      await memory.observe(typedConversationEvent);
       const typedExtractor: MemoryExtractor = (input) => {
         const candidate: MemoryExtractionCandidate = {
           kind: "project",

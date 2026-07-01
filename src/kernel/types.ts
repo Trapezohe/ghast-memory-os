@@ -48,6 +48,28 @@ export type FailureKind =
   | "action_policy_missing"
   | "task_failure";
 
+export type ConversationSpeakerKind =
+  | "person"
+  | "human"
+  | "assistant"
+  | "bot"
+  | "system"
+  | "tool"
+  | "unknown"
+  | (string & {});
+
+export interface ConversationSourceMetadata extends Record<string, unknown> {
+  speaker?: string | undefined;
+  speakerKind?: ConversationSpeakerKind | undefined;
+  speakerId?: string | undefined;
+  speakerAliases?: string[] | undefined;
+  participants?: string[] | undefined;
+  sessionId?: string | undefined;
+  sessionKey?: string | undefined;
+  sourceId?: string | undefined;
+  sourceUri?: string | undefined;
+}
+
 export interface ConversationMessageEvent {
   type: "conversation.message";
   profileId?: string | undefined;
@@ -57,7 +79,7 @@ export interface ConversationMessageEvent {
   content: string;
   privacyMode?: PrivacyMode | undefined;
   createdAt?: string | undefined;
-  metadata?: Record<string, unknown> | undefined;
+  metadata?: ConversationSourceMetadata | undefined;
 }
 
 export interface UserForgetEvent {
