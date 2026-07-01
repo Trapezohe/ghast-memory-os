@@ -191,10 +191,11 @@ of copying the built-in detector.
 
 ## CLI
 
-The npm package exposes two binaries:
+The npm package exposes these binaries:
 
 - `gmos`
 - `ghast-memory`
+- `gmos-inspect`
 
 Useful integration commands:
 
@@ -209,11 +210,18 @@ gmos observe --db ./gmos.db --profile local --text "User opened the release plan
 gmos prepare --db ./gmos.db --profile local --text "How should you answer me?"
 gmos reconstruct --db ./gmos.db --profile local --text "What is the project next step?"
 gmos forget --db ./gmos.db --profile local --query "delete old project" --target-term "old project"
+gmos-inspect --db ./gmos.db --profile local --query "project release" --format markdown
 gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
 ```
 
-`doctor`, `status`, `gate`, and report-style gym commands support JSON output
-by default and markdown output with `--format markdown`. Use `--json-file` and
+`gmos-inspect` emits a content-safe local inspection report. It reports counts,
+row-count summaries, and optional reconstruction diagnostics without printing
+memory content, evidence text, prompt context, table hashes, or private database
+paths. Use it for support bundles and local integration checks before building a
+host UI.
+
+`doctor`, `status`, `gate`, and report-style gym commands support JSON output by
+default and markdown output with `--format markdown`. Use `--json-file` and
 `--markdown-file` on commands that expose those artifact flags when building
 reproducibility bundles.
 
