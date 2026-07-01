@@ -395,15 +395,32 @@ if (skipFreshInstall) {
   recordCommand("fresh_install_sdk_smoke", nodeBin, [smokeFile], {
     cwd: freshInstallDir,
   });
-  const cliBin = path.join(
-    freshInstallDir,
-    "node_modules",
-    ".bin",
-    process.platform === "win32" ? "gmos.cmd" : "gmos",
-  );
+  const cliBin = path.join("node_modules", ".bin", process.platform === "win32" ? "gmos.cmd" : "gmos");
   recordCommand("fresh_install_cli_smoke", cliBin, ["version", "--format", "json"], {
     cwd: freshInstallDir,
   });
+  const inspectBin = path.join(
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "gmos-inspect.cmd" : "gmos-inspect",
+  );
+  recordCommand(
+    "fresh_install_inspect_smoke",
+    inspectBin,
+    [
+      "--db",
+      "consumer.db",
+      "--profile",
+      "fresh-install",
+      "--query",
+      "release note",
+      "--format",
+      "json",
+    ],
+    {
+      cwd: freshInstallDir,
+    },
+  );
   manifest.artifacts.freshInstallDir = path.relative(root, freshInstallDir);
 }
 
