@@ -392,8 +392,7 @@ commands can pass a `forgetTargetParser` to `createSqliteMemoryStore`. Parser
 ```ts
 const store = createSqliteMemoryStore({
   path: "./gmos.db",
-  forgetTargetParser: ({ query }) =>
-    query.includes("old billing note") ? ["billing note"] : undefined,
+  forgetTargetParser: ({ query }) => hostOwnedForgetParser(query),
 });
 ```
 
