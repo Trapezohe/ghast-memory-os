@@ -39,7 +39,10 @@ const benchmarkSurfaceExcludes = new Set([
 const forbidden = /longmemeval|locomo|state[-_]?bench|statebench|mem2act|beam|hotpotqa|naturalquestions|qasper|financebench|benchmark|dataset|fixture|case[_-]?id|hidden[_-]?world|scenario/iu;
 const datasetShortcutPattern =
   /longmemeval_s_cleaned|longmemeval_oracle|locomo10|locomo-mini|lme-mini|curated-gmos|budget-drop-mini|native-[a-z0-9_-]+/iu;
-const fixtureRoot = path.join(root, "test/fixtures/external-benchmark");
+const fixtureScanRoots = [
+  path.join(root, "test/fixtures/external-benchmark"),
+  path.join(root, "examples/external-mini-fixture.jsonl"),
+];
 const fixtureAnswerKeys = new Set(["expectedAny", "expectedAll", "forbiddenAny", "answer", "adversarial_answer"]);
 const fixtureIdentifierKeys = new Set([
   "id",
@@ -77,6 +80,17 @@ function fixtureFilesUnder(dir) {
   if (!existsSync(dir)) return [];
   if (statSync(dir).isFile()) return /\.(?:json|jsonl)$/u.test(dir) ? [dir] : [];
   return readdirSync(dir).flatMap((entry) => fixtureFilesUnder(path.join(dir, entry)));
+}
+
+const fixtureFiles = fixtureScanRoots.flatMap(fixtureFilesUnder);
+const fixtureRelativeFiles = new Set(fixtureFiles.map(relative));
+for (const expectedFixtureFile of [
+  "examples/external-mini-fixture.jsonl",
+  "test/fixtures/external-benchmark/curated-gmos.jsonl",
+]) {
+  if (!fixtureRelativeFiles.has(expectedFixtureFile)) {
+    throw new Error(`fixture scanner did not include ${expectedFixtureFile}`);
+  }
 }
 
 function collectStrings(value) {
@@ -170,17 +184,25 @@ const findings = coreFiles.flatMap((file) =>
       ),
 );
 const fixtureAnswerTerms = [
-  ...new Set(fixtureFilesUnder(fixtureRoot).flatMap(parseFixtureFile).map(stableFixtureAnswerTerm).filter(Boolean)),
+  ...new Set(fixtureFiles.flatMap(parseFixtureFile).map(stableFixtureAnswerTerm).filter(Boolean)),
 ];
 const fixtureIdentifierTerms = [
   ...new Set(
-    fixtureFilesUnder(fixtureRoot)
+    fixtureFiles
       .flatMap(parseFixtureIdentifiers)
       .map(stableFixtureAnswerTerm)
       .filter(Boolean),
   ),
 ];
 const guardedSurfaceTerms = [...new Set([...fixtureAnswerTerms, ...fixtureIdentifierTerms])];
+for (const expectedGuardedFixtureTerm of [
+  "venue booking",
+  "external-mini-project-next-step",
+]) {
+  if (!guardedSurfaceTerms.includes(expectedGuardedFixtureTerm)) {
+    throw new Error(`fixture scanner did not guard ${expectedGuardedFixtureTerm}`);
+  }
+}
 const fixtureAnswerFindings = coreFiles.flatMap((file) =>
   readFileSync(file, "utf8")
     .split(/\r?\n/u)

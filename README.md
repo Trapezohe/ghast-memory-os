@@ -226,7 +226,7 @@ for LongMemEval original/cleaned JSON/JSONL and LoCoMo JSON/JSONL through
 those datasets. In native gmOS JSONL, each line is one deterministic case:
 
 ```jsonl
-{"id":"demo-project-next-step","events":[{"type":"memory","kind":"project","content":"project:release-demo 的公开别名是 demo release。"},{"type":"memory","kind":"procedure","content":"demo release 下一步先完成 preflight checklist，再做实现。"}],"question":"demo release 这个项目下一步先做什么？","reconstructionIntent":{"queryCues":["project:release-demo"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]},"expectedAll":["preflight checklist"],"forbiddenAny":["venue booking"]}
+{"id":"demo-project-next-step","events":[{"type":"memory","kind":"project","content":"project:release-demo 的公开别名是 demo release。"},{"type":"memory","kind":"procedure","content":"demo release 下一步先完成 preflight checklist，再做实现。"}],"question":"demo release 这个项目下一步先做什么？","reconstructionIntent":{"queryCues":["project:release-demo"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]},"expectedAll":["preflight checklist"],"forbiddenAny":["catering schedule"]}
 ```
 
 The LongMemEval adapter maps each instance's `haystack_sessions` turns into a
