@@ -13122,6 +13122,16 @@ const mcpInvalidBefore = await store.rowCounts();
 const invalidMcpObserve = await mcpServer.callTool("memory.observe", { content: 42 });
 assert.equal(invalidMcpObserve.isError, true);
 assert.deepEqual(await store.rowCounts(), mcpInvalidBefore);
+const mcpUnknownObserveField = await mcpServer.callTool("memory.observe", {
+  content: "unknown observe field should be rejected",
+  unsupported: true,
+});
+assert.equal(mcpUnknownObserveField.isError, true);
+assert.match(
+  String((mcpUnknownObserveField.structuredContent as { error?: unknown }).error ?? ""),
+  /memory\.observe contains unsupported fields: unsupported/,
+);
+assert.deepEqual(await store.rowCounts(), mcpInvalidBefore);
 const mcpAdd = await mcpServer.callTool("memory.add", {
   profileId: "mcp",
   kind: "preference",
@@ -13623,6 +13633,14 @@ try {
   });
   assert.equal(observe.status, 200);
   assert.equal(observe.body.ok, true);
+  const httpUnknownObserveField = await postJson(`${httpAddress.url}/observe`, {
+    profileId: "http",
+    role: "user",
+    content: "unknown HTTP observe field should be rejected",
+    unsupported: true,
+  });
+  assert.equal(httpUnknownObserveField.status, 400);
+  assert.match(httpUnknownObserveField.text, /memory\.observe contains unsupported fields/);
   const httpAdd = await postJson(`${httpAddress.url}/add`, {
     profileId: "http",
     kind: "preference",

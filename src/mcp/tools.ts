@@ -119,7 +119,7 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
       inputSchema: {
         type: "object",
         required: ["content"],
-        additionalProperties: true,
+        additionalProperties: false,
         properties: {
           profileId: { type: "string" },
           conversationId: { type: "string" },

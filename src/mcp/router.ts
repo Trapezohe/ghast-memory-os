@@ -353,6 +353,20 @@ function validateMessages(messages: unknown): TurnMessage[] {
 }
 
 function observeEvent(args: Record<string, unknown>): HostEvent {
+  assertAllowedKeys(
+    args,
+    new Set([
+      "profileId",
+      "conversationId",
+      "messageId",
+      "role",
+      "content",
+      "privacyMode",
+      "createdAt",
+      "metadata",
+    ]),
+    "memory.observe",
+  );
   const event: HostEvent = {
     type: "conversation.message",
     role: optionalRole(args),
