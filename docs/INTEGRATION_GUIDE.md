@@ -64,6 +64,28 @@ Low-level `add` and `search` are compatibility APIs. They are useful for import,
 admin tools, and simple hosts, but they are not a substitute for the full turn
 lifecycle.
 
+When observing multi-speaker conversations, pass speaker context as structured
+event metadata:
+
+```ts
+await memory.observe({
+  type: "conversation.message",
+  role: "user",
+  content: "Mira opened the rollout planning thread.",
+  metadata: {
+    speaker: "Mira",
+    speakerKind: "person",
+    speakerAliases: ["mira-local"],
+    participants: ["Mira", "Blair"],
+  },
+});
+```
+
+gmOS treats `speaker` as a person cue only when `speakerKind` is `"person"` or
+`"human"`. Bare speaker strings are preserved as source metadata but are not
+trusted for person grounding. `participants` are kept as non-retrieval entity
+mentions for explanation and audit; they do not become association cues.
+
 If the host already has a trusted local or host-controlled calendar/task-time
 parser, pass it through `createMemoryOS({ temporal: { parser } })` and return
 structured `eventTime`, `eventDate`, `validFrom`, or `validTo` values. Built-in

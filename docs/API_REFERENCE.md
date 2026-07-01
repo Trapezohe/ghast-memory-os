@@ -83,6 +83,11 @@ Primary methods:
 - `observe(event)`: record a host event, attach evidence, and extract eligible
   long-term memory through a configured structured extractor. Import semantic
   memories explicitly with `add()` when no structured extractor is configured.
+  For multi-speaker events, pass `metadata.speaker`, `speakerKind`,
+  `speakerAliases`, and `participants`. gmOS trusts `speaker` as a person cue
+  only when `speakerKind` is `"person"` or `"human"`; bare speaker labels remain
+  source metadata. Participants are stored as non-retrieval entity mentions for
+  explanation and audit, not as association cues.
 - `createOpenAICompatibleExtractor(options)`: optional structured extractor
   factory for `/chat/completions` compatible providers. The request body stays
   Chat Completions-shaped; response parsing accepts JSON memory payloads from
