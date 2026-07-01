@@ -2,7 +2,7 @@
 import { writeFileSync } from "node:fs";
 
 import type { EvidenceEvent } from "../kernel/types.js";
-import { safePublicLabel } from "../kernel/safety.js";
+import { safePublicLabel, safePublicSensitivity } from "../kernel/safety.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 
@@ -56,7 +56,7 @@ function evidenceSummary(evidence: EvidenceEvent[]): InspectReport["evidenceSumm
   let eligibleForLongTermMemory = 0;
   for (const event of evidence) {
     if (event.eligibleForLongTermMemory) eligibleForLongTermMemory += 1;
-    increment(bySensitivity, event.sensitivity);
+    increment(bySensitivity, safePublicSensitivity(event.sensitivity));
     increment(bySourceType, safePublicLabel(event.sourceType));
   }
   return {
