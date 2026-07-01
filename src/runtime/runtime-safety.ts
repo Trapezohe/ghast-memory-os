@@ -299,7 +299,7 @@ function redactRuntimeExtractionString(
 }
 
 function redactRuntimeExtractionStringArray(
-  values: string[] | undefined,
+  values: readonly string[] | undefined,
   classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
   surface: MemorySensitivityClassifierInput["surface"],
 ): string[] | undefined {

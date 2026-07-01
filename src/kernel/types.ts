@@ -163,7 +163,7 @@ export interface MemoryExtractionCandidate {
   confidence: number;
   predicate?: string | undefined;
   subject?: string | undefined;
-  subjectAliases?: string[] | undefined;
+  subjectAliases?: readonly string[] | undefined;
   speaker?: string | undefined;
   object?: string | undefined;
   source?: string | undefined;
@@ -267,7 +267,7 @@ export interface MemoryExtractionCandidateSnapshot {
   confidence?: number | undefined;
   predicate?: string | undefined;
   subject?: string | undefined;
-  subjectAliases?: string[] | undefined;
+  subjectAliases?: readonly string[] | undefined;
   speaker?: string | undefined;
   object?: string | undefined;
   source?: string | undefined;
@@ -804,7 +804,7 @@ export interface ArchiveMemoriesInput {
 export interface AddWorldBeliefInput {
   profileId: string;
   subject: string;
-  subjectAliases?: string[] | undefined;
+  subjectAliases?: readonly string[] | undefined;
   predicate: string;
   object: string;
   confidence?: number | undefined;

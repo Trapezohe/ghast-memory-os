@@ -725,6 +725,7 @@ try {
           confidence: 0.83,
           predicate: "project.status",
           subject: "project:consumer-types",
+          subjectAliases: ["consumer project", "typed project"] as const,
           object: "typed",
           source: "consumer-type-smoke",
           cardinality: "single",

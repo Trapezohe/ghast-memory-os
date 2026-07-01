@@ -177,7 +177,7 @@ function publicStructuredStringField(key: string, value: string | undefined): st
 
 function publicStructuredStringArrayField(
   key: string,
-  values: string[] | undefined,
+  values: readonly string[] | undefined,
 ): string[] | undefined {
   if (!values || values.length === 0) return undefined;
   const sanitized = sanitizePublicPayloadRecord({ [key]: values })[key];

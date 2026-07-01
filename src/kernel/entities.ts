@@ -4,7 +4,7 @@ import { stableNamedPersonSubject } from "./person-identity.js";
 export interface EntityResolutionInput {
   subject: string;
   predicate?: string | undefined;
-  aliases?: string[] | undefined;
+  aliases?: readonly string[] | undefined;
 }
 
 export interface EntityResolutionResult {
@@ -37,7 +37,7 @@ export interface EntityMention {
 export interface EntityMentionInput {
   subject?: string | undefined;
   predicate?: string | undefined;
-  subjectAliases?: string[] | undefined;
+  subjectAliases?: readonly string[] | undefined;
   sourceMetadata?: Record<string, unknown> | undefined;
   entityResolver?: EntityResolver | undefined;
 }
