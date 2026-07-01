@@ -336,8 +336,9 @@ current-state beliefs can receive explicit intent support. The planner also
 blends association paths with direct memory-search hits using a bounded
 reciprocal-rank signal, so explicit entity or temporal clues can reinforce the
 chosen evidence path without replacing the cue-tag-content graph. Returned paths
-include `routeScore` and `routeReason` so a host can explain why a branch was
-selected. Returned paths also expose
+include `routeScore`, stable `routeSources`, and human-readable `routeReason` so
+a host can explain why a branch was selected without parsing diagnostic text.
+Returned paths also expose
 `informationGain`, and returned stats include evidence convergence, coverage,
 and reconstruction uncertainty. This lets hosts distinguish "we found enough
 supporting evidence" from "we only retrieved plausible nearby memories".
