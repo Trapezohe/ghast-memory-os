@@ -27,7 +27,9 @@ const publicObserveBoundaryFiles = [
   "docs/INTEGRATION_GUIDE.md",
   "docs/MIGRATION.md",
   "docs/README.md",
+  "RELEASE_CHECKLIST.md",
   "src/cli/gmos.ts",
+  "scripts/create-release-evidence.mjs",
   "examples/agent-adapter.mjs",
   "examples/http-adapter.mjs",
   "examples/mcp-router.mjs",
@@ -117,6 +119,14 @@ const publicBuiltInExtractorClaimPatterns = [
   /rule\s+fallback\s+is\s+limited/iu,
   /observe\(\)\s+.*built-in/iu,
 ];
+const publicSemanticFallbackClaimPatterns = [
+  /\bbuilt-in\s+natural-language\s+templates?\b/iu,
+  /\blocal\s+(?:structural\s+)?(?:semantic|memory|extraction)\s+fallback\b/iu,
+  /\bfallback\s+memory\b/iu,
+  /\bsemantic\s+fallback\b/iu,
+  /\bbuilt-in\s+semantic\s+synthesis\b/iu,
+  /\blanguage-specific\s+fallback\b/iu,
+];
 const removedRuleFallbackPatterns = [
   /\bextractSafeRuleMemoryCandidates\b/u,
   /\bextractRuleMemoryCandidates\b/u,
@@ -160,6 +170,15 @@ if (
   fixedProfileStorageTemplatePatterns.every((pattern) => !pattern.test("我喜欢中文回答"))
 ) {
   throw new Error("fixed profile storage template scanner self-check failed");
+}
+if (
+  publicSemanticFallbackClaimPatterns.every((pattern) =>
+    !pattern.test("built-in natural-language templates")
+  ) ||
+  publicSemanticFallbackClaimPatterns.every((pattern) => !pattern.test("semantic fallback")) ||
+  publicSemanticFallbackClaimPatterns.every((pattern) => !pattern.test("fallback memory"))
+) {
+  throw new Error("public semantic fallback claim scanner self-check failed");
 }
 if (
   removedRuleFallbackPatterns.every((pattern) => !pattern.test("fallbackToRules")) ||
@@ -285,6 +304,10 @@ function publicBuiltInExtractorClaimMatches() {
 }
 
 const publicBuiltInExtractorClaims = publicBuiltInExtractorClaimMatches();
+const publicSemanticFallbackClaims = patternMatchesInFiles(
+  publicObserveBoundaryFiles,
+  publicSemanticFallbackClaimPatterns,
+);
 
 function publicLlmExtractorPreservesSourceLanguage() {
   return (
@@ -554,6 +577,15 @@ const checks = [
       "Public docs, examples, and CLI help must not imply a built-in/default/safe semantic extractor exists." +
       (publicBuiltInExtractorClaims.length > 0
         ? ` Matched: ${publicBuiltInExtractorClaims.join(", ")}.`
+        : ""),
+  },
+  {
+    name: "public-docs-do-not-imply-semantic-fallback",
+    pass: publicSemanticFallbackClaims.length === 0,
+    detail:
+      "Public docs, examples, and CLI help must describe built-in lexical/date cues directly instead of implying semantic memory fallback behavior." +
+      (publicSemanticFallbackClaims.length > 0
+        ? ` Matched: ${publicSemanticFallbackClaims.join(", ")}.`
         : ""),
   },
   {

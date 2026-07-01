@@ -71,7 +71,7 @@ const prepared = await memory.prepareTurn({
 - Pluggable extraction pipeline for host-provided structured extractors. gmOS
   keeps write-path authority for evidence, PERSON, secret-like, incognito, and
   forgetting gates, but it does not synthesize durable semantic memory from
-  built-in natural-language templates.
+  built-in lexical/date cue parsing.
 - Durable facts, preferences, boundaries, project state, people, and procedures
   should come from a host-provided structured extractor or an explicit low-level
   import.
