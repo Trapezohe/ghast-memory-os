@@ -16951,6 +16951,72 @@ assert.equal(cliStatusPayload.storage?.searchIndex?.missingEntryCount, 0);
 assert.equal(cliStatusPayload.failureSummary?.inspectedFailureCount, 3);
 assert.equal(cliStatusPayload.hostCompatibility?.level, "L4");
 assert.equal(cliStatus.stdout.includes("身份证"), false);
+const cliInspect = spawnSync(
+  process.execPath,
+  [
+    path.join(process.cwd(), "dist/cli/gmos-inspect.js"),
+    "--db",
+    dbPath,
+    "--profile",
+    "test",
+    "--query",
+    "project release",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliInspect.status, 0, cliInspect.stderr);
+const cliInspectPayload = JSON.parse(cliInspect.stdout) as {
+  schema?: string;
+  dbPath?: string;
+  rowCounts?: Record<string, number>;
+  health?: {
+    evidenceEvents?: number;
+    memories?: number;
+    worldBeliefs?: number;
+    associations?: number;
+    taskTrajectories?: number;
+    failureEvents?: number;
+    memoryVectors?: number;
+    memoryVectorTerms?: number;
+  };
+  reconstruction?: { pathCount?: number; retrievedMemoryCount?: number } | null;
+};
+assert.equal(cliInspectPayload.schema, "gmos.inspect_report.v1");
+assert.equal(cliInspectPayload.dbPath, "[plaintext sqlite path redacted]");
+assert.equal(cliInspectPayload.health?.evidenceEvents, cliInspectPayload.rowCounts?.gmos_evidence_events);
+assert.equal(cliInspectPayload.health?.memories, cliInspectPayload.rowCounts?.gmos_memories);
+assert.equal(cliInspectPayload.health?.worldBeliefs, cliInspectPayload.rowCounts?.gmos_world_beliefs);
+assert.equal(cliInspectPayload.health?.associations, cliInspectPayload.rowCounts?.gmos_associations);
+assert.equal(cliInspectPayload.health?.taskTrajectories, cliInspectPayload.rowCounts?.gmos_task_trajectories);
+assert.equal(cliInspectPayload.health?.failureEvents, cliInspectPayload.rowCounts?.gmos_failure_events);
+assert.equal(cliInspectPayload.health?.memoryVectors, cliInspectPayload.rowCounts?.gmos_memory_vectors);
+assert.equal(cliInspectPayload.health?.memoryVectorTerms, cliInspectPayload.rowCounts?.gmos_memory_vector_terms);
+assert.equal(cliInspect.stdout.includes("身份证"), false);
+assert.equal(cliInspect.stdout.includes(dbPath), false);
+const cliInspectMarkdown = spawnSync(
+  process.execPath,
+  [
+    path.join(process.cwd(), "dist/cli/gmos-inspect.js"),
+    "--db",
+    dbPath,
+    "--profile",
+    "test",
+    "--query",
+    "project release",
+    "--format",
+    "markdown",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliInspectMarkdown.status, 0, cliInspectMarkdown.stderr);
+assert.match(cliInspectMarkdown.stdout, /# gmOS Inspect Report/);
+assert.match(cliInspectMarkdown.stdout, /## Health Signals/);
+assert.match(cliInspectMarkdown.stdout, /world beliefs:/);
+assert.match(cliInspectMarkdown.stdout, /associations:/);
+assert.equal(cliInspectMarkdown.stdout.includes("身份证"), false);
+assert.equal(cliInspectMarkdown.stdout.includes(dbPath), false);
 const missingStatusDb = path.join(tmp, "missing-status.db");
 assert.equal(existsSync(missingStatusDb), false);
 const cliMissingStatus = spawnSync(

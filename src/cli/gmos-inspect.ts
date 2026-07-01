@@ -27,6 +27,23 @@ function numberValue(name: string, fallback: number): number {
   return parsed;
 }
 
+function rowCount(rowCounts: Record<string, number>, table: string): number {
+  return rowCounts[table] ?? 0;
+}
+
+function healthSignals(rowCounts: Record<string, number>): InspectReport["health"] {
+  return {
+    evidenceEvents: rowCount(rowCounts, "gmos_evidence_events"),
+    memories: rowCount(rowCounts, "gmos_memories"),
+    worldBeliefs: rowCount(rowCounts, "gmos_world_beliefs"),
+    associations: rowCount(rowCounts, "gmos_associations"),
+    taskTrajectories: rowCount(rowCounts, "gmos_task_trajectories"),
+    failureEvents: rowCount(rowCounts, "gmos_failure_events"),
+    memoryVectors: rowCount(rowCounts, "gmos_memory_vectors"),
+    memoryVectorTerms: rowCount(rowCounts, "gmos_memory_vector_terms"),
+  };
+}
+
 function requireValue(name: string): string {
   const selected = value(name);
   if (!selected) throw new Error(`${name} is required`);
@@ -48,6 +65,17 @@ function renderMarkdown(report: InspectReport): string {
     `- active memories: ${report.counts.activeMemories}`,
     `- archived memories: ${report.counts.archivedMemories}`,
     `- row count tables: ${Object.keys(report.rowCounts).length}`,
+    "",
+    "## Health Signals",
+    "",
+    `- evidence events: ${report.health.evidenceEvents}`,
+    `- memories: ${report.health.memories}`,
+    `- world beliefs: ${report.health.worldBeliefs}`,
+    `- associations: ${report.health.associations}`,
+    `- task trajectories: ${report.health.taskTrajectories}`,
+    `- failure events: ${report.health.failureEvents}`,
+    `- memory vectors: ${report.health.memoryVectors}`,
+    `- memory vector terms: ${report.health.memoryVectorTerms}`,
     "",
     "## Reconstruction",
     "",
@@ -86,6 +114,16 @@ interface InspectReport {
     archivedMemories: number;
   };
   rowCounts: Record<string, number>;
+  health: {
+    evidenceEvents: number;
+    memories: number;
+    worldBeliefs: number;
+    associations: number;
+    taskTrajectories: number;
+    failureEvents: number;
+    memoryVectors: number;
+    memoryVectorTerms: number;
+  };
   reconstruction: null | {
     pathCount: number;
     retrievedMemoryCount: number;
@@ -145,6 +183,7 @@ async function main(): Promise<void> {
         archivedMemories: archivedMemories.length,
       },
       rowCounts,
+      health: healthSignals(rowCounts),
       reconstruction: reconstructed
         ? {
             pathCount: reconstructed.paths.length,
