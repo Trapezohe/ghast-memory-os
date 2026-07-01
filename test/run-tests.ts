@@ -17710,6 +17710,46 @@ try {
       "2026-06-25T00:00:00.000Z",
       "2026-06-25T00:00:00.000Z",
     );
+    insertResidueAssociation.run(
+      "assoc_cli_inspect_archived_memory_target_belief_residue",
+      "cli_inspect_residue",
+      "target belief residue",
+      "lexical",
+      "diagnostic",
+      "world_belief",
+      "belief_cli_inspect_archived_memory_residue",
+      "fact",
+      "Safe target belief residue.",
+      "normal",
+      "active",
+      0.9,
+      null,
+      null,
+      null,
+      null,
+      "2026-06-25T00:00:00.000Z",
+      "2026-06-25T00:00:00.000Z",
+    );
+    insertResidueAssociation.run(
+      "assoc_cli_inspect_archived_memory_source_belief_residue",
+      "cli_inspect_residue",
+      "source belief residue",
+      "lexical",
+      "diagnostic",
+      "memory",
+      "memory_non_archived_target",
+      "fact",
+      "Safe source belief residue.",
+      "normal",
+      "active",
+      0.9,
+      null,
+      "belief_cli_inspect_archived_memory_residue",
+      null,
+      null,
+      "2026-06-25T00:00:00.000Z",
+      "2026-06-25T00:00:00.000Z",
+    );
   })();
 } finally {
   cliInspectResidueDb.close();
@@ -17738,8 +17778,8 @@ const cliInspectResiduePayload = JSON.parse(cliInspectResidue.stdout) as {
 };
 assert.equal(cliInspectResiduePayload.forgetSummary?.archivedMemories, 1);
 assert.equal(cliInspectResiduePayload.forgetSummary?.activeWorldBeliefResidue, 1);
-assert.equal(cliInspectResiduePayload.forgetSummary?.activeAssociationResidue, 2);
-assert.equal(cliInspectResiduePayload.forgetSummary?.derivedResidue, 3);
+assert.equal(cliInspectResiduePayload.forgetSummary?.activeAssociationResidue, 4);
+assert.equal(cliInspectResiduePayload.forgetSummary?.derivedResidue, 5);
 assert.equal(cliInspectResidue.stdout.includes("Inspector residue memory"), false);
 assert.equal(cliInspectResidue.stdout.includes(dbPath), false);
 const cliInspect = spawnSync(

@@ -123,19 +123,29 @@ function forgetSummary(dbPath: string, profileId: string): InspectReport["forget
     );
     const activeAssociationResidue = count(
       db,
-      `SELECT COUNT(*) AS count
+      `WITH archived_memories AS (
+         SELECT id FROM gmos_memories WHERE profile_id = ? AND status = 'archived'
+       ),
+       residue_beliefs AS (
+         SELECT id FROM gmos_world_beliefs
+         WHERE profile_id = ?
+           AND status = 'active'
+           AND source_memory_id IN (SELECT id FROM archived_memories)
+       )
+       SELECT COUNT(*) AS count
        FROM gmos_associations
        WHERE profile_id = ?
          AND status = 'active'
          AND (
-           source_memory_id IN (
-             SELECT id FROM gmos_memories WHERE profile_id = ? AND status = 'archived'
-           )
+           source_memory_id IN (SELECT id FROM archived_memories)
            OR (
              target_type = 'memory'
-             AND target_id IN (
-               SELECT id FROM gmos_memories WHERE profile_id = ? AND status = 'archived'
-             )
+             AND target_id IN (SELECT id FROM archived_memories)
+           )
+           OR source_belief_id IN (SELECT id FROM residue_beliefs)
+           OR (
+             target_type = 'world_belief'
+             AND target_id IN (SELECT id FROM residue_beliefs)
            )
          )`,
       profileId,
