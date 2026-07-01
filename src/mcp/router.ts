@@ -572,6 +572,11 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
 }
 
 function outcomeInput(args: Record<string, unknown>): CommitOutcomeInput {
+  assertAllowedKeys(
+    args,
+    new Set(["profileId", "taskId", "objective", "status", "summary", "failureKind", "createdAt"]),
+    "memory.commit_outcome",
+  );
   const input: CommitOutcomeInput = {
     objective: requiredString(args, "objective"),
     status: statusArg(args),
@@ -590,6 +595,11 @@ function outcomeInput(args: Record<string, unknown>): CommitOutcomeInput {
 }
 
 function feedbackInput(args: Record<string, unknown>): FeedbackInput {
+  assertAllowedKeys(
+    args,
+    new Set(["profileId", "content", "failureKind", "createdAt"]),
+    "memory.record_feedback",
+  );
   const input: FeedbackInput = {
     content: requiredString(args, "content"),
   };

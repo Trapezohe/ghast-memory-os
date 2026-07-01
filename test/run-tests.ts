@@ -13502,6 +13502,12 @@ await mcpServer.callTool("memory.record_feedback", {
   content: "刚才错误召回了已删除偏好",
   failureKind: "wrong_recall",
 });
+const mcpFeedbackUnknownField = await mcpServer.callTool("memory.record_feedback", {
+  profileId: "mcp",
+  content: "unknown field should be rejected",
+  unsupported: true,
+});
+assert.equal(mcpFeedbackUnknownField.isError, true);
 await mcpServer.callTool("memory.commit_outcome", {
   profileId: "mcp",
   objective: "verify mcp server",
@@ -13509,6 +13515,13 @@ await mcpServer.callTool("memory.commit_outcome", {
   summary: "mcp fixture failure",
   failureKind: "privacy_leak",
 });
+const mcpOutcomeUnknownField = await mcpServer.callTool("memory.commit_outcome", {
+  profileId: "mcp",
+  objective: "reject unknown outcome field",
+  status: "failed",
+  unsupported: true,
+});
+assert.equal(mcpOutcomeUnknownField.isError, true);
 const mcpPrivacyLeakFailures = await store.listFailures?.({
   profileId: "mcp",
   failureKind: "privacy_leak",
