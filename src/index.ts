@@ -4,6 +4,11 @@ export {
   resolveWorldEntitySubject,
 } from "./kernel/entities.js";
 export { createOpenAICompatibleExtractor } from "./kernel/openai-compatible-extractor.js";
+export {
+  classifySensitivity,
+  eligibleForLongTermMemory,
+  redactForReport,
+} from "./kernel/safety.js";
 export { getGmosRuntimeInfo } from "./runtime-info.js";
 export type {
   EntityResolutionInput,

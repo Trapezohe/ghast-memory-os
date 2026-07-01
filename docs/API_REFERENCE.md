@@ -179,6 +179,10 @@ uses the maximum sensitivity, so the host callback cannot downgrade built-in
 secret-like matches. This is the extension point for host-owned safety semantics;
 do not add product-specific keyword lists to gmOS core.
 
+Hosts that need to mirror gmOS safety behavior outside the runtime can import
+`classifySensitivity`, `eligibleForLongTermMemory`, and `redactForReport` from
+`@ghast/memory` instead of copying the built-in detector.
+
 ## CLI
 
 The npm package exposes two binaries:

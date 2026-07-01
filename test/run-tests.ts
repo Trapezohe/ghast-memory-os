@@ -18,9 +18,12 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import Database from "better-sqlite3";
 
 import {
+  classifySensitivity as classifyPublicSensitivity,
   createMemoryOS,
   createOpenAICompatibleExtractor,
+  eligibleForLongTermMemory as publicEligibleForLongTermMemory,
   getGmosRuntimeInfo,
+  redactForReport as publicRedactForReport,
   type EntityResolver,
   type MemoryCueExtractor,
   type MemoryExtractionInput,
@@ -12630,6 +12633,9 @@ for (const [credentialFixture, leakedFragment] of [
 ] as const) {
   assert.equal(classifySensitivity(credentialFixture), "secret_like");
   assert.equal(redactForReport(credentialFixture).includes(leakedFragment), false);
+  assert.equal(classifyPublicSensitivity(credentialFixture), "secret_like");
+  assert.equal(publicEligibleForLongTermMemory({ content: credentialFixture }), false);
+  assert.equal(publicRedactForReport(credentialFixture).includes(leakedFragment), false);
 }
 for (const sensitivePersonalFixture of [
   "I went to the LGBTQ support group yesterday.",
