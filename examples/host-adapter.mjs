@@ -21,7 +21,7 @@ const hostMemories = [
   {
     id: "host_pref_1",
     kind: "preference",
-    content: "User prefers concise engineering answers.",
+    content: "Response style: concise engineering answers.",
     confidence: 0.91,
     updatedAt: nowIso,
   },

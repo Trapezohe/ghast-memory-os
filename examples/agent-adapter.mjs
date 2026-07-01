@@ -46,7 +46,7 @@ try {
   structuredCandidateQueue.push([
     {
       kind: "preference",
-      content: "发布计划先列风险，再给最小可行步骤。",
+      content: "发布计划回答风格：先列风险，再给最小可行步骤。",
       confidence: 0.9,
       predicate: "user.preference",
       subject: "user",
@@ -56,7 +56,7 @@ try {
   ]);
   await adapter.observeMessage({
     role: "user",
-    content: "我喜欢发布计划先列风险，再给最小可行步骤。",
+    content: "发布计划请求：请使用风险优先的最小步骤格式。",
   });
   structuredCandidateQueue.push([
     {

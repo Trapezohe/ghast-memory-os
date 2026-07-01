@@ -15,7 +15,7 @@ try {
   const preference = await memory.add({
     profileId: "quickstart",
     kind: "preference",
-    content: "我喜欢先讲风险，再给方案。",
+    content: "回答风格：先讲风险，再给方案。",
     createdAt: "2026-06-25T00:00:00.000Z",
   });
 

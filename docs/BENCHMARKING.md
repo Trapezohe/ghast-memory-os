@@ -94,7 +94,7 @@ Larger local run:
 
 ```bash
 gmos gym external \
-  --input-file ./longmemeval_s_cleaned.json \
+  --input-file ./long-memory-cleaned.json \
   --dataset-format longmemeval \
   --format json \
   --json-file ./longmemeval.json \

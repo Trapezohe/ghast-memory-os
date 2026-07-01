@@ -111,8 +111,8 @@ Usage:
   gmos repair --db ./gmos.db --search-index
   gmos repair --db ./gmos.db --associations
   gmos status --db ./gmos.db --profile local --host ghast --format markdown
-  gmos add --db ./gmos.db --profile local --kind preference --text "我喜欢简洁回答"
-  gmos update --db ./gmos.db --profile local --id memory_xxx --text "我喜欢先讲风险"
+  gmos add --db ./gmos.db --profile local --kind preference --text "回答风格：简洁，先给结论"
+  gmos update --db ./gmos.db --profile local --id memory_xxx --text "回答风格：先讲风险，再给方案"
   gmos delete --db ./gmos.db --profile local --id memory_xxx --reason "manual cleanup"
   gmos clear --db ./gmos.db --profile local --scope global --reason "manual cleanup"
   gmos search --db ./gmos.db --profile local --query "简洁"
@@ -139,8 +139,8 @@ Usage:
   gmos gym run --db :memory: --generated-seeds 3 --format markdown --report-file ./memory-gym.md
   gmos gym scale --sizes 100,1000 --threshold-p95-ms 250
   gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --require-convergence --include-sensitive --temporal-metadata
-  gmos gym external --input-file ./longmemeval_s_cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
-  gmos gym external --input-file ./locomo10.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
+  gmos gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
   gmos gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format markdown
   gmos gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
   gmos gym statebench write-agent --output-file ./STATE-Bench/agents/gmos_memory_agent.py

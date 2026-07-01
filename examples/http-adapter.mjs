@@ -68,7 +68,7 @@ try {
   await memory.add({
     profileId,
     kind: "preference",
-    content: "I prefer HTTP host integrations to include evidence-backed context.",
+    content: "HTTP host integration style: include evidence-backed context.",
     createdAt: "2026-06-25T00:00:00.000Z",
   });
 

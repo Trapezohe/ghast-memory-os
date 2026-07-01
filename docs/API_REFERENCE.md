@@ -83,6 +83,12 @@ Primary methods:
 - `observe(event)`: record a host event, attach evidence, and extract eligible
   long-term memory through a configured structured extractor. Import semantic
   memories explicitly with `add()` when no structured extractor is configured.
+- `createOpenAICompatibleExtractor(options)`: optional structured extractor
+  factory for `/chat/completions` compatible providers. The request body stays
+  Chat Completions-shaped; response parsing accepts JSON memory payloads from
+  message content strings, content parts, top-level `output_text`, or
+  `output[].content[].text` returned by compatible proxies. Provider output
+  still goes through the normal gmOS candidate validation and safety gates.
 - `prepareTurn(input)`: retrieve ordinary context and action policy for the next
   agent turn. This is a read path and must not write.
 - `reconstructContext(input)`: run bounded cue/tag/content reconstruction with
@@ -127,7 +133,7 @@ await adapter.observeMessage({
 await memory.add({
   profileId: "local-user",
   kind: "preference",
-  content: "For release plans, list rollback risk first.",
+  content: "Release plan response style: rollback risk first.",
 });
 
 const turn = await adapter.prepareTurn({
@@ -186,7 +192,7 @@ gmos version --format json
 gmos init --db ./gmos.db
 gmos doctor --db ./gmos.db --host ghast --format markdown
 gmos status --db ./gmos.db --profile local --host ghast --format markdown
-gmos add --db ./gmos.db --profile local --kind preference --text "I prefer short answers."
+gmos add --db ./gmos.db --profile local --kind preference --text "Response style: concise answers."
 gmos add --db ./gmos.db --profile local --kind boundary --text "Do not push release announcements without approval."
 gmos observe --db ./gmos.db --profile local --text "User opened the release planning thread."
 gmos prepare --db ./gmos.db --profile local --text "How should you answer me?"

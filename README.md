@@ -127,8 +127,8 @@ node dist/cli/gmos.js doctor --db ./gmos.db --host ghast --format markdown
 node dist/cli/gmos.js repair --db ./gmos.db --search-index
 node dist/cli/gmos.js repair --db ./gmos.db --associations
 node dist/cli/gmos.js status --db ./gmos.db --profile local --host ghast --format markdown
-node dist/cli/gmos.js add --db ./gmos.db --profile local --kind preference --text "我喜欢简洁回答"
-node dist/cli/gmos.js update --db ./gmos.db --profile local --id memory_xxx --text "我喜欢先讲风险"
+node dist/cli/gmos.js add --db ./gmos.db --profile local --kind preference --text "回答风格：简洁，先给结论"
+node dist/cli/gmos.js update --db ./gmos.db --profile local --id memory_xxx --text "回答风格：先讲风险，再给方案"
 node dist/cli/gmos.js delete --db ./gmos.db --profile local --id memory_xxx
 node dist/cli/gmos.js clear --db ./gmos.db --profile local --scope global
 node dist/cli/gmos.js search --db ./gmos.db --profile local --query "简洁"
@@ -147,7 +147,7 @@ node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "我之�
 node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "这个项目之前是什么状态？" --temporal-mode history
 node dist/cli/gmos.js explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:atlas"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}' --include-trace
 node dist/cli/gmos.js mcp tools
-node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.add --input '{"kind":"preference","content":"我喜欢先讲风险"}'
+node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.add --input '{"kind":"preference","content":"回答风格：先讲风险"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.search --input '{"query":"先讲风险"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.search --input '{"query":"之前的状态","purpose":"history"}'
 node dist/cli/gmos.js mcp call --db ./gmos.db --profile local --tool memory.prepare_context --input '{"text":"你之后怎么回答我？"}'
@@ -161,8 +161,8 @@ node dist/cli/gmos.js gym run --db :memory: --generated-seeds 3
 node dist/cli/gmos.js gym run --generated-seeds 10 --format markdown --report-file ./memory-gym.md
 node dist/cli/gmos.js gym scale --sizes 100,1000
 node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --require-convergence --temporal-mode current
-node dist/cli/gmos.js gym external --input-file ./longmemeval_s_cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
-node dist/cli/gmos.js gym external --input-file ./locomo10.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --progress
+node dist/cli/gmos.js gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
+node dist/cli/gmos.js gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --progress
 node dist/cli/gmos.js gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format json --markdown-file ./external-suite.md
 node dist/cli/gmos.js gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
 node dist/cli/gmos.js gym statebench write-agent --output-file ./STATE-Bench/agents/gmos_memory_agent.py
@@ -501,7 +501,7 @@ const memory = createMemoryOS({
       return [
         {
           kind: "preference",
-          content: "The user prefers risk-first release plans.",
+          content: "Release plan response style: risk first, then options.",
           confidence: 0.9,
           predicate: "user.preference",
           actionPolicyKind: "prefer",
@@ -564,7 +564,7 @@ audit the write path without reading private tables:
 const report = await memory.observeWithReport({
   type: "conversation.message",
   role: "user",
-  content: "I prefer risk-first release plans.",
+  content: "User opened the release planning thread and asked for a rollback check.",
 });
 
 console.log(report.memoryIds);
@@ -642,16 +642,20 @@ const memory = createMemoryOS({
 });
 ```
 
-The extractor calls `/chat/completions`, requests JSON output, parses
-`{"memories":[...]}`, and then sends candidates through the same gmOS write-path
-guards as every other extractor: incognito events are skipped before extraction,
-secret-like and PERSON-routed candidates are rejected, confidence is bounded,
-and provider failure does not enable broad rule-based semantic extraction. Event
-metadata is not sent to the provider unless `includeEventMetadata: true` is set.
-Structured candidates may include `subject`, `predicate`, `object`, `source`,
-`eventTime`, `validFrom`, `validTo`, and `cardinality`; `source` is only a short
-public label for the extracted candidate, while evidence `sourceType/sourceUri`
-remain the provenance source of truth.
+The extractor sends a Chat Completions-shaped request to `/chat/completions`,
+requests JSON output, and parses `{"memories":[...]}` from ordinary message
+content, Chat Completions content parts, or OpenAI-compatible proxy responses
+that expose `output_text` / `output[].content[].text`. It does not switch the
+request body to the Responses API. Parsed candidates then pass through the same
+gmOS write-path guards as every other extractor: incognito events are skipped
+before extraction, secret-like and PERSON-routed candidates are rejected,
+confidence is bounded, and provider failure does not enable broad rule-based
+semantic extraction. Event metadata is not sent to the provider unless
+`includeEventMetadata: true` is set. Structured candidates may include
+`subject`, `predicate`, `object`, `source`, `eventTime`, `validFrom`, `validTo`,
+and `cardinality`; `source` is only a short public label for the extracted
+candidate, while evidence `sourceType/sourceUri` remain the provenance source of
+truth.
 Accepted memories and world beliefs retain the normalized structured fields in
 their public metadata so hosts can audit the extraction without reading private
 tables.
@@ -839,7 +843,7 @@ store.restoreProfileBackup({
 const saved = await memory.add({
   profileId: "local-user",
   kind: "preference",
-  content: "我喜欢先讲风险，再给方案。",
+  content: "回答风格：先讲风险，再给方案。",
 });
 
 const matches = await memory.search({
@@ -850,7 +854,7 @@ const matches = await memory.search({
 await memory.update({
   profileId: "local-user",
   id: saved.id,
-  content: "我喜欢先讲风险，再给方案。",
+  content: "回答风格：先讲风险，最后列方案。",
 });
 
 await memory.archive({
@@ -1120,7 +1124,7 @@ await syncHostMemorySnapshotsIntoStore({
   memories: [
     {
       id: "host-memory-1",
-      content: "我喜欢先讲风险。",
+      content: "回答风格：先讲风险。",
       kind: "preference",
       updatedAt: new Date().toISOString(),
     },

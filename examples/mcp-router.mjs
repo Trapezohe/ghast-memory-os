@@ -34,7 +34,7 @@ try {
   await memory.add({
     profileId,
     kind: "preference",
-    content: "I prefer MCP hosts to include evidence-backed context.",
+    content: "MCP host integration style: include evidence-backed context.",
     createdAt: "2026-06-25T00:00:00.000Z",
   });
 

@@ -327,18 +327,17 @@ if (skipFreshInstall) {
 
       const store = createSqliteMemoryStore({ path: path.join(process.cwd(), "consumer.db") });
       const memory = createMemoryOS({ profileId: "fresh-install", store });
-      await memory.observe({
-        type: "conversation.message",
+      await memory.add({
         profileId: "fresh-install",
-        role: "user",
-        content: "I prefer risk-first release notes.",
+        kind: "preference",
+        content: "Release note response style: risk first.",
       });
       const prepared = await memory.prepareTurn({
         profileId: "fresh-install",
         messages: [{ role: "user", content: "How should this release note be written?" }],
         includeEvidence: true,
       });
-      assert.match(prepared.contextBlock, /risk-first release notes/);
+      assert.match(prepared.contextBlock, /risk first/);
       assert.equal(prepared.evidence.length >= 1, true);
       await memory.close();
       console.log(JSON.stringify({ ok: true, package: runtimeInfo.package }));
