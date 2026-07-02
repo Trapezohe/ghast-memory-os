@@ -17932,6 +17932,26 @@ assert.equal(cliInspectMarkdown.stdout.includes("sk-inspectquerysecret"), false)
 assert.equal(cliInspectMarkdown.stdout.includes("[redacted_secret]"), true);
 assert.equal(cliInspectMarkdown.stdout.includes("Inspector residue memory"), false);
 assert.equal(cliInspectMarkdown.stdout.includes(dbPath), false);
+const cliInspectNestedOutputFile = path.join(tmp, "inspect-output", "nested", "report.md");
+const cliInspectNestedOutput = spawnSync(
+  process.execPath,
+  [
+    path.join(process.cwd(), "dist/cli/gmos-inspect.js"),
+    "--db",
+    dbPath,
+    "--profile",
+    "test",
+    "--format",
+    "markdown",
+    "--output-file",
+    cliInspectNestedOutputFile,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliInspectNestedOutput.status, 0, cliInspectNestedOutput.stderr);
+assert.equal(cliInspectNestedOutput.stdout, "");
+assert.match(readFileSync(cliInspectNestedOutputFile, "utf8"), /# gmOS Inspect Report/);
+assert.equal(readFileSync(cliInspectNestedOutputFile, "utf8").includes(dbPath), false);
 const cliInspectMemoryDb = spawnSync(
   process.execPath,
   [

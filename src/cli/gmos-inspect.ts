@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -396,7 +396,9 @@ async function main(): Promise<void> {
     const rendered = outputFormat === "markdown" ? renderMarkdown(report) : `${JSON.stringify(report, null, 2)}\n`;
     const outputFile = value("--output-file");
     if (outputFile) {
-      writeFileSync(outputFile, rendered);
+      const resolved = path.resolve(process.cwd(), outputFile);
+      mkdirSync(path.dirname(resolved), { recursive: true });
+      writeFileSync(resolved, rendered);
     } else {
       process.stdout.write(rendered);
     }
