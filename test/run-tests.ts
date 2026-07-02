@@ -1,11 +1,13 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -22273,6 +22275,46 @@ try {
 } finally {
   rmSync(releaseEvidenceExtraWorkflow, { force: true });
 }
+
+const releaseEvidencePackDir = path.join(tmp, "release-evidence-pack");
+const releaseEvidencePack = spawnSync(
+  process.execPath,
+  [
+    "scripts/create-release-evidence.mjs",
+    "--allow-dirty",
+    "--skip-gate",
+    "--skip-fresh-install",
+    "--output-dir",
+    releaseEvidencePackDir,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(releaseEvidencePack.status, 0, releaseEvidencePack.stderr);
+const releaseEvidencePackManifest = JSON.parse(
+  readFileSync(path.join(releaseEvidencePackDir, "manifest.json"), "utf8"),
+) as {
+  artifacts?: {
+    tarball?: string;
+    tarballFileName?: string;
+    tarballSizeBytes?: number;
+    tarballSha512?: string;
+  };
+};
+const releaseEvidenceTarball = releaseEvidencePackManifest.artifacts?.tarball ?? "";
+assert.match(releaseEvidenceTarball, /ghast-memory-.*\.tgz$/);
+const releaseEvidenceTarballPath = path.resolve(process.cwd(), releaseEvidenceTarball);
+assert.equal(
+  releaseEvidencePackManifest.artifacts?.tarballFileName,
+  path.basename(releaseEvidenceTarballPath),
+);
+assert.equal(
+  releaseEvidencePackManifest.artifacts?.tarballSizeBytes,
+  statSync(releaseEvidenceTarballPath).size,
+);
+assert.equal(
+  releaseEvidencePackManifest.artifacts?.tarballSha512,
+  createHash("sha512").update(readFileSync(releaseEvidenceTarballPath)).digest("hex"),
+);
 
 const releaseEvidenceScheduledDir = path.join(tmp, "release-evidence-scheduled-dry-run");
 const releaseEvidenceScheduledWorkflow = path.join(

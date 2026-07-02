@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -69,6 +69,10 @@ function readJson(file) {
 
 function sha256File(file) {
   return createHash("sha256").update(readFileSync(file)).digest("hex");
+}
+
+function sha512File(file) {
+  return createHash("sha512").update(readFileSync(file)).digest("hex");
 }
 
 function sqliteDatabaseFileGroupFingerprint(dbPath) {
@@ -260,6 +264,15 @@ function latestTarball(packDir) {
     throw new Error(`expected exactly one tarball in ${packDir}, found ${entries.length}`);
   }
   return entries[0];
+}
+
+function tarballManifestFields(file) {
+  return {
+    tarball: path.relative(root, file),
+    tarballFileName: path.basename(file),
+    tarballSizeBytes: statSync(file).size,
+    tarballSha512: sha512File(file),
+  };
 }
 
 function renderSummary(manifest) {
@@ -1711,7 +1724,7 @@ if (dryRun) {
   mkdirSync(packDir, { recursive: true });
   recordCommand("pack_tarball", npmBin, ["pack", "--pack-destination", packDir, "--json"]);
   tarballPath = latestTarball(packDir);
-  manifest.artifacts.tarball = path.relative(root, tarballPath);
+  Object.assign(manifest.artifacts, tarballManifestFields(tarballPath));
 }
 
 if (skipFreshInstall) {
