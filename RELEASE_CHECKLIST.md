@@ -38,7 +38,8 @@ node dist/cli/gmos.js gym external-suite --suite-file <release-suite.json> --out
 Archive the release evidence directory plus the suite JSON, markdown report,
 and manifest. The release evidence bundle contains `manifest.json`,
 `SUMMARY.md`, command logs, the packed tarball, and a fresh-install smoke
-workspace. The report must include:
+workspace. In an installed consumer project, the same external suite command can
+be run with the public `gmos` binary. The report must include:
 
 - gmOS package version;
 - git branch, SHA, and dirty status;
@@ -57,7 +58,8 @@ official LongMemEval, LoCoMo, STATE-Bench, or SOTA score.
 `npm run release:evidence` requires a clean worktree by default. It runs
 `gate:pr`, creates a tarball, installs that tarball into a fresh consumer
 project, verifies SDK imports, plaintext SQLite behavior, context preparation,
-evidence return, and the installed `gmos` CLI. `--skip-gate`,
+evidence return, and the installed public CLI binaries: `gmos`, `ghast-memory`,
+and `gmos-inspect`. `--skip-gate`,
 `--skip-fresh-install`, and `--allow-dirty` are for local diagnostics only and
 must not be used for public release evidence.
 
