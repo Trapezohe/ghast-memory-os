@@ -262,6 +262,7 @@ function renderSummary(manifest) {
 
 function failAfterWriting(manifest, outputDir, message) {
   recordFreshInstallDatabaseCleanupIfNeeded();
+  recordNpmCacheCleanupIfNeeded();
   writeFileSync(path.join(outputDir, "manifest.json"), JSON.stringify(manifest, null, 2));
   writeFileSync(path.join(outputDir, "SUMMARY.md"), renderSummary(manifest));
   throw new Error(message);
@@ -493,6 +494,41 @@ function recordFreshInstallDatabaseCleanup() {
   }
 }
 
+function recordNpmCacheCleanupIfNeeded(options = {}) {
+  if (manifest.checks.some((check) => check.name === "release_evidence_npm_cache_cleanup")) {
+    return;
+  }
+  if (!options.always && !existsSync(npmCacheDir)) {
+    return;
+  }
+  const check = {
+    name: "release_evidence_npm_cache_cleanup",
+    status: "pass",
+    command: "remove generated npm cache",
+  };
+  try {
+    rmSync(npmCacheDir, { recursive: true, force: true });
+  } catch (error) {
+    check.status = "fail";
+    check.reason = error instanceof Error ? error.message : String(error);
+  }
+  if (existsSync(npmCacheDir)) {
+    check.status = "fail";
+    check.reason = check.reason
+      ? `${check.reason}; npm cache still exists`
+      : "npm cache still exists";
+  }
+  manifest.checks.push(check);
+}
+
+function recordNpmCacheCleanup() {
+  recordNpmCacheCleanupIfNeeded();
+  const check = manifest.checks.find((entry) => entry.name === "release_evidence_npm_cache_cleanup");
+  if (check?.status === "fail") {
+    failAfterWriting(manifest, outputDir, "release_evidence_npm_cache_cleanup failed");
+  }
+}
+
 if (skipGate) {
   recordSkipped("pr_gate", "--skip-gate");
 } else {
@@ -604,6 +640,8 @@ if (skipFreshInstall) {
   recordFreshInstallDatabaseCleanup();
   manifest.artifacts.freshInstallDir = path.relative(root, freshInstallDir);
 }
+
+recordNpmCacheCleanup();
 
 writeFileSync(path.join(outputDir, "manifest.json"), JSON.stringify(manifest, null, 2));
 writeFileSync(path.join(outputDir, "SUMMARY.md"), renderSummary(manifest));
