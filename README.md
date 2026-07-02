@@ -250,7 +250,9 @@ smoke, and a pack dry run.
 `release:evidence` is the release-candidate evidence bundler. It requires a
 clean worktree by default, runs `gate:pr`, packs the SDK tarball, installs that
 tarball into a fresh temporary consumer project, runs minimal SDK, agent adapter,
-host adapter, local HTTP, MCP router, CLI backup/restore, evolution review, doctor, status, and inspector smoke checks from the installed package,
+host adapter, local HTTP, MCP router, installed public CLI smoke checks for
+`gmos`, `ghast-memory`, and `gmos-inspect`, plus backup/restore, evolution
+review, doctor, status, and inspector checks from the installed package,
 validates content-safe reporting plus numeric inspector forget-residue, health,
 and evidence eligibility counters, and writes `manifest.json`, `SUMMARY.md`, and command logs under
 `release-evidence/`. The directory is git-ignored. Use `--skip-gate`,

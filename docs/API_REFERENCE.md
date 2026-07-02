@@ -197,6 +197,9 @@ The npm package exposes these binaries:
 - `ghast-memory`
 - `gmos-inspect`
 
+`ghast-memory` is an alias for `gmos`; `gmos-inspect` is the read-only
+inspection binary.
+
 Useful integration commands:
 
 ```bash
