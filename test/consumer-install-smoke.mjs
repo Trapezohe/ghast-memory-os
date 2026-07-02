@@ -1225,10 +1225,13 @@ try {
   assert.notEqual(installedExternalSuiteGate.status, 0);
   assert.match(installedExternalSuiteGate.stdout, /"benchmarkPass": false/);
 
-  const bin = runInstalledCli(["doctor", "--db", path.join(consumerDir, "doctor.db"), "--host", "ghast"]);
+  const doctorDbPath = path.join(consumerDir, "doctor.db");
+  const bin = runInstalledCli(["doctor", "--db", doctorDbPath, "--host", "ghast"]);
   assert.equal(bin.status, 0, bin.stderr);
   const doctor = JSON.parse(bin.stdout);
   assert.equal(doctor.encrypted, false);
+  assert.equal(doctor.dbPath, "[plaintext sqlite path redacted]");
+  assert.equal(bin.stdout.includes(doctorDbPath), false);
   assert.equal(doctor.runtimeInfo.schema, "gmos.runtime_info.v1");
   assert.equal(doctor.runtimeInfo.cli.binaries.includes("gmos"), true);
   assert.equal(doctor.runtimeInfo.packageExports.includes("."), true);
@@ -1251,7 +1254,7 @@ try {
   const doctorMarkdown = runInstalledCli([
     "doctor",
     "--db",
-    path.join(consumerDir, "doctor.db"),
+    doctorDbPath,
     "--host",
     "ghast",
     "--format",
@@ -1259,11 +1262,13 @@ try {
   ]);
   assert.equal(doctorMarkdown.status, 0, doctorMarkdown.stderr);
   assert.match(doctorMarkdown.stdout, /^# gmOS Doctor Report/m);
+  assert.match(doctorMarkdown.stdout, /Database: \[plaintext sqlite path redacted\]/);
   assert.match(doctorMarkdown.stdout, /memory\.runtime_info/);
   assert.match(doctorMarkdown.stdout, /GET \/runtime-info/);
   assert.match(doctorMarkdown.stdout, /Search index: ok/);
   assert.match(doctorMarkdown.stdout, /Host: ghast/);
   assert.doesNotMatch(doctorMarkdown.stdout, /stateHash/);
+  assert.equal(doctorMarkdown.stdout.includes(doctorDbPath), false);
   const binLowLevelDb = path.join(consumerDir, "bin-low-level.db");
   const addBin = runInstalledCli(
     [

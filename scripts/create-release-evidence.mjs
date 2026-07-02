@@ -406,6 +406,35 @@ function recordInspectorContentSafety(result, forbiddenValues) {
   manifest.checks.push(check);
 }
 
+function recordDoctorContentSafety(result, forbiddenValues) {
+  const check = {
+    name: "fresh_install_doctor_content_safety",
+    status: "pass",
+    command: "validate fresh_install_doctor_smoke stdout",
+  };
+  try {
+    const report = JSON.parse(result.stdout);
+    if (report.ok !== true || report.encrypted !== false) {
+      throw new Error("unexpected doctor report shape");
+    }
+    if (report.dbPath !== "[plaintext sqlite path redacted]") {
+      throw new Error("doctor report did not redact dbPath");
+    }
+    const stdout = result.stdout;
+    for (const [index, value] of forbiddenValues.entries()) {
+      if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
+        throw new Error(`doctor report leaked forbidden value #${index + 1}`);
+      }
+    }
+  } catch (error) {
+    check.status = "fail";
+    check.reason = error instanceof Error ? error.message : String(error);
+    manifest.checks.push(check);
+    failAfterWriting(manifest, outputDir, `${check.name} failed`);
+  }
+  manifest.checks.push(check);
+}
+
 if (skipGate) {
   recordSkipped("pr_gate", "--skip-gate");
 } else {
@@ -474,6 +503,18 @@ if (skipFreshInstall) {
   recordCommand("fresh_install_cli_smoke", cliBin, ["version", "--format", "json"], {
     cwd: freshInstallDir,
   });
+  const doctorResult = recordCommand(
+    "fresh_install_doctor_smoke",
+    cliBin,
+    ["doctor", "--db", "consumer.db", "--host", "ghast", "--format", "json"],
+    {
+      cwd: freshInstallDir,
+    },
+  );
+  recordDoctorContentSafety(doctorResult, [
+    "consumer.db",
+    path.join(freshInstallDir, "consumer.db"),
+  ]);
   const inspectBin = path.join(
     "node_modules",
     ".bin",
