@@ -82,6 +82,7 @@ import { summarizeMemoryScaleLatenciesForTest } from "../src/gym/scale.js";
 import {
   createSqliteMemoryStore,
   parseSqliteProfileBackup,
+  SqliteMemoryStoreEncryptionError,
   type SqliteMemoryStore,
   type SqliteProfileBackupDocument,
 } from "../src/store/sqlite/index.js";
@@ -150,6 +151,49 @@ const legacyRuleTestExtractor: MemoryExtractor = {
 async function runExtractorForTest(extractor: MemoryExtractor, input: MemoryExtractionInput) {
   const result = typeof extractor === "function" ? await extractor(input) : await extractor.extract(input);
   return Array.isArray(result) ? result : result ? [result] : [];
+}
+
+function createStubCipherDriver(options: {
+  calls: string[];
+  rejectKey?: string | undefined;
+  verifyFailureKey?: string | undefined;
+}): typeof Database {
+  const StubCipherDriver = function (
+    this: unknown,
+    filename: string,
+    sqliteOptions?: Database.Options,
+  ) {
+    const db = new Database(filename, sqliteOptions);
+    const originalExec = db.exec.bind(db);
+    const originalPrepare = db.prepare.bind(db);
+    let failVerify = false;
+    db.exec = (source: string) => {
+      if (source.startsWith("PRAGMA key = ")) {
+        options.calls.push(source);
+        if (options.rejectKey && source.includes(options.rejectKey)) {
+          throw new Error("file is encrypted or is not a database");
+        }
+        if (options.verifyFailureKey && source.includes(options.verifyFailureKey)) {
+          failVerify = true;
+        }
+        return db;
+      }
+      options.calls.push(source);
+      return originalExec(source);
+    };
+    db.prepare = (source: string) => {
+      if (failVerify && source === "SELECT count(*) AS count FROM sqlite_master") {
+        return {
+          get() {
+            throw new Error("file is encrypted or is not a database");
+          },
+        } as Database.Statement;
+      }
+      return originalPrepare(source);
+    };
+    return db;
+  } as unknown as typeof Database;
+  return StubCipherDriver;
 }
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-sdk-test-"));
@@ -513,6 +557,7 @@ assert.equal(publicRuntimeInfo.publicSurface.httpRoutes.includes("POST /explain-
 assert.equal(publicRuntimeInfo.trustContract.localFirst, true);
 assert.equal(publicRuntimeInfo.trustContract.defaultStorage, "sqlite");
 assert.equal(publicRuntimeInfo.trustContract.encryptedByDefault, false);
+assert.equal(publicRuntimeInfo.trustContract.encryptionSupported, "host_driver");
 assert.equal(publicRuntimeInfo.trustContract.cloudRequired, false);
 function gitOutput(args: string[]): string {
   const result = spawnSync("git", args, { cwd: process.cwd(), encoding: "utf8" });
@@ -12924,6 +12969,142 @@ assert.throws(
   /restore conflict/,
 );
 await restoredMemory.close();
+const encryptionCalls: string[] = [];
+const encryptedDbPath = path.join(tmp, "encrypted-store.db");
+const encryptedDriver = createStubCipherDriver({ calls: encryptionCalls });
+const encryptedStore = createSqliteMemoryStore({
+  path: encryptedDbPath,
+  encryption: {
+    driver: encryptedDriver,
+    key: "test-encryption-key",
+    pragmas: ["PRAGMA cipher_page_size = 4096"],
+  },
+});
+await encryptedStore.initialize();
+assert.equal(encryptedStore.encryptionStatus().encrypted, true);
+assert.equal(encryptedStore.encryptionStatus().mode, "host_driver");
+assert.equal(
+  encryptionCalls.some((call) => call === "PRAGMA key = 'test-encryption-key'"),
+  true,
+);
+assert.equal(
+  encryptionCalls.some((call) => call === "PRAGMA cipher_page_size = 4096"),
+  true,
+);
+const encryptedMemory = createMemoryOS({
+  profileId: "encrypted_profile",
+  store: encryptedStore,
+});
+await encryptedMemory.add({
+  profileId: "encrypted_profile",
+  kind: "preference",
+  content: "Encrypted profile backup prefers driver-backed opens.",
+});
+const encryptedStatus = await createMemoryStatusReport({
+  store: encryptedStore,
+  profileId: "encrypted_profile",
+  host: "ghast",
+});
+assert.equal(encryptedStatus.trustContract.encrypted, true);
+assert.equal(encryptedStatus.storage.encryption.encrypted, true);
+assert.equal(encryptedStatus.storage.encryption.mode, "host_driver");
+const encryptedBackup = encryptedStore.exportProfileBackup({
+  profileId: "encrypted_profile",
+});
+assert.equal(encryptedBackup.counts.memories, 1);
+const encryptedRestoreCalls: string[] = [];
+const encryptedRestoreStore = createSqliteMemoryStore({
+  path: path.join(tmp, "encrypted-restore.db"),
+  encryption: {
+    driver: createStubCipherDriver({ calls: encryptedRestoreCalls }),
+    key: "test-restore-key",
+  },
+});
+await encryptedRestoreStore.initialize();
+const encryptedRestoreReport = encryptedRestoreStore.restoreProfileBackup({
+  backup: encryptedBackup,
+  profileId: "encrypted_profile_restored",
+});
+assert.equal(encryptedRestoreReport.inserted.memories, 1);
+assert.equal(
+  encryptedRestoreCalls.some((call) => call === "PRAGMA key = 'test-restore-key'"),
+  true,
+);
+const encryptedRestoredMemory = createMemoryOS({
+  profileId: "encrypted_profile_restored",
+  store: encryptedRestoreStore,
+});
+const encryptedRestoredMatches = await encryptedRestoredMemory.search({
+  profileId: "encrypted_profile_restored",
+  query: "driver-backed opens",
+});
+assert.equal(encryptedRestoredMatches.length, 1);
+await encryptedRestoredMemory.close();
+await encryptedMemory.close();
+await encryptedRestoreStore.close();
+assert.throws(
+  () =>
+    createSqliteMemoryStore({
+      path: path.join(tmp, "invalid-key.db"),
+      encryption: {
+        driver: encryptedDriver,
+        key: "bad'key",
+      },
+    }),
+  (error) =>
+    error instanceof SqliteMemoryStoreEncryptionError &&
+    error.code === "invalid_encryption_key",
+);
+const encryptionConflictHandle = new Database(":memory:");
+try {
+  assert.throws(
+    () =>
+      createSqliteMemoryStore({
+        path: path.join(tmp, "handle-conflict.db"),
+        handle: encryptionConflictHandle,
+        encryption: {
+          driver: encryptedDriver,
+          key: "test-encryption-key",
+        },
+      }),
+    (error) =>
+      error instanceof SqliteMemoryStoreEncryptionError &&
+      error.code === "encryption_handle_conflict",
+  );
+} finally {
+  encryptionConflictHandle.close();
+}
+const failedNewEncryptedPath = path.join(tmp, "failed-new-encrypted.db");
+assert.throws(
+  () =>
+    createSqliteMemoryStore({
+      path: failedNewEncryptedPath,
+      encryption: {
+        driver: createStubCipherDriver({ calls: [], rejectKey: "reject-key" }),
+        key: "reject-key",
+      },
+    }),
+  (error) =>
+    error instanceof SqliteMemoryStoreEncryptionError &&
+    error.code === "encryption_key_failed",
+);
+assert.equal(existsSync(failedNewEncryptedPath), false);
+const failedExistingEncryptedPath = path.join(tmp, "failed-existing-encrypted.db");
+new Database(failedExistingEncryptedPath).close();
+assert.throws(
+  () =>
+    createSqliteMemoryStore({
+      path: failedExistingEncryptedPath,
+      encryption: {
+        driver: createStubCipherDriver({ calls: [], verifyFailureKey: "wrong-key" }),
+        key: "wrong-key",
+      },
+    }),
+  (error) =>
+    error instanceof SqliteMemoryStoreEncryptionError &&
+    error.code === "encryption_verify_failed",
+);
+assert.equal(existsSync(failedExistingEncryptedPath), true);
 assert.throws(
   () =>
     parseMemorySnapshotExport({
@@ -17767,6 +17948,7 @@ const cliVersionPayload = JSON.parse(cliVersion.stdout) as {
     localFirst?: boolean;
     defaultStorage?: string;
     encryptedByDefault?: boolean;
+    encryptionSupported?: string;
     cloudRequired?: boolean;
   };
 };
@@ -17790,6 +17972,7 @@ assert.equal(cliVersionPayload.publicSurface?.httpRoutes?.includes("POST /explai
 assert.equal(cliVersionPayload.trustContract?.localFirst, true);
 assert.equal(cliVersionPayload.trustContract?.defaultStorage, "sqlite");
 assert.equal(cliVersionPayload.trustContract?.encryptedByDefault, false);
+assert.equal(cliVersionPayload.trustContract?.encryptionSupported, "host_driver");
 assert.equal(cliVersionPayload.trustContract?.cloudRequired, false);
 const cliVersionMarkdown = spawnSync(
   process.execPath,
@@ -20875,6 +21058,7 @@ for (const [host, expectedLevel] of [
         localFirst?: boolean;
         defaultStorage?: string;
         encryptedByDefault?: boolean;
+        encryptionSupported?: string;
         cloudRequired?: boolean;
       };
     };
@@ -20910,6 +21094,7 @@ for (const [host, expectedLevel] of [
   assert.equal(doctorJson.runtimeInfo?.trustContract?.localFirst, true);
   assert.equal(doctorJson.runtimeInfo?.trustContract?.defaultStorage, "sqlite");
   assert.equal(doctorJson.runtimeInfo?.trustContract?.encryptedByDefault, false);
+  assert.equal(doctorJson.runtimeInfo?.trustContract?.encryptionSupported, "host_driver");
   assert.equal(doctorJson.runtimeInfo?.trustContract?.cloudRequired, false);
   assert.equal(doctorJson.schema?.dialect, "sqlite");
   assert.equal(doctorJson.schema?.version, 9);

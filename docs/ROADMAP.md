@@ -11,7 +11,7 @@ The roadmap is planning material. Shipped behavior is documented in the
 [API reference](./API_REFERENCE.md) and [architecture](./ARCHITECTURE.md)
 pages, not here.
 
-## Where alpha.69 Stands
+## Where alpha.70 Development Line Stands
 
 Already shipped and gated:
 
@@ -73,6 +73,9 @@ These are contract, not preference. No milestone may trade them away:
 
 ## M1 — Memory Lifecycle: Salience, Decay, Dormancy
 
+Status: shipped in the alpha.70 development line. Shipped behavior is tracked in
+the API reference, not this planning section.
+
 Goal: make forgetting a first-class, evidence-backed lifecycle instead of an
 explicit-delete-only feature.
 
@@ -98,6 +101,9 @@ Non-goals: no summarization, no clustering, no model calls.
 
 ## M2 — Consolidation: Episodic To Semantic
 
+Status: shipped in the alpha.70 development line. Shipped behavior is tracked in
+the API reference, not this planning section.
+
 Goal: keep the store healthy at scale by merging duplicates and letting hosts
 distill episodes into durable semantic memory.
 
@@ -114,6 +120,9 @@ distill episodes into durable semantic memory.
 
 ## M3 — Experience Learning: Procedures, Preference Reinforcement, Evolution
 
+Status: shipped in the alpha.70 development line. Shipped behavior is tracked in
+the API reference, not this planning section.
+
 Goal: move from "remembering what the user said" to "learning what works for
 this user".
 
@@ -128,6 +137,9 @@ this user".
 
 ## M4 — Deep Explainability
 
+Status: shipped in the alpha.70 development line. Shipped behavior is tracked in
+the API reference, not this planning section.
+
 Goal: every context decision is answerable.
 
 - `explainTurn()`: for a prepared turn, report why each included memory was
@@ -141,6 +153,9 @@ Goal: every context decision is answerable.
 
 ## M5 — Semantic Recall Upgrade
 
+Status: shipped in the alpha.70 development line. Shipped behavior is tracked in
+the API reference, not this planning section.
+
 Goal: raise recall quality without breaking local-first or determinism.
 
 - `EmbeddingProvider` interface (host-provided: local ONNX, Ollama, or remote
@@ -152,6 +167,9 @@ Goal: raise recall quality without breaking local-first or determinism.
   recall on the same fixtures.
 
 ## M6 — Evaluation And Ecosystem
+
+Status: shipped in the alpha.70 development line. Shipped behavior is tracked in
+the API reference, not this planning section.
 
 Goal: measure experience learning honestly and make integration one command.
 
@@ -166,7 +184,7 @@ external benchmark protocol separation.
   host-provided SDK judge callbacks for `official_protocol` runs and refuses
   official CLI runs without a judge instead of downgrading.
 
-M6b remains:
+M6b status: implemented in the alpha.70 development line as:
 
 - Turnkey adapters: Claude Code memory hooks, OpenAI-compatible agent
   runtimes, LangGraph-style graph runtimes, all thin wrappers over the MCP or

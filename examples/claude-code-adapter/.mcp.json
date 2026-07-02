@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "gmos-memory": {
+      "command": "gmos",
+      "args": [
+        "mcp",
+        "serve",
+        "--db",
+        "./.gmos/claude-code-memory.db",
+        "--profile",
+        "claude-code"
+      ]
+    }
+  }
+}

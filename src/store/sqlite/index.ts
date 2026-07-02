@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync, unlinkSync } from "node:fs";
 import Database from "better-sqlite3";
 
 import type {
@@ -137,10 +138,39 @@ export interface SqliteMemoryStoreOptions {
   handle?: Database.Database;
   readonly?: boolean | undefined;
   fileMustExist?: boolean | undefined;
+  encryption?: SqliteMemoryStoreEncryptionOptions | undefined;
   entityResolver?: EntityResolver | undefined;
   embeddingProvider?: EmbeddingProvider | EmbeddingProviderConfig | undefined;
   retrieval?: MemoryRetrievalConfig | undefined;
   forgetTargetParser?: SqliteForgetTargetParser | undefined;
+}
+
+export interface SqliteMemoryStoreEncryptionOptions {
+  driver: typeof Database;
+  key: string;
+  pragmas?: string[] | undefined;
+}
+
+export interface SqliteMemoryStoreEncryptionStatus {
+  encrypted: boolean;
+  mode: "plaintext" | "host_driver";
+}
+
+export type SqliteMemoryStoreEncryptionErrorCode =
+  | "encryption_handle_conflict"
+  | "invalid_encryption_key"
+  | "encryption_open_failed"
+  | "encryption_key_failed"
+  | "encryption_verify_failed";
+
+export class SqliteMemoryStoreEncryptionError extends Error {
+  readonly code: SqliteMemoryStoreEncryptionErrorCode;
+
+  constructor(code: SqliteMemoryStoreEncryptionErrorCode, message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "SqliteMemoryStoreEncryptionError";
+    this.code = code;
+  }
 }
 
 export interface SqliteForgetTargetParserInput {
@@ -157,6 +187,7 @@ export type SqliteForgetTargetParser =
 
 export interface SqliteMemoryStore extends MemoryStore {
   listFailures(input: ListFailuresInput): FailureEventRecord[];
+  encryptionStatus(): SqliteMemoryStoreEncryptionStatus;
   schemaVersion(): number;
   searchIndexStatus(): SearchIndexStatus;
   repairSearchIndex(input?: RepairSearchIndexInput): Promise<RepairSearchIndexResult> | RepairSearchIndexResult;
@@ -774,13 +805,111 @@ function daysBetween(start: string, end: string): number | null {
   return Math.max(0, (endInstant - startInstant) / (24 * 60 * 60 * 1000));
 }
 
+function databaseFileGroup(pathname: string): string[] {
+  return pathname === ":memory:" ? [] : [pathname, `${pathname}-wal`, `${pathname}-shm`];
+}
+
+function cleanupCreatedDatabaseFiles(before: Map<string, boolean>): void {
+  for (const [file, existed] of before) {
+    if (existed || !existsSync(file)) continue;
+    try {
+      unlinkSync(file);
+    } catch {
+      // Best effort only. The primary guarantee is that pre-existing files are never removed.
+    }
+  }
+}
+
+function validateEncryptionKey(key: string): void {
+  if (key.length === 0 || /['"`\p{Cc}]/u.test(key)) {
+    throw new SqliteMemoryStoreEncryptionError(
+      "invalid_encryption_key",
+      "gmOS SQLite encryption key must be non-empty and must not contain quotes or control characters",
+    );
+  }
+}
+
+function sqliteQuotedString(db: Database.Database, value: string): string {
+  const row = db
+    .prepare("SELECT quote(?) AS value")
+    .get(value) as { value?: string } | undefined;
+  if (!row?.value || !/^'.*'$/u.test(row.value)) {
+    throw new SqliteMemoryStoreEncryptionError(
+      "encryption_key_failed",
+      "gmOS SQLite encryption driver could not parameterize PRAGMA key",
+    );
+  }
+  return row.value;
+}
+
+function openEncryptedDatabase(
+  pathname: string,
+  sqliteOptions: Database.Options,
+  encryption: SqliteMemoryStoreEncryptionOptions,
+): Database.Database {
+  validateEncryptionKey(encryption.key);
+  const before = new Map(databaseFileGroup(pathname).map((file) => [file, existsSync(file)]));
+  let db: Database.Database;
+  try {
+    db = new encryption.driver(pathname, sqliteOptions);
+  } catch (error) {
+    cleanupCreatedDatabaseFiles(before);
+    throw new SqliteMemoryStoreEncryptionError(
+      "encryption_open_failed",
+      "gmOS SQLite encryption driver failed to open the database",
+      { cause: error },
+    );
+  }
+  try {
+    db.exec(`PRAGMA key = ${sqliteQuotedString(db, encryption.key)}`);
+    for (const pragma of encryption.pragmas ?? []) {
+      db.exec(pragma);
+    }
+  } catch (error) {
+    try {
+      db.close();
+    } finally {
+      cleanupCreatedDatabaseFiles(before);
+    }
+    throw new SqliteMemoryStoreEncryptionError(
+      "encryption_key_failed",
+      "gmOS SQLite encryption driver failed while applying key or cipher pragmas",
+      { cause: error },
+    );
+  }
+  try {
+    db.prepare("SELECT count(*) AS count FROM sqlite_master").get();
+  } catch (error) {
+    try {
+      db.close();
+    } finally {
+      cleanupCreatedDatabaseFiles(before);
+    }
+    throw new SqliteMemoryStoreEncryptionError(
+      "encryption_verify_failed",
+      "gmOS SQLite encryption driver could not read the database with the supplied key",
+      { cause: error },
+    );
+  }
+  return db;
+}
+
 export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): SqliteMemoryStore {
+  if (options.handle && options.encryption) {
+    throw new SqliteMemoryStoreEncryptionError(
+      "encryption_handle_conflict",
+      "gmOS SQLite encryption opens the database through the supplied driver and cannot be combined with handle",
+    );
+  }
   const sqliteOptions: Database.Options = {};
   if (options.readonly !== undefined) sqliteOptions.readonly = options.readonly;
   if (options.fileMustExist !== undefined) sqliteOptions.fileMustExist = options.fileMustExist;
   const db =
     options.handle ??
-    new Database(options.path, sqliteOptions);
+    (options.encryption
+      ? openEncryptedDatabase(options.path, sqliteOptions, options.encryption)
+      : new Database(options.path, sqliteOptions));
+  const encrypted = options.encryption !== undefined;
   const resolveEntity = (input: Parameters<typeof resolveWorldEntitySubject>[0]): EntityResolutionResult =>
     resolveWorldEntitySubject(input, options.entityResolver);
   let embeddingProvider = resolveEmbeddingProviderConfig(options.embeddingProvider);
@@ -4844,6 +4973,13 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     return sqliteSchemaVersion(db);
   }
 
+  function encryptionStatus(): SqliteMemoryStoreEncryptionStatus {
+    return {
+      encrypted,
+      mode: encrypted ? "host_driver" : "plaintext",
+    };
+  }
+
   return {
     configureEmbeddingProvider,
     initialize,
@@ -4881,6 +5017,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     listFailures,
     recordTaskTrajectory,
     rowCounts,
+    encryptionStatus,
     readAuditSnapshot,
     schemaVersion,
     searchIndexStatus,

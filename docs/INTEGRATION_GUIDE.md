@@ -5,7 +5,8 @@ runtime internals. Use it after reading the API reference when deciding how an
 agent runtime should connect to gmOS.
 
 gmOS stays local-first: the default store is plaintext SQLite, cloud sync is not
-required, and encryption is intentionally not enabled by the SDK.
+required, and encryption is not enabled unless the host supplies a cipher driver
+and key.
 
 ## Choose A Boundary
 
@@ -211,6 +212,92 @@ Run the smoke example:
 
 ```bash
 npm run examples:agent-adapter
+```
+
+## Adapter Recipes
+
+These recipes are thin wiring examples over gmOS public surfaces. They are not
+certified integrations with Claude Code, OpenAI, LangGraph, or any other host.
+
+### Claude Code MCP And Hook Bridge
+
+`examples/claude-code-adapter/.mcp.json` registers gmOS as a stdio MCP server:
+
+```json
+{
+  "mcpServers": {
+    "gmos-memory": {
+      "command": "gmos",
+      "args": [
+        "mcp",
+        "serve",
+        "--db",
+        "./.gmos/claude-code-memory.db",
+        "--profile",
+        "claude-code"
+      ]
+    }
+  }
+}
+```
+
+At `SessionStart`, the host should call `memory.prepare_context` through MCP
+with the current task text and inject the returned context block into the turn
+setup. gmOS exposes the tool; the host owns where that context is placed.
+
+`examples/claude-code-adapter/observe-bridge.mjs` reads one hook event JSON
+object from stdin. It accepts the minimal fields documented in that directory's
+README: `hook_event_name`/`hookEventName`, optional `session_id`/`sessionId`,
+optional `timestamp`, and `tool_name`/`toolName` for `PostToolUse`. It forwards
+`SessionStart` and `PostToolUse` to `/observe`, and `SessionStop` to
+`/commit-outcome`, using `GMOS_HTTP_URL`, `GMOS_HTTP_AUTH_TOKEN`, and
+`GMOS_PROFILE_ID`.
+
+Run the offline smoke:
+
+```bash
+npm run examples:claude-code
+```
+
+### OpenAI-Compatible Function Tool Hosts
+
+`examples/openai-agent-memory.mjs` derives function-tool JSON schemas from the
+MCP tool contract for:
+
+- `memory.prepare_context`
+- `memory.observe`
+- `memory.commit_outcome`
+- `memory.record_feedback`
+- `memory.explain_turn`
+
+The example drives those tools through the in-process MCP router with a scripted
+agent loop. A real host keeps the same tool contract and replaces the scripted
+loop with its model client and function-call dispatcher. gmOS still receives
+ordinary MCP tool calls and does not call a model itself.
+
+Run it with:
+
+```bash
+npm run examples:openai-agent-memory
+```
+
+### Graph-Style Runtime
+
+`examples/graph-runtime-memory.mjs` hand-rolls a small graph:
+
+- pre-model node: calls `POST /prepare`;
+- model node: returns a deterministic assistant message;
+- post-model node: calls `POST /observe` and `POST /commit-outcome` with
+  `usedMemoryIds`.
+
+The second graph run verifies that recall count and reinforcement advanced
+through the normal write path. A LangGraph or similar host can map these nodes
+to framework nodes without changing gmOS.
+
+Run it with:
+
+```bash
+npm run examples:graph-runtime-memory
 ```
 
 ## MCP Contract

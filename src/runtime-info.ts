@@ -23,6 +23,7 @@ export interface GmosRuntimeInfo {
     localFirst: true;
     defaultStorage: "sqlite";
     encryptedByDefault: false;
+    encryptionSupported: "host_driver";
     cloudRequired: false;
   };
 }
@@ -44,6 +45,7 @@ export function getGmosRuntimeInfo(): GmosRuntimeInfo {
       localFirst: true,
       defaultStorage: "sqlite",
       encryptedByDefault: false,
+      encryptionSupported: "host_driver",
       cloudRequired: false,
     },
   };

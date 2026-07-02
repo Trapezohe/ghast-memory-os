@@ -438,6 +438,7 @@ try {
       assert.equal(runtimeInfo.trustContract.localFirst, true);
       assert.equal(runtimeInfo.trustContract.defaultStorage, "sqlite");
       assert.equal(runtimeInfo.trustContract.encryptedByDefault, false);
+      assert.equal(runtimeInfo.trustContract.encryptionSupported, "host_driver");
       assert.equal(runtimeInfo.trustContract.cloudRequired, false);
       assert.equal(installedPackage.types, "./dist/index.d.ts");
       assert.equal(consumerSuiteExecution.result.runManifest.package.name, "@ghast/memory");
@@ -1248,6 +1249,7 @@ try {
   assert.equal(installedVersionJson.trustContract.localFirst, true);
   assert.equal(installedVersionJson.trustContract.defaultStorage, "sqlite");
   assert.equal(installedVersionJson.trustContract.encryptedByDefault, false);
+  assert.equal(installedVersionJson.trustContract.encryptionSupported, "host_driver");
   assert.equal(installedVersionJson.trustContract.cloudRequired, false);
   const installedAliasVersionBin = spawnCommand(ghastMemoryBin, ["version", "--format", "json"], {
     cwd: consumerDir,
@@ -1355,6 +1357,7 @@ try {
   assert.equal(doctor.runtimeInfo.trustContract.localFirst, true);
   assert.equal(doctor.runtimeInfo.trustContract.defaultStorage, "sqlite");
   assert.equal(doctor.runtimeInfo.trustContract.encryptedByDefault, false);
+  assert.equal(doctor.runtimeInfo.trustContract.encryptionSupported, "host_driver");
   assert.equal(doctor.runtimeInfo.trustContract.cloudRequired, false);
   assert.equal(doctor.schema.dialect, "sqlite");
   assert.equal(doctor.schema.version, 9);
@@ -1967,6 +1970,78 @@ try {
   assert.equal(mcpRouterOutput.preparedHasPreference, true);
   assert.equal(mcpRouterOutput.sensitiveOverrideRejected, true);
   assert.equal(mcpRouterOutput.evidencePathSchema, "gmos.evidence_path_explanation.v1");
+  const installedClaudeCodeBridge = path.join(
+    consumerDir,
+    "node_modules",
+    "@ghast",
+    "memory",
+    "examples",
+    "claude-code-adapter",
+    "observe-bridge.mjs",
+  );
+  const installedClaudeCodeMcpTemplate = path.join(
+    consumerDir,
+    "node_modules",
+    "@ghast",
+    "memory",
+    "examples",
+    "claude-code-adapter",
+    ".mcp.json",
+  );
+  assert.equal(existsSync(installedClaudeCodeBridge), true);
+  assert.equal(existsSync(installedClaudeCodeMcpTemplate), true);
+  const claudeCodeBridgeExample = spawnSync(process.execPath, [installedClaudeCodeBridge, "--smoke"], {
+    cwd: consumerDir,
+    encoding: "utf8",
+  });
+  assert.equal(claudeCodeBridgeExample.status, 0, claudeCodeBridgeExample.stderr);
+  const claudeCodeBridgeOutput = JSON.parse(claudeCodeBridgeExample.stdout);
+  assert.equal(claudeCodeBridgeOutput.ok, true);
+  assert.equal(claudeCodeBridgeOutput.forwardedEvents, 3);
+  assert.equal(claudeCodeBridgeOutput.evidenceEvents, 2);
+  assert.equal(claudeCodeBridgeOutput.taskTrajectories, 1);
+  const installedOpenAIAgentMemoryExample = path.join(
+    consumerDir,
+    "node_modules",
+    "@ghast",
+    "memory",
+    "examples",
+    "openai-agent-memory.mjs",
+  );
+  assert.equal(existsSync(installedOpenAIAgentMemoryExample), true);
+  const openAIAgentMemoryExample = spawnSync(process.execPath, [installedOpenAIAgentMemoryExample], {
+    cwd: consumerDir,
+    encoding: "utf8",
+  });
+  assert.equal(openAIAgentMemoryExample.status, 0, openAIAgentMemoryExample.stderr);
+  const openAIAgentMemoryOutput = JSON.parse(openAIAgentMemoryExample.stdout);
+  assert.equal(openAIAgentMemoryOutput.ok, true);
+  assert.equal(openAIAgentMemoryOutput.functionToolCount, 5);
+  assert.equal(openAIAgentMemoryOutput.preparedMemoryCount > 0, true);
+  assert.equal(openAIAgentMemoryOutput.usedMemoryCount > 0, true);
+  assert.equal(openAIAgentMemoryOutput.explanationIncludedCount > 0, true);
+  assert.equal(openAIAgentMemoryOutput.recallCount, 1);
+  assert.equal(openAIAgentMemoryOutput.reinforcement > 0, true);
+  const installedGraphRuntimeMemoryExample = path.join(
+    consumerDir,
+    "node_modules",
+    "@ghast",
+    "memory",
+    "examples",
+    "graph-runtime-memory.mjs",
+  );
+  assert.equal(existsSync(installedGraphRuntimeMemoryExample), true);
+  const graphRuntimeMemoryExample = spawnSync(process.execPath, [installedGraphRuntimeMemoryExample], {
+    cwd: consumerDir,
+    encoding: "utf8",
+  });
+  assert.equal(graphRuntimeMemoryExample.status, 0, graphRuntimeMemoryExample.stderr);
+  const graphRuntimeMemoryOutput = JSON.parse(graphRuntimeMemoryExample.stdout);
+  assert.equal(graphRuntimeMemoryOutput.ok, true);
+  assert.equal(graphRuntimeMemoryOutput.firstUsedMemoryCount > 0, true);
+  assert.equal(graphRuntimeMemoryOutput.secondUsedMemoryCount > 0, true);
+  assert.equal(graphRuntimeMemoryOutput.recallCount, 2);
+  assert.equal(graphRuntimeMemoryOutput.reinforcement >= 0.2, true);
   const installedExternalMiniExample = path.join(
     consumerDir,
     "node_modules",

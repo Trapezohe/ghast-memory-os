@@ -21,6 +21,9 @@ const REDACTED_PROFILE_ID = "[profile id redacted]";
 
 export interface DiagnosticsStore {
   rowCounts(): Promise<Record<string, number>> | Record<string, number>;
+  encryptionStatus?():
+    | Promise<MemoryStorageEncryptionStatus>
+    | MemoryStorageEncryptionStatus;
   readAuditSnapshot?(): Promise<ReadAuditSnapshot> | ReadAuditSnapshot;
   schemaVersion?(): Promise<number> | number;
   searchIndexStatus?(): Promise<SearchIndexStatus> | SearchIndexStatus;
@@ -52,6 +55,7 @@ export interface MemoryStorageStatus {
   status: "ok" | "unavailable";
   schemaVersion: number | null;
   rowCounts: Record<string, number>;
+  encryption: MemoryStorageEncryptionStatus;
   lifecycle?: MemoryLifecycleStatus | undefined;
   readAudit: MemoryReadAuditStatus;
   searchIndex?: SearchIndexStatus | undefined;
@@ -59,6 +63,11 @@ export interface MemoryStorageStatus {
     name: string;
     code: string;
   } | undefined;
+}
+
+export interface MemoryStorageEncryptionStatus {
+  encrypted: boolean;
+  mode: "plaintext" | "host_driver";
 }
 
 export interface MemoryReadAuditStatus {
@@ -99,7 +108,7 @@ export interface MemoryStatusReport {
   failureSummary: MemoryFailureSummary;
   hostCompatibility?: HostCompatibilityReport | undefined;
   trustContract: {
-    encrypted: false;
+    encrypted: boolean;
     reportContainsMemoryContent: false;
     readPathSideEffectsChecked: boolean;
   };
@@ -195,6 +204,9 @@ async function storageStatus(input: {
   try {
     const schemaVersion = input.store.schemaVersion ? await input.store.schemaVersion() : null;
     const rowCounts = await input.store.rowCounts();
+    const encryption = input.store.encryptionStatus
+      ? await input.store.encryptionStatus()
+      : { encrypted: false, mode: "plaintext" as const };
     const readAudit = await readAuditStatus(input.store);
     const searchIndex = input.store.searchIndexStatus ? await input.store.searchIndexStatus() : undefined;
     const lifecycle = input.store.lifecycleStatus
@@ -204,6 +216,7 @@ async function storageStatus(input: {
       status: "ok",
       schemaVersion,
       rowCounts,
+      encryption,
       ...(lifecycle !== undefined ? { lifecycle } : {}),
       readAudit,
       ...(searchIndex !== undefined ? { searchIndex } : {}),
@@ -213,6 +226,7 @@ async function storageStatus(input: {
       status: "unavailable",
       schemaVersion: null,
       rowCounts: {},
+      encryption: { encrypted: false, mode: "plaintext" },
       readAudit: {
         status: "unavailable",
         schema: null,
@@ -291,7 +305,7 @@ export async function createMemoryStatusReport(
     }),
     hostCompatibility: hostCompatibility(input.host),
     trustContract: {
-      encrypted: false,
+      encrypted: storage.encryption.encrypted,
       reportContainsMemoryContent: false,
       readPathSideEffectsChecked: storage.readAudit.status === "ok",
     },
@@ -317,6 +331,7 @@ export function renderMemoryStatusMarkdown(report: MemoryStatusReport): string {
     `Local-first: ${report.runtimeInfo.trustContract.localFirst ? "yes" : "no"}`,
     `Default storage: ${report.runtimeInfo.trustContract.defaultStorage}`,
     `Encrypted by default: ${report.runtimeInfo.trustContract.encryptedByDefault ? "yes" : "no"}`,
+    `Encryption supported: ${report.runtimeInfo.trustContract.encryptionSupported}`,
     `Cloud required: ${report.runtimeInfo.trustContract.cloudRequired ? "yes" : "no"}`,
     "",
     "## Storage",

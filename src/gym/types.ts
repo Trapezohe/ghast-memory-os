@@ -159,7 +159,7 @@ export interface MemoryReleaseGateResult {
       pass: boolean;
       schemaVersion: number | null;
       storageStatus: "ok" | "unavailable";
-      encrypted: false;
+      encrypted: boolean;
       readAuditStatus: "ok" | "unsupported" | "unavailable";
       readAuditTableCount: number;
       readPathSideEffectsChecked: boolean;

@@ -7,8 +7,8 @@ package exports listed here and avoid importing files under `dist/` or `src/`.
 
 - `@ghast/memory`: runtime facade, core types, structured extractor factory,
   and `getGmosRuntimeInfo()`.
-- `@ghast/memory/store/sqlite`: plaintext SQLite store and profile
-  backup/restore helpers.
+- `@ghast/memory/store/sqlite`: SQLite store, opt-in host-driver encryption,
+  and profile backup/restore helpers.
 - `@ghast/memory/mcp`: in-process MCP-style router and stdio server helpers.
 - `@ghast/memory/http`: local HTTP adapter.
 - `@ghast/memory/host`: host compatibility, generic agent-turn adapter, and
@@ -28,6 +28,55 @@ import { createSqliteMemoryStore } from "@ghast/memory/store/sqlite";
 const store = createSqliteMemoryStore({ path: "./gmos.db" });
 const memory = createMemoryOS({ profileId: "local-user", store });
 ```
+
+### SQLite Store Encryption
+
+`createSqliteMemoryStore()` is plaintext by default. Hosts can opt in to
+encryption at rest by supplying a BetterSqlite3-compatible cipher driver:
+
+```ts
+import CipherDatabase from "better-sqlite3-multiple-ciphers";
+import { createSqliteMemoryStore } from "@ghast/memory/store/sqlite";
+
+const store = createSqliteMemoryStore({
+  path: "./gmos.db",
+  encryption: {
+    driver: CipherDatabase,
+    key: process.env.GMOS_DB_KEY ?? "",
+    pragmas: ["PRAGMA cipher = 'sqlcipher'"],
+  },
+});
+```
+
+gmOS does not depend on a cipher package and does not own key custody. The key is
+used only during store open: gmOS validates that it is non-empty and contains no
+quotes or control characters, applies `PRAGMA key`, applies host-supplied cipher
+pragmas before schema setup, verifies the database is readable, and then runs
+normal schema initialization. `handle` and `encryption` are mutually exclusive
+because gmOS must open the database through the supplied driver.
+
+The store exposes `encryptionStatus()`:
+
+```ts
+store.encryptionStatus(); // { encrypted: true, mode: "host_driver" }
+```
+
+Failures throw `SqliteMemoryStoreEncryptionError` with one of these codes:
+
+- `encryption_handle_conflict`
+- `invalid_encryption_key`
+- `encryption_open_failed`
+- `encryption_key_failed`
+- `encryption_verify_failed`
+
+Open failures close the driver handle and do not remove pre-existing database,
+WAL, or SHM files. Files created during a failed new encrypted open are cleaned
+up best-effort.
+
+Profile backup/restore methods run through the already opened store handle. For
+encrypted stores, source reads and restore writes therefore use the host-supplied
+driver and key. The profile backup document remains JSON and should be protected
+by the host when written to disk.
 
 ### Embedding Provider And Retrieval
 
@@ -811,5 +860,8 @@ an explicit preference memory, prepares context through `/prepare`, reads
 `getGmosRuntimeInfo()`, `gmos version`, `gmos doctor`, `/runtime-info`,
 `memory.runtime_info`, and `createMemoryStatusReport()` expose content-free
 runtime and integration metadata. They report package, CLI, export, MCP, HTTP,
-and local-first trust contract information. They do not include memory text,
+and local-first trust contract information. The trust contract keeps
+`encryptedByDefault: false` and reports `encryptionSupported: "host_driver"`.
+`gmos doctor` and `createMemoryStatusReport()` also report whether the inspected
+store was opened with a host encryption driver. They do not include memory text,
 failure samples, raw profile IDs, or table state hashes.

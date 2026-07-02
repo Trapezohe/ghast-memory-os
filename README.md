@@ -7,7 +7,7 @@ privacy and forgetting, and gradually become a user's second brain and digital
 twin infrastructure.
 
 The current package is the late-alpha runtime kernel for that vision. It
-provides the SDK, CLI, MCP, HTTP, plaintext SQLite storage, evidence ledger,
+provides the SDK, CLI, MCP, HTTP, SQLite storage, evidence ledger,
 world beliefs, reconstructive recall, action policies, safety gates, release
 evidence, and benchmark harness needed for stable integration. It is not a
 finished digital twin product and it is not a vector-memory CRUD wrapper.
@@ -60,7 +60,8 @@ npm run examples:quickstart
 
 ## Current Scope
 
-- Plaintext local SQLite store. No database encryption and no vault integration.
+- Plaintext local SQLite store by default, with opt-in encryption at rest when
+  the host supplies a BetterSqlite3-compatible cipher driver and key.
 - SQLite FTS-backed recall for query search, with LIKE fallback for tokenizer
   edge cases.
 - Provider-aware vector recall. A host can pass an embedding provider for
@@ -154,6 +155,9 @@ npm run examples:quickstart
   runtime adapters.
 - Local HTTP adapter for hosts that need a small service boundary instead of
   in-process imports or MCP stdio.
+- Turnkey adapter recipes for Claude Code MCP/hooks, OpenAI-compatible function
+  tool hosts, and graph-style runtimes. These are wiring examples over public
+  MCP/HTTP/SDK surfaces, not certified third-party integrations.
 - Read-only diagnostics/status report for schema, row counts, failure summary,
   package version, and host compatibility.
 - Approval-gated evolution failure review for clustering failure logs into
@@ -164,8 +168,9 @@ npm run examples:quickstart
 ## Known Limitations
 
 - gmOS is still a late-alpha SDK/runtime, not a stable 1.0 Agent Memory OS.
-- Local SQLite is plaintext by design. gmOS does not provide database
-  encryption, cloud custody, vault integration, or hosted synchronization.
+- Local SQLite is plaintext by default. Encryption at rest is opt-in and uses a
+  host-supplied cipher driver; gmOS does not provide key custody, vault
+  integration, cloud custody, or hosted synchronization.
 - gmOS does not ship production-grade content understanding. Hosts should
   provide a structured extractor, or explicitly import known memories with
   `add()`, for durable facts, preferences, boundaries, procedures, people, and
@@ -365,6 +370,9 @@ npm run examples:agent-adapter
 npm run examples:host-adapter
 npm run examples:http-adapter
 npm run examples:mcp-router
+npm run examples:claude-code
+npm run examples:openai-agent-memory
+npm run examples:graph-runtime-memory
 npm run examples:external-mini
 ```
 
@@ -396,6 +404,18 @@ observation through `memory.observe`, imports an explicit preference memory,
 prepares evidence-backed context, verifies public MCP rejects sensitive override
 switches, explains the turn and evidence path without returning a prompt block, and
 prints only sanitized integration metadata.
+
+`examples/claude-code-adapter/` contains a `.mcp.json` template and a hook
+observe bridge. The smoke starts a local HTTP adapter, feeds sample hook events
+through stdin, and verifies `/observe` plus `/commit-outcome` forwarding.
+
+`examples/openai-agent-memory.mjs` maps the MCP memory tool contract into
+OpenAI-style function tools and drives a scripted model loop through the
+in-process MCP router.
+
+`examples/graph-runtime-memory.mjs` hand-rolls a small graph runtime where
+pre-model, model, and post-model nodes call the HTTP adapter and advance memory
+recall/reinforcement across two runs.
 
 `examples/external-mini-benchmark.mjs` runs the native deterministic external
 mini fixture in `examples/external-mini-fixture.jsonl`. It is a reproducibility
@@ -440,8 +460,10 @@ value`. For path option values whose filename starts with `--`, pass
 
 Safe exports exclude archived, sensitive, and person memories by default. Safe
 backups exclude archived, sensitive, and person memories but include dormant
-memories because they remain user memory. Full backups are plaintext JSON and
-should be used only inside a trusted host boundary.
+memories because they remain user memory. Profile backup/restore reads and
+writes through the already opened store, so encrypted stores use their
+host-supplied driver and key. The exported profile backup document is JSON and
+should be handled inside a trusted host boundary.
 
 ## MCP Tools
 
@@ -467,9 +489,9 @@ memory records.
 Hosts that cannot embed the Node SDK directly can run gmOS as a local HTTP
 service. This adapter reuses the MCP tool router for memory operations, so it
 does not bypass the public safety boundary. It defaults to `127.0.0.1` and does
-not add TLS, cloud sync, or database encryption. For local service boundaries
-that cross a process boundary, pass `authToken` or `--auth-token`; all non-health
-endpoints will then require `Authorization: Bearer <token>`.
+not add TLS, cloud sync, or key custody. For local service boundaries that cross
+a process boundary, pass `authToken` or `--auth-token`; all non-health endpoints
+will then require `Authorization: Bearer <token>`.
 
 Endpoints include `GET /health`, `GET /runtime-info`, `GET /status`, `GET
 /tools`, `POST /add`, `POST /search`, `POST /observe`, `POST /prepare`, `POST
@@ -511,8 +533,9 @@ gmos status --db ./gmos.db --profile local --host ghast --format markdown
 
 ## Trust Contract
 
-gmOS defaults to a plaintext SQLite database. Security comes from memory policy
-and host boundaries, not database encryption:
+gmOS defaults to a plaintext SQLite database. Encryption at rest is available
+only when the host supplies the cipher driver and key. Security still comes from
+memory policy, key custody, filesystem controls, and host boundaries:
 
 - secret-like content is not persisted as long-term memory;
 - incognito/private events are not promoted to long-term memory;

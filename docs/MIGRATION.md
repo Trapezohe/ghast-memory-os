@@ -46,6 +46,15 @@ include dormant memories because dormant records are still user memory, just
 excluded from ordinary context. Use `--mode full` only for explicit trusted
 migration rehearsals with appropriate handling of local files.
 
+## Encryption At Rest
+
+Encryption is an open-time store option, not a SQLite schema migration. Schema
+version remains v9. A host that wants encryption should open the source or target
+store with `createSqliteMemoryStore({ encryption: { driver, key, pragmas } })`
+and run normal import, backup, restore, or cutover checks through that opened
+store. gmOS does not rewrite an existing plaintext database into an encrypted
+file by itself and does not manage key custody.
+
 ## SQLite Schema v8
 
 Schema v8 adds first-class lifecycle signals to `gmos_memories`:

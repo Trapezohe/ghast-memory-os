@@ -331,7 +331,7 @@ function renderSummary(manifest) {
     "",
     "## Known limitations",
     "",
-    "- gmOS remains plaintext local SQLite by design; it does not provide database encryption or cloud custody.",
+    "- gmOS remains plaintext local SQLite by default; encryption at rest requires a host-supplied cipher driver and key.",
     "- gmOS does not ship a built-in semantic extractor. Durable semantic memory requires a host-provided structured extractor profile or explicit low-level import.",
     "- Current public external benchmark numbers are local deterministic baselines, not official leaderboard results.",
     "- STATE-Bench and tool/action benchmark claims require their unchanged official runners and manifests.",
@@ -484,6 +484,7 @@ function validateSdkSmokeContentSafety(stdout, forbiddenValues, expectedPackage)
     report.trustContract?.localFirst !== true ||
     report.trustContract?.defaultStorage !== "sqlite" ||
     report.trustContract?.encryptedByDefault !== false ||
+    report.trustContract?.encryptionSupported !== "host_driver" ||
     report.trustContract?.cloudRequired !== false ||
     report.mcpPrepareContextAvailable !== true ||
     report.contextInjected !== true ||
@@ -514,6 +515,7 @@ function validateCliVersionContentSafety(stdout, forbiddenValues, expectedPackag
     report.trustContract?.localFirst !== true ||
     report.trustContract?.defaultStorage !== "sqlite" ||
     report.trustContract?.encryptedByDefault !== false ||
+    report.trustContract?.encryptionSupported !== "host_driver" ||
     report.trustContract?.cloudRequired !== false
   ) {
     throw new Error("unexpected CLI version report shape");
@@ -666,6 +668,7 @@ function validateRuntimeLocalFirstContract(runtimeInfo, label) {
     runtimeTrust?.localFirst !== true ||
     runtimeTrust?.defaultStorage !== "sqlite" ||
     runtimeTrust?.encryptedByDefault !== false ||
+    runtimeTrust?.encryptionSupported !== "host_driver" ||
     runtimeTrust?.cloudRequired !== false
   ) {
     throw new Error(`${label} did not include runtime local-first contract`);
@@ -858,6 +861,7 @@ function selfTestDoctorReport(overrides = {}) {
         localFirst: true,
         defaultStorage: "sqlite",
         encryptedByDefault: false,
+        encryptionSupported: "host_driver",
         cloudRequired: false,
         ...runtimeTrustContract,
       },
@@ -976,6 +980,7 @@ function selfTestStatusReport(overrides = {}) {
         localFirst: true,
         defaultStorage: "sqlite",
         encryptedByDefault: false,
+        encryptionSupported: "host_driver",
         cloudRequired: false,
         ...runtimeTrustContract,
       },
@@ -1054,6 +1059,7 @@ function selfTestSdkSmokeReport(expectedPackage, overrides = {}) {
       localFirst: true,
       defaultStorage: "sqlite",
       encryptedByDefault: false,
+      encryptionSupported: "host_driver",
       cloudRequired: false,
       ...trustContract,
     },
@@ -1119,6 +1125,7 @@ function selfTestCliVersionReport(expectedPackage, overrides = {}) {
       localFirst: true,
       defaultStorage: "sqlite",
       encryptedByDefault: false,
+      encryptionSupported: "host_driver",
       cloudRequired: false,
       ...trustContract,
     },
@@ -1783,6 +1790,7 @@ if (skipFreshInstall) {
       const runtimeInfo = getGmosRuntimeInfo();
       assert.equal(runtimeInfo.trustContract.localFirst, true);
       assert.equal(runtimeInfo.trustContract.encryptedByDefault, false);
+      assert.equal(runtimeInfo.trustContract.encryptionSupported, "host_driver");
       assert.ok(runtimeInfo.publicSurface.mcpTools.includes("memory.prepare_context"));
 
       const store = createSqliteMemoryStore({ path: path.join(process.cwd(), "consumer.db") });

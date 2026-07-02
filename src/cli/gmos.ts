@@ -320,7 +320,7 @@ function doctorReadAudit(snapshot: ReadAuditSnapshot | null) {
 interface CliDoctorReport {
   ok: true;
   dbPath: string;
-  encrypted: false;
+  encrypted: boolean;
   runtimeInfo: GmosRuntimeInfo;
   schema: {
     dialect: "sqlite";
@@ -341,7 +341,7 @@ function renderDoctorMarkdown(report: CliDoctorReport): string {
     "# gmOS Doctor Report",
     "",
     `Database: ${report.dbPath}`,
-    "Encrypted: no",
+    `Encrypted: ${report.encrypted ? "yes" : "no"}`,
     "",
     "## Runtime",
     "",
@@ -353,6 +353,7 @@ function renderDoctorMarkdown(report: CliDoctorReport): string {
     `Local-first: ${report.runtimeInfo.trustContract.localFirst ? "yes" : "no"}`,
     `Default storage: ${report.runtimeInfo.trustContract.defaultStorage}`,
     `Encrypted by default: ${report.runtimeInfo.trustContract.encryptedByDefault ? "yes" : "no"}`,
+    `Encryption supported: ${report.runtimeInfo.trustContract.encryptionSupported}`,
     `Cloud required: ${report.runtimeInfo.trustContract.cloudRequired ? "yes" : "no"}`,
     "",
     "## SQLite",
@@ -592,6 +593,7 @@ interface CliVersionReport {
     localFirst: true;
     defaultStorage: "sqlite";
     encryptedByDefault: false;
+    encryptionSupported: "host_driver";
     cloudRequired: false;
   };
 }
@@ -661,6 +663,7 @@ function renderCliVersionMarkdown(report: CliVersionReport): string {
     `Local-first: ${report.trustContract.localFirst ? "yes" : "no"}`,
     `Default storage: ${report.trustContract.defaultStorage}`,
     `Encrypted by default: ${report.trustContract.encryptedByDefault ? "yes" : "no"}`,
+    `Encryption supported: ${report.trustContract.encryptionSupported}`,
     `Cloud required: ${report.trustContract.cloudRequired ? "yes" : "no"}`,
     "",
   ].join("\n");
@@ -1237,16 +1240,18 @@ async function main(): Promise<void> {
   try {
     if (command === "init") {
       await store.initialize();
-      console.log(JSON.stringify({ ok: true, dbPath, encrypted: false }, null, 2));
+      const encrypted = store.encryptionStatus().encrypted;
+      console.log(JSON.stringify({ ok: true, dbPath, encrypted }, null, 2));
       return;
     }
 
     if (command === "doctor") {
       await store.initialize();
+      const encryption = store.encryptionStatus();
       const report: CliDoctorReport = {
         ok: true,
         dbPath: REDACTED_PLAINTEXT_SQLITE_PATH,
-        encrypted: false,
+        encrypted: encryption.encrypted,
         runtimeInfo: getGmosRuntimeInfo(),
         schema: {
           dialect: "sqlite",
@@ -1652,7 +1657,7 @@ async function main(): Promise<void> {
             ok: true,
             url: server.address.url,
             authRequired: authToken !== undefined,
-            encrypted: false,
+            encrypted: store.encryptionStatus().encrypted,
           },
           null,
           2,
