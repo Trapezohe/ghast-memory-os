@@ -392,6 +392,11 @@ function recordSkipped(name, reason) {
   manifest.checks.push({ name, status: "skipped", reason });
 }
 
+function sameStringSet(actual, expected) {
+  return Array.isArray(actual) &&
+    JSON.stringify([...actual].sort()) === JSON.stringify([...expected].sort());
+}
+
 function recordSdkSmokeContentSafety(result, forbiddenValues) {
   const check = {
     name: "fresh_install_sdk_content_safety",
@@ -411,6 +416,46 @@ function recordSdkSmokeContentSafety(result, forbiddenValues) {
     for (const [index, value] of forbiddenValues.entries()) {
       if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
         throw new Error(`SDK smoke report leaked forbidden value #${index + 1}`);
+      }
+    }
+  } catch (error) {
+    check.status = "fail";
+    check.reason = error instanceof Error ? error.message : String(error);
+    manifest.checks.push(check);
+    failAfterWriting(manifest, outputDir, `${check.name} failed`);
+  }
+  manifest.checks.push(check);
+}
+
+function recordCliVersionContentSafety(result, forbiddenValues) {
+  const check = {
+    name: "fresh_install_cli_content_safety",
+    status: "pass",
+    command: "validate fresh_install_cli_smoke stdout",
+  };
+  try {
+    const report = JSON.parse(result.stdout);
+    const expectedBinaries = Object.keys(packageJson.bin ?? {});
+    const expectedExports = Object.keys(packageJson.exports ?? {});
+    if (
+      report.schema !== "gmos.cli_version.v1" ||
+      report.package?.name !== packageJson.name ||
+      report.package?.version !== packageJson.version ||
+      !sameStringSet(report.cli?.binaries, expectedBinaries) ||
+      !Array.isArray(report.cli?.commands) ||
+      !report.cli?.commands?.includes("evolution") ||
+      !sameStringSet(report.packageExports, expectedExports) ||
+      report.trustContract?.localFirst !== true ||
+      report.trustContract?.defaultStorage !== "sqlite" ||
+      report.trustContract?.encryptedByDefault !== false ||
+      report.trustContract?.cloudRequired !== false
+    ) {
+      throw new Error("unexpected CLI version report shape");
+    }
+    const stdout = result.stdout;
+    for (const [index, value] of forbiddenValues.entries()) {
+      if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
+        throw new Error(`CLI version report leaked forbidden value #${index + 1}`);
       }
     }
   } catch (error) {
@@ -1566,9 +1611,12 @@ if (skipFreshInstall) {
   });
   recordMcpContentSafety(mcpResult, mcpForbiddenValues);
   const cliBin = path.join("node_modules", ".bin", process.platform === "win32" ? "gmos.cmd" : "gmos");
-  recordCommand("fresh_install_cli_smoke", cliBin, ["version", "--format", "json"], {
+  const cliForbiddenValues = ["fresh-install", "consumer.db", freshInstallDbPath];
+  const cliResult = recordCommand("fresh_install_cli_smoke", cliBin, ["version", "--format", "json"], {
     cwd: freshInstallDir,
+    redactLogValues: cliForbiddenValues,
   });
+  recordCliVersionContentSafety(cliResult, cliForbiddenValues);
   const backupRestoreSmokeFile = path.join(freshInstallDir, "fresh-install-backup-restore-smoke.mjs");
   freshInstallGeneratedFilePaths.push(backupRestoreSmokeFile);
   writeFileSync(
