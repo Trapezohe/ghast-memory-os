@@ -75,6 +75,10 @@ function sha512File(file) {
   return createHash("sha512").update(readFileSync(file)).digest("hex");
 }
 
+function sha512IntegrityFile(file) {
+  return `sha512-${createHash("sha512").update(readFileSync(file)).digest("base64")}`;
+}
+
 function sqliteDatabaseFileGroupFingerprint(dbPath) {
   return [dbPath, `${dbPath}-wal`, `${dbPath}-shm`].map((file) => ({
     file: path.basename(file),
@@ -272,6 +276,7 @@ function tarballManifestFields(file) {
     tarballFileName: path.basename(file),
     tarballSizeBytes: statSync(file).size,
     tarballSha512: sha512File(file),
+    tarballIntegritySha512: sha512IntegrityFile(file),
   };
 }
 

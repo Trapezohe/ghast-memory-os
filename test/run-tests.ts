@@ -22298,6 +22298,7 @@ const releaseEvidencePackManifest = JSON.parse(
     tarballFileName?: string;
     tarballSizeBytes?: number;
     tarballSha512?: string;
+    tarballIntegritySha512?: string;
   };
 };
 const releaseEvidenceTarball = releaseEvidencePackManifest.artifacts?.tarball ?? "";
@@ -22314,6 +22315,10 @@ assert.equal(
 assert.equal(
   releaseEvidencePackManifest.artifacts?.tarballSha512,
   createHash("sha512").update(readFileSync(releaseEvidenceTarballPath)).digest("hex"),
+);
+assert.equal(
+  releaseEvidencePackManifest.artifacts?.tarballIntegritySha512,
+  `sha512-${createHash("sha512").update(readFileSync(releaseEvidenceTarballPath)).digest("base64")}`,
 );
 
 const releaseEvidenceScheduledDir = path.join(tmp, "release-evidence-scheduled-dry-run");
