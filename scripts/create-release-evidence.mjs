@@ -657,6 +657,10 @@ function validateInspectorContentSafety(stdout, forbiddenValues) {
   const health = report.health;
   const evidenceSummary = report.evidenceSummary;
   const counts = report.counts;
+  const failureKindCounts =
+    failureSummary && typeof failureSummary.byKind === "object" && failureSummary.byKind !== null
+      ? Object.values(failureSummary.byKind)
+      : [];
   if (
     !forgetSummary ||
     !nonNegativeInteger(forgetSummary.archivedMemories) ||
@@ -673,7 +677,10 @@ function validateInspectorContentSafety(stdout, forbiddenValues) {
     failureSummary.status !== "ok" ||
     !nonNegativeInteger(failureSummary.inspectedFailureCount) ||
     typeof failureSummary.byKind !== "object" ||
-    failureSummary.byKind === null
+    failureSummary.byKind === null ||
+    failureKindCounts.some((count) => !nonNegativeInteger(count)) ||
+    failureKindCounts.reduce((sum, count) => sum + count, 0) !==
+      failureSummary.inspectedFailureCount
   ) {
     throw new Error("inspector report did not include healthy failure summary");
   }
@@ -1238,6 +1245,24 @@ function runSelfTest() {
         inspected: 1,
         eligibleForLongTermMemory: 0,
         ineligibleForLongTermMemory: 0,
+      },
+    }),
+  );
+  expectInspectorValidationFailure(
+    "inconsistent inspector failure summary",
+    selfTestInspectorReport({
+      failureSummary: {
+        inspectedFailureCount: 2,
+        byKind: { privacy_leak: 1 },
+      },
+    }),
+  );
+  expectInspectorValidationFailure(
+    "negative inspector failure kind count",
+    selfTestInspectorReport({
+      failureSummary: {
+        inspectedFailureCount: 0,
+        byKind: { wrong_recall: -1 },
       },
     }),
   );
