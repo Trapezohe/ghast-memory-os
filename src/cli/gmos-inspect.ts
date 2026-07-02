@@ -33,6 +33,13 @@ function numberValue(name: string, fallback: number): number {
   return parsed;
 }
 
+function temporalModeValue(): "auto" | "current" | "history" | undefined {
+  const selected = value("--temporal-mode");
+  if (selected === undefined) return undefined;
+  if (selected === "auto" || selected === "current" || selected === "history") return selected;
+  throw new Error("--temporal-mode must be auto, current, or history");
+}
+
 function rowCount(rowCounts: Record<string, number>, table: string): number {
   return rowCounts[table] ?? 0;
 }
@@ -179,6 +186,7 @@ function renderMarkdown(report: InspectReport): string {
     `- dbPath: ${report.dbPath}`,
     `- generatedAt: ${report.generatedAt}`,
     `- query: ${report.query ? `\`${report.query}\`` : "none"}`,
+    `- temporalMode: ${report.temporalMode ?? "none"}`,
     "",
     "## Counts",
     "",
@@ -244,6 +252,7 @@ interface InspectReport {
   profileId: string;
   dbPath: string;
   query: string | null;
+  temporalMode: "auto" | "current" | "history" | null;
   counts: {
     evidence: number;
     activeMemories: number;
@@ -289,7 +298,7 @@ interface InspectReport {
 async function main(): Promise<void> {
   if (hasFlag("--help") || hasFlag("-h")) {
     process.stdout.write([
-      "Usage: gmos-inspect --db <path> [--profile <id>] [--query <text>] [--format json|markdown] [--output-file <path>]",
+      "Usage: gmos-inspect --db <path> [--profile <id>] [--query <text>] [--temporal-mode auto|current|history] [--format json|markdown] [--output-file <path>]",
       "",
       "Creates a content-safe local inspection report with counts, evidence summaries, and optional reconstruction diagnostics.",
       "The report does not print memory content, evidence text, table hashes, or context blocks.",
@@ -301,6 +310,7 @@ async function main(): Promise<void> {
   const dbPath = requireValue("--db");
   const profileId = value("--profile", "default") ?? "default";
   const query = value("--query") ?? null;
+  const temporalMode = temporalModeValue();
   const reportQuery = query ? redactForReport(query) : null;
   const outputFormat = format();
   const evidenceLimit = numberValue("--evidence-limit", 100);
@@ -318,6 +328,7 @@ async function main(): Promise<void> {
           includeEvidence: true,
           maxSteps: numberValue("--max-steps", 2),
           maxBranch: numberValue("--max-branch", 4),
+          temporalMode,
         })
       : null;
 
@@ -327,6 +338,7 @@ async function main(): Promise<void> {
       profileId: REDACTED_PROFILE_ID,
       dbPath: "[plaintext sqlite path redacted]",
       query: reportQuery,
+      temporalMode: query ? temporalMode ?? "auto" : null,
       counts: {
         evidence: evidence.length,
         activeMemories: activeMemories.length,

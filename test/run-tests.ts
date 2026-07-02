@@ -17797,6 +17797,8 @@ const cliInspect = spawnSync(
     "test",
     "--query",
     "project release api key: sk-inspectquerysecret1234567890",
+    "--temporal-mode",
+    "history",
     "--format",
     "json",
   ],
@@ -17808,6 +17810,7 @@ const cliInspectPayload = JSON.parse(cliInspect.stdout) as {
   profileId?: string;
   dbPath?: string;
   query?: string | null;
+  temporalMode?: string | null;
   counts?: { evidence?: number };
   rowCounts?: Record<string, number>;
   health?: {
@@ -17838,6 +17841,7 @@ const cliInspectPayload = JSON.parse(cliInspect.stdout) as {
 assert.equal(cliInspectPayload.schema, "gmos.inspect_report.v1");
 assert.equal(cliInspectPayload.profileId, "[profile id redacted]");
 assert.equal(cliInspectPayload.dbPath, "[plaintext sqlite path redacted]");
+assert.equal(cliInspectPayload.temporalMode, "history");
 assert.equal(cliInspectPayload.query?.includes("sk-inspectquerysecret"), false);
 assert.equal(cliInspectPayload.query?.includes("[redacted_secret]"), true);
 assert.equal(cliInspectPayload.health?.evidenceEvents, cliInspectPayload.rowCounts?.gmos_evidence_events);
@@ -17894,6 +17898,8 @@ const cliInspectMarkdown = spawnSync(
     "test",
     "--query",
     "project release api key: sk-inspectquerysecret1234567890",
+    "--temporal-mode",
+    "current",
     "--format",
     "markdown",
   ],
@@ -17905,6 +17911,7 @@ assert.match(cliInspectMarkdown.stdout, /## Health Signals/);
 assert.match(cliInspectMarkdown.stdout, /## Evidence Summary/);
 assert.match(cliInspectMarkdown.stdout, /## Forget Summary/);
 assert.match(cliInspectMarkdown.stdout, /profileId: `\[profile id redacted\]`/);
+assert.match(cliInspectMarkdown.stdout, /temporalMode: current/);
 assert.match(cliInspectMarkdown.stdout, /eligible for long-term memory:/);
 assert.match(cliInspectMarkdown.stdout, /derived residue:/);
 assert.match(cliInspectMarkdown.stdout, /world beliefs:/);
