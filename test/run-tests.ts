@@ -15166,6 +15166,24 @@ assert.equal(cliExportPayload.memories?.[0]?.id, cliAddMemory.id);
 assert.match(cliExportPayload.memories?.[0]?.content ?? "", /concise answers/);
 assert.equal(JSON.stringify(cliExportPayload).includes("护照办理偏好"), false);
 assert.equal(JSON.stringify(cliExportPayload).includes("李雷"), false);
+const cliExportMissingOutputFileValue = spawnSync(
+  process.execPath,
+  [
+    path.join(process.cwd(), "dist/cli/gmos.js"),
+    "export",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--output-file",
+    "--format",
+    "json",
+  ],
+  { cwd: tmp, encoding: "utf8" },
+);
+assert.notEqual(cliExportMissingOutputFileValue.status, 0);
+assert.match(cliExportMissingOutputFileValue.stderr, /--output-file requires a value/);
+assert.equal(existsSync(path.join(tmp, "--format")), false);
 const cliSensitiveExport = spawnSync(
   process.execPath,
   [
@@ -15587,6 +15605,24 @@ assert.equal(
   ),
   true,
 );
+const cliBackupMissingOutputFileValue = spawnSync(
+  process.execPath,
+  [
+    path.join(process.cwd(), "dist/cli/gmos.js"),
+    "backup",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--output-file",
+    "--format",
+    "json",
+  ],
+  { cwd: tmp, encoding: "utf8" },
+);
+assert.notEqual(cliBackupMissingOutputFileValue.status, 0);
+assert.match(cliBackupMissingOutputFileValue.stderr, /--output-file requires a value/);
+assert.equal(existsSync(path.join(tmp, "--format")), false);
 const cliProfileRestoreDb = path.join(tmp, "cli-profile-restore.db");
 const cliProfileRestore = spawnSync(
   process.execPath,

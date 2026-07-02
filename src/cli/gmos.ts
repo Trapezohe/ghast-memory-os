@@ -634,7 +634,7 @@ function renderCliVersionMarkdown(report: CliVersionReport): string {
 
 function writeJsonOutput(payload: unknown): void {
   const output = JSON.stringify(payload, null, 2);
-  const outputFile = value("--output-file");
+  const outputFile = strictOptionValue("--output-file");
   if (outputFile) {
     const resolved = path.resolve(process.cwd(), outputFile);
     mkdirSync(path.dirname(resolved), { recursive: true });
