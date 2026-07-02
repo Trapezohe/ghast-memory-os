@@ -392,6 +392,36 @@ function recordSkipped(name, reason) {
   manifest.checks.push({ name, status: "skipped", reason });
 }
 
+function recordSdkSmokeContentSafety(result, forbiddenValues) {
+  const check = {
+    name: "fresh_install_sdk_content_safety",
+    status: "pass",
+    command: "validate fresh_install_sdk_smoke stdout",
+  };
+  try {
+    const report = JSON.parse(result.stdout);
+    if (
+      report.ok !== true ||
+      report.package?.name !== packageJson.name ||
+      report.package?.version !== packageJson.version
+    ) {
+      throw new Error("unexpected SDK smoke report shape");
+    }
+    const stdout = result.stdout;
+    for (const [index, value] of forbiddenValues.entries()) {
+      if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
+        throw new Error(`SDK smoke report leaked forbidden value #${index + 1}`);
+      }
+    }
+  } catch (error) {
+    check.status = "fail";
+    check.reason = error instanceof Error ? error.message : String(error);
+    manifest.checks.push(check);
+    failAfterWriting(manifest, outputDir, `${check.name} failed`);
+  }
+  manifest.checks.push(check);
+}
+
 function recordCommand(name, command, args, options = {}) {
   if (dryRun) {
     recordSkipped(name, "dry-run");
@@ -1047,9 +1077,18 @@ if (skipFreshInstall) {
       console.log(JSON.stringify({ ok: true, package: runtimeInfo.package }));
     `,
   );
-  recordCommand("fresh_install_sdk_smoke", nodeBin, [smokeFile], {
+  const sdkForbiddenValues = [
+    "fresh-install",
+    "consumer.db",
+    "Release note response style",
+    "summary first",
+    freshInstallDbPath,
+  ];
+  const sdkResult = recordCommand("fresh_install_sdk_smoke", nodeBin, [smokeFile], {
     cwd: freshInstallDir,
+    redactLogValues: sdkForbiddenValues,
   });
+  recordSdkSmokeContentSafety(sdkResult, sdkForbiddenValues);
   const agentAdapterSmokeFile = path.join(freshInstallDir, "fresh-install-agent-adapter-smoke.mjs");
   freshInstallGeneratedFilePaths.push(agentAdapterSmokeFile);
   writeFileSync(
