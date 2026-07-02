@@ -118,7 +118,7 @@ npm run examples:quickstart
   package version, and host compatibility.
 - Report-only evolution failure review for clustering failure logs into
   hypotheses and patch candidates without auto-apply or auto-rollout.
-- CLI: `gmos`.
+- CLI binaries: `gmos`, `ghast-memory`, and `gmos-inspect`.
 
 ## Known Limitations
 
