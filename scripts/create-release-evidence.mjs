@@ -495,11 +495,11 @@ function validateCliVersionContentSafety(stdout, forbiddenValues, expectedPackag
   }
 }
 
-function recordCliVersionContentSafety(result, forbiddenValues) {
+function recordCliVersionContentSafety(result, forbiddenValues, options = {}) {
   const check = {
-    name: "fresh_install_cli_content_safety",
+    name: options.name ?? "fresh_install_cli_content_safety",
     status: "pass",
-    command: "validate fresh_install_cli_smoke stdout",
+    command: options.command ?? "validate fresh_install_cli_smoke stdout",
   };
   try {
     validateCliVersionContentSafety(result.stdout, forbiddenValues, packageJson);
@@ -2207,6 +2207,23 @@ if (skipFreshInstall) {
     redactLogValues: cliForbiddenValues,
   });
   recordCliVersionContentSafety(cliResult, cliForbiddenValues);
+  const cliAliasBin = path.join(
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "ghast-memory.cmd" : "ghast-memory",
+  );
+  const cliAliasResult = recordCommand("fresh_install_ghast_memory_alias_smoke", cliAliasBin, [
+    "version",
+    "--format",
+    "json",
+  ], {
+    cwd: freshInstallDir,
+    redactLogValues: cliForbiddenValues,
+  });
+  recordCliVersionContentSafety(cliAliasResult, cliForbiddenValues, {
+    name: "fresh_install_ghast_memory_alias_content_safety",
+    command: "validate fresh_install_ghast_memory_alias_smoke stdout",
+  });
   const backupRestoreSmokeFile = path.join(freshInstallDir, "fresh-install-backup-restore-smoke.mjs");
   freshInstallGeneratedFilePaths.push(backupRestoreSmokeFile);
   writeFileSync(
