@@ -408,7 +408,15 @@ function recordSdkSmokeContentSafety(result, forbiddenValues) {
     if (
       report.ok !== true ||
       report.package?.name !== packageJson.name ||
-      report.package?.version !== packageJson.version
+      report.package?.version !== packageJson.version ||
+      report.trustContract?.localFirst !== true ||
+      report.trustContract?.defaultStorage !== "sqlite" ||
+      report.trustContract?.encryptedByDefault !== false ||
+      report.trustContract?.cloudRequired !== false ||
+      report.mcpPrepareContextAvailable !== true ||
+      report.contextInjected !== true ||
+      !Number.isInteger(report.evidenceCount) ||
+      report.evidenceCount < 1
     ) {
       throw new Error("unexpected SDK smoke report shape");
     }
@@ -1258,10 +1266,18 @@ if (skipFreshInstall) {
         messages: [{ role: "user", content: "How should this release note be written?" }],
         includeEvidence: true,
       });
-      assert.match(prepared.contextBlock, /summary first/);
+      const contextInjected = /summary first/.test(prepared.contextBlock);
+      assert.equal(contextInjected, true);
       assert.equal(prepared.evidence.length >= 1, true);
       await memory.close();
-      console.log(JSON.stringify({ ok: true, package: runtimeInfo.package }));
+      console.log(JSON.stringify({
+        ok: true,
+        package: runtimeInfo.package,
+        trustContract: runtimeInfo.trustContract,
+        mcpPrepareContextAvailable: runtimeInfo.publicSurface.mcpTools.includes("memory.prepare_context"),
+        contextInjected,
+        evidenceCount: prepared.evidence.length,
+      }));
     `,
   );
   const sdkForbiddenValues = [
