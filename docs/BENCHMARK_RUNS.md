@@ -3,6 +3,33 @@
 This page archives local deterministic benchmark snapshots. These are not
 official benchmark scores, leaderboard claims, or SOTA claims.
 
+## alpha.69 release evidence snapshot
+
+Run date: 2026-07-02.
+
+Manifest completeness: full local release evidence bundle.
+
+- Package: `@ghast/memory@0.1.0-alpha.69`.
+- Git SHA: `6f6bfdc1edb570c282dbeb0ed30ffeb712341ce1`.
+- Dirty worktree: `no`.
+- Command:
+  `npm run release:evidence -- --output-dir ./release-evidence/alpha69-6f6bfdc`.
+- PR gate command: `npm run gate:pr`.
+- Release evidence checks: `27/27` pass.
+- CI policy in the bundle: push trigger absent; remote CI is opt-in through
+  `workflow_dispatch`.
+
+The release evidence bundle verified the local PR gate, npm pack dry run, fresh
+tarball install, SDK smoke, agent adapter smoke, host adapter smoke, local HTTP
+smoke, MCP smoke, CLI smoke, backup/restore smoke, report-only evolution smoke,
+doctor/status/inspector content-safety checks, and cleanup of generated
+plaintext SQLite and npm cache artifacts.
+
+This entry is a local SDK release gate snapshot. It is not an official
+LongMemEval, LoCoMo, STATE-Bench, Mem2ActBench, or BEAM score. Use it to
+reproduce package health and integration safety for this commit, not to claim
+external benchmark ranking.
+
 ## alpha.67 local adapter snapshot
 
 Run date: 2026-06-29.
