@@ -214,6 +214,11 @@ gmos-inspect --db ./gmos.db --profile local --query "project release" --temporal
 gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
 ```
 
+Value-taking CLI options use the next space-separated token as the value. If
+that token is missing or starts with `--`, gmOS reports `<option> requires a
+value`. For path option values whose filename starts with `--`, pass
+`./--report.json` or an absolute path.
+
 `gmos-inspect` emits a content-safe local inspection report. It reports counts,
 evidence eligibility/source summaries, row-count summaries, forget residue
 counts for archived-memory derived world-belief/association residue, and

@@ -360,6 +360,11 @@ gmos backup --db ./gmos.db --profile local --mode safe --output-file ./gmos-prof
 gmos restore --db ./new-gmos.db --profile local-restored --input-file ./gmos-profile-backup.json
 ```
 
+Value-taking CLI options use the next space-separated token as the value. If
+that token is missing or starts with `--`, gmOS reports `<option> requires a
+value`. For path option values whose filename starts with `--`, pass
+`./--export.json` or an absolute path.
+
 Safe exports and backups exclude archived, sensitive, and person memories by
 default. Full backups are plaintext JSON and should be used only inside a trusted
 host boundary.
