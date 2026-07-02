@@ -317,6 +317,7 @@ const freshInstallAgentDbPath = path.join(freshInstallDir, "consumer-agent.db");
 const freshInstallHostDbPath = path.join(freshInstallDir, "consumer-host.db");
 const freshInstallHttpDbPath = path.join(freshInstallDir, "consumer-http.db");
 const freshInstallMcpDbPath = path.join(freshInstallDir, "consumer-mcp.db");
+const freshInstallEvolutionDbPath = path.join(freshInstallDir, "consumer-evolution.db");
 const freshInstallRestoreDbPath = path.join(freshInstallDir, "consumer-restore.db");
 const freshInstallBackupPath = path.join(freshInstallDir, "consumer-backup.json");
 const freshInstallDbPaths = [
@@ -325,6 +326,7 @@ const freshInstallDbPaths = [
   freshInstallHostDbPath,
   freshInstallHttpDbPath,
   freshInstallMcpDbPath,
+  freshInstallEvolutionDbPath,
   freshInstallRestoreDbPath,
 ];
 const freshInstallGeneratedFilePaths = [freshInstallBackupPath];
@@ -813,6 +815,43 @@ function recordBackupRestoreContentSafety(result, forbiddenValues) {
     for (const [index, value] of forbiddenValues.entries()) {
       if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
         throw new Error(`backup/restore smoke report leaked forbidden value #${index + 1}`);
+      }
+    }
+  } catch (error) {
+    check.status = "fail";
+    check.reason = error instanceof Error ? error.message : String(error);
+    manifest.checks.push(check);
+    failAfterWriting(manifest, outputDir, `${check.name} failed`);
+  }
+  manifest.checks.push(check);
+}
+
+function recordEvolutionContentSafety(result, forbiddenValues) {
+  const check = {
+    name: "fresh_install_evolution_content_safety",
+    status: "pass",
+    command: "validate fresh_install_evolution_smoke stdout",
+  };
+  try {
+    const report = JSON.parse(result.stdout);
+    if (
+      report.ok !== true ||
+      report.sdkMode !== "report_only" ||
+      report.cliMode !== "report_only" ||
+      report.autoApply !== false ||
+      report.autoRollout !== false ||
+      !Number.isInteger(report.sdkClusterCount) ||
+      report.sdkClusterCount < 2 ||
+      !Number.isInteger(report.cliInspectedFailureCount) ||
+      report.cliInspectedFailureCount < 2 ||
+      report.sensitiveSampleRedacted !== true
+    ) {
+      throw new Error("unexpected evolution smoke report shape");
+    }
+    const stdout = result.stdout;
+    for (const [index, value] of forbiddenValues.entries()) {
+      if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
+        throw new Error(`evolution smoke report leaked forbidden value #${index + 1}`);
       }
     }
   } catch (error) {
@@ -1596,6 +1635,113 @@ if (skipFreshInstall) {
     },
   );
   recordBackupRestoreContentSafety(backupRestoreResult, backupRestoreForbiddenValues);
+  const evolutionSmokeFile = path.join(freshInstallDir, "fresh-install-evolution-smoke.mjs");
+  writeFileSync(
+    evolutionSmokeFile,
+    `
+      import { spawnSync } from "node:child_process";
+      import { strict as assert } from "node:assert";
+      import path from "node:path";
+      import { createMemoryOS } from "@ghast/memory";
+      import {
+        createEvolutionControlPlane,
+        renderEvolutionFailureReviewMarkdown,
+      } from "@ghast/memory/evolution";
+      import { createSqliteMemoryStore } from "@ghast/memory/store/sqlite";
+
+      const profileId = "fresh-install-evolution";
+      const store = createSqliteMemoryStore({ path: path.join(process.cwd(), "consumer-evolution.db") });
+      const memory = createMemoryOS({ profileId, store });
+      const cliBin = path.join(
+        process.cwd(),
+        "node_modules",
+        ".bin",
+        process.platform === "win32" ? "gmos.cmd" : "gmos",
+      );
+      try {
+        await memory.commitOutcome({
+          profileId,
+          taskId: "fresh-evolution-task",
+          objective: "Verify report-only evolution review.",
+          status: "failed",
+          summary: "Evolution smoke wrong recall sample.",
+          failureKind: "wrong_recall",
+        });
+        await memory.recordFeedback({
+          profileId,
+          content: "Evolution smoke privacy leak sample with SSN 123-45-6789.",
+          failureKind: "privacy_leak",
+        });
+        const controlPlane = createEvolutionControlPlane({ store, profileId });
+        const sdkReport = await controlPlane.reviewFailures({ limit: 10 });
+        assert.equal(sdkReport.mode, "report_only");
+        assert.equal(sdkReport.autoApply, false);
+        assert.equal(sdkReport.autoRollout, false);
+        assert.equal(sdkReport.clusters.length >= 2, true);
+        const markdown = renderEvolutionFailureReviewMarkdown(sdkReport);
+        assert.match(markdown, /gmOS Evolution Failure Review/);
+        const sdkReportJson = JSON.stringify(sdkReport);
+        assert.equal(sdkReportJson.includes("123-45-6789"), false);
+        assert.equal(sdkReportJson.includes("[redacted_sensitive_failure]"), true);
+
+        const cliResult = spawnSync(
+          cliBin,
+          [
+            "evolution",
+            "report",
+            "--db",
+            "consumer-evolution.db",
+            "--profile",
+            profileId,
+            "--format",
+            "json",
+          ],
+          {
+            cwd: process.cwd(),
+            encoding: "utf8",
+            shell: process.platform === "win32",
+          },
+        );
+        assert.equal(cliResult.status, 0);
+        const cliReport = JSON.parse(cliResult.stdout);
+        assert.equal(cliReport.mode, "report_only");
+        assert.equal(cliReport.autoApply, false);
+        assert.equal(cliReport.autoRollout, false);
+        assert.equal(cliReport.inspectedFailureCount >= 2, true);
+        assert.equal(JSON.stringify(cliReport).includes("123-45-6789"), false);
+        console.log(JSON.stringify({
+          ok: true,
+          sdkMode: sdkReport.mode,
+          cliMode: cliReport.mode,
+          autoApply: sdkReport.autoApply || cliReport.autoApply,
+          autoRollout: sdkReport.autoRollout || cliReport.autoRollout,
+          sdkClusterCount: sdkReport.clusters.length,
+          cliInspectedFailureCount: cliReport.inspectedFailureCount,
+          sensitiveSampleRedacted: sdkReportJson.includes("[redacted_sensitive_failure]"),
+        }));
+      } finally {
+        await memory.close();
+      }
+    `,
+  );
+  const evolutionForbiddenValues = [
+    "fresh-install-evolution",
+    "consumer-evolution.db",
+    "Evolution smoke wrong recall sample",
+    "Evolution smoke privacy leak sample",
+    "123-45-6789",
+    freshInstallEvolutionDbPath,
+  ];
+  const evolutionResult = recordCommand(
+    "fresh_install_evolution_smoke",
+    nodeBin,
+    [evolutionSmokeFile],
+    {
+      cwd: freshInstallDir,
+      redactLogValues: evolutionForbiddenValues,
+    },
+  );
+  recordEvolutionContentSafety(evolutionResult, evolutionForbiddenValues);
   const doctorForbiddenValues = [
     "consumer.db",
     path.join(freshInstallDir, "consumer.db"),
