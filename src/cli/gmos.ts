@@ -71,7 +71,12 @@ import { getGmosRuntimeInfo, type GmosRuntimeInfo } from "../runtime-info.js";
 
 function value(name: string, fallback?: string): string | undefined {
   const index = process.argv.indexOf(name);
-  return index === -1 ? fallback : process.argv[index + 1] ?? fallback;
+  if (index === -1) return fallback;
+  const next = process.argv[index + 1];
+  if (next === undefined || next.startsWith("--")) {
+    throw new Error(`${name} requires a value`);
+  }
+  return next;
 }
 
 function values(name: string): string[] {
@@ -88,13 +93,7 @@ function values(name: string): string[] {
 }
 
 function strictOptionValue(name: string, fallback?: string): string | undefined {
-  const index = process.argv.indexOf(name);
-  if (index === -1) return fallback;
-  const next = process.argv[index + 1];
-  if (next === undefined || next.startsWith("--")) {
-    throw new Error(`${name} requires a value`);
-  }
-  return next;
+  return value(name, fallback);
 }
 
 function has(name: string): boolean {

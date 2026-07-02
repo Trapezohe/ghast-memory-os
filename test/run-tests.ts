@@ -14768,6 +14768,20 @@ try {
 }
 
 const cliLowLevelDb = path.join(tmp, "cli-low-level.db");
+const cliMissingDbValue = spawnSync(
+  process.execPath,
+  [
+    path.join(process.cwd(), "dist/cli/gmos.js"),
+    "list",
+    "--db",
+    "--profile",
+    "cli_low",
+  ],
+  { cwd: tmp, encoding: "utf8" },
+);
+assert.notEqual(cliMissingDbValue.status, 0);
+assert.match(cliMissingDbValue.stderr, /--db requires a value/);
+assert.equal(existsSync(path.join(tmp, "--profile")), false);
 const cliAdd = spawnSync(
   process.execPath,
   [
