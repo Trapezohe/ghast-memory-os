@@ -1286,7 +1286,11 @@ if (skipFreshInstall) {
         });
         assert.equal(forgetResult.archivedMemoryIds.length >= 1, true);
         const rowCounts = await store.rowCounts();
-        assert.equal(rowCounts.gmos_failure_events >= 2, true);
+        assert.equal(rowCounts.gmos_failure_events, 2);
+        const failureKinds = (await store.listFailures({ profileId: "fresh-install-agent" }))
+          .map((failure) => failure.failureKind)
+          .sort();
+        assert.deepEqual(failureKinds, ["controller_route_error", "wrong_recall"]);
         console.log(JSON.stringify({
           ok: true,
           adapter: "agent",
@@ -1294,6 +1298,7 @@ if (skipFreshInstall) {
           actionPolicyCount: turn.actionPolicies.length,
           evidenceCount: turn.prepared.evidence.length,
           failureEvents: rowCounts.gmos_failure_events,
+          failureKinds,
           archivedMemoryCount: forgetResult.archivedMemoryIds.length,
         }));
       } finally {
@@ -1565,12 +1570,19 @@ if (skipFreshInstall) {
         });
         assert.equal(status.status, 200);
         const statusBody = await status.json();
-        assert.equal(statusBody.report.failureSummary.inspectedFailureCount >= 2, true);
+        assert.equal(statusBody.report.failureSummary.inspectedFailureCount, 2);
+        assert.equal(statusBody.report.failureSummary.byKind.controller_route_error, 1);
+        assert.equal(statusBody.report.failureSummary.byKind.wrong_recall, 1);
+        assert.deepEqual(Object.keys(statusBody.report.failureSummary.byKind).sort(), [
+          "controller_route_error",
+          "wrong_recall",
+        ]);
         console.log(JSON.stringify({
           ok: true,
           routes: ["POST /mcp/call", "POST /reconstruct", "POST /commit-outcome", "POST /feedback"],
           mcpCallRuntimeInfoSchema: mcpRuntimeInfoBody.runtimeInfo.schema,
           failureEvents: statusBody.report.failureSummary.inspectedFailureCount,
+          failureKinds: Object.keys(statusBody.report.failureSummary.byKind).sort(),
         }));
       } finally {
         await server.close();
@@ -1642,11 +1654,16 @@ if (skipFreshInstall) {
         });
         assert.equal(feedback.isError, undefined);
         const rowCounts = await store.rowCounts();
-        assert.equal(rowCounts.gmos_failure_events >= 2, true);
+        assert.equal(rowCounts.gmos_failure_events, 2);
+        const failureKinds = (await store.listFailures({ profileId: "fresh-install-mcp" }))
+          .map((failure) => failure.failureKind)
+          .sort();
+        assert.deepEqual(failureKinds, ["controller_route_error", "wrong_recall"]);
         console.log(JSON.stringify({
           ok: true,
           tools: ["memory.prepare_context", "memory.commit_outcome", "memory.record_feedback"],
           failureEvents: rowCounts.gmos_failure_events,
+          failureKinds,
         }));
       } finally {
         await memory.close();

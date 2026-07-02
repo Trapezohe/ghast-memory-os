@@ -83,7 +83,11 @@ try {
   });
   assert.equal(feedback.isError, undefined);
   const rowCounts = await store.rowCounts();
-  assert.equal(rowCounts.gmos_failure_events >= 2, true);
+  assert.equal(rowCounts.gmos_failure_events, 2);
+  const failureKinds = (await store.listFailures({ profileId }))
+    .map((failure) => failure.failureKind)
+    .sort();
+  assert.deepEqual(failureKinds, ["controller_route_error", "wrong_recall"]);
 
   console.log(
     JSON.stringify(
@@ -97,6 +101,7 @@ try {
         sensitiveOverrideRejected: sensitiveOverride.isError === true,
         evidencePathSchema: evidencePath.structuredContent.explanation.schema,
         failureEvents: rowCounts.gmos_failure_events,
+        failureKinds,
       },
       null,
       2,

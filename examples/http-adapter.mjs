@@ -134,7 +134,13 @@ try {
   assert.equal(status.response.status, 200);
   assert.equal(status.body.report.storage.schemaVersion, 7);
   assert.equal(status.body.report.hostCompatibility.level, "L4");
-  assert.equal(status.body.report.failureSummary.inspectedFailureCount >= 2, true);
+  assert.equal(status.body.report.failureSummary.inspectedFailureCount, 2);
+  assert.equal(status.body.report.failureSummary.byKind.controller_route_error, 1);
+  assert.equal(status.body.report.failureSummary.byKind.wrong_recall, 1);
+  assert.deepEqual(Object.keys(status.body.report.failureSummary.byKind).sort(), [
+    "controller_route_error",
+    "wrong_recall",
+  ]);
 
   console.log(
     JSON.stringify(
@@ -151,6 +157,7 @@ try {
         statusSchemaVersion: status.body.report.storage.schemaVersion,
         hostLevel: status.body.report.hostCompatibility.level,
         failureEvents: status.body.report.failureSummary.inspectedFailureCount,
+        failureKinds: Object.keys(status.body.report.failureSummary.byKind).sort(),
       },
       null,
       2,
