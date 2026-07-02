@@ -17631,6 +17631,14 @@ assert.match(cliVersionMarkdown.stdout, /# gmOS CLI Version/);
 assert.match(cliVersionMarkdown.stdout, /Local-first: yes/);
 assert.match(cliVersionMarkdown.stdout, /Encrypted by default: no/);
 assert.equal(existsSync(cliVersionDefaultDb), false);
+const cliVersionInvalidFormat = spawnSync(
+  process.execPath,
+  ["--import", tsxLoader, path.join(process.cwd(), "src/cli/gmos.ts"), "version", "--format", "yaml"],
+  { cwd: cliVersionCwd, encoding: "utf8" },
+);
+assert.notEqual(cliVersionInvalidFormat.status, 0);
+assert.match(cliVersionInvalidFormat.stderr, /--format must be json or markdown/);
+assert.equal(existsSync(cliVersionDefaultDb), false);
 const cliShortVersion = spawnSync(
   process.execPath,
   ["--import", tsxLoader, path.join(process.cwd(), "src/cli/gmos.ts"), "--version"],

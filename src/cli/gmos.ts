@@ -169,6 +169,9 @@ function writeOutputFileIfRequested(optionName: string, content: string): void {
 
 function printReport(json: unknown, markdown: string): void {
   const format = value("--format", "json");
+  if (format !== "json" && format !== "markdown") {
+    throw new Error("--format must be json or markdown");
+  }
   const jsonOutput = JSON.stringify(json, null, 2);
   const output = format === "markdown" ? markdown : jsonOutput;
   writeReportIfRequested(output);
