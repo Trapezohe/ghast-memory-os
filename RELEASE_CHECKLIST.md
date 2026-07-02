@@ -133,11 +133,18 @@ npm pack --dry-run
 npm publish --access public
 ```
 
+If host applications consume the GitHub release tarball instead of npm, upload
+the release evidence tarball to the matching versioned GitHub release before
+updating those hosts. Verify that the public tarball URL returns `200` and that
+its size, sha512, and npm-style SRI integrity match `manifest.json`.
+
 After publish:
 
 - install the published package in a fresh temporary project;
 - run quickstart and consumer smoke against the published package;
 - tag the release commit;
+- update consuming app dependencies only after the published npm package or
+  GitHub release tarball has been verified;
 - update the README baseline only if the new report is reproducible;
 - keep current external benchmark baselines visible instead of replacing them with
   only aggregate scores.
