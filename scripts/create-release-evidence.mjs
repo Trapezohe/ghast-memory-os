@@ -671,7 +671,15 @@ function recordHttpContentSafety(result, forbiddenValues) {
   };
   try {
     const report = JSON.parse(result.stdout);
-    if (report.ok !== true || report.route !== "POST /reconstruct") {
+    if (
+      report.ok !== true ||
+      !Array.isArray(report.routes) ||
+      !report.routes.includes("POST /reconstruct") ||
+      !report.routes.includes("POST /commit-outcome") ||
+      !report.routes.includes("POST /feedback") ||
+      !Number.isInteger(report.failureEvents) ||
+      report.failureEvents < 2
+    ) {
       throw new Error("unexpected HTTP smoke report shape");
     }
     const stdout = result.stdout;
@@ -892,7 +900,46 @@ if (skipFreshInstall) {
         const reconstructedBody = await reconstructed.json();
         assert.equal(reconstructedBody.reconstructed.paths.length > 0, true);
         assert.equal(JSON.stringify(reconstructedBody).includes("fresh-install-http-token"), false);
-        console.log(JSON.stringify({ ok: true, route: "POST /reconstruct" }));
+        const failedOutcome = await fetch(address.url + "/commit-outcome", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer fresh-install-http-token",
+          },
+          body: JSON.stringify({
+            profileId: "fresh-install-http",
+            taskId: "fresh-install-http-task",
+            objective: "Verify fresh install HTTP feedback routes.",
+            status: "failed",
+            summary: "Fresh install HTTP route missed release evidence.",
+            failureKind: "controller_route_error",
+          }),
+        });
+        assert.equal(failedOutcome.status, 200);
+        const feedback = await fetch(address.url + "/feedback", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer fresh-install-http-token",
+          },
+          body: JSON.stringify({
+            profileId: "fresh-install-http",
+            content: "Fresh install HTTP feedback should be recorded.",
+            failureKind: "wrong_recall",
+          }),
+        });
+        assert.equal(feedback.status, 200);
+        const status = await fetch(address.url + "/status?profileId=fresh-install-http", {
+          headers: { authorization: "Bearer fresh-install-http-token" },
+        });
+        assert.equal(status.status, 200);
+        const statusBody = await status.json();
+        assert.equal(statusBody.report.failureSummary.inspectedFailureCount >= 2, true);
+        console.log(JSON.stringify({
+          ok: true,
+          routes: ["POST /reconstruct", "POST /commit-outcome", "POST /feedback"],
+          failureEvents: statusBody.report.failureSummary.inspectedFailureCount,
+        }));
       } finally {
         await server.close();
         await memory.close();
@@ -903,6 +950,8 @@ if (skipFreshInstall) {
     "fresh-install-http",
     "fresh-install-http-token",
     "consumer-http.db",
+    "Fresh install HTTP route missed release evidence.",
+    "Fresh install HTTP feedback should be recorded.",
     freshInstallHttpDbPath,
   ];
   const httpResult = recordCommand("fresh_install_http_smoke", nodeBin, [httpSmokeFile], {

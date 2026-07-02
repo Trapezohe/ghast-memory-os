@@ -97,10 +97,34 @@ try {
   assert.ok(reconstructed.body.reconstructed.paths.length > 0);
   assert.equal(JSON.stringify(reconstructed.body).includes("local-example-token"), false);
 
+  const failedOutcome = await jsonRequest("/commit-outcome", {
+    method: "POST",
+    body: {
+      profileId,
+      taskId: "http-example-task",
+      objective: "Prepare HTTP integration context",
+      status: "failed",
+      summary: "HTTP adapter missed the evidence route during integration.",
+      failureKind: "controller_route_error",
+    },
+  });
+  assert.equal(failedOutcome.response.status, 200);
+
+  const feedback = await jsonRequest("/feedback", {
+    method: "POST",
+    body: {
+      profileId,
+      content: "HTTP adapter should preserve feedback events for release checks.",
+      failureKind: "wrong_recall",
+    },
+  });
+  assert.equal(feedback.response.status, 200);
+
   const status = await jsonRequest(`/status?profileId=${encodeURIComponent(profileId)}`);
   assert.equal(status.response.status, 200);
   assert.equal(status.body.report.storage.schemaVersion, 7);
   assert.equal(status.body.report.hostCompatibility.level, "L4");
+  assert.equal(status.body.report.failureSummary.inspectedFailureCount >= 2, true);
 
   console.log(
     JSON.stringify(
@@ -115,6 +139,7 @@ try {
         reconstructedPathCount: reconstructed.body.reconstructed.paths.length,
         statusSchemaVersion: status.body.report.storage.schemaVersion,
         hostLevel: status.body.report.hostCompatibility.level,
+        failureEvents: status.body.report.failureSummary.inspectedFailureCount,
       },
       null,
       2,
