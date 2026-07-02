@@ -427,6 +427,32 @@ function recordSdkSmokeContentSafety(result, forbiddenValues) {
   manifest.checks.push(check);
 }
 
+function validateCliVersionContentSafety(stdout, forbiddenValues, expectedPackage) {
+  const report = JSON.parse(stdout);
+  const expectedBinaries = Object.keys(expectedPackage.bin ?? {});
+  const expectedExports = Object.keys(expectedPackage.exports ?? {});
+  if (
+    report.schema !== "gmos.cli_version.v1" ||
+    report.package?.name !== expectedPackage.name ||
+    report.package?.version !== expectedPackage.version ||
+    !sameStringSet(report.cli?.binaries, expectedBinaries) ||
+    !Array.isArray(report.cli?.commands) ||
+    !report.cli?.commands?.includes("evolution") ||
+    !sameStringSet(report.packageExports, expectedExports) ||
+    report.trustContract?.localFirst !== true ||
+    report.trustContract?.defaultStorage !== "sqlite" ||
+    report.trustContract?.encryptedByDefault !== false ||
+    report.trustContract?.cloudRequired !== false
+  ) {
+    throw new Error("unexpected CLI version report shape");
+  }
+  for (const [index, value] of forbiddenValues.entries()) {
+    if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
+      throw new Error(`CLI version report leaked forbidden value #${index + 1}`);
+    }
+  }
+}
+
 function recordCliVersionContentSafety(result, forbiddenValues) {
   const check = {
     name: "fresh_install_cli_content_safety",
@@ -434,30 +460,7 @@ function recordCliVersionContentSafety(result, forbiddenValues) {
     command: "validate fresh_install_cli_smoke stdout",
   };
   try {
-    const report = JSON.parse(result.stdout);
-    const expectedBinaries = Object.keys(packageJson.bin ?? {});
-    const expectedExports = Object.keys(packageJson.exports ?? {});
-    if (
-      report.schema !== "gmos.cli_version.v1" ||
-      report.package?.name !== packageJson.name ||
-      report.package?.version !== packageJson.version ||
-      !sameStringSet(report.cli?.binaries, expectedBinaries) ||
-      !Array.isArray(report.cli?.commands) ||
-      !report.cli?.commands?.includes("evolution") ||
-      !sameStringSet(report.packageExports, expectedExports) ||
-      report.trustContract?.localFirst !== true ||
-      report.trustContract?.defaultStorage !== "sqlite" ||
-      report.trustContract?.encryptedByDefault !== false ||
-      report.trustContract?.cloudRequired !== false
-    ) {
-      throw new Error("unexpected CLI version report shape");
-    }
-    const stdout = result.stdout;
-    for (const [index, value] of forbiddenValues.entries()) {
-      if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
-        throw new Error(`CLI version report leaked forbidden value #${index + 1}`);
-      }
-    }
+    validateCliVersionContentSafety(result.stdout, forbiddenValues, packageJson);
   } catch (error) {
     check.status = "fail";
     check.reason = error instanceof Error ? error.message : String(error);
@@ -644,8 +647,60 @@ function expectInspectorValidationFailure(name, stdout) {
   throw new Error(`${name} unexpectedly passed`);
 }
 
+function selfTestCliVersionReport(expectedPackage, overrides = {}) {
+  const { pkg, cli, trustContract, ...topLevelOverrides } = overrides;
+  return JSON.stringify({
+    schema: "gmos.cli_version.v1",
+    package: {
+      name: expectedPackage.name,
+      version: expectedPackage.version,
+      ...pkg,
+    },
+    cli: {
+      binaries: Object.keys(expectedPackage.bin ?? {}),
+      commands: ["evolution"],
+      ...cli,
+    },
+    packageExports: Object.keys(expectedPackage.exports ?? {}),
+    trustContract: {
+      localFirst: true,
+      defaultStorage: "sqlite",
+      encryptedByDefault: false,
+      cloudRequired: false,
+      ...trustContract,
+    },
+    ...topLevelOverrides,
+  });
+}
+
+function expectCliVersionValidationFailure(name, stdout, expectedPackage) {
+  try {
+    validateCliVersionContentSafety(stdout, ["consumer.db"], expectedPackage);
+  } catch {
+    return;
+  }
+  throw new Error(`${name} unexpectedly passed`);
+}
+
 function runSelfTest() {
+  const expectedPackage = readJson("package.json");
   validateInspectorContentSafety(selfTestInspectorReport(), ["secret-value"]);
+  validateCliVersionContentSafety(selfTestCliVersionReport(expectedPackage), ["consumer.db"], expectedPackage);
+  expectCliVersionValidationFailure(
+    "string cli binaries",
+    selfTestCliVersionReport(expectedPackage, { cli: { binaries: Object.keys(expectedPackage.bin ?? {}).join(",") } }),
+    expectedPackage,
+  );
+  expectCliVersionValidationFailure(
+    "missing default storage",
+    selfTestCliVersionReport(expectedPackage, { trustContract: { defaultStorage: undefined } }),
+    expectedPackage,
+  );
+  expectCliVersionValidationFailure(
+    "forbidden cli value",
+    selfTestCliVersionReport(expectedPackage, { cli: { commands: ["evolution", "consumer.db"] } }),
+    expectedPackage,
+  );
   expectInspectorValidationFailure(
     "empty inspector report",
     selfTestInspectorReport({
