@@ -317,13 +317,17 @@ const freshInstallAgentDbPath = path.join(freshInstallDir, "consumer-agent.db");
 const freshInstallHostDbPath = path.join(freshInstallDir, "consumer-host.db");
 const freshInstallHttpDbPath = path.join(freshInstallDir, "consumer-http.db");
 const freshInstallMcpDbPath = path.join(freshInstallDir, "consumer-mcp.db");
+const freshInstallRestoreDbPath = path.join(freshInstallDir, "consumer-restore.db");
+const freshInstallBackupPath = path.join(freshInstallDir, "consumer-backup.json");
 const freshInstallDbPaths = [
   freshInstallDbPath,
   freshInstallAgentDbPath,
   freshInstallHostDbPath,
   freshInstallHttpDbPath,
   freshInstallMcpDbPath,
+  freshInstallRestoreDbPath,
 ];
+const freshInstallGeneratedFilePaths = [freshInstallBackupPath];
 const npmCacheDir = path.join(outputDir, ".npm-cache");
 
 mkdirSync(outputDir, { recursive: true });
@@ -785,6 +789,41 @@ function recordHostAdapterContentSafety(result, forbiddenValues) {
   manifest.checks.push(check);
 }
 
+function recordBackupRestoreContentSafety(result, forbiddenValues) {
+  const check = {
+    name: "fresh_install_backup_restore_content_safety",
+    status: "pass",
+    command: "validate fresh_install_backup_restore_smoke stdout",
+  };
+  try {
+    const report = JSON.parse(result.stdout);
+    if (
+      report.ok !== true ||
+      report.backupSchema !== "gmos.profile_backup.v1" ||
+      report.restoreSchema !== "gmos.profile_backup_restore_result.v1" ||
+      !Number.isInteger(report.backupMemoryCount) ||
+      report.backupMemoryCount < 1 ||
+      !Number.isInteger(report.restoredMemoryCount) ||
+      report.restoredMemoryCount < 1 ||
+      report.restoredSearchHit !== true
+    ) {
+      throw new Error("unexpected backup/restore smoke report shape");
+    }
+    const stdout = result.stdout;
+    for (const [index, value] of forbiddenValues.entries()) {
+      if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
+        throw new Error(`backup/restore smoke report leaked forbidden value #${index + 1}`);
+      }
+    }
+  } catch (error) {
+    check.status = "fail";
+    check.reason = error instanceof Error ? error.message : String(error);
+    manifest.checks.push(check);
+    failAfterWriting(manifest, outputDir, `${check.name} failed`);
+  }
+  manifest.checks.push(check);
+}
+
 function recordMcpContentSafety(result, forbiddenValues) {
   const check = {
     name: "fresh_install_mcp_content_safety",
@@ -820,9 +859,12 @@ function recordMcpContentSafety(result, forbiddenValues) {
 }
 
 function cleanupFreshInstallDatabaseFiles() {
-  const files = freshInstallDbPaths.flatMap((dbPath) =>
-    ["", "-shm", "-wal"].map((suffix) => `${dbPath}${suffix}`),
-  );
+  const files = [
+    ...freshInstallDbPaths.flatMap((dbPath) =>
+      ["", "-shm", "-wal"].map((suffix) => `${dbPath}${suffix}`),
+    ),
+    ...freshInstallGeneratedFilePaths,
+  ];
   const errors = [];
   for (const file of files) {
     try {
@@ -845,7 +887,7 @@ function recordFreshInstallDatabaseCleanupIfNeeded(options = {}) {
   const check = {
     name: "fresh_install_plaintext_db_cleanup",
     status: "pass",
-    command: "remove generated fresh-install plaintext sqlite databases",
+    command: "remove generated fresh-install plaintext sqlite databases and backup files",
   };
   const cleanup = cleanupFreshInstallDatabaseFiles();
   if (cleanup.leftover.length > 0 || cleanup.errors.length > 0) {
@@ -1443,6 +1485,117 @@ if (skipFreshInstall) {
   recordCommand("fresh_install_cli_smoke", cliBin, ["version", "--format", "json"], {
     cwd: freshInstallDir,
   });
+  const backupRestoreSmokeFile = path.join(freshInstallDir, "fresh-install-backup-restore-smoke.mjs");
+  writeFileSync(
+    backupRestoreSmokeFile,
+    `
+      import { spawnSync } from "node:child_process";
+      import { strict as assert } from "node:assert";
+      import { readFileSync, rmSync } from "node:fs";
+      import path from "node:path";
+
+      const cliBin = path.join(
+        process.cwd(),
+        "node_modules",
+        ".bin",
+        process.platform === "win32" ? "gmos.cmd" : "gmos",
+      );
+      const backupFile = "consumer-backup.json";
+      const restoreDb = "consumer-restore.db";
+
+      function runGmos(args) {
+        const result = spawnSync(cliBin, args, {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          shell: process.platform === "win32",
+        });
+        assert.equal(result.status, 0);
+        return result.stdout;
+      }
+
+      try {
+        const backupStdout = runGmos([
+          "backup",
+          "--db",
+          "consumer.db",
+          "--profile",
+          "fresh-install",
+          "--mode",
+          "safe",
+          "--output-file",
+          backupFile,
+        ]);
+        const backupCommandReport = JSON.parse(backupStdout);
+        assert.equal(backupCommandReport.ok, true);
+        assert.equal(backupCommandReport.outputFile, backupFile);
+        const backup = JSON.parse(readFileSync(path.join(process.cwd(), backupFile), "utf8"));
+        assert.equal(backup.schema, "gmos.profile_backup.v1");
+        assert.equal(backup.mode, "safe");
+        assert.equal(backup.counts.memories >= 1, true);
+        assert.equal(JSON.stringify(backup).includes("summary first"), true);
+
+        const restore = JSON.parse(runGmos([
+          "restore",
+          "--db",
+          restoreDb,
+          "--profile",
+          "fresh-install-restored",
+          "--input-file",
+          backupFile,
+        ]));
+        assert.equal(restore.ok, true);
+        assert.equal(restore.schema, "gmos.profile_backup_restore_result.v1");
+        assert.equal(restore.targetProfileId, "fresh-install-restored");
+        assert.equal(restore.inserted.memories >= 1, true);
+
+        const search = JSON.parse(runGmos([
+          "search",
+          "--db",
+          restoreDb,
+          "--profile",
+          "fresh-install-restored",
+          "--query",
+          "summary first",
+        ]));
+        const restoredSearchHit = search.memories.some((memory) =>
+          typeof memory.content === "string" && memory.content.includes("summary first"),
+        );
+        assert.equal(restoredSearchHit, true);
+        console.log(JSON.stringify({
+          ok: true,
+          backupSchema: backup.schema,
+          restoreSchema: restore.schema,
+          backupMemoryCount: backup.counts.memories,
+          restoredMemoryCount: restore.inserted.memories,
+          restoredSearchHit,
+        }));
+      } finally {
+        rmSync(path.join(process.cwd(), backupFile), { force: true });
+      }
+    `,
+  );
+  const backupRestoreForbiddenValues = [
+    "fresh-install",
+    "fresh-install-restored",
+    "consumer.db",
+    "consumer-restore.db",
+    "consumer-backup.json",
+    "Release note response style",
+    "summary first",
+    freshInstallDbPath,
+    freshInstallRestoreDbPath,
+    freshInstallBackupPath,
+  ];
+  const backupRestoreResult = recordCommand(
+    "fresh_install_backup_restore_smoke",
+    nodeBin,
+    [backupRestoreSmokeFile],
+    {
+      cwd: freshInstallDir,
+      redactLogValues: backupRestoreForbiddenValues,
+    },
+  );
+  recordBackupRestoreContentSafety(backupRestoreResult, backupRestoreForbiddenValues);
   const doctorForbiddenValues = [
     "consumer.db",
     path.join(freshInstallDir, "consumer.db"),
