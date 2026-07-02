@@ -314,11 +314,13 @@ const packDir = path.join(outputDir, "pack");
 const freshInstallDir = path.join(outputDir, "fresh-install");
 const freshInstallDbPath = path.join(freshInstallDir, "consumer.db");
 const freshInstallAgentDbPath = path.join(freshInstallDir, "consumer-agent.db");
+const freshInstallHostDbPath = path.join(freshInstallDir, "consumer-host.db");
 const freshInstallHttpDbPath = path.join(freshInstallDir, "consumer-http.db");
 const freshInstallMcpDbPath = path.join(freshInstallDir, "consumer-mcp.db");
 const freshInstallDbPaths = [
   freshInstallDbPath,
   freshInstallAgentDbPath,
+  freshInstallHostDbPath,
   freshInstallHttpDbPath,
   freshInstallMcpDbPath,
 ];
@@ -745,6 +747,44 @@ function recordAgentAdapterContentSafety(result, forbiddenValues) {
   manifest.checks.push(check);
 }
 
+function recordHostAdapterContentSafety(result, forbiddenValues) {
+  const check = {
+    name: "fresh_install_host_adapter_content_safety",
+    status: "pass",
+    command: "validate fresh_install_host_adapter_smoke stdout",
+  };
+  try {
+    const report = JSON.parse(result.stdout);
+    if (
+      report.ok !== true ||
+      report.adapter !== "host" ||
+      report.compatibilityLevel !== "L3" ||
+      !Number.isInteger(report.loadedCount) ||
+      report.loadedCount < 2 ||
+      !Number.isInteger(report.skippedCount) ||
+      report.skippedCount < 2 ||
+      !Number.isInteger(report.exportedCount) ||
+      report.exportedCount < 2 ||
+      !Number.isInteger(report.archivedCount) ||
+      report.archivedCount < 1
+    ) {
+      throw new Error("unexpected host adapter smoke report shape");
+    }
+    const stdout = result.stdout;
+    for (const [index, value] of forbiddenValues.entries()) {
+      if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
+        throw new Error(`host adapter smoke report leaked forbidden value #${index + 1}`);
+      }
+    }
+  } catch (error) {
+    check.status = "fail";
+    check.reason = error instanceof Error ? error.message : String(error);
+    manifest.checks.push(check);
+    failAfterWriting(manifest, outputDir, `${check.name} failed`);
+  }
+  manifest.checks.push(check);
+}
+
 function recordMcpContentSafety(result, forbiddenValues) {
   const check = {
     name: "fresh_install_mcp_content_safety",
@@ -1059,6 +1099,147 @@ if (skipFreshInstall) {
     },
   );
   recordAgentAdapterContentSafety(agentAdapterResult, agentAdapterForbiddenValues);
+  const hostAdapterSmokeFile = path.join(freshInstallDir, "fresh-install-host-adapter-smoke.mjs");
+  writeFileSync(
+    hostAdapterSmokeFile,
+    `
+      import { strict as assert } from "node:assert";
+      import path from "node:path";
+      import { createMemoryOS } from "@ghast/memory";
+      import {
+        classifyHostCompatibility,
+        exportMemorySnapshots,
+        parseMemorySnapshotExport,
+        syncHostMemorySnapshotsIntoStore,
+      } from "@ghast/memory/host";
+      import { createSqliteMemoryStore } from "@ghast/memory/store/sqlite";
+
+      const profileId = "fresh-install-host";
+      const nowIso = "2026-06-25T00:00:00.000Z";
+      const store = createSqliteMemoryStore({ path: path.join(process.cwd(), "consumer-host.db") });
+      const memory = createMemoryOS({ profileId, store });
+      const hostMemories = [
+        {
+          id: "host_pref_1",
+          kind: "preference",
+          content: "Host imported response style: concise release summaries.",
+          confidence: 0.91,
+          updatedAt: nowIso,
+        },
+        {
+          id: "host_boundary_1",
+          kind: "boundary",
+          content: "Host imported release flow must wait for owner approval.",
+          confidence: 0.94,
+          updatedAt: nowIso,
+        },
+        {
+          id: "host_secret_1",
+          kind: "fact",
+          content: "Host imported API key is sk-freshhostsecret1234567890.",
+          updatedAt: nowIso,
+        },
+        {
+          id: "host_person_1",
+          kind: "person",
+          content: "PERSON: Alice: Alice prefers TypeScript.",
+          updatedAt: nowIso,
+        },
+      ];
+      try {
+        const compatibility = classifyHostCompatibility({
+          hostId: "fresh-install-host-adapter",
+          capabilities: {
+            canObserveConversation: true,
+            canInjectSystemContext: true,
+            canEnforceHardDirectives: true,
+            canForget: true,
+            supportsPrivateMode: true,
+            supportsActionPolicies: true,
+            supportsEvidenceInContext: true,
+          },
+        });
+        assert.equal(compatibility.level, "L3");
+        const firstSync = await syncHostMemorySnapshotsIntoStore({
+          store,
+          profileId,
+          memories: hostMemories,
+          sourceType: "fresh.host.memory",
+          sourceUriPrefix: "fresh-host://memory",
+          nowIso,
+        });
+        assert.equal(firstSync.loadedCount, 2);
+        assert.equal(firstSync.skippedCount, 2);
+        const prepared = await memory.prepareTurn({
+          profileId,
+          messages: [{ role: "user", content: "How should imported release planning work?" }],
+          includeEvidence: true,
+        });
+        assert.match(prepared.contextBlock, /concise release summaries/);
+        assert.match(prepared.contextBlock, /owner approval/);
+        assert.equal(prepared.contextBlock.includes("sk-freshhostsecret"), false);
+        assert.equal(prepared.contextBlock.includes("PERSON: Alice"), false);
+        assert.equal(prepared.actionPolicies.length >= 1, true);
+        assert.equal(prepared.evidence.length >= 1, true);
+        const exported = await exportMemorySnapshots({
+          memory,
+          profileId,
+          sourceUriPrefix: "gmos://fresh-host-export",
+          nowIso,
+        });
+        const parsedExport = parseMemorySnapshotExport(exported);
+        assert.equal(parsedExport.memoryCount >= 2, true);
+        const secondSync = await syncHostMemorySnapshotsIntoStore({
+          store,
+          profileId,
+          memories: hostMemories.filter((memoryRecord) => memoryRecord.id !== "host_pref_1"),
+          sourceType: "fresh.host.memory",
+          sourceUriPrefix: "fresh-host://memory",
+          nowIso: "2026-06-25T01:00:00.000Z",
+        });
+        assert.equal(secondSync.archivedCount >= 1, true);
+        const afterArchive = await memory.prepareTurn({
+          profileId,
+          messages: [{ role: "user", content: "concise release summaries" }],
+        });
+        assert.equal(afterArchive.contextBlock.includes("concise release summaries"), false);
+        console.log(JSON.stringify({
+          ok: true,
+          adapter: "host",
+          compatibilityLevel: compatibility.level,
+          loadedCount: firstSync.loadedCount,
+          skippedCount: firstSync.skippedCount,
+          exportedCount: parsedExport.memoryCount,
+          archivedCount: secondSync.archivedCount,
+        }));
+      } finally {
+        await memory.close();
+      }
+    `,
+  );
+  const hostAdapterForbiddenValues = [
+    "fresh-install-host",
+    "consumer-host.db",
+    "Host imported response style",
+    "concise release summaries",
+    "Host imported release flow",
+    "owner approval",
+    "sk-freshhostsecret",
+    "PERSON: Alice",
+    "fresh-host://memory",
+    "gmos://fresh-host-export",
+    freshInstallHostDbPath,
+  ];
+  const hostAdapterResult = recordCommand(
+    "fresh_install_host_adapter_smoke",
+    nodeBin,
+    [hostAdapterSmokeFile],
+    {
+      cwd: freshInstallDir,
+      redactLogValues: hostAdapterForbiddenValues,
+    },
+  );
+  recordHostAdapterContentSafety(hostAdapterResult, hostAdapterForbiddenValues);
   const httpSmokeFile = path.join(freshInstallDir, "fresh-install-http-smoke.mjs");
   writeFileSync(
     httpSmokeFile,
