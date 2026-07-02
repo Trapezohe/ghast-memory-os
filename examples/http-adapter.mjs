@@ -54,6 +54,16 @@ try {
   assert.equal(runtimeInfo.response.status, 200);
   assert.equal(runtimeInfo.body.runtimeInfo.schema, "gmos.runtime_info.v1");
 
+  const mcpRuntimeInfo = await jsonRequest("/mcp/call", {
+    method: "POST",
+    body: {
+      tool: "memory.runtime_info",
+      args: {},
+    },
+  });
+  assert.equal(mcpRuntimeInfo.response.status, 200);
+  assert.equal(mcpRuntimeInfo.body.runtimeInfo.schema, "gmos.runtime_info.v1");
+
   const observed = await jsonRequest("/observe", {
     method: "POST",
     body: {
@@ -135,6 +145,7 @@ try {
         authRequired: healthBody.authRequired,
         unauthenticatedRuntimeInfoStatus: unauthenticatedRuntimeInfo.status,
         runtimeInfoSchema: runtimeInfo.body.runtimeInfo.schema,
+        mcpCallRuntimeInfoSchema: mcpRuntimeInfo.body.runtimeInfo.schema,
         preparedHasPreference: preparedText.includes("evidence-backed context"),
         reconstructedPathCount: reconstructed.body.reconstructed.paths.length,
         statusSchemaVersion: status.body.report.storage.schemaVersion,

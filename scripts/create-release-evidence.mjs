@@ -675,9 +675,11 @@ function recordHttpContentSafety(result, forbiddenValues) {
     if (
       report.ok !== true ||
       !Array.isArray(report.routes) ||
+      !report.routes.includes("POST /mcp/call") ||
       !report.routes.includes("POST /reconstruct") ||
       !report.routes.includes("POST /commit-outcome") ||
       !report.routes.includes("POST /feedback") ||
+      report.mcpCallRuntimeInfoSchema !== "gmos.runtime_info.v1" ||
       !Number.isInteger(report.failureEvents) ||
       report.failureEvents < 2
     ) {
@@ -906,6 +908,17 @@ if (skipFreshInstall) {
         const runtimeInfoWithoutToken = await fetch(address.url + "/runtime-info");
         assert.equal(runtimeInfoWithoutToken.status, 401);
         assert.equal((await runtimeInfoWithoutToken.text()).includes("fresh-install-http-token"), false);
+        const mcpRuntimeInfo = await fetch(address.url + "/mcp/call", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer fresh-install-http-token",
+          },
+          body: JSON.stringify({ tool: "memory.runtime_info", args: {} }),
+        });
+        assert.equal(mcpRuntimeInfo.status, 200);
+        const mcpRuntimeInfoBody = await mcpRuntimeInfo.json();
+        assert.equal(mcpRuntimeInfoBody.runtimeInfo.schema, "gmos.runtime_info.v1");
         const add = await fetch(address.url + "/add", {
           method: "POST",
           headers: {
@@ -972,7 +985,8 @@ if (skipFreshInstall) {
         assert.equal(statusBody.report.failureSummary.inspectedFailureCount >= 2, true);
         console.log(JSON.stringify({
           ok: true,
-          routes: ["POST /reconstruct", "POST /commit-outcome", "POST /feedback"],
+          routes: ["POST /mcp/call", "POST /reconstruct", "POST /commit-outcome", "POST /feedback"],
+          mcpCallRuntimeInfoSchema: mcpRuntimeInfoBody.runtimeInfo.schema,
           failureEvents: statusBody.report.failureSummary.inspectedFailureCount,
         }));
       } finally {
