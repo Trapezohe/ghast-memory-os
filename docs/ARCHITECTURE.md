@@ -16,7 +16,7 @@ host event
 -> evidence event
 -> memory / world belief / task trajectory
 -> association projection
--> prepareTurn() or reconstructContext()
+-> prepareTurn(), explainTurn(), or reconstructContext()
 -> context, evidence, action policy
 -> commitOutcome() / recordFeedback()
 -> explicit maintain()
@@ -57,6 +57,7 @@ Write paths:
 Read paths:
 
 - `prepareTurn()`
+- `explainTurn()`
 - `reconstructContext()`
 - `explainEvidencePath()`
 - `search()` when used for context, history, delete, or manage lookup
@@ -132,6 +133,13 @@ query cues
 The planner remains bounded by step, branch, and token budgets. Context output
 should carry uncertainty, conflict, current/history, and evidence markers rather
 than blindly stuffing every neighbor into the prompt.
+
+`explainTurn()` is a read-only explanation mode on the same turn pipeline, not a
+second retrieval implementation. The runtime threads an optional trace collector
+through `searchMemories()` and `prepareTurnCore()`: ordinary `prepareTurn()`
+does not allocate trace state, while explanation mode records included and
+excluded memory decisions, score components, safety/lifecycle reasons, and
+budget stops before returning a report without `contextBlock`.
 
 ## Safety Model
 

@@ -506,8 +506,10 @@ assert.deepEqual(publicRuntimeInfo.cli.binaries, Object.keys(packageJson.bin).so
 assert.deepEqual(publicRuntimeInfo.packageExports, Object.keys(packageJson.exports).sort());
 assert.equal(publicRuntimeInfo.publicSurface.mcpTools.includes("memory.runtime_info"), true);
 assert.equal(publicRuntimeInfo.publicSurface.mcpTools.includes("memory.prepare_context"), true);
+assert.equal(publicRuntimeInfo.publicSurface.mcpTools.includes("memory.explain_turn"), true);
 assert.equal(publicRuntimeInfo.publicSurface.httpRoutes.includes("GET /runtime-info"), true);
 assert.equal(publicRuntimeInfo.publicSurface.httpRoutes.includes("POST /prepare"), true);
+assert.equal(publicRuntimeInfo.publicSurface.httpRoutes.includes("POST /explain-turn"), true);
 assert.equal(publicRuntimeInfo.trustContract.localFirst, true);
 assert.equal(publicRuntimeInfo.trustContract.defaultStorage, "sqlite");
 assert.equal(publicRuntimeInfo.trustContract.encryptedByDefault, false);
@@ -14021,6 +14023,19 @@ const mcpPreparedPayload = mcpPrepared.structuredContent as {
 };
 assert.equal(mcpPreparedPayload.ok, true);
 assert.match(mcpPreparedPayload.prepared?.contextBlock ?? "", /不要主动提醒/);
+const mcpTurnExplanation = await mcpServer.callTool("memory.explain_turn", {
+  profileId: "mcp",
+  text: "MCP add 稳定偏好",
+  maxExcluded: 5,
+});
+assert.equal(mcpTurnExplanation.isError, undefined);
+assert.match(JSON.stringify(mcpTurnExplanation.structuredContent), /gmos\.turn_explanation\.v1/);
+assert.equal(JSON.stringify(mcpTurnExplanation.structuredContent).includes("contextBlock"), false);
+assert.equal(
+  ((mcpTurnExplanation.structuredContent as { explanation?: { included?: unknown[] } }).explanation
+    ?.included ?? []).length > 0,
+  true,
+);
 const mcpPreparedWithShadow = await mcpServer.callTool("memory.prepare_context", {
   profileId: "mcp",
   text: "项目延期提醒边界",
@@ -14208,6 +14223,16 @@ const mcpSensitiveOverride = await mcpServer.callTool("memory.prepare_context", 
 });
 assert.equal(mcpSensitiveOverride.isError, true);
 assert.equal(JSON.stringify(mcpSensitiveOverride.structuredContent).includes("123-45-6789"), false);
+const mcpExplainTurnSensitiveOverride = await mcpServer.callTool("memory.explain_turn", {
+  profileId: "mcp",
+  text: "SSN 提醒",
+  includeSensitive: true,
+});
+assert.equal(mcpExplainTurnSensitiveOverride.isError, true);
+assert.equal(
+  JSON.stringify(mcpExplainTurnSensitiveOverride.structuredContent).includes("123-45-6789"),
+  false,
+);
 const sensitiveMcpMemories = await store.searchMemories({
   profileId: "mcp",
   query: "123-45-6789",
@@ -14380,6 +14405,7 @@ try {
     "POST /search",
     "POST /observe",
     "POST /prepare",
+    "POST /explain-turn",
     "POST /reconstruct",
     "POST /explain-path",
     "POST /commit-outcome",
@@ -14529,6 +14555,14 @@ try {
   };
   const httpMemoryId = preparedPayload.prepared?.memories?.[0]?.id;
   assert.equal(typeof httpMemoryId, "string");
+  const httpTurnExplanation = await postJson(`${httpAddress.url}/explain-turn`, {
+    profileId: "http",
+    text: "compact memory contracts",
+    maxExcluded: 5,
+  });
+  assert.equal(httpTurnExplanation.status, 200);
+  assert.match(httpTurnExplanation.text, /gmos\.turn_explanation\.v1/);
+  assert.equal(httpTurnExplanation.text.includes("contextBlock"), false);
   const explanation = await postJson(`${httpAddress.url}/explain`, {
     profileId: "http",
     id: httpMemoryId,
@@ -14574,6 +14608,13 @@ try {
   });
   assert.equal(sensitiveOverride.status, 400);
   assert.equal(sensitiveOverride.text.includes("123-45-6789"), false);
+  const explainTurnSensitiveOverride = await postJson(`${httpAddress.url}/explain-turn`, {
+    profileId: "http",
+    text: "SSN 是什么？",
+    includeSensitive: true,
+  });
+  assert.equal(explainTurnSensitiveOverride.status, 400);
+  assert.equal(explainTurnSensitiveOverride.text.includes("123-45-6789"), false);
   const reconstructSensitiveOverride = await postJson(`${httpAddress.url}/reconstruct`, {
     profileId: "http",
     text: "SSN 是什么？",
@@ -17740,7 +17781,9 @@ for (const exportPath of [".", "./gym", "./mcp", "./http", "./store/sqlite"]) {
 }
 assert.deepEqual(cliVersionPayload.packageExports, Object.keys(packageJson.exports).sort());
 assert.equal(cliVersionPayload.publicSurface?.mcpTools?.includes("memory.prepare_context"), true);
+assert.equal(cliVersionPayload.publicSurface?.mcpTools?.includes("memory.explain_turn"), true);
 assert.equal(cliVersionPayload.publicSurface?.httpRoutes?.includes("POST /prepare"), true);
+assert.equal(cliVersionPayload.publicSurface?.httpRoutes?.includes("POST /explain-turn"), true);
 assert.equal(cliVersionPayload.trustContract?.localFirst, true);
 assert.equal(cliVersionPayload.trustContract?.defaultStorage, "sqlite");
 assert.equal(cliVersionPayload.trustContract?.encryptedByDefault, false);
@@ -18158,6 +18201,89 @@ assert.equal(cliInspectMarkdown.stdout.includes("sk-inspectquerysecret"), false)
 assert.equal(cliInspectMarkdown.stdout.includes("[redacted_secret]"), true);
 assert.equal(cliInspectMarkdown.stdout.includes("Inspector residue memory"), false);
 assert.equal(cliInspectMarkdown.stdout.includes(dbPath), false);
+const cliInspectExplainMemory = await store.addMemory({
+  profileId: "test",
+  kind: "fact",
+  content: "Inspector turn explanation target is Copper Bridge.",
+  confidence: 0.91,
+});
+const cliInspectTurn = spawnSync(
+  process.execPath,
+  [
+    path.join(process.cwd(), "dist/cli/gmos-inspect.js"),
+    "turn",
+    "--db",
+    dbPath,
+    "--profile",
+    "test",
+    "--query",
+    "Copper Bridge api key: sk-inspectturnsecret1234567890",
+    "--max-excluded",
+    "5",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliInspectTurn.status, 0, cliInspectTurn.stderr);
+const cliInspectTurnPayload = JSON.parse(cliInspectTurn.stdout) as {
+  schema?: string;
+  profileId?: string;
+  query?: string;
+  included?: Array<{ id?: string; content?: string }>;
+  excluded?: unknown[];
+  budgets?: { stoppedAt?: string };
+  stats?: { retrievedMemoryCount?: number };
+};
+assert.equal(cliInspectTurnPayload.schema, "gmos.turn_explanation.v1");
+assert.equal(cliInspectTurnPayload.profileId, "[profile id redacted]");
+assert.equal(cliInspectTurnPayload.query?.includes("sk-inspectturnsecret"), false);
+assert.equal(cliInspectTurnPayload.query?.includes("[redacted_secret]"), true);
+assert.equal(cliInspectTurnPayload.included?.some((memory) => memory.id === cliInspectExplainMemory.id), true);
+assert.equal(
+  cliInspectTurnPayload.included?.some((memory) =>
+    memory.content === "[memory content redacted]"
+  ),
+  true,
+);
+assert.equal(typeof cliInspectTurnPayload.excluded?.length, "number");
+assert.equal(typeof cliInspectTurnPayload.budgets?.stoppedAt, "string");
+assert.equal(typeof cliInspectTurnPayload.stats?.retrievedMemoryCount, "number");
+assert.equal(cliInspectTurn.stdout.includes("Inspector turn explanation target"), false);
+assert.equal(cliInspectTurn.stdout.includes("sk-inspectturnsecret"), false);
+assert.equal(cliInspectTurn.stdout.includes(dbPath), false);
+const cliInspectTimeline = spawnSync(
+  process.execPath,
+  [
+    path.join(process.cwd(), "dist/cli/gmos-inspect.js"),
+    "timeline",
+    cliInspectExplainMemory.id,
+    "--db",
+    dbPath,
+    "--profile",
+    "test",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliInspectTimeline.status, 0, cliInspectTimeline.stderr);
+const cliInspectTimelinePayload = JSON.parse(cliInspectTimeline.stdout) as {
+  schema?: string;
+  profileId?: string;
+  memoryId?: string;
+  lifecycle?: { schema?: string; entries?: Array<{ eventKind?: string }> };
+};
+assert.equal(cliInspectTimelinePayload.schema, "gmos.inspect_timeline.v1");
+assert.equal(cliInspectTimelinePayload.profileId, "[profile id redacted]");
+assert.equal(cliInspectTimelinePayload.memoryId, cliInspectExplainMemory.id);
+assert.equal(cliInspectTimelinePayload.lifecycle?.schema, "gmos.memory_lifecycle_history.v1");
+assert.equal(
+  cliInspectTimelinePayload.lifecycle?.entries?.some((entry) => entry.eventKind === "created"),
+  true,
+);
+assert.equal(cliInspectTimeline.stdout.includes("Copper Bridge"), false);
+assert.equal(cliInspectTimeline.stdout.includes(dbPath), false);
 const cliInspectNestedOutputFile = path.join(tmp, "inspect-output", "nested", "report.md");
 const cliInspectNestedOutput = spawnSync(
   process.execPath,
@@ -21873,6 +21999,7 @@ assert.deepEqual(
 );
 for (const toolName of [
   "memory.prepare_context",
+  "memory.explain_turn",
   "memory.reconstruct_context",
   "memory.explain_evidence_path",
 ]) {

@@ -34,8 +34,10 @@ import type {
   MemoryListInput,
   MemoryKind,
   MemoryRecord,
+  MemorySearchScoreComponents,
   MemorySearchInput,
   MemoryStore,
+  MemorySearchTraceCollector,
   RecordEvidenceInput,
   RecordConsolidationSummaryInput,
   RecordConsolidationSummaryResult,
@@ -473,6 +475,62 @@ function scoreMemory(memory: MemoryRecord, query: string): number {
   const lower = memory.content.toLowerCase();
   const hits = terms.filter((term) => lower.includes(term)).length;
   return hits + memory.confidence;
+}
+
+function matchedMemorySearchCues(memory: MemoryRecord, query: string): string[] {
+  const terms = queryTerms(query);
+  if (terms.length === 0) return [];
+  const lower = [
+    memory.kind,
+    memory.scope,
+    memory.content,
+    JSON.stringify(memory.metadata),
+  ].join(" ").toLowerCase();
+  return terms.filter((term) => lower.includes(term)).slice(0, 12);
+}
+
+function memorySearchTags(memory: MemoryRecord): string[] {
+  const tags: string[] = [memory.kind];
+  for (const key of ["actionPolicyKind", "predicate", "source", "consolidationSource", "distillationSource"]) {
+    const value = memory.metadata[key];
+    if (typeof value === "string" && value.trim().length > 0) tags.push(value.trim());
+  }
+  const sharedTags = memory.metadata.sharedTags;
+  if (Array.isArray(sharedTags)) {
+    tags.push(...sharedTags.filter((entry): entry is string => typeof entry === "string"));
+  }
+  return uniqueStrings(tags).slice(0, 12);
+}
+
+function memorySearchAssociations(memory: MemoryRecord): string[] {
+  const associations = [];
+  const sourceMemoryIds = memory.metadata.sourceMemoryIds;
+  if (Array.isArray(sourceMemoryIds) && sourceMemoryIds.length > 0) {
+    associations.push("consolidation_sources");
+  }
+  if (memory.metadata.consolidatedInto) associations.push("consolidated_into");
+  if (memory.metadata.supersededBy) associations.push("superseded_by");
+  if (memory.sourceEventId) associations.push("source_evidence");
+  return associations;
+}
+
+function memorySearchScoreComponents(input: {
+  memory: MemoryRecord;
+  query: string;
+  retrievalScore: number;
+}): MemorySearchScoreComponents {
+  const contentScore = input.query
+    ? scoreMemory(input.memory, input.query)
+    : input.memory.confidence;
+  const finalScore = input.query
+    ? Math.max(contentScore, input.memory.confidence + input.retrievalScore)
+    : input.memory.confidence;
+  return {
+    confidence: input.memory.confidence,
+    retrievalScore: input.retrievalScore,
+    contentScore,
+    finalScore,
+  };
 }
 
 function structuredForgetTargetTerms(targetTerms: string[] | undefined): string[] | null {
@@ -2907,42 +2965,188 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     return hidden;
   }
 
+  function traceMemorySearchDecision(input: {
+    trace: MemorySearchTraceCollector | undefined;
+    memory: MemoryRecord;
+    query: string;
+    retrievalScore: number;
+    decision: "included" | "excluded";
+    reason?: MemorySearchTraceDecisionReason | undefined;
+  }): void {
+    if (!input.trace) return;
+    const scoreComponents = memorySearchScoreComponents({
+      memory: input.memory,
+      query: input.query,
+      retrievalScore: input.retrievalScore,
+    });
+    input.trace.recordMemorySearchDecision({
+      memory: input.memory,
+      decision: input.decision,
+      ...(input.reason !== undefined ? { reason: input.reason } : {}),
+      cues: matchedMemorySearchCues(input.memory, input.query),
+      associations: memorySearchAssociations(input.memory),
+      tags: memorySearchTags(input.memory),
+      scoreComponents,
+    });
+  }
+
+  type MemorySearchTraceDecisionReason =
+    | "dormant"
+    | "archived"
+    | "superseded"
+    | "out_of_window"
+    | "sensitivity_gated"
+    | "person_gated"
+    | "forget_residue"
+    | "budget_cut"
+    | "below_score_threshold";
+
+  function archivedMemoryExplanationReason(memory: MemoryRecord): MemorySearchTraceDecisionReason {
+    if (memory.metadata.supersededBy || memory.metadata.consolidatedInto) return "superseded";
+    const archive = memory.metadata.archive;
+    if (!archive || typeof archive !== "object" || Array.isArray(archive)) return "forget_residue";
+    return "archived";
+  }
+
+  function traceDormantAndArchivedSearchCandidates(input: {
+    trace: MemorySearchTraceCollector | undefined;
+    profileId: string;
+    query: string;
+    includeSensitive?: boolean | undefined;
+    includeSecretLike?: boolean | undefined;
+    includePerson?: boolean | undefined;
+    seenMemoryIds: Set<string>;
+  }): void {
+    if (!input.trace || !input.query.trim()) return;
+    for (const row of memoryRowsForList({
+      profileId: input.profileId,
+      query: input.query,
+      status: "any",
+      includeSensitive: true,
+      includePerson: true,
+      limit: 100,
+    })) {
+      const memory = normalizeMemory(row);
+      if (input.seenMemoryIds.has(memory.id)) continue;
+      if (memory.status !== "dormant" && memory.status !== "archived") continue;
+      input.seenMemoryIds.add(memory.id);
+      const sensitivity = effectiveMemorySensitivity(memory);
+      const reason =
+        !input.includePerson && memory.kind === "person"
+          ? "person_gated"
+          : !input.includeSecretLike && sensitivity === "secret_like"
+            ? "sensitivity_gated"
+            : shouldHideFromOrdinaryContext({
+                sensitivity,
+                includeSensitive: input.includeSensitive,
+              })
+              ? "sensitivity_gated"
+              : memory.status === "dormant"
+                ? "dormant"
+                : archivedMemoryExplanationReason(memory);
+      traceMemorySearchDecision({
+        trace: input.trace,
+        memory,
+        query: input.query,
+        retrievalScore: Number(row.__gmos_search_score ?? 0),
+        decision: "excluded",
+        reason,
+      });
+    }
+  }
+
   function searchMemories(input: MemorySearchInput): MemoryRecord[] {
     initialize();
     const query = input.query?.trim() ?? "";
     const purpose = input.purpose ?? "context";
     const ordinaryRecallPurpose = purpose === "context" || purpose === "history";
+    const asOfIso = purpose === "context" ? nowIso() : "";
+    const supersededHiddenMemoryIds =
+      purpose === "context" && input.trace ? supersededSourceMemoryIds(input.profileId) : new Set<string>();
+    const temporalHiddenMemoryIds =
+      purpose === "context" && input.trace ? temporallyInvalidMemoryIds(input.profileId, asOfIso) : new Set<string>();
     const hiddenContextMemoryIds =
-      purpose === "context" ? contextHiddenMemoryIds(input.profileId, nowIso()) : new Set<string>();
-    return memoryRowsForSearch(input)
-      .map((row) => ({
-        memory: normalizeMemory(row),
-        retrievalScore: Number(row.__gmos_search_score ?? 0),
-      }))
-      .filter((item) => input.includePerson || item.memory.kind !== "person")
-      .filter((item) => !hiddenContextMemoryIds.has(item.memory.id))
-      .filter(
-        (item) =>
-          input.includeSecretLike || effectiveMemorySensitivity(item.memory) !== "secret_like",
-      )
-      .filter(
-        (item) =>
-          !ordinaryRecallPurpose ||
-          !shouldHideFromOrdinaryContext({
-            sensitivity: effectiveMemorySensitivity(item.memory),
-            includeSensitive: input.includeSensitive,
-          }),
-      )
-      .map((item) => ({
-        memory: item.memory,
-        score: query
-          ? Math.max(scoreMemory(item.memory, query), item.memory.confidence + item.retrievalScore)
-          : item.memory.confidence,
-      }))
-      .filter((item) => !query || item.score > item.memory.confidence)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, input.limit ?? 12)
-      .map((item) => item.memory);
+      purpose === "context"
+        ? input.trace
+          ? new Set([...supersededHiddenMemoryIds, ...temporalHiddenMemoryIds])
+          : contextHiddenMemoryIds(input.profileId, asOfIso)
+        : new Set<string>();
+    const accepted: Array<{
+      memory: MemoryRecord;
+      retrievalScore: number;
+      score: number;
+    }> = [];
+    const tracedMemoryIds = new Set<string>();
+    for (const row of memoryRowsForSearch(input)) {
+      const memory = normalizeMemory(row);
+      const retrievalScore = Number(row.__gmos_search_score ?? 0);
+      if (input.trace) tracedMemoryIds.add(memory.id);
+      const sensitivity = effectiveMemorySensitivity(memory);
+      const scoreComponents = memorySearchScoreComponents({ memory, query, retrievalScore });
+      let reason: MemorySearchTraceDecisionReason | null = null;
+      if (!input.includePerson && memory.kind === "person") {
+        reason = "person_gated";
+      } else if (supersededHiddenMemoryIds.has(memory.id)) {
+        reason = "superseded";
+      } else if (temporalHiddenMemoryIds.has(memory.id)) {
+        reason = "out_of_window";
+      } else if (hiddenContextMemoryIds.has(memory.id)) {
+        reason = "superseded";
+      } else if (!input.includeSecretLike && sensitivity === "secret_like") {
+        reason = "sensitivity_gated";
+      } else if (
+        ordinaryRecallPurpose &&
+        shouldHideFromOrdinaryContext({
+          sensitivity,
+          includeSensitive: input.includeSensitive,
+        })
+      ) {
+        reason = "sensitivity_gated";
+      } else if (query && scoreComponents.finalScore <= memory.confidence) {
+        reason = "below_score_threshold";
+      }
+      if (reason) {
+        traceMemorySearchDecision({
+          trace: input.trace,
+          memory,
+          query,
+          retrievalScore,
+          decision: "excluded",
+          reason,
+        });
+        continue;
+      }
+      accepted.push({
+        memory,
+        retrievalScore,
+        score: scoreComponents.finalScore,
+      });
+    }
+    accepted.sort((a, b) => b.score - a.score);
+    const selected = accepted.slice(0, input.limit ?? 12);
+    if (input.trace) {
+      const selectedIds = new Set(selected.map((item) => item.memory.id));
+      for (const item of accepted) {
+        traceMemorySearchDecision({
+          trace: input.trace,
+          memory: item.memory,
+          query,
+          retrievalScore: item.retrievalScore,
+          decision: selectedIds.has(item.memory.id) ? "included" : "excluded",
+          ...(selectedIds.has(item.memory.id) ? {} : { reason: "budget_cut" }),
+        });
+      }
+      traceDormantAndArchivedSearchCandidates({
+        trace: input.trace,
+        profileId: input.profileId,
+        query,
+        includeSensitive: input.includeSensitive,
+        includeSecretLike: input.includeSecretLike,
+        includePerson: input.includePerson,
+        seenMemoryIds: tracedMemoryIds,
+      });
+    }
+    return selected.map((item) => item.memory);
   }
 
   function listMemories(input: MemoryListInput): MemoryRecord[] {

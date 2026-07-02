@@ -47,11 +47,15 @@ search:
    `memory.observe`.
 2. Prepare context before model calls with `prepareTurn()`,
    `memory.prepare_context`, or `POST /prepare`.
-3. Use `reconstructContext()` or `memory.reconstruct_context` for long-running
+3. Call `explainTurn()`, `memory.explain_turn`, or `POST /explain-turn` only
+   when the host needs to debug a turn decision, for example a user-visible
+   "why did you say that?" moment, a support bundle, or a regression check.
+   It returns decision traces and budget stops, not a prompt block.
+4. Use `reconstructContext()` or `memory.reconstruct_context` for long-running
    tasks that need cue/tag/content reconstruction.
-4. Commit task outcomes with `commitOutcome()` or `memory.commit_outcome`.
-5. Record user corrections with `recordFeedback()` or `memory.record_feedback`.
-6. Use `forget()` or `memory.forget` for user-requested deletion and residue
+5. Commit task outcomes with `commitOutcome()` or `memory.commit_outcome`.
+6. Record user corrections with `recordFeedback()` or `memory.record_feedback`.
+7. Use `forget()` or `memory.forget` for user-requested deletion and residue
    cleanup. When the host already knows the deletion subject, pass structured
    `targetTerms`; keep the natural-language `query` for audit and literal
    compatibility. If the host accepts natural-language delete commands, parse
@@ -175,10 +179,12 @@ Public MCP tools are:
 - `memory.search`
 - `memory.observe`
 - `memory.prepare_context`
+- `memory.explain_turn`
 - `memory.reconstruct_context`
 - `memory.explain_evidence_path`
 - `memory.commit_outcome`
 - `memory.record_feedback`
+- `memory.maintain`
 - `memory.forget`
 - `memory.explain_belief`
 - `memory.runtime_info`
@@ -194,8 +200,8 @@ npm run examples:mcp-router
 ```
 
 The example validates runtime info, observation, context preparation, public
-sensitive override rejection, and evidence-path explanation without printing
-memory content or the real SQLite path.
+sensitive override rejection, turn explanation, and evidence-path explanation
+without printing memory content or the real SQLite path.
 
 ## HTTP Contract
 
@@ -217,10 +223,12 @@ Useful endpoints:
 - `POST /search`
 - `POST /observe`
 - `POST /prepare`
+- `POST /explain-turn`
 - `POST /reconstruct`
 - `POST /explain-path`
 - `POST /commit-outcome`
 - `POST /feedback`
+- `POST /maintain`
 - `POST /forget`
 - `POST /explain`
 - `POST /mcp/call`

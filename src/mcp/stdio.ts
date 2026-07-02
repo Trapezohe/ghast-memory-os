@@ -99,6 +99,16 @@ const prepareContextSchema = z.object({
   reconstruction: prepareReconstructionSchema.optional(),
 }).strict();
 
+const explainTurnSchema = z.object({
+  profileId: z.string().optional(),
+  text: z.string().optional(),
+  messages: z.array(messageSchema).optional(),
+  includeEvidence: z.boolean().optional(),
+  contextBudgetTokens: z.number().positive().optional(),
+  reconstruction: prepareReconstructionSchema.optional(),
+  maxExcluded: z.number().int().nonnegative().optional(),
+}).strict();
+
 const reconstructContextSchema = z.object({
   profileId: z.string().optional(),
   text: z.string().optional(),
@@ -179,6 +189,7 @@ const STDIO_TOOL_SCHEMAS: Record<MemoryMcpToolName, z.ZodObject> = {
   "memory.search": searchSchema,
   "memory.observe": observeSchema,
   "memory.prepare_context": prepareContextSchema,
+  "memory.explain_turn": explainTurnSchema,
   "memory.reconstruct_context": reconstructContextSchema,
   "memory.explain_evidence_path": explainEvidencePathSchema,
   "memory.commit_outcome": commitOutcomeSchema,

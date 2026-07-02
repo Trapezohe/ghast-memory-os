@@ -67,7 +67,7 @@ npm run examples:quickstart
 - SQLite read-audit snapshots for read-path purity checks. The runtime uses
   trigger-backed table revisions for durable tables and content digests for FTS
   indexes, not only row counts, to catch accidental writes during `prepareTurn`,
-  `reconstructContext`, and `explainEvidencePath`.
+  `explainTurn`, `reconstructContext`, and `explainEvidencePath`.
 - SQLite association projection for active reconstruction. It derives
   cue-tag-content edges from existing memory, world belief, and task trajectory
   rows; those associations are an index, not a second source of truth.
@@ -102,9 +102,17 @@ npm run examples:quickstart
 - Outcome reinforcement. `commitOutcome({ usedMemoryIds })` updates recall
   counters and bounded reinforcement; `wrong_recall` feedback can also lower
   confidence for related memories while preserving the feedback evidence path.
+- Deep explainability for turn context decisions. `explainTurn()` shares the
+  `prepareTurn()` retrieval path and reports included memories, notable excluded
+  candidates, score components, lifecycle-sensitive reasons, and budget stops
+  without returning a prompt injection block.
+- Lifecycle provenance on `explain()`. The runtime derives a content-safe memory
+  timeline from evidence and feedback events, including creation/import,
+  reinforcement, dormancy/reactivation, archive, consolidation, distillation,
+  evolution, forget, and restore entries when present.
 - Runtime facade: `observe`, `prepareTurn`, `commitOutcome`, `recordFeedback`,
-  `reconstructContext`, `explainEvidencePath`, `maintain`, `forget`,
-  `explain`.
+  `explainTurn`, `reconstructContext`, `explainEvidencePath`, `maintain`,
+  `forget`, `explain`.
 - Pluggable extraction pipeline for host-provided structured extractors. gmOS
   keeps write-path authority for evidence, PERSON, secret-like, incognito, and
   forgetting gates, but it does not synthesize durable memory from built-in
@@ -256,6 +264,8 @@ gmos history --db ./gmos.db --profile local --query "之前的状态"
 gmos prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
 gmos reconstruct --db ./gmos.db --profile local --text "这个项目之前是什么状态？" --temporal-mode history
 gmos-inspect --db ./gmos.db --profile local --query "这个项目现在是什么状态？" --temporal-mode current --format markdown
+gmos-inspect turn --db ./gmos.db --profile local --query "这个项目现在是什么状态？" --format markdown
+gmos-inspect timeline <memory-id> --db ./gmos.db --profile local --format markdown
 gmos explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --include-trace
 gmos mcp serve --db ./gmos.db --profile local
 gmos http serve --db ./gmos.db --profile local --port 4787 --host ghast --auth-token local-dev-token
@@ -364,7 +374,7 @@ prepares evidence-backed context through `/prepare`, reads a content-free
 public package exports. It checks `memory.runtime_info`, records an ordinary
 observation through `memory.observe`, imports an explicit preference memory,
 prepares evidence-backed context, verifies public MCP rejects sensitive override
-switches, explains the evidence path without returning a prompt block, and
+switches, explains the turn and evidence path without returning a prompt block, and
 prints only sanitized integration metadata.
 
 `examples/external-mini-benchmark.mjs` runs the native deterministic external
@@ -417,7 +427,7 @@ MCP stdio, HTTP, Electron IPC, or another agent runtime without changing the
 memory core.
 
 Current tools are `memory.add`, `memory.search`, `memory.observe`,
-`memory.prepare_context`, `memory.reconstruct_context`,
+`memory.prepare_context`, `memory.explain_turn`, `memory.reconstruct_context`,
 `memory.explain_evidence_path`, `memory.commit_outcome`,
 `memory.record_feedback`, `memory.maintain`, `memory.forget`,
 `memory.explain_belief`, and `memory.runtime_info`.
@@ -439,8 +449,9 @@ endpoints will then require `Authorization: Bearer <token>`.
 
 Endpoints include `GET /health`, `GET /runtime-info`, `GET /status`, `GET
 /tools`, `POST /add`, `POST /search`, `POST /observe`, `POST /prepare`, `POST
-/reconstruct`, `POST /explain-path`, `POST /commit-outcome`, `POST /feedback`,
-`POST /maintain`, `POST /forget`, `POST /explain`, and `POST /mcp/call`.
+/explain-turn`, `POST /reconstruct`, `POST /explain-path`, `POST
+/commit-outcome`, `POST /feedback`, `POST /maintain`, `POST /forget`, `POST
+/explain`, and `POST /mcp/call`.
 
 Profile backup/restore is intentionally not exposed as an MCP tool or HTTP route.
 It remains an in-process SQLite store API and CLI operation for trusted

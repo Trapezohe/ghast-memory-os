@@ -141,6 +141,14 @@ try {
       assert.equal(explainedPath.summary.evidenceCount >= 1, true);
       assert.equal(JSON.stringify(explainedPath).includes("contextBlock"), false);
       assert.ok(explainedPath.plannerTrace);
+      const explainedTurn = await memory.explainTurn({
+        profileId: "consumer",
+        messages: [{ role: "user", content: "风险 方案" }],
+        maxExcluded: 5,
+      });
+      assert.equal(explainedTurn.schema, "gmos.turn_explanation.v1");
+      assert.equal(explainedTurn.included.length, prepared.memories.length);
+      assert.equal(JSON.stringify(explainedTurn).includes("contextBlock"), false);
       const lowLevel = await memory.add({
         profileId: "consumer",
         kind: "preference",
@@ -270,11 +278,13 @@ try {
       const mcp = createMemoryMcpServer(memory);
       const runtimeInfoTool = mcp.listTools().find((tool) => tool.name === "memory.runtime_info");
       const prepareTool = mcp.listTools().find((tool) => tool.name === "memory.prepare_context");
+      const explainTurnTool = mcp.listTools().find((tool) => tool.name === "memory.explain_turn");
       const explainEvidencePathTool = mcp
         .listTools()
         .find((tool) => tool.name === "memory.explain_evidence_path");
       assert.ok(runtimeInfoTool);
       assert.ok(prepareTool);
+      assert.ok(explainTurnTool);
       assert.ok(explainEvidencePathTool);
       assert.deepEqual(
         mcp.listTools().map((tool) => tool.name),
@@ -286,6 +296,7 @@ try {
       assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /restore"), false);
       assert.equal(Object.keys(runtimeInfoTool.inputSchema.properties).length, 0);
       assert.equal(Object.hasOwn(prepareTool.inputSchema.properties, "includeSensitive"), false);
+      assert.equal(Object.hasOwn(explainTurnTool.inputSchema.properties, "includeSensitive"), false);
       assert.equal(
         Object.hasOwn(explainEvidencePathTool.inputSchema.properties, "includeSensitive"),
         false,
@@ -320,6 +331,13 @@ try {
       });
       assert.equal(mcpResult.isError, undefined);
       assert.match(JSON.stringify(mcpResult.structuredContent), /先讲风险/);
+      const mcpTurnExplanation = await mcp.callTool("memory.explain_turn", {
+        profileId: "consumer",
+        text: "风险 方案",
+      });
+      assert.equal(mcpTurnExplanation.isError, undefined);
+      assert.match(JSON.stringify(mcpTurnExplanation.structuredContent), /gmos\.turn_explanation\.v1/);
+      assert.equal(JSON.stringify(mcpTurnExplanation.structuredContent).includes("contextBlock"), false);
       const mcpEvidencePath = await mcp.callTool("memory.explain_evidence_path", {
         profileId: "consumer",
         text: "风险 方案",
@@ -331,6 +349,14 @@ try {
       assert.match(JSON.stringify(mcpEvidencePath.structuredContent), /plannerTrace/);
       assert.equal(
         (await mcp.callTool("memory.explain_evidence_path", {
+          profileId: "consumer",
+          text: "风险 方案",
+          includeSensitive: true,
+        })).isError,
+        true,
+      );
+      assert.equal(
+        (await mcp.callTool("memory.explain_turn", {
           profileId: "consumer",
           text: "风险 方案",
           includeSensitive: true,
@@ -401,8 +427,10 @@ try {
       assert.deepEqual(runtimeInfo.packageExports, Object.keys(installedPackage.exports).sort());
       assert.equal(runtimeInfo.publicSurface.mcpTools.includes("memory.runtime_info"), true);
       assert.equal(runtimeInfo.publicSurface.mcpTools.includes("memory.prepare_context"), true);
+      assert.equal(runtimeInfo.publicSurface.mcpTools.includes("memory.explain_turn"), true);
       assert.equal(runtimeInfo.publicSurface.httpRoutes.includes("GET /runtime-info"), true);
       assert.equal(runtimeInfo.publicSurface.httpRoutes.includes("POST /prepare"), true);
+      assert.equal(runtimeInfo.publicSurface.httpRoutes.includes("POST /explain-turn"), true);
       assert.equal(runtimeInfo.trustContract.localFirst, true);
       assert.equal(runtimeInfo.trustContract.defaultStorage, "sqlite");
       assert.equal(runtimeInfo.trustContract.encryptedByDefault, false);
@@ -587,6 +615,22 @@ try {
         const httpReconstructBody = await httpReconstruct.json();
         assert.equal(httpReconstructBody.reconstructed.paths.length > 0, true);
         assert.match(JSON.stringify(httpReconstructBody), /stable SDK boundaries/);
+        const httpExplainTurn = await fetch(httpAddress.url + "/explain-turn", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer consumer-local-token",
+          },
+          body: JSON.stringify({
+            profileId: "consumer_http",
+            text: "stable SDK boundaries",
+            maxExcluded: 5,
+          }),
+        });
+        assert.equal(httpExplainTurn.status, 200);
+        const httpExplainTurnBody = await httpExplainTurn.json();
+        assert.match(JSON.stringify(httpExplainTurnBody), /gmos\.turn_explanation\.v1/);
+        assert.equal(JSON.stringify(httpExplainTurnBody).includes("contextBlock"), false);
         const httpExplainPath = await fetch(httpAddress.url + "/explain-path", {
           method: "POST",
           headers: {
@@ -628,6 +672,7 @@ try {
         type ConversationSpeakerKind,
         type EvidencePathExplanation,
         type ExplainEvidencePathInput,
+        type ExplainTurnInput,
         type MemoryExtractor,
         type MemoryOS,
         type MemoryRecord,
@@ -637,6 +682,7 @@ try {
         type ReadAuditSnapshot,
         type RepairSearchIndexResult,
         type SearchIndexStatus,
+        type TurnExplanationReport,
       } from "@ghast/memory";
       import {
         createMemoryStatusReport,
@@ -822,6 +868,15 @@ try {
       const typedEvidencePath: EvidencePathExplanation = await memory.explainEvidencePath(typedExplainInput);
       if (typedEvidencePath.schema !== "gmos.evidence_path_explanation.v1") {
         throw new Error("typed evidence path explanation failed");
+      }
+      const typedExplainTurnInput: ExplainTurnInput = {
+        profileId: "consumer-types",
+        messages: [{ role: "user", content: "fixture" }],
+        maxExcluded: 5,
+      };
+      const typedTurnExplanation: TurnExplanationReport = await memory.explainTurn(typedExplainTurnInput);
+      if (typedTurnExplanation.schema !== "gmos.turn_explanation.v1") {
+        throw new Error("typed turn explanation failed");
       }
       const typedSearchIndexStatus: SearchIndexStatus = sqliteStore.searchIndexStatus();
       if (typedSearchIndexStatus.status !== "ok") throw new Error("typed search index status failed");
@@ -1166,7 +1221,9 @@ try {
   assert.equal(installedVersionJson.packageExports.includes("./store/sqlite"), true);
   assert.equal(installedVersionJson.publicSurface.mcpTools.includes("memory.runtime_info"), true);
   assert.equal(installedVersionJson.publicSurface.mcpTools.includes("memory.prepare_context"), true);
+  assert.equal(installedVersionJson.publicSurface.mcpTools.includes("memory.explain_turn"), true);
   assert.equal(installedVersionJson.publicSurface.httpRoutes.includes("POST /prepare"), true);
+  assert.equal(installedVersionJson.publicSurface.httpRoutes.includes("POST /explain-turn"), true);
   assert.equal(installedVersionJson.trustContract.localFirst, true);
   assert.equal(installedVersionJson.trustContract.defaultStorage, "sqlite");
   assert.equal(installedVersionJson.trustContract.encryptedByDefault, false);

@@ -154,6 +154,9 @@ Primary methods:
   still goes through the normal gmOS candidate validation and safety gates.
 - `prepareTurn(input)`: retrieve ordinary context and action policy for the next
   agent turn. This is a read path and must not write.
+- `explainTurn(input)`: run the same retrieval and context-budget pipeline as
+  `prepareTurn()` in explanation mode. It returns included and excluded memory
+  decision traces but no context block for prompt injection.
 - `reconstructContext(input)`: run bounded cue/tag/content reconstruction with
   evidence convergence and planner trace metadata.
 - `explainEvidencePath(input)`: explain why evidence was selected for a query.
@@ -181,7 +184,8 @@ Primary methods:
   natural-language delete commands into structured target terms. Parser
   `undefined` or `null` falls back to literal `query`; parser empty terms archive
   nothing. Empty literal queries also archive nothing.
-- `explain(input)`: explain a memory or belief without exposing unsafe content.
+- `explain(input)`: explain a memory or belief without exposing unsafe content,
+  including a lifecycle history derived from evidence and feedback events.
 
 Low-level compatibility methods such as `add`, `search`, `history`, `list`,
 `get`, `update`, `delete`, `backup`, and `restore` exist for migration,
@@ -191,6 +195,92 @@ administration, and host adapters that cannot emit full events yet. Prefer
 `PreparedTurn.memories` contains the memory ids selected for ordinary context.
 Hosts should pass the ids actually used by the model/tool loop back through
 `commitOutcome({ usedMemoryIds })`.
+
+## Turn Explanation
+
+`explainTurn(input)` accepts the same input shape as `prepareTurn(input)` plus
+`maxExcluded?: number`. It is a read path and is covered by the same read-audit
+snapshot checks as `prepareTurn()`. The runtime shares the retrieval, safety
+gating, action-policy, reconstruction-shadow, and token-budget code path with
+`prepareTurn()`; trace collection is only attached for explanation mode.
+
+```ts
+const explanation = await memory.explainTurn({
+  profileId: "local-user",
+  messages: [{ role: "user", content: "How should we plan this release?" }],
+  contextBudgetTokens: 800,
+  maxExcluded: 20,
+});
+```
+
+The report schema is `gmos.turn_explanation.v1`:
+
+```ts
+{
+  schema: "gmos.turn_explanation.v1",
+  profileId,
+  query,
+  included: [{
+    id,
+    kind,
+    status,
+    content,
+    retention: { recallCount?, reinforcement?, confidence },
+    cues,
+    associations,
+    tags,
+    scoreComponents: { confidence, retrievalScore, contentScore, finalScore },
+    evidenceEventIds,
+  }],
+  excluded: [{
+    id,
+    kind,
+    status,
+    reason,
+    retention: { recallCount?, reinforcement?, confidence },
+    cues,
+    associations,
+    tags,
+    scoreComponents,
+  }],
+  budgets: {
+    memorySearchLimit,
+    contextBudgetTokens,
+    promptTokenEstimate,
+    actionPolicyCount,
+    planner?: { maxSteps, maxBranch, maxMemories, stopReason },
+    stoppedAt,
+  },
+  stats,
+}
+```
+
+`stats` has parity with `PreparedTurn.stats`; `included` matches
+`PreparedTurn.memories` for the same input and store state. The report never
+includes `contextBlock`. Included memory content follows the same visibility
+rules as the context itself. Excluded candidates expose only content-safe
+decision fields and do not include memory text.
+
+`reason` is a closed enum:
+
+```ts
+type TurnExplanationExcludedReason =
+  | "dormant"
+  | "archived"
+  | "superseded"
+  | "out_of_window"
+  | "sensitivity_gated"
+  | "person_gated"
+  | "incognito_gated"
+  | "forget_residue"
+  | "budget_cut"
+  | "below_score_threshold"
+  | "deduplicated";
+```
+
+`stoppedAt` is `"memory_search" | "token_budget" | "planner" | "complete"`.
+`budget_cut` covers candidates considered by the retrieval pipeline but omitted
+by memory-search or context-token budgets.
 
 ## Memory Lifecycle
 
@@ -204,6 +294,34 @@ Hosts should pass the ids actually used by the model/tool loop back through
   "dormant" })` or `list({ status: "any" })`.
 - `archived`: excluded from ordinary and history recall unless explicitly
   listed/restored through management APIs.
+
+`explain(id)` now includes a lifecycle history section:
+
+```ts
+{
+  lifecycle: {
+    schema: "gmos.memory_lifecycle_history.v1",
+    entries: [{
+      createdAt,
+      eventKind,
+      eventId?,
+      sourceType?,
+      fromStatus?,
+      toStatus?,
+      reasonSummary,
+    }],
+  },
+}
+```
+
+`eventKind` can be `created`, `imported`, `updated`, `reinforced`,
+`decayed_to_dormant`, `archived`, `consolidated_source`,
+`consolidated_survivor`, `consolidated_summary`, `distilled_source_trajectory`,
+`distilled_procedure`, `evolution_applied`, `evolution_reverted`, `forgotten`,
+`restored`, or `reactivated`. Entries are ordered by `createdAt` and derived
+from existing evidence/failure payloads; gmOS does not add schema fields or
+write new rows for lifecycle explanation. Reason summaries and ids are
+content-safe redacted strings.
 
 `maintain({ profileId, dryRun, now, phases })` defaults to
 `phases: ["decay"]` and returns:
@@ -477,6 +595,8 @@ gmos evolution report --db ./gmos.db --profile local --format markdown
 gmos evolution apply --db ./gmos.db --profile local --proposal proposal_xxx --approved-by "Song Su" --yes
 gmos evolution revert --db ./gmos.db --application evidence_xxx --yes
 gmos-inspect --db ./gmos.db --profile local --query "project release" --temporal-mode current --evidence-limit 50 --failure-limit 50 --max-steps 2 --max-branch 4 --format markdown
+gmos-inspect turn --db ./gmos.db --profile local --query "project release" --max-excluded 20 --format markdown
+gmos-inspect timeline <memory-id> --db ./gmos.db --profile local --format markdown
 gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
 ```
 
@@ -485,14 +605,18 @@ that token is missing or starts with `--`, gmOS reports `<option> requires a
 value`. For path option values whose filename starts with `--`, pass
 `./--report.json` or an absolute path.
 
-`gmos-inspect` emits a content-safe local inspection report. It reports counts,
-evidence eligibility/source summaries, row-count summaries, failure kind
-summaries, forget residue counts for archived-memory derived world-belief/association residue, and
-optional reconstruction diagnostics. Use `--temporal-mode current` or
-`--temporal-mode history` when inspecting current-state or historical recall
-behavior. Use `--failure-limit` to cap inspected failure events. The report does not print memory content, evidence
-text, raw query secrets, profile IDs, prompt context, table hashes, or private database paths. Use it for
-support bundles and local integration checks before building a host UI.
+`gmos-inspect` emits content-safe local inspection reports. The default report
+prints counts, evidence eligibility/source summaries, row-count summaries,
+failure kind summaries, forget residue counts for archived-memory derived
+world-belief/association residue, and optional reconstruction diagnostics. Use
+`--temporal-mode current` or `--temporal-mode history` when inspecting
+current-state or historical recall behavior. Use `--failure-limit` to cap
+inspected failure events. The `turn` view renders the `explainTurn()` report for
+one query; the `timeline` view renders the lifecycle history for one memory id.
+Inspector reports do not print memory content, evidence text, raw query
+secrets, profile IDs, prompt context, table hashes, or private database paths.
+Use them for support bundles and local integration checks before building a host
+UI.
 Use `--evidence-limit` to cap evidence summary sampling. Use `--max-steps` and
 `--max-branch` to bound optional reconstruction diagnostics for query-based
 inspection, including reconstruction step, explored cue, and association counts.
@@ -513,6 +637,7 @@ calls instead of direct SDK imports:
 - `memory.search`
 - `memory.observe`
 - `memory.prepare_context`
+- `memory.explain_turn`
 - `memory.reconstruct_context`
 - `memory.explain_evidence_path`
 - `memory.commit_outcome`
@@ -534,9 +659,9 @@ Run `examples/mcp-router.mjs` for a minimal in-process MCP smoke test. The
 example validates `memory.runtime_info`, records an ordinary observation through
 `memory.observe`, imports an explicit preference memory, prepares
 evidence-backed context through `memory.prepare_context`, rejects public
-sensitive override switches, explains the evidence path without returning a
-prompt block, records task outcome and feedback failures, and deletes its
-temporary plaintext SQLite database.
+sensitive override switches, explains the turn and evidence path without
+returning a prompt block, records task outcome and feedback failures, and
+deletes its temporary plaintext SQLite database.
 
 ## HTTP Surface
 
@@ -550,6 +675,7 @@ The local HTTP adapter exposes:
 - `POST /search`
 - `POST /observe`
 - `POST /prepare`
+- `POST /explain-turn`
 - `POST /reconstruct`
 - `POST /explain-path`
 - `POST /commit-outcome`

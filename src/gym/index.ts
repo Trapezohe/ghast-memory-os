@@ -671,6 +671,20 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "running maintain twice with the same now should not create new transitions",
     "lifecycle",
   );
+  const dormantTurnExplanation = await memory.explainTurn({
+    profileId: lifecycleProfile,
+    messages: [{ role: "user", content: "LifecycleDormantSignal" }],
+    maxExcluded: 10,
+  });
+  gate(
+    result,
+    "explain_turn_reports_dormant_exclusion",
+    dormantTurnExplanation.excluded.some(
+      (entry) => entry.id === staleMemory.id && entry.reason === "dormant",
+    ),
+    "explainTurn should report dormant candidates that ordinary context excludes",
+    "explainability",
+  );
   const forgottenDormant = await memory.forget({
     profileId: lifecycleProfile,
     query: "LifecycleDormantSignal",
@@ -678,6 +692,11 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   const dormantAfterForgetContext = await memory.prepareTurn({
     profileId: lifecycleProfile,
     messages: [{ role: "user", content: "LifecycleDormantSignal" }],
+  });
+  const forgottenDormantExplanation = await memory.explainTurn({
+    profileId: lifecycleProfile,
+    messages: [{ role: "user", content: "LifecycleDormantSignal" }],
+    maxExcluded: 10,
   });
   const archivedDormant = await memory.list({
     profileId: lifecycleProfile,
@@ -694,12 +713,29 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "forget should archive dormant matches and keep ordinary context clean",
     "lifecycle",
   );
+  gate(
+    result,
+    "explain_turn_forget_residue_redacts_content",
+    forgottenDormantExplanation.excluded.some(
+      (entry) => entry.id === staleMemory.id && entry.reason === "forget_residue",
+    ) &&
+      !JSON.stringify(forgottenDormantExplanation).includes("stale fact should decay"),
+    "explainTurn should name forget residue without resurfacing forgotten content",
+    "explainability",
+  );
   const usedDormant = await memory.add({
     profileId: lifecycleProfile,
     kind: "fact",
     content: "LifecycleUsedDormantSignal should reactivate on outcome.",
     confidence: 0.4,
     createdAt: "2020-01-01T00:10:00.000Z",
+  });
+  await memory.recordFeedback({
+    profileId: lifecycleProfile,
+    content: "LifecycleUsedDormantSignal was useful feedback.",
+    relatedMemoryIds: [usedDormant.id],
+    signal: "positive",
+    createdAt: "2020-01-02T00:10:00.000Z",
   });
   await memory.maintain({
     profileId: lifecycleProfile,
@@ -732,6 +768,77 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "commitOutcome usedMemoryIds should reactivate dormant memories and bump recall counters",
     "lifecycle",
   );
+  const lifecycleExplainBefore = await store.readAuditSnapshot();
+  const usedDormantExplanation = await memory.explain(usedDormant.id, lifecycleProfile);
+  const lifecycleExplainAfter = await store.readAuditSnapshot();
+  const lifecycleKinds = usedDormantExplanation?.lifecycle.entries.map((entry) => entry.eventKind) ?? [];
+  gate(
+    result,
+    "lifecycle_history_lists_reinforce_dormant_reactivate",
+    JSON.stringify(lifecycleExplainBefore) === JSON.stringify(lifecycleExplainAfter) &&
+      ["created", "reinforced", "decayed_to_dormant", "reactivated"].every((kind, index) =>
+        lifecycleKinds.indexOf(kind as never) >= index,
+      ) &&
+      lifecycleKinds.indexOf("created") < lifecycleKinds.indexOf("reinforced") &&
+      lifecycleKinds.indexOf("reinforced") < lifecycleKinds.indexOf("decayed_to_dormant") &&
+      lifecycleKinds.indexOf("decayed_to_dormant") < lifecycleKinds.indexOf("reactivated"),
+    "explain lifecycle history should be read-pure and ordered from creation through reactivation",
+    "explainability",
+  );
+
+  const explainProfile = "gym_explain_turn";
+  for (const suffix of ["alpha", "beta", "gamma"]) {
+    await memory.add({
+      profileId: explainProfile,
+      kind: "fact",
+      content: `ExplainTurnBudgetSignal ${suffix} keeps the public decision trace deterministic and concise.`,
+      confidence: 0.8,
+    });
+  }
+  const explainInput = {
+    profileId: explainProfile,
+    messages: [{ role: "user" as const, content: "ExplainTurnBudgetSignal decision trace" }],
+  };
+  const explainPrepared = await memory.prepareTurn(explainInput);
+  const explainReport = await memory.explainTurn(explainInput);
+  const explainReportAgain = await memory.explainTurn(explainInput);
+  const tightBudgetExplanation = await memory.explainTurn({
+    ...explainInput,
+    contextBudgetTokens: 60,
+    maxExcluded: 10,
+  });
+  const relaxedBudgetExplanation = await memory.explainTurn({
+    ...explainInput,
+    contextBudgetTokens: 1800,
+    maxExcluded: 10,
+  });
+  const explainAuditBefore = await store.readAuditSnapshot();
+  await memory.explainTurn({ ...explainInput, maxExcluded: 10 });
+  const explainAuditAfter = await store.readAuditSnapshot();
+  gate(
+    result,
+    "explain_turn_included_matches_prepare_turn",
+    JSON.stringify(explainPrepared.memories.map((entry) => entry.id)) ===
+      JSON.stringify(explainReport.included.map((entry) => entry.id)),
+    "explainTurn included set should exactly match prepareTurn memories for the same input",
+    "explainability",
+  );
+  gate(
+    result,
+    "explain_turn_deterministic_and_read_pure",
+    JSON.stringify(explainReport) === JSON.stringify(explainReportAgain) &&
+      JSON.stringify(explainAuditBefore) === JSON.stringify(explainAuditAfter),
+    "explainTurn should be deterministic and read-pure",
+    "explainability",
+  );
+  gate(
+    result,
+    "explain_turn_budget_cut_tracks_token_budget",
+    tightBudgetExplanation.excluded.some((entry) => entry.reason === "budget_cut") &&
+      !relaxedBudgetExplanation.excluded.some((entry) => entry.reason === "budget_cut"),
+    "explainTurn should report token budget cuts only when the context budget is tightened",
+    "explainability",
+  );
   scenario(result, "memory_lifecycle", "dev", [
     "maintenance_dry_run_read_audit_pure",
     "lifecycle_decay_to_dormant",
@@ -741,6 +848,12 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "maintenance_idempotent_same_now",
     "forget_archives_dormant_memory",
     "commit_outcome_reactivates_dormant_usage",
+    "explain_turn_reports_dormant_exclusion",
+    "explain_turn_forget_residue_redacts_content",
+    "lifecycle_history_lists_reinforce_dormant_reactivate",
+    "explain_turn_included_matches_prepare_turn",
+    "explain_turn_deterministic_and_read_pure",
+    "explain_turn_budget_cut_tracks_token_budget",
   ]);
 
   const duplicateProfile = "gym_consolidation_duplicate";
@@ -2157,6 +2270,16 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     maxBranch: 8,
     maxMemories: 8,
   });
+  const supersededTurnExplanation = await memory.explainTurn({
+    profileId: "gym_reconstruct",
+    messages: [{ role: "user", content: "atlas source current state" }],
+    maxExcluded: 20,
+  });
+  const temporalTurnExplanation = await memory.explainTurn({
+    profileId: "gym_reconstruct",
+    messages: [{ role: "user", content: "atlas temporal validity owner" }],
+    maxExcluded: 20,
+  });
   gate(
     result,
     "world_belief_single_cardinality_supersession",
@@ -2185,6 +2308,15 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   );
   gate(
     result,
+    "explain_turn_reports_superseded_exclusion",
+    supersededTurnExplanation.excluded.some(
+      (entry) => entry.id === staleCurrentStateSourceMemory.id && entry.reason === "superseded",
+    ),
+    "explainTurn should report source memories hidden by current-state supersession",
+    "explainability",
+  );
+  gate(
+    result,
     "historical_recall_includes_superseded_source_memory",
     historicalSourceStateReconstruction.contextBlock.includes("AlphaSourceOwner") &&
       forcedHistoricalSourceStateReconstruction.contextBlock.includes("AlphaSourceOwner"),
@@ -2210,6 +2342,13 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
       !temporalValidityReconstruction.contextBlock.includes("FutureTemporalOwner"),
     "ordinary context and reconstruction should honor memory validFrom/validTo windows",
     "reconstruction",
+  );
+  gate(
+    result,
+    "explain_turn_reports_out_of_window_exclusion",
+    temporalTurnExplanation.excluded.some((entry) => entry.reason === "out_of_window"),
+    "explainTurn should report temporally invalid candidates as out_of_window",
+    "explainability",
   );
   gate(
     result,
@@ -2249,9 +2388,11 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "world_belief_single_cardinality_supersession",
     "entity_resolution_current_state_invalidation",
     "current_state_suppresses_superseded_source_memory",
+    "explain_turn_reports_superseded_exclusion",
     "historical_recall_includes_superseded_source_memory",
     "current_temporal_mode_overrides_history_cues",
     "temporal_validity_window_context_filter",
+    "explain_turn_reports_out_of_window_exclusion",
     "temporal_validity_history_recall",
     "historical_recall_keeps_sensitive_person_filters",
   ]);

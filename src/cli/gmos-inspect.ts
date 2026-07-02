@@ -6,7 +6,13 @@ import path from "node:path";
 import Database from "better-sqlite3";
 
 import { createMemoryStatusReport, type MemoryFailureSummary } from "../diagnostics/index.js";
-import type { EvidenceEvent } from "../kernel/types.js";
+import type {
+  EvidenceEvent,
+  ExplainResult,
+  ExplainTurnInput,
+  MemoryLifecycleHistory,
+  TurnExplanationReport,
+} from "../kernel/types.js";
 import { redactForReport, safePublicLabel, safePublicSensitivity } from "../kernel/safety.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
@@ -50,6 +56,12 @@ function hasFlag(name: string): boolean {
   return process.argv.includes(name);
 }
 
+function command(): "report" | "timeline" | "turn" {
+  const first = process.argv[2];
+  if (first === "timeline" || first === "turn") return first;
+  return "report";
+}
+
 function format(): "json" | "markdown" {
   const selected = value("--format", "json");
   if (selected === "json" || selected === "markdown") return selected;
@@ -61,6 +73,14 @@ function numberValue(name: string, fallback: number): number {
   if (raw === undefined) return fallback;
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${name} must be a positive integer`);
+  return parsed;
+}
+
+function nonNegativeIntegerValue(name: string, fallback: number): number {
+  const raw = value(name);
+  if (raw === undefined) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) throw new Error(`${name} must be a non-negative integer`);
   return parsed;
 }
 
@@ -209,6 +229,13 @@ function requireValue(name: string): string {
   return selected;
 }
 
+function positionalAfter(commandName: "timeline" | "turn", label: string): string {
+  const commandIndex = process.argv.indexOf(commandName);
+  const selected = commandIndex === -1 ? undefined : process.argv[commandIndex + 1];
+  if (!selected || selected.startsWith("--")) throw new Error(`${commandName} requires ${label}`);
+  return selected;
+}
+
 function renderMarkdown(report: InspectReport): string {
   const lines = [
     "# gmOS Inspect Report",
@@ -288,6 +315,93 @@ function renderMarkdown(report: InspectReport): string {
   return `${lines.join("\n")}\n`;
 }
 
+function renderTimelineMarkdown(report: InspectTimelineReport): string {
+  const lines = [
+    "# gmOS Memory Timeline",
+    "",
+    `- profileId: \`${report.profileId}\``,
+    `- dbPath: ${report.dbPath}`,
+    `- generatedAt: ${report.generatedAt}`,
+    `- memoryId: \`${report.memoryId}\``,
+    "",
+    "## Lifecycle",
+    "",
+  ];
+  if (!report.lifecycle) {
+    lines.push("Memory was not found or is not explainable on this surface.");
+  } else if (report.lifecycle.entries.length === 0) {
+    lines.push("No lifecycle entries were found.");
+  } else {
+    for (const entry of report.lifecycle.entries) {
+      const transition = entry.fromStatus && entry.toStatus
+        ? `; ${entry.fromStatus} -> ${entry.toStatus}`
+        : "";
+      lines.push(
+        `- ${entry.createdAt}: ${entry.eventKind}${transition}; ${entry.reasonSummary}`,
+      );
+    }
+  }
+  lines.push(
+    "",
+    "This report is content-safe: it does not print memory content, evidence text, table hashes, or prompt context.",
+    "",
+  );
+  return `${lines.join("\n")}\n`;
+}
+
+function inspectSafeTurnExplanation(report: TurnExplanationReport): TurnExplanationReport {
+  return {
+    ...report,
+    profileId: REDACTED_PROFILE_ID,
+    query: redactForReport(report.query),
+    included: report.included.map((memory) => ({
+      ...memory,
+      content: "[memory content redacted]",
+    })),
+  };
+}
+
+function renderTurnMarkdown(report: TurnExplanationReport): string {
+  const lines = [
+    "# gmOS Turn Explanation",
+    "",
+    `- profileId: \`${report.profileId}\``,
+    `- query: ${report.query ? `\`${report.query}\`` : "none"}`,
+    `- included memories: ${report.included.length}`,
+    `- excluded candidates: ${report.excluded.length}`,
+    `- prompt token estimate: ${report.stats.promptTokenEstimate}`,
+    `- stopped at: ${report.budgets.stoppedAt}`,
+    "",
+    "## Included",
+    "",
+  ];
+  if (report.included.length === 0) {
+    lines.push("No memories were included.");
+  } else {
+    for (const memory of report.included) {
+      lines.push(
+        `- ${memory.id}: ${memory.kind}; confidence=${memory.retention.confidence.toFixed(2)}; cues=${memory.cues.join(", ") || "none"}; tags=${memory.tags.join(", ") || "none"}; evidence=${memory.evidenceEventIds.length}`,
+      );
+    }
+  }
+  lines.push("", "## Excluded", "");
+  if (report.excluded.length === 0) {
+    lines.push("No notable excluded candidates were reported.");
+  } else {
+    for (const memory of report.excluded) {
+      lines.push(
+        `- ${memory.id}: ${memory.kind}; status=${memory.status}; reason=${memory.reason}`,
+      );
+    }
+  }
+  lines.push(
+    "",
+    "This report is content-safe: it does not print memory content, evidence text, table hashes, or prompt context.",
+    "",
+  );
+  return `${lines.join("\n")}\n`;
+}
+
 interface InspectReport {
   schema: "gmos.inspect_report.v1";
   generatedAt: string;
@@ -342,18 +456,46 @@ interface InspectReport {
   };
 }
 
+interface InspectTimelineReport {
+  schema: "gmos.inspect_timeline.v1";
+  generatedAt: string;
+  profileId: string;
+  dbPath: string;
+  memoryId: string;
+  lifecycle: MemoryLifecycleHistory | null;
+}
+
+function timelineReport(input: {
+  explanation: ExplainResult | null;
+  memoryId: string;
+}): InspectTimelineReport {
+  return {
+    schema: "gmos.inspect_timeline.v1",
+    generatedAt: new Date().toISOString(),
+    profileId: REDACTED_PROFILE_ID,
+    dbPath: "[plaintext sqlite path redacted]",
+    memoryId: redactForReport(input.memoryId),
+    lifecycle: input.explanation?.lifecycle ?? null,
+  };
+}
+
 async function main(): Promise<void> {
   if (hasFlag("--help") || hasFlag("-h")) {
     process.stdout.write([
       "Usage: gmos-inspect --db <path> [--profile <id>] [--query <text>] [--temporal-mode auto|current|history] [--evidence-limit <count>] [--failure-limit <count>] [--max-steps <count>] [--max-branch <count>] [--format json|markdown] [--output-file <path>]",
+      "       gmos-inspect timeline <memory-id> --db <path> [--profile <id>] [--format json|markdown] [--output-file <path>]",
+      "       gmos-inspect turn --db <path> --query <text> [--profile <id>] [--max-excluded <count>] [--format json|markdown] [--output-file <path>]",
       "",
       "Creates a content-safe local inspection report with counts, health signals, evidence summaries, forget residue, failure summaries, and optional reconstruction counters.",
-      "The report does not print memory content, evidence text, table hashes, or context blocks.",
+      "timeline renders a content-safe lifecycle history for one memory.",
+      "turn renders a content-safe explainTurn report for a query.",
+      "Reports do not print memory content, evidence text, table hashes, or context blocks.",
       "",
     ].join("\n"));
     return;
   }
 
+  const selectedCommand = command();
   const dbPath = requireValue("--db");
   const profileId = value("--profile", "default") ?? "default";
   const query = value("--query") ?? null;
@@ -369,6 +511,52 @@ async function main(): Promise<void> {
     });
     const memory = createMemoryOS({ profileId, store });
     try {
+      if (selectedCommand === "timeline") {
+        const report = timelineReport({
+          explanation: await memory.explain(positionalAfter("timeline", "<memory-id>"), profileId),
+          memoryId: positionalAfter("timeline", "<memory-id>"),
+        });
+        const rendered = outputFormat === "markdown"
+          ? renderTimelineMarkdown(report)
+          : `${JSON.stringify(report, null, 2)}\n`;
+        const outputFile = value("--output-file");
+        if (outputFile) {
+          const resolved = path.resolve(process.cwd(), outputFile);
+          mkdirSync(path.dirname(resolved), { recursive: true });
+          writeFileSync(resolved, rendered);
+        } else {
+          process.stdout.write(rendered);
+        }
+        return;
+      }
+      if (selectedCommand === "turn") {
+        if (!query) throw new Error("turn requires --query");
+        const turnInput: ExplainTurnInput = {
+          profileId,
+          messages: [{ role: "user", content: query }],
+        };
+        if (hasFlag("--include-evidence")) turnInput.includeEvidence = true;
+        if (value("--context-budget-tokens")) {
+          turnInput.contextBudgetTokens = numberValue("--context-budget-tokens", 1800);
+        }
+        if (value("--max-excluded")) {
+          turnInput.maxExcluded = nonNegativeIntegerValue("--max-excluded", 20);
+        }
+        const explanation = await memory.explainTurn(turnInput);
+        const report = inspectSafeTurnExplanation(explanation);
+        const rendered = outputFormat === "markdown"
+          ? renderTurnMarkdown(report)
+          : `${JSON.stringify(report, null, 2)}\n`;
+        const outputFile = value("--output-file");
+        if (outputFile) {
+          const resolved = path.resolve(process.cwd(), outputFile);
+          mkdirSync(path.dirname(resolved), { recursive: true });
+          writeFileSync(resolved, rendered);
+        } else {
+          process.stdout.write(rendered);
+        }
+        return;
+      }
       const evidence = await memory.listEvidence({ profileId, limit: evidenceLimit });
       const activeMemories = await memory.list({ profileId, status: "active" });
       const dormantMemories = await memory.list({ profileId, status: "dormant" });

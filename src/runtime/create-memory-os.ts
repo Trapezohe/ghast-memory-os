@@ -29,7 +29,9 @@ import { isReservedSpeakerIdentity } from "../kernel/person-identity.js";
 import { reconstructMemoryContext } from "../kernel/reconstruction.js";
 import {
   isPersonRoutedMemory,
+  redactForReport,
   safePublicLabel,
+  safePublicInlineField,
   sanitizePublicPayloadRecord,
   sourceMetadataSpeakerIsPerson,
 } from "../kernel/safety.js";
@@ -38,8 +40,10 @@ import type {
   EvidencePathExplanation,
   EvidenceEvent,
   EvidenceListInput,
+  ExplainTurnInput,
   ExplainEvidencePathInput,
   ExplainResult,
+  FailureEventRecord,
   FeedbackInput,
   ForgetInput,
   ForgetResult,
@@ -54,11 +58,15 @@ import type {
   LowLevelUpdateMemoryInput,
   MaintenanceInput,
   MaintenanceReport,
+  MemoryLifecycleHistory,
+  MemoryLifecycleHistoryEntry,
   MemoryConsolidationCandidate,
   MemoryConsolidationCluster,
   MemoryConsolidationResult,
   MemoryExtractionCandidate,
   MemoryKind,
+  MemorySearchTraceCollector,
+  MemorySearchTraceDecision,
   MemoryProcedureDistillationCandidate,
   MemoryProcedureDistillationCluster,
   MemoryProcedureDistillationResult,
@@ -67,12 +75,16 @@ import type {
   MemoryOSOptions,
   ObserveResult,
   PrepareTurnInput,
+  PreparedTurn,
   ReadAuditSnapshot,
   ReconstructionIntentHint,
   ReconstructContextInput,
   ReconstructedContext,
   RestoreArchivedResult,
   Sensitivity,
+  TurnExplanationExcludedMemory,
+  TurnExplanationIncludedMemory,
+  TurnExplanationReport,
 } from "../kernel/types.js";
 import { resolveMemoryLifecycleConfig } from "../kernel/retention.js";
 import {
@@ -664,6 +676,122 @@ function sanitizedReconstructRequest<T extends ReconstructContextInput>(
     delete request.reconstructionIntent;
   }
   return request;
+}
+
+class TurnExplanationSearchCollector implements MemorySearchTraceCollector {
+  readonly decisions: MemorySearchTraceDecision[] = [];
+
+  recordMemorySearchDecision(decision: MemorySearchTraceDecision): void {
+    this.decisions.push(decision);
+  }
+}
+
+function boundedPositiveInteger(input: number | undefined, fallback: number, min: number, max: number): number {
+  if (input === undefined || !Number.isFinite(input)) return fallback;
+  return Math.max(min, Math.min(Math.trunc(input), max));
+}
+
+function publicTraceValues(values: string[], mode: "label" | "inline"): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const value of values) {
+    const publicValue = mode === "label" ? safePublicLabel(value) : safePublicInlineField(value);
+    const key = publicValue.toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    output.push(publicValue);
+  }
+  return output;
+}
+
+function memoryRetention(memory: MemoryRecord): TurnExplanationIncludedMemory["retention"] {
+  return {
+    ...(memory.recallCount !== undefined ? { recallCount: memory.recallCount } : {}),
+    ...(memory.reinforcement !== undefined ? { reinforcement: memory.reinforcement } : {}),
+    confidence: memory.confidence,
+  };
+}
+
+function fallbackSearchDecision(memory: MemoryRecord): MemorySearchTraceDecision {
+  return {
+    memory,
+    decision: "included",
+    cues: [],
+    associations: memory.sourceEventId ? ["source_evidence"] : [],
+    tags: [memory.kind],
+    scoreComponents: {
+      confidence: memory.confidence,
+      retrievalScore: 0,
+      contentScore: memory.confidence,
+      finalScore: memory.confidence,
+    },
+  };
+}
+
+function publicSearchDecision(input: {
+  memory: MemoryRecord;
+  decision: MemorySearchTraceDecision | undefined;
+}): MemorySearchTraceDecision {
+  return input.decision ?? fallbackSearchDecision(input.memory);
+}
+
+function traceDecisionByMemoryId(
+  decisions: MemorySearchTraceDecision[],
+): Map<string, MemorySearchTraceDecision> {
+  const output = new Map<string, MemorySearchTraceDecision>();
+  for (const decision of decisions) {
+    const existing = output.get(decision.memory.id);
+    if (!existing || decision.decision === "included") output.set(decision.memory.id, decision);
+  }
+  return output;
+}
+
+function explanationMemoryKind(memory: MemoryRecord): MemoryKind {
+  return safePublicLabel(memory.kind) as MemoryKind;
+}
+
+function explanationEventId(
+  value: string,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+): string {
+  return redactRuntimePayloadString(value, classifyRuntimeSensitivity, "metadata");
+}
+
+function includedTurnExplanationMemory(input: {
+  memory: MemoryRecord;
+  decision: MemorySearchTraceDecision | undefined;
+  evidenceEventIds: string[];
+}): TurnExplanationIncludedMemory {
+  const decision = publicSearchDecision(input);
+  return {
+    id: input.memory.id,
+    kind: explanationMemoryKind(input.memory),
+    status: input.memory.status,
+    content: input.memory.content,
+    retention: memoryRetention(input.memory),
+    cues: publicTraceValues(decision.cues, "inline"),
+    associations: publicTraceValues(decision.associations, "label"),
+    tags: publicTraceValues(decision.tags, "label"),
+    scoreComponents: decision.scoreComponents,
+    evidenceEventIds: input.evidenceEventIds,
+  };
+}
+
+function excludedTurnExplanationMemory(
+  decision: MemorySearchTraceDecision,
+): TurnExplanationExcludedMemory | null {
+  if (!decision.reason) return null;
+  return {
+    id: decision.memory.id,
+    kind: explanationMemoryKind(decision.memory),
+    status: decision.memory.status,
+    reason: decision.reason,
+    retention: memoryRetention(decision.memory),
+    cues: publicTraceValues(decision.cues, "inline"),
+    associations: publicTraceValues(decision.associations, "label"),
+    tags: publicTraceValues(decision.tags, "label"),
+    scoreComponents: decision.scoreComponents,
+  };
 }
 
 function redactRouteSignals(value: string, privateSignals: string[]): string {
@@ -1271,8 +1399,20 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     );
   }
 
-  async function prepareTurn(input: PrepareTurnInput) {
-    await initialize();
+  async function evidenceEventIdsForMemory(memory: MemoryRecord): Promise<string[]> {
+    return [...new Set(
+      (await store.listEvidenceForMemory(memory.id))
+        .map((event) => sanitizeRuntimeEvidenceForPublicOutput(event, classifyRuntimeSensitivity))
+        .map((event) => explanationEventId(event.id, classifyRuntimeSensitivity)),
+    )].sort((left, right) => left.localeCompare(right));
+  }
+
+  async function prepareTurnCore(input: PrepareTurnInput, trace?: MemorySearchTraceCollector): Promise<{
+    prepared: PreparedTurn;
+    displayQuery: string;
+    retrievalQuery: string;
+    candidateMemories: MemoryRecord[];
+  }> {
     const profileId = profileIdFor(defaultProfileId, input.profileId);
     const displayQuery = prepareTurnDisplayQuery(input);
     const query = prepareTurnQuery(input, classifyRuntimeSensitivity);
@@ -1282,13 +1422,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       classifyRuntimeSensitivity,
     );
     const hideTaskRetrievalHints = displayQuery !== query || privateRouteSignals.length > 0;
-    const before = await readAuditSnapshot(store);
     const memories = sourceScopedMemories(await store.searchMemories({
       profileId,
       query,
       limit: 12,
       purpose: "context",
       includeSensitive: input.includeSensitive,
+      ...(trace ? { trace } : {}),
     }), query);
     const actionPolicies = await store.listActionPolicies(profileId, {
       includeSensitive: input.includeSensitive,
@@ -1362,12 +1502,97 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
             },
           })
         : undefined;
+    return {
+      prepared: reconstruction ? { ...prepared, reconstruction } : prepared,
+      displayQuery,
+      retrievalQuery: query,
+      candidateMemories: memories,
+    };
+  }
+
+  async function prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn> {
+    await initialize();
+    const before = await readAuditSnapshot(store);
+    const execution = await prepareTurnCore(input);
     assertNoReadSideEffects({
       operation: "prepareTurn",
       before,
       after: await readAuditSnapshot(store),
     });
-    return reconstruction ? { ...prepared, reconstruction } : prepared;
+    return execution.prepared;
+  }
+
+  async function explainTurn(input: ExplainTurnInput): Promise<TurnExplanationReport> {
+    await initialize();
+    const before = await readAuditSnapshot(store);
+    const trace = new TurnExplanationSearchCollector();
+    const execution = await prepareTurnCore(input, trace);
+    const prepared = execution.prepared;
+    const includedIds = new Set(prepared.memories.map((memory) => memory.id));
+    const decisionsById = traceDecisionByMemoryId(trace.decisions);
+    const included: TurnExplanationIncludedMemory[] = [];
+    for (const memory of prepared.memories) {
+      included.push(includedTurnExplanationMemory({
+        memory,
+        decision: decisionsById.get(memory.id),
+        evidenceEventIds: await evidenceEventIdsForMemory(memory),
+      }));
+    }
+
+    const excludedById = new Map<string, TurnExplanationExcludedMemory>();
+    for (const decision of trace.decisions) {
+      if (includedIds.has(decision.memory.id) || decision.decision !== "excluded") continue;
+      const excluded = excludedTurnExplanationMemory(decision);
+      if (excluded && !excludedById.has(excluded.id)) excludedById.set(excluded.id, excluded);
+    }
+    for (const memory of execution.candidateMemories) {
+      if (includedIds.has(memory.id)) continue;
+      const baseDecision = decisionsById.get(memory.id) ?? fallbackSearchDecision(memory);
+      const excluded = excludedTurnExplanationMemory({
+        ...baseDecision,
+        memory,
+        decision: "excluded",
+        reason: "budget_cut",
+      });
+      if (excluded) excludedById.set(excluded.id, excluded);
+    }
+
+    const maxExcluded = boundedPositiveInteger(input.maxExcluded, 20, 0, 100);
+    const planner = prepared.reconstruction
+      ? {
+          maxSteps: boundedPositiveInteger(input.reconstruction?.maxSteps, 3, 1, 8),
+          maxBranch: boundedPositiveInteger(input.reconstruction?.maxBranch, 4, 1, 12),
+          maxMemories: boundedPositiveInteger(input.reconstruction?.maxMemories, 8, 1, 24),
+          stopReason: prepared.reconstruction.stats.stopReason,
+        }
+      : undefined;
+    const report: TurnExplanationReport = {
+      schema: "gmos.turn_explanation.v1",
+      profileId: prepared.profileId,
+      query: execution.displayQuery,
+      included,
+      excluded: [...excludedById.values()].slice(0, maxExcluded),
+      budgets: {
+        memorySearchLimit: 12,
+        contextBudgetTokens: input.contextBudgetTokens ?? 1800,
+        promptTokenEstimate: prepared.stats.promptTokenEstimate,
+        actionPolicyCount: prepared.stats.actionPolicyCount,
+        ...(planner ? { planner } : {}),
+        stoppedAt:
+          execution.candidateMemories.length > prepared.memories.length
+            ? "token_budget"
+            : planner && planner.stopReason !== "evidence_sufficient"
+              ? "planner"
+              : "complete",
+      },
+      stats: prepared.stats,
+    };
+    assertNoReadSideEffects({
+      operation: "explainTurn",
+      before,
+      after: await readAuditSnapshot(store),
+    });
+    return report;
   }
 
   async function reconstructContext(input: ReconstructContextInput): Promise<ReconstructedContext> {
@@ -1892,25 +2117,279 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     });
   }
 
+  function payloadRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+  }
+
+  function payloadStringArray(value: unknown): string[] {
+    return Array.isArray(value)
+      ? value.filter((entry): entry is string => typeof entry === "string")
+      : [];
+  }
+
+  function payloadStatus(value: unknown): MemoryRecord["status"] | undefined {
+    return value === "active" || value === "dormant" || value === "archived"
+      ? value
+      : undefined;
+  }
+
+  function payloadReferencesMemory(payload: Record<string, unknown>, memoryId: string): boolean {
+    if (payload.memoryId === memoryId) return true;
+    if (payload.archivedMemberId === memoryId) return true;
+    if (payload.survivorId === memoryId) return true;
+    if (payloadStringArray(payload.sourceMemoryIds).includes(memoryId)) return true;
+    if (payloadStringArray(payload.memberIds).includes(memoryId)) return true;
+    for (const key of ["actions", "previousValues", "restoredValues"]) {
+      const values = payload[key];
+      if (!Array.isArray(values)) continue;
+      if (values.some((entry) => payloadRecord(entry).memoryId === memoryId)) return true;
+    }
+    return false;
+  }
+
+  function lifecycleReasonSummary(parts: string[]): string {
+    const summary = parts
+      .filter((part) => part.trim().length > 0)
+      .map((part) => redactForReport(part))
+      .join("; ");
+    return summary || "no_public_reason";
+  }
+
+  function lifecycleTransitionKind(input: {
+    fromStatus?: MemoryRecord["status"] | undefined;
+    toStatus?: MemoryRecord["status"] | undefined;
+    reasons?: string[] | undefined;
+  }): MemoryLifecycleHistoryEntry["eventKind"] {
+    if (input.toStatus === "dormant") return "decayed_to_dormant";
+    if (
+      input.toStatus === "archived" &&
+      input.reasons?.some((reason) => /forget|delete|deletion/iu.test(reason))
+    ) {
+      return "forgotten";
+    }
+    if (input.toStatus === "archived") return "archived";
+    if (input.fromStatus === "dormant" && input.toStatus === "active") return "reactivated";
+    if (input.fromStatus === "archived" && input.toStatus === "active") return "restored";
+    return "updated";
+  }
+
+  function lifecycleEntriesFromEvidence(
+    memory: MemoryRecord,
+    event: EvidenceEvent,
+  ): MemoryLifecycleHistoryEntry[] {
+    const payload = payloadRecord(event.payload);
+    const sourceType = safePublicLabel(event.sourceType);
+    const eventId = explanationEventId(event.id, classifyRuntimeSensitivity);
+    if (event.id === memory.sourceEventId) {
+      if (sourceType === "consolidation" && memory.metadata.consolidationSummary === true) {
+        return [{
+          createdAt: event.createdAt,
+          eventKind: "consolidated_summary",
+          eventId,
+          sourceType,
+          reasonSummary: lifecycleReasonSummary([
+            "created consolidation summary",
+            `sources:${payloadStringArray(payload.sourceMemoryIds).length}`,
+          ]),
+        }];
+      }
+      if (sourceType === "distillation" && memory.metadata.procedureDistillation === true) {
+        return [{
+          createdAt: event.createdAt,
+          eventKind: "distilled_procedure",
+          eventId,
+          sourceType,
+          reasonSummary: lifecycleReasonSummary([
+            "created distilled procedure",
+            `trajectories:${payloadStringArray(payload.sourceTrajectoryIds).length}`,
+          ]),
+        }];
+      }
+      const imported = sourceType.includes("import") || sourceType.includes("restore");
+      return [{
+        createdAt: event.createdAt,
+        eventKind: imported ? "imported" : sourceType === "sdk.low_level_update" ? "updated" : "created",
+        eventId,
+        sourceType,
+        reasonSummary: lifecycleReasonSummary([`source:${sourceType}`]),
+      }];
+    }
+    if (!payloadReferencesMemory(payload, memory.id)) return [];
+    if (sourceType === "maintenance" || sourceType === "memory.lifecycle") {
+      const fromStatus = payloadStatus(payload.from);
+      const toStatus = payloadStatus(payload.to);
+      const reasons = payloadStringArray(payload.reasons);
+      return [{
+        createdAt: event.createdAt,
+        eventKind: lifecycleTransitionKind({ fromStatus, toStatus, reasons }),
+        eventId,
+        sourceType,
+        ...(fromStatus !== undefined ? { fromStatus } : {}),
+        ...(toStatus !== undefined ? { toStatus } : {}),
+        reasonSummary: lifecycleReasonSummary(reasons.length > 0 ? reasons : [`source:${sourceType}`]),
+      }];
+    }
+    if (sourceType === "consolidation") {
+      const kind: MemoryLifecycleHistoryEntry["eventKind"] =
+        payload.archivedMemberId === memory.id ||
+        payloadStringArray(payload.sourceMemoryIds).includes(memory.id) ||
+        payloadStringArray(payload.memberIds).includes(memory.id)
+          ? "consolidated_source"
+          : payload.survivorId === memory.id
+            ? "consolidated_survivor"
+            : "consolidated_summary";
+      const reasons = payloadStringArray(payload.reasons);
+      return [{
+        createdAt: event.createdAt,
+        eventKind: kind,
+        eventId,
+        sourceType,
+        reasonSummary: lifecycleReasonSummary(reasons.length > 0 ? reasons : ["consolidation"]),
+      }];
+    }
+    if (sourceType === "distillation") {
+      return [{
+        createdAt: event.createdAt,
+        eventKind: event.id === memory.sourceEventId ? "distilled_procedure" : "distilled_source_trajectory",
+        eventId,
+        sourceType,
+        reasonSummary: lifecycleReasonSummary(["procedure distillation"]),
+      }];
+    }
+    if (sourceType === "evolution") {
+      const reverted = typeof payload.revertedApplicationEventId === "string";
+      return [{
+        createdAt: event.createdAt,
+        eventKind: reverted ? "evolution_reverted" : "evolution_applied",
+        eventId,
+        sourceType,
+        reasonSummary: lifecycleReasonSummary([
+          reverted ? "evolution reverted" : "evolution applied",
+          typeof payload.proposalId === "string" ? `proposal:${payload.proposalId}` : "",
+        ]),
+      }];
+    }
+    return [];
+  }
+
+  function failureReferencesMemory(failure: FailureEventRecord, memoryId: string): boolean {
+    return (
+      payloadStringArray(failure.metadata.relatedMemoryIds).includes(memoryId) ||
+      payloadStringArray(failure.metadata.usedMemoryIds).includes(memoryId)
+    );
+  }
+
+  async function memoryLifecycleHistory(memory: MemoryRecord): Promise<MemoryLifecycleHistory> {
+    const eventById = new Map<string, EvidenceEvent>();
+    for (const event of await store.listEvidenceForMemory(memory.id)) {
+      eventById.set(event.id, event);
+    }
+    if (store.listEvidence) {
+      for (const event of await store.listEvidence({
+        profileId: memory.profileId,
+        includeSensitive: true,
+        limit: 500,
+      })) {
+        if (event.id === memory.sourceEventId || payloadReferencesMemory(event.payload, memory.id)) {
+          eventById.set(event.id, event);
+        }
+      }
+    }
+    const entries: MemoryLifecycleHistoryEntry[] = [];
+    for (const event of eventById.values()) {
+      const safeEvent = sanitizeRuntimeEvidenceForPublicOutput(event, classifyRuntimeSensitivity);
+      entries.push(...lifecycleEntriesFromEvidence(memory, safeEvent));
+    }
+    if (store.listFailures) {
+      for (const failure of await store.listFailures({ profileId: memory.profileId, limit: 500 })) {
+        if (!failureReferencesMemory(failure, memory.id)) continue;
+        entries.push({
+          createdAt: failure.createdAt,
+          eventKind: "reinforced",
+          eventId: explanationEventId(failure.id, classifyRuntimeSensitivity),
+          sourceType: "feedback",
+          reasonSummary: lifecycleReasonSummary([`failure:${failure.failureKind}`]),
+        });
+      }
+    }
+    if (entries.length === 0) {
+      entries.push({
+        createdAt: memory.createdAt,
+        eventKind: "created",
+        reasonSummary: "source_evidence_unavailable",
+      });
+    }
+    const seen = new Set<string>();
+    const ordered = entries
+      .sort((left, right) => {
+        const at = left.createdAt.localeCompare(right.createdAt);
+        if (at !== 0) return at;
+        return [
+          left.eventKind,
+          left.eventId ?? "",
+          left.fromStatus ?? "",
+          left.toStatus ?? "",
+        ].join(":").localeCompare([
+          right.eventKind,
+          right.eventId ?? "",
+          right.fromStatus ?? "",
+          right.toStatus ?? "",
+        ].join(":"));
+      })
+      .filter((entry) => {
+        const key = [
+          entry.createdAt,
+          entry.eventKind,
+          entry.eventId ?? "",
+          entry.fromStatus ?? "",
+          entry.toStatus ?? "",
+        ].join("\n");
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    return {
+      schema: "gmos.memory_lifecycle_history.v1",
+      entries: ordered,
+    };
+  }
+
   async function explain(id: string, profileIdInput?: string): Promise<ExplainResult | null> {
     await initialize();
+    const before = await readAuditSnapshot(store);
     const profileId = profileIdFor(defaultProfileId, profileIdInput);
     const memory = await store.getMemoryById(profileId, id, {
       includeSensitive: true,
       includePerson: true,
     });
-    if (!memory) return null;
+    if (!memory) {
+      assertNoReadSideEffects({
+        operation: "explain",
+        before,
+        after: await readAuditSnapshot(store),
+      });
+      return null;
+    }
     const evidence = (await store.listEvidenceForMemory(memory.id)).map(
       (event) => sanitizeRuntimeEvidenceForPublicOutput(event, classifyRuntimeSensitivity),
     );
-    return {
+    const result: ExplainResult = {
       id: memory.id,
       kind: "memory",
       memoryKind: safePublicLabel(memory.kind) as MemoryRecord["kind"],
       sensitivity: memory.sensitivity,
       text: memory.content,
       evidence,
+      lifecycle: await memoryLifecycleHistory(memory),
     };
+    assertNoReadSideEffects({
+      operation: "explain",
+      before,
+      after: await readAuditSnapshot(store),
+    });
+    return result;
   }
 
   return {
@@ -1926,6 +2405,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     observeWithReport,
     listEvidence,
     prepareTurn,
+    explainTurn,
     reconstructContext,
     explainEvidencePath,
     commitOutcome,

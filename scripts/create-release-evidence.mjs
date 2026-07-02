@@ -1435,6 +1435,7 @@ function recordHttpContentSafety(result, forbiddenValues) {
       report.ok !== true ||
       !Array.isArray(report.routes) ||
       !report.routes.includes("POST /mcp/call") ||
+      !report.routes.includes("POST /explain-turn") ||
       !report.routes.includes("POST /reconstruct") ||
       !report.routes.includes("POST /commit-outcome") ||
       !report.routes.includes("POST /feedback") ||
@@ -1616,6 +1617,7 @@ function recordMcpContentSafety(result, forbiddenValues) {
       report.ok !== true ||
       !Array.isArray(report.tools) ||
       !report.tools.includes("memory.prepare_context") ||
+      !report.tools.includes("memory.explain_turn") ||
       !report.tools.includes("memory.commit_outcome") ||
       !report.tools.includes("memory.record_feedback") ||
       !hasExactFailureKinds(report)
@@ -2153,6 +2155,23 @@ if (skipFreshInstall) {
         const reconstructedBody = await reconstructed.json();
         assert.equal(reconstructedBody.reconstructed.paths.length > 0, true);
         assert.equal(JSON.stringify(reconstructedBody).includes("fresh-install-http-token"), false);
+        const explainedTurn = await fetch(address.url + "/explain-turn", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer fresh-install-http-token",
+          },
+          body: JSON.stringify({
+            profileId: "fresh-install-http",
+            text: "release evidence route",
+            maxExcluded: 5,
+          }),
+        });
+        assert.equal(explainedTurn.status, 200);
+        const explainedTurnBody = await explainedTurn.json();
+        assert.equal(explainedTurnBody.explanation.schema, "gmos.turn_explanation.v1");
+        assert.equal(explainedTurnBody.explanation.included.length > 0, true);
+        assert.equal(JSON.stringify(explainedTurnBody).includes("contextBlock"), false);
         const failedOutcome = await fetch(address.url + "/commit-outcome", {
           method: "POST",
           headers: {
@@ -2196,8 +2215,15 @@ if (skipFreshInstall) {
         ]);
         console.log(JSON.stringify({
           ok: true,
-          routes: ["POST /mcp/call", "POST /reconstruct", "POST /commit-outcome", "POST /feedback"],
+          routes: [
+            "POST /mcp/call",
+            "POST /explain-turn",
+            "POST /reconstruct",
+            "POST /commit-outcome",
+            "POST /feedback",
+          ],
           mcpCallRuntimeInfoSchema: mcpRuntimeInfoBody.runtimeInfo.schema,
+          explainTurnSchema: explainedTurnBody.explanation.schema,
           failureEvents: statusBody.report.failureSummary.inspectedFailureCount,
           failureKinds: Object.keys(statusBody.report.failureSummary.byKind).sort(),
         }));
@@ -2237,6 +2263,7 @@ if (skipFreshInstall) {
       try {
         const tools = server.listTools().map((tool) => tool.name);
         assert.equal(tools.includes("memory.prepare_context"), true);
+        assert.equal(tools.includes("memory.explain_turn"), true);
         assert.equal(tools.includes("memory.commit_outcome"), true);
         assert.equal(tools.includes("memory.record_feedback"), true);
         const runtimeInfo = await server.callTool("memory.runtime_info");
@@ -2255,6 +2282,15 @@ if (skipFreshInstall) {
         });
         assert.equal(prepared.isError, undefined);
         assert.match(JSON.stringify(prepared.structuredContent), /release evidence/);
+        const explainedTurn = await server.callTool("memory.explain_turn", {
+          profileId: "fresh-install-mcp",
+          text: "release evidence route",
+          maxExcluded: 5,
+        });
+        assert.equal(explainedTurn.isError, undefined);
+        assert.equal(explainedTurn.structuredContent.explanation.schema, "gmos.turn_explanation.v1");
+        assert.equal(explainedTurn.structuredContent.explanation.included.length > 0, true);
+        assert.equal(JSON.stringify(explainedTurn.structuredContent).includes("contextBlock"), false);
         const failedOutcome = await server.callTool("memory.commit_outcome", {
           profileId: "fresh-install-mcp",
           taskId: "fresh-install-mcp-task",
@@ -2278,7 +2314,13 @@ if (skipFreshInstall) {
         assert.deepEqual(failureKinds, ["controller_route_error", "wrong_recall"]);
         console.log(JSON.stringify({
           ok: true,
-          tools: ["memory.prepare_context", "memory.commit_outcome", "memory.record_feedback"],
+          tools: [
+            "memory.prepare_context",
+            "memory.explain_turn",
+            "memory.commit_outcome",
+            "memory.record_feedback",
+          ],
+          explainTurnSchema: explainedTurn.structuredContent.explanation.schema,
           failureEvents: rowCounts.gmos_failure_events,
           failureKinds,
         }));

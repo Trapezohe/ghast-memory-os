@@ -461,6 +461,99 @@ export interface PreparedTurn {
   };
 }
 
+export type TurnExplanationExcludedReason =
+  | "dormant"
+  | "archived"
+  | "superseded"
+  | "out_of_window"
+  | "sensitivity_gated"
+  | "person_gated"
+  | "incognito_gated"
+  | "forget_residue"
+  | "budget_cut"
+  | "below_score_threshold"
+  | "deduplicated";
+
+export interface MemorySearchScoreComponents {
+  confidence: number;
+  retrievalScore: number;
+  contentScore: number;
+  finalScore: number;
+}
+
+export interface MemorySearchTraceDecision {
+  memory: MemoryRecord;
+  decision: "included" | "excluded";
+  reason?: TurnExplanationExcludedReason | undefined;
+  cues: string[];
+  associations: string[];
+  tags: string[];
+  scoreComponents: MemorySearchScoreComponents;
+}
+
+export interface MemorySearchTraceCollector {
+  recordMemorySearchDecision(decision: MemorySearchTraceDecision): void;
+}
+
+export interface ExplainTurnInput extends PrepareTurnInput {
+  maxExcluded?: number | undefined;
+}
+
+export interface TurnExplanationMemoryRetention {
+  recallCount?: number | undefined;
+  reinforcement?: number | undefined;
+  confidence: number;
+}
+
+export interface TurnExplanationIncludedMemory {
+  id: string;
+  kind: MemoryKind;
+  status: MemoryStatus;
+  content: string;
+  retention: TurnExplanationMemoryRetention;
+  cues: string[];
+  associations: string[];
+  tags: string[];
+  scoreComponents: MemorySearchScoreComponents;
+  evidenceEventIds: string[];
+}
+
+export interface TurnExplanationExcludedMemory {
+  id: string;
+  kind: MemoryKind;
+  status: MemoryStatus;
+  reason: TurnExplanationExcludedReason;
+  retention: TurnExplanationMemoryRetention;
+  cues: string[];
+  associations: string[];
+  tags: string[];
+  scoreComponents: MemorySearchScoreComponents;
+}
+
+export interface TurnExplanationBudgetReport {
+  memorySearchLimit: number;
+  contextBudgetTokens: number;
+  promptTokenEstimate: number;
+  actionPolicyCount: number;
+  planner?: {
+    maxSteps: number;
+    maxBranch: number;
+    maxMemories: number;
+    stopReason: ReconstructedContext["stats"]["stopReason"];
+  } | undefined;
+  stoppedAt: "memory_search" | "token_budget" | "planner" | "complete";
+}
+
+export interface TurnExplanationReport {
+  schema: "gmos.turn_explanation.v1";
+  profileId: string;
+  query: string;
+  included: TurnExplanationIncludedMemory[];
+  excluded: TurnExplanationExcludedMemory[];
+  budgets: TurnExplanationBudgetReport;
+  stats: PreparedTurn["stats"];
+}
+
 export type ReconstructionRecallPurpose = "context" | "history";
 
 export interface ReconstructionIntentTagGroupHint {
@@ -672,6 +765,40 @@ export interface ExplainResult {
   sensitivity?: Sensitivity | undefined;
   text: string;
   evidence: EvidenceEvent[];
+  lifecycle: MemoryLifecycleHistory;
+}
+
+export type MemoryLifecycleHistoryEventKind =
+  | "created"
+  | "imported"
+  | "updated"
+  | "reinforced"
+  | "decayed_to_dormant"
+  | "archived"
+  | "consolidated_source"
+  | "consolidated_survivor"
+  | "consolidated_summary"
+  | "distilled_source_trajectory"
+  | "distilled_procedure"
+  | "evolution_applied"
+  | "evolution_reverted"
+  | "forgotten"
+  | "restored"
+  | "reactivated";
+
+export interface MemoryLifecycleHistoryEntry {
+  createdAt: string;
+  eventKind: MemoryLifecycleHistoryEventKind;
+  eventId?: string | undefined;
+  sourceType?: string | undefined;
+  fromStatus?: MemoryStatus | undefined;
+  toStatus?: MemoryStatus | undefined;
+  reasonSummary: string;
+}
+
+export interface MemoryLifecycleHistory {
+  schema: "gmos.memory_lifecycle_history.v1";
+  entries: MemoryLifecycleHistoryEntry[];
 }
 
 export interface LowLevelAddMemoryInput {
@@ -762,6 +889,7 @@ export interface MemorySearchInput {
   includeSensitive?: boolean | undefined;
   includePerson?: boolean | undefined;
   includeSecretLike?: boolean | undefined;
+  trace?: MemorySearchTraceCollector | undefined;
 }
 
 export type MemoryAssociationTargetType = "memory" | "world_belief" | "task_trajectory";
@@ -1415,6 +1543,7 @@ export interface MemoryOS {
     input?: Omit<EvidenceListInput, "profileId"> & { profileId?: string | undefined },
   ): Promise<EvidenceEvent[]>;
   prepareTurn(input: PrepareTurnInput): Promise<PreparedTurn>;
+  explainTurn(input: ExplainTurnInput): Promise<TurnExplanationReport>;
   reconstructContext(input: ReconstructContextInput): Promise<ReconstructedContext>;
   explainEvidencePath(input: ExplainEvidencePathInput): Promise<EvidencePathExplanation>;
   commitOutcome(input: CommitOutcomeInput): Promise<void>;

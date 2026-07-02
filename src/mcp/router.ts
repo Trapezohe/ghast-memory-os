@@ -3,6 +3,7 @@ import type {
   EvidenceEvent,
   ExplainEvidencePathInput,
   ExplainResult,
+  ExplainTurnInput,
   FailureKind,
   FeedbackInput,
   ForgetInput,
@@ -120,6 +121,15 @@ function optionalPositiveInteger(args: Record<string, unknown>, key: string): nu
   const value = optionalPositiveNumber(args, key);
   if (value === undefined) return undefined;
   if (!Number.isInteger(value)) throw new Error(`${key} must be a positive integer`);
+  return value;
+}
+
+function optionalNonNegativeInteger(args: Record<string, unknown>, key: string): number | undefined {
+  const value = args[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || !Number.isInteger(value)) {
+    throw new Error(`${key} must be a non-negative integer`);
+  }
   return value;
 }
 
@@ -472,6 +482,40 @@ function prepareInput(args: Record<string, unknown>): PrepareTurnInput {
   return input;
 }
 
+function explainTurnInput(args: Record<string, unknown>): ExplainTurnInput {
+  assertAllowedKeys(
+    args,
+    new Set([
+      "profileId",
+      "text",
+      "messages",
+      "includeEvidence",
+      "includeSensitive",
+      "contextBudgetTokens",
+      "reconstruction",
+      "maxExcluded",
+    ]),
+    "memory.explain_turn",
+  );
+  if (args.includeSensitive !== undefined) {
+    throw new Error("memory.explain_turn does not allow includeSensitive over MCP");
+  }
+  const input: ExplainTurnInput = {
+    messages: messagesArg(args),
+  };
+  const profileId = optionalString(args, "profileId");
+  const includeEvidence = optionalBoolean(args, "includeEvidence");
+  const contextBudgetTokens = optionalPositiveNumber(args, "contextBudgetTokens");
+  const reconstruction = optionalPrepareReconstruction(args);
+  const maxExcluded = optionalNonNegativeInteger(args, "maxExcluded");
+  if (profileId !== undefined) input.profileId = profileId;
+  if (includeEvidence !== undefined) input.includeEvidence = includeEvidence;
+  if (contextBudgetTokens !== undefined) input.contextBudgetTokens = contextBudgetTokens;
+  if (reconstruction !== undefined) input.reconstruction = reconstruction;
+  if (maxExcluded !== undefined) input.maxExcluded = maxExcluded;
+  return input;
+}
+
 function reconstructInput(args: Record<string, unknown>): ReconstructContextInput {
   assertAllowedKeys(
     args,
@@ -778,6 +822,8 @@ export function createMemoryMcpServer(memory: MemoryOS): MemoryMcpServer {
     },
     "memory.prepare_context": async (object) =>
       ok({ ok: true, prepared: await memory.prepareTurn(prepareInput(object)) }),
+    "memory.explain_turn": async (object) =>
+      ok({ ok: true, explanation: await memory.explainTurn(explainTurnInput(object)) }),
     "memory.reconstruct_context": async (object) =>
       ok({ ok: true, reconstructed: await memory.reconstructContext(reconstructInput(object)) }),
     "memory.explain_evidence_path": async (object) =>

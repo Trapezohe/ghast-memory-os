@@ -159,6 +159,34 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
         },
       },
     },
+    "memory.explain_turn": {
+      name: "memory.explain_turn",
+      description: "Explain why memories were included or excluded for a turn without returning a prompt block.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          profileId: { type: "string" },
+          text: { type: "string" },
+          messages: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["content"],
+              properties: {
+                role: { type: "string", enum: ["system", "user", "assistant", "tool"] },
+                content: { type: "string" },
+              },
+            },
+          },
+          includeEvidence: { type: "boolean" },
+          contextBudgetTokens: { type: "number", exclusiveMinimum: 0 },
+          reconstruction: PREPARE_RECONSTRUCTION_SCHEMA,
+          maxExcluded: { type: "integer", minimum: 0 },
+        },
+      },
+    },
     "memory.reconstruct_context": {
       name: "memory.reconstruct_context",
       description: "Actively reconstruct context through bounded cue-tag-content associations.",

@@ -62,6 +62,11 @@ export function coverageMatrix(result: MemoryGymResult): MemoryGymCoverageRow[] 
       evidence: "bounded cue-tag-content reconstruction is exercised in shadow mode",
     },
     {
+      layer: "Layer 4X: Deep Explainability",
+      status: statusFor(layerPass(result, "explainability")),
+      evidence: "explainTurn inclusion parity, exclusion reasons, lifecycle history, read purity, and determinism are exercised",
+    },
+    {
       layer: "Layer 5: Generalization",
       status: result.generalizationResult.status,
       evidence: `holdout=${result.generalizationResult.holdoutScore.toFixed(2)}; generatedMean=${result.generalizationResult.generatedMean.toFixed(2)}; gap=${result.generalizationResult.generalizationGap.toFixed(2)}`,
@@ -146,6 +151,22 @@ export function memoryStackCoverage(result: MemoryGymResult): MemoryGymCoverageR
       ),
       evidence:
         "reconstructContext follows association paths, reports evidence convergence, information gain, planner trace, and hybrid reinforcement, requires all structured intent groups to converge, reranks noisy branches by explicit intent, respects entity-resolved current world belief and temporal validity state, and does not replace main context",
+    },
+    {
+      layer: "Explainability",
+      status: statusFor(
+        Boolean(
+          result.hardGates.explain_turn_included_matches_prepare_turn &&
+            result.hardGates.explain_turn_reports_dormant_exclusion &&
+            result.hardGates.explain_turn_forget_residue_redacts_content &&
+            result.hardGates.explain_turn_budget_cut_tracks_token_budget &&
+            result.hardGates.explain_turn_deterministic_and_read_pure &&
+            result.hardGates.lifecycle_history_lists_reinforce_dormant_reactivate &&
+            result.hardGates.explain_turn_reports_superseded_exclusion &&
+            result.hardGates.explain_turn_reports_out_of_window_exclusion,
+        ),
+      ),
+      evidence: "turn explanations and lifecycle provenance are exercised as portable SDK contracts",
     },
     {
       layer: "MCP / Host",
