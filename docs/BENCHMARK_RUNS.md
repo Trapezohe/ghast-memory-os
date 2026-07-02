@@ -10,10 +10,12 @@ Run date: 2026-07-02.
 Manifest completeness: full local release evidence bundle.
 
 - Package: `@ghast/memory@0.1.0-alpha.69`.
-- Git SHA: `cb00da9ab420730f455b3a39c67b0bfacac8070a`.
+- Git SHA: `49b7fe4a46d21ab2d8b1d72f0e87f4a60da757be`.
 - Dirty worktree: `no`.
-- Command:
-  `npm run release:evidence -- --output-dir ./release-evidence/alpha69-cb00da9`.
+- Shell command:
+  `npm run release:evidence -- --output-dir ./release-evidence/alpha69-49b7fe4`.
+- Manifest invocation:
+  `node scripts/create-release-evidence.mjs --output-dir ./release-evidence/alpha69-49b7fe4`.
 - PR gate command: `npm run gate:pr`.
 - Release evidence checks: `30/30` pass.
 - CI policy in the bundle: push trigger absent; remote CI is opt-in through

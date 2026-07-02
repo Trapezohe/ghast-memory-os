@@ -41,8 +41,8 @@ checks for `gmos`, `ghast-memory`, and `gmos-inspect`, plus backup/restore,
 evolution review, doctor, status, and inspector checks from the installed package,
 and writes:
 
-- `manifest.json` with package version, git SHA, dirty status, runtime, CI
-  policy, command status, and artifact paths;
+- `manifest.json` with package version, git SHA, dirty status, invocation
+  command, runtime, CI policy, command status, and artifact paths;
 - `SUMMARY.md` with check status, CI trigger policy, claim boundaries, and known
   limitations;
 - stdout/stderr logs for each command.
