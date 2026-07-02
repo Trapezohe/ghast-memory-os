@@ -37,7 +37,12 @@ function inspectionDatabase(dbPath: string): { path: string; cleanup(): void } {
 
 function value(name: string, fallback?: string): string | undefined {
   const index = process.argv.indexOf(name);
-  return index === -1 ? fallback : process.argv[index + 1] ?? fallback;
+  if (index === -1) return fallback;
+  const next = process.argv[index + 1];
+  if (next === undefined || next.startsWith("--")) {
+    throw new Error(`${name} requires a value`);
+  }
+  return next;
 }
 
 function hasFlag(name: string): boolean {

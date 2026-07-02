@@ -17952,6 +17952,23 @@ assert.equal(cliInspectNestedOutput.status, 0, cliInspectNestedOutput.stderr);
 assert.equal(cliInspectNestedOutput.stdout, "");
 assert.match(readFileSync(cliInspectNestedOutputFile, "utf8"), /# gmOS Inspect Report/);
 assert.equal(readFileSync(cliInspectNestedOutputFile, "utf8").includes(dbPath), false);
+const cliInspectMissingOutputFileValue = spawnSync(
+  process.execPath,
+  [
+    path.join(process.cwd(), "dist/cli/gmos-inspect.js"),
+    "--db",
+    dbPath,
+    "--profile",
+    "test",
+    "--output-file",
+    "--format",
+    "json",
+  ],
+  { cwd: tmp, encoding: "utf8" },
+);
+assert.notEqual(cliInspectMissingOutputFileValue.status, 0);
+assert.match(cliInspectMissingOutputFileValue.stderr, /--output-file requires a value/);
+assert.equal(existsSync(path.join(tmp, "--format")), false);
 const cliInspectMemoryDb = spawnSync(
   process.execPath,
   [
