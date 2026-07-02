@@ -267,6 +267,9 @@ function renderMarkdown(report: InspectReport): string {
   } else {
     lines.push(
       `- path count: ${report.reconstruction.pathCount}`,
+      `- step count: ${report.reconstruction.stepCount}`,
+      `- explored cues: ${report.reconstruction.exploredCueCount}`,
+      `- association count: ${report.reconstruction.associationCount}`,
       `- retrieved memories: ${report.reconstruction.retrievedMemoryCount}`,
       `- prompt token estimate: ${report.reconstruction.promptTokenEstimate}`,
       `- stop reason: ${report.reconstruction.stopReason}`,
@@ -323,6 +326,9 @@ interface InspectReport {
   failureSummary: MemoryFailureSummary;
   reconstruction: null | {
     pathCount: number;
+    stepCount: number;
+    exploredCueCount: number;
+    associationCount: number;
     retrievedMemoryCount: number;
     promptTokenEstimate: number;
     stopReason: string;
@@ -403,6 +409,9 @@ async function main(): Promise<void> {
       reconstruction: reconstructed
         ? {
             pathCount: reconstructed.paths.length,
+            stepCount: reconstructed.stats.stepCount,
+            exploredCueCount: reconstructed.stats.exploredCueCount,
+            associationCount: reconstructed.stats.associationCount,
             retrievedMemoryCount: reconstructed.stats.retrievedMemoryCount,
             promptTokenEstimate: reconstructed.stats.promptTokenEstimate,
             stopReason: reconstructed.stats.stopReason,

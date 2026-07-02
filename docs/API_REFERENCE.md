@@ -232,7 +232,7 @@ text, raw query secrets, profile IDs, prompt context, table hashes, or private d
 support bundles and local integration checks before building a host UI.
 Use `--evidence-limit` to cap evidence summary sampling. Use `--max-steps` and
 `--max-branch` to bound optional reconstruction diagnostics for query-based
-inspection.
+inspection, including reconstruction step, explored cue, and association counts.
 
 `doctor`, `status`, `gate`, and report-style gym commands support JSON output by
 default and markdown output with `--format markdown`. Use `--json-file` and
