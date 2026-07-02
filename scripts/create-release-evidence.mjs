@@ -537,6 +537,64 @@ function nonNegativeInteger(value) {
   return Number.isInteger(value) && value >= 0;
 }
 
+function validateCoreRowCounts(rowCounts, label) {
+  if (
+    !rowCounts ||
+    Object.values(rowCounts).some((count) => !nonNegativeInteger(count)) ||
+    statusCoreTables.some((table) => !nonNegativeInteger(rowCounts[table]))
+  ) {
+    throw new Error(`${label} did not include numeric storage row counts`);
+  }
+}
+
+function validateReadAudit(readAudit, label, options = {}) {
+  const auditedTables = readAudit?.auditedTables;
+  if (
+    !readAudit ||
+    readAudit.status !== "ok" ||
+    readAudit.schema !== "gmos.read_audit_snapshot.v1" ||
+    !nonNegativeInteger(readAudit.rowCountTotal) ||
+    !nonNegativeInteger(readAudit.tableCount) ||
+    readAudit.tableCount < statusCoreTables.length ||
+    !Array.isArray(readAudit.missingTables) ||
+    readAudit.missingTables.length !== 0 ||
+    readAudit.hashesAvailable !== true ||
+    (options.requireAuditedTables &&
+      (!Array.isArray(auditedTables) || statusCoreTables.some((table) => !auditedTables.includes(table))))
+  ) {
+    throw new Error(`${label} did not include healthy read audit`);
+  }
+}
+
+function validateSearchIndex(searchIndex, label) {
+  const vectorIndex = searchIndex?.vectorIndex;
+  if (
+    !searchIndex ||
+    searchIndex.status !== "ok" ||
+    !nonNegativeInteger(searchIndex.totalMemoryCount) ||
+    !nonNegativeInteger(searchIndex.indexedMemoryCount) ||
+    !nonNegativeInteger(searchIndex.activeMemoryCount) ||
+    !vectorIndex ||
+    vectorIndex.status !== "ok" ||
+    !nonNegativeInteger(vectorIndex.indexedMemoryCount)
+  ) {
+    throw new Error(`${label} did not include healthy search index`);
+  }
+}
+
+function validateRuntimeLocalFirstContract(runtimeInfo, label) {
+  const runtimeTrust = runtimeInfo?.trustContract;
+  if (
+    runtimeInfo?.schema !== "gmos.runtime_info.v1" ||
+    runtimeTrust?.localFirst !== true ||
+    runtimeTrust?.defaultStorage !== "sqlite" ||
+    runtimeTrust?.encryptedByDefault !== false ||
+    runtimeTrust?.cloudRequired !== false
+  ) {
+    throw new Error(`${label} did not include runtime local-first contract`);
+  }
+}
+
 function validateInspectorContentSafety(stdout, forbiddenValues) {
   const report = JSON.parse(stdout);
   if (report.schema !== "gmos.inspect_report.v1") {
@@ -624,43 +682,9 @@ function validateStatusContentSafety(stdout, forbiddenValues) {
     throw new Error("status report did not include healthy storage metadata");
   }
   const rowCounts = storage.rowCounts;
-  if (
-    !rowCounts ||
-    Object.values(rowCounts).some((count) => !nonNegativeInteger(count)) ||
-    statusCoreTables.some((table) => !nonNegativeInteger(rowCounts[table]))
-  ) {
-    throw new Error("status report did not include numeric storage row counts");
-  }
-  const auditedTables = storage.readAudit?.auditedTables;
-  if (
-    !storage.readAudit ||
-    storage.readAudit.status !== "ok" ||
-    storage.readAudit.schema !== "gmos.read_audit_snapshot.v1" ||
-    !nonNegativeInteger(storage.readAudit.rowCountTotal) ||
-    !nonNegativeInteger(storage.readAudit.tableCount) ||
-    storage.readAudit.tableCount < statusCoreTables.length ||
-    !Array.isArray(auditedTables) ||
-    statusCoreTables.some((table) => !auditedTables.includes(table)) ||
-    !Array.isArray(storage.readAudit.missingTables) ||
-    storage.readAudit.missingTables.length !== 0 ||
-    storage.readAudit.hashesAvailable !== true
-  ) {
-    throw new Error("status report did not include healthy read audit");
-  }
-  const searchIndex = storage.searchIndex;
-  const vectorIndex = searchIndex?.vectorIndex;
-  if (
-    !searchIndex ||
-    searchIndex.status !== "ok" ||
-    !nonNegativeInteger(searchIndex.totalMemoryCount) ||
-    !nonNegativeInteger(searchIndex.indexedMemoryCount) ||
-    !nonNegativeInteger(searchIndex.activeMemoryCount) ||
-    !vectorIndex ||
-    vectorIndex.status !== "ok" ||
-    !nonNegativeInteger(vectorIndex.indexedMemoryCount)
-  ) {
-    throw new Error("status report did not include healthy search index");
-  }
+  validateCoreRowCounts(rowCounts, "status report");
+  validateReadAudit(storage.readAudit, "status report", { requireAuditedTables: true });
+  validateSearchIndex(storage.searchIndex, "status report");
   if (
     !report.failureSummary ||
     report.failureSummary.status !== "ok" ||
@@ -675,21 +699,101 @@ function validateStatusContentSafety(stdout, forbiddenValues) {
   ) {
     throw new Error("status report did not expose safe local trust contract");
   }
-  const runtimeTrust = report.runtimeInfo?.trustContract;
-  if (
-    report.runtimeInfo?.schema !== "gmos.runtime_info.v1" ||
-    runtimeTrust?.localFirst !== true ||
-    runtimeTrust?.defaultStorage !== "sqlite" ||
-    runtimeTrust?.encryptedByDefault !== false ||
-    runtimeTrust?.cloudRequired !== false
-  ) {
-    throw new Error("status report did not include runtime local-first contract");
-  }
+  validateRuntimeLocalFirstContract(report.runtimeInfo, "status report");
   for (const [index, value] of forbiddenValues.entries()) {
     if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
       throw new Error(`status report leaked forbidden value #${index + 1}`);
     }
   }
+}
+
+function validateDoctorContentSafety(stdout, forbiddenValues) {
+  const report = JSON.parse(stdout);
+  if (report.ok !== true || report.encrypted !== false) {
+    throw new Error("unexpected doctor report shape");
+  }
+  if (report.dbPath !== "[plaintext sqlite path redacted]") {
+    throw new Error("doctor report did not redact dbPath");
+  }
+  validateRuntimeLocalFirstContract(report.runtimeInfo, "doctor report");
+  if (report.schema?.dialect !== "sqlite" || !nonNegativeInteger(report.schema?.version) || report.schema.version < 1) {
+    throw new Error("doctor report did not include sqlite schema metadata");
+  }
+  validateCoreRowCounts(report.rowCounts, "doctor report");
+  validateReadAudit(report.readAudit, "doctor report");
+  validateSearchIndex(report.searchIndex, "doctor report");
+  if (report.hostCompatibility?.hostId !== "ghast" || report.hostCompatibility?.level !== "L4") {
+    throw new Error("doctor report did not include expected ghast host compatibility");
+  }
+  for (const [index, value] of forbiddenValues.entries()) {
+    if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
+      throw new Error(`doctor report leaked forbidden value #${index + 1}`);
+    }
+  }
+}
+
+function selfTestDoctorReport(overrides = {}) {
+  const {
+    rowCounts,
+    readAudit,
+    searchIndex,
+    vectorIndex,
+    runtimeInfo,
+    runtimeTrustContract,
+    schema,
+    hostCompatibility,
+    ...topLevelOverrides
+  } = overrides;
+  const baseRowCounts = Object.fromEntries(statusCoreTables.map((table) => [table, 1]));
+  return JSON.stringify({
+    ok: true,
+    dbPath: "[plaintext sqlite path redacted]",
+    encrypted: false,
+    runtimeInfo: {
+      schema: "gmos.runtime_info.v1",
+      trustContract: {
+        localFirst: true,
+        defaultStorage: "sqlite",
+        encryptedByDefault: false,
+        cloudRequired: false,
+        ...runtimeTrustContract,
+      },
+      ...runtimeInfo,
+    },
+    schema: {
+      dialect: "sqlite",
+      version: 7,
+      ...schema,
+    },
+    rowCounts: { ...baseRowCounts, ...rowCounts },
+    readAudit: {
+      status: "ok",
+      schema: "gmos.read_audit_snapshot.v1",
+      tableCount: statusCoreTables.length,
+      rowCountTotal: statusCoreTables.length,
+      missingTables: [],
+      hashesAvailable: true,
+      ...readAudit,
+    },
+    searchIndex: {
+      status: "ok",
+      totalMemoryCount: 1,
+      indexedMemoryCount: 1,
+      activeMemoryCount: 1,
+      vectorIndex: {
+        status: "ok",
+        indexedMemoryCount: 1,
+        ...vectorIndex,
+      },
+      ...searchIndex,
+    },
+    hostCompatibility: {
+      hostId: "ghast",
+      level: "L4",
+      ...hostCompatibility,
+    },
+    ...topLevelOverrides,
+  });
 }
 
 function selfTestStatusReport(overrides = {}) {
@@ -860,6 +964,15 @@ function expectStatusValidationFailure(name, stdout) {
   throw new Error(`${name} unexpectedly passed`);
 }
 
+function expectDoctorValidationFailure(name, stdout) {
+  try {
+    validateDoctorContentSafety(stdout, ["secret-value"]);
+  } catch {
+    return;
+  }
+  throw new Error(`${name} unexpectedly passed`);
+}
+
 function selfTestCliVersionReport(expectedPackage, overrides = {}) {
   const { pkg, cli, trustContract, ...topLevelOverrides } = overrides;
   return JSON.stringify({
@@ -909,6 +1022,7 @@ function runSelfTest() {
   const expectedPackage = readJson("package.json");
   validateSdkSmokeContentSafety(selfTestSdkSmokeReport(expectedPackage), ["secret-value"], expectedPackage);
   validateInspectorContentSafety(selfTestInspectorReport(), ["secret-value"]);
+  validateDoctorContentSafety(selfTestDoctorReport(), ["secret-value"]);
   validateStatusContentSafety(selfTestStatusReport(), ["secret-value"]);
   validateCliVersionContentSafety(selfTestCliVersionReport(expectedPackage), ["consumer.db"], expectedPackage);
   expectSdkSmokeValidationFailure(
@@ -1088,6 +1202,19 @@ function runSelfTest() {
     "forbidden status value",
     selfTestStatusReport({ diagnostics: "secret-value" }),
   );
+  expectDoctorValidationFailure("encrypted doctor report", selfTestDoctorReport({ encrypted: true }));
+  expectDoctorValidationFailure(
+    "missing doctor runtime trust",
+    selfTestDoctorReport({ runtimeTrustContract: { defaultStorage: "cloud" } }),
+  );
+  expectDoctorValidationFailure(
+    "missing doctor read audit",
+    selfTestDoctorReport({ readAudit: { missingTables: ["gmos_memories"] } }),
+  );
+  expectDoctorValidationFailure(
+    "forbidden doctor value",
+    selfTestDoctorReport({ diagnostics: "secret-value" }),
+  );
   console.log(JSON.stringify({ ok: true, check: "release_evidence_self_test" }));
 }
 
@@ -1098,19 +1225,7 @@ function recordDoctorContentSafety(result, forbiddenValues) {
     command: "validate fresh_install_doctor_smoke stdout",
   };
   try {
-    const report = JSON.parse(result.stdout);
-    if (report.ok !== true || report.encrypted !== false) {
-      throw new Error("unexpected doctor report shape");
-    }
-    if (report.dbPath !== "[plaintext sqlite path redacted]") {
-      throw new Error("doctor report did not redact dbPath");
-    }
-    const stdout = result.stdout;
-    for (const [index, value] of forbiddenValues.entries()) {
-      if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
-        throw new Error(`doctor report leaked forbidden value #${index + 1}`);
-      }
-    }
+    validateDoctorContentSafety(result.stdout, forbiddenValues);
   } catch (error) {
     check.status = "fail";
     check.reason = error instanceof Error ? error.message : String(error);
