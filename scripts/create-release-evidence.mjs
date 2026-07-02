@@ -808,6 +808,16 @@ function recordStatusContentSafety(result, forbiddenValues) {
   manifest.checks.push(check);
 }
 
+function hasExactFailureKinds(report) {
+  return (
+    report.failureEvents === 2 &&
+    Array.isArray(report.failureKinds) &&
+    report.failureKinds.length === 2 &&
+    report.failureKinds[0] === "controller_route_error" &&
+    report.failureKinds[1] === "wrong_recall"
+  );
+}
+
 function recordHttpContentSafety(result, forbiddenValues) {
   const check = {
     name: "fresh_install_http_content_safety",
@@ -824,8 +834,7 @@ function recordHttpContentSafety(result, forbiddenValues) {
       !report.routes.includes("POST /commit-outcome") ||
       !report.routes.includes("POST /feedback") ||
       report.mcpCallRuntimeInfoSchema !== "gmos.runtime_info.v1" ||
-      !Number.isInteger(report.failureEvents) ||
-      report.failureEvents < 2
+      !hasExactFailureKinds(report)
     ) {
       throw new Error("unexpected HTTP smoke report shape");
     }
@@ -861,8 +870,7 @@ function recordAgentAdapterContentSafety(result, forbiddenValues) {
       report.actionPolicyCount < 1 ||
       !Number.isInteger(report.evidenceCount) ||
       report.evidenceCount < 1 ||
-      !Number.isInteger(report.failureEvents) ||
-      report.failureEvents < 2 ||
+      !hasExactFailureKinds(report) ||
       !Number.isInteger(report.archivedMemoryCount) ||
       report.archivedMemoryCount < 1
     ) {
@@ -1008,8 +1016,7 @@ function recordMcpContentSafety(result, forbiddenValues) {
       !report.tools.includes("memory.prepare_context") ||
       !report.tools.includes("memory.commit_outcome") ||
       !report.tools.includes("memory.record_feedback") ||
-      !Number.isInteger(report.failureEvents) ||
-      report.failureEvents < 2
+      !hasExactFailureKinds(report)
     ) {
       throw new Error("unexpected MCP smoke report shape");
     }
