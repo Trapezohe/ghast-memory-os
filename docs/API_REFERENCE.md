@@ -254,7 +254,8 @@ example validates `memory.runtime_info`, records an ordinary observation through
 `memory.observe`, imports an explicit preference memory, prepares
 evidence-backed context through `memory.prepare_context`, rejects public
 sensitive override switches, explains the evidence path without returning a
-prompt block, and deletes its temporary plaintext SQLite database.
+prompt block, records task outcome and feedback failures, and deletes its
+temporary plaintext SQLite database.
 
 ## HTTP Surface
 
