@@ -254,8 +254,11 @@ host adapter, local HTTP, MCP router, installed public CLI smoke checks for
 `gmos`, `ghast-memory`, and `gmos-inspect`, plus backup/restore, evolution
 review, doctor, status, and inspector checks from the installed package,
 validates content-safe reporting plus numeric inspector forget-residue, health,
-failure-summary, evidence eligibility, and reconstruction counters, and writes `manifest.json`, `SUMMARY.md`, and command logs under
-`release-evidence/`. The directory is git-ignored. Use `--skip-gate`,
+failure-summary, evidence eligibility, and reconstruction counters, and writes
+`manifest.json`, `SUMMARY.md`, and command logs under `release-evidence/`.
+The manifest and summary include the packed tarball path, filename, size,
+sha512, and npm-style SRI integrity so hosts can verify the artifact before
+upgrading. The directory is git-ignored. Use `--skip-gate`,
 `--skip-fresh-install`, and `--allow-dirty` only for local diagnostics; do not
 use those flags for public release evidence.
 

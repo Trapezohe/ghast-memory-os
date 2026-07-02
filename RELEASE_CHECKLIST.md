@@ -37,12 +37,14 @@ node dist/cli/gmos.js gym external-suite --suite-file <release-suite.json> --out
 
 Archive the release evidence directory plus the suite JSON, markdown report,
 and manifest. The release evidence bundle contains `manifest.json`,
-`SUMMARY.md`, command logs, the packed tarball, and a fresh-install smoke
-workspace. In an installed consumer project, the same external suite command can
-be run with the public `gmos` binary. The report must include:
+`SUMMARY.md`, command logs, the packed tarball, tarball size/hash/integrity
+metadata, and a fresh-install smoke workspace. In an installed consumer project,
+the same external suite command can be run with the public `gmos` binary. The
+report must include:
 
 - gmOS package version;
 - git branch, SHA, and dirty status;
+- tarball filename, size, sha512, and npm-style SRI integrity;
 - dataset file hashes;
 - suite parameters, seed list, concurrency, and failure sample limit;
 - model, judge, temperature, and max-token settings, or `N/A` for deterministic
@@ -59,7 +61,8 @@ official LongMemEval, LoCoMo, STATE-Bench, or SOTA score.
 `gate:pr`, creates a tarball, installs that tarball into a fresh consumer
 project, verifies SDK imports, plaintext SQLite behavior, context preparation,
 evidence return, and the installed public CLI binaries: `gmos`, `ghast-memory`,
-and `gmos-inspect`. `--skip-gate`,
+and `gmos-inspect`. It also records the packed tarball path, filename, size,
+sha512, and SRI integrity in both `manifest.json` and `SUMMARY.md`. `--skip-gate`,
 `--skip-fresh-install`, and `--allow-dirty` are for local diagnostics only and
 must not be used for public release evidence.
 

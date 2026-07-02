@@ -44,9 +44,10 @@ health, and reconstruction-counter validation,
 and writes:
 
 - `manifest.json` with package version, git SHA, dirty status, invocation
-  command, runtime, CI policy, command status, and artifact paths;
-- `SUMMARY.md` with check status, CI trigger policy, claim boundaries, and known
-  limitations;
+  command, runtime, CI policy, command status, artifact paths, tarball size,
+  sha512, and npm-style SRI integrity;
+- `SUMMARY.md` with artifact metadata, check status, CI trigger policy, claim
+  boundaries, and known limitations;
 - stdout/stderr logs for each command.
 
 The output directory is git-ignored. Do not use `--skip-gate`,
