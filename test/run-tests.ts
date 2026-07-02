@@ -17947,6 +17947,54 @@ const cliInspectMemoryDb = spawnSync(
 );
 assert.equal(cliInspectMemoryDb.status, 0, cliInspectMemoryDb.stderr);
 assert.equal(JSON.parse(cliInspectMemoryDb.stdout).forgetSummary?.derivedResidue, 0);
+const walSingleFileInspectDb = path.join(tmp, "wal-single-file-inspect.db");
+const walSingleFileInspectMemory = createMemoryOS({
+  profileId: "wal_single_file_inspect",
+  store: createSqliteMemoryStore({ path: walSingleFileInspectDb }),
+});
+await walSingleFileInspectMemory.add({
+  profileId: "wal_single_file_inspect",
+  kind: "fact",
+  content: "WAL single file inspector smoke memory.",
+  confidence: 0.9,
+});
+await walSingleFileInspectMemory.close();
+rmSync(`${walSingleFileInspectDb}-wal`, { force: true });
+rmSync(`${walSingleFileInspectDb}-shm`, { force: true });
+const cliWalSingleFileInspect = spawnSync(
+  process.execPath,
+  [
+    path.join(process.cwd(), "dist/cli/gmos-inspect.js"),
+    "--db",
+    walSingleFileInspectDb,
+    "--profile",
+    "wal_single_file_inspect",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliWalSingleFileInspect.status, 0, cliWalSingleFileInspect.stderr);
+assert.equal(JSON.parse(cliWalSingleFileInspect.stdout).schema, "gmos.inspect_report.v1");
+assert.equal(existsSync(`${walSingleFileInspectDb}-wal`), false);
+assert.equal(existsSync(`${walSingleFileInspectDb}-shm`), false);
+const missingInspectDb = path.join(tmp, "missing-inspect.db");
+assert.equal(existsSync(missingInspectDb), false);
+const cliMissingInspect = spawnSync(
+  process.execPath,
+  [
+    path.join(process.cwd(), "dist/cli/gmos-inspect.js"),
+    "--db",
+    missingInspectDb,
+    "--profile",
+    "missing",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliMissingInspect.status, 0);
+assert.equal(existsSync(missingInspectDb), false);
 const missingStatusDb = path.join(tmp, "missing-status.db");
 assert.equal(existsSync(missingStatusDb), false);
 const cliMissingStatus = spawnSync(

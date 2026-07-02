@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-import { writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import Database from "better-sqlite3";
 
@@ -9,6 +11,29 @@ import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 
 const REDACTED_PROFILE_ID = "[profile id redacted]";
+
+function inspectionDatabase(dbPath: string): { path: string; cleanup(): void } {
+  if (dbPath === ":memory:") return { path: dbPath, cleanup() {} };
+  const source = path.resolve(process.cwd(), dbPath);
+  if (!existsSync(source)) throw new Error("database file does not exist");
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-inspect-"));
+  const target = path.join(tmp, "inspect.db");
+  try {
+    copyFileSync(source, target);
+    for (const suffix of ["-wal", "-shm"]) {
+      if (existsSync(`${source}${suffix}`)) copyFileSync(`${source}${suffix}`, `${target}${suffix}`);
+    }
+  } catch (error) {
+    rmSync(tmp, { recursive: true, force: true });
+    throw error;
+  }
+  return {
+    path: target,
+    cleanup() {
+      rmSync(tmp, { recursive: true, force: true });
+    },
+  };
+}
 
 function value(name: string, fallback?: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -314,23 +339,28 @@ async function main(): Promise<void> {
   const reportQuery = query ? redactForReport(query) : null;
   const outputFormat = format();
   const evidenceLimit = numberValue("--evidence-limit", 100);
-  const store = createSqliteMemoryStore({ path: dbPath });
-  const memory = createMemoryOS({ profileId, store });
+  const inspectedDb = inspectionDatabase(dbPath);
   try {
-    const evidence = await memory.listEvidence({ profileId, limit: evidenceLimit });
-    const activeMemories = await memory.list({ profileId, status: "active" });
-    const archivedMemories = await memory.list({ profileId, status: "archived" });
-    const rowCounts = await store.rowCounts();
-    const reconstructed = query
-      ? await memory.reconstructContext({
-          profileId,
-          query,
-          includeEvidence: true,
-          maxSteps: numberValue("--max-steps", 2),
-          maxBranch: numberValue("--max-branch", 4),
-          temporalMode,
-        })
-      : null;
+    const store = createSqliteMemoryStore({
+      path: inspectedDb.path,
+      fileMustExist: dbPath !== ":memory:",
+    });
+    const memory = createMemoryOS({ profileId, store });
+    try {
+      const evidence = await memory.listEvidence({ profileId, limit: evidenceLimit });
+      const activeMemories = await memory.list({ profileId, status: "active" });
+      const archivedMemories = await memory.list({ profileId, status: "archived" });
+      const rowCounts = await store.rowCounts();
+      const reconstructed = query
+        ? await memory.reconstructContext({
+            profileId,
+            query,
+            includeEvidence: true,
+            maxSteps: numberValue("--max-steps", 2),
+            maxBranch: numberValue("--max-branch", 4),
+            temporalMode,
+          })
+        : null;
 
     const report: InspectReport = {
       schema: "gmos.inspect_report.v1",
@@ -347,7 +377,7 @@ async function main(): Promise<void> {
       rowCounts,
       health: healthSignals(rowCounts),
       evidenceSummary: evidenceSummary(evidence),
-      forgetSummary: forgetSummary(dbPath, profileId),
+      forgetSummary: forgetSummary(inspectedDb.path, profileId),
       reconstruction: reconstructed
         ? {
             pathCount: reconstructed.paths.length,
@@ -370,8 +400,11 @@ async function main(): Promise<void> {
     } else {
       process.stdout.write(rendered);
     }
+    } finally {
+      await memory.close();
+    }
   } finally {
-    await memory.close();
+    inspectedDb.cleanup();
   }
 }
 
