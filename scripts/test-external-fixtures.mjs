@@ -47,15 +47,31 @@ function caseById(runReport, id) {
   return runReport?.cases?.find((entry) => entry.id === id);
 }
 
+function hasFormalMatched(caseReport) {
+  const matched = caseReport?.matched;
+  return (
+    matched &&
+    Array.isArray(matched.expectedAny) &&
+    Array.isArray(matched.expectedAnyNormalized) &&
+    Array.isArray(matched.expectedAll) &&
+    Array.isArray(matched.expectedAllNormalized) &&
+    Array.isArray(matched.forbidden)
+  );
+}
+
 function matched(caseReport, value) {
-  const expectedAnyMatched = caseReport?.expectedAnyMatched ?? [];
-  const expectedAnyMissing = caseReport?.expectedAnyMissing ?? [];
-  if (expectedAnyMatched.includes(value)) return true;
-  if (expectedAnyMissing.includes(value)) return false;
-  if (Array.isArray(caseReport?.expectedAllMissing)) {
-    return !caseReport.expectedAllMissing.includes(value);
-  }
-  return false;
+  if (!hasFormalMatched(caseReport)) return false;
+  const matchedValues = [
+    ...caseReport.matched.expectedAny,
+    ...caseReport.matched.expectedAnyNormalized,
+    ...caseReport.matched.expectedAll,
+    ...caseReport.matched.expectedAllNormalized,
+  ];
+  return matchedValues.includes(value);
+}
+
+function noForbiddenMatched(caseReport) {
+  return hasFormalMatched(caseReport) && caseReport.matched.forbidden.length === 0;
 }
 
 function hasDiagnostics(caseReport) {
@@ -182,7 +198,7 @@ if (
   !matched(longMemEvalCase, "rollback matrix") ||
   !hasDiagnostics(longMemEvalCase) ||
   typeof longMemEvalCase.diagnostics.evidenceConvergenceReached !== "boolean" ||
-  longMemEvalCase.forbiddenMatches?.length !== 0
+  !noForbiddenMatched(longMemEvalCase)
 ) {
   failures.push("longmemeval-mini missing per-case match or diagnostics");
 }
@@ -231,7 +247,7 @@ for (const [id, expected] of [
     !locomoCase?.pass ||
     !matched(locomoCase, expected) ||
     !hasDiagnostics(locomoCase) ||
-    locomoCase.forbiddenMatches?.length !== 0
+    !noForbiddenMatched(locomoCase)
   ) {
     failures.push(`locomo-mini missing per-case match or diagnostics for ${id}`);
   }
