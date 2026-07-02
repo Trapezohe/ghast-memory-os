@@ -450,6 +450,38 @@ function recordDoctorContentSafety(result, forbiddenValues) {
   manifest.checks.push(check);
 }
 
+function recordStatusContentSafety(result, forbiddenValues) {
+  const check = {
+    name: "fresh_install_status_content_safety",
+    status: "pass",
+    command: "validate fresh_install_status_smoke stdout",
+  };
+  try {
+    const report = JSON.parse(result.stdout);
+    if (report.framework !== "ghast-memory-os") {
+      throw new Error("unexpected status report shape");
+    }
+    if (report.profileId !== "[profile id redacted]") {
+      throw new Error("status report did not redact profileId");
+    }
+    if (report.trustContract?.encrypted !== false) {
+      throw new Error("status report did not expose plaintext local trust contract");
+    }
+    const stdout = result.stdout;
+    for (const [index, value] of forbiddenValues.entries()) {
+      if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
+        throw new Error(`status report leaked forbidden value #${index + 1}`);
+      }
+    }
+  } catch (error) {
+    check.status = "fail";
+    check.reason = error instanceof Error ? error.message : String(error);
+    manifest.checks.push(check);
+    failAfterWriting(manifest, outputDir, `${check.name} failed`);
+  }
+  manifest.checks.push(check);
+}
+
 function cleanupFreshInstallDatabaseFiles() {
   const files = ["", "-shm", "-wal"].map((suffix) => `${freshInstallDbPath}${suffix}`);
   const errors = [];
@@ -609,6 +641,19 @@ if (skipFreshInstall) {
     },
   );
   recordDoctorContentSafety(doctorResult, [
+    "consumer.db",
+    path.join(freshInstallDir, "consumer.db"),
+  ]);
+  const statusResult = recordCommand(
+    "fresh_install_status_smoke",
+    cliBin,
+    ["status", "--db", "consumer.db", "--profile", "fresh-install", "--host", "ghast", "--format", "json"],
+    {
+      cwd: freshInstallDir,
+    },
+  );
+  recordStatusContentSafety(statusResult, [
+    "fresh-install",
     "consumer.db",
     path.join(freshInstallDir, "consumer.db"),
   ]);

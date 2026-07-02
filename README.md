@@ -247,9 +247,9 @@ smoke, and a pack dry run.
 
 `release:evidence` is the release-candidate evidence bundler. It requires a
 clean worktree by default, runs `gate:pr`, packs the SDK tarball, installs that
-tarball into a fresh temporary consumer project, runs minimal SDK and CLI smoke
-checks plus a content-safe inspector smoke from the installed package, validates
-that the inspector report includes numeric forget-residue counters, and writes
+tarball into a fresh temporary consumer project, runs minimal SDK, CLI doctor,
+CLI status, and content-safe inspector smoke checks from the installed package,
+validates that the inspector report includes numeric forget-residue counters, and writes
 `manifest.json`, `SUMMARY.md`, and command logs under `release-evidence/`. The
 directory is git-ignored. Use `--skip-gate`, `--skip-fresh-install`, and
 `--allow-dirty` only for local diagnostics; do not use those flags for public
