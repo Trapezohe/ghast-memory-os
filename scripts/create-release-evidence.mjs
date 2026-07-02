@@ -927,14 +927,14 @@ function recordFreshInstallDatabaseCleanupIfNeeded(options = {}) {
   const check = {
     name: "fresh_install_plaintext_db_cleanup",
     status: "pass",
-    command: "remove generated fresh-install plaintext sqlite databases and backup files",
+    command: "remove generated fresh-install plaintext sqlite databases, backup files, and smoke scripts",
   };
   const cleanup = cleanupFreshInstallDatabaseFiles();
   if (cleanup.leftover.length > 0 || cleanup.errors.length > 0) {
     check.status = "fail";
     check.reason = [
       cleanup.leftover.length > 0
-        ? `leftover generated database files: ${cleanup.leftover.join(", ")}`
+        ? `leftover generated fresh-install files: ${cleanup.leftover.join(", ")}`
         : "",
       cleanup.errors.length > 0 ? `cleanup errors: ${cleanup.errors.join("; ")}` : "",
     ].filter(Boolean).join("; ");
@@ -1015,6 +1015,7 @@ if (skipFreshInstall) {
     cwd: freshInstallDir,
   });
   const smokeFile = path.join(freshInstallDir, "fresh-install-smoke.mjs");
+  freshInstallGeneratedFilePaths.push(smokeFile);
   writeFileSync(
     smokeFile,
     `
@@ -1050,6 +1051,7 @@ if (skipFreshInstall) {
     cwd: freshInstallDir,
   });
   const agentAdapterSmokeFile = path.join(freshInstallDir, "fresh-install-agent-adapter-smoke.mjs");
+  freshInstallGeneratedFilePaths.push(agentAdapterSmokeFile);
   writeFileSync(
     agentAdapterSmokeFile,
     `
@@ -1182,6 +1184,7 @@ if (skipFreshInstall) {
   );
   recordAgentAdapterContentSafety(agentAdapterResult, agentAdapterForbiddenValues);
   const hostAdapterSmokeFile = path.join(freshInstallDir, "fresh-install-host-adapter-smoke.mjs");
+  freshInstallGeneratedFilePaths.push(hostAdapterSmokeFile);
   writeFileSync(
     hostAdapterSmokeFile,
     `
@@ -1323,6 +1326,7 @@ if (skipFreshInstall) {
   );
   recordHostAdapterContentSafety(hostAdapterResult, hostAdapterForbiddenValues);
   const httpSmokeFile = path.join(freshInstallDir, "fresh-install-http-smoke.mjs");
+  freshInstallGeneratedFilePaths.push(httpSmokeFile);
   writeFileSync(
     httpSmokeFile,
     `
@@ -1449,6 +1453,7 @@ if (skipFreshInstall) {
   });
   recordHttpContentSafety(httpResult, httpForbiddenValues);
   const mcpSmokeFile = path.join(freshInstallDir, "fresh-install-mcp-smoke.mjs");
+  freshInstallGeneratedFilePaths.push(mcpSmokeFile);
   writeFileSync(
     mcpSmokeFile,
     `
@@ -1526,6 +1531,7 @@ if (skipFreshInstall) {
     cwd: freshInstallDir,
   });
   const backupRestoreSmokeFile = path.join(freshInstallDir, "fresh-install-backup-restore-smoke.mjs");
+  freshInstallGeneratedFilePaths.push(backupRestoreSmokeFile);
   writeFileSync(
     backupRestoreSmokeFile,
     `
@@ -1637,6 +1643,7 @@ if (skipFreshInstall) {
   );
   recordBackupRestoreContentSafety(backupRestoreResult, backupRestoreForbiddenValues);
   const evolutionSmokeFile = path.join(freshInstallDir, "fresh-install-evolution-smoke.mjs");
+  freshInstallGeneratedFilePaths.push(evolutionSmokeFile);
   writeFileSync(
     evolutionSmokeFile,
     `
