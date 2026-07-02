@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -64,6 +65,25 @@ function git(args) {
 
 function readJson(file) {
   return JSON.parse(readFileSync(path.join(root, file), "utf8"));
+}
+
+function sha256File(file) {
+  return createHash("sha256").update(readFileSync(file)).digest("hex");
+}
+
+function sqliteDatabaseFileGroupFingerprint(dbPath) {
+  return [dbPath, `${dbPath}-wal`, `${dbPath}-shm`].map((file) => ({
+    file: path.basename(file),
+    exists: existsSync(file),
+    sha256: existsSync(file) ? sha256File(file) : null,
+  }));
+}
+
+function diffFileGroupFingerprints(before, after) {
+  return after.filter((entry, index) => {
+    const previous = before[index];
+    return !previous || previous.exists !== entry.exists || previous.sha256 !== entry.sha256;
+  });
 }
 
 if (has("--self-test")) {
@@ -531,6 +551,22 @@ function recordInspectorContentSafety(result, forbiddenValues) {
     failAfterWriting(manifest, outputDir, `${check.name} failed`);
   }
   manifest.checks.push(check);
+}
+
+function recordInspectorSourceDatabaseUnchanged(beforeFingerprint, afterFingerprint) {
+  const changedFiles = diffFileGroupFingerprints(beforeFingerprint, afterFingerprint);
+  const check = {
+    name: "fresh_install_inspect_source_db_unchanged",
+    status: changedFiles.length === 0 ? "pass" : "fail",
+    command: "compare consumer.db sqlite file group before and after fresh_install_inspect_smoke",
+  };
+  if (changedFiles.length > 0) {
+    check.changedFiles = changedFiles.map((entry) => entry.file);
+  }
+  manifest.checks.push(check);
+  if (check.status !== "pass") {
+    failAfterWriting(manifest, outputDir, `${check.name} failed`);
+  }
 }
 
 function nonNegativeInteger(value) {
@@ -2442,6 +2478,7 @@ if (skipFreshInstall) {
     "sk-releaseevidencequerysecret",
     freshInstallDbPath,
   ];
+  const inspectSourceDbFingerprintBefore = sqliteDatabaseFileGroupFingerprint(freshInstallDbPath);
   const inspectResult = recordCommand(
     "fresh_install_inspect_smoke",
     inspectBin,
@@ -2461,6 +2498,10 @@ if (skipFreshInstall) {
     },
   );
   recordInspectorContentSafety(inspectResult, inspectForbiddenValues);
+  recordInspectorSourceDatabaseUnchanged(
+    inspectSourceDbFingerprintBefore,
+    sqliteDatabaseFileGroupFingerprint(freshInstallDbPath),
+  );
   recordFreshInstallDatabaseCleanup();
   manifest.artifacts.freshInstallDir = path.relative(root, freshInstallDir);
 }
