@@ -22301,6 +22301,26 @@ try {
   rmSync(releaseEvidenceScheduledWorkflow, { force: true });
 }
 
+const dirtyReleaseEvidenceDir = path.join(tmp, "release-evidence-dirty-preflight");
+const dirtyReleaseMarker = path.join(process.cwd(), "release-evidence-dirty-preflight.tmp");
+writeFileSync(dirtyReleaseMarker, "temporary dirty marker\n");
+try {
+  const dirtyReleaseEvidence = spawnSync(
+    process.execPath,
+    [
+      "scripts/create-release-evidence.mjs",
+      "--output-dir",
+      dirtyReleaseEvidenceDir,
+    ],
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  assert.notEqual(dirtyReleaseEvidence.status, 0);
+  assert.match(dirtyReleaseEvidence.stderr, /worktree is dirty/);
+  assert.equal(existsSync(path.join(dirtyReleaseEvidenceDir, "manifest.json")), false);
+} finally {
+  rmSync(dirtyReleaseMarker, { force: true });
+}
+
 const skippedReleaseEvidenceDir = path.join(tmp, "release-evidence-skipped-public");
 const skippedReleaseEvidence = spawnSync(
   process.execPath,

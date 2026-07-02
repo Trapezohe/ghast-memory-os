@@ -357,6 +357,12 @@ const freshInstallDbPaths = [
 const freshInstallGeneratedFilePaths = [freshInstallBackupPath];
 const npmCacheDir = path.join(outputDir, ".npm-cache");
 
+const dirtyWorktreeMessage =
+  "worktree is dirty; commit or stash changes before creating release evidence, or pass --allow-dirty for a non-release dry run";
+if (gitInfo.dirty && !allowDirty && !skipGate && !skipFreshInstall) {
+  throw new Error(dirtyWorktreeMessage);
+}
+
 mkdirSync(outputDir, { recursive: true });
 
 const manifest = {
@@ -409,7 +415,7 @@ if (gitInfo.dirty && !allowDirty) {
   failAfterWriting(
     manifest,
     outputDir,
-    "worktree is dirty; commit or stash changes before creating release evidence, or pass --allow-dirty for a non-release dry run",
+    dirtyWorktreeMessage,
   );
 }
 
