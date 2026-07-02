@@ -18,7 +18,7 @@ export const DEFAULT_GMOS_PACKAGE_INFO: GmosPackageInfo = {
   version: "0.0.0-development",
 };
 
-export const DEFAULT_GMOS_CLI_BINARIES = ["gmos", "ghast-memory"];
+export const DEFAULT_GMOS_CLI_BINARIES = ["ghast-memory", "gmos", "gmos-inspect"];
 
 export function readGmosPackageManifest(): GmosPackageManifest | null {
   try {

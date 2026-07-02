@@ -488,6 +488,7 @@ assert.deepEqual(
 assert.deepEqual(publicCliBinariesFromManifest({ name: "@scope/tool", bin: "./dist/cli.js" }), ["tool"]);
 assert.deepEqual(publicCliBinariesFromManifest({ name: "plain-tool", bin: "./dist/cli.js" }), ["plain-tool"]);
 assert.deepEqual(publicCliBinariesFromManifest({ name: "@scope/tool", bin: "" }), DEFAULT_GMOS_CLI_BINARIES);
+assert.deepEqual(DEFAULT_GMOS_CLI_BINARIES, ["ghast-memory", "gmos", "gmos-inspect"]);
 assert.deepEqual(
   publicPackageExportsFromManifest({ exports: { "./store/sqlite": "./dist/store/sqlite/index.js", ".": "./dist/index.js" } }),
   [".", "./store/sqlite"],
