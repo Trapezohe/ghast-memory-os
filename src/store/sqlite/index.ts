@@ -22,6 +22,8 @@ import type {
   FailureKind,
   ForgetInput,
   ForgetResult,
+  EmbeddingProvider,
+  EmbeddingProviderConfig,
   ListFailuresInput,
   MaintenanceExemption,
   MaintenanceReport,
@@ -34,10 +36,12 @@ import type {
   MemoryListInput,
   MemoryKind,
   MemoryRecord,
+  MemoryRetrievalConfig,
   MemorySearchScoreComponents,
   MemorySearchInput,
   MemoryStore,
   MemorySearchTraceCollector,
+  MemoryVectorEmbedding,
   RecordEvidenceInput,
   RecordConsolidationSummaryInput,
   RecordConsolidationSummaryResult,
@@ -45,6 +49,7 @@ import type {
   RecordProcedureDistillationInput,
   RecordProcedureDistillationResult,
   ReadAuditSnapshot,
+  RepairSearchIndexInput,
   RepairSearchIndexResult,
   RebuildAssociationsInput,
   RebuildAssociationsResult,
@@ -90,10 +95,22 @@ import {
 import {
   cosineSimilarity,
   LOCAL_TEXT_VECTOR_DIMENSIONS,
+  LOCAL_TEXT_VECTOR_PROVIDER,
   localTextCandidateFeatures,
-  localTextVector,
   vectorContentHash,
 } from "../../kernel/local-vector.js";
+import {
+  DEFAULT_VECTOR_BACKFILL_BATCH_SIZE,
+  embeddingForMemory,
+  localMemoryEmbedding,
+  memoryEligibleForEmbeddingProvider,
+  providerDimensionsForHealth,
+  providerNameForHealth,
+  resolveEmbeddingProviderConfig,
+  validateQueryEmbedding,
+  validateStoredEmbedding,
+  type ResolvedEmbeddingProviderConfig,
+} from "../../kernel/embeddings.js";
 import {
   exportSqliteProfileBackup,
   restoreSqliteProfileBackup,
@@ -121,6 +138,8 @@ export interface SqliteMemoryStoreOptions {
   readonly?: boolean | undefined;
   fileMustExist?: boolean | undefined;
   entityResolver?: EntityResolver | undefined;
+  embeddingProvider?: EmbeddingProvider | EmbeddingProviderConfig | undefined;
+  retrieval?: MemoryRetrievalConfig | undefined;
   forgetTargetParser?: SqliteForgetTargetParser | undefined;
 }
 
@@ -140,7 +159,7 @@ export interface SqliteMemoryStore extends MemoryStore {
   listFailures(input: ListFailuresInput): FailureEventRecord[];
   schemaVersion(): number;
   searchIndexStatus(): SearchIndexStatus;
-  repairSearchIndex(): RepairSearchIndexResult;
+  repairSearchIndex(input?: RepairSearchIndexInput): Promise<RepairSearchIndexResult> | RepairSearchIndexResult;
   searchAssociations(input: MemoryAssociationSearchInput): MemoryAssociationRecord[];
   rebuildAssociations(input?: RebuildAssociationsInput): RebuildAssociationsResult;
   readAuditSnapshot(): ReadAuditSnapshot;
@@ -149,7 +168,7 @@ export interface SqliteMemoryStore extends MemoryStore {
   listTaskTrajectories(input: { profileId: string; limit?: number | undefined }): TaskTrajectoryRecord[];
   recordProcedureDistillation(
     input: RecordProcedureDistillationInput,
-  ): RecordProcedureDistillationResult;
+  ): Promise<RecordProcedureDistillationResult> | RecordProcedureDistillationResult;
   applyEvolutionActions(input: EvolutionApplyStoreInput): EvolutionApplyStoreResult;
   revertEvolutionApplication(input: EvolutionRevertStoreInput): EvolutionRevertStoreResult;
 }
@@ -518,6 +537,10 @@ function memorySearchScoreComponents(input: {
   memory: MemoryRecord;
   query: string;
   retrievalScore: number;
+  ftsScore?: number | undefined;
+  vectorScore?: number | undefined;
+  associationScore?: number | undefined;
+  fusionScore?: number | undefined;
 }): MemorySearchScoreComponents {
   const contentScore = input.query
     ? scoreMemory(input.memory, input.query)
@@ -529,6 +552,10 @@ function memorySearchScoreComponents(input: {
     confidence: input.memory.confidence,
     retrievalScore: input.retrievalScore,
     contentScore,
+    ...(input.ftsScore !== undefined ? { ftsScore: input.ftsScore } : {}),
+    ...(input.vectorScore !== undefined ? { vectorScore: input.vectorScore } : {}),
+    ...(input.associationScore !== undefined ? { associationScore: input.associationScore } : {}),
+    ...(input.fusionScore !== undefined ? { fusionScore: input.fusionScore } : {}),
     finalScore,
   };
 }
@@ -582,6 +609,28 @@ function scoreAssociation(association: MemoryAssociationRecord, query: string): 
 function limit(input: number | undefined, fallback: number, maximum: number): number {
   if (input === undefined) return fallback;
   return Math.max(1, Math.min(Math.trunc(input), maximum));
+}
+
+function reciprocalRank(rank: number): number {
+  return 1 / (60 + Math.max(1, rank));
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function attachInternalFusionScore(
+  memory: MemoryRecord,
+  fusionScore: number | undefined,
+): MemoryRecord {
+  if (fusionScore === undefined) return memory;
+  Object.defineProperty(memory, "__gmosFusionScore", {
+    value: fusionScore,
+    enumerable: false,
+    configurable: true,
+  });
+  return memory;
 }
 
 function visibleMemory(input: {
@@ -734,9 +783,17 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     new Database(options.path, sqliteOptions);
   const resolveEntity = (input: Parameters<typeof resolveWorldEntitySubject>[0]): EntityResolutionResult =>
     resolveWorldEntitySubject(input, options.entityResolver);
+  let embeddingProvider = resolveEmbeddingProviderConfig(options.embeddingProvider);
+  const retrievalConfig = options.retrieval;
   let initialized = false;
   let ftsAvailableCache: boolean | null = null;
   let vectorIndexAvailableCache: boolean | null = null;
+
+  function configureEmbeddingProvider(
+    input: EmbeddingProvider | EmbeddingProviderConfig | undefined,
+  ): void {
+    embeddingProvider = resolveEmbeddingProviderConfig(input);
+  }
 
   function initialize(): void {
     if (initialized) return;
@@ -812,9 +869,11 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     ).run(row.id, row.profile_id, row.kind, row.scope, row.status, row.content);
   }
 
-  function syncMemoryVector(memoryId: string): void {
+  function syncMemoryVector(memoryId: string, embeddingInput?: MemoryVectorEmbedding | undefined): void {
     if (!vectorIndexAvailable()) return;
-    db.prepare("DELETE FROM gmos_memory_vectors WHERE id = ?").run(memoryId);
+    const existing = db
+      .prepare("SELECT * FROM gmos_memory_vectors WHERE id = ?")
+      .get(memoryId) as Record<string, unknown> | undefined;
     db.prepare("DELETE FROM gmos_memory_vector_terms WHERE id = ?").run(memoryId);
     const row = db
       .prepare(
@@ -831,19 +890,49 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           updated_at: string;
         }
       | undefined;
-    if (!row) return;
-    const vector = localTextVector(row.content);
+    if (!row) {
+      db.prepare("DELETE FROM gmos_memory_vectors WHERE id = ?").run(memoryId);
+      return;
+    }
+    const contentHash = vectorContentHash(row.content);
+    const embedding =
+      embeddingInput ??
+      preservedMemoryEmbedding(existing, contentHash) ??
+      localMemoryEmbedding(
+        row.content,
+        memoryEligibleForEmbeddingProvider({
+          provider: embeddingProvider,
+          kind: memoryKindForVector(row.id),
+          sensitivity: memorySensitivityForVector(row.id),
+          content: row.content,
+        })
+          ? "pending"
+          : "embedded",
+      );
+    const storedEmbedding = validateStoredEmbedding(embedding);
     db.prepare(
       `INSERT INTO gmos_memory_vectors(
-        id, profile_id, status, dimensions, vector_json, content_hash, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        id, profile_id, status, provider_name, embedding_status, dimensions,
+        vector_json, content_hash, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        profile_id = excluded.profile_id,
+        status = excluded.status,
+        provider_name = excluded.provider_name,
+        embedding_status = excluded.embedding_status,
+        dimensions = excluded.dimensions,
+        vector_json = excluded.vector_json,
+        content_hash = excluded.content_hash,
+        updated_at = excluded.updated_at`,
     ).run(
       row.id,
       row.profile_id,
       row.status,
-      vector.length,
-      JSON.stringify(vector),
-      vectorContentHash(row.content),
+      storedEmbedding.providerName,
+      storedEmbedding.status,
+      storedEmbedding.dimensions,
+      JSON.stringify(storedEmbedding.vector),
+      contentHash,
       row.updated_at,
     );
     const termStmt = db.prepare(
@@ -854,6 +943,51 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     for (const feature of localTextCandidateFeatures(row.content)) {
       termStmt.run(row.id, row.profile_id, row.status, feature, row.updated_at);
     }
+  }
+
+  function preservedMemoryEmbedding(
+    row: Record<string, unknown> | undefined,
+    contentHash: string,
+  ): MemoryVectorEmbedding | null {
+    if (!row || row.content_hash !== contentHash) return null;
+    const vector = parseJsonArray(row.vector_json);
+    const dimensions = Number(row.dimensions ?? 0);
+    if (vector.length !== dimensions || dimensions <= 0) return null;
+    return {
+      providerName: String(row.provider_name ?? LOCAL_TEXT_VECTOR_PROVIDER),
+      dimensions,
+      vector,
+      status: row.embedding_status === "pending" ? "pending" : "embedded",
+    };
+  }
+
+  function memoryKindForVector(memoryId: string): MemoryKind {
+    const row = db
+      .prepare("SELECT kind FROM gmos_memories WHERE id = ?")
+      .get(memoryId) as { kind?: string } | undefined;
+    return (row?.kind ?? "fact") as MemoryKind;
+  }
+
+  function memorySensitivityForVector(memoryId: string): Sensitivity {
+    const row = db
+      .prepare("SELECT sensitivity FROM gmos_memories WHERE id = ?")
+      .get(memoryId) as { sensitivity?: string } | undefined;
+    return (row?.sensitivity ?? "normal") as Sensitivity;
+  }
+
+  async function embeddingForWrite(input: {
+    kind: MemoryKind;
+    sensitivity?: Sensitivity | undefined;
+    content: string;
+    embedding?: MemoryVectorEmbedding | undefined;
+  }): Promise<MemoryVectorEmbedding> {
+    if (input.embedding) return validateStoredEmbedding(input.embedding);
+    return embeddingForMemory({
+      provider: embeddingProvider,
+      kind: input.kind,
+      sensitivity: input.sensitivity ?? "normal",
+      content: input.content,
+    });
   }
 
   function rebuildMemoryVectorIndex(): void {
@@ -1717,6 +1851,11 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         staleEntryCount: 0,
         orphanEntryCount: 0,
         duplicateEntryCount: 0,
+        providerName: providerNameForHealth(embeddingProvider),
+        providerDimensions: providerDimensionsForHealth(embeddingProvider),
+        embeddedEntryCount: 0,
+        pendingEntryCount: 0,
+        staleProviderEntryCount: 0,
         dimensions: 0,
       };
     }
@@ -1734,6 +1873,11 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         staleEntryCount: 0,
         orphanEntryCount: 0,
         duplicateEntryCount: 0,
+        providerName: providerNameForHealth(embeddingProvider),
+        providerDimensions: providerDimensionsForHealth(embeddingProvider),
+        embeddedEntryCount: 0,
+        pendingEntryCount: 0,
+        staleProviderEntryCount: 0,
         dimensions: 0,
       };
     }
@@ -1810,11 +1954,13 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           .get() as { count: number }
       ).count,
     );
-    const staleVectorEntryCount = (
+    const vectorRows = (
       db
         .prepare(
-          `SELECT v.profile_id, v.status, v.updated_at, v.dimensions, v.vector_json, v.content_hash,
-                  m.profile_id AS memory_profile_id, m.status AS memory_status,
+          `SELECT v.profile_id, v.status, v.updated_at, v.provider_name,
+                  v.embedding_status, v.dimensions, v.vector_json, v.content_hash,
+                  m.profile_id AS memory_profile_id, m.kind AS memory_kind,
+                  m.sensitivity AS memory_sensitivity, m.status AS memory_status,
                   m.updated_at AS memory_updated_at, m.content AS memory_content
            FROM gmos_memory_vectors v
            JOIN gmos_memories m ON m.id = v.id`,
@@ -1823,24 +1969,59 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         profile_id?: string | null;
         status?: string | null;
         updated_at?: string | null;
+        provider_name?: string | null;
+        embedding_status?: string | null;
         dimensions?: number | null;
         vector_json?: string | null;
         content_hash?: string | null;
         memory_profile_id?: string | null;
+        memory_kind?: string | null;
+        memory_sensitivity?: string | null;
         memory_status?: string | null;
         memory_updated_at?: string | null;
         memory_content?: string | null;
       }>
-    ).filter(
-      (row) =>
-        row.profile_id !== row.memory_profile_id ||
-        row.status !== row.memory_status ||
-        row.updated_at !== row.memory_updated_at ||
-        row.dimensions !== LOCAL_TEXT_VECTOR_DIMENSIONS ||
-        !row.vector_json ||
-        parseJsonArray(row.vector_json).length !== LOCAL_TEXT_VECTOR_DIMENSIONS ||
-        row.content_hash !== vectorContentHash(row.memory_content ?? ""),
-    ).length;
+    );
+    const vectorDiagnostics = vectorRows.reduce(
+      (diagnostics, row) => {
+        const expected = expectedVectorProviderForMemory({
+          kind: (row.memory_kind ?? "fact") as MemoryKind,
+          sensitivity: (row.memory_sensitivity ?? "normal") as Sensitivity,
+          content: row.memory_content ?? "",
+        });
+        const rawVector = parseJsonArray(row.vector_json);
+        const vectorStale =
+          row.profile_id !== row.memory_profile_id ||
+          row.status !== row.memory_status ||
+          row.updated_at !== row.memory_updated_at ||
+          row.dimensions !== rawVector.length ||
+          !row.vector_json ||
+          rawVector.length === 0 ||
+          rawVector.some((value) => !Number.isFinite(value)) ||
+          row.content_hash !== vectorContentHash(row.memory_content ?? "");
+        const providerStale =
+          row.provider_name !== expected.providerName ||
+          Number(row.dimensions ?? 0) !== expected.dimensions;
+        const pending = row.embedding_status === "pending";
+        if (vectorStale) diagnostics.staleVectorEntryCount += 1;
+        if (pending) diagnostics.pendingEntryCount += 1;
+        if (providerStale && !pending) diagnostics.staleProviderEntryCount += 1;
+        if (
+          !vectorStale &&
+          !providerStale &&
+          row.embedding_status !== "pending"
+        ) {
+          diagnostics.embeddedEntryCount += 1;
+        }
+        return diagnostics;
+      },
+      {
+        staleVectorEntryCount: 0,
+        pendingEntryCount: 0,
+        staleProviderEntryCount: 0,
+        embeddedEntryCount: 0,
+      },
+    );
     const duplicateEntryCount = Number(
       (
         db
@@ -1866,8 +2047,10 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     const status =
       missingEntryCount === 0 &&
       missingFeatureEntryCount === 0 &&
-      staleVectorEntryCount === 0 &&
+      vectorDiagnostics.staleVectorEntryCount === 0 &&
       staleFeatureEntryCount === 0 &&
+      vectorDiagnostics.pendingEntryCount === 0 &&
+      vectorDiagnostics.staleProviderEntryCount === 0 &&
       orphanEntryCount === 0 &&
       orphanFeatureEntryCount === 0 &&
       duplicateEntryCount === 0
@@ -1877,39 +2060,192 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       status,
       indexedMemoryCount,
       missingEntryCount: missingEntryCount + missingFeatureEntryCount,
-      staleEntryCount: staleVectorEntryCount + staleFeatureEntryCount,
+      staleEntryCount:
+        vectorDiagnostics.staleVectorEntryCount +
+        staleFeatureEntryCount +
+        vectorDiagnostics.pendingEntryCount +
+        vectorDiagnostics.staleProviderEntryCount,
       orphanEntryCount: orphanEntryCount + orphanFeatureEntryCount,
       duplicateEntryCount,
+      providerName: providerNameForHealth(embeddingProvider),
+      providerDimensions: providerDimensionsForHealth(embeddingProvider),
+      embeddedEntryCount: vectorDiagnostics.embeddedEntryCount,
+      pendingEntryCount: vectorDiagnostics.pendingEntryCount,
+      staleProviderEntryCount: vectorDiagnostics.staleProviderEntryCount,
       dimensions,
     };
   }
 
-  function repairSearchIndex(): RepairSearchIndexResult {
+  function expectedVectorProviderForMemory(input: {
+    kind: MemoryKind;
+    sensitivity: Sensitivity;
+    content: string;
+  }): { providerName: string; dimensions: number } {
+    if (
+      memoryEligibleForEmbeddingProvider({
+        provider: embeddingProvider,
+        kind: input.kind,
+        sensitivity: input.sensitivity,
+        content: input.content,
+      })
+    ) {
+      return {
+        providerName: providerNameForHealth(embeddingProvider),
+        dimensions: providerDimensionsForHealth(embeddingProvider),
+      };
+    }
+    return {
+      providerName: LOCAL_TEXT_VECTOR_PROVIDER,
+      dimensions: LOCAL_TEXT_VECTOR_DIMENSIONS,
+    };
+  }
+
+  async function repairSearchIndex(input: RepairSearchIndexInput = {}): Promise<RepairSearchIndexResult> {
     initialize();
     const before = searchIndexStatus();
     if (db.readonly) throw new Error("gmOS SQLite store is readonly");
     if (!ftsAvailable()) throw new Error("gmOS SQLite search index is missing");
-    const repairedAt = nowIso();
-    const tx = db.transaction(() => {
+    const repairedAt = input.now ?? nowIso();
+    const batchSize = limit(input.vectorBatchSize, DEFAULT_VECTOR_BACKFILL_BATCH_SIZE, 500);
+    const vectorCandidates = vectorBackfillCandidates(batchSize);
+    const vectorBackfill = {
+      batchSize,
+      candidateCount: vectorCandidates.length,
+      embeddedCount: 0,
+      fallbackCount: 0,
+      pendingCount: 0,
+      staleProviderCount: vectorCandidates.filter((candidate) => candidate.staleProvider).length,
+      skippedCount: input.dryRun === true ? vectorCandidates.length : 0,
+    };
+    if (input.dryRun === true) {
+      return {
+        repaired: false,
+        dryRun: true,
+        before,
+        after: searchIndexStatus(),
+        repairedAt,
+        vectorBackfill,
+      };
+    }
+    const repairFts = db.transaction(() => {
       db.prepare("DELETE FROM gmos_memories_fts").run();
       db.prepare(
         `INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
          SELECT id, profile_id, kind, scope, status, content
          FROM gmos_memories`,
       ).run();
-      rebuildMemoryVectorIndex();
     });
-    tx();
+    repairFts();
+    if (!embeddingProvider) {
+      rebuildMemoryVectorIndex();
+      vectorBackfill.fallbackCount = vectorCandidates.length;
+    } else {
+      for (const candidate of vectorCandidates) {
+        const embedding = await embeddingForMemory({
+          provider: embeddingProvider,
+          kind: candidate.kind,
+          sensitivity: candidate.sensitivity,
+          content: candidate.content,
+        });
+        syncMemoryVector(candidate.id, embedding);
+        if (embedding.providerName === LOCAL_TEXT_VECTOR_PROVIDER) {
+          vectorBackfill.fallbackCount += 1;
+        } else {
+          vectorBackfill.embeddedCount += 1;
+        }
+        if (embedding.status === "pending") vectorBackfill.pendingCount += 1;
+      }
+    }
     const after = searchIndexStatus();
     return {
       repaired: before.status !== "ok" && after.status === "ok",
+      dryRun: false,
       before,
       after,
       repairedAt,
+      vectorBackfill,
     };
   }
 
-  function memoryRowsForSearch(input: MemorySearchInput): Record<string, unknown>[] {
+  interface VectorBackfillCandidate {
+    id: string;
+    kind: MemoryKind;
+    sensitivity: Sensitivity;
+    content: string;
+    staleProvider: boolean;
+  }
+
+  function vectorBackfillCandidates(batchSize: number): VectorBackfillCandidate[] {
+    if (!vectorIndexAvailable()) return [];
+    const rows = db
+      .prepare(
+        `SELECT m.id, m.kind, m.sensitivity, m.content, m.profile_id, m.status,
+                m.updated_at, v.profile_id AS vector_profile_id,
+                v.status AS vector_status, v.updated_at AS vector_updated_at,
+                v.provider_name, v.embedding_status, v.dimensions, v.vector_json, v.content_hash,
+                EXISTS(
+                  SELECT 1 FROM gmos_memory_vector_terms t WHERE t.id = m.id
+                ) AS has_terms
+         FROM gmos_memories m
+         LEFT JOIN gmos_memory_vectors v ON v.id = m.id
+         ORDER BY m.updated_at ASC, m.id ASC`,
+      )
+      .all() as Array<{
+        id: string;
+        kind: string;
+        sensitivity: string;
+        content: string;
+        profile_id: string;
+        status: string;
+        updated_at: string;
+        vector_profile_id?: string | null;
+        vector_status?: string | null;
+        vector_updated_at?: string | null;
+        provider_name?: string | null;
+        embedding_status?: string | null;
+        dimensions?: number | null;
+        vector_json?: string | null;
+        content_hash?: string | null;
+        has_terms?: number | null;
+      }>;
+    const candidates: VectorBackfillCandidate[] = [];
+    for (const row of rows) {
+      const kind = row.kind as MemoryKind;
+      const sensitivity = row.sensitivity as Sensitivity;
+      const expected = expectedVectorProviderForMemory({
+        kind,
+        sensitivity,
+        content: row.content,
+      });
+      const rawVector = parseJsonArray(row.vector_json);
+      const missingVector = !row.provider_name || !row.vector_json;
+      const staleProvider =
+        row.provider_name !== expected.providerName ||
+        Number(row.dimensions ?? 0) !== expected.dimensions;
+      const pending = row.embedding_status === "pending";
+      const staleVector =
+        missingVector ||
+        row.has_terms !== 1 ||
+        row.dimensions !== rawVector.length ||
+        rawVector.length === 0 ||
+        row.vector_profile_id !== row.profile_id ||
+        row.vector_status !== row.status ||
+        row.vector_updated_at !== row.updated_at ||
+        row.content_hash !== vectorContentHash(row.content);
+      if (!staleVector && !staleProvider && !pending) continue;
+      candidates.push({
+        id: row.id,
+        kind,
+        sensitivity,
+        content: row.content,
+        staleProvider,
+      });
+      if (candidates.length >= batchSize) break;
+    }
+    return candidates;
+  }
+
+  function lexicalMemoryRowsForSearch(input: MemorySearchInput): Record<string, unknown>[] {
     const query = input.query?.trim() ?? "";
     const candidateLimit = Math.max(input.limit ?? 12, 100);
     const statusSql = lifecycleReachableStatusSql(input.purpose);
@@ -1924,12 +2260,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         .all(input.profileId, Math.max(candidateLimit, 500)) as Record<string, unknown>[];
     }
 
-    const lexicalRows = memoryLexicalRowsForSearch(input, candidateLimit);
-    const purpose = input.purpose ?? "context";
-    if (purpose !== "context" && purpose !== "history") return lexicalRows;
-    const vectorRows = memoryVectorRowsForSearch(input, candidateLimit);
-    if (vectorRows.length === 0) return lexicalRows;
-    return mergeSearchRows(lexicalRows, vectorRows, candidateLimit);
+    return memoryLexicalRowsForSearch(input, candidateLimit);
   }
 
   function memoryLexicalRowsForSearch(
@@ -1955,6 +2286,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         if (rows.length > 0) {
           return rows.map((row, index) => ({
             ...row,
+            __gmos_fts_score: reciprocalRank(index + 1),
             __gmos_search_score: 100 / (60 + index + 1),
           }));
         }
@@ -1983,6 +2315,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       ) as Record<string, unknown>[]
     ).map((row, index) => ({
       ...row,
+      __gmos_fts_score: reciprocalRank(index + 1) * 0.8,
       __gmos_search_score: 80 / (60 + index + 1),
     }));
   }
@@ -1993,39 +2326,77 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   ): Record<string, unknown>[] {
     const query = input.query?.trim() ?? "";
     if (!query || !vectorIndexAvailable()) return [];
+    const queryEmbedding = input.queryEmbedding
+      ? validateQueryEmbedding(input.queryEmbedding)
+      : null;
     const queryFeatures = localTextCandidateFeatures(query, 128);
-    if (queryFeatures.length === 0 || !tableExists("gmos_memory_vector_terms")) return [];
-    const queryVector = localTextVector(query);
+    if (!queryEmbedding && (queryFeatures.length === 0 || !tableExists("gmos_memory_vector_terms"))) {
+      return [];
+    }
+    const queryVector = queryEmbedding?.vector ?? localMemoryEmbedding(query, "embedded").vector;
     const candidateRowLimit = Math.min(Math.max(candidateLimit * 20, 100), 1000);
-    const featurePlaceholders = queryFeatures.map(() => "?").join(", ");
-    const statusSql = lifecycleReachableStatusSql(input.purpose);
     const vectorStatusSql = lifecycleReachableAliasStatusSql("v", input.purpose);
     const memoryStatusSql = lifecycleReachableAliasStatusSql("m", input.purpose);
-    const rows = db
-      .prepare(
-        `SELECT m.*, v.vector_json, candidates.hit_count
-         FROM (
-           SELECT id, COUNT(*) AS hit_count, MAX(updated_at) AS latest_at
-           FROM gmos_memory_vector_terms
-           WHERE profile_id = ?
-             AND ${statusSql}
-             AND feature_key IN (${featurePlaceholders})
-           GROUP BY id
-           ORDER BY hit_count DESC, latest_at DESC
-           LIMIT ?
-         ) candidates
-         JOIN gmos_memory_vectors v ON v.id = candidates.id
-         JOIN gmos_memories m ON m.id = candidates.id
-         WHERE v.profile_id = ?
-           AND ${vectorStatusSql}
-           AND m.profile_id = ?
-           AND ${memoryStatusSql}`,
-      )
-      .all(input.profileId, ...queryFeatures, candidateRowLimit, input.profileId, input.profileId) as Array<
-      Record<string, unknown>
-    >;
+    const rows = queryEmbedding
+      ? db
+          .prepare(
+            `SELECT m.*, v.vector_json, 0 AS hit_count
+             FROM gmos_memory_vectors v
+             JOIN gmos_memories m ON m.id = v.id
+             WHERE v.profile_id = ?
+               AND ${vectorStatusSql}
+               AND v.provider_name = ?
+               AND v.dimensions = ?
+               AND v.embedding_status = 'embedded'
+               AND m.profile_id = ?
+               AND ${memoryStatusSql}
+             ORDER BY v.updated_at DESC, v.id ASC
+             LIMIT ?`,
+          )
+          .all(
+            input.profileId,
+            queryEmbedding.providerName,
+            queryEmbedding.dimensions,
+            input.profileId,
+            candidateRowLimit,
+          ) as Array<Record<string, unknown>>
+      : (() => {
+          const featurePlaceholders = queryFeatures.map(() => "?").join(", ");
+          const statusSql = lifecycleReachableStatusSql(input.purpose);
+          return db
+            .prepare(
+              `SELECT m.*, v.vector_json, candidates.hit_count
+               FROM (
+                 SELECT id, COUNT(*) AS hit_count, MAX(updated_at) AS latest_at
+                 FROM gmos_memory_vector_terms
+                 WHERE profile_id = ?
+                   AND ${statusSql}
+                   AND feature_key IN (${featurePlaceholders})
+                 GROUP BY id
+                 ORDER BY hit_count DESC, latest_at DESC
+                 LIMIT ?
+               ) candidates
+               JOIN gmos_memory_vectors v ON v.id = candidates.id
+               JOIN gmos_memories m ON m.id = candidates.id
+               WHERE v.profile_id = ?
+                 AND ${vectorStatusSql}
+                 AND v.provider_name = ?
+                 AND v.dimensions = ?
+                 AND m.profile_id = ?
+                 AND ${memoryStatusSql}`,
+            )
+            .all(
+              input.profileId,
+              ...queryFeatures,
+              candidateRowLimit,
+              input.profileId,
+              LOCAL_TEXT_VECTOR_PROVIDER,
+              LOCAL_TEXT_VECTOR_DIMENSIONS,
+              input.profileId,
+            ) as Array<Record<string, unknown>>;
+        })();
     return rows
-      .map((row) => {
+      .map((row, index) => {
         const rawVector = parseJsonArray(row.vector_json);
         const similarity =
           rawVector.length === queryVector.length ? cosineSimilarity(queryVector, rawVector) : 0;
@@ -2034,6 +2405,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           ...memoryRow,
           __gmos_vector_similarity: similarity,
           __gmos_feature_hit_count: Number(hitCount ?? 0),
+          __gmos_vector_score: similarity > 0 ? similarity + reciprocalRank(index + 1) : 0,
           __gmos_search_score: similarity > 0 ? similarity * 3 : 0,
         };
       })
@@ -2045,20 +2417,41 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   function mergeSearchRows(
     lexicalRows: Record<string, unknown>[],
     vectorRows: Record<string, unknown>[],
+    associationRows: Record<string, unknown>[],
     candidateLimit: number,
+    retrieval: MemoryRetrievalConfig | undefined,
   ): Record<string, unknown>[] {
     const merged = new Map<string, Record<string, unknown>>();
-    function addRows(rows: Record<string, unknown>[], source: "lexical" | "vector"): void {
+    const weights = retrievalFusionWeights(retrieval);
+    function addRows(rows: Record<string, unknown>[], source: "fts" | "vector" | "association"): void {
       rows.forEach((row, index) => {
         const memoryId = String(row.id);
         const existing = merged.get(memoryId);
-        const sourceScore =
-          Number(row.__gmos_search_score ?? 0) + 1 / (60 + index + 1);
+        const rankScore = reciprocalRank(index + 1);
+        const ftsScore =
+          source === "fts"
+            ? Math.max(Number(row.__gmos_fts_score ?? 0), rankScore)
+            : Number(existing?.__gmos_fts_score ?? 0);
+        const vectorScore =
+          source === "vector"
+            ? Math.max(Number(row.__gmos_vector_score ?? 0), rankScore)
+            : Number(existing?.__gmos_vector_score ?? 0);
+        const associationScore =
+          source === "association"
+            ? Math.max(Number(row.__gmos_association_score ?? 0), rankScore)
+            : Number(existing?.__gmos_association_score ?? 0);
+        const fusionScore =
+          ftsScore * weights.fts +
+          vectorScore * weights.vector +
+          associationScore * weights.association;
         merged.set(memoryId, {
           ...(existing ?? row),
           ...row,
-          __gmos_search_score:
-            Number(existing?.__gmos_search_score ?? 0) + sourceScore,
+          __gmos_fts_score: ftsScore,
+          __gmos_vector_score: vectorScore,
+          __gmos_association_score: associationScore,
+          __gmos_fusion_score: fusionScore,
+          __gmos_search_score: fusionScore,
           __gmos_search_reason: [
             typeof existing?.__gmos_search_reason === "string"
               ? existing.__gmos_search_reason
@@ -2070,11 +2463,88 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         });
       });
     }
-    addRows(lexicalRows, "lexical");
+    addRows(lexicalRows, "fts");
     addRows(vectorRows, "vector");
+    addRows(associationRows, "association");
     return [...merged.values()]
-      .sort((a, b) => Number(b.__gmos_search_score ?? 0) - Number(a.__gmos_search_score ?? 0))
+      .sort((a, b) =>
+        Number(b.__gmos_search_score ?? 0) - Number(a.__gmos_search_score ?? 0) ||
+        String(b.updated_at ?? "").localeCompare(String(a.updated_at ?? "")) ||
+        String(a.id ?? "").localeCompare(String(b.id ?? ""))
+      )
       .slice(0, Math.max(candidateLimit, 500));
+  }
+
+  function retrievalFusionWeights(
+    retrieval: MemoryRetrievalConfig | undefined,
+  ): { fts: number; vector: number; association: number } {
+    const weights = retrieval?.fusion;
+    return {
+      fts: boundedWeight(weights?.fts, 1),
+      vector: boundedWeight(weights?.vector, 1.2),
+      association: boundedWeight(weights?.association, 0.8),
+    };
+  }
+
+  function boundedWeight(input: number | undefined, fallback: number): number {
+    if (input === undefined || !Number.isFinite(input)) return fallback;
+    return Math.max(0, Math.min(input, 10));
+  }
+
+  function memoryAssociationRowsForSearch(
+    input: MemorySearchInput,
+    candidateLimit: number,
+  ): Record<string, unknown>[] {
+    const query = input.query?.trim() ?? "";
+    if (!query || !tableExists("gmos_associations")) return [];
+    const associations = searchAssociations({
+      profileId: input.profileId,
+      query,
+      purpose: input.purpose === "history" ? "history" : "context",
+      includeSensitive: input.includeSensitive,
+      includePerson: input.includePerson,
+      limit: Math.min(Math.max(candidateLimit * 4, 24), 100),
+    });
+    const memoryIds = new Map<string, number>();
+    associations.forEach((association, index) => {
+      const memoryId = association.targetType === "memory"
+        ? association.targetId
+        : association.sourceMemoryId ?? "";
+      if (!memoryId || memoryIds.has(memoryId)) return;
+      memoryIds.set(memoryId, index + 1);
+    });
+    if (memoryIds.size === 0) return [];
+    const rows: Record<string, unknown>[] = [];
+    const rowStmt = db.prepare(
+      `SELECT *
+       FROM gmos_memories
+       WHERE profile_id = ? AND id = ? AND ${lifecycleReachableStatusSql(input.purpose)}`,
+    );
+    for (const [memoryId, rank] of memoryIds) {
+      const row = rowStmt.get(input.profileId, memoryId) as Record<string, unknown> | undefined;
+      if (!row) continue;
+      rows.push({
+        ...row,
+        __gmos_association_score: reciprocalRank(rank),
+        __gmos_search_score: reciprocalRank(rank),
+      });
+    }
+    return rows;
+  }
+
+  function memoryRowsForSearch(input: MemorySearchInput): Record<string, unknown>[] {
+    const candidateLimit = Math.max(input.limit ?? 12, 100);
+    const retrieval = input.retrieval ?? retrievalConfig;
+    const lexicalRows = lexicalMemoryRowsForSearch(input);
+    const purpose = input.purpose ?? "context";
+    if (purpose !== "context" && purpose !== "history") return lexicalRows;
+    return mergeSearchRows(
+      lexicalRows,
+      memoryVectorRowsForSearch(input, candidateLimit),
+      memoryAssociationRowsForSearch(input, candidateLimit),
+      candidateLimit,
+      retrieval,
+    );
   }
 
   function parseJsonArray(value: unknown): number[] {
@@ -2246,8 +2716,14 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     return normalizeEvidence(row);
   }
 
-  function addMemory(input: AddMemoryInput): MemoryRecord {
+  async function addMemory(input: AddMemoryInput): Promise<MemoryRecord> {
     initialize();
+    const embedding = await embeddingForWrite({
+      kind: input.kind,
+      sensitivity: input.sensitivity,
+      content: input.content,
+      embedding: input.embedding,
+    });
     const tx = db.transaction((): MemoryRecord => {
       const createdAt = input.createdAt ?? nowIso();
       const memoryId = id("memory");
@@ -2270,7 +2746,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         createdAt,
       );
       syncMemoryFts(memoryId);
-      syncMemoryVector(memoryId);
+      syncMemoryVector(memoryId, embedding);
       const memory = normalizeMemory(
         db
           .prepare("SELECT * FROM gmos_memories WHERE id = ?")
@@ -2282,7 +2758,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     return tx();
   }
 
-  function updateMemory(input: UpdateMemoryInput): MemoryRecord | null {
+  async function updateMemory(input: UpdateMemoryInput): Promise<MemoryRecord | null> {
     initialize();
     const existing = db
       .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ? AND status = 'active'")
@@ -2300,6 +2776,15 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         input.sourceEventId === undefined ? previous.sourceEventId : input.sourceEventId,
       metadata: input.metadata ?? previous.metadata,
     };
+    const embedding =
+      input.content !== undefined || input.embedding !== undefined
+        ? await embeddingForWrite({
+            kind: next.kind,
+            sensitivity: next.sensitivity,
+            content: next.content,
+            embedding: input.embedding,
+          })
+        : undefined;
     db.prepare(
       `UPDATE gmos_memories
        SET kind = ?,
@@ -2324,7 +2809,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       input.id,
     );
     syncMemoryFts(input.id);
-    syncMemoryVector(input.id);
+    syncMemoryVector(input.id, embedding);
     const memory = normalizeMemory(
       db
         .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ?")
@@ -2613,13 +3098,19 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     return tx();
   }
 
-  function recordConsolidationSummary(
+  async function recordConsolidationSummary(
     input: RecordConsolidationSummaryInput,
-  ): RecordConsolidationSummaryResult {
+  ): Promise<RecordConsolidationSummaryResult> {
     initialize();
     const sourceMemoryIds = [...new Set(input.sourceMemoryIds)].sort((left, right) =>
       left.localeCompare(right)
     );
+    const embedding = await embeddingForWrite({
+      kind: input.kind,
+      sensitivity: input.sensitivity,
+      content: input.content,
+      embedding: input.embedding,
+    });
     const tx = db.transaction((): RecordConsolidationSummaryResult => {
       const evidenceId = id("evidence");
       const evidenceKey = [
@@ -2678,7 +3169,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         input.createdAt,
       );
       syncMemoryFts(memoryId);
-      syncMemoryVector(memoryId);
+      syncMemoryVector(memoryId, embedding);
       const memory = normalizeMemory(
         db.prepare("SELECT * FROM gmos_memories WHERE id = ?").get(memoryId) as Record<
           string,
@@ -2759,14 +3250,20 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     return ["distillation.procedure", profileId, signature].join(":");
   }
 
-  function recordProcedureDistillation(
+  async function recordProcedureDistillation(
     input: RecordProcedureDistillationInput,
-  ): RecordProcedureDistillationResult {
+  ): Promise<RecordProcedureDistillationResult> {
     initialize();
     const sourceTrajectoryIds = [...new Set(input.sourceTrajectoryIds)].sort((left, right) =>
       left.localeCompare(right)
     );
     const eventKey = distillationEventKey(input.profileId, input.clusterKey);
+    const embedding = await embeddingForWrite({
+      kind: "procedure",
+      sensitivity: input.sensitivity,
+      content: input.content,
+      embedding: input.embedding,
+    });
     const tx = db.transaction((): RecordProcedureDistillationResult => {
       const existingEvidenceRow = db
         .prepare("SELECT * FROM gmos_evidence_events WHERE event_key = ?")
@@ -2841,7 +3338,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         input.createdAt,
       );
       syncMemoryFts(memoryId);
-      syncMemoryVector(memoryId);
+      syncMemoryVector(memoryId, embedding);
       const memory = normalizeMemory(
         db.prepare("SELECT * FROM gmos_memories WHERE id = ?").get(memoryId) as Record<
           string,
@@ -2970,6 +3467,10 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     memory: MemoryRecord;
     query: string;
     retrievalScore: number;
+    ftsScore?: number | undefined;
+    vectorScore?: number | undefined;
+    associationScore?: number | undefined;
+    fusionScore?: number | undefined;
     decision: "included" | "excluded";
     reason?: MemorySearchTraceDecisionReason | undefined;
   }): void {
@@ -2978,6 +3479,10 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       memory: input.memory,
       query: input.query,
       retrievalScore: input.retrievalScore,
+      ftsScore: input.ftsScore,
+      vectorScore: input.vectorScore,
+      associationScore: input.associationScore,
+      fusionScore: input.fusionScore,
     });
     input.trace.recordMemorySearchDecision({
       memory: input.memory,
@@ -3074,15 +3579,31 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     const accepted: Array<{
       memory: MemoryRecord;
       retrievalScore: number;
+      ftsScore?: number | undefined;
+      vectorScore?: number | undefined;
+      associationScore?: number | undefined;
+      fusionScore?: number | undefined;
       score: number;
     }> = [];
     const tracedMemoryIds = new Set<string>();
     for (const row of memoryRowsForSearch(input)) {
       const memory = normalizeMemory(row);
       const retrievalScore = Number(row.__gmos_search_score ?? 0);
+      const ftsScore = optionalNumber(row.__gmos_fts_score);
+      const vectorScore = optionalNumber(row.__gmos_vector_score);
+      const associationScore = optionalNumber(row.__gmos_association_score);
+      const fusionScore = optionalNumber(row.__gmos_fusion_score);
       if (input.trace) tracedMemoryIds.add(memory.id);
       const sensitivity = effectiveMemorySensitivity(memory);
-      const scoreComponents = memorySearchScoreComponents({ memory, query, retrievalScore });
+      const scoreComponents = memorySearchScoreComponents({
+        memory,
+        query,
+        retrievalScore,
+        ftsScore,
+        vectorScore,
+        associationScore,
+        fusionScore,
+      });
       let reason: MemorySearchTraceDecisionReason | null = null;
       if (!input.includePerson && memory.kind === "person") {
         reason = "person_gated";
@@ -3111,14 +3632,22 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           memory,
           query,
           retrievalScore,
+          ftsScore,
+          vectorScore,
+          associationScore,
+          fusionScore,
           decision: "excluded",
           reason,
         });
         continue;
       }
       accepted.push({
-        memory,
+        memory: attachInternalFusionScore(memory, fusionScore),
         retrievalScore,
+        ftsScore,
+        vectorScore,
+        associationScore,
+        fusionScore,
         score: scoreComponents.finalScore,
       });
     }
@@ -3132,6 +3661,10 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           memory: item.memory,
           query,
           retrievalScore: item.retrievalScore,
+          ftsScore: item.ftsScore,
+          vectorScore: item.vectorScore,
+          associationScore: item.associationScore,
+          fusionScore: item.fusionScore,
           decision: selectedIds.has(item.memory.id) ? "included" : "excluded",
           ...(selectedIds.has(item.memory.id) ? {} : { reason: "budget_cut" }),
         });
@@ -4209,6 +4742,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   }
 
   return {
+    configureEmbeddingProvider,
     initialize,
     close() {
       if (!options.handle) db.close();

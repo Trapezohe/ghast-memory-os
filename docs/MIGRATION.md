@@ -72,6 +72,25 @@ If the preview is acceptable, run the same command without `--dry-run`.
 default. Dormant memories remain available to history recall and can be restored
 to active by `commitOutcome({ usedMemoryIds })` when a host reports actual use.
 
+## SQLite Schema v9
+
+Schema v9 makes the memory vector index provider-aware. `gmos_memory_vectors`
+adds:
+
+- `provider_name TEXT NOT NULL DEFAULT 'local-hash-v1'`
+- `embedding_status TEXT NOT NULL DEFAULT 'embedded'`
+
+Existing local hash vectors migrate in place as `local-hash-v1` with 384
+dimensions. When a host configures an embedding provider, health reports normal
+eligible memories with old provider names or dimensions as stale provider rows.
+Provider failures during writes store fallback local vectors with pending status;
+`repairSearchIndex({ vectorBatchSize })` backfills pending/stale rows in bounded
+batches.
+
+Sensitive and person memories remain on local fallback vectors unless the host
+explicitly opts in through provider config. Secret-like content is never sent to
+the provider.
+
 ## M3 Experience Learning
 
 M3 does not add a SQLite schema version. Procedure distillation, outcome
@@ -85,7 +104,7 @@ payloads instead of new columns.
 Derived indexes can be rebuilt after import or SQLite drift:
 
 ```bash
-gmos repair --db ./gmos.db --search-index
+gmos repair --db ./gmos.db --search-index --dry-run --vector-batch-size 32
 gmos repair --db ./gmos.db --associations
 ```
 

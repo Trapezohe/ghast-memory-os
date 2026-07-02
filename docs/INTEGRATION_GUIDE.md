@@ -133,6 +133,48 @@ structured candidate normalization, action-policy projection, and reconstruction
 path while keeping the same gmOS write-path safety gates that a real provider
 would use.
 
+## Embedding Providers
+
+Hosts can upgrade recall by wiring a local Ollama, ONNX, or other embedding
+provider. The provider is host-owned; gmOS only calls its `embed(texts)` method
+on write paths, explicit repair/backfill, or explicit query embedding.
+
+```ts
+const embeddingProvider = {
+  name: "ollama-nomic-embed-text",
+  dimensions: 768,
+  async embed(texts: string[]) {
+    return Promise.all(texts.map((text) => ollamaEmbed(text)));
+  },
+};
+
+const store = createSqliteMemoryStore({
+  path: "./gmos.db",
+  embeddingProvider,
+});
+
+const memory = createMemoryOS({
+  profileId: "local-user",
+  store,
+  embeddingProvider,
+});
+```
+
+Remote providers are allowed only by host choice. Defaults protect privacy:
+normal non-person memories may be embedded; sensitive and person memories stay
+on `local-hash-v1` unless the host opts in with `embedSensitive` or
+`embedPerson`; secret-like content and secret-like queries are never sent.
+
+Use explicit query embedding only where the host accepts a read-time provider
+call:
+
+```ts
+await memory.search({
+  query: "semantic paraphrase",
+  retrieval: { embedQuery: true, queryEmbeddingTimeoutMs: 1000 },
+});
+```
+
 For in-process Node agent runtimes, `@ghast/memory/host` includes a small
 framework-agnostic adapter that wires this lifecycle without depending on a
 specific agent framework:

@@ -648,7 +648,12 @@ function validateSearchIndex(searchIndex, label) {
     !nonNegativeInteger(searchIndex.activeMemoryCount) ||
     !vectorIndex ||
     vectorIndex.status !== "ok" ||
-    !nonNegativeInteger(vectorIndex.indexedMemoryCount)
+    typeof vectorIndex.providerName !== "string" ||
+    !nonNegativeInteger(vectorIndex.providerDimensions) ||
+    !nonNegativeInteger(vectorIndex.indexedMemoryCount) ||
+    !nonNegativeInteger(vectorIndex.embeddedEntryCount) ||
+    !nonNegativeInteger(vectorIndex.pendingEntryCount) ||
+    !nonNegativeInteger(vectorIndex.staleProviderEntryCount)
   ) {
     throw new Error(`${label} did not include healthy search index`);
   }
@@ -881,7 +886,12 @@ function selfTestDoctorReport(overrides = {}) {
       activeMemoryCount: 1,
       vectorIndex: {
         status: "ok",
+        providerName: "local-hash-v1",
+        providerDimensions: 384,
         indexedMemoryCount: 1,
+        embeddedEntryCount: 1,
+        pendingEntryCount: 0,
+        staleProviderEntryCount: 0,
         ...vectorIndex,
       },
       ...searchIndex,
@@ -936,7 +946,12 @@ function selfTestStatusReport(overrides = {}) {
               activeMemoryCount: 1,
               vectorIndex: {
                 status: "ok",
+                providerName: "local-hash-v1",
+                providerDimensions: 384,
                 indexedMemoryCount: 1,
+                embeddedEntryCount: 1,
+                pendingEntryCount: 0,
+                staleProviderEntryCount: 0,
                 ...vectorIndex,
               },
               ...searchIndex,

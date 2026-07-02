@@ -36,12 +36,24 @@ host event
 - `gmos_failure_events`: feedback and failure loop events.
 - `gmos_associations`: derived cue/tag/content projection for reconstructive
   retrieval.
-- `gmos_memories_fts` and vector tables: derived search indexes.
+- `gmos_memories_fts` and provider-aware vector tables: derived search
+  indexes. Vector rows record provider name, dimensions, embedding status, and
+  content hash.
 
-Associations, FTS rows, and local vector rows are indexes. They can be rebuilt
-from source-of-truth rows and must not become independent memory stores.
+Associations, FTS rows, and vector rows are indexes. They can be rebuilt from
+source-of-truth rows and must not become independent memory stores. The
+`local-hash-v1` 384-dimensional vector is the deterministic fallback; host
+embedding providers are optional write/repair-path upgrades.
 
 ## Read And Write Boundaries
+
+Embedding providers are write-path hooks. gmOS may call them while adding or
+updating memory, while writing host consolidation summaries or distilled
+procedures, and during explicit search-index repair/backfill. Ordinary
+`prepareTurn`, `reconstructContext`, `explainTurn`, `explainEvidencePath`, and
+`search` do not call the provider. Query embedding is the only read-time
+exception and requires an explicit `retrieval.embedQuery` option with timeout
+and the same secret-like sensitivity gate as stored content.
 
 Write paths:
 
@@ -133,6 +145,13 @@ query cues
 The planner remains bounded by step, branch, and token budgets. Context output
 should carry uncertainty, conflict, current/history, and evidence markers rather
 than blindly stuffing every neighbor into the prompt.
+
+Direct memory retrieval uses one shared hybrid search path. FTS rank, vector
+cosine similarity, and association/tag overlap are fused with fixed default
+weights (`fts=1`, `vector=1.2`, `association=0.8`) and deterministic tie-breaks
+by score, recency, then id. Safety, lifecycle, supersession, temporal, person,
+and sensitivity gates run after fusion, so semantic similarity cannot resurface
+content that ordinary recall would hide.
 
 `explainTurn()` is a read-only explanation mode on the same turn pipeline, not a
 second retrieval implementation. The runtime threads an optional trace collector

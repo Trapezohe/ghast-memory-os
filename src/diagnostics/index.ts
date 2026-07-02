@@ -335,7 +335,7 @@ export function renderMemoryStatusMarkdown(report: MemoryStatusReport): string {
       ? `Search index: ${report.storage.searchIndex.status} (${report.storage.searchIndex.indexedMemoryCount}/${report.storage.searchIndex.totalMemoryCount} indexed; missing=${report.storage.searchIndex.missingEntryCount}; stale=${report.storage.searchIndex.staleEntryCount}; orphan=${report.storage.searchIndex.orphanEntryCount}; duplicate=${report.storage.searchIndex.duplicateEntryCount})`
       : "",
     vectorIndex
-      ? `Vector index: ${vectorIndex.status} (${vectorIndex.indexedMemoryCount} indexed; missing=${vectorIndex.missingEntryCount}; stale=${vectorIndex.staleEntryCount}; orphan=${vectorIndex.orphanEntryCount}; duplicate=${vectorIndex.duplicateEntryCount}; dimensions=${vectorIndex.dimensions})`
+      ? `Vector index: ${vectorIndex.status} (${vectorIndex.indexedMemoryCount} indexed; provider=${vectorIndex.providerName}/${vectorIndex.providerDimensions}; embedded=${vectorIndex.embeddedEntryCount}; pending=${vectorIndex.pendingEntryCount}; staleProvider=${vectorIndex.staleProviderEntryCount}; missing=${vectorIndex.missingEntryCount}; stale=${vectorIndex.staleEntryCount}; orphan=${vectorIndex.orphanEntryCount}; duplicate=${vectorIndex.duplicateEntryCount}; dimensions=${vectorIndex.dimensions})`
       : "",
     report.storage.lifecycle
       ? `Memory status counts: active=${report.storage.lifecycle.counts.active}; dormant=${report.storage.lifecycle.counts.dormant}; archived=${report.storage.lifecycle.counts.archived}; total=${report.storage.lifecycle.counts.total}`

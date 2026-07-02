@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-export const GMOS_SQLITE_SCHEMA_VERSION = 8;
+export const GMOS_SQLITE_SCHEMA_VERSION = 9;
 
 const READ_AUDIT_REVISION_TABLES = [
   "gmos_evidence_events",
@@ -237,6 +237,8 @@ export function ensureSqliteSchema(db: Database.Database): void {
       id TEXT PRIMARY KEY,
       profile_id TEXT NOT NULL,
       status TEXT NOT NULL,
+      provider_name TEXT NOT NULL DEFAULT 'local-hash-v1',
+      embedding_status TEXT NOT NULL DEFAULT 'embedded',
       dimensions INTEGER NOT NULL,
       vector_json TEXT NOT NULL,
       content_hash TEXT NOT NULL,
@@ -268,6 +270,16 @@ export function ensureSqliteSchema(db: Database.Database): void {
   }
   if (!columnExists(db, "gmos_memories", "reinforcement")) {
     db.exec("ALTER TABLE gmos_memories ADD COLUMN reinforcement REAL NOT NULL DEFAULT 0;");
+  }
+  if (!columnExists(db, "gmos_memory_vectors", "provider_name")) {
+    db.exec(
+      "ALTER TABLE gmos_memory_vectors ADD COLUMN provider_name TEXT NOT NULL DEFAULT 'local-hash-v1';",
+    );
+  }
+  if (!columnExists(db, "gmos_memory_vectors", "embedding_status")) {
+    db.exec(
+      "ALTER TABLE gmos_memory_vectors ADD COLUMN embedding_status TEXT NOT NULL DEFAULT 'embedded';",
+    );
   }
   db.exec(`
     INSERT OR IGNORE INTO gmos_schema_migrations(version, name, applied_at)
@@ -302,6 +314,12 @@ export function ensureSqliteSchema(db: Database.Database): void {
       VALUES (
         8,
         'memory_lifecycle_signals',
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      );
+    INSERT OR IGNORE INTO gmos_schema_migrations(version, name, applied_at)
+      VALUES (
+        9,
+        'provider_aware_memory_vectors',
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       );
   `);

@@ -38,6 +38,18 @@ export interface MemoryGymRoadmapResult {
   suggestions: string[];
 }
 
+export interface MemoryGymRecallQualityReport {
+  schema: "gmos.recall_quality.v1";
+  fixtureGroups: Array<{
+    group: string;
+    fallbackHits: number;
+    providerHits: number;
+    total: number;
+    fallbackHitRate: number;
+    providerHitRate: number;
+  }>;
+}
+
 export interface MemoryGymCoverageRow {
   layer: string;
   status: MemoryGymStatus;
@@ -78,6 +90,7 @@ export interface MemoryGymResult {
   gateResults: MemoryGymGateResult[];
   details: string[];
   scenarios: MemoryGymScenarioResult[];
+  recallQuality: MemoryGymRecallQualityReport;
   coverageMatrix: MemoryGymCoverageRow[];
   memoryStackCoverage: MemoryGymCoverageRow[];
   runManifest: MemoryGymRunManifest;

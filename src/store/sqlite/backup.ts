@@ -18,6 +18,7 @@ import {
   payloadContainsRestrictedValue,
 } from "../../kernel/safety.js";
 import {
+  LOCAL_TEXT_VECTOR_PROVIDER,
   localTextCandidateFeatures,
   localTextVector,
   vectorContentHash,
@@ -1174,12 +1175,15 @@ function syncRestoredMemoryVector(db: Database.Database, memoryId: string): void
   const vector = localTextVector(row.content);
   db.prepare(
     `INSERT INTO gmos_memory_vectors(
-      id, profile_id, status, dimensions, vector_json, content_hash, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      id, profile_id, status, provider_name, embedding_status, dimensions,
+      vector_json, content_hash, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     row.id,
     row.profile_id,
     row.status,
+    LOCAL_TEXT_VECTOR_PROVIDER,
+    "embedded",
     vector.length,
     JSON.stringify(vector),
     vectorContentHash(row.content),

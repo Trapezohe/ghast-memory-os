@@ -109,7 +109,7 @@ Usage:
   gmos version --format json
   gmos init --db ./gmos.db
   gmos doctor --db ./gmos.db --host ghast --format markdown
-  gmos repair --db ./gmos.db --search-index
+  gmos repair --db ./gmos.db --search-index --dry-run --vector-batch-size 32
   gmos repair --db ./gmos.db --associations
   gmos status --db ./gmos.db --profile local --host ghast --format markdown
   gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate,distill --now 2026-07-02T00:00:00.000Z --format markdown
@@ -364,7 +364,7 @@ function renderDoctorMarkdown(report: CliDoctorReport): string {
       ? `Search index: ${report.searchIndex.status} (${report.searchIndex.indexedMemoryCount}/${report.searchIndex.totalMemoryCount} indexed; missing=${report.searchIndex.missingEntryCount}; stale=${report.searchIndex.staleEntryCount}; orphan=${report.searchIndex.orphanEntryCount}; duplicate=${report.searchIndex.duplicateEntryCount})`
       : "Search index: unsupported",
     vectorIndex
-      ? `Vector index: ${vectorIndex.status} (${vectorIndex.indexedMemoryCount} indexed; missing=${vectorIndex.missingEntryCount}; stale=${vectorIndex.staleEntryCount}; orphan=${vectorIndex.orphanEntryCount}; duplicate=${vectorIndex.duplicateEntryCount}; dimensions=${vectorIndex.dimensions})`
+      ? `Vector index: ${vectorIndex.status} (${vectorIndex.indexedMemoryCount} indexed; provider=${vectorIndex.providerName}/${vectorIndex.providerDimensions}; embedded=${vectorIndex.embeddedEntryCount}; pending=${vectorIndex.pendingEntryCount}; staleProvider=${vectorIndex.staleProviderEntryCount}; missing=${vectorIndex.missingEntryCount}; stale=${vectorIndex.staleEntryCount}; orphan=${vectorIndex.orphanEntryCount}; duplicate=${vectorIndex.duplicateEntryCount}; dimensions=${vectorIndex.dimensions})`
       : "",
     "",
     "### Row Counts",
@@ -1272,7 +1272,10 @@ async function main(): Promise<void> {
           JSON.stringify(
             {
               ok: true,
-              searchIndex: await store.repairSearchIndex(),
+              searchIndex: await store.repairSearchIndex({
+                dryRun: has("--dry-run"),
+                vectorBatchSize: positiveIntegerOption("--vector-batch-size", 32),
+              }),
             },
             null,
             2,

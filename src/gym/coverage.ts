@@ -102,6 +102,11 @@ export function coverageMatrix(result: MemoryGymResult): MemoryGymCoverageRow[] 
       ),
       evidence: "procedure distillation, outcome reinforcement, confidence penalty, and approval-gated evolution are exercised",
     },
+    {
+      layer: "Layer 11: Semantic Recall",
+      status: statusFor(layerPass(result, "semantic_recall")),
+      evidence: "pluggable embeddings, hybrid fusion, provider repair, reranker fallback, and recall-quality diagnostics are exercised",
+    },
   ];
 }
 
@@ -151,6 +156,21 @@ export function memoryStackCoverage(result: MemoryGymResult): MemoryGymCoverageR
       ),
       evidence:
         "reconstructContext follows association paths, reports evidence convergence, information gain, planner trace, and hybrid reinforcement, requires all structured intent groups to converge, reranks noisy branches by explicit intent, respects entity-resolved current world belief and temporal validity state, and does not replace main context",
+    },
+    {
+      layer: "Semantic Recall",
+      status: statusFor(
+        Boolean(
+          result.hardGates.semantic_provider_paraphrase_recall &&
+            result.hardGates.embedding_failure_pending_repair &&
+            result.hardGates.embedding_provider_change_repair &&
+            result.hardGates.semantic_fusion_respects_visibility_gates &&
+            result.hardGates.retrieval_reranker_contract &&
+            result.hardGates.embedding_read_path_purity_default,
+        ),
+      ),
+      evidence:
+        "provider-backed semantic vectors, fallback vectors, vector backfill, fusion gates, reranker contract, and read purity are exercised",
     },
     {
       layer: "Explainability",

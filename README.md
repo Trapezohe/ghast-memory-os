@@ -63,7 +63,15 @@ npm run examples:quickstart
 - Plaintext local SQLite store. No database encryption and no vault integration.
 - SQLite FTS-backed recall for query search, with LIKE fallback for tokenizer
   edge cases.
-- Search index health reporting and explicit repair for SQLite FTS drift.
+- Provider-aware vector recall. A host can pass an embedding provider for
+  write-path embeddings; gmOS keeps the deterministic `local-hash-v1` vector as
+  the zero-dependency fallback and records provider name/dimensions in the
+  vector index.
+- Hybrid retrieval fusion across FTS rank, vector similarity, and association
+  overlap, with deterministic tie-breaks. Optional rerankers can only reorder or
+  drop already gated candidates.
+- Search index health reporting and explicit repair for SQLite FTS/vector drift,
+  including pending/stale provider vectors.
 - SQLite read-audit snapshots for read-path purity checks. The runtime uses
   trigger-backed table revisions for durable tables and content digests for FTS
   indexes, not only row counts, to catch accidental writes during `prepareTurn`,
@@ -281,7 +289,7 @@ gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
 npm run gate:pr
 npm run release:evidence -- --output-dir ./release-evidence/alpha-local
 gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format json --require-convergence --progress
-gmos repair --db ./gmos.db --search-index
+gmos repair --db ./gmos.db --search-index --dry-run --vector-batch-size 32
 gmos repair --db ./gmos.db --associations
 ```
 
@@ -399,6 +407,10 @@ yet expose full event hooks. They are intentionally not raw database access:
 - `search()` defaults to `purpose: "context"`, which hides sensitive memory
   unless `includeSensitive` is explicitly set and hides person memory unless
   `includePerson` is explicitly set.
+- `search({ retrieval: { embedQuery: true } })` is the explicit query-time
+  embedding escape hatch. Secret-like queries are never sent to the provider,
+  provider failures fall back to lexical vectors, and ordinary `prepareTurn`,
+  `reconstructContext`, and `search` calls do not call the provider.
 
 The CLI also supports portable memory snapshot migration and profile backup:
 

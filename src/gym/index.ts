@@ -261,6 +261,10 @@ function createEmptyResult(options: NormalizedRunMemoryGymOptions): MutableGymRe
     gateResults: [],
     details: [],
     scenarios: [],
+    recallQuality: {
+      schema: "gmos.recall_quality.v1",
+      fixtureGroups: [],
+    },
     coverageMatrix: [],
     memoryStackCoverage: [],
     runManifest: {
@@ -335,6 +339,51 @@ function generatedSeedNames(raw: number | string[] | undefined): string[] {
     throw new Error("generatedSeeds must be a positive integer or non-empty string array");
   }
   return Array.from({ length: count }, (_, index) => `generated-${index + 1}`);
+}
+
+interface GymEmbeddingProvider {
+  name: string;
+  dimensions: number;
+  calls: string[][];
+  failNext: boolean;
+  embed(texts: string[]): Promise<number[][]>;
+}
+
+function createGymEmbeddingProvider(name = "gym-semantic-stub-v1"): GymEmbeddingProvider {
+  const provider: GymEmbeddingProvider = {
+    name,
+    dimensions: 4,
+    calls: [],
+    failNext: false,
+    async embed(texts: string[]): Promise<number[][]> {
+      provider.calls.push([...texts]);
+      if (provider.failNext) {
+        provider.failNext = false;
+        throw new Error("deterministic gym embedding failure");
+      }
+      return texts.map(gymEmbeddingVector);
+    },
+  };
+  return provider;
+}
+
+function gymEmbeddingVector(text: string): number[] {
+  const normalized = text.toLowerCase();
+  if (
+    normalized.includes("zephyr shuttle") ||
+    normalized.includes("launch transport") ||
+    normalized.includes("semantic recall target")
+  ) {
+    return [1, 0, 0, 0];
+  }
+  if (normalized.includes("reranker alpha")) return [0, 1, 0, 0];
+  if (normalized.includes("reranker beta")) return [0, 0.9, 0.1, 0];
+  if (normalized.includes("gate vector")) return [0, 0, 1, 0];
+  return [0, 0, 0, 1];
+}
+
+function hitRate(hits: number, total: number): number {
+  return total === 0 ? 0 : hits / total;
 }
 
 export interface RunMemoryGymOptions {
@@ -2457,6 +2506,360 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     generatedScores.push(passed ? 1 : 0);
     scenario(result, gateName, "generated", [gateName]);
   }
+
+  const fallbackRecallStore = createSqliteMemoryStore({ path: ":memory:" });
+  const fallbackRecallMemory = createMemoryOS({ profileId: "gym_m5_fallback", store: fallbackRecallStore });
+  const providerRecallStore = createSqliteMemoryStore({ path: ":memory:" });
+  const providerRecall = createGymEmbeddingProvider();
+  const providerRecallMemory = createMemoryOS({
+    profileId: "gym_m5_provider",
+    store: providerRecallStore,
+    embeddingProvider: providerRecall,
+  });
+  try {
+    await fallbackRecallMemory.add({
+      profileId: "gym_m5_fallback",
+      kind: "fact",
+      content: "The preferred deployment vehicle is Zephyr Shuttle.",
+    });
+    await providerRecallMemory.add({
+      profileId: "gym_m5_provider",
+      kind: "fact",
+      content: "The preferred deployment vehicle is Zephyr Shuttle.",
+    });
+    const fallbackSemantic = await fallbackRecallMemory.search({
+      profileId: "gym_m5_fallback",
+      query: "Which launch transport should we use?",
+    });
+    const providerSemantic = await providerRecallMemory.search({
+      profileId: "gym_m5_provider",
+      query: "Which launch transport should we use?",
+      retrieval: { embedQuery: true },
+    });
+    const fallbackHits = fallbackSemantic.some((entry) => entry.content.includes("Zephyr Shuttle")) ? 1 : 0;
+    const providerHits = providerSemantic.some((entry) => entry.content.includes("Zephyr Shuttle")) ? 1 : 0;
+    result.recallQuality.fixtureGroups.push({
+      group: "semantic_paraphrase",
+      fallbackHits,
+      providerHits,
+      total: 1,
+      fallbackHitRate: hitRate(fallbackHits, 1),
+      providerHitRate: hitRate(providerHits, 1),
+    });
+    gate(
+      result,
+      "semantic_provider_paraphrase_recall",
+      fallbackHits === 0 && providerHits === 1,
+      "provider-backed query embedding should recall a paraphrase that fallback lexical search misses",
+      "semantic_recall",
+    );
+    gate(
+      result,
+      "semantic_recall_quality_not_worse",
+      providerHits >= fallbackHits,
+      "provider recall-quality report should not regress deterministic fixtures",
+      "semantic_recall",
+    );
+  } finally {
+    await fallbackRecallMemory.close();
+    await providerRecallMemory.close();
+  }
+
+  const failureProvider = createGymEmbeddingProvider("gym-failure-stub-v1");
+  const failureStore = createSqliteMemoryStore({ path: ":memory:" });
+  const failureMemory = createMemoryOS({
+    profileId: "gym_m5_failure",
+    store: failureStore,
+    embeddingProvider: failureProvider,
+    extractor: () => ({
+      kind: "fact",
+      content: "Semantic recall target survives provider failure.",
+      confidence: 0.9,
+    }),
+  });
+  try {
+    failureProvider.failNext = true;
+    await failureMemory.observe({
+      type: "conversation.message",
+      profileId: "gym_m5_failure",
+      role: "user",
+      content: "Please remember the semantic recall target.",
+      createdAt: "2026-07-02T00:00:00.000Z",
+    });
+    const pendingHealth = failureStore.searchIndexStatus();
+    const repaired = await failureStore.repairSearchIndex({ vectorBatchSize: 8 });
+    const secondRepair = await failureStore.repairSearchIndex({ vectorBatchSize: 8 });
+    gate(
+      result,
+      "embedding_failure_pending_repair",
+      pendingHealth.vectorIndex?.pendingEntryCount === 1 &&
+        repaired.after.vectorIndex?.pendingEntryCount === 0 &&
+        secondRepair.vectorBackfill.candidateCount === 0,
+      "provider failure during observe should not block the write; repair backfills once and then no-ops",
+      "semantic_recall",
+    );
+  } finally {
+    await failureMemory.close();
+  }
+
+  const changeProviderA = createGymEmbeddingProvider("gym-provider-a");
+  const changeProviderB = createGymEmbeddingProvider("gym-provider-b");
+  const changeStore = createSqliteMemoryStore({ path: ":memory:" });
+  const changeMemory = createMemoryOS({
+    profileId: "gym_m5_provider_change",
+    store: changeStore,
+    embeddingProvider: changeProviderA,
+  });
+  try {
+    await changeMemory.add({
+      profileId: "gym_m5_provider_change",
+      kind: "fact",
+      content: "The provider change fixture uses Zephyr Shuttle.",
+    });
+    changeStore.configureEmbeddingProvider?.(changeProviderB);
+    const staleHealth = changeStore.searchIndexStatus();
+    const dryRunBefore = changeStore.readAuditSnapshot();
+    const dryRunRepair = await changeStore.repairSearchIndex({ dryRun: true, vectorBatchSize: 8 });
+    const dryRunAfter = changeStore.readAuditSnapshot();
+    const providerRepair = await changeStore.repairSearchIndex({ vectorBatchSize: 8 });
+    gate(
+      result,
+      "embedding_provider_change_repair",
+      staleHealth.vectorIndex?.staleProviderEntryCount === 1 &&
+        dryRunRepair.after.vectorIndex?.staleProviderEntryCount === 1 &&
+        JSON.stringify(dryRunBefore) === JSON.stringify(dryRunAfter) &&
+        providerRepair.after.vectorIndex?.staleProviderEntryCount === 0,
+      "provider name/dimension changes should mark vectors stale; dry-run writes nothing; repair rebuilds",
+      "semantic_recall",
+    );
+  } finally {
+    await changeMemory.close();
+  }
+
+  const privacyProvider = createGymEmbeddingProvider("gym-privacy-stub-v1");
+  const privacyStore = createSqliteMemoryStore({ path: ":memory:" });
+  const privacyMemory = createMemoryOS({
+    profileId: "gym_m5_privacy",
+    store: privacyStore,
+    embeddingProvider: privacyProvider,
+  });
+  try {
+    await privacyMemory.add({
+      profileId: "gym_m5_privacy",
+      kind: "fact",
+      content: "Mental health support plan should stay local fallback.",
+      sensitivity: "sensitive",
+    });
+    await privacyMemory.add({
+      profileId: "gym_m5_privacy",
+      kind: "person",
+      content: "PERSON: Privacy Fixture should stay local fallback.",
+      allowPerson: true,
+    });
+    await privacyMemory.observe({
+      type: "conversation.message",
+      profileId: "gym_m5_privacy",
+      role: "user",
+      content: "api key: sk-gymprivacysecret1234567890",
+    });
+    privacyProvider.calls.length = 0;
+    await privacyMemory.search({
+      profileId: "gym_m5_privacy",
+      query: "api key sk-gymprivacysecret1234567890",
+      retrieval: { embedQuery: true },
+    });
+    const sentTexts = privacyProvider.calls.flat();
+    gate(
+      result,
+      "embedding_privacy_defaults",
+      sentTexts.length === 0,
+      "sensitive, person, secret-like content and secret-like queries should not be sent to the provider by default",
+      "safety",
+    );
+  } finally {
+    await privacyMemory.close();
+  }
+
+  const gateProvider = createGymEmbeddingProvider("gym-gate-stub-v1");
+  const gateStore = createSqliteMemoryStore({ path: ":memory:" });
+  const gateMemory = createMemoryOS({
+    profileId: "gym_m5_gates",
+    store: gateStore,
+    embeddingProvider: gateProvider,
+  });
+  try {
+    await gateMemory.add({
+      profileId: "gym_m5_gates",
+      kind: "fact",
+      content: "gate vector active memory",
+      createdAt: "2026-07-02T00:00:00.000Z",
+    });
+    await gateMemory.add({
+      profileId: "gym_m5_gates",
+      kind: "fact",
+      content: "gate vector dormant memory",
+      createdAt: "2020-01-01T00:00:00.000Z",
+    });
+    const archived = await gateMemory.add({
+      profileId: "gym_m5_gates",
+      kind: "fact",
+      content: "gate vector archived memory",
+    });
+    await gateMemory.add({
+      profileId: "gym_m5_gates",
+      kind: "fact",
+      content: "gate vector forgotten memory",
+    });
+    await gateMemory.add({
+      profileId: "gym_m5_gates",
+      kind: "person",
+      content: "PERSON: gate vector person memory",
+      allowPerson: true,
+    });
+    await gateMemory.maintain({
+      profileId: "gym_m5_gates",
+      now: "2026-07-02T00:00:00.000Z",
+      phases: ["decay"],
+    });
+    await gateMemory.archive({
+      profileId: "gym_m5_gates",
+      id: archived.id,
+      reason: "gym gate archive",
+    });
+    await gateMemory.forget({
+      profileId: "gym_m5_gates",
+      query: "forgotten memory",
+    });
+    const gated = await gateMemory.search({
+      profileId: "gym_m5_gates",
+      query: "gate vector retrieval",
+      retrieval: { embedQuery: true },
+      limit: 12,
+    });
+    const gatedText = gated.map((entry) => entry.content).join("\n");
+    gate(
+      result,
+      "semantic_fusion_respects_visibility_gates",
+      gatedText.includes("gate vector active memory") &&
+        !gatedText.includes("dormant memory") &&
+        !gatedText.includes("archived memory") &&
+        !gatedText.includes("forgotten memory") &&
+        !gatedText.includes("person memory"),
+      "vector similarity should not resurface dormant, archived, forgotten, or person memories",
+      "safety",
+    );
+  } finally {
+    await gateMemory.close();
+  }
+
+  let rerankerKeepId = "";
+  const rerankerStore = createSqliteMemoryStore({ path: ":memory:" });
+  const rerankerMemory = createMemoryOS({
+    profileId: "gym_m5_reranker",
+    store: rerankerStore,
+    retrieval: {
+      reranker: () => [rerankerKeepId, "unknown_memory_id"],
+    },
+  });
+  const throwingRerankerStore = createSqliteMemoryStore({ path: ":memory:" });
+  const throwingRerankerMemory = createMemoryOS({
+    profileId: "gym_m5_reranker_throw",
+    store: throwingRerankerStore,
+    retrieval: {
+      reranker: () => {
+        throw new Error("deterministic reranker failure");
+      },
+    },
+  });
+  try {
+    const alpha = await rerankerMemory.add({
+      profileId: "gym_m5_reranker",
+      kind: "fact",
+      content: "reranker alpha memory",
+    });
+    const beta = await rerankerMemory.add({
+      profileId: "gym_m5_reranker",
+      kind: "fact",
+      content: "reranker beta memory",
+    });
+    rerankerKeepId = alpha.id;
+    const reranked = await rerankerMemory.search({
+      profileId: "gym_m5_reranker",
+      query: "reranker memory",
+      limit: 10,
+    });
+    await throwingRerankerMemory.add({
+      profileId: "gym_m5_reranker_throw",
+      kind: "fact",
+      content: "reranker alpha memory",
+    });
+    const thrownFallback = await throwingRerankerMemory.search({
+      profileId: "gym_m5_reranker_throw",
+      query: "reranker memory",
+      limit: 10,
+    });
+    gate(
+      result,
+      "retrieval_reranker_contract",
+      reranked.length === 1 &&
+        reranked[0]?.id === alpha.id &&
+        !reranked.some((entry) => entry.id === beta.id) &&
+        thrownFallback.length > 0,
+      "reranker may reorder/drop known ids, unknown ids are ignored, and failures fall back to fusion",
+      "semantic_recall",
+    );
+  } finally {
+    await rerankerMemory.close();
+    await throwingRerankerMemory.close();
+  }
+
+  const purityProvider = createGymEmbeddingProvider("gym-read-purity-stub-v1");
+  const purityStore = createSqliteMemoryStore({ path: ":memory:" });
+  const purityMemory = createMemoryOS({
+    profileId: "gym_m5_purity",
+    store: purityStore,
+    embeddingProvider: purityProvider,
+  });
+  try {
+    await purityMemory.add({
+      profileId: "gym_m5_purity",
+      kind: "fact",
+      content: "The read purity fixture uses Zephyr Shuttle.",
+    });
+    purityProvider.calls.length = 0;
+    await purityMemory.prepareTurn({
+      profileId: "gym_m5_purity",
+      messages: [{ role: "user", content: "read purity fixture" }],
+    });
+    await purityMemory.reconstructContext({
+      profileId: "gym_m5_purity",
+      query: "read purity fixture",
+    });
+    await purityMemory.search({
+      profileId: "gym_m5_purity",
+      query: "read purity fixture",
+    });
+    gate(
+      result,
+      "embedding_read_path_purity_default",
+      purityProvider.calls.length === 0,
+      "prepareTurn, reconstructContext, and search should not invoke the provider without explicit query embedding",
+      "read_purity",
+    );
+  } finally {
+    await purityMemory.close();
+  }
+
+  scenario(result, "semantic_recall_upgrade", "dev", [
+    "semantic_provider_paraphrase_recall",
+    "semantic_recall_quality_not_worse",
+    "embedding_failure_pending_repair",
+    "embedding_provider_change_repair",
+    "embedding_privacy_defaults",
+    "semantic_fusion_respects_visibility_gates",
+    "retrieval_reranker_contract",
+    "embedding_read_path_purity_default",
+  ]);
 
   const hostCompatibility = createHostAdapter({
     hostId: "sdk-memory-gym",

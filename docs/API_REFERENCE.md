@@ -29,6 +29,55 @@ const store = createSqliteMemoryStore({ path: "./gmos.db" });
 const memory = createMemoryOS({ profileId: "local-user", store });
 ```
 
+### Embedding Provider And Retrieval
+
+Hosts may pass `embeddingProvider` to `createMemoryOS()` or
+`createSqliteMemoryStore()`:
+
+```ts
+const embeddingProvider = {
+  name: "local-onnx-bge-small",
+  dimensions: 384,
+  async embed(texts: string[]) {
+    return texts.map((text) => embedLocally(text));
+  },
+};
+
+const store = createSqliteMemoryStore({ path: "./gmos.db", embeddingProvider });
+const memory = createMemoryOS({
+  profileId: "local-user",
+  store,
+  embeddingProvider,
+  retrieval: {
+    fusion: { fts: 1, vector: 1.2, association: 0.8 },
+    reranker: async (candidates) => candidates.map((candidate) => candidate.id),
+  },
+});
+```
+
+The provider receives batch input and returns order-preserving vectors with
+finite numbers and the configured dimension. gmOS normalizes vectors before
+storage. Provider failures do not block writes; gmOS stores a `local-hash-v1`
+fallback vector with pending status and explicit repair can backfill it.
+
+By default, only normal non-`person` memories are sent to the provider.
+`{ provider, embedSensitive: true }` and `{ provider, embedPerson: true }` are
+host opt-ins. Secret-like content and secret-like queries are never sent.
+
+Read paths do not call the provider unless the host explicitly enables query
+embedding:
+
+```ts
+await memory.search({
+  query: "semantic paraphrase",
+  retrieval: { embedQuery: true, queryEmbeddingTimeoutMs: 1000 },
+});
+```
+
+The same `retrieval` read option is available on `prepareTurn()` and
+`reconstructContext()`. Without it, provider-backed stores still use lexical FTS
+and local fallback vectors on reads.
+
 Lifecycle maintenance is configured on the runtime facade and runs only when the
 host explicitly calls `maintain()`:
 
@@ -591,6 +640,7 @@ gmos observe --db ./gmos.db --profile local --text "User opened the release plan
 gmos prepare --db ./gmos.db --profile local --text "How should you answer me?"
 gmos reconstruct --db ./gmos.db --profile local --text "What is the project next step?"
 gmos forget --db ./gmos.db --profile local --query "delete old project" --target-term "old project"
+gmos repair --db ./gmos.db --search-index --dry-run --vector-batch-size 32
 gmos evolution report --db ./gmos.db --profile local --format markdown
 gmos evolution apply --db ./gmos.db --profile local --proposal proposal_xxx --approved-by "Song Su" --yes
 gmos evolution revert --db ./gmos.db --application evidence_xxx --yes
@@ -604,6 +654,12 @@ Value-taking CLI options use the next space-separated token as the value. If
 that token is missing or starts with `--`, gmOS reports `<option> requires a
 value`. For path option values whose filename starts with `--`, pass
 `./--report.json` or an absolute path.
+
+`doctor` and `status` include `storage.searchIndex.vectorIndex` with
+`providerName`, `providerDimensions`, `embeddedEntryCount`,
+`pendingEntryCount`, and `staleProviderEntryCount`. `repairSearchIndex({
+dryRun, vectorBatchSize })` rebuilds FTS and backfills pending/stale vectors in
+a bounded batch; dry-run reports the same shape without writes.
 
 `gmos-inspect` emits content-safe local inspection reports. The default report
 prints counts, evidence eligibility/source summaries, row-count summaries,

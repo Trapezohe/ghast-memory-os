@@ -142,6 +142,7 @@ export interface PrepareTurnInput {
     recallPurpose?: ReconstructionRecallPurpose | undefined;
     reconstructionIntent?: ReconstructionIntentHint | undefined;
   } | undefined;
+  retrieval?: MemoryReadRetrievalOptions | undefined;
 }
 
 export interface EvidenceEvent {
@@ -478,6 +479,10 @@ export interface MemorySearchScoreComponents {
   confidence: number;
   retrievalScore: number;
   contentScore: number;
+  ftsScore?: number | undefined;
+  vectorScore?: number | undefined;
+  associationScore?: number | undefined;
+  fusionScore?: number | undefined;
   finalScore: number;
 }
 
@@ -494,6 +499,68 @@ export interface MemorySearchTraceDecision {
 export interface MemorySearchTraceCollector {
   recordMemorySearchDecision(decision: MemorySearchTraceDecision): void;
 }
+
+export type EmbeddingProvider =
+  | ((texts: string[]) => Promise<number[][]>)
+  | {
+      name: string;
+      dimensions: number;
+      embed(texts: string[]): Promise<number[][]>;
+    };
+
+export interface EmbeddingProviderConfig {
+  provider: EmbeddingProvider;
+  embedSensitive?: boolean | undefined;
+  embedPerson?: boolean | undefined;
+  timeoutMs?: number | undefined;
+}
+
+export interface MemoryVectorEmbedding {
+  providerName: string;
+  dimensions: number;
+  vector: number[];
+  status: "embedded" | "pending";
+}
+
+export interface QueryVectorEmbedding {
+  providerName: string;
+  dimensions: number;
+  vector: number[];
+}
+
+export interface MemoryRetrievalFusionWeights {
+  fts?: number | undefined;
+  vector?: number | undefined;
+  association?: number | undefined;
+}
+
+export interface MemoryRetrievalConfig {
+  fusion?: MemoryRetrievalFusionWeights | undefined;
+  reranker?: MemoryRetrievalReranker | undefined;
+}
+
+export interface MemoryReadRetrievalOptions {
+  embedQuery?: boolean | undefined;
+  queryEmbeddingTimeoutMs?: number | undefined;
+}
+
+export interface MemoryRetrievalRerankerCandidate {
+  id: string;
+  kind: MemoryKind;
+  snippet: string;
+  fusedScore: number;
+}
+
+export type MemoryRetrievalReranker =
+  | ((
+      candidates: MemoryRetrievalRerankerCandidate[],
+    ) => Promise<string[]> | string[])
+  | {
+      name?: string | undefined;
+      rerank(
+        candidates: MemoryRetrievalRerankerCandidate[],
+      ): Promise<string[]> | string[];
+    };
 
 export interface ExplainTurnInput extends PrepareTurnInput {
   maxExcluded?: number | undefined;
@@ -583,6 +650,7 @@ export interface ReconstructContextInput {
   temporalMode?: "auto" | "current" | "history" | undefined;
   recallPurpose?: ReconstructionRecallPurpose | undefined;
   reconstructionIntent?: ReconstructionIntentHint | undefined;
+  retrieval?: MemoryReadRetrievalOptions | undefined;
 }
 
 export interface ExplainEvidencePathInput extends ReconstructContextInput {
@@ -860,6 +928,7 @@ export interface LowLevelSearchInput {
   purpose?: "context" | "history" | "delete" | "manage" | undefined;
   includeSensitive?: boolean | undefined;
   includePerson?: boolean | undefined;
+  retrieval?: MemoryReadRetrievalOptions | undefined;
 }
 
 export interface LowLevelListMemoriesInput {
@@ -890,6 +959,8 @@ export interface MemorySearchInput {
   includePerson?: boolean | undefined;
   includeSecretLike?: boolean | undefined;
   trace?: MemorySearchTraceCollector | undefined;
+  retrieval?: MemoryRetrievalConfig | undefined;
+  queryEmbedding?: QueryVectorEmbedding | undefined;
 }
 
 export type MemoryAssociationTargetType = "memory" | "world_belief" | "task_trajectory";
@@ -973,6 +1044,7 @@ export interface AddMemoryInput {
   sourceEventId?: string | null | undefined;
   metadata?: Record<string, unknown> | undefined;
   createdAt?: string | undefined;
+  embedding?: MemoryVectorEmbedding | undefined;
 }
 
 export interface UpdateMemoryInput {
@@ -986,6 +1058,7 @@ export interface UpdateMemoryInput {
   sourceEventId?: string | null | undefined;
   metadata?: Record<string, unknown> | undefined;
   updatedAt?: string | undefined;
+  embedding?: MemoryVectorEmbedding | undefined;
 }
 
 export interface ArchiveMemoryInput {
@@ -1037,6 +1110,7 @@ export interface RecordConsolidationSummaryInput {
   sharedTags: string[];
   createdAt: string;
   metadata?: Record<string, unknown> | undefined;
+  embedding?: MemoryVectorEmbedding | undefined;
   belief?: {
     subject: string;
     predicate: string;
@@ -1061,6 +1135,7 @@ export interface RecordProcedureDistillationInput {
   clusterKey: string;
   createdAt: string;
   metadata?: Record<string, unknown> | undefined;
+  embedding?: MemoryVectorEmbedding | undefined;
 }
 
 export interface RecordProcedureDistillationResult {
@@ -1405,18 +1480,42 @@ export interface SearchIndexStatus {
     staleEntryCount: number;
     orphanEntryCount: number;
     duplicateEntryCount: number;
+    providerName: string;
+    providerDimensions: number;
+    embeddedEntryCount: number;
+    pendingEntryCount: number;
+    staleProviderEntryCount: number;
     dimensions: number;
   } | undefined;
 }
 
+export interface RepairSearchIndexInput {
+  dryRun?: boolean | undefined;
+  vectorBatchSize?: number | undefined;
+  now?: string | undefined;
+}
+
 export interface RepairSearchIndexResult {
   repaired: boolean;
+  dryRun: boolean;
   before: SearchIndexStatus;
   after: SearchIndexStatus;
   repairedAt: string;
+  vectorBackfill: {
+    batchSize: number;
+    candidateCount: number;
+    embeddedCount: number;
+    fallbackCount: number;
+    pendingCount: number;
+    staleProviderCount: number;
+    skippedCount: number;
+  };
 }
 
 export interface MemoryStore {
+  configureEmbeddingProvider?(
+    input: EmbeddingProvider | EmbeddingProviderConfig | undefined,
+  ): void;
   initialize(): Promise<void> | void;
   close(): Promise<void> | void;
   recordEvidence(input: RecordEvidenceInput): Promise<EvidenceEvent> | EvidenceEvent;
@@ -1486,7 +1585,9 @@ export interface MemoryStore {
   readAuditSnapshot?(): Promise<ReadAuditSnapshot> | ReadAuditSnapshot;
   schemaVersion?(): Promise<number> | number;
   searchIndexStatus?(): Promise<SearchIndexStatus> | SearchIndexStatus;
-  repairSearchIndex?(): Promise<RepairSearchIndexResult> | RepairSearchIndexResult;
+  repairSearchIndex?(
+    input?: RepairSearchIndexInput,
+  ): Promise<RepairSearchIndexResult> | RepairSearchIndexResult;
 }
 
 export interface MemoryOSOptions {
@@ -1495,6 +1596,8 @@ export interface MemoryOSOptions {
   extractor?: MemoryExtractor | undefined;
   consolidator?: MemoryConsolidator | undefined;
   procedureDistiller?: MemoryProcedureDistiller | undefined;
+  embeddingProvider?: EmbeddingProvider | EmbeddingProviderConfig | undefined;
+  retrieval?: MemoryRetrievalConfig | undefined;
   entityResolver?: EntityResolver | undefined;
   temporal?: {
     parser?: MemoryTemporalParser | undefined;

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const LOCAL_TEXT_VECTOR_DIMENSIONS = 384;
+export const LOCAL_TEXT_VECTOR_PROVIDER = "local-hash-v1";
 
 function hashFeature(feature: string): number {
   let hash = 2166136261;
@@ -77,6 +78,15 @@ export function localTextVector(text: string, dimensions = LOCAL_TEXT_VECTOR_DIM
   }
   const magnitude = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0));
   return magnitude > 0 ? vector.map((value) => Number((value / magnitude).toFixed(6))) : vector;
+}
+
+export function normalizeVector(vector: number[]): number[] {
+  if (vector.some((value) => !Number.isFinite(value))) {
+    throw new Error("gmOS vectors must contain only finite numbers");
+  }
+  const magnitude = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0));
+  if (magnitude <= 0) return vector.map(() => 0);
+  return vector.map((value) => Number((value / magnitude).toFixed(6)));
 }
 
 export function cosineSimilarity(left: number[], right: number[]): number {

@@ -148,6 +148,16 @@ export function renderMemoryGymMarkdown(report: MemoryGymResult): string {
     `Adversarial score: ${report.generalizationResult.adversarialScore.toFixed(2)}`,
     `Generalization gap: ${report.generalizationResult.generalizationGap.toFixed(2)}`,
     "",
+    "## Recall Quality",
+    "",
+    "| Group | Fallback | Provider | Total | Fallback hit-rate | Provider hit-rate |",
+    "| --- | ---: | ---: | ---: | ---: | ---: |",
+    ...report.recallQuality.fixtureGroups.map(
+      (row) =>
+        `| ${markdownCell(row.group)} | ${row.fallbackHits} | ${row.providerHits} | ${row.total} | ${row.fallbackHitRate.toFixed(2)} | ${row.providerHitRate.toFixed(2)} |`,
+    ),
+    ...(report.recallQuality.fixtureGroups.length === 0 ? ["| none | 0 | 0 | 0 | 0.00 | 0.00 |"] : []),
+    "",
     "## Coverage Matrix",
     "",
     "| Layer | Status | Evidence |",

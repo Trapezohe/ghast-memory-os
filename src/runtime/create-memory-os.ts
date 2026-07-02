@@ -25,6 +25,12 @@ import {
   resolveMemoryProcedureDistillationConfig,
   selectProcedureDistillationClusters,
 } from "../kernel/distillation.js";
+import {
+  embeddingForMemory,
+  embeddingForQuery,
+  queryEligibleForEmbeddingProvider,
+  resolveEmbeddingProviderConfig,
+} from "../kernel/embeddings.js";
 import { isReservedSpeakerIdentity } from "../kernel/person-identity.js";
 import { reconstructMemoryContext } from "../kernel/reconstruction.js";
 import {
@@ -65,12 +71,15 @@ import type {
   MemoryConsolidationResult,
   MemoryExtractionCandidate,
   MemoryKind,
+  MemoryReadRetrievalOptions,
+  MemorySearchInput,
   MemorySearchTraceCollector,
   MemorySearchTraceDecision,
   MemoryProcedureDistillationCandidate,
   MemoryProcedureDistillationCluster,
   MemoryProcedureDistillationResult,
   MemoryRecord,
+  MemoryRetrievalConfig,
   MemoryOS,
   MemoryOSOptions,
   ObserveResult,
@@ -543,6 +552,42 @@ function sourceEntityCuesForMemory(memory: MemoryRecord): string[] {
   return sourceMetadataEntityCues(memory.metadata);
 }
 
+function internalFusionScore(memory: MemoryRecord, fallback: number): number {
+  const value = (memory as MemoryRecord & { __gmosFusionScore?: unknown }).__gmosFusionScore;
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+async function callRetrievalReranker(input: {
+  retrieval: MemoryRetrievalConfig | undefined;
+  memories: MemoryRecord[];
+}): Promise<MemoryRecord[] | null> {
+  const reranker = input.retrieval?.reranker;
+  if (!reranker || input.memories.length === 0) return null;
+  try {
+    const candidates = input.memories.slice(0, 50).map((memory, index) => ({
+      id: memory.id,
+      kind: memory.kind,
+      snippet: redactForReport(memory.content).slice(0, 240),
+      fusedScore: internalFusionScore(memory, Math.max(0, input.memories.length - index)),
+    }));
+    const order = typeof reranker === "function"
+      ? await reranker(candidates)
+      : await reranker.rerank(candidates);
+    const allowed = new Map(input.memories.map((memory) => [memory.id, memory]));
+    const reranked: MemoryRecord[] = [];
+    const seen = new Set<string>();
+    for (const id of order) {
+      const memory = allowed.get(id);
+      if (!memory || seen.has(id)) continue;
+      seen.add(id);
+      reranked.push(memory);
+    }
+    return reranked;
+  } catch {
+    return null;
+  }
+}
+
 function eventKey(event: HostEvent): string {
   if (event.type === "conversation.message") {
     return [
@@ -942,12 +987,68 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   const lifecycle = resolveMemoryLifecycleConfig(options.lifecycle);
   const consolidation = resolveMemoryConsolidationConfig(options.consolidation);
   const distillation = resolveMemoryProcedureDistillationConfig(options.distillation);
+  const embeddingProvider = resolveEmbeddingProviderConfig(options.embeddingProvider);
+  const retrieval = options.retrieval;
   let initialized = false;
 
   async function initialize(): Promise<void> {
     if (initialized) return;
+    if (options.embeddingProvider && store.configureEmbeddingProvider) {
+      store.configureEmbeddingProvider(options.embeddingProvider);
+    }
     await store.initialize();
     initialized = true;
+  }
+
+  async function embeddingForRuntimeWrite(input: {
+    kind: MemoryKind;
+    sensitivity: Sensitivity;
+    content: string;
+  }) {
+    if (!embeddingProvider) return undefined;
+    return embeddingForMemory({
+      provider: embeddingProvider,
+      kind: input.kind,
+      sensitivity: input.sensitivity,
+      content: input.content,
+    });
+  }
+
+  async function queryEmbeddingForSearch(
+    query: string | undefined,
+    options: MemoryReadRetrievalOptions | undefined,
+  ) {
+    if (!query || options?.embedQuery !== true || !embeddingProvider) return undefined;
+    if (!queryEligibleForEmbeddingProvider(query)) return undefined;
+    const embedding = await embeddingForQuery({
+      provider: embeddingProvider,
+      query,
+      timeoutMs: options.queryEmbeddingTimeoutMs,
+    });
+    return embedding ?? undefined;
+  }
+
+  async function searchMemoriesWithRetrieval(
+    input: MemorySearchInput,
+    readRetrieval?: MemoryReadRetrievalOptions | undefined,
+  ): Promise<MemoryRecord[]> {
+    const queryEmbedding = await queryEmbeddingForSearch(input.query, readRetrieval);
+    const memories = await store.searchMemories({
+      ...input,
+      retrieval,
+      ...(queryEmbedding ? { queryEmbedding } : {}),
+    });
+    const reranked = await callRetrievalReranker({ retrieval, memories });
+    return reranked ?? memories;
+  }
+
+  function storeWithRetrieval(readRetrieval?: MemoryReadRetrievalOptions | undefined) {
+    return {
+      ...store,
+      searchMemories(input: MemorySearchInput) {
+        return searchMemoriesWithRetrieval(input, readRetrieval);
+      },
+    };
   }
 
   async function add(input: LowLevelAddMemoryInput): Promise<MemoryRecord> {
@@ -974,6 +1075,11 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       },
       createdAt,
     });
+    const embedding = await embeddingForRuntimeWrite({
+      kind,
+      sensitivity,
+      content,
+    });
     return publicMemoryRecord(await store.addMemory({
       profileId,
       kind,
@@ -985,6 +1091,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         lowLevelApi: true,
       },
       createdAt,
+      ...(embedding ? { embedding } : {}),
       ...(input.scope !== undefined ? { scope: input.scope } : {}),
       ...(input.confidence !== undefined ? { confidence: input.confidence } : {}),
     }), classifyRuntimeSensitivity);
@@ -1045,6 +1152,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       },
       createdAt: updatedAt,
     });
+    const embedding =
+      input.content !== undefined
+        ? await embeddingForRuntimeWrite({
+            kind,
+            sensitivity,
+            content,
+          })
+        : undefined;
     const updated = await updateMemory({
       profileId,
       id: input.id,
@@ -1060,6 +1175,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         lowLevelUpdatedAt: updatedAt,
       },
       updatedAt,
+      ...(embedding ? { embedding } : {}),
     });
     return updated ? publicMemoryRecord(updated, classifyRuntimeSensitivity) : updated;
   }
@@ -1108,14 +1224,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
 
   async function search(input: LowLevelSearchInput = {}): Promise<MemoryRecord[]> {
     await initialize();
-    return (await store.searchMemories({
+    return (await searchMemoriesWithRetrieval({
       profileId: profileIdFor(defaultProfileId, input.profileId),
       purpose: input.purpose ?? "context",
       ...(input.query !== undefined ? { query: input.query } : {}),
       ...(input.limit !== undefined ? { limit: input.limit } : {}),
       ...(input.includeSensitive !== undefined ? { includeSensitive: input.includeSensitive } : {}),
       ...(input.includePerson !== undefined ? { includePerson: input.includePerson } : {}),
-    })).map((memory) => publicMemoryRecord(memory, classifyRuntimeSensitivity));
+    }, input.retrieval)).map((memory) => publicMemoryRecord(memory, classifyRuntimeSensitivity));
   }
 
   async function list(input: LowLevelListMemoriesInput = {}): Promise<MemoryRecord[]> {
@@ -1312,17 +1428,23 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         sourceMetadata: candidateSourceMetadata,
         entityResolver: options.entityResolver,
       });
+      const memorySensitivity = memorySensitivityForCandidate({
+        eventSensitivity: sensitivity,
+        candidateContentSensitivity: candidateSensitivity,
+        candidateMetadataSensitivity,
+        candidateStructuredSensitivity,
+      });
+      const embedding = await embeddingForRuntimeWrite({
+        kind: writeCandidate.kind,
+        sensitivity: memorySensitivity,
+        content: writeCandidate.content,
+      });
       const memory = await store.addMemory({
         profileId,
         kind: writeCandidate.kind,
         content: writeCandidate.content,
         confidence: writeCandidate.confidence,
-        sensitivity: memorySensitivityForCandidate({
-          eventSensitivity: sensitivity,
-          candidateContentSensitivity: candidateSensitivity,
-          candidateMetadataSensitivity,
-          candidateStructuredSensitivity,
-        }),
+        sensitivity: memorySensitivity,
         sourceEventId: evidence.id,
         metadata: {
           ...sanitizeRuntimeExternalMemoryMetadata(
@@ -1335,6 +1457,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           ...(memoryEntityMentions.length > 0 ? { entityMentions: memoryEntityMentions } : {}),
         },
         createdAt: event.createdAt,
+        ...(embedding ? { embedding } : {}),
       });
       result.memoryIds.push(memory.id);
       if (writeCandidate.predicate && subject) {
@@ -1422,14 +1545,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       classifyRuntimeSensitivity,
     );
     const hideTaskRetrievalHints = displayQuery !== query || privateRouteSignals.length > 0;
-    const memories = sourceScopedMemories(await store.searchMemories({
+    const memories = sourceScopedMemories(await searchMemoriesWithRetrieval({
       profileId,
       query,
       limit: 12,
       purpose: "context",
       includeSensitive: input.includeSensitive,
       ...(trace ? { trace } : {}),
-    }), query);
+    }, input.retrieval), query);
     const actionPolicies = await store.listActionPolicies(profileId, {
       includeSensitive: input.includeSensitive,
     });
@@ -1473,7 +1596,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const reconstruction =
       input.reconstruction?.mode === "shadow"
         ? await reconstructMemoryContext({
-            store,
+            store: storeWithRetrieval(input.retrieval),
             defaultProfileId,
             cueExtractor: options.reconstruction?.cueExtractor,
             inferTemporalCuesFromText: options.reconstruction?.inferTemporalCuesFromText,
@@ -1599,7 +1722,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     await initialize();
     const before = await readAuditSnapshot(store);
     const reconstructed = await reconstructMemoryContext({
-      store,
+      store: storeWithRetrieval(input.retrieval),
       defaultProfileId,
       cueExtractor: options.reconstruction?.cueExtractor,
       inferTemporalCuesFromText: options.reconstruction?.inferTemporalCuesFromText,
@@ -1621,7 +1744,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     await initialize();
     const before = await readAuditSnapshot(store);
     const reconstructed = await reconstructMemoryContext({
-      store,
+      store: storeWithRetrieval(input.retrieval),
       defaultProfileId,
       cueExtractor: options.reconstruction?.cueExtractor,
       inferTemporalCuesFromText: options.reconstruction?.inferTemporalCuesFromText,
@@ -1863,6 +1986,11 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           input.report.consolidation.summaryMemories.push(summary);
           continue;
         }
+        const embedding = await embeddingForRuntimeWrite({
+          kind: normalized.normalized.kind,
+          sensitivity: contentSensitivity,
+          content: normalized.normalized.content,
+        });
         const result = await store.recordConsolidationSummary({
           profileId: input.profileId,
           kind: normalized.normalized.kind,
@@ -1876,6 +2004,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
             consolidationSource: "host_consolidator",
             ...(name ? { consolidatorName: name } : {}),
           },
+          ...(embedding ? { embedding } : {}),
           ...(normalized.normalized.subject &&
           normalized.normalized.predicate &&
           normalized.normalized.object
@@ -2032,6 +2161,11 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           input.report.distillation.summaryMemories.push(summary);
           continue;
         }
+        const embedding = await embeddingForRuntimeWrite({
+          kind: "procedure",
+          sensitivity: contentSensitivity,
+          content: normalized.normalized.content,
+        });
         const result = await store.recordProcedureDistillation({
           profileId: input.profileId,
           objective: cluster.objective,
@@ -2046,6 +2180,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
             distillationSource: "host_procedure_distiller",
             ...(name ? { procedureDistillerName: name } : {}),
           },
+          ...(embedding ? { embedding } : {}),
         });
         if (result.alreadyExists) {
           addDistillationSkipped(input.report, "already_distilled");
