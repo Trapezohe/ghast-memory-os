@@ -11,6 +11,11 @@ import {
 const root = path.resolve(import.meta.dirname, "..");
 const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
 const nodeBin = process.execPath;
+const statusCoreTables = [
+  "gmos_memories",
+  "gmos_evidence_events",
+  "gmos_failure_events",
+];
 
 function option(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -606,6 +611,162 @@ function validateInspectorContentSafety(stdout, forbiddenValues) {
   }
 }
 
+function validateStatusContentSafety(stdout, forbiddenValues) {
+  const report = JSON.parse(stdout);
+  if (report.framework !== "ghast-memory-os") {
+    throw new Error("unexpected status report shape");
+  }
+  if (report.profileId !== "[profile id redacted]") {
+    throw new Error("status report did not redact profileId");
+  }
+  const storage = report.storage;
+  if (!storage || storage.status !== "ok" || !nonNegativeInteger(storage.schemaVersion) || storage.schemaVersion < 1) {
+    throw new Error("status report did not include healthy storage metadata");
+  }
+  const rowCounts = storage.rowCounts;
+  if (
+    !rowCounts ||
+    Object.values(rowCounts).some((count) => !nonNegativeInteger(count)) ||
+    statusCoreTables.some((table) => !nonNegativeInteger(rowCounts[table]))
+  ) {
+    throw new Error("status report did not include numeric storage row counts");
+  }
+  const auditedTables = storage.readAudit?.auditedTables;
+  if (
+    !storage.readAudit ||
+    storage.readAudit.status !== "ok" ||
+    storage.readAudit.schema !== "gmos.read_audit_snapshot.v1" ||
+    !nonNegativeInteger(storage.readAudit.rowCountTotal) ||
+    !nonNegativeInteger(storage.readAudit.tableCount) ||
+    storage.readAudit.tableCount < statusCoreTables.length ||
+    !Array.isArray(auditedTables) ||
+    statusCoreTables.some((table) => !auditedTables.includes(table)) ||
+    !Array.isArray(storage.readAudit.missingTables) ||
+    storage.readAudit.missingTables.length !== 0 ||
+    storage.readAudit.hashesAvailable !== true
+  ) {
+    throw new Error("status report did not include healthy read audit");
+  }
+  const searchIndex = storage.searchIndex;
+  const vectorIndex = searchIndex?.vectorIndex;
+  if (
+    !searchIndex ||
+    searchIndex.status !== "ok" ||
+    !nonNegativeInteger(searchIndex.totalMemoryCount) ||
+    !nonNegativeInteger(searchIndex.indexedMemoryCount) ||
+    !nonNegativeInteger(searchIndex.activeMemoryCount) ||
+    !vectorIndex ||
+    vectorIndex.status !== "ok" ||
+    !nonNegativeInteger(vectorIndex.indexedMemoryCount)
+  ) {
+    throw new Error("status report did not include healthy search index");
+  }
+  if (
+    !report.failureSummary ||
+    report.failureSummary.status !== "ok" ||
+    !nonNegativeInteger(report.failureSummary.inspectedFailureCount)
+  ) {
+    throw new Error("status report did not include healthy failure summary");
+  }
+  if (
+    report.trustContract?.encrypted !== false ||
+    report.trustContract?.reportContainsMemoryContent !== false ||
+    report.trustContract?.readPathSideEffectsChecked !== true
+  ) {
+    throw new Error("status report did not expose safe local trust contract");
+  }
+  const runtimeTrust = report.runtimeInfo?.trustContract;
+  if (
+    report.runtimeInfo?.schema !== "gmos.runtime_info.v1" ||
+    runtimeTrust?.localFirst !== true ||
+    runtimeTrust?.defaultStorage !== "sqlite" ||
+    runtimeTrust?.encryptedByDefault !== false ||
+    runtimeTrust?.cloudRequired !== false
+  ) {
+    throw new Error("status report did not include runtime local-first contract");
+  }
+  for (const [index, value] of forbiddenValues.entries()) {
+    if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
+      throw new Error(`status report leaked forbidden value #${index + 1}`);
+    }
+  }
+}
+
+function selfTestStatusReport(overrides = {}) {
+  const {
+    storage,
+    rowCounts,
+    readAudit,
+    searchIndex,
+    vectorIndex,
+    failureSummary,
+    trustContract,
+    runtimeInfo,
+    runtimeTrustContract,
+    ...topLevelOverrides
+  } = overrides;
+  const baseRowCounts = Object.fromEntries(statusCoreTables.map((table) => [table, 1]));
+  return JSON.stringify({
+    framework: "ghast-memory-os",
+    profileId: "[profile id redacted]",
+    storage:
+      storage === null
+        ? null
+        : {
+            status: "ok",
+            schemaVersion: 7,
+            rowCounts: { ...baseRowCounts, ...rowCounts },
+            readAudit: {
+              status: "ok",
+              schema: "gmos.read_audit_snapshot.v1",
+              tableCount: statusCoreTables.length,
+              rowCountTotal: statusCoreTables.length,
+              auditedTables: statusCoreTables,
+              missingTables: [],
+              hashesAvailable: true,
+              ...readAudit,
+            },
+            searchIndex: {
+              status: "ok",
+              totalMemoryCount: 1,
+              indexedMemoryCount: 1,
+              activeMemoryCount: 1,
+              vectorIndex: {
+                status: "ok",
+                indexedMemoryCount: 1,
+                ...vectorIndex,
+              },
+              ...searchIndex,
+            },
+            ...storage,
+          },
+    failureSummary: {
+      status: "ok",
+      inspectedFailureCount: 0,
+      byKind: {},
+      ...failureSummary,
+    },
+    trustContract: {
+      encrypted: false,
+      reportContainsMemoryContent: false,
+      readPathSideEffectsChecked: true,
+      ...trustContract,
+    },
+    runtimeInfo: {
+      schema: "gmos.runtime_info.v1",
+      trustContract: {
+        localFirst: true,
+        defaultStorage: "sqlite",
+        encryptedByDefault: false,
+        cloudRequired: false,
+        ...runtimeTrustContract,
+      },
+      ...runtimeInfo,
+    },
+    ...topLevelOverrides,
+  });
+}
+
 function selfTestInspectorReport(overrides = {}) {
   const { counts, health, evidenceSummary, forgetSummary, ...topLevelOverrides } = overrides;
   const base = {
@@ -690,6 +851,15 @@ function expectInspectorValidationFailure(name, stdout) {
   throw new Error(`${name} unexpectedly passed`);
 }
 
+function expectStatusValidationFailure(name, stdout) {
+  try {
+    validateStatusContentSafety(stdout, ["secret-value"]);
+  } catch {
+    return;
+  }
+  throw new Error(`${name} unexpectedly passed`);
+}
+
 function selfTestCliVersionReport(expectedPackage, overrides = {}) {
   const { pkg, cli, trustContract, ...topLevelOverrides } = overrides;
   return JSON.stringify({
@@ -739,6 +909,7 @@ function runSelfTest() {
   const expectedPackage = readJson("package.json");
   validateSdkSmokeContentSafety(selfTestSdkSmokeReport(expectedPackage), ["secret-value"], expectedPackage);
   validateInspectorContentSafety(selfTestInspectorReport(), ["secret-value"]);
+  validateStatusContentSafety(selfTestStatusReport(), ["secret-value"]);
   validateCliVersionContentSafety(selfTestCliVersionReport(expectedPackage), ["consumer.db"], expectedPackage);
   expectSdkSmokeValidationFailure(
     "missing SDK trust contract",
@@ -896,6 +1067,27 @@ function runSelfTest() {
     "forbidden inspector value",
     selfTestInspectorReport({ query: "release note api key: [redacted_secret] secret-value" }),
   );
+  expectStatusValidationFailure("missing status storage", selfTestStatusReport({ storage: null }));
+  expectStatusValidationFailure(
+    "negative status row count",
+    selfTestStatusReport({ rowCounts: { gmos_memories: -1 } }),
+  );
+  expectStatusValidationFailure(
+    "missing status audited tables",
+    selfTestStatusReport({ readAudit: { auditedTables: [] } }),
+  );
+  expectStatusValidationFailure(
+    "unsafe status content flag",
+    selfTestStatusReport({ trustContract: { reportContainsMemoryContent: true } }),
+  );
+  expectStatusValidationFailure(
+    "missing status runtime trust",
+    selfTestStatusReport({ runtimeTrustContract: { localFirst: false } }),
+  );
+  expectStatusValidationFailure(
+    "forbidden status value",
+    selfTestStatusReport({ diagnostics: "secret-value" }),
+  );
   console.log(JSON.stringify({ ok: true, check: "release_evidence_self_test" }));
 }
 
@@ -935,22 +1127,7 @@ function recordStatusContentSafety(result, forbiddenValues) {
     command: "validate fresh_install_status_smoke stdout",
   };
   try {
-    const report = JSON.parse(result.stdout);
-    if (report.framework !== "ghast-memory-os") {
-      throw new Error("unexpected status report shape");
-    }
-    if (report.profileId !== "[profile id redacted]") {
-      throw new Error("status report did not redact profileId");
-    }
-    if (report.trustContract?.encrypted !== false) {
-      throw new Error("status report did not expose plaintext local trust contract");
-    }
-    const stdout = result.stdout;
-    for (const [index, value] of forbiddenValues.entries()) {
-      if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
-        throw new Error(`status report leaked forbidden value #${index + 1}`);
-      }
-    }
+    validateStatusContentSafety(result.stdout, forbiddenValues);
   } catch (error) {
     check.status = "fail";
     check.reason = error instanceof Error ? error.message : String(error);
