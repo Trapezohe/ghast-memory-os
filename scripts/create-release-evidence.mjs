@@ -61,6 +61,11 @@ function readJson(file) {
   return JSON.parse(readFileSync(path.join(root, file), "utf8"));
 }
 
+if (has("--self-test")) {
+  runSelfTest();
+  process.exit(0);
+}
+
 function compactTimestamp(date) {
   return date.toISOString().replace(/[-:]/gu, "").replace(/\.\d{3}Z$/u, "Z");
 }
@@ -409,79 +414,7 @@ function recordInspectorContentSafety(result, forbiddenValues) {
     command: "validate fresh_install_inspect_smoke stdout",
   };
   try {
-    const report = JSON.parse(result.stdout);
-    if (report.schema !== "gmos.inspect_report.v1") {
-      throw new Error("unexpected inspector report schema");
-    }
-    if (report.dbPath !== "[plaintext sqlite path redacted]") {
-      throw new Error("inspector report did not redact dbPath");
-    }
-    if (report.profileId !== "[profile id redacted]") {
-      throw new Error("inspector report did not redact profileId");
-    }
-    const forgetSummary = report.forgetSummary;
-    const health = report.health;
-    const evidenceSummary = report.evidenceSummary;
-    const counts = report.counts;
-    const nonNegativeInteger = (value) => Number.isInteger(value) && value >= 0;
-    if (
-      !forgetSummary ||
-      !nonNegativeInteger(forgetSummary.archivedMemories) ||
-      !nonNegativeInteger(forgetSummary.activeWorldBeliefResidue) ||
-      !nonNegativeInteger(forgetSummary.activeAssociationResidue) ||
-      !nonNegativeInteger(forgetSummary.derivedResidue) ||
-      forgetSummary.derivedResidue !==
-        forgetSummary.activeWorldBeliefResidue + forgetSummary.activeAssociationResidue
-    ) {
-      throw new Error("inspector report did not include numeric forgetSummary");
-    }
-    if (
-      !health ||
-      !nonNegativeInteger(health.evidenceEvents) ||
-      !nonNegativeInteger(health.memories) ||
-      !nonNegativeInteger(health.worldBeliefs) ||
-      !nonNegativeInteger(health.associations) ||
-      !nonNegativeInteger(health.taskTrajectories) ||
-      !nonNegativeInteger(health.failureEvents) ||
-      !nonNegativeInteger(health.memoryVectors) ||
-      !nonNegativeInteger(health.memoryVectorTerms) ||
-      health.evidenceEvents < 1 ||
-      health.memories < 1 ||
-      health.associations < 1
-    ) {
-      throw new Error("inspector report did not include numeric health signals");
-    }
-    if (
-      !counts ||
-      !nonNegativeInteger(counts.evidence) ||
-      !nonNegativeInteger(counts.activeMemories) ||
-      !nonNegativeInteger(counts.archivedMemories) ||
-      counts.evidence < 1 ||
-      counts.activeMemories < 1
-    ) {
-      throw new Error("inspector report did not include numeric top-level counts");
-    }
-    if (
-      !evidenceSummary ||
-      !nonNegativeInteger(evidenceSummary.inspected) ||
-      !nonNegativeInteger(evidenceSummary.eligibleForLongTermMemory) ||
-      !nonNegativeInteger(evidenceSummary.ineligibleForLongTermMemory) ||
-      evidenceSummary.inspected !== counts.evidence ||
-      evidenceSummary.inspected !== health.evidenceEvents ||
-      evidenceSummary.eligibleForLongTermMemory + evidenceSummary.ineligibleForLongTermMemory !==
-        evidenceSummary.inspected
-    ) {
-      throw new Error("inspector report did not include consistent evidence eligibility summary");
-    }
-    if (typeof report.query !== "string" || !report.query.includes("[redacted_secret]")) {
-      throw new Error("inspector report did not redact secret-like query");
-    }
-    const stdout = result.stdout;
-    for (const [index, value] of forbiddenValues.entries()) {
-      if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
-        throw new Error(`inspector report leaked forbidden value #${index + 1}`);
-      }
-    }
+    validateInspectorContentSafety(result.stdout, forbiddenValues);
   } catch (error) {
     check.status = "fail";
     check.reason = error instanceof Error ? error.message : String(error);
@@ -489,6 +422,184 @@ function recordInspectorContentSafety(result, forbiddenValues) {
     failAfterWriting(manifest, outputDir, `${check.name} failed`);
   }
   manifest.checks.push(check);
+}
+
+function nonNegativeInteger(value) {
+  return Number.isInteger(value) && value >= 0;
+}
+
+function validateInspectorContentSafety(stdout, forbiddenValues) {
+  const report = JSON.parse(stdout);
+  if (report.schema !== "gmos.inspect_report.v1") {
+    throw new Error("unexpected inspector report schema");
+  }
+  if (report.dbPath !== "[plaintext sqlite path redacted]") {
+    throw new Error("inspector report did not redact dbPath");
+  }
+  if (report.profileId !== "[profile id redacted]") {
+    throw new Error("inspector report did not redact profileId");
+  }
+  const forgetSummary = report.forgetSummary;
+  const health = report.health;
+  const evidenceSummary = report.evidenceSummary;
+  const counts = report.counts;
+  if (
+    !forgetSummary ||
+    !nonNegativeInteger(forgetSummary.archivedMemories) ||
+    !nonNegativeInteger(forgetSummary.activeWorldBeliefResidue) ||
+    !nonNegativeInteger(forgetSummary.activeAssociationResidue) ||
+    !nonNegativeInteger(forgetSummary.derivedResidue) ||
+    forgetSummary.derivedResidue !==
+      forgetSummary.activeWorldBeliefResidue + forgetSummary.activeAssociationResidue
+  ) {
+    throw new Error("inspector report did not include numeric forgetSummary");
+  }
+  if (
+    !health ||
+    !nonNegativeInteger(health.evidenceEvents) ||
+    !nonNegativeInteger(health.memories) ||
+    !nonNegativeInteger(health.worldBeliefs) ||
+    !nonNegativeInteger(health.associations) ||
+    !nonNegativeInteger(health.taskTrajectories) ||
+    !nonNegativeInteger(health.failureEvents) ||
+    !nonNegativeInteger(health.memoryVectors) ||
+    !nonNegativeInteger(health.memoryVectorTerms) ||
+    health.evidenceEvents < 1 ||
+    health.memories < 1 ||
+    health.associations < 1
+  ) {
+    throw new Error("inspector report did not include numeric health signals");
+  }
+  if (
+    !counts ||
+    !nonNegativeInteger(counts.evidence) ||
+    !nonNegativeInteger(counts.activeMemories) ||
+    !nonNegativeInteger(counts.archivedMemories) ||
+    counts.evidence < 1 ||
+    counts.activeMemories < 1
+  ) {
+    throw new Error("inspector report did not include numeric top-level counts");
+  }
+  if (
+    !evidenceSummary ||
+    !nonNegativeInteger(evidenceSummary.inspected) ||
+    !nonNegativeInteger(evidenceSummary.eligibleForLongTermMemory) ||
+    !nonNegativeInteger(evidenceSummary.ineligibleForLongTermMemory) ||
+    evidenceSummary.inspected !== counts.evidence ||
+    evidenceSummary.inspected !== health.evidenceEvents ||
+    evidenceSummary.eligibleForLongTermMemory + evidenceSummary.ineligibleForLongTermMemory !==
+      evidenceSummary.inspected
+  ) {
+    throw new Error("inspector report did not include consistent evidence eligibility summary");
+  }
+  if (typeof report.query !== "string" || !report.query.includes("[redacted_secret]")) {
+    throw new Error("inspector report did not redact secret-like query");
+  }
+  for (const [index, value] of forbiddenValues.entries()) {
+    if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
+      throw new Error(`inspector report leaked forbidden value #${index + 1}`);
+    }
+  }
+}
+
+function selfTestInspectorReport(overrides = {}) {
+  const { counts, health, evidenceSummary, forgetSummary, ...topLevelOverrides } = overrides;
+  const base = {
+    counts: {
+      evidence: 1,
+      activeMemories: 1,
+      archivedMemories: 0,
+    },
+    health: {
+      evidenceEvents: 1,
+      memories: 1,
+      worldBeliefs: 0,
+      associations: 1,
+      taskTrajectories: 0,
+      failureEvents: 0,
+      memoryVectors: 1,
+      memoryVectorTerms: 1,
+    },
+    evidenceSummary: {
+      inspected: 1,
+      eligibleForLongTermMemory: 1,
+      ineligibleForLongTermMemory: 0,
+    },
+    forgetSummary: {
+      archivedMemories: 0,
+      activeWorldBeliefResidue: 0,
+      activeAssociationResidue: 0,
+      derivedResidue: 0,
+    },
+  };
+  return JSON.stringify({
+    schema: "gmos.inspect_report.v1",
+    profileId: "[profile id redacted]",
+    dbPath: "[plaintext sqlite path redacted]",
+    query: "release note api key: [redacted_secret]",
+    counts: { ...base.counts, ...counts },
+    health: { ...base.health, ...health },
+    evidenceSummary: { ...base.evidenceSummary, ...evidenceSummary },
+    forgetSummary: { ...base.forgetSummary, ...forgetSummary },
+    ...topLevelOverrides,
+  });
+}
+
+function expectInspectorValidationFailure(name, stdout) {
+  try {
+    validateInspectorContentSafety(stdout, ["secret-value"]);
+  } catch {
+    return;
+  }
+  throw new Error(`${name} unexpectedly passed`);
+}
+
+function runSelfTest() {
+  validateInspectorContentSafety(selfTestInspectorReport(), ["secret-value"]);
+  expectInspectorValidationFailure(
+    "empty inspector report",
+    selfTestInspectorReport({
+      counts: { evidence: 0, activeMemories: 0, archivedMemories: 0 },
+      health: {
+        evidenceEvents: 0,
+        memories: 0,
+        worldBeliefs: 0,
+        associations: 0,
+        taskTrajectories: 0,
+        failureEvents: 0,
+        memoryVectors: 0,
+        memoryVectorTerms: 0,
+      },
+      evidenceSummary: {
+        inspected: 0,
+        eligibleForLongTermMemory: 0,
+        ineligibleForLongTermMemory: 0,
+      },
+    }),
+  );
+  expectInspectorValidationFailure(
+    "fractional inspector count",
+    selfTestInspectorReport({ health: { evidenceEvents: 1.5 } }),
+  );
+  expectInspectorValidationFailure(
+    "negative inspector count",
+    selfTestInspectorReport({ forgetSummary: { archivedMemories: -1 } }),
+  );
+  expectInspectorValidationFailure(
+    "inconsistent evidence summary",
+    selfTestInspectorReport({
+      evidenceSummary: {
+        inspected: 1,
+        eligibleForLongTermMemory: 0,
+        ineligibleForLongTermMemory: 0,
+      },
+    }),
+  );
+  expectInspectorValidationFailure(
+    "forbidden inspector value",
+    selfTestInspectorReport({ query: "release note api key: [redacted_secret] secret-value" }),
+  );
+  console.log(JSON.stringify({ ok: true, check: "release_evidence_self_test" }));
 }
 
 function recordDoctorContentSafety(result, forbiddenValues) {

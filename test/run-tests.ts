@@ -21956,6 +21956,13 @@ assert.match(invalidHost.stderr, /--host must be one of/);
 assert.equal(existsSync(invalidHostDb), false);
 
 const releaseEvidenceDir = path.join(tmp, "release-evidence-dry-run");
+const releaseEvidenceSelfTest = spawnSync(
+  process.execPath,
+  ["scripts/create-release-evidence.mjs", "--self-test"],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(releaseEvidenceSelfTest.status, 0, releaseEvidenceSelfTest.stderr);
+assert.match(releaseEvidenceSelfTest.stdout, /release_evidence_self_test/);
 const releaseEvidenceExtraWorkflow = path.join(
   process.cwd(),
   ".github",
