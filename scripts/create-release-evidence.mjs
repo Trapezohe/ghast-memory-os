@@ -171,8 +171,17 @@ function redactEvidenceText(value) {
     );
 }
 
-function commandForDisplay(command, args) {
-  return redactEvidenceText([command, ...args].join(" "));
+function displayCommandPart(value, cwd) {
+  if (!path.isAbsolute(value)) return value;
+  const rootRelative = path.relative(root, value);
+  if (!rootRelative.startsWith("..") && !path.isAbsolute(rootRelative)) {
+    return path.relative(cwd, value) || ".";
+  }
+  return path.basename(value);
+}
+
+function commandForDisplay(command, args, cwd = root) {
+  return redactEvidenceText([command, ...args].map((part) => displayCommandPart(part, cwd)).join(" "));
 }
 
 const redactionSelfCheck = redactEvidenceText(
@@ -352,7 +361,7 @@ function recordCommand(name, command, args, options = {}) {
   const check = {
     name,
     status: statusForResult(result),
-    command: commandForDisplay(command, args),
+    command: commandForDisplay(command, args, result.cwd),
     cwd: path.relative(root, result.cwd) || ".",
     durationMs: result.durationMs,
     exitStatus: result.status,
