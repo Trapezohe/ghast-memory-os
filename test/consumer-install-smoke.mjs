@@ -1262,6 +1262,8 @@ try {
   assert.equal(doctor.readAudit.status, "ok");
   assert.equal(doctor.readAudit.schema, "gmos.read_audit_snapshot.v1");
   assert.equal(doctor.readAudit.tableCount >= 10, true);
+  assert.equal(doctor.readAudit.auditedTables.includes("gmos_memories"), true);
+  assert.equal(doctor.readAudit.auditedTables.includes("gmos_evidence_events"), true);
   assert.equal(doctor.readAudit.hashesAvailable, true);
   assert.equal(Object.prototype.hasOwnProperty.call(doctor.readAudit, "stateHash"), false);
   assert.equal(doctor.searchIndex.status, "ok");

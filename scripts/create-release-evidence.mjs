@@ -720,7 +720,7 @@ function validateDoctorContentSafety(stdout, forbiddenValues) {
     throw new Error("doctor report did not include sqlite schema metadata");
   }
   validateCoreRowCounts(report.rowCounts, "doctor report");
-  validateReadAudit(report.readAudit, "doctor report");
+  validateReadAudit(report.readAudit, "doctor report", { requireAuditedTables: true });
   validateSearchIndex(report.searchIndex, "doctor report");
   if (report.hostCompatibility?.hostId !== "ghast" || report.hostCompatibility?.level !== "L4") {
     throw new Error("doctor report did not include expected ghast host compatibility");
@@ -771,6 +771,7 @@ function selfTestDoctorReport(overrides = {}) {
       schema: "gmos.read_audit_snapshot.v1",
       tableCount: statusCoreTables.length,
       rowCountTotal: statusCoreTables.length,
+      auditedTables: statusCoreTables,
       missingTables: [],
       hashesAvailable: true,
       ...readAudit,
@@ -1210,6 +1211,10 @@ function runSelfTest() {
   expectDoctorValidationFailure(
     "missing doctor read audit",
     selfTestDoctorReport({ readAudit: { missingTables: ["gmos_memories"] } }),
+  );
+  expectDoctorValidationFailure(
+    "missing doctor audited tables",
+    selfTestDoctorReport({ readAudit: { auditedTables: [] } }),
   );
   expectDoctorValidationFailure(
     "forbidden doctor value",

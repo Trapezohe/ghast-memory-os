@@ -295,11 +295,13 @@ function doctorReadAudit(snapshot: ReadAuditSnapshot | null) {
     };
   }
   const entries = Object.entries(snapshot.tables);
+  const auditedTables = entries.map(([table]) => table).sort();
   return {
     status: "ok",
     schema: snapshot.schema,
     tableCount: entries.length,
     rowCountTotal: entries.reduce((sum, [, table]) => sum + table.rowCount, 0),
+    auditedTables,
     missingTables: entries
       .filter(([, table]) => table.stateHash === "missing")
       .map(([table]) => table)

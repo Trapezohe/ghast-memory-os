@@ -20341,6 +20341,7 @@ for (const [host, expectedLevel] of [
       schema?: string;
       tableCount?: number;
       rowCountTotal?: number;
+      auditedTables?: string[];
       missingTables?: string[];
       hashesAvailable?: boolean;
       stateHash?: string;
@@ -20372,6 +20373,8 @@ for (const [host, expectedLevel] of [
   assert.equal(doctorJson.readAudit?.status, "ok");
   assert.equal(doctorJson.readAudit?.schema, "gmos.read_audit_snapshot.v1");
   assert.equal((doctorJson.readAudit?.tableCount ?? 0) >= 10, true);
+  assert.equal(doctorJson.readAudit?.auditedTables?.includes("gmos_memories"), true);
+  assert.equal(doctorJson.readAudit?.auditedTables?.includes("gmos_evidence_events"), true);
   assert.equal(doctorJson.readAudit?.hashesAvailable, true);
   assert.equal(doctorJson.readAudit?.stateHash, undefined);
   assert.equal(doctorJson.hostCompatibility?.level, expectedLevel);
@@ -20422,10 +20425,11 @@ assert.equal(readFileSync(doctorMarkdownFile, "utf8").trimEnd(), doctorMarkdown.
 assert.equal(readFileSync(doctorReportFile, "utf8").trimEnd(), doctorMarkdown.stdout.trimEnd());
 const doctorJsonFilePayload = JSON.parse(readFileSync(doctorJsonFile, "utf8")) as {
   runtimeInfo?: { schema?: string };
-  readAudit?: { stateHash?: string };
+  readAudit?: { auditedTables?: string[]; stateHash?: string };
   dbPath?: string;
 };
 assert.equal(doctorJsonFilePayload.runtimeInfo?.schema, "gmos.runtime_info.v1");
+assert.equal(doctorJsonFilePayload.readAudit?.auditedTables?.includes("gmos_memories"), true);
 assert.equal(doctorJsonFilePayload.readAudit?.stateHash, undefined);
 assert.equal(doctorJsonFilePayload.dbPath, "[plaintext sqlite path redacted]");
 assert.equal(readFileSync(doctorMarkdownFile, "utf8").includes(doctorMarkdownDbPath), false);
