@@ -139,21 +139,27 @@ function inspectCiPolicy() {
   };
 }
 
-function writeCommandLogs(logDir, name, result) {
+function writeCommandLogs(logDir, name, result, options = {}) {
   mkdirSync(logDir, { recursive: true });
   const safeName = name.replace(/[^a-z0-9_.-]+/giu, "-");
-  writeFileSync(path.join(logDir, `${safeName}.stdout.log`), redactEvidenceText(result.stdout));
-  writeFileSync(path.join(logDir, `${safeName}.stderr.log`), redactEvidenceText(result.stderr));
+  writeFileSync(
+    path.join(logDir, `${safeName}.stdout.log`),
+    redactEvidenceText(result.stdout, options.redactValues),
+  );
+  writeFileSync(
+    path.join(logDir, `${safeName}.stderr.log`),
+    redactEvidenceText(result.stderr, options.redactValues),
+  );
   return {
     stdoutLog: path.relative(root, path.join(logDir, `${safeName}.stdout.log`)),
     stderrLog: path.relative(root, path.join(logDir, `${safeName}.stderr.log`)),
   };
 }
 
-function redactEvidenceText(value) {
+function redactEvidenceText(value, extraValues = []) {
   const credentialKey =
     "api[\\s_.-]?key|access[\\s_.-]?token|refresh[\\s_.-]?token|id[\\s_.-]?token|client[\\s_.-]?secret|token|password|secret|auth(?:entication)?(?:[\\s_.-]?token)?|authorization|cookies?|credentials?(?:[\\s_.-]?id)?|session(?:[\\s_.-]?(?:id|token))?";
-  return value
+  let redacted = value
     .replace(/(^|[^A-Za-z0-9])sk-[A-Za-z0-9_-]{8,}(?=$|[^A-Za-z0-9])/gu, "$1[redacted_secret]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/giu, "Bearer [redacted_secret]")
     .replace(/\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/gu, "[redacted_secret]")
@@ -169,6 +175,14 @@ function redactEvidenceText(value) {
       new RegExp(`\\b(${credentialKey})\\b(\\s*["']?\\s*[:=]\\s*)(?!["'\\[])([^\\s"',}\\]\\)\\[]){8,}`, "giu"),
       "$1$2[redacted_secret]",
     );
+  for (const extraValue of extraValues ?? []) {
+    if (!extraValue) continue;
+    redacted = redacted.split(extraValue).join("[redacted_value]");
+    redacted = redacted
+      .split(JSON.stringify(extraValue).slice(1, -1))
+      .join("[redacted_value]");
+  }
+  return redacted;
 }
 
 function displayCommandPart(value, cwd) {
@@ -187,11 +201,19 @@ function commandForDisplay(command, args, cwd = root) {
 const redactionSelfCheck = redactEvidenceText(
   '{"token":"abcdefghijkl","ok":true} access_token=abcdefghijkl api_key_sk-redactorsecret1234567890 Bearer abcdefghijkl aaaaaaaaaa.bbbbbbbbbb.cccccccccc',
 );
+const extraRedactionSelfCheck = redactEvidenceText(
+  "plain profile fresh-install and path C:\\Users\\Example\\consumer.db secret sk-releaseevidencequerysecret1234567890",
+  ["fresh-install", "C:\\Users\\Example\\consumer.db", "sk-releaseevidencequerysecret"],
+);
 if (
   redactionSelfCheck.includes("abcdefghijkl") ||
   redactionSelfCheck.includes("sk-redactorsecret") ||
   redactionSelfCheck.includes("aaaaaaaaaa.bbbbbbbbbb.cccccccccc") ||
-  !redactionSelfCheck.includes('{"token":"[redacted_secret]","ok":true}')
+  !redactionSelfCheck.includes('{"token":"[redacted_secret]","ok":true}') ||
+  extraRedactionSelfCheck.includes("fresh-install") ||
+  extraRedactionSelfCheck.includes("consumer.db") ||
+  extraRedactionSelfCheck.includes("releaseevidencequerysecret") ||
+  extraRedactionSelfCheck.includes("1234567890")
 ) {
   throw new Error("release evidence redaction self-check failed");
 }
@@ -358,7 +380,9 @@ function recordCommand(name, command, args, options = {}) {
     npmCacheDir,
     env: options.env,
   });
-  const logs = writeCommandLogs(logDir, name, result);
+  const logs = writeCommandLogs(logDir, name, result, {
+    redactValues: options.redactLogValues,
+  });
   const check = {
     name,
     status: statusForResult(result),
@@ -408,7 +432,7 @@ function recordInspectorContentSafety(result, forbiddenValues) {
     }
     const stdout = result.stdout;
     for (const [index, value] of forbiddenValues.entries()) {
-      if (value && stdout.includes(value)) {
+      if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
         throw new Error(`inspector report leaked forbidden value #${index + 1}`);
       }
     }
@@ -632,36 +656,48 @@ if (skipFreshInstall) {
   recordCommand("fresh_install_cli_smoke", cliBin, ["version", "--format", "json"], {
     cwd: freshInstallDir,
   });
+  const doctorForbiddenValues = [
+    "consumer.db",
+    path.join(freshInstallDir, "consumer.db"),
+  ];
   const doctorResult = recordCommand(
     "fresh_install_doctor_smoke",
     cliBin,
     ["doctor", "--db", "consumer.db", "--host", "ghast", "--format", "json"],
     {
       cwd: freshInstallDir,
+      redactLogValues: doctorForbiddenValues,
     },
   );
-  recordDoctorContentSafety(doctorResult, [
+  recordDoctorContentSafety(doctorResult, doctorForbiddenValues);
+  const statusForbiddenValues = [
+    "fresh-install",
     "consumer.db",
     path.join(freshInstallDir, "consumer.db"),
-  ]);
+  ];
   const statusResult = recordCommand(
     "fresh_install_status_smoke",
     cliBin,
     ["status", "--db", "consumer.db", "--profile", "fresh-install", "--host", "ghast", "--format", "json"],
     {
       cwd: freshInstallDir,
+      redactLogValues: statusForbiddenValues,
     },
   );
-  recordStatusContentSafety(statusResult, [
-    "fresh-install",
-    "consumer.db",
-    path.join(freshInstallDir, "consumer.db"),
-  ]);
+  recordStatusContentSafety(statusResult, statusForbiddenValues);
   const inspectBin = path.join(
     "node_modules",
     ".bin",
     process.platform === "win32" ? "gmos-inspect.cmd" : "gmos-inspect",
   );
+  const inspectForbiddenValues = [
+    "fresh-install",
+    "consumer.db",
+    "Release note response style",
+    "summary first",
+    "sk-releaseevidencequerysecret",
+    freshInstallDbPath,
+  ];
   const inspectResult = recordCommand(
     "fresh_install_inspect_smoke",
     inspectBin,
@@ -677,14 +713,10 @@ if (skipFreshInstall) {
     ],
     {
       cwd: freshInstallDir,
+      redactLogValues: inspectForbiddenValues,
     },
   );
-  recordInspectorContentSafety(inspectResult, [
-    "Release note response style",
-    "summary first",
-    "sk-releaseevidencequerysecret",
-    freshInstallDbPath,
-  ]);
+  recordInspectorContentSafety(inspectResult, inspectForbiddenValues);
   recordFreshInstallDatabaseCleanup();
   manifest.artifacts.freshInstallDir = path.relative(root, freshInstallDir);
 }
