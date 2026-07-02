@@ -337,9 +337,9 @@ interface InspectReport {
 async function main(): Promise<void> {
   if (hasFlag("--help") || hasFlag("-h")) {
     process.stdout.write([
-      "Usage: gmos-inspect --db <path> [--profile <id>] [--query <text>] [--temporal-mode auto|current|history] [--format json|markdown] [--output-file <path>]",
+      "Usage: gmos-inspect --db <path> [--profile <id>] [--query <text>] [--temporal-mode auto|current|history] [--failure-limit <count>] [--format json|markdown] [--output-file <path>]",
       "",
-      "Creates a content-safe local inspection report with counts, evidence summaries, and optional reconstruction diagnostics.",
+      "Creates a content-safe local inspection report with counts, evidence summaries, failure summaries, and optional reconstruction diagnostics.",
       "The report does not print memory content, evidence text, table hashes, or context blocks.",
       "",
     ].join("\n"));

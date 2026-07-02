@@ -213,7 +213,7 @@ gmos observe --db ./gmos.db --profile local --text "User opened the release plan
 gmos prepare --db ./gmos.db --profile local --text "How should you answer me?"
 gmos reconstruct --db ./gmos.db --profile local --text "What is the project next step?"
 gmos forget --db ./gmos.db --profile local --query "delete old project" --target-term "old project"
-gmos-inspect --db ./gmos.db --profile local --query "project release" --temporal-mode current --format markdown
+gmos-inspect --db ./gmos.db --profile local --query "project release" --temporal-mode current --failure-limit 50 --format markdown
 gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
 ```
 
@@ -227,7 +227,7 @@ evidence eligibility/source summaries, row-count summaries, failure kind
 summaries, forget residue counts for archived-memory derived world-belief/association residue, and
 optional reconstruction diagnostics. Use `--temporal-mode current` or
 `--temporal-mode history` when inspecting current-state or historical recall
-behavior. The report does not print memory content, evidence
+behavior. Use `--failure-limit` to cap inspected failure events. The report does not print memory content, evidence
 text, raw query secrets, profile IDs, prompt context, table hashes, or private database paths. Use it for
 support bundles and local integration checks before building a host UI.
 

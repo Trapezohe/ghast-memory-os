@@ -17684,6 +17684,13 @@ assert.equal(cliStatusPayload.storage?.searchIndex?.missingEntryCount, 0);
 assert.equal(cliStatusPayload.failureSummary?.inspectedFailureCount, 3);
 assert.equal(cliStatusPayload.hostCompatibility?.level, "L4");
 assert.equal(cliStatus.stdout.includes("身份证"), false);
+const cliInspectHelp = spawnSync(
+  process.execPath,
+  [path.join(process.cwd(), "dist/cli/gmos-inspect.js"), "--help"],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliInspectHelp.status, 0, cliInspectHelp.stderr);
+assert.match(cliInspectHelp.stdout, /--failure-limit <count>/);
 await store.recordEvidence({
   profileId: "test",
   eventKey: "cli-inspect-unsafe-source-type",
