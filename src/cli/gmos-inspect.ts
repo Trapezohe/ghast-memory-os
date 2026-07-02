@@ -345,7 +345,7 @@ async function main(): Promise<void> {
     process.stdout.write([
       "Usage: gmos-inspect --db <path> [--profile <id>] [--query <text>] [--temporal-mode auto|current|history] [--evidence-limit <count>] [--failure-limit <count>] [--max-steps <count>] [--max-branch <count>] [--format json|markdown] [--output-file <path>]",
       "",
-      "Creates a content-safe local inspection report with counts, evidence summaries, failure summaries, and optional reconstruction diagnostics.",
+      "Creates a content-safe local inspection report with counts, health signals, evidence summaries, forget residue, failure summaries, and optional reconstruction counters.",
       "The report does not print memory content, evidence text, table hashes, or context blocks.",
       "",
     ].join("\n"));

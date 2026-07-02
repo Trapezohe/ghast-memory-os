@@ -17694,6 +17694,9 @@ assert.match(cliInspectHelp.stdout, /--evidence-limit <count>/);
 assert.match(cliInspectHelp.stdout, /--failure-limit <count>/);
 assert.match(cliInspectHelp.stdout, /--max-steps <count>/);
 assert.match(cliInspectHelp.stdout, /--max-branch <count>/);
+assert.match(cliInspectHelp.stdout, /health signals/);
+assert.match(cliInspectHelp.stdout, /forget residue/);
+assert.match(cliInspectHelp.stdout, /reconstruction counters/);
 await store.recordEvidence({
   profileId: "test",
   eventKey: "cli-inspect-unsafe-source-type",
