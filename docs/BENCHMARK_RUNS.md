@@ -10,18 +10,19 @@ Run date: 2026-07-02.
 Manifest completeness: full local release evidence bundle.
 
 - Package: `@ghast/memory@0.1.0-alpha.69`.
-- Git SHA: `3756ae347c90f733efb79d5b44a6978233c11eb8`.
+- Git SHA: `cb00da9ab420730f455b3a39c67b0bfacac8070a`.
 - Dirty worktree: `no`.
 - Command:
-  `npm run release:evidence -- --output-dir ./release-evidence/alpha69-3756ae3`.
+  `npm run release:evidence -- --output-dir ./release-evidence/alpha69-cb00da9`.
 - PR gate command: `npm run gate:pr`.
-- Release evidence checks: `28/28` pass.
+- Release evidence checks: `30/30` pass.
 - CI policy in the bundle: push trigger absent; remote CI is opt-in through
   `workflow_dispatch`.
 
 The release evidence bundle verified the local PR gate, npm pack tarball generation, fresh
 tarball install, SDK smoke, agent adapter smoke, host adapter smoke, local HTTP
-smoke, MCP smoke, CLI smoke, backup/restore smoke, report-only evolution smoke,
+smoke, MCP smoke, installed public CLI smoke for `gmos`, `ghast-memory`, and
+`gmos-inspect`, backup/restore smoke, report-only evolution smoke,
 doctor/status/inspector content-safety checks, and cleanup of generated
 plaintext SQLite and npm cache artifacts.
 The inspector check also verifies that `consumer.db`, `consumer.db-wal`, and
