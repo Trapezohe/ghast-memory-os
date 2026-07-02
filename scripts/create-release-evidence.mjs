@@ -404,28 +404,7 @@ function recordSdkSmokeContentSafety(result, forbiddenValues) {
     command: "validate fresh_install_sdk_smoke stdout",
   };
   try {
-    const report = JSON.parse(result.stdout);
-    if (
-      report.ok !== true ||
-      report.package?.name !== packageJson.name ||
-      report.package?.version !== packageJson.version ||
-      report.trustContract?.localFirst !== true ||
-      report.trustContract?.defaultStorage !== "sqlite" ||
-      report.trustContract?.encryptedByDefault !== false ||
-      report.trustContract?.cloudRequired !== false ||
-      report.mcpPrepareContextAvailable !== true ||
-      report.contextInjected !== true ||
-      !Number.isInteger(report.evidenceCount) ||
-      report.evidenceCount < 1
-    ) {
-      throw new Error("unexpected SDK smoke report shape");
-    }
-    const stdout = result.stdout;
-    for (const [index, value] of forbiddenValues.entries()) {
-      if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
-        throw new Error(`SDK smoke report leaked forbidden value #${index + 1}`);
-      }
-    }
+    validateSdkSmokeContentSafety(result.stdout, forbiddenValues, packageJson);
   } catch (error) {
     check.status = "fail";
     check.reason = error instanceof Error ? error.message : String(error);
@@ -433,6 +412,30 @@ function recordSdkSmokeContentSafety(result, forbiddenValues) {
     failAfterWriting(manifest, outputDir, `${check.name} failed`);
   }
   manifest.checks.push(check);
+}
+
+function validateSdkSmokeContentSafety(stdout, forbiddenValues, expectedPackage) {
+  const report = JSON.parse(stdout);
+  if (
+    report.ok !== true ||
+    report.package?.name !== expectedPackage.name ||
+    report.package?.version !== expectedPackage.version ||
+    report.trustContract?.localFirst !== true ||
+    report.trustContract?.defaultStorage !== "sqlite" ||
+    report.trustContract?.encryptedByDefault !== false ||
+    report.trustContract?.cloudRequired !== false ||
+    report.mcpPrepareContextAvailable !== true ||
+    report.contextInjected !== true ||
+    !Number.isInteger(report.evidenceCount) ||
+    report.evidenceCount < 1
+  ) {
+    throw new Error("unexpected SDK smoke report shape");
+  }
+  for (const [index, value] of forbiddenValues.entries()) {
+    if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
+      throw new Error(`SDK smoke report leaked forbidden value #${index + 1}`);
+    }
+  }
 }
 
 function validateCliVersionContentSafety(stdout, forbiddenValues, expectedPackage) {
@@ -646,6 +649,38 @@ function selfTestInspectorReport(overrides = {}) {
   });
 }
 
+function selfTestSdkSmokeReport(expectedPackage, overrides = {}) {
+  const { pkg, trustContract, ...topLevelOverrides } = overrides;
+  return JSON.stringify({
+    ok: true,
+    package: {
+      name: expectedPackage.name,
+      version: expectedPackage.version,
+      ...pkg,
+    },
+    trustContract: {
+      localFirst: true,
+      defaultStorage: "sqlite",
+      encryptedByDefault: false,
+      cloudRequired: false,
+      ...trustContract,
+    },
+    mcpPrepareContextAvailable: true,
+    contextInjected: true,
+    evidenceCount: 1,
+    ...topLevelOverrides,
+  });
+}
+
+function expectSdkSmokeValidationFailure(name, stdout, expectedPackage) {
+  try {
+    validateSdkSmokeContentSafety(stdout, ["secret-value"], expectedPackage);
+  } catch {
+    return;
+  }
+  throw new Error(`${name} unexpectedly passed`);
+}
+
 function expectInspectorValidationFailure(name, stdout) {
   try {
     validateInspectorContentSafety(stdout, ["secret-value"]);
@@ -702,8 +737,49 @@ function expectEvolutionFailureKindsValidationFailure(name, report) {
 
 function runSelfTest() {
   const expectedPackage = readJson("package.json");
+  validateSdkSmokeContentSafety(selfTestSdkSmokeReport(expectedPackage), ["secret-value"], expectedPackage);
   validateInspectorContentSafety(selfTestInspectorReport(), ["secret-value"]);
   validateCliVersionContentSafety(selfTestCliVersionReport(expectedPackage), ["consumer.db"], expectedPackage);
+  expectSdkSmokeValidationFailure(
+    "missing SDK trust contract",
+    selfTestSdkSmokeReport(expectedPackage, { trustContract: { localFirst: undefined } }),
+    expectedPackage,
+  );
+  expectSdkSmokeValidationFailure(
+    "SDK cloud requirement",
+    selfTestSdkSmokeReport(expectedPackage, { trustContract: { cloudRequired: true } }),
+    expectedPackage,
+  );
+  expectSdkSmokeValidationFailure(
+    "SDK non-sqlite default storage",
+    selfTestSdkSmokeReport(expectedPackage, { trustContract: { defaultStorage: "cloud" } }),
+    expectedPackage,
+  );
+  expectSdkSmokeValidationFailure(
+    "SDK encrypted by default",
+    selfTestSdkSmokeReport(expectedPackage, { trustContract: { encryptedByDefault: true } }),
+    expectedPackage,
+  );
+  expectSdkSmokeValidationFailure(
+    "SDK missing MCP prepare context",
+    selfTestSdkSmokeReport(expectedPackage, { mcpPrepareContextAvailable: false }),
+    expectedPackage,
+  );
+  expectSdkSmokeValidationFailure(
+    "SDK missing context injection",
+    selfTestSdkSmokeReport(expectedPackage, { contextInjected: false }),
+    expectedPackage,
+  );
+  expectSdkSmokeValidationFailure(
+    "SDK empty evidence",
+    selfTestSdkSmokeReport(expectedPackage, { evidenceCount: 0 }),
+    expectedPackage,
+  );
+  expectSdkSmokeValidationFailure(
+    "forbidden SDK smoke value",
+    selfTestSdkSmokeReport(expectedPackage, { diagnostics: "secret-value" }),
+    expectedPackage,
+  );
   if (
     !hasExactFailureKinds({
       failureEvents: 2,
