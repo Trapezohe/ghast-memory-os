@@ -308,6 +308,8 @@ const logDir = path.join(outputDir, "logs");
 const packDir = path.join(outputDir, "pack");
 const freshInstallDir = path.join(outputDir, "fresh-install");
 const freshInstallDbPath = path.join(freshInstallDir, "consumer.db");
+const freshInstallHttpDbPath = path.join(freshInstallDir, "consumer-http.db");
+const freshInstallDbPaths = [freshInstallDbPath, freshInstallHttpDbPath];
 const npmCacheDir = path.join(outputDir, ".npm-cache");
 
 mkdirSync(outputDir, { recursive: true });
@@ -507,7 +509,9 @@ function recordStatusContentSafety(result, forbiddenValues) {
 }
 
 function cleanupFreshInstallDatabaseFiles() {
-  const files = ["", "-shm", "-wal"].map((suffix) => `${freshInstallDbPath}${suffix}`);
+  const files = freshInstallDbPaths.flatMap((dbPath) =>
+    ["", "-shm", "-wal"].map((suffix) => `${dbPath}${suffix}`),
+  );
   const errors = [];
   for (const file of files) {
     try {
@@ -530,7 +534,7 @@ function recordFreshInstallDatabaseCleanupIfNeeded(options = {}) {
   const check = {
     name: "fresh_install_plaintext_db_cleanup",
     status: "pass",
-    command: "remove generated fresh-install plaintext sqlite database",
+    command: "remove generated fresh-install plaintext sqlite databases",
   };
   const cleanup = cleanupFreshInstallDatabaseFiles();
   if (cleanup.leftover.length > 0 || cleanup.errors.length > 0) {
@@ -651,6 +655,77 @@ if (skipFreshInstall) {
   );
   recordCommand("fresh_install_sdk_smoke", nodeBin, [smokeFile], {
     cwd: freshInstallDir,
+  });
+  const httpSmokeFile = path.join(freshInstallDir, "fresh-install-http-smoke.mjs");
+  writeFileSync(
+    httpSmokeFile,
+    `
+      import { strict as assert } from "node:assert";
+      import path from "node:path";
+      import { createMemoryOS } from "@ghast/memory";
+      import { createMemoryHttpServer } from "@ghast/memory/http";
+      import { createSqliteMemoryStore } from "@ghast/memory/store/sqlite";
+
+      const store = createSqliteMemoryStore({ path: path.join(process.cwd(), "consumer-http.db") });
+      const memory = createMemoryOS({ profileId: "fresh-install-http", store });
+      const server = createMemoryHttpServer({
+        memory,
+        store,
+        profileId: "fresh-install-http",
+        host: "ghast",
+        authToken: "fresh-install-http-token",
+      });
+      const address = await server.listen();
+      try {
+        const health = await fetch(address.url + "/health");
+        assert.equal(health.status, 200);
+        const runtimeInfoWithoutToken = await fetch(address.url + "/runtime-info");
+        assert.equal(runtimeInfoWithoutToken.status, 401);
+        assert.equal((await runtimeInfoWithoutToken.text()).includes("fresh-install-http-token"), false);
+        const add = await fetch(address.url + "/add", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer fresh-install-http-token",
+          },
+          body: JSON.stringify({
+            profileId: "fresh-install-http",
+            kind: "preference",
+            content: "Fresh install HTTP route prefers release evidence.",
+          }),
+        });
+        assert.equal(add.status, 200);
+        const reconstructed = await fetch(address.url + "/reconstruct", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer fresh-install-http-token",
+          },
+          body: JSON.stringify({
+            profileId: "fresh-install-http",
+            text: "release evidence route",
+            temporalMode: "current",
+          }),
+        });
+        assert.equal(reconstructed.status, 200);
+        const reconstructedBody = await reconstructed.json();
+        assert.equal(reconstructedBody.reconstructed.paths.length > 0, true);
+        assert.equal(JSON.stringify(reconstructedBody).includes("fresh-install-http-token"), false);
+        console.log(JSON.stringify({ ok: true, route: "POST /reconstruct" }));
+      } finally {
+        await server.close();
+        await memory.close();
+      }
+    `,
+  );
+  recordCommand("fresh_install_http_smoke", nodeBin, [httpSmokeFile], {
+    cwd: freshInstallDir,
+    redactLogValues: [
+      "fresh-install-http",
+      "fresh-install-http-token",
+      "consumer-http.db",
+      freshInstallHttpDbPath,
+    ],
   });
   const cliBin = path.join("node_modules", ".bin", process.platform === "win32" ? "gmos.cmd" : "gmos");
   recordCommand("fresh_install_cli_smoke", cliBin, ["version", "--format", "json"], {
