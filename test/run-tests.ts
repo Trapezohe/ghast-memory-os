@@ -20194,7 +20194,10 @@ const escapedExternalMarkdown = renderExternalMemoryBenchmarkMarkdown({
       ...externalBenchmark.cases[0]!,
       id: "case|pipe",
       pass: false,
-      forbiddenMatches: ["line|break\nvalue"],
+      matched: {
+        ...externalBenchmark.cases[0]!.matched,
+        forbidden: ["line|break\nvalue"],
+      },
     },
   ],
 });
