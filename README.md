@@ -460,7 +460,7 @@ host must expose the right hooks to preserve full behavior:
   directive enforcement.
 - `search_only`: L1, recall-only and not a full Memory OS integration.
 
-Run `gmos doctor --host ghast --format markdown` to inspect runtime surface,
+Run `gmos doctor --db ./gmos.db --host ghast --format markdown` to inspect runtime surface,
 SQLite health, capability gaps, and hard-gate coverage.
 
 Host adapters can import existing memory snapshots through
