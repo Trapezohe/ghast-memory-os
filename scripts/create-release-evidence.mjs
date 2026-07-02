@@ -314,7 +314,8 @@ const packDir = path.join(outputDir, "pack");
 const freshInstallDir = path.join(outputDir, "fresh-install");
 const freshInstallDbPath = path.join(freshInstallDir, "consumer.db");
 const freshInstallHttpDbPath = path.join(freshInstallDir, "consumer-http.db");
-const freshInstallDbPaths = [freshInstallDbPath, freshInstallHttpDbPath];
+const freshInstallMcpDbPath = path.join(freshInstallDir, "consumer-mcp.db");
+const freshInstallDbPaths = [freshInstallDbPath, freshInstallHttpDbPath, freshInstallMcpDbPath];
 const npmCacheDir = path.join(outputDir, ".npm-cache");
 
 mkdirSync(outputDir, { recursive: true });
@@ -697,6 +698,40 @@ function recordHttpContentSafety(result, forbiddenValues) {
   manifest.checks.push(check);
 }
 
+function recordMcpContentSafety(result, forbiddenValues) {
+  const check = {
+    name: "fresh_install_mcp_content_safety",
+    status: "pass",
+    command: "validate fresh_install_mcp_smoke stdout",
+  };
+  try {
+    const report = JSON.parse(result.stdout);
+    if (
+      report.ok !== true ||
+      !Array.isArray(report.tools) ||
+      !report.tools.includes("memory.prepare_context") ||
+      !report.tools.includes("memory.commit_outcome") ||
+      !report.tools.includes("memory.record_feedback") ||
+      !Number.isInteger(report.failureEvents) ||
+      report.failureEvents < 2
+    ) {
+      throw new Error("unexpected MCP smoke report shape");
+    }
+    const stdout = result.stdout;
+    for (const [index, value] of forbiddenValues.entries()) {
+      if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
+        throw new Error(`MCP smoke report leaked forbidden value #${index + 1}`);
+      }
+    }
+  } catch (error) {
+    check.status = "fail";
+    check.reason = error instanceof Error ? error.message : String(error);
+    manifest.checks.push(check);
+    failAfterWriting(manifest, outputDir, `${check.name} failed`);
+  }
+  manifest.checks.push(check);
+}
+
 function cleanupFreshInstallDatabaseFiles() {
   const files = freshInstallDbPaths.flatMap((dbPath) =>
     ["", "-shm", "-wal"].map((suffix) => `${dbPath}${suffix}`),
@@ -959,6 +994,79 @@ if (skipFreshInstall) {
     redactLogValues: httpForbiddenValues,
   });
   recordHttpContentSafety(httpResult, httpForbiddenValues);
+  const mcpSmokeFile = path.join(freshInstallDir, "fresh-install-mcp-smoke.mjs");
+  writeFileSync(
+    mcpSmokeFile,
+    `
+      import { strict as assert } from "node:assert";
+      import path from "node:path";
+      import { createMemoryOS } from "@ghast/memory";
+      import { createMemoryMcpServer } from "@ghast/memory/mcp";
+      import { createSqliteMemoryStore } from "@ghast/memory/store/sqlite";
+
+      const store = createSqliteMemoryStore({ path: path.join(process.cwd(), "consumer-mcp.db") });
+      const memory = createMemoryOS({ profileId: "fresh-install-mcp", store });
+      const server = createMemoryMcpServer(memory);
+      try {
+        const tools = server.listTools().map((tool) => tool.name);
+        assert.equal(tools.includes("memory.prepare_context"), true);
+        assert.equal(tools.includes("memory.commit_outcome"), true);
+        assert.equal(tools.includes("memory.record_feedback"), true);
+        const runtimeInfo = await server.callTool("memory.runtime_info");
+        assert.equal(runtimeInfo.isError, undefined);
+        assert.equal(runtimeInfo.structuredContent.runtimeInfo.schema, "gmos.runtime_info.v1");
+        const add = await server.callTool("memory.add", {
+          profileId: "fresh-install-mcp",
+          kind: "preference",
+          content: "Fresh install MCP route prefers release evidence.",
+        });
+        assert.equal(add.isError, undefined);
+        const prepared = await server.callTool("memory.prepare_context", {
+          profileId: "fresh-install-mcp",
+          text: "release evidence route",
+          includeEvidence: true,
+        });
+        assert.equal(prepared.isError, undefined);
+        assert.match(JSON.stringify(prepared.structuredContent), /release evidence/);
+        const failedOutcome = await server.callTool("memory.commit_outcome", {
+          profileId: "fresh-install-mcp",
+          taskId: "fresh-install-mcp-task",
+          objective: "Verify fresh install MCP feedback tools.",
+          status: "failed",
+          summary: "Fresh install MCP route missed release evidence.",
+          failureKind: "controller_route_error",
+        });
+        assert.equal(failedOutcome.isError, undefined);
+        const feedback = await server.callTool("memory.record_feedback", {
+          profileId: "fresh-install-mcp",
+          content: "Fresh install MCP feedback should be recorded.",
+          failureKind: "wrong_recall",
+        });
+        assert.equal(feedback.isError, undefined);
+        const rowCounts = await store.rowCounts();
+        assert.equal(rowCounts.gmos_failure_events >= 2, true);
+        console.log(JSON.stringify({
+          ok: true,
+          tools: ["memory.prepare_context", "memory.commit_outcome", "memory.record_feedback"],
+          failureEvents: rowCounts.gmos_failure_events,
+        }));
+      } finally {
+        await memory.close();
+      }
+    `,
+  );
+  const mcpForbiddenValues = [
+    "fresh-install-mcp",
+    "consumer-mcp.db",
+    "Fresh install MCP route missed release evidence.",
+    "Fresh install MCP feedback should be recorded.",
+    freshInstallMcpDbPath,
+  ];
+  const mcpResult = recordCommand("fresh_install_mcp_smoke", nodeBin, [mcpSmokeFile], {
+    cwd: freshInstallDir,
+    redactLogValues: mcpForbiddenValues,
+  });
+  recordMcpContentSafety(mcpResult, mcpForbiddenValues);
   const cliBin = path.join("node_modules", ".bin", process.platform === "win32" ? "gmos.cmd" : "gmos");
   recordCommand("fresh_install_cli_smoke", cliBin, ["version", "--format", "json"], {
     cwd: freshInstallDir,

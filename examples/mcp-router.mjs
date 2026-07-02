@@ -66,6 +66,25 @@ try {
   );
   assert.equal(JSON.stringify(evidencePath.structuredContent).includes("contextBlock"), false);
 
+  const failedOutcome = await server.callTool("memory.commit_outcome", {
+    profileId,
+    taskId: "mcp-example-task",
+    objective: "Prepare MCP integration context",
+    status: "failed",
+    summary: "MCP adapter missed the evidence route during integration.",
+    failureKind: "controller_route_error",
+  });
+  assert.equal(failedOutcome.isError, undefined);
+
+  const feedback = await server.callTool("memory.record_feedback", {
+    profileId,
+    content: "MCP adapter should preserve feedback events for release checks.",
+    failureKind: "wrong_recall",
+  });
+  assert.equal(feedback.isError, undefined);
+  const rowCounts = await store.rowCounts();
+  assert.equal(rowCounts.gmos_failure_events >= 2, true);
+
   console.log(
     JSON.stringify(
       {
@@ -77,6 +96,7 @@ try {
         preparedHasPreference: preparedText.includes("evidence-backed context"),
         sensitiveOverrideRejected: sensitiveOverride.isError === true,
         evidencePathSchema: evidencePath.structuredContent.explanation.schema,
+        failureEvents: rowCounts.gmos_failure_events,
       },
       null,
       2,
