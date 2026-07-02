@@ -223,8 +223,8 @@ value`. For path option values whose filename starts with `--`, pass
 `./--report.json` or an absolute path.
 
 `gmos-inspect` emits a content-safe local inspection report. It reports counts,
-evidence eligibility/source summaries, row-count summaries, forget residue
-counts for archived-memory derived world-belief/association residue, and
+evidence eligibility/source summaries, row-count summaries, failure kind
+summaries, forget residue counts for archived-memory derived world-belief/association residue, and
 optional reconstruction diagnostics. Use `--temporal-mode current` or
 `--temporal-mode history` when inspecting current-state or historical recall
 behavior. The report does not print memory content, evidence

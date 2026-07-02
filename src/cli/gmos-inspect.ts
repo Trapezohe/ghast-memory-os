@@ -5,6 +5,7 @@ import path from "node:path";
 
 import Database from "better-sqlite3";
 
+import { createMemoryStatusReport, type MemoryFailureSummary } from "../diagnostics/index.js";
 import type { EvidenceEvent } from "../kernel/types.js";
 import { redactForReport, safePublicLabel, safePublicSensitivity } from "../kernel/safety.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
@@ -240,6 +241,13 @@ function renderMarkdown(report: InspectReport): string {
     `- active association residue: ${report.forgetSummary.activeAssociationResidue}`,
     `- derived residue: ${report.forgetSummary.derivedResidue}`,
     "",
+    "## Failure Summary",
+    "",
+    `- status: ${report.failureSummary.status}`,
+    `- inspected failures: ${report.failureSummary.inspectedFailureCount}`,
+    `- latest failure: ${report.failureSummary.latestAt ?? "none"}`,
+    `- failure kind counts: ${JSON.stringify(report.failureSummary.byKind)}`,
+    "",
     "## Health Signals",
     "",
     `- evidence events: ${report.health.evidenceEvents}`,
@@ -312,6 +320,7 @@ interface InspectReport {
     activeAssociationResidue: number;
     derivedResidue: number;
   };
+  failureSummary: MemoryFailureSummary;
   reconstruction: null | {
     pathCount: number;
     retrievedMemoryCount: number;
@@ -356,6 +365,13 @@ async function main(): Promise<void> {
       const activeMemories = await memory.list({ profileId, status: "active" });
       const archivedMemories = await memory.list({ profileId, status: "archived" });
       const rowCounts = await store.rowCounts();
+      const failureSummary = (
+        await createMemoryStatusReport({
+          store,
+          profileId,
+          failureLimit: numberValue("--failure-limit", 100),
+        })
+      ).failureSummary;
       const reconstructed = query
         ? await memory.reconstructContext({
             profileId,
@@ -383,6 +399,7 @@ async function main(): Promise<void> {
       health: healthSignals(rowCounts),
       evidenceSummary: evidenceSummary(evidence),
       forgetSummary: forgetSummary(inspectedDb.path, profileId),
+      failureSummary,
       reconstruction: reconstructed
         ? {
             pathCount: reconstructed.paths.length,

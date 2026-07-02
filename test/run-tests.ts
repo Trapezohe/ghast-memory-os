@@ -17906,6 +17906,11 @@ const cliInspectPayload = JSON.parse(cliInspect.stdout) as {
     activeAssociationResidue?: number;
     derivedResidue?: number;
   };
+  failureSummary?: {
+    inspectedFailureCount?: number;
+    byKind?: Record<string, number>;
+    latestAt?: string;
+  };
   reconstruction?: { pathCount?: number; retrievedMemoryCount?: number } | null;
 };
 assert.equal(cliInspectPayload.schema, "gmos.inspect_report.v1");
@@ -17938,6 +17943,11 @@ assert.equal(
   (cliInspectPayload.forgetSummary?.activeWorldBeliefResidue ?? 0) +
     (cliInspectPayload.forgetSummary?.activeAssociationResidue ?? 0),
 );
+assert.equal(cliInspectPayload.failureSummary?.inspectedFailureCount, 3);
+assert.equal(cliInspectPayload.failureSummary?.byKind?.wrong_recall, 1);
+assert.equal(cliInspectPayload.failureSummary?.byKind?.privacy_leak, 1);
+assert.equal(cliInspectPayload.failureSummary?.byKind?.task_failure, 1);
+assert.equal(typeof cliInspectPayload.failureSummary?.latestAt, "string");
 assert.equal(cliInspect.stdout.includes("身份证"), false);
 assert.equal(cliInspect.stdout.includes("sk-inspectquerysecret"), false);
 assert.equal(cliInspect.stdout.includes("Inspector residue memory"), false);
@@ -17980,10 +17990,13 @@ assert.match(cliInspectMarkdown.stdout, /# gmOS Inspect Report/);
 assert.match(cliInspectMarkdown.stdout, /## Health Signals/);
 assert.match(cliInspectMarkdown.stdout, /## Evidence Summary/);
 assert.match(cliInspectMarkdown.stdout, /## Forget Summary/);
+assert.match(cliInspectMarkdown.stdout, /## Failure Summary/);
 assert.match(cliInspectMarkdown.stdout, /profileId: `\[profile id redacted\]`/);
 assert.match(cliInspectMarkdown.stdout, /temporalMode: current/);
 assert.match(cliInspectMarkdown.stdout, /eligible for long-term memory:/);
 assert.match(cliInspectMarkdown.stdout, /derived residue:/);
+assert.match(cliInspectMarkdown.stdout, /inspected failures: 3/);
+assert.match(cliInspectMarkdown.stdout, /wrong_recall/);
 assert.match(cliInspectMarkdown.stdout, /world beliefs:/);
 assert.match(cliInspectMarkdown.stdout, /associations:/);
 assert.equal(cliInspectMarkdown.stdout.includes("身份证"), false);

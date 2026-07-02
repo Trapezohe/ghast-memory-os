@@ -653,6 +653,7 @@ function validateInspectorContentSafety(stdout, forbiddenValues) {
     throw new Error("inspector report did not redact profileId");
   }
   const forgetSummary = report.forgetSummary;
+  const failureSummary = report.failureSummary;
   const health = report.health;
   const evidenceSummary = report.evidenceSummary;
   const counts = report.counts;
@@ -666,6 +667,15 @@ function validateInspectorContentSafety(stdout, forbiddenValues) {
       forgetSummary.activeWorldBeliefResidue + forgetSummary.activeAssociationResidue
   ) {
     throw new Error("inspector report did not include numeric forgetSummary");
+  }
+  if (
+    !failureSummary ||
+    failureSummary.status !== "ok" ||
+    !nonNegativeInteger(failureSummary.inspectedFailureCount) ||
+    typeof failureSummary.byKind !== "object" ||
+    failureSummary.byKind === null
+  ) {
+    throw new Error("inspector report did not include healthy failure summary");
   }
   if (
     !health ||
@@ -919,7 +929,8 @@ function selfTestStatusReport(overrides = {}) {
 }
 
 function selfTestInspectorReport(overrides = {}) {
-  const { counts, health, evidenceSummary, forgetSummary, ...topLevelOverrides } = overrides;
+  const { counts, health, evidenceSummary, failureSummary, forgetSummary, ...topLevelOverrides } =
+    overrides;
   const base = {
     counts: {
       evidence: 1,
@@ -941,6 +952,11 @@ function selfTestInspectorReport(overrides = {}) {
       eligibleForLongTermMemory: 1,
       ineligibleForLongTermMemory: 0,
     },
+    failureSummary: {
+      status: "ok",
+      inspectedFailureCount: 0,
+      byKind: {},
+    },
     forgetSummary: {
       archivedMemories: 0,
       activeWorldBeliefResidue: 0,
@@ -956,6 +972,7 @@ function selfTestInspectorReport(overrides = {}) {
     counts: { ...base.counts, ...counts },
     health: { ...base.health, ...health },
     evidenceSummary: { ...base.evidenceSummary, ...evidenceSummary },
+    failureSummary: { ...base.failureSummary, ...failureSummary },
     forgetSummary: { ...base.forgetSummary, ...forgetSummary },
     ...topLevelOverrides,
   });
