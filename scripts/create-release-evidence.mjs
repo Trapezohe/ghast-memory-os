@@ -657,6 +657,7 @@ function validateInspectorContentSafety(stdout, forbiddenValues) {
   const health = report.health;
   const evidenceSummary = report.evidenceSummary;
   const counts = report.counts;
+  const reconstruction = report.reconstruction;
   const failureKindCounts =
     failureSummary && typeof failureSummary.byKind === "object" && failureSummary.byKind !== null
       ? Object.values(failureSummary.byKind)
@@ -724,6 +725,14 @@ function validateInspectorContentSafety(stdout, forbiddenValues) {
   }
   if (typeof report.query !== "string" || !report.query.includes("[redacted_secret]")) {
     throw new Error("inspector report did not redact secret-like query");
+  }
+  if (
+    !reconstruction ||
+    !nonNegativeInteger(reconstruction.stepCount) ||
+    !nonNegativeInteger(reconstruction.exploredCueCount) ||
+    !nonNegativeInteger(reconstruction.associationCount)
+  ) {
+    throw new Error("inspector report did not include numeric reconstruction counters");
   }
   for (const [index, value] of forbiddenValues.entries()) {
     if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
@@ -936,7 +945,7 @@ function selfTestStatusReport(overrides = {}) {
 }
 
 function selfTestInspectorReport(overrides = {}) {
-  const { counts, health, evidenceSummary, failureSummary, forgetSummary, ...topLevelOverrides } =
+  const { counts, health, evidenceSummary, failureSummary, forgetSummary, reconstruction, ...topLevelOverrides } =
     overrides;
   const base = {
     counts: {
@@ -970,6 +979,11 @@ function selfTestInspectorReport(overrides = {}) {
       activeAssociationResidue: 0,
       derivedResidue: 0,
     },
+    reconstruction: {
+      stepCount: 1,
+      exploredCueCount: 1,
+      associationCount: 1,
+    },
   };
   return JSON.stringify({
     schema: "gmos.inspect_report.v1",
@@ -981,6 +995,7 @@ function selfTestInspectorReport(overrides = {}) {
     evidenceSummary: { ...base.evidenceSummary, ...evidenceSummary },
     failureSummary: { ...base.failureSummary, ...failureSummary },
     forgetSummary: { ...base.forgetSummary, ...forgetSummary },
+    reconstruction: reconstruction === null ? null : { ...base.reconstruction, ...reconstruction },
     ...topLevelOverrides,
   });
 }
@@ -1265,6 +1280,18 @@ function runSelfTest() {
         byKind: { wrong_recall: -1 },
       },
     }),
+  );
+  expectInspectorValidationFailure(
+    "missing inspector reconstruction counters",
+    selfTestInspectorReport({ reconstruction: null }),
+  );
+  expectInspectorValidationFailure(
+    "missing inspector reconstruction count",
+    selfTestInspectorReport({ reconstruction: { stepCount: undefined } }),
+  );
+  expectInspectorValidationFailure(
+    "negative inspector reconstruction count",
+    selfTestInspectorReport({ reconstruction: { associationCount: -1 } }),
   );
   expectInspectorValidationFailure(
     "forbidden inspector value",
