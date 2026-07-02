@@ -85,6 +85,18 @@ try {
   assert.match(preparedText, /evidence-backed context/);
   assert.equal(preparedText.includes("local-example-token"), false);
 
+  const reconstructed = await jsonRequest("/reconstruct", {
+    method: "POST",
+    body: {
+      profileId,
+      text: "How should HTTP host integrations prepare context for me?",
+      temporalMode: "current",
+    },
+  });
+  assert.equal(reconstructed.response.status, 200);
+  assert.ok(reconstructed.body.reconstructed.paths.length > 0);
+  assert.equal(JSON.stringify(reconstructed.body).includes("local-example-token"), false);
+
   const status = await jsonRequest(`/status?profileId=${encodeURIComponent(profileId)}`);
   assert.equal(status.response.status, 200);
   assert.equal(status.body.report.storage.schemaVersion, 7);
@@ -100,6 +112,7 @@ try {
         unauthenticatedRuntimeInfoStatus: unauthenticatedRuntimeInfo.status,
         runtimeInfoSchema: runtimeInfo.body.runtimeInfo.schema,
         preparedHasPreference: preparedText.includes("evidence-backed context"),
+        reconstructedPathCount: reconstructed.body.reconstructed.paths.length,
         statusSchemaVersion: status.body.report.storage.schemaVersion,
         hostLevel: status.body.report.hostCompatibility.level,
       },

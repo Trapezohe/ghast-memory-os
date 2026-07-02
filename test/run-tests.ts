@@ -14426,6 +14426,17 @@ try {
   assert.match(httpEvidencePath.text, /gmos\.evidence_path_explanation\.v1/);
   assert.equal(httpEvidencePath.text.includes("contextBlock"), false);
   assert.match(httpEvidencePath.text, /plannerTrace/);
+  const httpReconstructed = await postJson(`${httpAddress.url}/reconstruct`, {
+    profileId: "http",
+    text: "compact memory contracts",
+    temporalMode: "current",
+  });
+  assert.equal(httpReconstructed.status, 200);
+  assert.match(httpReconstructed.text, /compact memory contracts/);
+  assert.equal(
+    ((httpReconstructed.body.reconstructed as { paths?: unknown[] }).paths ?? []).length > 0,
+    true,
+  );
   await postJson(`${httpAddress.url}/observe`, {
     profileId: "http",
     role: "user",
