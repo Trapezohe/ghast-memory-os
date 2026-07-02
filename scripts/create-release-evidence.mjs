@@ -420,14 +420,58 @@ function recordInspectorContentSafety(result, forbiddenValues) {
       throw new Error("inspector report did not redact profileId");
     }
     const forgetSummary = report.forgetSummary;
+    const health = report.health;
+    const evidenceSummary = report.evidenceSummary;
+    const counts = report.counts;
+    const nonNegativeInteger = (value) => Number.isInteger(value) && value >= 0;
     if (
       !forgetSummary ||
-      !Number.isFinite(forgetSummary.archivedMemories) ||
-      !Number.isFinite(forgetSummary.activeWorldBeliefResidue) ||
-      !Number.isFinite(forgetSummary.activeAssociationResidue) ||
-      !Number.isFinite(forgetSummary.derivedResidue)
+      !nonNegativeInteger(forgetSummary.archivedMemories) ||
+      !nonNegativeInteger(forgetSummary.activeWorldBeliefResidue) ||
+      !nonNegativeInteger(forgetSummary.activeAssociationResidue) ||
+      !nonNegativeInteger(forgetSummary.derivedResidue) ||
+      forgetSummary.derivedResidue !==
+        forgetSummary.activeWorldBeliefResidue + forgetSummary.activeAssociationResidue
     ) {
       throw new Error("inspector report did not include numeric forgetSummary");
+    }
+    if (
+      !health ||
+      !nonNegativeInteger(health.evidenceEvents) ||
+      !nonNegativeInteger(health.memories) ||
+      !nonNegativeInteger(health.worldBeliefs) ||
+      !nonNegativeInteger(health.associations) ||
+      !nonNegativeInteger(health.taskTrajectories) ||
+      !nonNegativeInteger(health.failureEvents) ||
+      !nonNegativeInteger(health.memoryVectors) ||
+      !nonNegativeInteger(health.memoryVectorTerms) ||
+      health.evidenceEvents < 1 ||
+      health.memories < 1 ||
+      health.associations < 1
+    ) {
+      throw new Error("inspector report did not include numeric health signals");
+    }
+    if (
+      !counts ||
+      !nonNegativeInteger(counts.evidence) ||
+      !nonNegativeInteger(counts.activeMemories) ||
+      !nonNegativeInteger(counts.archivedMemories) ||
+      counts.evidence < 1 ||
+      counts.activeMemories < 1
+    ) {
+      throw new Error("inspector report did not include numeric top-level counts");
+    }
+    if (
+      !evidenceSummary ||
+      !nonNegativeInteger(evidenceSummary.inspected) ||
+      !nonNegativeInteger(evidenceSummary.eligibleForLongTermMemory) ||
+      !nonNegativeInteger(evidenceSummary.ineligibleForLongTermMemory) ||
+      evidenceSummary.inspected !== counts.evidence ||
+      evidenceSummary.inspected !== health.evidenceEvents ||
+      evidenceSummary.eligibleForLongTermMemory + evidenceSummary.ineligibleForLongTermMemory !==
+        evidenceSummary.inspected
+    ) {
+      throw new Error("inspector report did not include consistent evidence eligibility summary");
     }
     if (typeof report.query !== "string" || !report.query.includes("[redacted_secret]")) {
       throw new Error("inspector report did not redact secret-like query");
