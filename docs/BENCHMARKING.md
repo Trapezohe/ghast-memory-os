@@ -36,7 +36,8 @@ npm run release:evidence -- --output-dir ./release-evidence/<version>-<short-sha
 
 The bundler requires a clean worktree by default, runs `gate:pr`, creates an npm
 tarball, installs that tarball into a fresh consumer project, runs minimal SDK,
-CLI doctor, CLI status, and inspector smoke checks from the installed package,
+agent adapter, local HTTP, MCP router, CLI doctor, CLI status, and inspector
+smoke checks from the installed package,
 and writes:
 
 - `manifest.json` with package version, git SHA, dirty status, runtime, CI

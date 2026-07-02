@@ -313,9 +313,15 @@ const logDir = path.join(outputDir, "logs");
 const packDir = path.join(outputDir, "pack");
 const freshInstallDir = path.join(outputDir, "fresh-install");
 const freshInstallDbPath = path.join(freshInstallDir, "consumer.db");
+const freshInstallAgentDbPath = path.join(freshInstallDir, "consumer-agent.db");
 const freshInstallHttpDbPath = path.join(freshInstallDir, "consumer-http.db");
 const freshInstallMcpDbPath = path.join(freshInstallDir, "consumer-mcp.db");
-const freshInstallDbPaths = [freshInstallDbPath, freshInstallHttpDbPath, freshInstallMcpDbPath];
+const freshInstallDbPaths = [
+  freshInstallDbPath,
+  freshInstallAgentDbPath,
+  freshInstallHttpDbPath,
+  freshInstallMcpDbPath,
+];
 const npmCacheDir = path.join(outputDir, ".npm-cache");
 
 mkdirSync(outputDir, { recursive: true });
@@ -700,6 +706,45 @@ function recordHttpContentSafety(result, forbiddenValues) {
   manifest.checks.push(check);
 }
 
+function recordAgentAdapterContentSafety(result, forbiddenValues) {
+  const check = {
+    name: "fresh_install_agent_adapter_content_safety",
+    status: "pass",
+    command: "validate fresh_install_agent_adapter_smoke stdout",
+  };
+  try {
+    const report = JSON.parse(result.stdout);
+    if (
+      report.ok !== true ||
+      report.adapter !== "agent" ||
+      !Number.isInteger(report.modelMessageCount) ||
+      report.modelMessageCount < 2 ||
+      !Number.isInteger(report.actionPolicyCount) ||
+      report.actionPolicyCount < 1 ||
+      !Number.isInteger(report.evidenceCount) ||
+      report.evidenceCount < 1 ||
+      !Number.isInteger(report.failureEvents) ||
+      report.failureEvents < 2 ||
+      !Number.isInteger(report.archivedMemoryCount) ||
+      report.archivedMemoryCount < 1
+    ) {
+      throw new Error("unexpected agent adapter smoke report shape");
+    }
+    const stdout = result.stdout;
+    for (const [index, value] of forbiddenValues.entries()) {
+      if (value && (stdout.includes(value) || stdout.includes(JSON.stringify(value).slice(1, -1)))) {
+        throw new Error(`agent adapter smoke report leaked forbidden value #${index + 1}`);
+      }
+    }
+  } catch (error) {
+    check.status = "fail";
+    check.reason = error instanceof Error ? error.message : String(error);
+    manifest.checks.push(check);
+    failAfterWriting(manifest, outputDir, `${check.name} failed`);
+  }
+  manifest.checks.push(check);
+}
+
 function recordMcpContentSafety(result, forbiddenValues) {
   const check = {
     name: "fresh_install_mcp_content_safety",
@@ -882,6 +927,138 @@ if (skipFreshInstall) {
   recordCommand("fresh_install_sdk_smoke", nodeBin, [smokeFile], {
     cwd: freshInstallDir,
   });
+  const agentAdapterSmokeFile = path.join(freshInstallDir, "fresh-install-agent-adapter-smoke.mjs");
+  writeFileSync(
+    agentAdapterSmokeFile,
+    `
+      import { strict as assert } from "node:assert";
+      import path from "node:path";
+      import { createMemoryOS } from "@ghast/memory";
+      import { createAgentMemoryAdapter } from "@ghast/memory/host";
+      import { createSqliteMemoryStore } from "@ghast/memory/store/sqlite";
+
+      const store = createSqliteMemoryStore({ path: path.join(process.cwd(), "consumer-agent.db") });
+      const structuredCandidates = [];
+      const memory = createMemoryOS({
+        profileId: "fresh-install-agent",
+        store,
+        extractor: {
+          name: "fresh-install-host-extractor",
+          extract() {
+            return structuredCandidates.shift() ?? [];
+          },
+        },
+        host: {
+          hostId: "fresh-install-agent-host",
+          capabilities: {
+            canObserveConversation: true,
+            canInjectSystemContext: true,
+            canEnforceHardDirectives: true,
+            canCommitTaskOutcomes: true,
+            canRecordUserFeedback: true,
+            canForget: true,
+            supportsActionPolicies: true,
+            supportsEvidenceInContext: true,
+          },
+        },
+      });
+      const adapter = createAgentMemoryAdapter({
+        memory,
+        profileId: "fresh-install-agent",
+        includeEvidence: true,
+        reconstruction: { mode: "shadow", maxSteps: 2, maxBranch: 3 },
+      });
+      try {
+        structuredCandidates.push([
+          {
+            kind: "preference",
+            content: "Agent release planning style: start with constraints.",
+            confidence: 0.9,
+            predicate: "user.preference",
+            subject: "user",
+            object: "constraint-first agent release planning",
+            actionPolicyKind: "prefer",
+          },
+        ]);
+        await adapter.observeMessage({
+          role: "user",
+          content: "Please use constraint-first release planning.",
+        });
+        structuredCandidates.push([
+          {
+            kind: "boundary",
+            content: "project:agent-release must wait for owner approval before execution.",
+            confidence: 0.95,
+            predicate: "boundary.do_not_push",
+            subject: "project:agent-release",
+            object: "release execution without owner approval",
+            actionPolicyKind: "do_not_push",
+          },
+        ]);
+        await adapter.observeMessage({
+          role: "user",
+          content: "project:agent-release must wait for owner approval before execution.",
+        });
+        const turn = await adapter.prepareTurn({
+          messages: [{ role: "user", content: "How should agent-release proceed?" }],
+          task: { intent: "release planning", topic: "project:agent-release" },
+        });
+        assert.equal(turn.modelMessages[0]?.role, "system");
+        assert.equal(turn.actionPolicies.length >= 1, true);
+        assert.equal(turn.prepared.evidence.length >= 1, true);
+        await adapter.commitOutcome({
+          taskId: "fresh-install-agent-task",
+          objective: "Verify fresh install agent adapter.",
+          status: "failed",
+          summary: "Fresh install agent adapter missed release memory.",
+          failureKind: "controller_route_error",
+        });
+        await adapter.recordFeedback({
+          content: "Fresh install agent adapter feedback should be recorded.",
+          failureKind: "wrong_recall",
+        });
+        const forgetResult = await adapter.forget({
+          query: "start with constraints",
+          reason: "fresh install smoke cleanup",
+        });
+        assert.equal(forgetResult.archivedMemoryIds.length >= 1, true);
+        const rowCounts = await store.rowCounts();
+        assert.equal(rowCounts.gmos_failure_events >= 2, true);
+        console.log(JSON.stringify({
+          ok: true,
+          adapter: "agent",
+          modelMessageCount: turn.modelMessages.length,
+          actionPolicyCount: turn.actionPolicies.length,
+          evidenceCount: turn.prepared.evidence.length,
+          failureEvents: rowCounts.gmos_failure_events,
+          archivedMemoryCount: forgetResult.archivedMemoryIds.length,
+        }));
+      } finally {
+        await memory.close();
+      }
+    `,
+  );
+  const agentAdapterForbiddenValues = [
+    "fresh-install-agent",
+    "consumer-agent.db",
+    "Agent release planning style",
+    "constraint-first",
+    "start with constraints",
+    "project:agent-release",
+    "Fresh install agent adapter missed release memory.",
+    "Fresh install agent adapter feedback should be recorded.",
+    freshInstallAgentDbPath,
+  ];
+  const agentAdapterResult = recordCommand(
+    "fresh_install_agent_adapter_smoke",
+    nodeBin,
+    [agentAdapterSmokeFile],
+    {
+      cwd: freshInstallDir,
+      redactLogValues: agentAdapterForbiddenValues,
+    },
+  );
+  recordAgentAdapterContentSafety(agentAdapterResult, agentAdapterForbiddenValues);
   const httpSmokeFile = path.join(freshInstallDir, "fresh-install-http-smoke.mjs");
   writeFileSync(
     httpSmokeFile,
