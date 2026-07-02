@@ -39,6 +39,8 @@ tarball, installs that tarball into a fresh consumer project, runs minimal SDK,
 agent adapter, host adapter, local HTTP, MCP router, installed public CLI smoke
 checks for `gmos`, `ghast-memory`, and `gmos-inspect`, plus backup/restore,
 evolution review, doctor, status, and inspector checks from the installed package,
+including content-safety, forget-residue, evidence eligibility, failure-summary,
+health, and reconstruction-counter validation,
 and writes:
 
 - `manifest.json` with package version, git SHA, dirty status, invocation
