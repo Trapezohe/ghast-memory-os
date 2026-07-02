@@ -687,6 +687,11 @@ function expectFailureKindsValidationFailure(name, report) {
   throw new Error(`${name} unexpectedly passed`);
 }
 
+function expectEvolutionFailureKindsValidationFailure(name, report) {
+  if (!hasExactEvolutionFailureKinds(report)) return;
+  throw new Error(`${name} unexpectedly passed`);
+}
+
 function runSelfTest() {
   const expectedPackage = readJson("package.json");
   validateInspectorContentSafety(selfTestInspectorReport(), ["secret-value"]);
@@ -714,6 +719,40 @@ function runSelfTest() {
   expectFailureKindsValidationFailure("wrong failure event count", {
     failureEvents: 3,
     failureKinds: ["controller_route_error", "wrong_recall"],
+  });
+  if (
+    !hasExactEvolutionFailureKinds({
+      sdkClusterCount: 2,
+      sdkFailureKinds: ["privacy_leak", "wrong_recall"],
+      cliInspectedFailureCount: 2,
+      cliFailureKinds: ["privacy_leak", "wrong_recall"],
+    })
+  ) {
+    throw new Error("exact evolution failure kind report unexpectedly failed");
+  }
+  expectEvolutionFailureKindsValidationFailure("missing SDK evolution failure kind", {
+    sdkClusterCount: 2,
+    sdkFailureKinds: ["privacy_leak"],
+    cliInspectedFailureCount: 2,
+    cliFailureKinds: ["privacy_leak", "wrong_recall"],
+  });
+  expectEvolutionFailureKindsValidationFailure("extra CLI evolution failure kind", {
+    sdkClusterCount: 2,
+    sdkFailureKinds: ["privacy_leak", "wrong_recall"],
+    cliInspectedFailureCount: 2,
+    cliFailureKinds: ["privacy_leak", "wrong_recall", "stale_pollution"],
+  });
+  expectEvolutionFailureKindsValidationFailure("reordered evolution failure kind", {
+    sdkClusterCount: 2,
+    sdkFailureKinds: ["wrong_recall", "privacy_leak"],
+    cliInspectedFailureCount: 2,
+    cliFailureKinds: ["privacy_leak", "wrong_recall"],
+  });
+  expectEvolutionFailureKindsValidationFailure("wrong CLI evolution failure count", {
+    sdkClusterCount: 2,
+    sdkFailureKinds: ["privacy_leak", "wrong_recall"],
+    cliInspectedFailureCount: 3,
+    cliFailureKinds: ["privacy_leak", "wrong_recall"],
   });
   expectCliVersionValidationFailure(
     "string cli binaries",
@@ -844,6 +883,21 @@ function hasExactFailureKinds(report) {
     report.failureKinds.length === 2 &&
     report.failureKinds[0] === "controller_route_error" &&
     report.failureKinds[1] === "wrong_recall"
+  );
+}
+
+function hasExactEvolutionFailureKinds(report) {
+  return (
+    report.sdkClusterCount === 2 &&
+    Array.isArray(report.sdkFailureKinds) &&
+    report.sdkFailureKinds.length === 2 &&
+    report.sdkFailureKinds[0] === "privacy_leak" &&
+    report.sdkFailureKinds[1] === "wrong_recall" &&
+    report.cliInspectedFailureCount === 2 &&
+    Array.isArray(report.cliFailureKinds) &&
+    report.cliFailureKinds.length === 2 &&
+    report.cliFailureKinds[0] === "privacy_leak" &&
+    report.cliFailureKinds[1] === "wrong_recall"
   );
 }
 
@@ -1007,14 +1061,7 @@ function recordEvolutionContentSafety(result, forbiddenValues) {
       report.cliMode !== "report_only" ||
       report.autoApply !== false ||
       report.autoRollout !== false ||
-      !Number.isInteger(report.sdkClusterCount) ||
-      report.sdkClusterCount !== 2 ||
-      !Array.isArray(report.sdkFailureKinds) ||
-      report.sdkFailureKinds.join(",") !== "privacy_leak,wrong_recall" ||
-      !Number.isInteger(report.cliInspectedFailureCount) ||
-      report.cliInspectedFailureCount !== 2 ||
-      !Array.isArray(report.cliFailureKinds) ||
-      report.cliFailureKinds.join(",") !== "privacy_leak,wrong_recall" ||
+      !hasExactEvolutionFailureKinds(report) ||
       report.sensitiveSampleRedacted !== true ||
       report.cliSensitiveSampleRedacted !== true
     ) {
