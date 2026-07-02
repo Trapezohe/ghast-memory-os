@@ -1008,9 +1008,13 @@ function recordEvolutionContentSafety(result, forbiddenValues) {
       report.autoApply !== false ||
       report.autoRollout !== false ||
       !Number.isInteger(report.sdkClusterCount) ||
-      report.sdkClusterCount < 2 ||
+      report.sdkClusterCount !== 2 ||
+      !Array.isArray(report.sdkFailureKinds) ||
+      report.sdkFailureKinds.join(",") !== "privacy_leak,wrong_recall" ||
       !Number.isInteger(report.cliInspectedFailureCount) ||
-      report.cliInspectedFailureCount < 2 ||
+      report.cliInspectedFailureCount !== 2 ||
+      !Array.isArray(report.cliFailureKinds) ||
+      report.cliFailureKinds.join(",") !== "privacy_leak,wrong_recall" ||
       report.sensitiveSampleRedacted !== true ||
       report.cliSensitiveSampleRedacted !== true
     ) {
@@ -1880,7 +1884,10 @@ if (skipFreshInstall) {
         assert.equal(sdkReport.mode, "report_only");
         assert.equal(sdkReport.autoApply, false);
         assert.equal(sdkReport.autoRollout, false);
-        assert.equal(sdkReport.clusters.length >= 2, true);
+        assert.equal(sdkReport.inspectedFailureCount, 2);
+        assert.equal(sdkReport.clusters.length, 2);
+        const sdkFailureKinds = sdkReport.clusters.map((cluster) => cluster.failureKind).sort();
+        assert.deepEqual(sdkFailureKinds, ["privacy_leak", "wrong_recall"]);
         const markdown = renderEvolutionFailureReviewMarkdown(sdkReport);
         assert.match(markdown, /gmOS Evolution Failure Review/);
         const sdkReportJson = JSON.stringify(sdkReport);
@@ -1912,7 +1919,10 @@ if (skipFreshInstall) {
         assert.equal(cliReport.mode, "report_only");
         assert.equal(cliReport.autoApply, false);
         assert.equal(cliReport.autoRollout, false);
-        assert.equal(cliReport.inspectedFailureCount >= 2, true);
+        assert.equal(cliReport.inspectedFailureCount, 2);
+        assert.equal(cliReport.clusters.length, 2);
+        const cliFailureKinds = cliReport.clusters.map((cluster) => cluster.failureKind).sort();
+        assert.deepEqual(cliFailureKinds, ["privacy_leak", "wrong_recall"]);
         const cliReportJson = JSON.stringify(cliReport);
         const cliPrivacyLeakSamples =
           cliReport.clusters.find((cluster) => cluster.failureKind === "privacy_leak")?.sampleContents ?? [];
@@ -1925,7 +1935,9 @@ if (skipFreshInstall) {
           autoApply: sdkReport.autoApply || cliReport.autoApply,
           autoRollout: sdkReport.autoRollout || cliReport.autoRollout,
           sdkClusterCount: sdkReport.clusters.length,
+          sdkFailureKinds,
           cliInspectedFailureCount: cliReport.inspectedFailureCount,
+          cliFailureKinds,
           sensitiveSampleRedacted: sdkPrivacyLeakSamples.includes("[redacted_sensitive_failure]"),
           cliSensitiveSampleRedacted: cliPrivacyLeakSamples.includes("[redacted_sensitive_failure]"),
         }));
