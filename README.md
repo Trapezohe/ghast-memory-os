@@ -132,9 +132,15 @@ npm run examples:quickstart
   compatibility use cases that cannot emit full host events.
 - Safety gates for secret-like content, incognito events, PERSON isolation,
   forgetting, and do-not-push action policies.
-- Built-in deterministic Memory Gym smoke benchmark.
+- Built-in deterministic Memory Gym smoke benchmark, including the
+  `experience_horizon` group for multi-week preference adherence, forgetting
+  compliance, contradiction resolution, and procedure reuse diagnostics.
 - Built-in release gate runner that combines Memory Gym, host compatibility,
   scale, and diagnostics checks for CI/release candidates.
+- External benchmark reports label their protocol explicitly:
+  `deterministic_local` for offline adapter baselines, or `official_protocol`
+  when a host supplies an SDK judge callback. The CLI refuses
+  `official_protocol` because it cannot provide a callback.
 - Host compatibility reports for Ghast, MCP, search-only, and mock L3 adapters.
 - Host memory snapshot import for adapters that need to project an existing
   memory store into gmOS.
@@ -164,9 +170,11 @@ npm run examples:quickstart
   provide a structured extractor, or explicitly import known memories with
   `add()`, for durable facts, preferences, boundaries, procedures, people, and
   project state.
-- External LongMemEval and LoCoMo numbers are deterministic local adapter
-  baselines for engineering comparison. Official benchmark claims require the
-  upstream protocol, fixed model/judge settings, and public reproduction data.
+- External LongMemEval and LoCoMo numbers are `deterministic_local` adapter
+  baselines for engineering comparison unless the report says
+  `protocol=official_protocol` and names a host-provided judge. Official
+  benchmark claims require the upstream protocol, fixed model/judge settings,
+  and public reproduction data.
 - STATE-Bench, Mem2ActBench, BEAM, and similar action-memory claims require
   their unchanged official runners before they should be presented as comparable
   benchmark results.
@@ -325,9 +333,9 @@ they do not call an external LLM.
 ## Benchmarking
 
 `gym run` is the deterministic SDK benchmark. It reports hard gates, coverage
-layers, a generalization view, diagnostic suggestions, and a run manifest. It
-does not run an LLM judge and should not be treated as proof of mature
-digital-twin capability.
+layers, a generalization view, the `experience_horizon` multi-week learning
+group, diagnostic suggestions, and a run manifest. It does not run an LLM judge
+and should not be treated as proof of mature digital-twin capability.
 
 `gym external` runs a local long-memory QA adapter over a user-provided file.
 gmOS supports its native deterministic JSONL format plus direct local adapters
@@ -336,8 +344,12 @@ for LongMemEval original/cleaned JSON/JSONL and LoCoMo JSON/JSONL through
 those datasets.
 
 External reports include strict deterministic scores, normalized evidence scores,
-timing, manifests, and failure-stage taxonomy for debugging extraction,
-grounding, reconstruction, context budget, temporal policy, and safety behavior.
+protocol labels, judge provenance, timing, manifests, and failure-stage taxonomy
+for debugging extraction, grounding, reconstruction, context budget, temporal
+policy, and safety behavior. `deterministic_local` is the default and stays
+fully offline. `official_protocol` is available through the SDK only when the
+host provides an async judge callback; gmOS does not make network calls and does
+not silently downgrade official runs to lexical scoring.
 See [benchmarking](./docs/BENCHMARKING.md) and
 [benchmark runs](./docs/BENCHMARK_RUNS.md) for scoring semantics, baseline
 snapshots, and claim rules.

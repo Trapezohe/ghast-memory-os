@@ -33,6 +33,9 @@ assert.equal(report.pass, true);
 assert.equal(report.caseCount, 3);
 assert.equal(report.strictScore, 1);
 assert.equal(report.normalizedEvidenceScore, 1);
+assert.equal(report.runManifest.protocol, "deterministic_local");
+assert.equal(report.runManifest.judgeProvenance.kind, "none");
+assert.equal(report.runManifest.scoreSemantics.protocol, "deterministic_local");
 assert.equal(report.runManifest.scoreSemantics.officialProtocol, "not_run");
 assert.equal(report.runManifest.scoreSemantics.comparableToOfficialScore, false);
 assert.equal(report.runManifest.deterministicOnly, true);
@@ -47,6 +50,8 @@ console.log(
       ok: true,
       fixture: "examples/external-mini-fixture.jsonl",
       datasetFormat: report.datasetFormat,
+      protocol: report.runManifest.protocol,
+      judgeName: report.runManifest.judgeProvenance.name,
       deterministicOnly: report.runManifest.deterministicOnly,
       officialProtocol: report.runManifest.scoreSemantics.officialProtocol,
       comparableToOfficialScore: report.runManifest.scoreSemantics.comparableToOfficialScore,

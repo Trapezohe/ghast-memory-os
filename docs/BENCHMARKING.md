@@ -56,7 +56,8 @@ flags exist only for local diagnostics and script smoke tests.
 
 ## Memory Gym
 
-Memory Gym checks SDK architecture and safety contracts:
+Memory Gym checks SDK architecture, safety contracts, and experience-learning
+horizon behavior:
 
 ```bash
 gmos gym run --db :memory: --generated-seeds 3 --format json
@@ -66,9 +67,16 @@ gmos gym scale --sizes 100,1000 --threshold-p95-ms 250 --format json
 
 It validates behavior such as preference recall, do-not-push policy,
 secret-like rejection, incognito exclusion, forget residue, read-path purity,
-active reconstruction, temporal current/history behavior, and host
-compatibility. It is an SDK engineering gate, not proof of mature digital
-twin capability.
+active reconstruction, temporal current/history behavior, host compatibility,
+and the default `experience_horizon` group.
+
+`experience_horizon` runs deterministic fixed-clock simulations across eight
+or more simulated weeks. The group checks preference reinforcement, boundary
+non-decay, unused low-confidence fact decay, full-surface forgetting residue,
+current-vs-history contradiction handling, and repeated procedure reuse. The
+report includes `experienceHorizon` with per-scenario pass/fail results,
+diagnostic counters, and a deterministic replay meta-gate. It is an SDK
+engineering gate, not proof of mature digital twin capability.
 
 ## External Adapters
 
@@ -83,6 +91,52 @@ reports. They must not write expected answers, forbidden/adversarial answers,
 evidence ids, category labels, `has_answer`, dataset names, case IDs, session
 ids, or adapter trace labels into runtime memory or evidence. Those fields may
 appear in benchmark reports and manifests only.
+
+Every external report carries a protocol label:
+
+- `deterministic_local`: default offline adapter scoring. This is the local
+  reproducible baseline and never calls a model judge.
+- `official_protocol`: host-provided judge scoring. This is available through
+  the SDK runner when the host passes a judge callback; gmOS never makes
+  network calls itself.
+
+The CLI can run `deterministic_local` only:
+
+```bash
+gmos gym external \
+  --input-file ./long-memory-cleaned.json \
+  --dataset-format longmemeval \
+  --protocol deterministic-local \
+  --format json
+```
+
+If `--protocol official-protocol` is passed to the CLI, the command refuses
+with a clear error instead of downgrading to lexical scoring.
+
+Host SDK official-protocol sketch:
+
+```ts
+import { runExternalMemoryBenchmark } from "@ghast/memory/gym";
+
+const report = await runExternalMemoryBenchmark({
+  cases,
+  protocol: "official_protocol",
+  judge: {
+    name: "host-fixed-judge-v1",
+    async judge(question, expectedAnswer, actualAnswer) {
+      return {
+        correct: await hostJudge(question, expectedAnswer, actualAnswer),
+        rationale: "host judge rationale",
+      };
+    },
+  },
+});
+```
+
+The judge receives only benchmark dataset content (`question`,
+`expectedAnswer`) plus the answer text produced by the gmOS runtime
+(`actualAnswer`). It does not receive gmOS memory ids, evidence ids, source
+metadata, profile ids, or store handles.
 
 Example:
 
@@ -116,7 +170,9 @@ score. Current baseline numbers belong in release evidence or a benchmark run
 archive with the git SHA, dataset hash, command, options, and failure samples.
 Older snapshots that lack those fields must mark them as not recorded.
 Do not treat local deterministic adapter scores as official LongMemEval or
-LoCoMo protocol scores. Datasets are not vendored in this repository. See
+LoCoMo protocol scores. Reports and manifests must show
+`protocol=deterministic_local`, `officialProtocol=not_run`, and
+`comparableToOfficialScore=false` for those baselines. Datasets are not vendored in this repository. See
 [benchmark runs](./BENCHMARK_RUNS.md) for tracked local baseline snapshots.
 
 ## Protocol Bridges
@@ -143,8 +199,9 @@ External reports should separate:
 
 - strict score;
 - normalized evidence score;
-- deterministic adapter score;
-- official protocol score;
+- deterministic adapter score (`protocol=deterministic_local`);
+- official protocol score (`protocol=official_protocol`, `officialProtocol=host_judge`);
+- judge provenance;
 - setup/runtime ingestion cost;
 - scoring runtime;
 - diagnostics runtime;
@@ -157,6 +214,9 @@ state, reconstruction, context composition, safety, action policy, or feedback.
 ## Claim Rules
 
 - Do not call deterministic adapter results official benchmark scores.
+- Do not quote a report as official unless its manifest says
+  `protocol=official_protocol`, `officialProtocol=host_judge`, and names the
+  judge.
 - Do not claim SOTA without the official dataset, official or strictly
   equivalent runner, fixed model/judge settings, and a public reproduction
   bundle.

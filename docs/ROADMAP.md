@@ -155,11 +155,19 @@ Goal: raise recall quality without breaking local-first or determinism.
 
 Goal: measure experience learning honestly and make integration one command.
 
+M6a status: implemented as the `experience_horizon` gym group plus explicit
+external benchmark protocol separation.
+
 - Experience-learning Gym suites: preference adherence across simulated
   weeks, forgetting compliance (decayed and forgotten content stays out),
   contradiction resolution, procedure reuse rate.
 - Official-protocol external benchmark support (model judge, upstream
-  scoring) clearly separated from deterministic adapter baselines.
+  scoring) clearly separated from deterministic adapter baselines. gmOS accepts
+  host-provided SDK judge callbacks for `official_protocol` runs and refuses
+  official CLI runs without a judge instead of downgrading.
+
+M6b remains:
+
 - Turnkey adapters: Claude Code memory hooks, OpenAI-compatible agent
   runtimes, LangGraph-style graph runtimes, all thin wrappers over the MCP or
   HTTP surface.

@@ -1,7 +1,9 @@
 # gmOS Benchmark Runs
 
-This page archives local deterministic benchmark snapshots. These are not
-official benchmark scores, leaderboard claims, or SOTA claims.
+This page archives local deterministic benchmark snapshots. Unless an entry
+explicitly says `protocol=official_protocol` and names a host-provided judge,
+these are `protocol=deterministic_local` reports, not official benchmark
+scores, leaderboard claims, or SOTA claims.
 
 ## alpha.69 release evidence snapshot
 
@@ -38,6 +40,8 @@ LongMemEval, LoCoMo, STATE-Bench, Mem2ActBench, or BEAM score. Use it to
 reproduce package health and integration safety for this commit, not to claim
 external benchmark ranking.
 
+Protocol: `deterministic_local`. Official protocol: `not_run`.
+
 ## alpha.67 local adapter snapshot
 
 Run date: 2026-06-29.
@@ -53,11 +57,11 @@ Use this entry only for historical continuity. New public benchmark entries
 should include the full manifest fields listed in
 [benchmarking](./BENCHMARKING.md).
 
-| Dataset file | Source format | Scored cases | Deterministic adapter score | Runtime |
-| --- | --- | ---: | ---: | ---: |
-| `longmemeval_oracle.json` | LongMemEval cleaned oracle | 470 | `0.2404` | 26.3s |
-| `longmemeval_s_cleaned.json` | LongMemEval cleaned S | 470 | `0.2532` | 1284.2s |
-| `locomo10.json` | LoCoMo full history | 1542 | `0.1089` | 363.4s |
+| Dataset file | Source format | Protocol | Scored cases | Deterministic adapter score | Runtime |
+| --- | --- | --- | ---: | ---: | ---: |
+| `longmemeval_oracle.json` | LongMemEval cleaned oracle | `deterministic_local` | 470 | `0.2404` | 26.3s |
+| `longmemeval_s_cleaned.json` | LongMemEval cleaned S | `deterministic_local` | 470 | `0.2532` | 1284.2s |
+| `locomo10.json` | LoCoMo full history | `deterministic_local` | 1542 | `0.1089` | 363.4s |
 
 Dataset sources:
 [LongMemEval cleaned](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned),

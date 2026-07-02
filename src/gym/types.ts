@@ -50,6 +50,26 @@ export interface MemoryGymRecallQualityReport {
   }>;
 }
 
+export interface MemoryGymExperienceHorizonAssertion {
+  name: string;
+  passed: boolean;
+}
+
+export interface MemoryGymExperienceHorizonScenario {
+  name: string;
+  pass: boolean;
+  assertions: MemoryGymExperienceHorizonAssertion[];
+  counters: Record<string, number>;
+}
+
+export interface MemoryGymExperienceHorizonReport {
+  schema: "gmos.experience_horizon.v1";
+  pass: boolean;
+  deterministicReplayPass: boolean;
+  scenarios: MemoryGymExperienceHorizonScenario[];
+  counters: Record<string, number>;
+}
+
 export interface MemoryGymCoverageRow {
   layer: string;
   status: MemoryGymStatus;
@@ -91,6 +111,7 @@ export interface MemoryGymResult {
   details: string[];
   scenarios: MemoryGymScenarioResult[];
   recallQuality: MemoryGymRecallQualityReport;
+  experienceHorizon: MemoryGymExperienceHorizonReport;
   coverageMatrix: MemoryGymCoverageRow[];
   memoryStackCoverage: MemoryGymCoverageRow[];
   runManifest: MemoryGymRunManifest;

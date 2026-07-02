@@ -615,6 +615,62 @@ Hosts that need to mirror gmOS safety behavior outside the runtime can import
 `eligibleForLongTermMemory`, and `redactForReport` from `@ghast/memory` instead
 of copying the built-in detector.
 
+## Gym And Benchmark APIs
+
+`@ghast/memory/gym` exports the deterministic SDK gates and external adapter
+runners that ship in the npm package. They run in-process against public gmOS
+APIs and do not require repository-relative paths or dev dependencies.
+
+Common exports:
+
+- `runMemoryGym()` and `renderMemoryGymMarkdown()`;
+- `runExperienceHorizonGym()` for the M6a multi-week experience-learning
+  scenario group;
+- `runMemoryReleaseGate()` and `runMemoryScaleBenchmark()`;
+- `runHostCompatibilityGym()`;
+- `runExternalMemoryBenchmark()` and `runExternalMemoryBenchmarkSuite()`;
+- dataset helpers such as `parseExternalMemoryBenchmarkDataset()`,
+  `parseExternalMemoryBenchmarkJsonl()`,
+  `parseExternalMemoryBenchmarkSuite()`, and
+  `hashExternalMemoryBenchmarkInput()`.
+
+Important report and option types include `MemoryGymResult`,
+`MemoryGymExperienceHorizonReport`, `ExternalMemoryBenchmarkResult`,
+`ExternalMemoryBenchmarkProtocol`, `ExternalMemoryBenchmarkJudge`,
+`ExternalMemoryBenchmarkJudgeResult`,
+`ExternalMemoryBenchmarkJudgeProvenance`,
+`ExternalMemoryBenchmarkSuiteResult`, and
+`ExternalMemoryBenchmarkSuiteExecution`.
+
+External benchmark protocol handling is explicit:
+
+```ts
+import { runExternalMemoryBenchmark } from "@ghast/memory/gym";
+
+const localReport = await runExternalMemoryBenchmark({
+  cases,
+  protocol: "deterministic_local",
+});
+
+const officialReport = await runExternalMemoryBenchmark({
+  cases,
+  protocol: "official_protocol",
+  judge: {
+    name: "host-judge-v1",
+    judge(question, expectedAnswer, actualAnswer) {
+      return { correct: hostCheck(question, expectedAnswer, actualAnswer) };
+    },
+  },
+});
+```
+
+`deterministic_local` is the default and remains fully offline. An
+`official_protocol` run requires a host-provided judge; without one the runner
+throws instead of falling back to lexical scoring. The judge callback receives
+only benchmark dataset content (`question`, `expectedAnswer`) and the answer
+text produced by the runtime (`actualAnswer`). It does not receive gmOS memory
+ids, evidence ids, profile ids, store handles, or private memory metadata.
+
 ## CLI
 
 The npm package exposes these binaries:

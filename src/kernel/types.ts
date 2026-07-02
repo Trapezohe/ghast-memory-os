@@ -850,6 +850,7 @@ export type MemoryLifecycleHistoryEventKind =
   | "distilled_procedure"
   | "evolution_applied"
   | "evolution_reverted"
+  | "derived_forget_archived"
   | "forgotten"
   | "restored"
   | "reactivated";

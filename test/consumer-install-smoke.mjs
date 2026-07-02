@@ -377,6 +377,10 @@ try {
         }],
       });
       assert.equal(externalGym.pass, true);
+      assert.equal(externalGym.runManifest.protocol, "deterministic_local");
+      assert.equal(externalGym.runManifest.scoreSemantics.protocol, "deterministic_local");
+      assert.equal(externalGym.runManifest.deterministicOnly, true);
+      assert.equal(externalGym.officialScore, null);
       assert.match(renderExternalMemoryBenchmarkMarkdown(externalGym), /External Long-Memory QA/);
       writeFileSync("consumer-suite.jsonl", JSON.stringify({
         id: "consumer-suite",
@@ -708,6 +712,8 @@ try {
         type StateBenchPreparedRunManifest,
         type ExternalMemoryBenchmarkDatasetAdapter,
         type ExternalMemoryBenchmarkDatasetFormat,
+        type ExternalMemoryBenchmarkJudge,
+        type ExternalMemoryBenchmarkProtocol,
         type ExternalMemoryBenchmarkCaseMatched,
         type ExternalMemoryBenchmarkResult,
         type ExternalMemoryBenchmarkSliceScore,
@@ -956,6 +962,15 @@ try {
         }],
       });
       if (!externalResult.pass) throw new Error("typed external benchmark failed");
+      const typedProtocol: ExternalMemoryBenchmarkProtocol = externalResult.runManifest.protocol;
+      if (typedProtocol !== "deterministic_local") {
+        throw new Error("typed external protocol failed");
+      }
+      const typedJudge: ExternalMemoryBenchmarkJudge = {
+        name: "typed-judge",
+        judge: () => ({ correct: true }),
+      };
+      void typedJudge;
       const typedMatched: ExternalMemoryBenchmarkCaseMatched | undefined = externalResult.cases[0]?.matched;
       if (typedMatched?.expectedAll[0] !== "rollback matrix") {
         throw new Error("typed external matched diagnostics failed");
@@ -1005,8 +1020,13 @@ try {
             package: null,
             git: null,
             scoreSemantics: {
+              protocol: "deterministic_local",
               scoreKind: "deterministic_adapter_context",
               primaryScore: "strictScore",
+              judgeProvenance: {
+                kind: "none",
+                name: null,
+              },
               deterministicAdapterScoreField: "score",
               strictScoreField: "strictScore",
               normalizedEvidenceScoreField: "normalizedEvidenceScore",
@@ -1015,6 +1035,7 @@ try {
               officialScore: null,
               comparableToOfficialScore: false,
             },
+            protocols: ["deterministic_local"],
             deterministicOnly: true,
           },
           runs: [],
@@ -1972,6 +1993,8 @@ try {
   const externalMiniOutput = JSON.parse(externalMiniExample.stdout);
   assert.equal(externalMiniOutput.ok, true);
   assert.equal(externalMiniOutput.datasetFormat, "gmos.external_long_memory_qa.jsonl");
+  assert.equal(externalMiniOutput.protocol, "deterministic_local");
+  assert.equal(externalMiniOutput.judgeName, null);
   assert.equal(externalMiniOutput.deterministicOnly, true);
   assert.equal(externalMiniOutput.officialProtocol, "not_run");
   assert.equal(externalMiniOutput.comparableToOfficialScore, false);

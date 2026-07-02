@@ -142,7 +142,7 @@ Usage:
   gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
   gmos gym run --db :memory: --generated-seeds 3 --format markdown --report-file ./memory-gym.md
   gmos gym scale --sizes 100,1000 --threshold-p95-ms 250
-  gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --require-convergence --include-sensitive --temporal-metadata
+  gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --protocol deterministic-local --require-convergence --include-sensitive --temporal-metadata
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
   gmos gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
   gmos gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format markdown
@@ -466,6 +466,17 @@ function diagnosticsLevelOption(): "off" | "basic" | "full" | undefined {
     throw new Error("--diagnostics-level must be one of: off, basic, full");
   }
   return raw;
+}
+
+function externalProtocolOption(): "deterministic_local" | "official_protocol" {
+  const raw = value("--protocol", "deterministic-local");
+  if (raw === "deterministic-local" || raw === "deterministic_local") {
+    return "deterministic_local";
+  }
+  if (raw === "official-protocol" || raw === "official_protocol") {
+    return "official_protocol";
+  }
+  throw new Error("--protocol must be deterministic-local or official-protocol");
 }
 
 function listStatusOption(): LowLevelListMemoriesInput["status"] {
@@ -1090,6 +1101,10 @@ async function main(): Promise<void> {
     ) {
       throw new Error("--require-convergence requires reconstruct mode for every external benchmark case");
     }
+    const protocol = externalProtocolOption();
+    if (protocol === "official_protocol") {
+      throw new Error("gmos gym external --protocol official-protocol requires a host-provided SDK judge callback; the CLI runner cannot provide one");
+    }
     const report = await runExternalMemoryBenchmark({
       cases: requireConvergence
         ? cases.map((benchmarkCase) => ({ ...benchmarkCase, requireConvergence: true }))
@@ -1110,6 +1125,7 @@ async function main(): Promise<void> {
       reuseProfiles: !has("--no-reuse-profiles"),
       failureSampleLimit: nonNegativeIntegerOption("--failure-sample-limit", 20),
       diagnosticsLevel: diagnosticsLevelOption(),
+      protocol,
       ...(has("--progress")
         ? {
             onCaseResult: (progress) => {

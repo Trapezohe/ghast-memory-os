@@ -18424,6 +18424,17 @@ assert.equal(gym.deterministicArchitectureResult.status, "pass");
 assert.equal(gym.agentMemoryUseResult.status, "not_run");
 assert.equal(gym.generalizationResult.status, "pass");
 assert.equal(gym.generalizationResult.generatedSeedCount, 3);
+assert.equal(gym.experienceHorizon.pass, true);
+assert.equal(gym.experienceHorizon.deterministicReplayPass, true);
+assert.deepEqual(
+  gym.experienceHorizon.scenarios.map((scenario) => scenario.name),
+  [
+    "preference_adherence_over_time",
+    "forgetting_compliance_full_surface",
+    "contradiction_resolution_over_time",
+    "procedure_reuse_over_time",
+  ],
+);
 assert.equal(gym.roadmapResult.status, "clear");
 assert.equal(gym.runManifest.dbPathMode, "memory");
 assert.equal(gym.runManifest.package.name, packageJson.name);
@@ -18439,6 +18450,7 @@ assert.ok(gym.memoryStackCoverage.some((row) => row.layer === "Safety / Privacy"
 const renderedGym = renderMemoryGymMarkdown(gym);
 assert.match(renderedGym, /gmOS Memory Gym Report/);
 assert.match(renderedGym, /Coverage Matrix/);
+assert.match(renderedGym, /Experience Horizon/);
 assert.match(renderedGym, /Run Manifest/);
 assert.match(renderedGym, /Package: @ghast\/memory@/);
 assert.match(renderedGym, /SQLite schema: 9/);
@@ -18610,6 +18622,20 @@ assert.equal(externalBenchmark.runManifest.options.includeSensitive, false);
 assert.equal(externalBenchmark.runManifest.options.includeTemporalMetadata, false);
 assert.equal(externalBenchmark.runManifest.options.failureSampleLimit, 20);
 assert.equal(externalBenchmark.runManifest.options.diagnosticsLevel, "full");
+assert.equal(externalBenchmark.runManifest.protocol, "deterministic_local");
+assert.deepEqual(externalBenchmark.runManifest.judgeProvenance, {
+  kind: "none",
+  name: null,
+});
+assert.equal(externalBenchmark.runManifest.options.protocol, "deterministic_local");
+assert.equal(externalBenchmark.runManifest.deterministicOnly, true);
+assert.equal(externalBenchmark.officialScore, null);
+assert.equal(externalBenchmark.officialPassedCount, null);
+assert.equal(externalBenchmark.runManifest.scoreSemantics.protocol, "deterministic_local");
+assert.deepEqual(externalBenchmark.runManifest.scoreSemantics.judgeProvenance, {
+  kind: "none",
+  name: null,
+});
 assert.equal(externalBenchmark.runManifest.scoreSemantics.scoreKind, "deterministic_adapter_context");
 assert.equal(externalBenchmark.runManifest.scoreSemantics.primaryScore, "strictScore");
 assert.equal(externalBenchmark.runManifest.scoreSemantics.officialProtocol, "not_run");
@@ -18636,6 +18662,9 @@ assert.equal(externalBenchmark.summary.runtime.taxonomyRuntimeMs >= 0, true);
 assert.equal(externalBenchmark.summary.runtime.wideBudgetDiagnosticRuntimeMs >= 0, true);
 assert.equal(externalBenchmark.summary.failureSamples.length, 0);
 assert.equal(externalBenchmark.cases[0]?.failureReasons.length, 0);
+assert.equal(externalBenchmark.cases[0]?.protocol, "deterministic_local");
+assert.equal(externalBenchmark.cases[0]?.officialPass, null);
+assert.equal(externalBenchmark.cases[0]?.judgeName, null);
 assert.equal(externalBenchmark.cases[0]?.strictPass, true);
 assert.equal(externalBenchmark.cases[0]?.normalizedEvidencePass, true);
 assert.deepEqual(externalBenchmark.cases[0]?.matched.expectedAll, ["rollback matrix"]);
@@ -18646,6 +18675,70 @@ assert.equal((externalBenchmark.cases[0]?.wideBudgetDiagnosticRuntimeMs ?? -1) >
 assert.equal(typeof externalBenchmark.cases[0]?.diagnostics.evidenceConvergenceScore, "number");
 const externalHash = hashExternalMemoryBenchmarkInput(externalBenchmarkJsonl);
 assert.match(externalHash, /^sha256:[a-f0-9]{64}$/);
+await assert.rejects(
+  () =>
+    runExternalMemoryBenchmark({
+      cases: externalCases.slice(0, 1),
+      protocol: "official_protocol",
+    }),
+  /official_protocol requires a host-provided judge callback/,
+);
+const officialJudgeCalls: Array<{
+  question: string;
+  expectedAnswer: string;
+  actualAnswer: string;
+}> = [];
+const officialJudgeBenchmark = await runExternalMemoryBenchmark({
+  cases: [{
+    id: "official-judge",
+    events: [{
+      type: "memory",
+      kind: "fact",
+      content: "Official judge answer is Blue Comet.",
+    }],
+    question: "What is the answer?",
+    expectedAny: ["Blue Comet"],
+  }],
+  protocol: "official_protocol",
+  judge: {
+    name: "recording-official-judge",
+    async judge(question, expectedAnswer, actualAnswer) {
+      officialJudgeCalls.push({ question, expectedAnswer, actualAnswer });
+      return {
+        correct: actualAnswer.includes(expectedAnswer),
+        rationale: "matched expected answer",
+      };
+    },
+  },
+});
+assert.equal(officialJudgeBenchmark.pass, true);
+assert.equal(officialJudgeBenchmark.score, 1);
+assert.equal(officialJudgeBenchmark.strictScore, 1);
+assert.equal(officialJudgeBenchmark.officialScore, 1);
+assert.equal(officialJudgeBenchmark.officialPassedCount, 1);
+assert.equal(officialJudgeBenchmark.runManifest.protocol, "official_protocol");
+assert.deepEqual(officialJudgeBenchmark.runManifest.judgeProvenance, {
+  kind: "host_provided",
+  name: "recording-official-judge",
+});
+assert.equal(officialJudgeBenchmark.runManifest.deterministicOnly, false);
+assert.equal(officialJudgeBenchmark.runManifest.scoreSemantics.protocol, "official_protocol");
+assert.equal(officialJudgeBenchmark.runManifest.scoreSemantics.primaryScore, "officialScore");
+assert.equal(officialJudgeBenchmark.runManifest.scoreSemantics.officialProtocol, "host_judge");
+assert.equal(officialJudgeBenchmark.cases[0]?.officialPass, true);
+assert.equal(officialJudgeBenchmark.cases[0]?.judgeName, "recording-official-judge");
+assert.equal(officialJudgeBenchmark.cases[0]?.judgeRationale, "matched expected answer");
+assert.equal(officialJudgeCalls.length, 1);
+assert.deepEqual(Object.keys(officialJudgeCalls[0]!).sort(), [
+  "actualAnswer",
+  "expectedAnswer",
+  "question",
+]);
+assert.equal(officialJudgeCalls[0]?.question, "What is the answer?");
+assert.equal(officialJudgeCalls[0]?.expectedAnswer, "Blue Comet");
+assert.match(officialJudgeCalls[0]?.actualAnswer ?? "", /Blue Comet/);
+assert.equal(JSON.stringify(officialJudgeCalls[0]).includes("Official judge answer is"), true);
+assert.equal(JSON.stringify(officialJudgeCalls[0]).includes("memory_"), false);
 const externalBenchmarkWithManifest = await runExternalMemoryBenchmark({
   cases: externalCases,
   datasetHash: externalHash,
@@ -19312,6 +19405,7 @@ assert.equal(externalSuiteExecution.reports.passing?.runManifest.options.include
 assert.equal(externalSuiteExecution.reports.passing?.runManifest.options.includeTemporalMetadata, false);
 assert.equal(externalSuiteExecution.reports.passing?.runManifest.options.temporalMode, "history");
 assert.equal(externalSuiteExecution.reports.passing?.runManifest.options.diagnosticsLevel, "basic");
+assert.equal(externalSuiteExecution.reports.passing?.runManifest.protocol, "deterministic_local");
 assert.deepEqual(externalSuiteExecution.result.runs[0]?.sliceScores, [
   {
     name: "gmos:project_procedure",
@@ -19369,13 +19463,19 @@ assert.equal(
   externalSuiteExecution.result.runManifest.scoreSemantics.scoreKind,
   "deterministic_adapter_context",
 );
+assert.deepEqual(externalSuiteExecution.result.runManifest.protocols, ["deterministic_local"]);
+assert.equal(externalSuiteExecution.result.runManifest.scoreSemantics.protocol, "deterministic_local");
 assert.equal(externalSuiteExecution.result.runManifest.scoreSemantics.officialProtocol, "not_run");
 assert.equal(externalSuiteExecution.result.runManifest.scoreSemantics.officialScore, null);
 assert.equal(externalSuiteExecution.result.runManifest.scoreSemantics.comparableToOfficialScore, false);
+assert.equal(externalSuiteExecution.result.runManifest.deterministicOnly, true);
 assert.equal(typeof externalSuiteExecution.result.runManifest.node, "string");
 assert.equal(externalSuiteExecution.result.runs[0]?.durationMs >= 0, true);
 assert.equal(externalSuiteExecution.result.runs[0]?.caseGroupCount >= 1, true);
 assert.equal(externalSuiteExecution.result.runs[0]?.warningCount, 0);
+assert.equal(externalSuiteExecution.result.runs[0]?.protocol, "deterministic_local");
+assert.equal(externalSuiteExecution.result.runs[0]?.officialScore, null);
+assert.equal(externalSuiteExecution.result.runs[0]?.judgeName, null);
 assert.equal((externalSuiteExecution.result.runs[0]?.runtime.setupRuntimeMs ?? -1) >= 0, true);
 assert.equal((externalSuiteExecution.result.runs[0]?.runtime.scoringRuntimeMs ?? -1) >= 0, true);
 assert.equal((externalSuiteExecution.result.runs[0]?.runtime.taxonomyRuntimeMs ?? -1) >= 0, true);
@@ -19406,7 +19506,7 @@ assert.match(
 );
 assert.match(
   renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!),
-  /Score semantics: kind=deterministic_adapter_context primary=strictScore officialProtocol=not_run officialScore=none officialComparable=no normalizedEvidence=diagnostic_only/,
+  /Score semantics: protocol=deterministic_local kind=deterministic_adapter_context primary=strictScore judge=none:none officialProtocol=not_run officialScore=none officialComparable=no normalizedEvidence=diagnostic_only/,
 );
 assert.match(renderExternalMemoryBenchmarkMarkdown(externalSuiteExecution.reports.failing!), /Runtime: total=\d+ms setup=\d+ms scoring=\d+ms taxonomy=\d+ms wideBudget=\d+ms diagnostics=\d+ms/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /BenchmarkStatus: FAIL/);
@@ -19415,7 +19515,7 @@ assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.r
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Suite hash: sha256:[a-f0-9]{64}/);
 assert.match(
   renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result),
-  /Score semantics: kind=deterministic_adapter_context primary=strictScore officialProtocol=not_run officialScore=none officialComparable=no normalizedEvidence=diagnostic_only/,
+  /Score semantics: protocol=deterministic_local kind=deterministic_adapter_context primary=strictScore judge=none:none officialProtocol=not_run officialScore=none officialComparable=no normalizedEvidence=diagnostic_only/,
 );
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Failure reasons: expected_all_missing=1/);
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalSuiteExecution.result), /Failure stages: answer_not_in_input=1/);
@@ -21019,6 +21119,8 @@ const cliExternal = spawnSync(
     externalBenchmarkFile,
     "--format",
     "json",
+    "--protocol",
+    "deterministic-local",
     "--json-file",
     cliExternalJsonFile,
     "--markdown-file",
@@ -21037,8 +21139,11 @@ const cliExternalJson = JSON.parse(cliExternal.stdout) as {
   schema?: string;
   pass?: boolean;
   runManifest?: {
+    protocol?: string;
+    judgeProvenance?: { kind?: string; name?: string | null };
     dataset?: { format?: string; hash?: string | null; id?: string | null };
     options?: {
+      protocol?: string;
       requireConvergence?: boolean;
       includeSensitive?: boolean;
       includeTemporalMetadata?: boolean;
@@ -21047,6 +21152,8 @@ const cliExternalJson = JSON.parse(cliExternal.stdout) as {
       diagnosticsLevel?: string;
     };
     scoreSemantics?: {
+      protocol?: string;
+      judgeProvenance?: { kind?: string; name?: string | null };
       scoreKind?: string;
       officialProtocol?: string;
       officialScore?: unknown;
@@ -21066,6 +21173,17 @@ assert.equal(cliExternalJson.runManifest?.options?.includeTemporalMetadata, fals
 assert.equal(cliExternalJson.runManifest?.options?.temporalMode, "history");
 assert.equal(cliExternalJson.runManifest?.options?.failureSampleLimit, 3);
 assert.equal(cliExternalJson.runManifest?.options?.diagnosticsLevel, "basic");
+assert.equal(cliExternalJson.runManifest?.protocol, "deterministic_local");
+assert.deepEqual(cliExternalJson.runManifest?.judgeProvenance, {
+  kind: "none",
+  name: null,
+});
+assert.equal(cliExternalJson.runManifest?.options?.protocol, "deterministic_local");
+assert.equal(cliExternalJson.runManifest?.scoreSemantics?.protocol, "deterministic_local");
+assert.deepEqual(cliExternalJson.runManifest?.scoreSemantics?.judgeProvenance, {
+  kind: "none",
+  name: null,
+});
 assert.equal(cliExternalJson.runManifest?.scoreSemantics?.scoreKind, "deterministic_adapter_context");
 assert.equal(cliExternalJson.runManifest?.scoreSemantics?.officialProtocol, "not_run");
 assert.equal(cliExternalJson.runManifest?.scoreSemantics?.officialScore, null);
@@ -21082,8 +21200,27 @@ assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /diagnosticsLevel=ba
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /Score attribution: none/);
 assert.match(
   readFileSync(cliExternalMarkdownFile, "utf8"),
-  /Score semantics: kind=deterministic_adapter_context primary=strictScore officialProtocol=not_run officialScore=none officialComparable=no normalizedEvidence=diagnostic_only/,
+  /Score semantics: protocol=deterministic_local kind=deterministic_adapter_context primary=strictScore judge=none:none officialProtocol=not_run officialScore=none officialComparable=no normalizedEvidence=diagnostic_only/,
 );
+const cliExternalOfficialProtocol = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--protocol",
+    "official-protocol",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalOfficialProtocol.status, 0);
+assert.match(cliExternalOfficialProtocol.stderr, /requires a host-provided SDK judge callback/);
 const cliExternalSuiteOutputDir = path.join(tmp, "cli-external-suite");
 const cliExternalSuiteJsonFile = path.join(tmp, "cli-external-suite-summary.json");
 const cliExternalSuiteMarkdownFile = path.join(tmp, "cli-external-suite-summary.md");
@@ -21125,7 +21262,10 @@ const cliExternalSuiteJson = JSON.parse(cliExternalSuite.stdout) as {
   runManifest?: {
     durationMs?: number;
     package?: { version?: string | null } | null;
+    protocols?: string[];
+    deterministicOnly?: boolean;
     scoreSemantics?: {
+      protocol?: string;
       scoreKind?: string;
       officialProtocol?: string;
       officialScore?: unknown;
@@ -21137,6 +21277,9 @@ const cliExternalSuiteJson = JSON.parse(cliExternalSuite.stdout) as {
     caseGroupCount?: number;
     reusedProfileCaseCount?: number;
     warningCount?: number;
+    protocol?: string;
+    officialScore?: number | null;
+    judgeName?: string | null;
     failureStages?: Array<{ name: string; count: number }>;
     scoreAttribution?: Array<{ name: string; count: number }>;
     sliceScores?: Array<{ name: string; caseCount: number; passedCount: number; failedCount: number; score: number }>;
@@ -21163,12 +21306,18 @@ assert.equal(
   cliExternalSuiteJson.runManifest?.scoreSemantics?.scoreKind,
   "deterministic_adapter_context",
 );
+assert.deepEqual(cliExternalSuiteJson.runManifest?.protocols, ["deterministic_local"]);
+assert.equal(cliExternalSuiteJson.runManifest?.deterministicOnly, true);
+assert.equal(cliExternalSuiteJson.runManifest?.scoreSemantics?.protocol, "deterministic_local");
 assert.equal(cliExternalSuiteJson.runManifest?.scoreSemantics?.officialProtocol, "not_run");
 assert.equal(cliExternalSuiteJson.runManifest?.scoreSemantics?.officialScore, null);
 assert.equal(cliExternalSuiteJson.runManifest?.scoreSemantics?.comparableToOfficialScore, false);
 assert.equal(cliExternalSuiteJson.runs?.[0]?.durationMs !== undefined, true);
 assert.equal(cliExternalSuiteJson.runs?.[0]?.caseGroupCount !== undefined, true);
 assert.equal(cliExternalSuiteJson.runs?.[0]?.warningCount, 0);
+assert.equal(cliExternalSuiteJson.runs?.[0]?.protocol, "deterministic_local");
+assert.equal(cliExternalSuiteJson.runs?.[0]?.officialScore, null);
+assert.equal(cliExternalSuiteJson.runs?.[0]?.judgeName, null);
 assert.deepEqual(cliExternalSuiteJson.runs?.[0]?.sliceScores, [
   {
     name: "gmos:project_procedure",
@@ -21199,7 +21348,7 @@ assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Suite hash: sh
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Score attribution: adapter_or_source_answer_alignment=1/);
 assert.match(
   readFileSync(cliExternalSuiteMarkdownFile, "utf8"),
-  /Score semantics: kind=deterministic_adapter_context primary=strictScore officialProtocol=not_run officialScore=none officialComparable=no normalizedEvidence=diagnostic_only/,
+  /Score semantics: protocol=deterministic_local kind=deterministic_adapter_context primary=strictScore judge=none:none officialProtocol=not_run officialScore=none officialComparable=no normalizedEvidence=diagnostic_only/,
 );
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /Failure stages: answer_not_in_input=1/);
 assert.match(readFileSync(cliExternalSuiteMarkdownFile, "utf8"), /gmos:project_procedure=1\/1 score=1\.0000/);

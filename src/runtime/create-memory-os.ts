@@ -826,6 +826,24 @@ function excludedTurnExplanationMemory(
   decision: MemorySearchTraceDecision,
 ): TurnExplanationExcludedMemory | null {
   if (!decision.reason) return null;
+  if (decision.reason === "forget_residue") {
+    return {
+      id: decision.memory.id,
+      kind: explanationMemoryKind(decision.memory),
+      status: decision.memory.status,
+      reason: decision.reason,
+      retention: memoryRetention(decision.memory),
+      cues: [],
+      associations: [],
+      tags: [],
+      scoreComponents: {
+        confidence: decision.memory.confidence,
+        retrievalScore: 0,
+        contentScore: 0,
+        finalScore: 0,
+      },
+    };
+  }
   return {
     id: decision.memory.id,
     kind: explanationMemoryKind(decision.memory),
@@ -2298,6 +2316,12 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     reasons?: string[] | undefined;
   }): MemoryLifecycleHistoryEntry["eventKind"] {
     if (input.toStatus === "dormant") return "decayed_to_dormant";
+    if (
+      input.toStatus === "archived" &&
+      input.reasons?.some((reason) => /derived_from_forgotten_source/iu.test(reason))
+    ) {
+      return "derived_forget_archived";
+    }
     if (
       input.toStatus === "archived" &&
       input.reasons?.some((reason) => /forget|delete|deletion/iu.test(reason))

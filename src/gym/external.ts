@@ -20,6 +20,7 @@ import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 
 export type ExternalMemoryBenchmarkMode = "prepare" | "reconstruct";
+export type ExternalMemoryBenchmarkProtocol = "deterministic_local" | "official_protocol";
 export type ExternalMemoryBenchmarkTemporalMode = "auto" | "current" | "history";
 export type ExternalMemoryBenchmarkDiagnosticsLevel = "off" | "basic" | "full";
 export type ExternalMemoryBenchmarkDatasetFormat =
@@ -92,6 +93,25 @@ export interface ExternalMemoryBenchmarkCaseDiagnostics {
   uncertaintyReasons: string[];
 }
 
+export interface ExternalMemoryBenchmarkJudgeResult {
+  correct: boolean;
+  rationale?: string | undefined;
+}
+
+export interface ExternalMemoryBenchmarkJudge {
+  name: string;
+  judge(
+    question: string,
+    expectedAnswer: string,
+    actualAnswer: string,
+  ): Promise<ExternalMemoryBenchmarkJudgeResult> | ExternalMemoryBenchmarkJudgeResult;
+}
+
+export interface ExternalMemoryBenchmarkJudgeProvenance {
+  kind: "none" | "host_provided";
+  name: string | null;
+}
+
 export type ExternalMemoryBenchmarkFailureStage =
   | "answer_not_in_input"
   | "answer_normalization_mismatch"
@@ -131,6 +151,10 @@ export interface ExternalMemoryBenchmarkCaseResult {
   pass: boolean;
   strictPass: boolean;
   normalizedEvidencePass: boolean;
+  officialPass: boolean | null;
+  protocol: ExternalMemoryBenchmarkProtocol;
+  judgeName: string | null;
+  judgeRationale?: string | undefined;
   mode: ExternalMemoryBenchmarkMode;
   temporalMode: ExternalMemoryBenchmarkTemporalMode | null;
   slices?: string[] | undefined;
@@ -256,20 +280,24 @@ export interface ExternalMemoryBenchmarkSummary {
 }
 
 export interface ExternalMemoryBenchmarkScoreSemantics {
-  scoreKind: "deterministic_adapter_context";
-  primaryScore: "strictScore";
+  scoreKind: "deterministic_adapter_context" | "official_protocol_judged_context";
+  primaryScore: "strictScore" | "officialScore";
+  protocol: ExternalMemoryBenchmarkProtocol;
+  judgeProvenance: ExternalMemoryBenchmarkJudgeProvenance;
   deterministicAdapterScoreField: "score";
   strictScoreField: "strictScore";
   normalizedEvidenceScoreField: "normalizedEvidenceScore";
   normalizedEvidenceScorePurpose: "diagnostic_only";
-  officialProtocol: "not_run";
-  officialScore: null;
-  comparableToOfficialScore: false;
+  officialProtocol: "not_run" | "host_judge";
+  officialScore: number | null;
+  comparableToOfficialScore: boolean;
 }
 
 export const EXTERNAL_MEMORY_BENCHMARK_SCORE_SEMANTICS: ExternalMemoryBenchmarkScoreSemantics = {
   scoreKind: "deterministic_adapter_context",
   primaryScore: "strictScore",
+  protocol: "deterministic_local",
+  judgeProvenance: { kind: "none", name: null },
   deterministicAdapterScoreField: "score",
   strictScoreField: "strictScore",
   normalizedEvidenceScoreField: "normalizedEvidenceScore",
@@ -305,6 +333,8 @@ export interface ExternalMemoryBenchmarkRunManifest {
     caseGroupCount: number;
     reusedProfileCaseCount: number;
   };
+  protocol: ExternalMemoryBenchmarkProtocol;
+  judgeProvenance: ExternalMemoryBenchmarkJudgeProvenance;
   options: {
     mode: ExternalMemoryBenchmarkMode | null;
     maxSteps: number | null;
@@ -319,9 +349,10 @@ export interface ExternalMemoryBenchmarkRunManifest {
     reuseProfiles: boolean;
     failureSampleLimit: number;
     diagnosticsLevel: ExternalMemoryBenchmarkDiagnosticsLevel;
+    protocol: ExternalMemoryBenchmarkProtocol;
   };
   scoreSemantics: ExternalMemoryBenchmarkScoreSemantics;
-  deterministicOnly: true;
+  deterministicOnly: boolean;
 }
 
 export interface ExternalMemoryBenchmarkResult {
@@ -335,6 +366,8 @@ export interface ExternalMemoryBenchmarkResult {
   strictScore: number;
   normalizedEvidenceScore: number;
   normalizedEvidencePassedCount: number;
+  officialScore: number | null;
+  officialPassedCount: number | null;
   summary: ExternalMemoryBenchmarkSummary;
   runManifest: ExternalMemoryBenchmarkRunManifest;
   cases: ExternalMemoryBenchmarkCaseResult[];
@@ -359,6 +392,8 @@ export interface RunExternalMemoryBenchmarkOptions {
   reuseProfiles?: boolean | undefined;
   failureSampleLimit?: number | undefined;
   diagnosticsLevel?: ExternalMemoryBenchmarkDiagnosticsLevel | undefined;
+  protocol?: ExternalMemoryBenchmarkProtocol | undefined;
+  judge?: ExternalMemoryBenchmarkJudge | undefined;
   onCaseResult?: ((progress: ExternalMemoryBenchmarkProgress) => void) | undefined;
 }
 
@@ -418,6 +453,29 @@ function normalizeMode(value: unknown): ExternalMemoryBenchmarkMode | undefined 
     throw new Error("External benchmark mode must be prepare or reconstruct");
   }
   return value;
+}
+
+function normalizeProtocol(value: unknown): ExternalMemoryBenchmarkProtocol {
+  if (value === undefined) return "deterministic_local";
+  if (value === "deterministic_local" || value === "official_protocol") return value;
+  throw new Error("External benchmark protocol must be deterministic_local or official_protocol");
+}
+
+function normalizedJudge(
+  protocol: ExternalMemoryBenchmarkProtocol,
+  judge: ExternalMemoryBenchmarkJudge | undefined,
+): ExternalMemoryBenchmarkJudge | undefined {
+  if (protocol === "deterministic_local") return undefined;
+  if (!judge) {
+    throw new Error("External benchmark official_protocol requires a host-provided judge callback");
+  }
+  if (typeof judge.name !== "string" || judge.name.trim().length === 0) {
+    throw new Error("External benchmark judge name must be a non-empty string");
+  }
+  if (typeof judge.judge !== "function") {
+    throw new Error("External benchmark judge must provide a judge callback");
+  }
+  return { name: judge.name.trim(), judge: judge.judge };
 }
 
 function normalizeTemporalMode(value: unknown, field: string): ExternalMemoryBenchmarkTemporalMode | undefined {
@@ -1209,6 +1267,50 @@ function warningsForCase(input: {
   return warnings;
 }
 
+function expectedAnswerForJudge(benchmarkCase: ExternalMemoryBenchmarkCase): string {
+  return uniqueTerms([
+    ...(benchmarkCase.expectedAll ?? []),
+    ...(benchmarkCase.expectedAny ?? []),
+  ]).join("\n");
+}
+
+const INTERNAL_RECORD_ID_PATTERN =
+  /\b[a-z][a-z_]*_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/giu;
+
+const CONTEXT_LINE_ANNOTATION_PATTERN = /^(\s*-\s*)\[[^\]]*\]\s*/gmu;
+
+const CONTEXT_DIAGNOSTIC_LINE_PATTERN =
+  /^(?:Query|Evidence coverage|Evidence convergence|Reconstruction uncertainty|Reconstructed evidence paths):.*$/gmu;
+
+function judgeSafeAnswer(actualAnswer: string): string {
+  return actualAnswer
+    .replace(CONTEXT_LINE_ANNOTATION_PATTERN, "$1")
+    .replace(CONTEXT_DIAGNOSTIC_LINE_PATTERN, "")
+    .replace(INTERNAL_RECORD_ID_PATTERN, "[internal-id]");
+}
+
+async function officialJudgeResult(input: {
+  judge: ExternalMemoryBenchmarkJudge | undefined;
+  benchmarkCase: ExternalMemoryBenchmarkCase;
+  actualAnswer: string;
+}): Promise<ExternalMemoryBenchmarkJudgeResult | null> {
+  if (!input.judge) return null;
+  const result = await input.judge.judge(
+    input.benchmarkCase.question,
+    expectedAnswerForJudge(input.benchmarkCase),
+    judgeSafeAnswer(input.actualAnswer),
+  );
+  if (!result || typeof result.correct !== "boolean") {
+    throw new Error("External benchmark judge result must include a boolean correct field");
+  }
+  return {
+    correct: result.correct,
+    ...(typeof result.rationale === "string" && result.rationale.trim()
+      ? { rationale: result.rationale.trim() }
+      : {}),
+  };
+}
+
 function gitText(args: string[], packageRoot: string): string | null {
   const ceiling = path.dirname(packageRoot);
   const existingCeiling = process.env.GIT_CEILING_DIRECTORIES;
@@ -1237,14 +1339,40 @@ export function externalBenchmarkGitInfoForPackageRoot(
   };
 }
 
+function scoreSemanticsForRun(input: {
+  protocol: ExternalMemoryBenchmarkProtocol;
+  judge: ExternalMemoryBenchmarkJudge | undefined;
+  officialScore: number | null;
+}): ExternalMemoryBenchmarkScoreSemantics {
+  if (input.protocol === "official_protocol") {
+    return {
+      ...EXTERNAL_MEMORY_BENCHMARK_SCORE_SEMANTICS,
+      scoreKind: "official_protocol_judged_context",
+      primaryScore: "officialScore",
+      protocol: "official_protocol",
+      judgeProvenance: {
+        kind: "host_provided",
+        name: input.judge?.name ?? null,
+      },
+      officialProtocol: "host_judge",
+      officialScore: input.officialScore,
+      comparableToOfficialScore: true,
+    };
+  }
+  return { ...EXTERNAL_MEMORY_BENCHMARK_SCORE_SEMANTICS };
+}
+
 function createRunManifest(input: {
   startedAt: string;
   finishedAt: string;
   caseCount: number;
   caseGroupCount: number;
   options: RunExternalMemoryBenchmarkOptions;
+  officialScore: number | null;
 }): ExternalMemoryBenchmarkRunManifest {
   const packageInfo = readGmosPackageInfo();
+  const protocol = normalizeProtocol(input.options.protocol);
+  const judge = normalizedJudge(protocol, input.options.judge);
   return {
     framework: "gmos-external-long-memory-qa",
     startedAt: input.startedAt,
@@ -1267,6 +1395,10 @@ function createRunManifest(input: {
       caseGroupCount: input.caseGroupCount,
       reusedProfileCaseCount: Math.max(0, input.caseCount - input.caseGroupCount),
     },
+    protocol,
+    judgeProvenance: protocol === "official_protocol"
+      ? { kind: "host_provided", name: judge?.name ?? null }
+      : { kind: "none", name: null },
     options: {
       mode: input.options.mode ?? null,
       maxSteps: input.options.maxSteps ?? null,
@@ -1281,9 +1413,14 @@ function createRunManifest(input: {
       reuseProfiles: input.options.reuseProfiles ?? true,
       failureSampleLimit: normalizedFailureSampleLimit(input.options.failureSampleLimit),
       diagnosticsLevel: normalizedDiagnosticsLevel(input.options.diagnosticsLevel),
+      protocol,
     },
-    scoreSemantics: { ...EXTERNAL_MEMORY_BENCHMARK_SCORE_SEMANTICS },
-    deterministicOnly: true,
+    scoreSemantics: scoreSemanticsForRun({
+      protocol,
+      judge,
+      officialScore: input.officialScore,
+    }),
+    deterministicOnly: protocol === "deterministic_local",
   };
 }
 
@@ -1616,6 +1753,8 @@ async function scoreCase(input: {
   const profileId = input.profileId;
   const mode = input.benchmarkCase.mode ?? input.options.mode ?? "reconstruct";
   const diagnosticsLevel = normalizedDiagnosticsLevel(input.options.diagnosticsLevel);
+  const protocol = normalizeProtocol(input.options.protocol);
+  const judge = normalizedJudge(protocol, input.options.judge);
   const temporalMode = effectiveTemporalMode({
     benchmarkCase: input.benchmarkCase,
     mode,
@@ -1691,6 +1830,11 @@ async function scoreCase(input: {
     requireConvergence: requireConvergenceForCase,
     diagnostics,
   });
+  const judgeResult = await officialJudgeResult({
+    judge,
+    benchmarkCase: input.benchmarkCase,
+    actualAnswer: context,
+  });
   const scoringRuntimeMs = Math.max(0, Date.now() - coreScoringStartedMs);
   const taxonomyResult = failureReasons.length
     ? await failureTaxonomyForCase({
@@ -1711,11 +1855,24 @@ async function scoreCase(input: {
   const warnings = diagnosticsLevel === "off" ? [] : warningsForCase({ mode, diagnostics });
   const strictPass = failureReasons.length === 0;
   const normalizedEvidencePass = normalizedFailureReasons.length === 0;
+  const officialPass = judgeResult
+    ? judgeResult.correct &&
+      forbiddenMatches.length === 0 &&
+      (!requireConvergenceForCase || diagnostics.evidenceConvergenceReached === true)
+    : null;
+  const primaryFailureReasons =
+    protocol === "official_protocol" && officialPass === false && failureReasons.length === 0
+      ? ["official_judge_incorrect"]
+      : failureReasons;
   return {
     id,
-    pass: strictPass,
+    pass: officialPass ?? strictPass,
     strictPass,
     normalizedEvidencePass,
+    officialPass,
+    protocol,
+    judgeName: judge?.name ?? null,
+    ...(judgeResult?.rationale ? { judgeRationale: judgeResult.rationale } : {}),
     mode,
     temporalMode,
     slices: input.benchmarkCase.slices ?? [],
@@ -1728,7 +1885,7 @@ async function scoreCase(input: {
     expectedAllNormalizedMissing,
     forbiddenMatches,
     matched,
-    failureReasons,
+    failureReasons: primaryFailureReasons,
     failureTaxonomy: taxonomyResult.entries,
     warnings,
     diagnostics,
@@ -1830,6 +1987,8 @@ export async function runExternalMemoryBenchmark(
     throw new Error("External benchmark requires at least one case");
   }
   const defaultMode = normalizeMode(options.mode);
+  const protocol = normalizeProtocol(options.protocol);
+  const judge = normalizedJudge(protocol, options.judge);
   const eventCache = new WeakMap<object, ExternalMemoryBenchmarkEvent[]>();
   const normalizedCases = options.cases.map((benchmarkCase, index) =>
     normalizeCase(benchmarkCase, index, eventCache),
@@ -1845,6 +2004,8 @@ export async function runExternalMemoryBenchmark(
     reuseProfiles: options.reuseProfiles ?? true,
     failureSampleLimit,
     diagnosticsLevel,
+    protocol,
+    ...(judge ? { judge } : {}),
   };
   const groups = groupCases(normalizedCases, normalizedOptions);
   const cases: Array<ExternalMemoryBenchmarkCaseResult | undefined> = new Array(
@@ -1875,14 +2036,24 @@ export async function runExternalMemoryBenchmark(
     return entry;
   });
   const finalPassedCount = completedCases.filter((entry) => entry.pass).length;
+  const strictPassedCount = completedCases.filter((entry) => entry.strictPass).length;
   const normalizedEvidencePassedCount = completedCases.filter(
     (entry) => entry.normalizedEvidencePass,
   ).length;
+  const officialPassedCount = protocol === "official_protocol"
+    ? completedCases.filter((entry) => entry.officialPass === true).length
+    : null;
   const finishedAt = new Date().toISOString();
   const summary = buildExternalMemoryBenchmarkSummary(completedCases, failureSampleLimit, groupTimings);
-  const strictScore = completedCases.length === 0 ? 0 : finalPassedCount / completedCases.length;
+  const strictScore = completedCases.length === 0 ? 0 : strictPassedCount / completedCases.length;
   const normalizedEvidenceScore =
     completedCases.length === 0 ? 0 : normalizedEvidencePassedCount / completedCases.length;
+  const officialScore = officialPassedCount === null
+    ? null
+    : completedCases.length === 0
+      ? 0
+      : officialPassedCount / completedCases.length;
+  const primaryScore = protocol === "official_protocol" ? officialScore ?? 0 : strictScore;
   return {
     schema: "gmos.external_long_memory_qa.v1",
     pass: finalPassedCount === completedCases.length,
@@ -1890,10 +2061,12 @@ export async function runExternalMemoryBenchmark(
     caseCount: completedCases.length,
     passedCount: finalPassedCount,
     failedCount: completedCases.length - finalPassedCount,
-    score: strictScore,
+    score: primaryScore,
     strictScore,
     normalizedEvidenceScore,
     normalizedEvidencePassedCount,
+    officialScore,
+    officialPassedCount,
     summary,
     runManifest: createRunManifest({
       startedAt,
@@ -1901,6 +2074,7 @@ export async function runExternalMemoryBenchmark(
       caseCount: completedCases.length,
       caseGroupCount: groups.length,
       options: normalizedOptions,
+      officialScore,
     }),
     cases: completedCases,
   };

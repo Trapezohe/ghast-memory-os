@@ -1402,6 +1402,108 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     deleteAssociationsForMemory(memoryId);
   }
 
+  function consolidationSourceMemoryIds(metadata: Record<string, unknown>): string[] {
+    const sourceMemoryIds = metadata.sourceMemoryIds;
+    return Array.isArray(sourceMemoryIds)
+      ? sourceMemoryIds.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+      : [];
+  }
+
+  function derivedConsolidationSummaryIdsForForgottenSources(
+    profileId: string,
+    sourceMemoryIds: string[],
+  ): string[] {
+    if (sourceMemoryIds.length === 0) return [];
+    const sourceClosure = new Set(sourceMemoryIds);
+    const derivedIds = new Set<string>();
+    const rows = db
+      .prepare(
+        `SELECT id, metadata_json
+         FROM gmos_memories
+         WHERE profile_id = ? AND status IN ('active', 'dormant')`,
+      )
+      .all(profileId) as Array<{ id: string; metadata_json: string }>;
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const row of rows) {
+        if (sourceClosure.has(row.id) || derivedIds.has(row.id)) continue;
+        const metadata = parseJsonObject(row.metadata_json);
+        if (metadata.consolidationSummary !== true) continue;
+        const summarySourceIds = consolidationSourceMemoryIds(metadata);
+        if (!summarySourceIds.some((sourceId) => sourceClosure.has(sourceId))) continue;
+        derivedIds.add(row.id);
+        sourceClosure.add(row.id);
+        changed = true;
+      }
+    }
+    return [...derivedIds].sort((left, right) => left.localeCompare(right));
+  }
+
+  function archiveForgetMemoryIds(input: {
+    profileId: string;
+    memoryIds: string[];
+    derivedMemoryIds: string[];
+    archivedAt: string;
+  }): string[] {
+    const orderedIds = [
+      ...input.memoryIds,
+      ...input.derivedMemoryIds.filter((memoryId) => !input.memoryIds.includes(memoryId)),
+    ];
+    if (orderedIds.length === 0) return [];
+    const directIds = new Set(input.memoryIds);
+    const rowStmt = db.prepare(
+      `SELECT id, status, metadata_json
+       FROM gmos_memories
+       WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
+    );
+    const updateStmt = db.prepare(
+      `UPDATE gmos_memories
+       SET status = 'archived', updated_at = ?, metadata_json = ?
+       WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
+    );
+    const archivedIds: string[] = [];
+    const tx = db.transaction((memoryIds: string[]) => {
+      for (const memoryId of memoryIds) {
+        const row = rowStmt.get(input.profileId, memoryId) as
+          | { id: string; status: MemoryRecord["status"]; metadata_json: string }
+          | undefined;
+        if (!row) continue;
+        const reason = directIds.has(memoryId)
+          ? "user_forget"
+          : "derived_from_forgotten_source";
+        const metadata = metadataWithArchiveMarker({
+          metadata: parseJsonObject(row.metadata_json),
+          archivedAt: input.archivedAt,
+          reason,
+        });
+        const result = updateStmt.run(
+          input.archivedAt,
+          JSON.stringify(metadata),
+          input.profileId,
+          memoryId,
+        );
+        if (result.changes === 0) continue;
+        archivedIds.push(memoryId);
+        syncMemoryFts(memoryId);
+        syncMemoryVector(memoryId);
+        deleteAssociationsForMemory(memoryId);
+        rejectBeliefsForMemory(memoryId, input.archivedAt);
+        insertLifecycleEvidence({
+          profileId: input.profileId,
+          sourceType: "memory.lifecycle",
+          memoryId,
+          from: row.status,
+          to: "archived",
+          createdAt: input.archivedAt,
+          reasons: [reason],
+        });
+      }
+    });
+    tx(orderedIds);
+    return archivedIds;
+  }
+
   function recordMemoryUsageSignals(input: {
     profileId: string;
     memoryIds: string[] | undefined;
@@ -3510,6 +3612,13 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     if (memory.metadata.supersededBy || memory.metadata.consolidatedInto) return "superseded";
     const archive = memory.metadata.archive;
     if (!archive || typeof archive !== "object" || Array.isArray(archive)) return "forget_residue";
+    const reason = (archive as Record<string, unknown>).reason;
+    if (
+      reason === "user_forget" ||
+      reason === "derived_from_forgotten_source"
+    ) {
+      return "forget_residue";
+    }
     return "archived";
   }
 
@@ -4429,23 +4538,17 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       includePerson: true,
       limit: 100,
     }).filter((memory) => memoryMatchesForgetQuery(memory, terms));
-    const archivedMemoryIds = matches.map((memory) => memory.id);
-    if (archivedMemoryIds.length > 0) {
-      const stmt = db.prepare(
-        "UPDATE gmos_memories SET status = 'archived', updated_at = ? WHERE id = ?",
-      );
-      const archivedAt = nowIso();
-      const tx = db.transaction((ids: string[]) => {
-        for (const memoryId of ids) {
-          stmt.run(archivedAt, memoryId);
-          syncMemoryFts(memoryId);
-          syncMemoryVector(memoryId);
-          deleteAssociationsForMemory(memoryId);
-          rejectBeliefsForMemory(memoryId, archivedAt);
-        }
-      });
-      tx(archivedMemoryIds);
-    }
+    const matchedMemoryIds = matches.map((memory) => memory.id);
+    const derivedMemoryIds = derivedConsolidationSummaryIdsForForgottenSources(
+      input.profileId,
+      matchedMemoryIds,
+    );
+    const archivedMemoryIds = archiveForgetMemoryIds({
+      profileId: input.profileId,
+      memoryIds: matchedMemoryIds,
+      derivedMemoryIds,
+      archivedAt: nowIso(),
+    });
     return { archivedMemoryIds };
   }
 

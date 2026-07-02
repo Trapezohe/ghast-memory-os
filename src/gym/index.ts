@@ -32,7 +32,11 @@ import {
   type ExternalMemoryBenchmarkFailureStage,
   type ExternalMemoryBenchmarkFailureTaxonomyEntry,
   type ExternalMemoryBenchmarkGroupTiming,
+  type ExternalMemoryBenchmarkJudge,
+  type ExternalMemoryBenchmarkJudgeProvenance,
+  type ExternalMemoryBenchmarkJudgeResult,
   type ExternalMemoryBenchmarkMode,
+  type ExternalMemoryBenchmarkProtocol,
   type ExternalMemoryBenchmarkResult,
   type ExternalMemoryBenchmarkRunManifest,
   type ExternalMemoryBenchmarkScoreAttributionArea,
@@ -59,6 +63,10 @@ import {
   type ExternalMemoryBenchmarkSuiteRunSummary,
   type RunExternalMemoryBenchmarkSuiteOptions,
 } from "./external-suite.js";
+import {
+  runExperienceHorizonGym,
+  type MemoryGymExperienceHorizonReport,
+} from "./experience-horizon.js";
 import {
   runHostCompatibilityGym,
   type HostCompatibilityGymResult,
@@ -107,6 +115,7 @@ export {
   stateBenchAgentPythonTemplate,
   runExternalMemoryBenchmark,
   runExternalMemoryBenchmarkSuite,
+  runExperienceHorizonGym,
   runHostCompatibilityGym,
 };
 export type {
@@ -125,7 +134,11 @@ export type {
   ExternalMemoryBenchmarkFailureStage,
   ExternalMemoryBenchmarkFailureTaxonomyEntry,
   ExternalMemoryBenchmarkGroupTiming,
+  ExternalMemoryBenchmarkJudge,
+  ExternalMemoryBenchmarkJudgeProvenance,
+  ExternalMemoryBenchmarkJudgeResult,
   ExternalMemoryBenchmarkMode,
+  ExternalMemoryBenchmarkProtocol,
   ExternalMemoryBenchmarkResult,
   ExternalMemoryBenchmarkRunManifest,
   ExternalMemoryBenchmarkScoreAttributionArea,
@@ -142,6 +155,7 @@ export type {
   HostCompatibilityProbeArea,
   HostCompatibilityProbeResult,
   HostCompatibilityProbeStatus,
+  MemoryGymExperienceHorizonReport,
   ParsedExternalMemoryBenchmarkDataset,
   ParseExternalMemoryBenchmarkDatasetOptions,
   RunHostCompatibilityGymOptions,
@@ -264,6 +278,13 @@ function createEmptyResult(options: NormalizedRunMemoryGymOptions): MutableGymRe
     recallQuality: {
       schema: "gmos.recall_quality.v1",
       fixtureGroups: [],
+    },
+    experienceHorizon: {
+      schema: "gmos.experience_horizon.v1",
+      pass: false,
+      deterministicReplayPass: false,
+      scenarios: [],
+      counters: {},
     },
     coverageMatrix: [],
     memoryStackCoverage: [],
@@ -2859,6 +2880,36 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "semantic_fusion_respects_visibility_gates",
     "retrieval_reranker_contract",
     "embedding_read_path_purity_default",
+  ]);
+
+  const experienceHorizon = await runExperienceHorizonGym();
+  result.experienceHorizon = experienceHorizon;
+  const experienceHorizonGates = experienceHorizon.scenarios.map((entry) => {
+    const gateName = `experience_horizon_${entry.name}`;
+    const failedAssertions = entry.assertions
+      .filter((assertion) => !assertion.passed)
+      .map((assertion) => assertion.name);
+    gate(
+      result,
+      gateName,
+      entry.pass,
+      failedAssertions.length === 0
+        ? `${entry.name} passed with counters ${JSON.stringify(entry.counters)}`
+        : `${entry.name} failed assertions: ${failedAssertions.join(", ")}`,
+      "experience_horizon",
+    );
+    return gateName;
+  });
+  gate(
+    result,
+    "experience_horizon_deterministic_replay",
+    experienceHorizon.deterministicReplayPass,
+    "experience_horizon scenarios should deep-equal across two fixed-clock in-memory runs",
+    "experience_horizon",
+  );
+  scenario(result, "experience_horizon", "dev", [
+    ...experienceHorizonGates,
+    "experience_horizon_deterministic_replay",
   ]);
 
   const hostCompatibility = createHostAdapter({

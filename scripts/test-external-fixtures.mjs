@@ -358,6 +358,12 @@ try {
   if (artifactManifest?.scoreSemantics?.primaryScore !== "strictScore") {
     failures.push("json artifact missing score semantics");
   }
+  if (artifactManifest?.protocols?.[0] !== "deterministic_local") {
+    failures.push("json artifact missing deterministic protocol manifest");
+  }
+  if (artifactManifest?.scoreSemantics?.protocol !== "deterministic_local") {
+    failures.push("json artifact missing score protocol semantics");
+  }
   if (artifactManifest?.scoreSemantics?.officialProtocol !== "not_run") {
     failures.push("json artifact did not mark official protocol as not_run");
   }
@@ -370,7 +376,11 @@ try {
   if (!markdown.includes("answer_not_in_input") || !markdown.includes("answer_normalization_mismatch")) {
     failures.push("suite markdown missing failure stages");
   }
-  if (!markdown.includes("primary=strictScore") || !markdown.includes("normalizedEvidence=diagnostic_only")) {
+  if (
+    !markdown.includes("protocol=deterministic_local") ||
+    !markdown.includes("primary=strictScore") ||
+    !markdown.includes("normalizedEvidence=diagnostic_only")
+  ) {
     failures.push("suite markdown missing score semantics fields");
   }
 } finally {

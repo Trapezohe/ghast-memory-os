@@ -10,7 +10,9 @@ import {
   type ExternalMemoryBenchmarkCounter,
   type ExternalMemoryBenchmarkDatasetFormat,
   type ExternalMemoryBenchmarkDiagnosticsLevel,
+  type ExternalMemoryBenchmarkJudge,
   type ExternalMemoryBenchmarkMode,
+  type ExternalMemoryBenchmarkProtocol,
   type ExternalMemoryBenchmarkResult,
   type ExternalMemoryBenchmarkScoreSemantics,
   type ExternalMemoryBenchmarkSliceScore,
@@ -39,12 +41,14 @@ export interface ExternalMemoryBenchmarkSuiteRunConfig {
   reuseProfiles?: boolean | undefined;
   failureSampleLimit?: number | undefined;
   diagnosticsLevel?: ExternalMemoryBenchmarkDiagnosticsLevel | undefined;
+  protocol?: ExternalMemoryBenchmarkProtocol | undefined;
 }
 
 export interface ExternalMemoryBenchmarkSuiteDocument {
   schema?: "gmos.external_benchmark_suite.v1" | undefined;
   defaults?: Omit<ExternalMemoryBenchmarkSuiteRunConfig, "id" | "inputFile" | "datasetFormat"> & {
     datasetFormat?: ExternalMemoryBenchmarkDatasetAdapter | undefined;
+    protocol?: ExternalMemoryBenchmarkProtocol | undefined;
   } | undefined;
   runs: ExternalMemoryBenchmarkSuiteRunConfig[];
 }
@@ -64,6 +68,10 @@ export interface ExternalMemoryBenchmarkSuiteRunSummary {
   strictScore: number;
   normalizedEvidenceScore: number;
   normalizedEvidencePassedCount: number;
+  officialScore: number | null;
+  officialPassedCount: number | null;
+  protocol: ExternalMemoryBenchmarkProtocol;
+  judgeName: string | null;
   caseGroupCount: number;
   reusedProfileCaseCount: number;
   runtime: ExternalMemoryBenchmarkResult["summary"]["runtime"];
@@ -112,7 +120,8 @@ export interface ExternalMemoryBenchmarkSuiteResult {
     package: ExternalMemoryBenchmarkResult["runManifest"]["package"] | null;
     git: ExternalMemoryBenchmarkResult["runManifest"]["git"] | null;
     scoreSemantics: ExternalMemoryBenchmarkScoreSemantics;
-    deterministicOnly: true;
+    protocols: ExternalMemoryBenchmarkProtocol[];
+    deterministicOnly: boolean;
   };
   runs: ExternalMemoryBenchmarkSuiteRunSummary[];
 }
@@ -127,6 +136,7 @@ export interface RunExternalMemoryBenchmarkSuiteOptions {
   suiteFile?: string | undefined;
   baseDir?: string | undefined;
   failOnBenchmarkFail?: boolean | undefined;
+  judge?: ExternalMemoryBenchmarkJudge | undefined;
   onRunResult?: ((summary: ExternalMemoryBenchmarkSuiteRunSummary) => void) | undefined;
 }
 
@@ -191,6 +201,12 @@ function diagnosticsLevelValue(
   throw new Error(`${label} must be off, basic, or full`);
 }
 
+function protocolValue(value: unknown, label: string): ExternalMemoryBenchmarkProtocol | undefined {
+  if (value === undefined) return undefined;
+  if (value === "deterministic_local" || value === "official_protocol") return value;
+  throw new Error(`${label} must be deterministic_local or official_protocol`);
+}
+
 function runId(value: unknown, label: string): string {
   const id = stringValue(value, label);
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(id)) {
@@ -218,6 +234,7 @@ function parseRunConfig(value: unknown, label: string): ExternalMemoryBenchmarkS
     reuseProfiles: optionalBoolean(record.reuseProfiles, `${label}.reuseProfiles`),
     failureSampleLimit: optionalNonNegativeInteger(record.failureSampleLimit, `${label}.failureSampleLimit`),
     diagnosticsLevel: diagnosticsLevelValue(record.diagnosticsLevel, `${label}.diagnosticsLevel`),
+    protocol: protocolValue(record.protocol, `${label}.protocol`),
   };
 }
 
@@ -250,6 +267,10 @@ function parseDefaults(value: unknown): ExternalMemoryBenchmarkSuiteDocument["de
     diagnosticsLevel: diagnosticsLevelValue(
       record.diagnosticsLevel,
       "External benchmark suite defaults.diagnosticsLevel",
+    ),
+    protocol: protocolValue(
+      record.protocol,
+      "External benchmark suite defaults.protocol",
     ),
   };
 }
@@ -312,6 +333,7 @@ function effectiveRun(
     reuseProfiles: run.reuseProfiles ?? defaults?.reuseProfiles,
     failureSampleLimit: run.failureSampleLimit ?? defaults?.failureSampleLimit,
     diagnosticsLevel: run.diagnosticsLevel ?? defaults?.diagnosticsLevel,
+    protocol: run.protocol ?? defaults?.protocol ?? "deterministic_local",
   };
 }
 
@@ -334,6 +356,7 @@ function reportOptions(input: {
   inputText: string;
   parsed: ReturnType<typeof parsedDataset>;
   inputPath: string;
+  judge?: ExternalMemoryBenchmarkJudge | undefined;
 }): RunExternalMemoryBenchmarkOptions {
   const requireConvergence = input.run.requireConvergence === true;
   const cases = requireConvergence
@@ -364,6 +387,8 @@ function reportOptions(input: {
     ...(input.run.reuseProfiles !== undefined ? { reuseProfiles: input.run.reuseProfiles } : {}),
     ...(input.run.failureSampleLimit !== undefined ? { failureSampleLimit: input.run.failureSampleLimit } : {}),
     ...(input.run.diagnosticsLevel !== undefined ? { diagnosticsLevel: input.run.diagnosticsLevel } : {}),
+    ...(input.run.protocol !== undefined ? { protocol: input.run.protocol } : {}),
+    ...(input.judge !== undefined ? { judge: input.judge } : {}),
     ...(requireConvergence ? { requireConvergence: true } : {}),
   };
 }
@@ -409,6 +434,7 @@ export async function runExternalMemoryBenchmarkSuite(
         inputText,
         parsed,
         inputPath,
+        judge: options.judge,
       }),
     );
     reports[run.id] = report;
@@ -427,6 +453,10 @@ export async function runExternalMemoryBenchmarkSuite(
       strictScore: report.strictScore,
       normalizedEvidenceScore: report.normalizedEvidenceScore,
       normalizedEvidencePassedCount: report.normalizedEvidencePassedCount,
+      officialScore: report.officialScore,
+      officialPassedCount: report.officialPassedCount,
+      protocol: report.runManifest.protocol,
+      judgeName: report.runManifest.judgeProvenance.name,
       caseGroupCount: report.runManifest.execution.caseGroupCount,
       reusedProfileCaseCount: report.runManifest.execution.reusedProfileCaseCount,
       runtime: report.summary.runtime,
@@ -461,6 +491,7 @@ export async function runExternalMemoryBenchmarkSuite(
   const totalFailureStages = aggregateCounters(runs.map((run) => run.failureStages));
   const totalScoreAttribution = aggregateCounters(runs.map((run) => run.scoreAttribution));
   const firstRunManifest = Object.values(reports)[0]?.runManifest;
+  const protocols = [...new Set(runs.map((run) => run.protocol))].sort();
   const failOnBenchmarkFail = options.failOnBenchmarkFail === true;
   const finishedAt = new Date().toISOString();
   return {
@@ -499,8 +530,9 @@ export async function runExternalMemoryBenchmarkSuite(
         platform: firstRunManifest?.platform ?? null,
         package: firstRunManifest?.package ?? null,
         git: firstRunManifest?.git ?? null,
-        scoreSemantics: { ...EXTERNAL_MEMORY_BENCHMARK_SCORE_SEMANTICS },
-        deterministicOnly: true,
+        scoreSemantics: firstRunManifest?.scoreSemantics ?? { ...EXTERNAL_MEMORY_BENCHMARK_SCORE_SEMANTICS },
+        protocols,
+        deterministicOnly: protocols.every((protocol) => protocol === "deterministic_local"),
       },
       runs,
     },
