@@ -211,24 +211,25 @@ read-path purity gates.
 ## CLI
 
 ```bash
-npm install
-npm run build
+npm install -g @ghast/memory
+# For a project-local dependency, use `npm exec -- gmos ...`
+# or `npm exec -- gmos-inspect ...` instead.
 
-node dist/cli/gmos.js init --db ./gmos.db
-node dist/cli/gmos.js doctor --db ./gmos.db --host ghast --format markdown
-node dist/cli/gmos.js status --db ./gmos.db --profile local --host ghast --format markdown
-node dist/cli/gmos.js add --db ./gmos.db --profile local --kind preference --text "回答风格：简洁，先给结论"
-node dist/cli/gmos.js add --db ./gmos.db --profile local --kind boundary --text "不要再提醒我这个项目延期了。"
-node dist/cli/gmos.js search --db ./gmos.db --profile local --query "结论 方案"
-node dist/cli/gmos.js history --db ./gmos.db --profile local --query "之前的状态"
-node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
-node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "这个项目之前是什么状态？" --temporal-mode history
-node dist/cli/gmos-inspect.js --db ./gmos.db --profile local --query "这个项目现在是什么状态？" --temporal-mode current --format markdown
-node dist/cli/gmos.js explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --include-trace
-node dist/cli/gmos.js mcp serve --db ./gmos.db --profile local
-node dist/cli/gmos.js http serve --db ./gmos.db --profile local --port 4787 --host ghast --auth-token local-dev-token
-node dist/cli/gmos.js evolution report --db ./gmos.db --profile local --format markdown
-node dist/cli/gmos.js gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
+gmos init --db ./gmos.db
+gmos doctor --db ./gmos.db --host ghast --format markdown
+gmos status --db ./gmos.db --profile local --host ghast --format markdown
+gmos add --db ./gmos.db --profile local --kind preference --text "回答风格：简洁，先给结论"
+gmos add --db ./gmos.db --profile local --kind boundary --text "不要再提醒我这个项目延期了。"
+gmos search --db ./gmos.db --profile local --query "结论 方案"
+gmos history --db ./gmos.db --profile local --query "之前的状态"
+gmos prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
+gmos reconstruct --db ./gmos.db --profile local --text "这个项目之前是什么状态？" --temporal-mode history
+gmos-inspect --db ./gmos.db --profile local --query "这个项目现在是什么状态？" --temporal-mode current --format markdown
+gmos explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --include-trace
+gmos mcp serve --db ./gmos.db --profile local
+gmos http serve --db ./gmos.db --profile local --port 4787 --host ghast --auth-token local-dev-token
+gmos evolution report --db ./gmos.db --profile local --format markdown
+gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
 ```
 
 ## QA Gates
@@ -236,9 +237,9 @@ node dist/cli/gmos.js gate --generated-seeds 3 --scale-sizes 100,1000 --format m
 ```bash
 npm run gate:pr
 npm run release:evidence -- --output-dir ./release-evidence/alpha-local
-node dist/cli/gmos.js gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format json --require-convergence --progress
-node dist/cli/gmos.js repair --db ./gmos.db --search-index
-node dist/cli/gmos.js repair --db ./gmos.db --associations
+gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format json --require-convergence --progress
+gmos repair --db ./gmos.db --search-index
+gmos repair --db ./gmos.db --associations
 ```
 
 `gate:pr` is the local and CI PR gate. It runs build/test, published examples,
