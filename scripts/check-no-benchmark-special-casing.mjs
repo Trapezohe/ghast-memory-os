@@ -64,12 +64,30 @@ const fixtureScanRoots = [
   path.join(root, "test/fixtures/external-benchmark"),
   path.join(root, "examples/external-mini-fixture.jsonl"),
 ];
-const fixtureAnswerKeys = new Set(["expectedAny", "expectedAll", "forbiddenAny", "answer", "adversarial_answer"]);
+const fixtureAnswerKeys = new Set([
+  "expected",
+  "expectedAny",
+  "expectedAll",
+  "expected_answer",
+  "final_answer",
+  "forbiddenAny",
+  "answer",
+  "answers",
+  "adversarial_answer",
+  "ground_truth",
+  "gold_answer",
+  "reference_answer",
+]);
 const fixtureIdentifierKeys = new Set([
   "id",
   "sample_id",
   "question_id",
   "inputFile",
+  "dataset_id",
+  "session_id",
+  "haystack_session_ids",
+  "answer_session_ids",
+  "dia_id",
 ]);
 
 const selfCheckSamples = [
@@ -166,6 +184,18 @@ if (
   stableFixtureAnswerTerm("2022") !== "2022"
 ) {
   throw new Error("fixture answer scanner self-check failed");
+}
+if (
+  !collectFixtureAnswers({
+    answers: ["Alpha route"],
+    nested: { final_answer: "Beta route", ground_truth: "Gamma route" },
+  }).includes("Gamma route") ||
+  !collectFixtureIdentifiers({
+    session_id: "session-1",
+    nested: { haystack_session_ids: ["session-2"] },
+  }).includes("session-2")
+) {
+  throw new Error("fixture scanner common-key self-check failed");
 }
 
 function uniqueFiles(files) {
