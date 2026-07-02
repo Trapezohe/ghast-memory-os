@@ -37,7 +37,7 @@ export type MemoryKind =
   | "person"
   | "task_trajectory";
 
-export type MemoryStatus = "active" | "archived";
+export type MemoryStatus = "active" | "dormant" | "archived";
 
 export type FailureKind =
   | "missed_recall"
@@ -337,6 +337,9 @@ export interface MemoryRecord {
   sensitivity: Sensitivity;
   status: MemoryStatus;
   confidence: number;
+  recallCount?: number | undefined;
+  lastRecalledAt?: string | null | undefined;
+  reinforcement?: number | undefined;
   sourceEventId?: string | null | undefined;
   metadata: Record<string, unknown>;
   createdAt: string;
@@ -557,6 +560,7 @@ export interface CommitOutcomeInput {
   summary?: string | undefined;
   failureKind?: FailureKind | undefined;
   createdAt?: string | undefined;
+  usedMemoryIds?: string[] | undefined;
 }
 
 export interface FeedbackInput {
@@ -564,6 +568,8 @@ export interface FeedbackInput {
   content: string;
   failureKind?: FailureKind | undefined;
   createdAt?: string | undefined;
+  relatedMemoryIds?: string[] | undefined;
+  signal?: "positive" | "negative" | undefined;
 }
 
 export interface ForgetInput {
@@ -847,6 +853,88 @@ export interface TaskTrajectoryInput {
   createdAt?: string | undefined;
 }
 
+export interface CommitOutcomeStoreInput extends TaskTrajectoryInput {
+  usedMemoryIds?: string[] | undefined;
+  failure?: RecordFailureInput | undefined;
+}
+
+export interface FeedbackSignalStoreInput extends RecordFailureInput {
+  relatedMemoryIds?: string[] | undefined;
+  signal?: "positive" | "negative" | undefined;
+}
+
+export interface MemoryLifecycleConfig {
+  enabled?: boolean | undefined;
+  halfLivesDays?: Partial<Record<MemoryKind, number>> | undefined;
+  dormantBelow?: number | undefined;
+  archiveAfterDormantDays?: number | undefined;
+  autoTransitionKinds?: MemoryKind[] | undefined;
+}
+
+export type MaintenancePhase = "decay";
+
+export interface ResolvedMemoryLifecycleConfig {
+  enabled: boolean;
+  halfLivesDays: Record<MemoryKind, number>;
+  dormantBelow: number;
+  archiveAfterDormantDays: number;
+  autoTransitionKinds: MemoryKind[];
+}
+
+export interface MaintenanceInput {
+  profileId?: string | undefined;
+  dryRun?: boolean | undefined;
+  now?: string | undefined;
+  phases?: MaintenancePhase[] | undefined;
+}
+
+export interface MaintenanceTransition {
+  memoryId: string;
+  kind: MemoryKind;
+  from: MemoryStatus;
+  to: MemoryStatus;
+  retention: number;
+  reasons: string[];
+}
+
+export interface MaintenanceExemption {
+  memoryId: string;
+  kind: MemoryKind;
+  status: MemoryStatus;
+  reason: string;
+}
+
+export interface MaintenanceSkippedSummary {
+  reason: string;
+  count: number;
+}
+
+export interface MaintenanceReport {
+  schema: "gmos.maintenance_report.v1";
+  profileId: string;
+  now: string;
+  dryRun: boolean;
+  evaluated: number;
+  transitions: MaintenanceTransition[];
+  exempted: MaintenanceExemption[];
+  skipped: MaintenanceSkippedSummary[];
+}
+
+export interface MaintenanceStoreInput extends MaintenanceInput {
+  profileId: string;
+  now: string;
+  dryRun: boolean;
+  phases: MaintenancePhase[];
+  lifecycle: ResolvedMemoryLifecycleConfig;
+}
+
+export interface MemoryLifecycleStatus {
+  schema: "gmos.lifecycle_status.v1";
+  profileId?: string | undefined;
+  counts: Record<MemoryStatus, number> & { total: number };
+  lastMaintenanceAt?: string | undefined;
+}
+
 export interface ArchiveStaleHostImportsInput {
   profileId: string;
   sourceType: string;
@@ -910,6 +998,12 @@ export interface MemoryStore {
   archiveStaleHostImports?(
     input: ArchiveStaleHostImportsInput,
   ): Promise<string[]> | string[];
+  commitOutcome?(input: CommitOutcomeStoreInput): Promise<void> | void;
+  recordFeedbackSignal?(input: FeedbackSignalStoreInput): Promise<void> | void;
+  maintain?(input: MaintenanceStoreInput): Promise<MaintenanceReport> | MaintenanceReport;
+  lifecycleStatus?(
+    input?: { profileId?: string | undefined },
+  ): Promise<MemoryLifecycleStatus> | MemoryLifecycleStatus;
   listActionPolicies(
     profileId: string,
     options?: { includeSensitive?: boolean | undefined },
@@ -950,6 +1044,7 @@ export interface MemoryOSOptions {
     cueExtractor?: MemoryCueExtractor | undefined;
     inferTemporalCuesFromText?: boolean | undefined;
   } | undefined;
+  lifecycle?: MemoryLifecycleConfig | undefined;
   safety?: {
     /**
      * Host-specific additive sensitivity classifier.
@@ -986,6 +1081,7 @@ export interface MemoryOS {
   explainEvidencePath(input: ExplainEvidencePathInput): Promise<EvidencePathExplanation>;
   commitOutcome(input: CommitOutcomeInput): Promise<void>;
   recordFeedback(input: FeedbackInput): Promise<void>;
+  maintain(input?: MaintenanceInput): Promise<MaintenanceReport>;
   forget(input: ForgetInput): Promise<ForgetResult>;
   explain(id: string, profileId?: string): Promise<ExplainResult | null>;
   close(): Promise<void>;

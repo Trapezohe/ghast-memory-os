@@ -9,6 +9,7 @@ import type {
   HostEvent,
   LowLevelAddMemoryInput,
   LowLevelSearchInput,
+  MaintenanceInput,
   MemoryOS,
   MemoryKind,
   MemoryRecord,
@@ -309,6 +310,17 @@ function optionalFailureKind(args: Record<string, unknown>): FailureKind | undef
   return value as FailureKind;
 }
 
+function optionalFeedbackSignal(
+  args: Record<string, unknown>,
+): FeedbackInput["signal"] {
+  const value = args.signal;
+  if (value === undefined) return undefined;
+  if (value !== "positive" && value !== "negative") {
+    throw new Error("signal must be positive or negative");
+  }
+  return value;
+}
+
 function statusArg(args: Record<string, unknown>): CommitOutcomeInput["status"] {
   const value = args.status;
   if (value !== "completed" && value !== "failed") {
@@ -588,7 +600,16 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
 function outcomeInput(args: Record<string, unknown>): CommitOutcomeInput {
   assertAllowedKeys(
     args,
-    new Set(["profileId", "taskId", "objective", "status", "summary", "failureKind", "createdAt"]),
+    new Set([
+      "profileId",
+      "taskId",
+      "objective",
+      "status",
+      "summary",
+      "failureKind",
+      "createdAt",
+      "usedMemoryIds",
+    ]),
     "memory.commit_outcome",
   );
   const input: CommitOutcomeInput = {
@@ -600,18 +621,27 @@ function outcomeInput(args: Record<string, unknown>): CommitOutcomeInput {
   const summary = optionalString(args, "summary");
   const failureKind = optionalFailureKind(args);
   const createdAt = optionalString(args, "createdAt");
+  const usedMemoryIds = optionalStringArrayValue(args.usedMemoryIds, "usedMemoryIds");
   if (profileId !== undefined) input.profileId = profileId;
   if (taskId !== undefined) input.taskId = taskId;
   if (summary !== undefined) input.summary = summary;
   if (failureKind !== undefined) input.failureKind = failureKind;
   if (createdAt !== undefined) input.createdAt = createdAt;
+  if (usedMemoryIds !== undefined) input.usedMemoryIds = usedMemoryIds;
   return input;
 }
 
 function feedbackInput(args: Record<string, unknown>): FeedbackInput {
   assertAllowedKeys(
     args,
-    new Set(["profileId", "content", "failureKind", "createdAt"]),
+    new Set([
+      "profileId",
+      "content",
+      "failureKind",
+      "createdAt",
+      "relatedMemoryIds",
+      "signal",
+    ]),
     "memory.record_feedback",
   );
   const input: FeedbackInput = {
@@ -620,9 +650,29 @@ function feedbackInput(args: Record<string, unknown>): FeedbackInput {
   const profileId = optionalString(args, "profileId");
   const failureKind = optionalFailureKind(args);
   const createdAt = optionalString(args, "createdAt");
+  const relatedMemoryIds = optionalStringArrayValue(args.relatedMemoryIds, "relatedMemoryIds");
+  const signal = optionalFeedbackSignal(args);
   if (profileId !== undefined) input.profileId = profileId;
   if (failureKind !== undefined) input.failureKind = failureKind;
   if (createdAt !== undefined) input.createdAt = createdAt;
+  if (relatedMemoryIds !== undefined) input.relatedMemoryIds = relatedMemoryIds;
+  if (signal !== undefined) input.signal = signal;
+  return input;
+}
+
+function maintainInput(args: Record<string, unknown>): MaintenanceInput {
+  assertAllowedKeys(
+    args,
+    new Set(["profileId", "dryRun", "now"]),
+    "memory.maintain",
+  );
+  const input: MaintenanceInput = {};
+  const profileId = optionalString(args, "profileId");
+  const dryRun = optionalBoolean(args, "dryRun");
+  const now = optionalString(args, "now");
+  if (profileId !== undefined) input.profileId = profileId;
+  if (dryRun !== undefined) input.dryRun = dryRun;
+  if (now !== undefined) input.now = now;
   return input;
 }
 
@@ -737,6 +787,8 @@ export function createMemoryMcpServer(memory: MemoryOS): MemoryMcpServer {
       await memory.recordFeedback(feedbackInput(object));
       return ok({ ok: true });
     },
+    "memory.maintain": async (object) =>
+      ok({ ok: true, report: await memory.maintain(maintainInput(object)) }),
     "memory.forget": async (object) =>
       ok({ ok: true, result: await memory.forget(forgetInput(object)) }),
     "memory.explain_belief": async (object) => {

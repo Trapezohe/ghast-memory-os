@@ -19,13 +19,16 @@ host event
 -> prepareTurn() or reconstructContext()
 -> context, evidence, action policy
 -> commitOutcome() / recordFeedback()
+-> explicit maintain()
+-> active / dormant / archived lifecycle evidence
 ```
 
 ## Sources Of Truth
 
 - `gmos_evidence_events`: evidence ledger for observed host events and derived
   signals.
-- `gmos_memories`: active and archived memory records.
+- `gmos_memories`: active, dormant, and archived memory records, including
+  recall counters and reinforcement signals.
 - `gmos_world_beliefs`: current and historical world-state beliefs.
 - `gmos_task_trajectories`: reusable procedural and task outcome traces.
 - `gmos_failure_events`: feedback and failure loop events.
@@ -43,6 +46,7 @@ Write paths:
 - `observe()`
 - `commitOutcome()`
 - `recordFeedback()`
+- `maintain()`
 - `forget()`
 - low-level admin/import operations
 - repair commands that rebuild derived indexes
@@ -57,6 +61,26 @@ Read paths:
 
 Read paths are checked by gate tests and read-audit snapshots. They should not
 write to memory, evidence, failure, association, FTS, or vector tables.
+
+## Lifecycle Model
+
+Forgetting is a reversible lifecycle, not only explicit deletion. `active`
+memories can become `dormant` through explicit `maintain()` when deterministic
+retention scoring falls below the configured threshold. Dormant memories are
+excluded from ordinary context and active association projection like archived
+memories, but remain visible to history-purpose recall and status-filtered
+management surfaces. Long-dormant memories can later become `archived`.
+
+`commitOutcome({ usedMemoryIds })` is the usage-signal write path. It increments
+recall counters, sets `last_recalled_at`, and reactivates dormant memories in the
+same transaction as the outcome write. `recordFeedback({ relatedMemoryIds,
+signal })` updates bounded reinforcement in the same transaction as feedback.
+
+Every maintenance transition writes a content-free evidence event with
+`source_type = "maintenance"` and `eligible_for_long_term_memory = 0`. Dry-run
+maintenance computes the same report but writes nothing and is covered by the
+read-audit snapshot mechanism. No read path runs lifecycle maintenance in the
+background.
 
 ## Reconstruction Model
 

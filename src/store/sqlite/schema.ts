@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-export const GMOS_SQLITE_SCHEMA_VERSION = 7;
+export const GMOS_SQLITE_SCHEMA_VERSION = 8;
 
 const READ_AUDIT_REVISION_TABLES = [
   "gmos_evidence_events",
@@ -113,6 +113,9 @@ export function ensureSqliteSchema(db: Database.Database): void {
       sensitivity TEXT NOT NULL DEFAULT 'normal',
       status TEXT NOT NULL DEFAULT 'active',
       confidence REAL NOT NULL DEFAULT 0.5,
+      recall_count INTEGER NOT NULL DEFAULT 0,
+      last_recalled_at TEXT,
+      reinforcement REAL NOT NULL DEFAULT 0,
       source_event_id TEXT,
       metadata_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL,
@@ -257,6 +260,15 @@ export function ensureSqliteSchema(db: Database.Database): void {
   if (!columnExists(db, "gmos_world_beliefs", "metadata_json")) {
     db.exec("ALTER TABLE gmos_world_beliefs ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';");
   }
+  if (!columnExists(db, "gmos_memories", "recall_count")) {
+    db.exec("ALTER TABLE gmos_memories ADD COLUMN recall_count INTEGER NOT NULL DEFAULT 0;");
+  }
+  if (!columnExists(db, "gmos_memories", "last_recalled_at")) {
+    db.exec("ALTER TABLE gmos_memories ADD COLUMN last_recalled_at TEXT;");
+  }
+  if (!columnExists(db, "gmos_memories", "reinforcement")) {
+    db.exec("ALTER TABLE gmos_memories ADD COLUMN reinforcement REAL NOT NULL DEFAULT 0;");
+  }
   db.exec(`
     INSERT OR IGNORE INTO gmos_schema_migrations(version, name, applied_at)
       VALUES (
@@ -284,6 +296,12 @@ export function ensureSqliteSchema(db: Database.Database): void {
       VALUES (
         7,
         'relation_belief_association_projection',
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      );
+    INSERT OR IGNORE INTO gmos_schema_migrations(version, name, applied_at)
+      VALUES (
+        8,
+        'memory_lifecycle_signals',
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       );
   `);

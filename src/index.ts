@@ -5,6 +5,13 @@ export {
 } from "./kernel/entities.js";
 export { createOpenAICompatibleExtractor } from "./kernel/openai-compatible-extractor.js";
 export {
+  DEFAULT_AUTO_TRANSITION_KINDS,
+  DEFAULT_MEMORY_HALF_LIVES_DAYS,
+  memoryKindCanAutoTransition,
+  resolveMemoryLifecycleConfig,
+  retentionScore,
+} from "./kernel/retention.js";
+export {
   classifySensitivity,
   eligibleForLongTermMemory,
   isSecretLikeMemoryContent,

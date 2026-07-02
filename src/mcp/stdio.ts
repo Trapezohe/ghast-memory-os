@@ -140,6 +140,7 @@ const commitOutcomeSchema = z.object({
   summary: z.string().optional(),
   failureKind: failureKindSchema.optional(),
   createdAt: z.string().optional(),
+  usedMemoryIds: z.array(z.string()).optional(),
 }).strict();
 
 const recordFeedbackSchema = z.object({
@@ -147,6 +148,14 @@ const recordFeedbackSchema = z.object({
   content: z.string().min(1),
   failureKind: failureKindSchema.optional(),
   createdAt: z.string().optional(),
+  relatedMemoryIds: z.array(z.string()).optional(),
+  signal: z.enum(["positive", "negative"]).optional(),
+}).strict();
+
+const maintainSchema = z.object({
+  profileId: z.string().optional(),
+  dryRun: z.boolean().optional(),
+  now: z.string().optional(),
 }).strict();
 
 const forgetSchema = z.object({
@@ -173,6 +182,7 @@ const STDIO_TOOL_SCHEMAS: Record<MemoryMcpToolName, z.ZodObject> = {
   "memory.explain_evidence_path": explainEvidencePathSchema,
   "memory.commit_outcome": commitOutcomeSchema,
   "memory.record_feedback": recordFeedbackSchema,
+  "memory.maintain": maintainSchema,
   "memory.forget": forgetSchema,
   "memory.explain_belief": explainBeliefSchema,
 };

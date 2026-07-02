@@ -62,6 +62,7 @@ import type {
   FailureKind,
   LowLevelListMemoriesInput,
   LowLevelSearchInput,
+  MaintenanceReport,
   MemoryKind,
   ReadAuditSnapshot,
   ReconstructionIntentHint,
@@ -110,6 +111,7 @@ Usage:
   gmos repair --db ./gmos.db --search-index
   gmos repair --db ./gmos.db --associations
   gmos status --db ./gmos.db --profile local --host ghast --format markdown
+  gmos maintain --db ./gmos.db --profile local --dry-run --now 2026-07-02T00:00:00.000Z --format markdown
   gmos add --db ./gmos.db --profile local --kind preference --text "回答风格：简洁，先给结论"
   gmos update --db ./gmos.db --profile local --id memory_xxx --text "回答风格：先给结论，再列方案"
   gmos delete --db ./gmos.db --profile local --id memory_xxx --reason "manual cleanup"
@@ -451,8 +453,8 @@ function diagnosticsLevelOption(): "off" | "basic" | "full" | undefined {
 function listStatusOption(): LowLevelListMemoriesInput["status"] {
   const raw = value("--status");
   if (!raw) return undefined;
-  if (raw !== "active" && raw !== "archived" && raw !== "any") {
-    throw new Error("--status must be one of: active, archived, any");
+  if (raw !== "active" && raw !== "dormant" && raw !== "archived" && raw !== "any") {
+    throw new Error("--status must be one of: active, dormant, archived, any");
   }
   return raw;
 }
@@ -571,6 +573,7 @@ const PUBLIC_CLI_COMMANDS = [
   "doctor",
   "repair",
   "status",
+  "maintain",
   "add",
   "update",
   "delete",
@@ -630,6 +633,45 @@ function renderCliVersionMarkdown(report: CliVersionReport): string {
     `Default storage: ${report.trustContract.defaultStorage}`,
     `Encrypted by default: ${report.trustContract.encryptedByDefault ? "yes" : "no"}`,
     `Cloud required: ${report.trustContract.cloudRequired ? "yes" : "no"}`,
+    "",
+  ].join("\n");
+}
+
+function renderMaintenanceMarkdown(report: MaintenanceReport): string {
+  const transitionRows = report.transitions.map((transition) =>
+    `| ${transition.memoryId} | ${transition.kind} | ${transition.from} | ${transition.to} | ${transition.retention.toFixed(4)} | ${transition.reasons.join(", ")} |`
+  );
+  const exemptRows = report.exempted.map((exemption) =>
+    `| ${exemption.memoryId} | ${exemption.kind} | ${exemption.status} | ${exemption.reason} |`
+  );
+  const skippedRows = report.skipped.map((entry) => `| ${entry.reason} | ${entry.count} |`);
+  return [
+    "# gmOS Maintenance Report",
+    "",
+    `Profile: ${report.profileId}`,
+    `Now: ${report.now}`,
+    `Dry run: ${report.dryRun ? "yes" : "no"}`,
+    `Evaluated: ${report.evaluated}`,
+    `Transitions: ${report.transitions.length}`,
+    "",
+    "## Transitions",
+    "",
+    transitionRows.length === 0
+      ? "No transitions."
+      : "| Memory | Kind | From | To | Retention | Reasons |\n| --- | --- | --- | --- | ---: | --- |\n" +
+          transitionRows.join("\n"),
+    "",
+    "## Exempted",
+    "",
+    exemptRows.length === 0
+      ? "No exemptions."
+      : "| Memory | Kind | Status | Reason |\n| --- | --- | --- | --- |\n" + exemptRows.join("\n"),
+    "",
+    "## Skipped",
+    "",
+    skippedRows.length === 0
+      ? "No skipped items."
+      : "| Reason | Count |\n| --- | ---: |\n" + skippedRows.join("\n"),
     "",
   ].join("\n");
 }
@@ -1077,6 +1119,16 @@ async function main(): Promise<void> {
         return;
       }
       usage();
+    }
+
+    if (command === "maintain") {
+      const report = await memory.maintain({
+        profileId,
+        dryRun: has("--dry-run"),
+        ...(value("--now") !== undefined ? { now: value("--now") } : {}),
+      });
+      printReport(report, renderMaintenanceMarkdown(report));
+      return;
     }
 
     if (command === "add") {

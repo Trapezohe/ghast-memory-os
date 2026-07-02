@@ -7,6 +7,7 @@ export const PUBLIC_MEMORY_MCP_TOOL_NAMES = [
   "memory.explain_evidence_path",
   "memory.commit_outcome",
   "memory.record_feedback",
+  "memory.maintain",
   "memory.forget",
   "memory.explain_belief",
   "memory.runtime_info",
@@ -49,6 +50,12 @@ export const PUBLIC_MEMORY_HTTP_ROUTE_REGISTRY = [
     pathname: "/feedback",
     route: "POST /feedback",
     toolName: "memory.record_feedback",
+  },
+  {
+    method: "POST",
+    pathname: "/maintain",
+    route: "POST /maintain",
+    toolName: "memory.maintain",
   },
   { method: "POST", pathname: "/forget", route: "POST /forget", toolName: "memory.forget" },
   {

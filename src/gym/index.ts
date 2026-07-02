@@ -558,6 +558,187 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "read_path_side_effects",
   ]);
 
+  const lifecycleProfile = "gym_lifecycle";
+  const lifecycleNow = "2026-07-02T00:00:00.000Z";
+  const staleMemory = await memory.add({
+    profileId: lifecycleProfile,
+    kind: "fact",
+    content: "LifecycleDormantSignal stale fact should decay.",
+    confidence: 0.4,
+    createdAt: "2020-01-01T00:00:00.000Z",
+  });
+  await memory.add({
+    profileId: lifecycleProfile,
+    kind: "boundary",
+    content: "LifecycleBoundarySignal should never auto-transition.",
+    confidence: 0.4,
+    createdAt: "2020-01-01T00:00:00.000Z",
+  });
+  await memory.add({
+    profileId: lifecycleProfile,
+    kind: "person",
+    content: "PERSON: LifecyclePersonSignal should never auto-transition.",
+    confidence: 0.4,
+    createdAt: "2020-01-01T00:00:00.000Z",
+    allowPerson: true,
+  });
+  const dryRunBefore = await store.readAuditSnapshot();
+  const dryRunMaintenance = await memory.maintain({
+    profileId: lifecycleProfile,
+    dryRun: true,
+    now: lifecycleNow,
+  });
+  const dryRunAfter = await store.readAuditSnapshot();
+  gate(
+    result,
+    "maintenance_dry_run_read_audit_pure",
+    dryRunMaintenance.transitions.some(
+      (transition) => transition.memoryId === staleMemory.id && transition.to === "dormant",
+    ) && JSON.stringify(dryRunBefore) === JSON.stringify(dryRunAfter),
+    "dry-run maintain should compute transitions without writes",
+    "lifecycle",
+  );
+  const maintenance = await memory.maintain({
+    profileId: lifecycleProfile,
+    now: lifecycleNow,
+  });
+  const secondMaintenance = await memory.maintain({
+    profileId: lifecycleProfile,
+    now: lifecycleNow,
+  });
+  const dormantMemories = await memory.list({
+    profileId: lifecycleProfile,
+    status: "dormant",
+    query: "LifecycleDormantSignal",
+    limit: 10,
+  });
+  const lifecyclePrepared = await memory.prepareTurn({
+    profileId: lifecycleProfile,
+    messages: [{ role: "user", content: "LifecycleDormantSignal" }],
+  });
+  const lifecycleHistory = await memory.search({
+    profileId: lifecycleProfile,
+    query: "LifecycleDormantSignal",
+    purpose: "history",
+    limit: 10,
+  });
+  const protectedLifecycleMemories = await memory.list({
+    profileId: lifecycleProfile,
+    status: "active",
+    includePerson: true,
+    query: "LifecycleBoundarySignal LifecyclePersonSignal",
+    limit: 10,
+  });
+  gate(
+    result,
+    "lifecycle_decay_to_dormant",
+    maintenance.transitions.some(
+      (transition) => transition.memoryId === staleMemory.id && transition.to === "dormant",
+    ) && dormantMemories.some((entry) => entry.id === staleMemory.id),
+    "maintain should transition stale unused memory to dormant",
+    "lifecycle",
+  );
+  gate(
+    result,
+    "lifecycle_exempts_boundary_and_person",
+    protectedLifecycleMemories.some((entry) => entry.kind === "boundary") &&
+      protectedLifecycleMemories.some((entry) => entry.kind === "person"),
+    "boundary and person memories should not auto-transition by default",
+    "lifecycle",
+  );
+  gate(
+    result,
+    "dormant_excluded_from_prepare_context",
+    !lifecyclePrepared.contextBlock.includes("LifecycleDormantSignal"),
+    "dormant memories should be excluded from ordinary prepareTurn context",
+    "lifecycle",
+  );
+  gate(
+    result,
+    "history_reaches_dormant_memory",
+    lifecycleHistory.some((entry) => entry.id === staleMemory.id),
+    "history-purpose recall should reach dormant memories",
+    "lifecycle",
+  );
+  gate(
+    result,
+    "maintenance_idempotent_same_now",
+    secondMaintenance.transitions.length === 0,
+    "running maintain twice with the same now should not create new transitions",
+    "lifecycle",
+  );
+  const forgottenDormant = await memory.forget({
+    profileId: lifecycleProfile,
+    query: "LifecycleDormantSignal",
+  });
+  const dormantAfterForgetContext = await memory.prepareTurn({
+    profileId: lifecycleProfile,
+    messages: [{ role: "user", content: "LifecycleDormantSignal" }],
+  });
+  const archivedDormant = await memory.list({
+    profileId: lifecycleProfile,
+    status: "archived",
+    query: "LifecycleDormantSignal",
+    limit: 10,
+  });
+  gate(
+    result,
+    "forget_archives_dormant_memory",
+    forgottenDormant.archivedMemoryIds.includes(staleMemory.id) &&
+      archivedDormant.some((entry) => entry.id === staleMemory.id) &&
+      !dormantAfterForgetContext.contextBlock.includes("LifecycleDormantSignal"),
+    "forget should archive dormant matches and keep ordinary context clean",
+    "lifecycle",
+  );
+  const usedDormant = await memory.add({
+    profileId: lifecycleProfile,
+    kind: "fact",
+    content: "LifecycleUsedDormantSignal should reactivate on outcome.",
+    confidence: 0.4,
+    createdAt: "2020-01-01T00:10:00.000Z",
+  });
+  await memory.maintain({
+    profileId: lifecycleProfile,
+    now: "2026-07-02T00:10:00.000Z",
+  });
+  await memory.commitOutcome({
+    profileId: lifecycleProfile,
+    taskId: "lifecycle-usage",
+    objective: "Use dormant lifecycle memory",
+    status: "completed",
+    createdAt: "2026-07-02T00:11:00.000Z",
+    usedMemoryIds: [usedDormant.id, "unknown_memory"],
+  });
+  const reactivated = await memory.get({
+    profileId: lifecycleProfile,
+    id: usedDormant.id,
+  });
+  const reactivationEvidence = await memory.listEvidence({
+    profileId: lifecycleProfile,
+    sourceType: "memory.lifecycle",
+    limit: 20,
+  });
+  gate(
+    result,
+    "commit_outcome_reactivates_dormant_usage",
+    reactivated?.status === "active" &&
+      reactivated.recallCount === 1 &&
+      reactivated.lastRecalledAt === "2026-07-02T00:11:00.000Z" &&
+      reactivationEvidence.some((event) => event.payload.memoryId === usedDormant.id),
+    "commitOutcome usedMemoryIds should reactivate dormant memories and bump recall counters",
+    "lifecycle",
+  );
+  scenario(result, "memory_lifecycle", "dev", [
+    "maintenance_dry_run_read_audit_pure",
+    "lifecycle_decay_to_dormant",
+    "lifecycle_exempts_boundary_and_person",
+    "dormant_excluded_from_prepare_context",
+    "history_reaches_dormant_memory",
+    "maintenance_idempotent_same_now",
+    "forget_archives_dormant_memory",
+    "commit_outcome_reactivates_dormant_usage",
+  ]);
+
   await memory.add({
     profileId: "gym_reconstruct",
     kind: "project",

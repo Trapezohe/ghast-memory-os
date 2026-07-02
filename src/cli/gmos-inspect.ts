@@ -223,6 +223,7 @@ function renderMarkdown(report: InspectReport): string {
     "",
     `- evidence: ${report.counts.evidence}`,
     `- active memories: ${report.counts.activeMemories}`,
+    `- dormant memories: ${report.counts.dormantMemories}`,
     `- archived memories: ${report.counts.archivedMemories}`,
     `- row count tables: ${Object.keys(report.rowCounts).length}`,
     "",
@@ -297,6 +298,7 @@ interface InspectReport {
   counts: {
     evidence: number;
     activeMemories: number;
+    dormantMemories: number;
     archivedMemories: number;
   };
   rowCounts: Record<string, number>;
@@ -369,6 +371,7 @@ async function main(): Promise<void> {
     try {
       const evidence = await memory.listEvidence({ profileId, limit: evidenceLimit });
       const activeMemories = await memory.list({ profileId, status: "active" });
+      const dormantMemories = await memory.list({ profileId, status: "dormant" });
       const archivedMemories = await memory.list({ profileId, status: "archived" });
       const rowCounts = await store.rowCounts();
       const failureSummary = (
@@ -399,6 +402,7 @@ async function main(): Promise<void> {
       counts: {
         evidence: evidence.length,
         activeMemories: activeMemories.length,
+        dormantMemories: dormantMemories.length,
         archivedMemories: archivedMemories.length,
       },
       rowCounts,

@@ -1,9 +1,13 @@
 import { redactForReport } from "../kernel/safety.js";
 import type {
+  CommitOutcomeStoreInput,
   FailureKind,
+  FeedbackSignalStoreInput,
   MemoryOSOptions,
   MemorySensitivityClassifierInput,
+  RecordFailureInput,
   Sensitivity,
+  TaskTrajectoryInput,
 } from "../kernel/types.js";
 import {
   redactRuntimePayloadRecord,
@@ -75,7 +79,21 @@ export async function recordRuntimeFailure(
   },
   classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
 ): Promise<void> {
-  await store.recordFailure({
+  await store.recordFailure(runtimeFailureForStorage(input, classifyRuntimeSensitivity));
+}
+
+export function runtimeFailureForStorage(
+  input: {
+    profileId: string;
+    failureKind: FailureKind;
+    content: string;
+    createdAt?: string | undefined;
+    metadata?: Record<string, unknown> | undefined;
+    additionalSurfaces?: MemorySensitivityClassifierInput["surface"][] | undefined;
+  },
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+): RecordFailureInput {
+  return {
     profileId: input.profileId,
     failureKind: input.failureKind,
     content: failureContentForStorage(
@@ -85,11 +103,10 @@ export async function recordRuntimeFailure(
     ),
     createdAt: input.createdAt,
     metadata: redactRuntimePayloadRecord(input.metadata, classifyRuntimeSensitivity),
-  });
+  };
 }
 
-export async function recordRuntimeTaskOutcome(
-  store: MemoryOSOptions["store"],
+export function runtimeTaskOutcomeForStorage(
   input: {
     profileId: string;
     taskId?: string | undefined;
@@ -100,7 +117,7 @@ export async function recordRuntimeTaskOutcome(
     createdAt?: string | undefined;
   },
   classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
-): Promise<"recorded" | "skipped_secret_like"> {
+): TaskTrajectoryInput | null {
   const additionalSurfaces: MemorySensitivityClassifierInput["surface"][] =
     input.status === "failed" ? ["failure"] : [];
   const sensitivity = sensitivityForParts(
@@ -109,7 +126,7 @@ export async function recordRuntimeTaskOutcome(
     ["task_trajectory", ...additionalSurfaces],
   );
   if (sensitivity !== "secret_like") {
-    await store.recordTaskTrajectory({
+    return {
       profileId: input.profileId,
       taskId: input.taskId
         ? taskTrajectoryTextForStorage(
@@ -132,7 +149,88 @@ export async function recordRuntimeTaskOutcome(
         : undefined,
       status: input.status,
       createdAt: input.createdAt,
-    });
+    };
+  }
+  return null;
+}
+
+export function runtimeCommitOutcomeForStorage(
+  input: {
+    profileId: string;
+    taskId?: string | undefined;
+    objective: string;
+    status: "completed" | "failed";
+    summary?: string | undefined;
+    failureKind?: FailureKind | undefined;
+    createdAt: string;
+    usedMemoryIds?: string[] | undefined;
+  },
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+): CommitOutcomeStoreInput | null {
+  const outcome = runtimeTaskOutcomeForStorage(input, classifyRuntimeSensitivity);
+  if (!outcome) return null;
+  return {
+    ...outcome,
+    usedMemoryIds: input.usedMemoryIds,
+    ...(input.status === "failed"
+      ? {
+          failure: runtimeFailureForStorage(
+            {
+              profileId: input.profileId,
+              failureKind: input.failureKind ?? "task_failure",
+              content: input.summary ?? input.objective,
+              createdAt: input.createdAt,
+              additionalSurfaces: ["task_trajectory"],
+            },
+            classifyRuntimeSensitivity,
+          ),
+        }
+      : {}),
+  };
+}
+
+export function runtimeFeedbackForStorage(
+  input: {
+    profileId: string;
+    content: string;
+    failureKind?: FailureKind | undefined;
+    createdAt: string;
+    relatedMemoryIds?: string[] | undefined;
+    signal?: "positive" | "negative" | undefined;
+  },
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+): FeedbackSignalStoreInput {
+  return {
+    ...runtimeFailureForStorage(
+      {
+        profileId: input.profileId,
+        failureKind: input.failureKind ?? "wrong_recall",
+        content: input.content,
+        createdAt: input.createdAt,
+      },
+      classifyRuntimeSensitivity,
+    ),
+    relatedMemoryIds: input.relatedMemoryIds,
+    signal: input.signal,
+  };
+}
+
+export async function recordRuntimeTaskOutcome(
+  store: MemoryOSOptions["store"],
+  input: {
+    profileId: string;
+    taskId?: string | undefined;
+    objective: string;
+    status: "completed" | "failed";
+    summary?: string | undefined;
+    failureKind?: FailureKind | undefined;
+    createdAt?: string | undefined;
+  },
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+): Promise<"recorded" | "skipped_secret_like"> {
+  const outcome = runtimeTaskOutcomeForStorage(input, classifyRuntimeSensitivity);
+  if (outcome) {
+    await store.recordTaskTrajectory(outcome);
     return "recorded";
   }
   if (input.status === "failed") {

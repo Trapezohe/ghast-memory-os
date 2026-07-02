@@ -41,9 +41,36 @@ gmos backup --db ./gmos.db --profile local --mode safe --output-file ./backup.js
 gmos restore --db ./new-gmos.db --profile local-restored --input-file ./backup.json
 ```
 
-Safe backups exclude archived, sensitive, and person memories by default. Use
-`--mode full` only for explicit trusted migration rehearsals with appropriate
-handling of local files.
+Safe backups exclude archived, sensitive, and person memories by default. They
+include dormant memories because dormant records are still user memory, just
+excluded from ordinary context. Use `--mode full` only for explicit trusted
+migration rehearsals with appropriate handling of local files.
+
+## SQLite Schema v8
+
+Schema v8 adds first-class lifecycle signals to `gmos_memories`:
+
+- `recall_count INTEGER NOT NULL DEFAULT 0`
+- `last_recalled_at TEXT NULL`
+- `reinforcement REAL NOT NULL DEFAULT 0`
+
+Existing rows migrate in place with `recall_count = 0`,
+`last_recalled_at = NULL`, and `reinforcement = 0`. No row is demoted during
+schema migration. Lifecycle transitions happen only when the host explicitly
+invokes `maintain()`.
+
+The first maintenance run on an old profile may demote stale active memories to
+`dormant` if their retention score is below the configured threshold. Preview it
+first:
+
+```bash
+gmos maintain --db ./gmos.db --profile local --dry-run --format markdown
+```
+
+If the preview is acceptable, run the same command without `--dry-run`.
+`boundary` and `person` memories are exempt from automatic transitions by
+default. Dormant memories remain available to history recall and can be restored
+to active by `commitOutcome({ usedMemoryIds })` when a host reports actual use.
 
 ## Index Repair
 

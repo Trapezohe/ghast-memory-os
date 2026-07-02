@@ -29,6 +29,28 @@ const store = createSqliteMemoryStore({ path: "./gmos.db" });
 const memory = createMemoryOS({ profileId: "local-user", store });
 ```
 
+Lifecycle maintenance is configured on the runtime facade and runs only when the
+host explicitly calls `maintain()`:
+
+```ts
+const memory = createMemoryOS({
+  profileId: "local-user",
+  store,
+  lifecycle: {
+    enabled: true,
+    dormantBelow: 0.25,
+    archiveAfterDormantDays: 180,
+    halfLivesDays: { project: 90 },
+  },
+});
+```
+
+Default half-lives are `fact=180`, `preference=365`, `project=90`,
+`procedure=365`, and `task_trajectory=45` days. `boundary` and `person` memories
+are exempt from automatic lifecycle transitions unless the host explicitly
+provides `autoTransitionKinds` with those kinds included. Person memories keep
+the normal person isolation gates even if opted in.
+
 Hosts with their own entity model can pass an `entityResolver` to both the
 SQLite store and runtime facade. This keeps current-state invalidation,
 association projection, entity mentions, and evidence explanations aligned
@@ -100,8 +122,16 @@ Primary methods:
   evidence convergence and planner trace metadata.
 - `explainEvidencePath(input)`: explain why evidence was selected for a query.
 - `commitOutcome(input)`: record task outcome signals. Failed outcomes may pass
-  `failureKind`; omitted values default to `task_failure`.
+  `failureKind`; omitted values default to `task_failure`. Hosts should pass
+  memory ids used in the turn as `usedMemoryIds`; gmOS increments recall
+  counters, sets `lastRecalledAt`, and reactivates dormant memories in the same
+  write transaction.
 - `recordFeedback(input)`: record user or host feedback into the failure loop.
+  Pass `relatedMemoryIds` plus `signal: "positive" | "negative"` to adjust
+  memory `reinforcement` by a deterministic bounded step within `[-1, 1]`.
+- `maintain(input)`: explicit lifecycle write path. `dryRun: true` computes the
+  full report and writes nothing. Ordinary runtime reads never call this
+  automatically.
 - `forget(input)`: archive matching memory and remove it from future context.
   Prefer structured `targetTerms` when a host already knows the deletion target;
   `query` remains required as a human-readable request and literal compatibility
@@ -115,6 +145,62 @@ Low-level compatibility methods such as `add`, `search`, `history`, `list`,
 `get`, `update`, `delete`, `backup`, and `restore` exist for migration,
 administration, and host adapters that cannot emit full events yet. Prefer
 `observe()` and `prepareTurn()` for agent runtime integration.
+
+`PreparedTurn.memories` contains the memory ids selected for ordinary context.
+Hosts should pass the ids actually used by the model/tool loop back through
+`commitOutcome({ usedMemoryIds })`.
+
+## Memory Lifecycle
+
+`MemoryStatus` is `active | dormant | archived`.
+
+- `active`: eligible for ordinary context, action policy projection, history
+  recall, and management operations.
+- `dormant`: excluded from ordinary `prepareTurn()` and
+  `reconstructContext({ recallPurpose: "context" })` like archived memory, but
+  reachable through history-purpose recall and status-filtered `list({ status:
+  "dormant" })` or `list({ status: "any" })`.
+- `archived`: excluded from ordinary and history recall unless explicitly
+  listed/restored through management APIs.
+
+`maintain({ profileId, dryRun, now, phases })` defaults to
+`phases: ["decay"]` and returns:
+
+```ts
+{
+  schema: "gmos.maintenance_report.v1",
+  profileId,
+  now,
+  dryRun,
+  evaluated,
+  transitions: [
+    { memoryId, kind, from, to, retention, reasons }
+  ],
+  exempted,
+  skipped
+}
+```
+
+Applied transitions write one evidence event with `sourceType: "maintenance"`
+and `eligibleForLongTermMemory: false`. Dormant reactivation from
+`commitOutcome({ usedMemoryIds })` writes a lifecycle evidence event with
+`sourceType: "memory.lifecycle"`. Maintenance is idempotent for the same `now`:
+after a transition is applied, a second run sees the new status and produces no
+duplicate transition.
+
+The retention score is pure and deterministic:
+
+```text
+anchor = lastRecalledAt ?? updatedAt ?? createdAt
+recency = 0.5 ^ (ageDays(anchor, now) / halfLifeDays[kind])
+recall = min(1, log1p(recallCount) / log1p(20))
+reinforcement01 = (clamp(reinforcement, -1, 1) + 1) / 2
+score = clamp(recency * 0.6 + confidence * 0.2 + recall * 0.1 + reinforcement01 * 0.1, 0, 1)
+```
+
+`now` is an explicit parameter to `maintain()` and `retentionScore()`. The
+runtime default is the call time for that explicit write path; read paths never
+score or transition memory in the background.
 
 ## Agent Turn Adapter
 
@@ -207,6 +293,7 @@ gmos version --format json
 gmos init --db ./gmos.db
 gmos doctor --db ./gmos.db --host ghast --format markdown
 gmos status --db ./gmos.db --profile local --host ghast --format markdown
+gmos maintain --db ./gmos.db --profile local --dry-run --format markdown
 gmos add --db ./gmos.db --profile local --kind preference --text "Response style: concise answers."
 gmos add --db ./gmos.db --profile local --kind boundary --text "Do not push release announcements without approval."
 gmos observe --db ./gmos.db --profile local --text "User opened the release planning thread."
@@ -252,6 +339,7 @@ calls instead of direct SDK imports:
 - `memory.explain_evidence_path`
 - `memory.commit_outcome`
 - `memory.record_feedback`
+- `memory.maintain`
 - `memory.forget`
 - `memory.explain_belief`
 - `memory.runtime_info`
@@ -284,6 +372,7 @@ The local HTTP adapter exposes:
 - `POST /explain-path`
 - `POST /commit-outcome`
 - `POST /feedback`
+- `POST /maintain`
 - `POST /forget`
 - `POST /explain`
 - `POST /mcp/call`

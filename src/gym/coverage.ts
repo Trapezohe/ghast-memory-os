@@ -76,6 +76,11 @@ export function coverageMatrix(result: MemoryGymResult): MemoryGymCoverageRow[] 
       status: statusFor(layerPass(result, "feedback")),
       evidence: "recordFeedback writes failure log",
     },
+    {
+      layer: "Layer 8: Memory Lifecycle",
+      status: statusFor(layerPass(result, "lifecycle")),
+      evidence: "maintain decay, dormancy, dry-run purity, idempotence, forget, and usage reactivation are exercised",
+    },
   ];
 }
 
@@ -149,6 +154,23 @@ export function memoryStackCoverage(result: MemoryGymResult): MemoryGymCoverageR
       layer: "Feedback / Evolution",
       status: statusFor(Boolean(result.hardGates.feedback_failure_log)),
       evidence: "feedback enters failure log; self-evolution remains outside SDK alpha scope",
+    },
+    {
+      layer: "Lifecycle",
+      status: statusFor(
+        Boolean(
+          result.hardGates.maintenance_dry_run_read_audit_pure &&
+            result.hardGates.lifecycle_decay_to_dormant &&
+            result.hardGates.lifecycle_exempts_boundary_and_person &&
+            result.hardGates.dormant_excluded_from_prepare_context &&
+            result.hardGates.history_reaches_dormant_memory &&
+            result.hardGates.maintenance_idempotent_same_now &&
+            result.hardGates.forget_archives_dormant_memory &&
+            result.hardGates.commit_outcome_reactivates_dormant_usage,
+        ),
+      ),
+      evidence:
+        "explicit lifecycle maintenance and usage signals are exercised without read-path writes",
     },
   ];
 }

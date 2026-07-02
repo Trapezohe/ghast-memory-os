@@ -2,6 +2,7 @@ import type {
   FailureEventRecord,
   FailureKind,
   ListFailuresInput,
+  MemoryLifecycleStatus,
   MemoryStore,
   ReadAuditSnapshot,
   SearchIndexStatus,
@@ -23,6 +24,9 @@ export interface DiagnosticsStore {
   readAuditSnapshot?(): Promise<ReadAuditSnapshot> | ReadAuditSnapshot;
   schemaVersion?(): Promise<number> | number;
   searchIndexStatus?(): Promise<SearchIndexStatus> | SearchIndexStatus;
+  lifecycleStatus?(
+    input?: { profileId?: string | undefined },
+  ): Promise<MemoryLifecycleStatus> | MemoryLifecycleStatus;
   listFailures?(input: ListFailuresInput): Promise<FailureEventRecord[]> | FailureEventRecord[];
 }
 
@@ -48,6 +52,7 @@ export interface MemoryStorageStatus {
   status: "ok" | "unavailable";
   schemaVersion: number | null;
   rowCounts: Record<string, number>;
+  lifecycle?: MemoryLifecycleStatus | undefined;
   readAudit: MemoryReadAuditStatus;
   searchIndex?: SearchIndexStatus | undefined;
   error?: {
@@ -183,16 +188,23 @@ async function readAuditStatus(store: DiagnosticsStore): Promise<MemoryReadAudit
   }
 }
 
-async function storageStatus(store: DiagnosticsStore): Promise<MemoryStorageStatus> {
+async function storageStatus(input: {
+  store: DiagnosticsStore;
+  profileId: string;
+}): Promise<MemoryStorageStatus> {
   try {
-    const schemaVersion = store.schemaVersion ? await store.schemaVersion() : null;
-    const rowCounts = await store.rowCounts();
-    const readAudit = await readAuditStatus(store);
-    const searchIndex = store.searchIndexStatus ? await store.searchIndexStatus() : undefined;
+    const schemaVersion = input.store.schemaVersion ? await input.store.schemaVersion() : null;
+    const rowCounts = await input.store.rowCounts();
+    const readAudit = await readAuditStatus(input.store);
+    const searchIndex = input.store.searchIndexStatus ? await input.store.searchIndexStatus() : undefined;
+    const lifecycle = input.store.lifecycleStatus
+      ? await input.store.lifecycleStatus({ profileId: input.profileId })
+      : undefined;
     return {
       status: "ok",
       schemaVersion,
       rowCounts,
+      ...(lifecycle !== undefined ? { lifecycle } : {}),
       readAudit,
       ...(searchIndex !== undefined ? { searchIndex } : {}),
     };
@@ -258,7 +270,7 @@ export async function createMemoryStatusReport(
   input: MemoryStatusReportInput,
 ): Promise<MemoryStatusReport> {
   const profileId = input.profileId ?? "default";
-  const storage = await storageStatus(input.store);
+  const storage = await storageStatus({ store: input.store, profileId });
   const packageInfo = input.packageInfo ?? readGmosPackageInfo();
   const runtimeInfo: GmosRuntimeInfo = {
     ...getGmosRuntimeInfo(),
@@ -324,6 +336,12 @@ export function renderMemoryStatusMarkdown(report: MemoryStatusReport): string {
       : "",
     vectorIndex
       ? `Vector index: ${vectorIndex.status} (${vectorIndex.indexedMemoryCount} indexed; missing=${vectorIndex.missingEntryCount}; stale=${vectorIndex.staleEntryCount}; orphan=${vectorIndex.orphanEntryCount}; duplicate=${vectorIndex.duplicateEntryCount}; dimensions=${vectorIndex.dimensions})`
+      : "",
+    report.storage.lifecycle
+      ? `Memory status counts: active=${report.storage.lifecycle.counts.active}; dormant=${report.storage.lifecycle.counts.dormant}; archived=${report.storage.lifecycle.counts.archived}; total=${report.storage.lifecycle.counts.total}`
+      : "",
+    report.storage.lifecycle?.lastMaintenanceAt
+      ? `Last maintenance: ${report.storage.lifecycle.lastMaintenanceAt}`
       : "",
     "",
     "### Row Counts",

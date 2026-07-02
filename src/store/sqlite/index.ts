@@ -8,14 +8,22 @@ import type {
   ArchiveMemoriesInput,
   ArchiveMemoryInput,
   ArchiveStaleHostImportsInput,
+  CommitOutcomeStoreInput,
   EvidenceEvent,
   EvidenceListInput,
+  FeedbackSignalStoreInput,
   FailureEventRecord,
   ForgetInput,
   ForgetResult,
   ListFailuresInput,
+  MaintenanceExemption,
+  MaintenanceReport,
+  MaintenanceSkippedSummary,
+  MaintenanceStoreInput,
+  MaintenanceTransition,
   MemoryAssociationRecord,
   MemoryAssociationSearchInput,
+  MemoryLifecycleStatus,
   MemoryListInput,
   MemoryKind,
   MemoryRecord,
@@ -34,6 +42,10 @@ import type {
   UpdateMemoryInput,
   WorldBeliefRecord,
 } from "../../kernel/types.js";
+import {
+  memoryKindCanAutoTransition,
+  retentionScore,
+} from "../../kernel/retention.js";
 import {
   associationCueKey,
   associationCuesForBelief,
@@ -265,6 +277,9 @@ function normalizeMemory(row: Record<string, unknown>): MemoryRecord {
     sensitivity: String(row.sensitivity) as Sensitivity,
     status: String(row.status) as MemoryRecord["status"],
     confidence: Number(row.confidence),
+    recallCount: Number(row.recall_count ?? 0),
+    lastRecalledAt: row.last_recalled_at == null ? null : String(row.last_recalled_at),
+    reinforcement: Number(row.reinforcement ?? 0),
     sourceEventId: row.source_event_id == null ? null : String(row.source_event_id),
     metadata: parseJsonObject(row.metadata_json),
     createdAt: String(row.created_at),
@@ -592,6 +607,44 @@ function likePattern(term: string): string {
   return `%${term.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
 }
 
+function lifecycleReachableStatusSql(
+  purpose: MemorySearchInput["purpose"] | MemoryAssociationSearchInput["purpose"] | undefined,
+): string {
+  return purpose === "history" || purpose === "delete" || purpose === "manage"
+    ? "status IN ('active', 'dormant')"
+    : "status = 'active'";
+}
+
+function lifecycleReachableAliasStatusSql(
+  alias: string,
+  purpose: MemorySearchInput["purpose"] | MemoryAssociationSearchInput["purpose"] | undefined,
+): string {
+  return purpose === "history" || purpose === "delete" || purpose === "manage"
+    ? `${alias}.status IN ('active', 'dormant')`
+    : `${alias}.status = 'active'`;
+}
+
+function incrementSkipped(
+  skipped: Map<string, number>,
+  reason: string,
+  count = 1,
+): void {
+  skipped.set(reason, (skipped.get(reason) ?? 0) + count);
+}
+
+function skippedSummaries(skipped: Map<string, number>): MaintenanceSkippedSummary[] {
+  return [...skipped.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([reason, count]) => ({ reason, count }));
+}
+
+function daysBetween(start: string, end: string): number | null {
+  const startInstant = Date.parse(start);
+  const endInstant = Date.parse(end);
+  if (!Number.isFinite(startInstant) || !Number.isFinite(endInstant)) return null;
+  return Math.max(0, (endInstant - startInstant) / (24 * 60 * 60 * 1000));
+}
+
 export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): SqliteMemoryStore {
   const sqliteOptions: Database.Options = {};
   if (options.readonly !== undefined) sqliteOptions.readonly = options.readonly;
@@ -614,14 +667,18 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       return;
     }
     const previousSchemaVersion = sqliteSchemaVersion(db);
+    const shouldRebuildAssociations =
+      previousSchemaVersion < 7 || !schemaMigrationApplied(7);
+    const shouldRebuildMemoryVectorIndex =
+      previousSchemaVersion < 5 || !schemaMigrationApplied(5);
     ensureSqliteSchema(db);
     ftsAvailableCache = tableExists("gmos_memories_fts");
     vectorIndexAvailableCache = tableExists("gmos_memory_vectors");
     initialized = true;
-    if (previousSchemaVersion < 7) {
+    if (shouldRebuildAssociations) {
       rebuildAssociations();
     }
-    if (previousSchemaVersion < 5) {
+    if (shouldRebuildMemoryVectorIndex) {
       rebuildMemoryVectorIndex();
     }
   }
@@ -631,6 +688,14 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
       .get(table) as { name?: string } | undefined;
     return row?.name === table;
+  }
+
+  function schemaMigrationApplied(version: number): boolean {
+    if (!tableExists("gmos_schema_migrations")) return false;
+    const row = db
+      .prepare("SELECT version FROM gmos_schema_migrations WHERE version = ?")
+      .get(version) as { version?: number } | undefined;
+    return row?.version === version;
   }
 
   function ftsAvailable(): boolean {
@@ -1012,6 +1077,267 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     }
   }
 
+  function projectBeliefsForMemory(memoryId: string): void {
+    if (!tableExists("gmos_world_beliefs")) return;
+    const rows = db
+      .prepare(
+        `SELECT * FROM gmos_world_beliefs
+         WHERE source_memory_id = ? AND status = 'active'`,
+      )
+      .all(memoryId) as Record<string, unknown>[];
+    for (const row of rows) {
+      projectBeliefAssociations(normalizeWorldBelief(row));
+    }
+  }
+
+  function insertLifecycleEvidence(input: {
+    profileId: string;
+    sourceType: "maintenance" | "memory.lifecycle";
+    memoryId: string;
+    from: MemoryRecord["status"];
+    to: MemoryRecord["status"];
+    createdAt: string;
+    retention?: number | undefined;
+    reasons: string[];
+  }): void {
+    db.prepare(
+      `INSERT INTO gmos_evidence_events (
+        id, event_key, profile_id, source_type, source_uri, content, sensitivity,
+        eligible_for_long_term_memory, payload_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'normal', 0, ?, ?)`,
+    ).run(
+      id("evidence"),
+      [
+        input.sourceType,
+        input.profileId,
+        input.memoryId,
+        input.from,
+        input.to,
+        input.createdAt,
+        randomUUID(),
+      ].join(":"),
+      input.profileId,
+      input.sourceType,
+      null,
+      `Memory lifecycle transition ${input.from} -> ${input.to}`,
+      JSON.stringify({
+        memoryId: input.memoryId,
+        from: input.from,
+        to: input.to,
+        ...(input.retention !== undefined ? { retention: input.retention } : {}),
+        reasons: input.reasons,
+      }),
+      input.createdAt,
+    );
+  }
+
+  function memoryRowById(profileId: string, memoryId: string): Record<string, unknown> | null {
+    return (
+      db
+      .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ?")
+      .get(profileId, memoryId) as Record<string, unknown> | undefined
+    ) ?? null;
+  }
+
+  function activateMemoryProjections(memoryId: string, profileId: string): void {
+    const row = memoryRowById(profileId, memoryId);
+    if (!row) return;
+    const memory = normalizeMemory(row);
+    projectMemoryAssociations(memory);
+    projectBeliefsForMemory(memory.id);
+  }
+
+  function deactivateMemoryProjections(memoryId: string): void {
+    deleteAssociationsForMemory(memoryId);
+  }
+
+  function recordMemoryUsageSignals(input: {
+    profileId: string;
+    memoryIds: string[] | undefined;
+    usedAt: string;
+  }): void {
+    const uniqueIds = [...new Set((input.memoryIds ?? []).filter((entry) => entry.trim().length > 0))];
+    if (uniqueIds.length === 0) return;
+    const rowStmt = db.prepare(
+      `SELECT id, status
+       FROM gmos_memories
+       WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
+    );
+    const updateStmt = db.prepare(
+      `UPDATE gmos_memories
+       SET recall_count = recall_count + 1,
+           last_recalled_at = ?,
+           status = 'active',
+           updated_at = ?
+       WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
+    );
+    for (const memoryId of uniqueIds) {
+      const row = rowStmt.get(input.profileId, memoryId) as
+        | { id: string; status: MemoryRecord["status"] }
+        | undefined;
+      if (!row) continue;
+      updateStmt.run(input.usedAt, input.usedAt, input.profileId, memoryId);
+      syncMemoryFts(memoryId);
+      syncMemoryVector(memoryId);
+      if (row.status === "dormant") {
+        activateMemoryProjections(memoryId, input.profileId);
+        insertLifecycleEvidence({
+          profileId: input.profileId,
+          sourceType: "memory.lifecycle",
+          memoryId,
+          from: "dormant",
+          to: "active",
+          createdAt: input.usedAt,
+          reasons: ["used_memory_id"],
+        });
+      }
+    }
+  }
+
+  function adjustMemoryReinforcement(input: {
+    profileId: string;
+    memoryIds: string[] | undefined;
+    signal?: "positive" | "negative" | undefined;
+    updatedAt: string;
+  }): void {
+    if (!input.signal) return;
+    const uniqueIds = [...new Set((input.memoryIds ?? []).filter((entry) => entry.trim().length > 0))];
+    if (uniqueIds.length === 0) return;
+    const delta = input.signal === "positive" ? 0.2 : -0.2;
+    const stmt = db.prepare(
+      `UPDATE gmos_memories
+       SET reinforcement = CASE
+             WHEN reinforcement + ? > 1 THEN 1
+             WHEN reinforcement + ? < -1 THEN -1
+             ELSE reinforcement + ?
+           END,
+           updated_at = ?
+       WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
+    );
+    for (const memoryId of uniqueIds) {
+      const result = stmt.run(delta, delta, delta, input.updatedAt, input.profileId, memoryId);
+      if (result.changes > 0) {
+        syncMemoryFts(memoryId);
+        syncMemoryVector(memoryId);
+      }
+    }
+  }
+
+  function latestMaintenanceDormantAt(memoryId: string): string | null {
+    const row = db
+      .prepare(
+        `SELECT created_at
+         FROM gmos_evidence_events
+         WHERE source_type = 'maintenance'
+           AND json_extract(payload_json, '$.memoryId') = ?
+           AND json_extract(payload_json, '$.to') = 'dormant'
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1`,
+      )
+      .get(memoryId) as { created_at?: string | null } | undefined;
+    return row?.created_at ?? null;
+  }
+
+  function maintenanceTransitionForMemory(
+    memory: MemoryRecord,
+    input: MaintenanceStoreInput,
+    skipped: Map<string, number>,
+  ): MaintenanceTransition | null {
+    const retention = retentionScore(memory, input.now, input.lifecycle);
+    if (memory.status === "active") {
+      if (retention >= input.lifecycle.dormantBelow) return null;
+      return {
+        memoryId: memory.id,
+        kind: memory.kind,
+        from: "active",
+        to: "dormant",
+        retention,
+        reasons: [
+          "retention_below_threshold",
+          `retention:${retention.toFixed(4)}`,
+          `threshold:${input.lifecycle.dormantBelow.toFixed(4)}`,
+        ],
+      };
+    }
+    if (memory.status !== "dormant") return null;
+    const dormantAt = latestMaintenanceDormantAt(memory.id);
+    if (!dormantAt) {
+      incrementSkipped(skipped, "missing_dormant_since_evidence");
+      return null;
+    }
+    const dormantDays = daysBetween(dormantAt, input.now);
+    if (dormantDays === null) {
+      incrementSkipped(skipped, "invalid_dormant_since_evidence");
+      return null;
+    }
+    if (dormantDays < input.lifecycle.archiveAfterDormantDays) {
+      incrementSkipped(skipped, "dormant_archive_window_not_reached");
+      return null;
+    }
+    return {
+      memoryId: memory.id,
+      kind: memory.kind,
+      from: "dormant",
+      to: "archived",
+      retention,
+      reasons: [
+        "archive_after_dormant_window",
+        `dormant_days:${dormantDays.toFixed(2)}`,
+        `archive_after_days:${input.lifecycle.archiveAfterDormantDays.toFixed(2)}`,
+      ],
+    };
+  }
+
+  function applyMaintenanceTransition(
+    transition: MaintenanceTransition,
+    profileId: string,
+    now: string,
+  ): void {
+    const row = memoryRowById(profileId, transition.memoryId);
+    if (!row || row.status !== transition.from) return;
+    const existingMetadata = parseJsonObject(row.metadata_json);
+    const metadata =
+      transition.to === "archived"
+        ? metadataWithArchiveMarker({
+            metadata: existingMetadata,
+            archivedAt: now,
+            reason: "maintenance:retention",
+          })
+        : existingMetadata;
+    db.prepare(
+      `UPDATE gmos_memories
+       SET status = ?, updated_at = ?, metadata_json = ?
+       WHERE profile_id = ? AND id = ? AND status = ?`,
+    ).run(
+      transition.to,
+      now,
+      JSON.stringify(metadata),
+      profileId,
+      transition.memoryId,
+      transition.from,
+    );
+    syncMemoryFts(transition.memoryId);
+    syncMemoryVector(transition.memoryId);
+    if (transition.to === "active") {
+      activateMemoryProjections(transition.memoryId, profileId);
+    } else {
+      deactivateMemoryProjections(transition.memoryId);
+      if (transition.to === "archived") {
+        rejectBeliefsForMemory(transition.memoryId, now);
+      }
+    }
+    insertLifecycleEvidence({
+      profileId,
+      sourceType: "maintenance",
+      memoryId: transition.memoryId,
+      from: transition.from,
+      to: transition.to,
+      createdAt: now,
+      retention: transition.retention,
+      reasons: transition.reasons,
+    });
+  }
+
   function searchIndexStatus(): SearchIndexStatus {
     initialize();
     const totalMemoryCount = tableExists("gmos_memories")
@@ -1343,11 +1669,12 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   function memoryRowsForSearch(input: MemorySearchInput): Record<string, unknown>[] {
     const query = input.query?.trim() ?? "";
     const candidateLimit = Math.max(input.limit ?? 12, 100);
+    const statusSql = lifecycleReachableStatusSql(input.purpose);
     if (!query) {
       return db
         .prepare(
           `SELECT * FROM gmos_memories
-           WHERE profile_id = ? AND status = 'active'
+           WHERE profile_id = ? AND ${statusSql}
            ORDER BY updated_at DESC
            LIMIT ?`,
         )
@@ -1377,7 +1704,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
              JOIN gmos_memories m ON m.id = gmos_memories_fts.id
              WHERE gmos_memories_fts MATCH ?
                AND m.profile_id = ?
-               AND m.status = 'active'
+               AND ${lifecycleReachableAliasStatusSql("m", input.purpose)}
              ORDER BY bm25(gmos_memories_fts), m.updated_at DESC
              LIMIT ?`,
           )
@@ -1401,7 +1728,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .prepare(
         `SELECT * FROM gmos_memories
          WHERE profile_id = ?
-           AND status = 'active'
+           AND ${lifecycleReachableStatusSql(input.purpose)}
            AND (${clauses.join(" OR ")})
          ORDER BY updated_at DESC
          LIMIT ?`,
@@ -1428,6 +1755,9 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     const queryVector = localTextVector(query);
     const candidateRowLimit = Math.min(Math.max(candidateLimit * 20, 100), 1000);
     const featurePlaceholders = queryFeatures.map(() => "?").join(", ");
+    const statusSql = lifecycleReachableStatusSql(input.purpose);
+    const vectorStatusSql = lifecycleReachableAliasStatusSql("v", input.purpose);
+    const memoryStatusSql = lifecycleReachableAliasStatusSql("m", input.purpose);
     const rows = db
       .prepare(
         `SELECT m.*, v.vector_json, candidates.hit_count
@@ -1435,7 +1765,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
            SELECT id, COUNT(*) AS hit_count, MAX(updated_at) AS latest_at
            FROM gmos_memory_vector_terms
            WHERE profile_id = ?
-             AND status = 'active'
+             AND ${statusSql}
              AND feature_key IN (${featurePlaceholders})
            GROUP BY id
            ORDER BY hit_count DESC, latest_at DESC
@@ -1444,9 +1774,9 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
          JOIN gmos_memory_vectors v ON v.id = candidates.id
          JOIN gmos_memories m ON m.id = candidates.id
          WHERE v.profile_id = ?
-           AND v.status = 'active'
+           AND ${vectorStatusSql}
            AND m.profile_id = ?
-           AND m.status = 'active'`,
+           AND ${memoryStatusSql}`,
       )
       .all(input.profileId, ...queryFeatures, candidateRowLimit, input.profileId, input.profileId) as Array<
       Record<string, unknown>
@@ -1766,7 +2096,10 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     initialize();
     const archivedAt = input.archivedAt ?? nowIso();
     const existing = db
-      .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ? AND status = 'active'")
+      .prepare(
+        `SELECT * FROM gmos_memories
+         WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
+      )
       .get(input.profileId, input.id) as Record<string, unknown> | undefined;
     if (!existing) return false;
     const metadata = metadataWithArchiveMarker({
@@ -1778,7 +2111,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .prepare(
         `UPDATE gmos_memories
          SET status = 'archived', updated_at = ?, metadata_json = ?
-         WHERE profile_id = ? AND id = ? AND status = 'active'`,
+         WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
       )
       .run(archivedAt, JSON.stringify(metadata), input.profileId, input.id);
     syncMemoryFts(input.id);
@@ -1821,7 +2154,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     if (!input.all && !input.scope && !input.metadataEquals) {
       throw new Error("archiveMemories requires all, scope, or metadataEquals");
     }
-    const clauses = ["profile_id = ?", "status = 'active'"];
+    const clauses = ["profile_id = ?", "status IN ('active', 'dormant')"];
     const params: unknown[] = [input.profileId];
     if (!input.all && input.scope) {
       clauses.push("scope = ?");
@@ -2239,7 +2572,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     const row = db
       .prepare(
         `SELECT * FROM gmos_memories
-         WHERE profile_id = ? AND status = 'active'
+         WHERE profile_id = ? AND status IN ('active', 'dormant')
            AND json_extract(metadata_json, ?) = ?
          ORDER BY updated_at DESC
          LIMIT 1`,
@@ -2260,7 +2593,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .prepare(
         `SELECT id FROM gmos_memories
          WHERE profile_id = ?
-           AND status = 'active'
+           AND status IN ('active', 'dormant')
            AND json_extract(metadata_json, '$.hostSnapshotImport') = 1
            AND json_extract(metadata_json, '$.hostImportSourceType') = ?
            ${activeKeyClause}`,
@@ -2282,6 +2615,171 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     });
     tx(ids);
     return ids;
+  }
+
+  function commitOutcome(input: CommitOutcomeStoreInput): void {
+    initialize();
+    const occurredAt = input.createdAt ?? nowIso();
+    const tx = db.transaction(() => {
+      recordTaskTrajectory({
+        profileId: input.profileId,
+        taskId: input.taskId,
+        objective: input.objective,
+        status: input.status,
+        summary: input.summary,
+        createdAt: occurredAt,
+      });
+      if (input.failure) {
+        recordFailure({
+          ...input.failure,
+          createdAt: input.failure.createdAt ?? occurredAt,
+        });
+      }
+      recordMemoryUsageSignals({
+        profileId: input.profileId,
+        memoryIds: input.usedMemoryIds,
+        usedAt: occurredAt,
+      });
+    });
+    tx();
+  }
+
+  function recordFeedbackSignal(input: FeedbackSignalStoreInput): void {
+    initialize();
+    const recordedAt = input.createdAt ?? nowIso();
+    const tx = db.transaction(() => {
+      recordFailure({
+        profileId: input.profileId,
+        failureKind: input.failureKind,
+        content: input.content,
+        createdAt: recordedAt,
+        metadata: input.metadata,
+      });
+      adjustMemoryReinforcement({
+        profileId: input.profileId,
+        memoryIds: input.relatedMemoryIds,
+        signal: input.signal,
+        updatedAt: recordedAt,
+      });
+    });
+    tx();
+  }
+
+  function maintain(input: MaintenanceStoreInput): MaintenanceReport {
+    initialize();
+    const skipped = new Map<string, number>();
+    const exempted: MaintenanceExemption[] = [];
+    if (!input.lifecycle.enabled) {
+      incrementSkipped(skipped, "lifecycle_disabled");
+      return {
+        schema: "gmos.maintenance_report.v1",
+        profileId: input.profileId,
+        now: input.now,
+        dryRun: input.dryRun,
+        evaluated: 0,
+        transitions: [],
+        exempted,
+        skipped: skippedSummaries(skipped),
+      };
+    }
+    if (!input.phases.includes("decay")) {
+      incrementSkipped(skipped, "phase_decay_not_requested");
+      return {
+        schema: "gmos.maintenance_report.v1",
+        profileId: input.profileId,
+        now: input.now,
+        dryRun: input.dryRun,
+        evaluated: 0,
+        transitions: [],
+        exempted,
+        skipped: skippedSummaries(skipped),
+      };
+    }
+    const rows = db
+      .prepare(
+        `SELECT *
+         FROM gmos_memories
+         WHERE profile_id = ? AND status IN ('active', 'dormant')
+         ORDER BY updated_at ASC, id ASC`,
+      )
+      .all(input.profileId) as Record<string, unknown>[];
+    let evaluated = 0;
+    const transitions: MaintenanceTransition[] = [];
+    for (const memory of rows.map(normalizeMemory)) {
+      if (!memoryKindCanAutoTransition(memory.kind, input.lifecycle)) {
+        exempted.push({
+          memoryId: memory.id,
+          kind: memory.kind,
+          status: memory.status,
+          reason: "kind_exempt",
+        });
+        continue;
+      }
+      evaluated += 1;
+      const transition = maintenanceTransitionForMemory(memory, input, skipped);
+      if (transition) transitions.push(transition);
+    }
+    if (!input.dryRun && transitions.length > 0) {
+      const tx = db.transaction((items: MaintenanceTransition[]) => {
+        for (const transition of items) {
+          applyMaintenanceTransition(transition, input.profileId, input.now);
+        }
+      });
+      tx(transitions);
+    }
+    return {
+      schema: "gmos.maintenance_report.v1",
+      profileId: input.profileId,
+      now: input.now,
+      dryRun: input.dryRun,
+      evaluated,
+      transitions,
+      exempted,
+      skipped: skippedSummaries(skipped),
+    };
+  }
+
+  function lifecycleStatus(input: { profileId?: string | undefined } = {}): MemoryLifecycleStatus {
+    initialize();
+    const clauses = input.profileId ? "WHERE profile_id = ?" : "";
+    const params = input.profileId ? [input.profileId] : [];
+    const rows = db
+      .prepare(
+        `SELECT status, COUNT(*) AS count
+         FROM gmos_memories
+         ${clauses}
+         GROUP BY status`,
+      )
+      .all(...params) as Array<{ status: MemoryRecord["status"]; count: number }>;
+    const counts: MemoryLifecycleStatus["counts"] = {
+      active: 0,
+      dormant: 0,
+      archived: 0,
+      total: 0,
+    };
+    for (const row of rows) {
+      if (row.status !== "active" && row.status !== "dormant" && row.status !== "archived") {
+        continue;
+      }
+      counts[row.status] = Number(row.count);
+      counts.total += Number(row.count);
+    }
+    const lastMaintenanceRow = db
+      .prepare(
+        `SELECT created_at
+         FROM gmos_evidence_events
+         WHERE source_type = 'maintenance'
+           ${input.profileId ? "AND profile_id = ?" : ""}
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1`,
+      )
+      .get(...params) as { created_at?: string | null } | undefined;
+    return {
+      schema: "gmos.lifecycle_status.v1",
+      ...(input.profileId ? { profileId: input.profileId } : {}),
+      counts,
+      ...(lastMaintenanceRow?.created_at ? { lastMaintenanceAt: lastMaintenanceRow.created_at } : {}),
+    };
   }
 
   function listActionPolicies(
@@ -2717,6 +3215,10 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     getMemoryById,
     findActiveMemoryByMetadata,
     archiveStaleHostImports,
+    commitOutcome,
+    recordFeedbackSignal,
+    maintain,
+    lifecycleStatus,
     listActionPolicies,
     listEvidence,
     listEvidenceForMemory,

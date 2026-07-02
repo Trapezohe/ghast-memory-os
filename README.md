@@ -86,8 +86,14 @@ npm run examples:quickstart
   still suppresses superseded or out-of-window memories, while explicit
   `history` recall can retrieve those past facts without using manage/delete
   search or opening sensitive/person memory.
+- First-class memory lifecycle maintenance. `maintain()` can explicitly demote
+  stale active memories to `dormant` and later archive long-dormant memories,
+  with evidence events, dry-run reporting, and no background writes. Ordinary
+  context excludes dormant memories; history recall and status-filtered list can
+  still reach them.
 - Runtime facade: `observe`, `prepareTurn`, `commitOutcome`, `recordFeedback`,
-  `reconstructContext`, `explainEvidencePath`, `forget`, `explain`.
+  `reconstructContext`, `explainEvidencePath`, `maintain`, `forget`,
+  `explain`.
 - Pluggable extraction pipeline for host-provided structured extractors. gmOS
   keeps write-path authority for evidence, PERSON, secret-like, incognito, and
   forgetting gates, but it does not synthesize durable memory from built-in
@@ -109,7 +115,8 @@ npm run examples:quickstart
   archived when the host source changes.
 - SQLite profile backup/restore for portable QA reproduction, migration, and
   rollback. Safe backups exclude archived, sensitive, and person memories by
-  default; full backups are explicit.
+  default, but include dormant memories because they remain user memory; full
+  backups are explicit.
 - In-process MCP-style tool router and real MCP stdio server for host/agent
   runtime adapters.
 - Local HTTP adapter for hosts that need a small service boundary instead of
@@ -218,6 +225,7 @@ npm install -g @ghast/memory
 gmos init --db ./gmos.db
 gmos doctor --db ./gmos.db --host ghast --format markdown
 gmos status --db ./gmos.db --profile local --host ghast --format markdown
+gmos maintain --db ./gmos.db --profile local --dry-run --format markdown
 gmos add --db ./gmos.db --profile local --kind preference --text "回答风格：简洁，先给结论"
 gmos add --db ./gmos.db --profile local --kind boundary --text "不要再提醒我这个项目延期了。"
 gmos search --db ./gmos.db --profile local --query "结论 方案"
@@ -371,9 +379,10 @@ that token is missing or starts with `--`, gmOS reports `<option> requires a
 value`. For path option values whose filename starts with `--`, pass
 `./--export.json` or an absolute path.
 
-Safe exports and backups exclude archived, sensitive, and person memories by
-default. Full backups are plaintext JSON and should be used only inside a trusted
-host boundary.
+Safe exports exclude archived, sensitive, and person memories by default. Safe
+backups exclude archived, sensitive, and person memories but include dormant
+memories because they remain user memory. Full backups are plaintext JSON and
+should be used only inside a trusted host boundary.
 
 ## MCP Tools
 
@@ -385,8 +394,8 @@ memory core.
 Current tools are `memory.add`, `memory.search`, `memory.observe`,
 `memory.prepare_context`, `memory.reconstruct_context`,
 `memory.explain_evidence_path`, `memory.commit_outcome`,
-`memory.record_feedback`, `memory.forget`, `memory.explain_belief`, and
-`memory.runtime_info`.
+`memory.record_feedback`, `memory.maintain`, `memory.forget`,
+`memory.explain_belief`, and `memory.runtime_info`.
 
 `memory.add` and `memory.search` are public-safe tools for simple agent
 integrations. They do not expose `allowPerson`, `includeSensitive`,
@@ -406,7 +415,7 @@ endpoints will then require `Authorization: Bearer <token>`.
 Endpoints include `GET /health`, `GET /runtime-info`, `GET /status`, `GET
 /tools`, `POST /add`, `POST /search`, `POST /observe`, `POST /prepare`, `POST
 /reconstruct`, `POST /explain-path`, `POST /commit-outcome`, `POST /feedback`,
-`POST /forget`, `POST /explain`, and `POST /mcp/call`.
+`POST /maintain`, `POST /forget`, `POST /explain`, and `POST /mcp/call`.
 
 Profile backup/restore is intentionally not exposed as an MCP tool or HTTP route.
 It remains an in-process SQLite store API and CLI operation for trusted
@@ -428,8 +437,9 @@ gmos evolution report --db ./gmos.db --profile local --format markdown
 Hosts can generate a read-only status report for integration checks and support
 bundles. The report includes package version, public SDK/CLI/MCP/HTTP runtime
 surface, SQLite schema version, row counts, read-audit coverage, failure counts
-by kind, and optional host compatibility. It does not include memory content,
-failure samples, real SQLite paths, or table state hashes.
+by kind, per-status memory counts, last maintenance timestamp, and optional host
+compatibility. It does not include memory content, failure samples, real SQLite
+paths, or table state hashes.
 
 ```bash
 gmos doctor --db ./gmos.db --host ghast --format markdown

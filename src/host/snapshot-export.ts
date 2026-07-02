@@ -161,7 +161,10 @@ function normalizeFilters(value: unknown): MemorySnapshotExport["filters"] {
     : {};
   const status = record.status;
   return {
-    status: status === "active" || status === "archived" || status === "any" ? status : "active",
+    status:
+      status === "active" || status === "dormant" || status === "archived" || status === "any"
+        ? status
+        : "active",
     ...(typeof record.kind === "string"
       ? { kind: record.kind as MemorySnapshotExport["filters"]["kind"] }
       : {}),

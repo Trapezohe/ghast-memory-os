@@ -103,7 +103,7 @@ const MEMORY_KINDS = new Set<MemoryKind>([
   "task_trajectory",
 ]);
 const SENSITIVITIES = new Set<Sensitivity>(["normal", "sensitive", "secret_like"]);
-const MEMORY_STATUSES = new Set<MemoryStatus>(["active", "archived"]);
+const MEMORY_STATUSES = new Set<MemoryStatus>(["active", "dormant", "archived"]);
 const WORLD_BELIEF_STATUSES = new Set<WorldBeliefRecord["status"]>([
   "active",
   "candidate",
@@ -197,6 +197,9 @@ function normalizeMemory(row: Record<string, unknown>): MemoryRecord {
     sensitivity: String(row.sensitivity) as Sensitivity,
     status: String(row.status) as MemoryStatus,
     confidence: Number(row.confidence),
+    recallCount: Number(row.recall_count ?? 0),
+    lastRecalledAt: row.last_recalled_at == null ? null : String(row.last_recalled_at),
+    reinforcement: Number(row.reinforcement ?? 0),
     sourceEventId: row.source_event_id == null ? null : String(row.source_event_id),
     metadata: parseJsonObject(row.metadata_json),
     createdAt: String(row.created_at),
@@ -309,7 +312,7 @@ function memoryRowsForBackup(
 ): MemoryRecord[] {
   const clauses = ["profile_id = ?"];
   const params: unknown[] = [profileId];
-  if (!options.includeArchived) clauses.push("status = 'active'");
+  if (!options.includeArchived) clauses.push("status != 'archived'");
   if (!options.includeSensitive) clauses.push("sensitivity = 'normal'");
   if (!options.includePerson) clauses.push("kind != 'person'");
   return (
@@ -770,6 +773,18 @@ function assertMemoryRecord(value: unknown, sourceProfileId: string, index: numb
   assertEnum(value.sensitivity, SENSITIVITIES, `${path}.sensitivity`);
   assertEnum(value.status, MEMORY_STATUSES, `${path}.status`);
   assertFiniteNumber(value.confidence, `${path}.confidence`, { min: 0, max: 1 });
+  if (value.recallCount === undefined) {
+    (value as { recallCount?: number }).recallCount = 0;
+  }
+  assertNonNegativeInteger(value.recallCount, `${path}.recallCount`);
+  if (value.lastRecalledAt === undefined) {
+    (value as { lastRecalledAt?: string | null }).lastRecalledAt = null;
+  }
+  assertOptionalStringOrNull(value.lastRecalledAt, `${path}.lastRecalledAt`);
+  if (value.reinforcement === undefined) {
+    (value as { reinforcement?: number }).reinforcement = 0;
+  }
+  assertFiniteNumber(value.reinforcement, `${path}.reinforcement`, { min: -1, max: 1 });
   assertOptionalNonEmptyStringOrNull(value.sourceEventId, `${path}.sourceEventId`);
   assertPlainObject(value.metadata, `${path}.metadata`);
   assertString(value.createdAt, `${path}.createdAt`);
@@ -1312,8 +1327,9 @@ export function restoreSqliteProfileBackup(
     const memoryStmt = db.prepare(
       `${verb} INTO gmos_memories (
         id, profile_id, kind, scope, content, sensitivity, status, confidence,
-        source_event_id, metadata_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        recall_count, last_recalled_at, reinforcement, source_event_id,
+        metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const memory of memories) {
       const result = memoryStmt.run(
@@ -1325,6 +1341,9 @@ export function restoreSqliteProfileBackup(
         memory.sensitivity,
         memory.status,
         memory.confidence,
+        memory.recallCount ?? 0,
+        memory.lastRecalledAt ?? null,
+        memory.reinforcement ?? 0,
         memory.sourceEventId ?? null,
         JSON.stringify(memory.metadata ?? {}),
         memory.createdAt,

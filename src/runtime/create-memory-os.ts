@@ -41,6 +41,7 @@ import type {
   LowLevelRestoreArchivedMemoryInput,
   LowLevelSearchInput,
   LowLevelUpdateMemoryInput,
+  MaintenanceInput,
   MemoryExtractionCandidate,
   MemoryKind,
   MemoryRecord,
@@ -55,7 +56,10 @@ import type {
   RestoreArchivedResult,
   Sensitivity,
 } from "../kernel/types.js";
+import { resolveMemoryLifecycleConfig } from "../kernel/retention.js";
 import {
+  runtimeCommitOutcomeForStorage,
+  runtimeFeedbackForStorage,
   recordRuntimeFailure,
   recordRuntimeTaskOutcome,
 } from "./runtime-outcomes.js";
@@ -740,12 +744,19 @@ function assertNoReadSideEffects(input: {
   }
 }
 
+function assertValidIsoInstant(value: string, label: string): void {
+  if (!Number.isFinite(Date.parse(value))) {
+    throw new Error(`${label} must be a valid ISO timestamp`);
+  }
+}
+
 export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   const defaultProfileId = options.profileId ?? "default";
   const store = options.store;
   const classifyRuntimeSensitivity = runtimeSensitivityClassifier(
     options.safety?.sensitivityClassifier,
   );
+  const lifecycle = resolveMemoryLifecycleConfig(options.lifecycle);
   let initialized = false;
 
   async function initialize(): Promise<void> {
@@ -1353,6 +1364,37 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   async function commitOutcome(input: CommitOutcomeInput): Promise<void> {
     await initialize();
     const profileId = profileIdFor(defaultProfileId, input.profileId);
+    const createdAt = input.createdAt ?? nowIso();
+    if (store.commitOutcome) {
+      const outcome = runtimeCommitOutcomeForStorage({
+        profileId,
+        taskId: input.taskId,
+        objective: input.objective,
+        status: input.status,
+        summary: input.summary,
+        failureKind: input.failureKind,
+        createdAt,
+        usedMemoryIds: input.usedMemoryIds,
+      }, classifyRuntimeSensitivity);
+      if (outcome) {
+        await store.commitOutcome(outcome);
+        return;
+      }
+      if (input.status === "failed") {
+        await recordRuntimeFailure(store, {
+          profileId,
+          failureKind: input.failureKind ?? "task_failure",
+          content: input.summary ?? input.objective,
+          createdAt,
+          metadata: { taskTrajectorySkippedReason: "secret_like" },
+          additionalSurfaces: ["task_trajectory"],
+        }, classifyRuntimeSensitivity);
+      }
+      return;
+    }
+    if (input.usedMemoryIds && input.usedMemoryIds.length > 0) {
+      throw new Error("gmOS store does not support commitOutcome usedMemoryIds");
+    }
     const taskOutcomeResult = await recordRuntimeTaskOutcome(store, {
       profileId,
       taskId: input.taskId,
@@ -1360,14 +1402,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       status: input.status,
       summary: input.summary,
       failureKind: input.failureKind,
-      createdAt: input.createdAt,
+      createdAt,
     }, classifyRuntimeSensitivity);
     if (taskOutcomeResult === "recorded" && input.status === "failed") {
       await recordRuntimeFailure(store, {
         profileId,
         failureKind: input.failureKind ?? "task_failure",
         content: input.summary ?? input.objective,
-        createdAt: input.createdAt,
+        createdAt,
         additionalSurfaces: ["task_trajectory"],
       }, classifyRuntimeSensitivity);
     }
@@ -1375,12 +1417,59 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
 
   async function recordFeedback(input: FeedbackInput): Promise<void> {
     await initialize();
+    const profileId = profileIdFor(defaultProfileId, input.profileId);
+    const createdAt = input.createdAt ?? nowIso();
+    if (store.recordFeedbackSignal) {
+      await store.recordFeedbackSignal(runtimeFeedbackForStorage({
+        profileId,
+        failureKind: input.failureKind,
+        content: input.content,
+        createdAt,
+        relatedMemoryIds: input.relatedMemoryIds,
+        signal: input.signal,
+      }, classifyRuntimeSensitivity));
+      return;
+    }
+    if (
+      (input.relatedMemoryIds && input.relatedMemoryIds.length > 0) ||
+      input.signal !== undefined
+    ) {
+      throw new Error("gmOS store does not support feedback memory signals");
+    }
     await recordRuntimeFailure(store, {
-      profileId: profileIdFor(defaultProfileId, input.profileId),
+      profileId,
       failureKind: input.failureKind ?? "wrong_recall",
       content: input.content,
-      createdAt: input.createdAt,
+      createdAt,
     }, classifyRuntimeSensitivity);
+  }
+
+  async function maintain(input: MaintenanceInput = {}) {
+    await initialize();
+    if (!store.maintain) throw new Error("gmOS store does not support maintenance");
+    const profileId = profileIdFor(defaultProfileId, input.profileId);
+    const now = input.now ?? nowIso();
+    assertValidIsoInstant(now, "maintain.now");
+    const phases = input.phases ?? ["decay"];
+    const unsupportedPhase = phases.find((phase) => phase !== "decay");
+    if (unsupportedPhase) throw new Error(`Unsupported gmOS maintenance phase: ${unsupportedPhase}`);
+    const dryRun = input.dryRun === true;
+    const before = dryRun ? await readAuditSnapshot(store) : null;
+    const report = await store.maintain({
+      profileId,
+      now,
+      dryRun,
+      phases,
+      lifecycle,
+    });
+    if (before) {
+      assertNoReadSideEffects({
+        operation: "maintain(dryRun)",
+        before,
+        after: await readAuditSnapshot(store),
+      });
+    }
+    return report;
   }
 
   async function forget(input: ForgetInput): Promise<ForgetResult> {
@@ -1431,6 +1520,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     explainEvidencePath,
     commitOutcome,
     recordFeedback,
+    maintain,
     forget,
     explain,
     async close() {

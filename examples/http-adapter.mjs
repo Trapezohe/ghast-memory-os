@@ -132,7 +132,7 @@ try {
 
   const status = await jsonRequest(`/status?profileId=${encodeURIComponent(profileId)}`);
   assert.equal(status.response.status, 200);
-  assert.equal(status.body.report.storage.schemaVersion, 7);
+  assert.equal(status.body.report.storage.schemaVersion, 8);
   assert.equal(status.body.report.hostCompatibility.level, "L4");
   assert.equal(status.body.report.failureSummary.inspectedFailureCount, 2);
   assert.equal(status.body.report.failureSummary.byKind.controller_route_error, 1);
