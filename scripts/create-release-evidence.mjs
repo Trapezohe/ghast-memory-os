@@ -1682,8 +1682,10 @@ if (skipFreshInstall) {
         const markdown = renderEvolutionFailureReviewMarkdown(sdkReport);
         assert.match(markdown, /gmOS Evolution Failure Review/);
         const sdkReportJson = JSON.stringify(sdkReport);
+        const sdkPrivacyLeakSamples =
+          sdkReport.clusters.find((cluster) => cluster.failureKind === "privacy_leak")?.sampleContents ?? [];
         assert.equal(sdkReportJson.includes("123-45-6789"), false);
-        assert.equal(sdkReportJson.includes("[redacted_sensitive_failure]"), true);
+        assert.equal(sdkPrivacyLeakSamples.includes("[redacted_sensitive_failure]"), true);
 
         const cliResult = spawnSync(
           cliBin,
@@ -1710,8 +1712,10 @@ if (skipFreshInstall) {
         assert.equal(cliReport.autoRollout, false);
         assert.equal(cliReport.inspectedFailureCount >= 2, true);
         const cliReportJson = JSON.stringify(cliReport);
+        const cliPrivacyLeakSamples =
+          cliReport.clusters.find((cluster) => cluster.failureKind === "privacy_leak")?.sampleContents ?? [];
         assert.equal(cliReportJson.includes("123-45-6789"), false);
-        assert.equal(cliReportJson.includes("[redacted_sensitive_failure]"), true);
+        assert.equal(cliPrivacyLeakSamples.includes("[redacted_sensitive_failure]"), true);
         console.log(JSON.stringify({
           ok: true,
           sdkMode: sdkReport.mode,
@@ -1720,8 +1724,8 @@ if (skipFreshInstall) {
           autoRollout: sdkReport.autoRollout || cliReport.autoRollout,
           sdkClusterCount: sdkReport.clusters.length,
           cliInspectedFailureCount: cliReport.inspectedFailureCount,
-          sensitiveSampleRedacted: sdkReportJson.includes("[redacted_sensitive_failure]"),
-          cliSensitiveSampleRedacted: cliReportJson.includes("[redacted_sensitive_failure]"),
+          sensitiveSampleRedacted: sdkPrivacyLeakSamples.includes("[redacted_sensitive_failure]"),
+          cliSensitiveSampleRedacted: cliPrivacyLeakSamples.includes("[redacted_sensitive_failure]"),
         }));
       } finally {
         await memory.close();
