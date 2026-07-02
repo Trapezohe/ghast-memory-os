@@ -213,7 +213,7 @@ gmos observe --db ./gmos.db --profile local --text "User opened the release plan
 gmos prepare --db ./gmos.db --profile local --text "How should you answer me?"
 gmos reconstruct --db ./gmos.db --profile local --text "What is the project next step?"
 gmos forget --db ./gmos.db --profile local --query "delete old project" --target-term "old project"
-gmos-inspect --db ./gmos.db --profile local --query "project release" --temporal-mode current --failure-limit 50 --format markdown
+gmos-inspect --db ./gmos.db --profile local --query "project release" --temporal-mode current --evidence-limit 50 --failure-limit 50 --max-steps 2 --max-branch 4 --format markdown
 gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
 ```
 
@@ -230,6 +230,9 @@ optional reconstruction diagnostics. Use `--temporal-mode current` or
 behavior. Use `--failure-limit` to cap inspected failure events. The report does not print memory content, evidence
 text, raw query secrets, profile IDs, prompt context, table hashes, or private database paths. Use it for
 support bundles and local integration checks before building a host UI.
+Use `--evidence-limit` to cap evidence summary sampling. Use `--max-steps` and
+`--max-branch` to bound optional reconstruction diagnostics for query-based
+inspection.
 
 `doctor`, `status`, `gate`, and report-style gym commands support JSON output by
 default and markdown output with `--format markdown`. Use `--json-file` and
