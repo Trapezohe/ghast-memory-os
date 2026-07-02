@@ -22270,6 +22270,8 @@ try {
     "utf8",
   );
   assert.match(releaseEvidenceSummary, /Invocation: .*scripts\/create-release-evidence\.mjs/);
+  assert.match(releaseEvidenceSummary, /## Artifacts/);
+  assert.match(releaseEvidenceSummary, /Tarball: n\/a/);
   assert.match(releaseEvidenceSummary, /Known limitations/);
   assert.match(releaseEvidenceDryRun.stdout, /gmos.release_evidence.v1/);
 } finally {
@@ -22320,6 +22322,12 @@ assert.equal(
   releaseEvidencePackManifest.artifacts?.tarballIntegritySha512,
   `sha512-${createHash("sha512").update(readFileSync(releaseEvidenceTarballPath)).digest("base64")}`,
 );
+const releaseEvidencePackSummary = readFileSync(
+  path.join(releaseEvidencePackDir, "SUMMARY.md"),
+  "utf8",
+);
+assert.equal(releaseEvidencePackSummary.includes(`Tarball: ${releaseEvidenceTarball}`), true);
+assert.match(releaseEvidencePackSummary, /Tarball integrity sha512: sha512-/);
 
 const releaseEvidenceScheduledDir = path.join(tmp, "release-evidence-scheduled-dry-run");
 const releaseEvidenceScheduledWorkflow = path.join(
