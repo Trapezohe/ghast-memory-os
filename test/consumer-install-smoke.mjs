@@ -1116,6 +1116,12 @@ try {
     ".bin",
     process.platform === "win32" ? "ghast-memory.cmd" : "ghast-memory",
   );
+  const gmosInspectBin = path.join(
+    consumerDir,
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "gmos-inspect.cmd" : "gmos-inspect",
+  );
   const installedCli = path.join(
     consumerDir,
     "node_modules",
@@ -1127,6 +1133,7 @@ try {
   );
   assert.equal(existsSync(gmosBin), true);
   assert.equal(existsSync(ghastMemoryBin), true);
+  assert.equal(existsSync(gmosInspectBin), true);
   assert.equal(existsSync(installedCli), true);
   const installedPackage = JSON.parse(
     readFileSync(path.join(consumerDir, "node_modules", "@ghast", "memory", "package.json"), "utf8"),
@@ -1283,6 +1290,16 @@ try {
   assert.equal(doctor.searchIndex.status, "ok");
   assert.equal(doctor.searchIndex.vectorIndex.status, "ok");
   assert.equal(doctor.hostCompatibility.level, "L4");
+  const inspectBin = spawnCommand(
+    gmosInspectBin,
+    ["--db", doctorDbPath, "--profile", "installed-consumer", "--format", "json"],
+    { cwd: consumerDir, encoding: "utf8" },
+  );
+  assert.equal(inspectBin.status, 0, inspectBin.stderr);
+  const inspectReport = JSON.parse(inspectBin.stdout);
+  assert.equal(inspectReport.schema, "gmos.inspect_report.v1");
+  assert.equal(inspectReport.dbPath, "[plaintext sqlite path redacted]");
+  assert.equal(inspectBin.stdout.includes(doctorDbPath), false);
   const doctorMarkdown = runInstalledCli([
     "doctor",
     "--db",
