@@ -571,6 +571,22 @@ try {
         });
         assert.equal(httpPrepare.status, 200);
         assert.match(JSON.stringify(await httpPrepare.json()), /stable SDK boundaries/);
+        const httpReconstruct = await fetch(httpAddress.url + "/reconstruct", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer consumer-local-token",
+          },
+          body: JSON.stringify({
+            profileId: "consumer_http",
+            text: "stable SDK boundaries",
+            temporalMode: "current",
+          }),
+        });
+        assert.equal(httpReconstruct.status, 200);
+        const httpReconstructBody = await httpReconstruct.json();
+        assert.equal(httpReconstructBody.reconstructed.paths.length > 0, true);
+        assert.match(JSON.stringify(httpReconstructBody), /stable SDK boundaries/);
         const httpExplainPath = await fetch(httpAddress.url + "/explain-path", {
           method: "POST",
           headers: {
@@ -1816,6 +1832,7 @@ try {
   assert.equal(httpAdapterOutput.unauthenticatedRuntimeInfoStatus, 401);
   assert.equal(httpAdapterOutput.runtimeInfoSchema, "gmos.runtime_info.v1");
   assert.equal(httpAdapterOutput.preparedHasPreference, true);
+  assert.equal(httpAdapterOutput.reconstructedPathCount > 0, true);
   assert.equal(httpAdapterOutput.statusSchemaVersion, 7);
   assert.equal(httpAdapterOutput.hostLevel, "L4");
   const installedMcpRouterExample = path.join(
