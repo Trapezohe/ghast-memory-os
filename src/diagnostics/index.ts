@@ -16,6 +16,8 @@ import {
 import { readGmosPackageInfo } from "../kernel/package-info.js";
 import { getGmosRuntimeInfo, type GmosRuntimeInfo } from "../runtime-info.js";
 
+const REDACTED_PROFILE_ID = "[profile id redacted]";
+
 export interface DiagnosticsStore {
   rowCounts(): Promise<Record<string, number>> | Record<string, number>;
   readAuditSnapshot?(): Promise<ReadAuditSnapshot> | ReadAuditSnapshot;
@@ -265,7 +267,7 @@ export async function createMemoryStatusReport(
   return {
     framework: "ghast-memory-os",
     generatedAt: input.now?.() ?? new Date().toISOString(),
-    profileId,
+    profileId: REDACTED_PROFILE_ID,
     package: packageInfo,
     runtimeInfo,
     storage,

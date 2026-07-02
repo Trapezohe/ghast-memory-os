@@ -13169,6 +13169,7 @@ const statusReport = await createMemoryStatusReport({
   now: () => "2026-06-25T00:02:45.000Z",
 });
 assert.equal(statusReport.framework, "ghast-memory-os");
+assert.equal(statusReport.profileId, "[profile id redacted]");
 assert.equal(statusReport.package.name, packageJson.name);
 assert.equal(statusReport.package.version, packageJson.version);
 assert.deepEqual(statusReport.runtimeInfo, getGmosRuntimeInfo());
@@ -13212,7 +13213,7 @@ const badStatus = await createMemoryStatusReport({
       throw error;
     },
   },
-  profileId: "test",
+  profileId: "test api key sk-diagnosticsprofile1234567890",
 });
 const badStatusJson = JSON.stringify(badStatus);
 assert.equal(badStatus.storage.status, "unavailable");
@@ -13220,6 +13221,7 @@ assert.equal(badStatus.storage.error?.code, "diagnostics_store_unavailable");
 assert.equal(badStatus.storage.error?.name, "DiagnosticsStoreUnavailable");
 assert.equal(badStatusJson.includes("sk-diagnosticssecret"), false);
 assert.equal(badStatusJson.includes("sk-diagnosticsname"), false);
+assert.equal(badStatusJson.includes("sk-diagnosticsprofile"), false);
 assert.equal(badStatusJson.includes("memory text"), false);
 assert.equal(renderMemoryStatusMarkdown(badStatus).includes("sk-diagnosticssecret"), false);
 assert.equal(renderMemoryStatusMarkdown(badStatus).includes("sk-diagnosticsname"), false);
@@ -14303,6 +14305,7 @@ try {
     ((status.body.report as { storage?: { schemaVersion?: number } }).storage ?? {}).schemaVersion,
     7,
   );
+  assert.equal((status.body.report as { profileId?: string }).profileId, "[profile id redacted]");
   assert.deepEqual(
     (status.body.report as { runtimeInfo?: unknown }).runtimeInfo,
     getGmosRuntimeInfo(),
@@ -17593,6 +17596,7 @@ const cliStatus = spawnSync(
 );
 assert.equal(cliStatus.status, 0, cliStatus.stderr);
 const cliStatusPayload = JSON.parse(cliStatus.stdout) as {
+  profileId?: string;
   storage?: {
     schemaVersion?: number;
     rowCounts?: Record<string, number>;
@@ -17601,6 +17605,7 @@ const cliStatusPayload = JSON.parse(cliStatus.stdout) as {
   failureSummary?: { inspectedFailureCount?: number };
   hostCompatibility?: { level?: string };
 };
+assert.equal(cliStatusPayload.profileId, "[profile id redacted]");
 assert.equal(cliStatusPayload.storage?.schemaVersion, 7);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_memories ?? 0) > 0);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_associations ?? 0) > 0);
@@ -17800,6 +17805,7 @@ const cliInspect = spawnSync(
 assert.equal(cliInspect.status, 0, cliInspect.stderr);
 const cliInspectPayload = JSON.parse(cliInspect.stdout) as {
   schema?: string;
+  profileId?: string;
   dbPath?: string;
   query?: string | null;
   counts?: { evidence?: number };
@@ -17830,6 +17836,7 @@ const cliInspectPayload = JSON.parse(cliInspect.stdout) as {
   reconstruction?: { pathCount?: number; retrievedMemoryCount?: number } | null;
 };
 assert.equal(cliInspectPayload.schema, "gmos.inspect_report.v1");
+assert.equal(cliInspectPayload.profileId, "[profile id redacted]");
 assert.equal(cliInspectPayload.dbPath, "[plaintext sqlite path redacted]");
 assert.equal(cliInspectPayload.query?.includes("sk-inspectquerysecret"), false);
 assert.equal(cliInspectPayload.query?.includes("[redacted_secret]"), true);
@@ -17861,6 +17868,22 @@ assert.equal(cliInspect.stdout.includes("身份证"), false);
 assert.equal(cliInspect.stdout.includes("sk-inspectquerysecret"), false);
 assert.equal(cliInspect.stdout.includes("Inspector residue memory"), false);
 assert.equal(cliInspect.stdout.includes(dbPath), false);
+const cliInspectProfileRedaction = spawnSync(
+  process.execPath,
+  [
+    path.join(process.cwd(), "dist/cli/gmos-inspect.js"),
+    "--db",
+    dbPath,
+    "--profile",
+    "test api key sk-inspectprofile1234567890",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliInspectProfileRedaction.status, 0, cliInspectProfileRedaction.stderr);
+assert.equal(JSON.parse(cliInspectProfileRedaction.stdout).profileId, "[profile id redacted]");
+assert.equal(cliInspectProfileRedaction.stdout.includes("sk-inspectprofile"), false);
 const cliInspectMarkdown = spawnSync(
   process.execPath,
   [
@@ -17881,6 +17904,7 @@ assert.match(cliInspectMarkdown.stdout, /# gmOS Inspect Report/);
 assert.match(cliInspectMarkdown.stdout, /## Health Signals/);
 assert.match(cliInspectMarkdown.stdout, /## Evidence Summary/);
 assert.match(cliInspectMarkdown.stdout, /## Forget Summary/);
+assert.match(cliInspectMarkdown.stdout, /profileId: `\[profile id redacted\]`/);
 assert.match(cliInspectMarkdown.stdout, /eligible for long-term memory:/);
 assert.match(cliInspectMarkdown.stdout, /derived residue:/);
 assert.match(cliInspectMarkdown.stdout, /world beliefs:/);

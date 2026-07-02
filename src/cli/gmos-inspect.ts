@@ -8,6 +8,8 @@ import { redactForReport, safePublicLabel, safePublicSensitivity } from "../kern
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 
+const REDACTED_PROFILE_ID = "[profile id redacted]";
+
 function value(name: string, fallback?: string): string | undefined {
   const index = process.argv.indexOf(name);
   return index === -1 ? fallback : process.argv[index + 1] ?? fallback;
@@ -322,7 +324,7 @@ async function main(): Promise<void> {
     const report: InspectReport = {
       schema: "gmos.inspect_report.v1",
       generatedAt: new Date().toISOString(),
-      profileId,
+      profileId: REDACTED_PROFILE_ID,
       dbPath: "[plaintext sqlite path redacted]",
       query: reportQuery,
       counts: {

@@ -218,7 +218,7 @@ gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
 evidence eligibility/source summaries, row-count summaries, forget residue
 counts for archived-memory derived world-belief/association residue, and
 optional reconstruction diagnostics without printing memory content, evidence
-text, raw query secrets, prompt context, table hashes, or private database paths. Use it for
+text, raw query secrets, profile IDs, prompt context, table hashes, or private database paths. Use it for
 support bundles and local integration checks before building a host UI.
 
 `doctor`, `status`, `gate`, and report-style gym commands support JSON output by
@@ -289,4 +289,4 @@ an explicit preference memory, prepares context through `/prepare`, reads
 `memory.runtime_info`, and `createMemoryStatusReport()` expose content-free
 runtime and integration metadata. They report package, CLI, export, MCP, HTTP,
 and local-first trust contract information. They do not include memory text,
-failure samples, or table state hashes.
+failure samples, raw profile IDs, or table state hashes.

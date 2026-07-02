@@ -390,6 +390,9 @@ function recordInspectorContentSafety(result, forbiddenValues) {
     if (report.dbPath !== "[plaintext sqlite path redacted]") {
       throw new Error("inspector report did not redact dbPath");
     }
+    if (report.profileId !== "[profile id redacted]") {
+      throw new Error("inspector report did not redact profileId");
+    }
     const forgetSummary = report.forgetSummary;
     if (
       !forgetSummary ||
