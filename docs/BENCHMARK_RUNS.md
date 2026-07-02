@@ -10,12 +10,12 @@ Run date: 2026-07-02.
 Manifest completeness: full local release evidence bundle.
 
 - Package: `@ghast/memory@0.1.0-alpha.69`.
-- Git SHA: `49b7fe4a46d21ab2d8b1d72f0e87f4a60da757be`.
+- Git SHA: `674b2a11534ca153e18bc714d7fe8cddc3dd701c`.
 - Dirty worktree: `no`.
 - Shell command:
-  `npm run release:evidence -- --output-dir ./release-evidence/alpha69-49b7fe4`.
+  `npm run release:evidence -- --output-dir ./release-evidence/alpha69-674b2a1`.
 - Manifest invocation:
-  `node scripts/create-release-evidence.mjs --output-dir ./release-evidence/alpha69-49b7fe4`.
+  `node scripts/create-release-evidence.mjs --output-dir ./release-evidence/alpha69-674b2a1`.
 - PR gate command: `npm run gate:pr`.
 - Release evidence checks: `30/30` pass.
 - CI policy in the bundle: push trigger absent; remote CI is opt-in through
@@ -27,8 +27,9 @@ smoke, MCP smoke, installed public CLI smoke for `gmos`, `ghast-memory`, and
 `gmos-inspect`, backup/restore smoke, report-only evolution smoke,
 doctor/status/inspector content-safety checks, and cleanup of generated
 plaintext SQLite and npm cache artifacts.
-The inspector check also verifies that `consumer.db`, `consumer.db-wal`, and
-`consumer.db-shm` are unchanged after inspection.
+The inspector check also verifies numeric health, evidence, failure, forget,
+and reconstruction counters, and confirms that `consumer.db`, `consumer.db-wal`,
+and `consumer.db-shm` are unchanged after inspection.
 
 This entry is a local SDK release gate snapshot. It is not an official
 LongMemEval, LoCoMo, STATE-Bench, Mem2ActBench, or BEAM score. Use it to
