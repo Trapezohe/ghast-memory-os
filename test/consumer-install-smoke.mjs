@@ -451,10 +451,10 @@ try {
       });
       const evolution = createEvolutionControlPlane({ store, profileId: "consumer" });
       const failureReview = await evolution.reviewFailures();
-      assert.equal(failureReview.mode, "report_only");
+      assert.equal(failureReview.mode, "propose_with_approval");
       assert.equal(failureReview.autoApply, false);
       assert.equal(failureReview.autoRollout, false);
-      assert.equal(failureReview.decision, "report_only_review");
+      assert.equal(failureReview.decision, "propose_with_approval_review");
       assert.equal(failureReview.inspectedFailureCount, 1);
       const profileBackup = store.exportProfileBackup({ profileId: "consumer", mode: "full" });
       assert.equal(profileBackup.schema, "gmos.profile_backup.v1");
@@ -877,8 +877,8 @@ try {
         sourceType: "gmos.snapshot_export",
       });
       const evolution = createEvolutionControlPlane({ store: sqliteStore, profileId: "consumer-types" });
-      const evolutionMode: "report_only" = evolution.mode;
-      if (evolutionMode !== "report_only") throw new Error("unexpected evolution mode");
+      const evolutionMode: "propose_with_approval" = evolution.mode;
+      if (evolutionMode !== "propose_with_approval") throw new Error("unexpected evolution mode");
       const gymResult: MemoryGymResult = await runMemoryGym({ generatedSeeds: 1 });
       if (!gymResult.pass) throw new Error("typed gym result failed");
       const releaseGateResult: MemoryReleaseGateResult = await runMemoryReleaseGate({

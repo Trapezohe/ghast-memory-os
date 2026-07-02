@@ -1579,8 +1579,8 @@ function recordEvolutionContentSafety(result, forbiddenValues) {
     const report = JSON.parse(result.stdout);
     if (
       report.ok !== true ||
-      report.sdkMode !== "report_only" ||
-      report.cliMode !== "report_only" ||
+      report.sdkMode !== "propose_with_approval" ||
+      report.cliMode !== "propose_with_approval" ||
       report.autoApply !== false ||
       report.autoRollout !== false ||
       !hasExactEvolutionFailureKinds(report) ||
@@ -2463,7 +2463,7 @@ if (skipFreshInstall) {
         await memory.commitOutcome({
           profileId,
           taskId: "fresh-evolution-task",
-          objective: "Verify report-only evolution review.",
+          objective: "Verify approval-gated evolution review.",
           status: "failed",
           summary: "Evolution smoke wrong recall sample.",
           failureKind: "wrong_recall",
@@ -2475,7 +2475,7 @@ if (skipFreshInstall) {
         });
         const controlPlane = createEvolutionControlPlane({ store, profileId });
         const sdkReport = await controlPlane.reviewFailures({ limit: 10 });
-        assert.equal(sdkReport.mode, "report_only");
+        assert.equal(sdkReport.mode, "propose_with_approval");
         assert.equal(sdkReport.autoApply, false);
         assert.equal(sdkReport.autoRollout, false);
         assert.equal(sdkReport.inspectedFailureCount, 2);
@@ -2510,7 +2510,7 @@ if (skipFreshInstall) {
         );
         assert.equal(cliResult.status, 0);
         const cliReport = JSON.parse(cliResult.stdout);
-        assert.equal(cliReport.mode, "report_only");
+        assert.equal(cliReport.mode, "propose_with_approval");
         assert.equal(cliReport.autoApply, false);
         assert.equal(cliReport.autoRollout, false);
         assert.equal(cliReport.inspectedFailureCount, 2);

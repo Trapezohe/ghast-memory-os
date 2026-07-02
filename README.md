@@ -95,6 +95,13 @@ npm run examples:quickstart
   can archive deterministic duplicate memories and, when a host provides a
   `consolidator`, persist evidence-backed semantic summaries while demoting the
   source episodes to dormant.
+- Procedure distillation maintenance. `maintain({ phases: ["distill"] })`
+  clusters repeated completed task trajectories and, when a host provides a
+  `procedureDistiller`, persists evidence-backed `procedure` memories without
+  changing the source trajectories.
+- Outcome reinforcement. `commitOutcome({ usedMemoryIds })` updates recall
+  counters and bounded reinforcement; `wrong_recall` feedback can also lower
+  confidence for related memories while preserving the feedback evidence path.
 - Runtime facade: `observe`, `prepareTurn`, `commitOutcome`, `recordFeedback`,
   `reconstructContext`, `explainEvidencePath`, `maintain`, `forget`,
   `explain`.
@@ -127,8 +134,9 @@ npm run examples:quickstart
   in-process imports or MCP stdio.
 - Read-only diagnostics/status report for schema, row counts, failure summary,
   package version, and host compatibility.
-- Report-only evolution failure review for clustering failure logs into
-  hypotheses and patch candidates without auto-apply or auto-rollout.
+- Approval-gated evolution failure review for clustering failure logs into
+  hypotheses and patch candidates. SDK/CLI admin apply/revert is evidence-backed
+  and reversible; MCP and HTTP surfaces remain read/agent operations only.
 - CLI binaries: `gmos`, `ghast-memory`, and `gmos-inspect`.
 
 ## Known Limitations
@@ -188,6 +196,12 @@ from explicit `maintain({ phases: ["consolidate"] })`; gmOS selects bounded
 clusters, enforces the same safety gates, records source memory ids in
 consolidation evidence, and never synthesizes summary prose without the hook.
 
+`createMemoryOS({ procedureDistiller })` follows the same host-owned wording
+boundary for repeated successful task trajectories. It runs only from explicit
+`maintain({ phases: ["distill"] })`; gmOS selects bounded completed-trajectory
+clusters and persists accepted hook output as `procedure` memory with
+`sourceType: "distillation"` evidence.
+
 For a runnable end-to-end example of host-owned candidate generation and
 reconstruction cues:
 
@@ -234,7 +248,7 @@ npm install -g @ghast/memory
 gmos init --db ./gmos.db
 gmos doctor --db ./gmos.db --host ghast --format markdown
 gmos status --db ./gmos.db --profile local --host ghast --format markdown
-gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate --format markdown
+gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate,distill --format markdown
 gmos add --db ./gmos.db --profile local --kind preference --text "回答风格：简洁，先给结论"
 gmos add --db ./gmos.db --profile local --kind boundary --text "不要再提醒我这个项目延期了。"
 gmos search --db ./gmos.db --profile local --query "结论 方案"
@@ -246,6 +260,8 @@ gmos explain-path --db ./gmos.db --profile local --text "我之前说的项目�
 gmos mcp serve --db ./gmos.db --profile local
 gmos http serve --db ./gmos.db --profile local --port 4787 --host ghast --auth-token local-dev-token
 gmos evolution report --db ./gmos.db --profile local --format markdown
+gmos evolution apply --db ./gmos.db --profile local --proposal proposal_xxx --approved-by "Song Su" --yes
+gmos evolution revert --db ./gmos.db --application evidence_xxx --yes
 gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
 ```
 
@@ -432,13 +448,16 @@ engineering workflows.
 
 ## Evolution Review
 
-The alpha SDK includes a report-only self-evolution control plane. It reads the
-failure log, clusters failures by kind, proposes repair hypotheses, and emits
-policy patch candidates. It does not apply patches, roll out changes, or weaken
-hard gates.
+The alpha SDK includes an approval-gated self-evolution control plane. Review is
+read-only: it reads the failure log, clusters failures by kind, proposes repair
+hypotheses, and emits policy patch candidates. SDK/CLI apply requires explicit
+approval, writes evolution evidence with previous values, and can be reverted
+once. Nothing auto-applies or rolls out.
 
 ```bash
 gmos evolution report --db ./gmos.db --profile local --format markdown
+gmos evolution apply --db ./gmos.db --profile local --proposal proposal_xxx --approved-by "Song Su" --yes
+gmos evolution revert --db ./gmos.db --application evidence_xxx --yes
 ```
 
 ## Diagnostics

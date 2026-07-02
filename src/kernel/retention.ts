@@ -35,6 +35,11 @@ function positiveDays(value: number | undefined, fallback: number): number {
   return value;
 }
 
+function positiveStep(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) return fallback;
+  return clamp(value, 0, 1);
+}
+
 function parseInstant(value: string | null | undefined): number | null {
   if (!value) return null;
   const instant = Date.parse(value);
@@ -63,6 +68,15 @@ export function resolveMemoryLifecycleConfig(
     autoTransitionKinds: input?.autoTransitionKinds?.length
       ? [...new Set(input.autoTransitionKinds)]
       : [...DEFAULT_AUTO_TRANSITION_KINDS],
+    outcomeReinforcement: {
+      enabled: input?.outcomeReinforcement?.enabled ?? true,
+      step: positiveStep(input?.outcomeReinforcement?.step, 0.1),
+    },
+    feedbackConfidencePenalty: {
+      enabled: input?.feedbackConfidencePenalty?.enabled ?? true,
+      step: positiveStep(input?.feedbackConfidencePenalty?.step, 0.1),
+      floor: clamp(input?.feedbackConfidencePenalty?.floor ?? 0.05, 0, 1),
+    },
   };
 }
 

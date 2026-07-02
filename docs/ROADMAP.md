@@ -35,7 +35,7 @@ Main gaps against the vision:
 2. **Experience does not accumulate.** `commitOutcome()` and
    `recordFeedback()` persist events, but usage and outcomes do not feed back
    into memory strength, and repeated task trajectories are not distilled
-   into reusable procedures. The evolution module is report-only.
+   into reusable procedures. The evolution module is propose-with-approval.
 3. **Recall is lexical.** FTS plus hashed 384-dim feature vectors is a
    deterministic baseline, not semantic recall. There is no pluggable
    embedding provider and no hybrid rank fusion.
@@ -122,7 +122,7 @@ this user".
   host hook for wording), surfaced in `prepareTurn` action policies.
 - Preference reinforcement: `recordFeedback` outcomes adjust confidence and
   retention of the memories that produced the behavior, both directions.
-- Evolution loop upgrade from report-only to propose-with-approval: failure
+- Evolution loop upgrade from read-only review to propose-with-approval: failure
   clusters produce patch candidates a host or user explicitly applies;
   applications are evidence-backed and reversible. No auto-apply.
 

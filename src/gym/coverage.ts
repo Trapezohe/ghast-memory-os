@@ -86,6 +86,17 @@ export function coverageMatrix(result: MemoryGymResult): MemoryGymCoverageRow[] 
       status: statusFor(layerPass(result, "consolidation")),
       evidence: "duplicate archive, host summary hook, safety exclusions, dry-run purity, idempotence, and forget residue cleanup are exercised",
     },
+    {
+      layer: "Layer 10: Experience Learning",
+      status: statusFor(
+        Boolean(
+          layerPass(result, "distillation") &&
+            layerPass(result, "reinforcement") &&
+            layerPass(result, "evolution"),
+        ),
+      ),
+      evidence: "procedure distillation, outcome reinforcement, confidence penalty, and approval-gated evolution are exercised",
+    },
   ];
 }
 
@@ -157,8 +168,15 @@ export function memoryStackCoverage(result: MemoryGymResult): MemoryGymCoverageR
     },
     {
       layer: "Feedback / Evolution",
-      status: statusFor(Boolean(result.hardGates.feedback_failure_log)),
-      evidence: "feedback enters failure log; self-evolution remains outside SDK alpha scope",
+      status: statusFor(
+        Boolean(
+          result.hardGates.feedback_failure_log &&
+            result.hardGates.outcome_reinforcement_adjusts_and_bounds &&
+            result.hardGates.wrong_recall_feedback_lowers_confidence_floor &&
+            result.hardGates.evolution_review_apply_revert_approval_gated,
+        ),
+      ),
+      evidence: "feedback enters failure log; outcome reinforcement and approval-gated evolution apply/revert are exercised",
     },
     {
       layer: "Lifecycle",
@@ -193,6 +211,21 @@ export function memoryStackCoverage(result: MemoryGymResult): MemoryGymCoverageR
       ),
       evidence:
         "deterministic duplicate consolidation and host semantic consolidation are exercised through maintain",
+    },
+    {
+      layer: "Experience Learning",
+      status: statusFor(
+        Boolean(
+          result.hardGates.distillation_writes_procedure_with_trajectory_evidence &&
+            result.hardGates.distillation_idempotent_same_now &&
+            result.hardGates.distillation_dry_run_read_audit_pure &&
+            result.hardGates.outcome_reinforcement_adjusts_and_bounds &&
+            result.hardGates.wrong_recall_feedback_lowers_confidence_floor &&
+            result.hardGates.evolution_review_apply_revert_approval_gated,
+        ),
+      ),
+      evidence:
+        "distilled procedure memory, reinforcement, confidence penalties, and reversible evolution applications are exercised",
     },
   ];
 }

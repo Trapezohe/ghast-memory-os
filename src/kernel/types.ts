@@ -348,6 +348,43 @@ export type MemoryConsolidator =
       ): Promise<MemoryConsolidationResult> | MemoryConsolidationResult;
     };
 
+export interface MemoryProcedureDistillationTrajectorySnapshot {
+  id: string;
+  objective: string;
+  status: "completed" | "failed";
+  summary?: string | undefined;
+  createdAt: string;
+}
+
+export interface MemoryProcedureDistillationCluster {
+  objective: string;
+  sharedTags: string[];
+  trajectories: MemoryProcedureDistillationTrajectorySnapshot[];
+  clusterKey: string;
+}
+
+export interface MemoryProcedureDistillationCandidate {
+  content: string;
+  confidence?: number | undefined;
+}
+
+export type MemoryProcedureDistillationResult =
+  | MemoryProcedureDistillationCandidate
+  | MemoryProcedureDistillationCandidate[]
+  | null
+  | undefined;
+
+export type MemoryProcedureDistiller =
+  | ((
+      input: Omit<MemoryProcedureDistillationCluster, "clusterKey">,
+    ) => Promise<MemoryProcedureDistillationResult> | MemoryProcedureDistillationResult)
+  | {
+      name?: string | undefined;
+      distill(
+        input: Omit<MemoryProcedureDistillationCluster, "clusterKey">,
+      ): Promise<MemoryProcedureDistillationResult> | MemoryProcedureDistillationResult;
+    };
+
 export type ObserveSkippedReason =
   | "forget_request"
   | "feedback_recorded"
@@ -885,6 +922,81 @@ export interface RecordConsolidationSummaryResult {
   dormantSourceIds: string[];
 }
 
+export interface RecordProcedureDistillationInput {
+  profileId: string;
+  objective: string;
+  content: string;
+  sensitivity: Sensitivity;
+  confidence: number;
+  sourceTrajectoryIds: string[];
+  sharedTags: string[];
+  clusterKey: string;
+  createdAt: string;
+  metadata?: Record<string, unknown> | undefined;
+}
+
+export interface RecordProcedureDistillationResult {
+  memory: MemoryRecord;
+  alreadyExists: boolean;
+}
+
+export type EvolutionAction =
+  | {
+      type: "adjust_reinforcement";
+      memoryId: string;
+      delta: number;
+    }
+  | {
+      type: "adjust_confidence";
+      memoryId: string;
+      delta: number;
+    }
+  | {
+      type: "demote_to_dormant";
+      memoryId: string;
+    }
+  | {
+      type: "reactivate";
+      memoryId: string;
+    };
+
+export interface EvolutionPreviousMemoryValue {
+  memoryId: string;
+  confidence: number;
+  reinforcement: number;
+  status: MemoryStatus;
+  updatedAt: string;
+}
+
+export interface EvolutionApplyStoreInput {
+  profileId: string;
+  proposalId: string;
+  approvedBy: string;
+  actions: EvolutionAction[];
+  appliedAt: string;
+}
+
+export interface EvolutionApplyStoreResult {
+  applicationEventId: string;
+  proposalId: string;
+  actions: EvolutionAction[];
+  previousValues: EvolutionPreviousMemoryValue[];
+  appliedAt: string;
+}
+
+export interface EvolutionRevertStoreInput {
+  profileId?: string | undefined;
+  applicationEventId: string;
+  revertedAt: string;
+}
+
+export interface EvolutionRevertStoreResult {
+  revertEventId: string;
+  applicationEventId: string;
+  restoredValues: EvolutionPreviousMemoryValue[];
+  revertedAt: string;
+}
+
 export interface RecordFailureInput {
   profileId: string;
   failureKind: FailureKind;
@@ -917,14 +1029,37 @@ export interface TaskTrajectoryInput {
   createdAt?: string | undefined;
 }
 
+export interface TaskTrajectoryRecord {
+  id: string;
+  profileId: string;
+  taskId?: string | null | undefined;
+  objective: string;
+  status: "completed" | "failed";
+  summary?: string | null | undefined;
+  createdAt: string;
+}
+
 export interface CommitOutcomeStoreInput extends TaskTrajectoryInput {
   usedMemoryIds?: string[] | undefined;
   failure?: RecordFailureInput | undefined;
+  outcomeReinforcement?: ResolvedOutcomeReinforcementConfig | undefined;
 }
 
 export interface FeedbackSignalStoreInput extends RecordFailureInput {
   relatedMemoryIds?: string[] | undefined;
   signal?: "positive" | "negative" | undefined;
+  confidencePenalty?: ResolvedFeedbackConfidencePenaltyConfig | undefined;
+}
+
+export interface OutcomeReinforcementConfig {
+  enabled?: boolean | undefined;
+  step?: number | undefined;
+}
+
+export interface FeedbackConfidencePenaltyConfig {
+  enabled?: boolean | undefined;
+  step?: number | undefined;
+  floor?: number | undefined;
 }
 
 export interface MemoryLifecycleConfig {
@@ -933,6 +1068,8 @@ export interface MemoryLifecycleConfig {
   dormantBelow?: number | undefined;
   archiveAfterDormantDays?: number | undefined;
   autoTransitionKinds?: MemoryKind[] | undefined;
+  outcomeReinforcement?: OutcomeReinforcementConfig | undefined;
+  feedbackConfidencePenalty?: FeedbackConfidencePenaltyConfig | undefined;
 }
 
 export interface MemoryConsolidationConfig {
@@ -945,7 +1082,25 @@ export interface MemoryConsolidationConfig {
   eligibleKinds?: MemoryKind[] | undefined;
 }
 
-export type MaintenancePhase = "decay" | "consolidate";
+export interface MemoryProcedureDistillationConfig {
+  enabled?: boolean | undefined;
+  minRepeats?: number | undefined;
+  maxClustersPerRun?: number | undefined;
+  maxTrajectoriesPerCluster?: number | undefined;
+}
+
+export type MaintenancePhase = "decay" | "consolidate" | "distill";
+
+export interface ResolvedOutcomeReinforcementConfig {
+  enabled: boolean;
+  step: number;
+}
+
+export interface ResolvedFeedbackConfidencePenaltyConfig {
+  enabled: boolean;
+  step: number;
+  floor: number;
+}
 
 export interface ResolvedMemoryLifecycleConfig {
   enabled: boolean;
@@ -953,6 +1108,8 @@ export interface ResolvedMemoryLifecycleConfig {
   dormantBelow: number;
   archiveAfterDormantDays: number;
   autoTransitionKinds: MemoryKind[];
+  outcomeReinforcement: ResolvedOutcomeReinforcementConfig;
+  feedbackConfidencePenalty: ResolvedFeedbackConfidencePenaltyConfig;
 }
 
 export interface ResolvedMemoryConsolidationConfig {
@@ -963,6 +1120,13 @@ export interface ResolvedMemoryConsolidationConfig {
   maxClustersPerRun: number;
   maxMembersPerCluster: number;
   eligibleKinds: MemoryKind[];
+}
+
+export interface ResolvedMemoryProcedureDistillationConfig {
+  enabled: boolean;
+  minRepeats: number;
+  maxClustersPerRun: number;
+  maxTrajectoriesPerCluster: number;
 }
 
 export interface MaintenanceInput {
@@ -1027,6 +1191,37 @@ export interface MaintenanceConsolidationReport {
   skipped: MaintenanceSkippedSummary[];
 }
 
+export interface MaintenanceProcedureDistillation {
+  objective: string;
+  sourceTrajectoryIds: string[];
+  sharedTags: string[];
+  clusterKey: string;
+}
+
+export interface MaintenanceProcedureDistillationSummary {
+  sourceTrajectoryIds: string[];
+  objective: string;
+  sharedTags: string[];
+  content: string;
+  confidence: number;
+  memoryId?: string | undefined;
+  reasons: string[];
+}
+
+export interface MaintenanceProcedureDistillationRejection {
+  sourceTrajectoryIds: string[];
+  reason: string;
+}
+
+export interface MaintenanceDistillationReport {
+  enabled: boolean;
+  evaluated: number;
+  clusters: MaintenanceProcedureDistillation[];
+  summaryMemories: MaintenanceProcedureDistillationSummary[];
+  rejectedCandidates: MaintenanceProcedureDistillationRejection[];
+  skipped: MaintenanceSkippedSummary[];
+}
+
 export interface MaintenanceReport {
   schema: "gmos.maintenance_report.v1";
   profileId: string;
@@ -1037,6 +1232,7 @@ export interface MaintenanceReport {
   exempted: MaintenanceExemption[];
   skipped: MaintenanceSkippedSummary[];
   consolidation: MaintenanceConsolidationReport;
+  distillation: MaintenanceDistillationReport;
 }
 
 export interface MaintenanceStoreInput extends MaintenanceInput {
@@ -1046,6 +1242,7 @@ export interface MaintenanceStoreInput extends MaintenanceInput {
   phases: MaintenancePhase[];
   lifecycle: ResolvedMemoryLifecycleConfig;
   consolidation: ResolvedMemoryConsolidationConfig;
+  distillation: ResolvedMemoryProcedureDistillationConfig;
 }
 
 export interface MemoryLifecycleStatus {
@@ -1126,6 +1323,18 @@ export interface MemoryStore {
   recordConsolidationSummary?(
     input: RecordConsolidationSummaryInput,
   ): Promise<RecordConsolidationSummaryResult> | RecordConsolidationSummaryResult;
+  listTaskTrajectories?(
+    input: { profileId: string; limit?: number | undefined },
+  ): Promise<TaskTrajectoryRecord[]> | TaskTrajectoryRecord[];
+  recordProcedureDistillation?(
+    input: RecordProcedureDistillationInput,
+  ): Promise<RecordProcedureDistillationResult> | RecordProcedureDistillationResult;
+  applyEvolutionActions?(
+    input: EvolutionApplyStoreInput,
+  ): Promise<EvolutionApplyStoreResult> | EvolutionApplyStoreResult;
+  revertEvolutionApplication?(
+    input: EvolutionRevertStoreInput,
+  ): Promise<EvolutionRevertStoreResult> | EvolutionRevertStoreResult;
   lifecycleStatus?(
     input?: { profileId?: string | undefined },
   ): Promise<MemoryLifecycleStatus> | MemoryLifecycleStatus;
@@ -1157,6 +1366,7 @@ export interface MemoryOSOptions {
   store: MemoryStore;
   extractor?: MemoryExtractor | undefined;
   consolidator?: MemoryConsolidator | undefined;
+  procedureDistiller?: MemoryProcedureDistiller | undefined;
   entityResolver?: EntityResolver | undefined;
   temporal?: {
     parser?: MemoryTemporalParser | undefined;
@@ -1172,6 +1382,7 @@ export interface MemoryOSOptions {
   } | undefined;
   lifecycle?: MemoryLifecycleConfig | undefined;
   consolidation?: MemoryConsolidationConfig | undefined;
+  distillation?: MemoryProcedureDistillationConfig | undefined;
   safety?: {
     /**
      * Host-specific additive sensitivity classifier.

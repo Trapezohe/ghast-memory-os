@@ -112,7 +112,7 @@ Usage:
   gmos repair --db ./gmos.db --search-index
   gmos repair --db ./gmos.db --associations
   gmos status --db ./gmos.db --profile local --host ghast --format markdown
-  gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate --now 2026-07-02T00:00:00.000Z --format markdown
+  gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate,distill --now 2026-07-02T00:00:00.000Z --format markdown
   gmos add --db ./gmos.db --profile local --kind preference --text "回答风格：简洁，先给结论"
   gmos update --db ./gmos.db --profile local --id memory_xxx --text "回答风格：先给结论，再列方案"
   gmos delete --db ./gmos.db --profile local --id memory_xxx --reason "manual cleanup"
@@ -137,6 +137,8 @@ Usage:
   gmos mcp serve --db ./gmos.db --profile local
   gmos http serve --db ./gmos.db --profile local --port 4787 --host ghast --auth-token local-dev-token
   gmos evolution report --db ./gmos.db --profile local --format markdown
+  gmos evolution apply --db ./gmos.db --profile local --proposal proposal_xxx --approved-by "Song Su" --yes
+  gmos evolution revert --db ./gmos.db --application evidence_xxx --yes
   gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
   gmos gym run --db :memory: --generated-seeds 3 --format markdown --report-file ./memory-gym.md
   gmos gym scale --sizes 100,1000 --threshold-p95-ms 250
@@ -424,12 +426,12 @@ function maintenancePhasesOption(): MaintenancePhase[] | undefined {
   if (!raw) return undefined;
   const phases = raw.split(",").map((phase) => phase.trim());
   if (phases.some((phase) => phase.length === 0)) {
-    throw new Error("--phases must be a comma-separated list of decay,consolidate");
+    throw new Error("--phases must be a comma-separated list of decay,consolidate,distill");
   }
-  const allowed = new Set<MaintenancePhase>(["decay", "consolidate"]);
+  const allowed = new Set<MaintenancePhase>(["decay", "consolidate", "distill"]);
   const invalid = phases.find((phase): phase is string => !allowed.has(phase as MaintenancePhase));
   if (invalid) {
-    throw new Error("--phases must contain only decay or consolidate");
+    throw new Error("--phases must contain only decay, consolidate, or distill");
   }
   return [...new Set(phases as MaintenancePhase[])];
 }
@@ -673,6 +675,18 @@ function renderMaintenanceMarkdown(report: MaintenanceReport): string {
   const consolidationSkippedRows = report.consolidation.skipped.map((entry) =>
     `| ${entry.reason} | ${entry.count} |`
   );
+  const distillationClusterRows = report.distillation.clusters.map((cluster) =>
+    `| ${cluster.objective} | ${cluster.sourceTrajectoryIds.join(", ")} | ${cluster.sharedTags.join(", ")} |`
+  );
+  const distillationSummaryRows = report.distillation.summaryMemories.map((summary) =>
+    `| ${summary.memoryId ?? "dry-run"} | ${summary.sourceTrajectoryIds.join(", ")} | ${summary.confidence.toFixed(4)} | ${summary.sharedTags.join(", ")} |`
+  );
+  const distillationRejectionRows = report.distillation.rejectedCandidates.map((rejection) =>
+    `| ${rejection.sourceTrajectoryIds.join(", ")} | ${rejection.reason} |`
+  );
+  const distillationSkippedRows = report.distillation.skipped.map((entry) =>
+    `| ${entry.reason} | ${entry.count} |`
+  );
   return [
     "# gmOS Maintenance Report",
     "",
@@ -734,6 +748,39 @@ function renderMaintenanceMarkdown(report: MaintenanceReport): string {
       ? "No skipped consolidation items."
       : "| Reason | Count |\n| --- | ---: |\n" + consolidationSkippedRows.join("\n"),
     "",
+    "## Distillation",
+    "",
+    `Enabled: ${report.distillation.enabled ? "yes" : "no"}`,
+    `Evaluated: ${report.distillation.evaluated}`,
+    `Clusters: ${report.distillation.clusters.length}`,
+    `Summary memories: ${report.distillation.summaryMemories.length}`,
+    "",
+    "### Procedure Clusters",
+    "",
+    distillationClusterRows.length === 0
+      ? "No procedure clusters."
+      : "| Objective | Trajectories | Shared Tags |\n| --- | --- | --- |\n" +
+          distillationClusterRows.join("\n"),
+    "",
+    "### Procedure Memories",
+    "",
+    distillationSummaryRows.length === 0
+      ? "No procedure memories."
+      : "| Memory | Trajectories | Confidence | Shared Tags |\n| --- | --- | ---: | --- |\n" +
+          distillationSummaryRows.join("\n"),
+    "",
+    "### Rejected Distillation Candidates",
+    "",
+    distillationRejectionRows.length === 0
+      ? "No rejected distillation candidates."
+      : "| Trajectories | Reason |\n| --- | --- |\n" + distillationRejectionRows.join("\n"),
+    "",
+    "### Distillation Skipped",
+    "",
+    distillationSkippedRows.length === 0
+      ? "No skipped distillation items."
+      : "| Reason | Count |\n| --- | ---: |\n" + distillationSkippedRows.join("\n"),
+    "",
   ].join("\n");
 }
 
@@ -786,6 +833,52 @@ async function runEvolutionReport(): Promise<void> {
     printReport(report, renderEvolutionFailureReviewMarkdown(report));
   } finally {
     await close?.();
+  }
+}
+
+function requireYes(action: string): void {
+  if (!has("--yes")) throw new Error(`${action} refuses to run without --yes`);
+}
+
+async function runEvolutionApply(): Promise<void> {
+  requireYes("gmos evolution apply");
+  const dbPath = value("--db", "./gmos.db")!;
+  const profileId = value("--profile", "default")!;
+  const proposalId = value("--proposal");
+  const approvedBy = value("--approved-by");
+  if (!proposalId || !approvedBy) usage();
+  const store = createSqliteMemoryStore({ path: dbPath });
+  try {
+    await store.initialize();
+    const controlPlane = createEvolutionControlPlane({ store, profileId });
+    const result = await controlPlane.applyEvolutionProposal({
+      profileId,
+      proposalId,
+      approvedBy,
+    });
+    console.log(JSON.stringify({ ok: true, result }, null, 2));
+  } finally {
+    await store.close();
+  }
+}
+
+async function runEvolutionRevert(): Promise<void> {
+  requireYes("gmos evolution revert");
+  const dbPath = value("--db", "./gmos.db")!;
+  const applicationEventId = value("--application");
+  if (!applicationEventId) usage();
+  const profileId = value("--profile");
+  const store = createSqliteMemoryStore({ path: dbPath });
+  try {
+    await store.initialize();
+    const controlPlane = createEvolutionControlPlane({ store });
+    const result = await controlPlane.revertEvolutionApplication({
+      ...(profileId ? { profileId } : {}),
+      applicationEventId,
+    });
+    console.log(JSON.stringify({ ok: true, result }, null, 2));
+  } finally {
+    await store.close();
   }
 }
 
@@ -1107,6 +1200,14 @@ async function main(): Promise<void> {
 
   if (command === "evolution" && subcommand === "report") {
     await runEvolutionReport();
+    return;
+  }
+  if (command === "evolution" && subcommand === "apply") {
+    await runEvolutionApply();
+    return;
+  }
+  if (command === "evolution" && subcommand === "revert") {
+    await runEvolutionRevert();
     return;
   }
 

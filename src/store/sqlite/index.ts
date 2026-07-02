@@ -10,9 +10,16 @@ import type {
   ArchiveStaleHostImportsInput,
   CommitOutcomeStoreInput,
   EvidenceEvent,
+  EvolutionAction,
+  EvolutionApplyStoreInput,
+  EvolutionApplyStoreResult,
+  EvolutionPreviousMemoryValue,
+  EvolutionRevertStoreInput,
+  EvolutionRevertStoreResult,
   EvidenceListInput,
   FeedbackSignalStoreInput,
   FailureEventRecord,
+  FailureKind,
   ForgetInput,
   ForgetResult,
   ListFailuresInput,
@@ -33,6 +40,8 @@ import type {
   RecordConsolidationSummaryInput,
   RecordConsolidationSummaryResult,
   RecordFailureInput,
+  RecordProcedureDistillationInput,
+  RecordProcedureDistillationResult,
   ReadAuditSnapshot,
   RepairSearchIndexResult,
   RebuildAssociationsInput,
@@ -41,6 +50,7 @@ import type {
   SearchIndexStatus,
   Sensitivity,
   TaskTrajectoryInput,
+  TaskTrajectoryRecord,
   UpdateMemoryInput,
   WorldBeliefRecord,
 } from "../../kernel/types.js";
@@ -134,6 +144,12 @@ export interface SqliteMemoryStore extends MemoryStore {
   readAuditSnapshot(): ReadAuditSnapshot;
   exportProfileBackup(input: ExportSqliteProfileBackupInput): SqliteProfileBackupDocument;
   restoreProfileBackup(input: RestoreSqliteProfileBackupInput): SqliteProfileBackupRestoreResult;
+  listTaskTrajectories(input: { profileId: string; limit?: number | undefined }): TaskTrajectoryRecord[];
+  recordProcedureDistillation(
+    input: RecordProcedureDistillationInput,
+  ): RecordProcedureDistillationResult;
+  applyEvolutionActions(input: EvolutionApplyStoreInput): EvolutionApplyStoreResult;
+  revertEvolutionApplication(input: EvolutionRevertStoreInput): EvolutionRevertStoreResult;
 }
 
 const READ_AUDIT_REVISION_TABLES = [
@@ -439,7 +455,7 @@ function worldBeliefMetadata(input: {
   };
 }
 
-function normalizeTaskTrajectory(row: Record<string, unknown>): TaskTrajectoryAssociationSource {
+function normalizeTaskTrajectory(row: Record<string, unknown>): TaskTrajectoryRecord {
   return {
     id: String(row.id),
     profileId: String(row.profile_id),
@@ -1237,16 +1253,18 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     }
   }
 
-  function adjustMemoryReinforcement(input: {
+  function uniqueMemoryIds(memoryIds: string[] | undefined): string[] {
+    return [...new Set((memoryIds ?? []).filter((entry) => entry.trim().length > 0))];
+  }
+
+  function adjustMemoryReinforcementDelta(input: {
     profileId: string;
     memoryIds: string[] | undefined;
-    signal?: "positive" | "negative" | undefined;
+    delta: number;
     updatedAt: string;
   }): void {
-    if (!input.signal) return;
-    const uniqueIds = [...new Set((input.memoryIds ?? []).filter((entry) => entry.trim().length > 0))];
-    if (uniqueIds.length === 0) return;
-    const delta = input.signal === "positive" ? 0.2 : -0.2;
+    const uniqueIds = uniqueMemoryIds(input.memoryIds);
+    if (uniqueIds.length === 0 || input.delta === 0) return;
     const stmt = db.prepare(
       `UPDATE gmos_memories
        SET reinforcement = CASE
@@ -1258,10 +1276,95 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
        WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
     );
     for (const memoryId of uniqueIds) {
-      const result = stmt.run(delta, delta, delta, input.updatedAt, input.profileId, memoryId);
+      const result = stmt.run(
+        input.delta,
+        input.delta,
+        input.delta,
+        input.updatedAt,
+        input.profileId,
+        memoryId,
+      );
       if (result.changes > 0) {
         syncMemoryFts(memoryId);
         syncMemoryVector(memoryId);
+      }
+    }
+  }
+
+  function adjustMemoryReinforcement(input: {
+    profileId: string;
+    memoryIds: string[] | undefined;
+    signal?: "positive" | "negative" | undefined;
+    updatedAt: string;
+  }): void {
+    if (!input.signal) return;
+    const delta = input.signal === "positive" ? 0.2 : -0.2;
+    adjustMemoryReinforcementDelta({
+      profileId: input.profileId,
+      memoryIds: input.memoryIds,
+      delta,
+      updatedAt: input.updatedAt,
+    });
+  }
+
+  function adjustOutcomeReinforcement(input: {
+    profileId: string;
+    memoryIds: string[] | undefined;
+    status: "completed" | "failed";
+    failureKind?: FailureKind | undefined;
+    config: CommitOutcomeStoreInput["outcomeReinforcement"];
+    updatedAt: string;
+  }): void {
+    const config = input.config ?? { enabled: true, step: 0.1 };
+    if (!config.enabled) return;
+    const delta =
+      input.status === "completed"
+        ? config.step
+        : input.failureKind === "wrong_recall" || input.failureKind === "missed_recall"
+          ? -config.step
+          : 0;
+    adjustMemoryReinforcementDelta({
+      profileId: input.profileId,
+      memoryIds: input.memoryIds,
+      delta,
+      updatedAt: input.updatedAt,
+    });
+  }
+
+  function adjustMemoryConfidencePenalty(input: {
+    profileId: string;
+    memoryIds: string[] | undefined;
+    step: number;
+    floor: number;
+    updatedAt: string;
+  }): void {
+    const uniqueIds = uniqueMemoryIds(input.memoryIds);
+    if (uniqueIds.length === 0 || input.step <= 0) return;
+    const stmt = db.prepare(
+      `UPDATE gmos_memories
+       SET confidence = CASE
+             WHEN confidence - ? < ? THEN ?
+             ELSE confidence - ?
+           END,
+           updated_at = ?
+       WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
+    );
+    for (const memoryId of uniqueIds) {
+      const result = stmt.run(
+        input.step,
+        input.floor,
+        input.floor,
+        input.step,
+        input.updatedAt,
+        input.profileId,
+        memoryId,
+      );
+      if (result.changes > 0) {
+        syncMemoryFts(memoryId);
+        syncMemoryVector(memoryId);
+        activateMemoryProjections(memoryId, input.profileId);
+        const row = memoryRowById(input.profileId, memoryId);
+        if (row) syncBeliefsForMemory(normalizeMemory(row));
       }
     }
   }
@@ -2593,6 +2696,109 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     return tx();
   }
 
+  function distillationEventKey(profileId: string, clusterKey: string): string {
+    const signature = createHash("sha256").update(clusterKey).digest("hex");
+    return ["distillation.procedure", profileId, signature].join(":");
+  }
+
+  function recordProcedureDistillation(
+    input: RecordProcedureDistillationInput,
+  ): RecordProcedureDistillationResult {
+    initialize();
+    const sourceTrajectoryIds = [...new Set(input.sourceTrajectoryIds)].sort((left, right) =>
+      left.localeCompare(right)
+    );
+    const eventKey = distillationEventKey(input.profileId, input.clusterKey);
+    const tx = db.transaction((): RecordProcedureDistillationResult => {
+      const existingEvidenceRow = db
+        .prepare("SELECT * FROM gmos_evidence_events WHERE event_key = ?")
+        .get(eventKey) as Record<string, unknown> | undefined;
+      if (existingEvidenceRow) {
+        const existingMemoryRow = db
+          .prepare(
+            `SELECT *
+             FROM gmos_memories
+             WHERE profile_id = ? AND source_event_id = ? AND kind = 'procedure'
+             ORDER BY created_at ASC, id ASC
+             LIMIT 1`,
+          )
+          .get(input.profileId, String(existingEvidenceRow.id)) as
+          | Record<string, unknown>
+          | undefined;
+        if (existingMemoryRow) {
+          return {
+            memory: normalizeMemory(existingMemoryRow),
+            alreadyExists: true,
+          };
+        }
+      }
+
+      const evidenceId = existingEvidenceRow ? String(existingEvidenceRow.id) : id("evidence");
+      if (!existingEvidenceRow) {
+        db.prepare(
+          `INSERT INTO gmos_evidence_events (
+            id, event_key, profile_id, source_type, source_uri, content, sensitivity,
+            eligible_for_long_term_memory, payload_json, created_at
+          ) VALUES (?, ?, ?, 'distillation', ?, ?, 'normal', 0, ?, ?)`,
+        ).run(
+          evidenceId,
+          eventKey,
+          input.profileId,
+          null,
+          "Procedure distillation",
+          JSON.stringify({
+            kind: "procedure",
+            objective: input.objective,
+            sourceTrajectoryIds,
+            sharedTags: input.sharedTags,
+            clusterKey: input.clusterKey,
+          }),
+          input.createdAt,
+        );
+      }
+
+      const memoryId = id("memory");
+      const metadata = {
+        ...(input.metadata ?? {}),
+        procedureDistillation: true,
+        objective: input.objective,
+        sourceTrajectoryIds,
+        sharedTags: input.sharedTags,
+        clusterKey: input.clusterKey,
+      };
+      db.prepare(
+        `INSERT INTO gmos_memories (
+          id, profile_id, kind, scope, content, sensitivity, status, confidence,
+          source_event_id, metadata_json, created_at, updated_at
+        ) VALUES (?, ?, 'procedure', 'global', ?, ?, 'active', ?, ?, ?, ?, ?)`,
+      ).run(
+        memoryId,
+        input.profileId,
+        input.content,
+        input.sensitivity,
+        input.confidence,
+        evidenceId,
+        JSON.stringify(metadata),
+        input.createdAt,
+        input.createdAt,
+      );
+      syncMemoryFts(memoryId);
+      syncMemoryVector(memoryId);
+      const memory = normalizeMemory(
+        db.prepare("SELECT * FROM gmos_memories WHERE id = ?").get(memoryId) as Record<
+          string,
+          unknown
+        >,
+      );
+      projectMemoryAssociations(memory);
+      return {
+        memory,
+        alreadyExists: false,
+      };
+    });
+    return tx();
+  }
+
   function supersededSourceMemoryIds(profileId: string): Set<string> {
     if (!tableExists("gmos_world_beliefs")) return new Set();
     const rows = db
@@ -2863,6 +3069,14 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         memoryIds: input.usedMemoryIds,
         usedAt: occurredAt,
       });
+      adjustOutcomeReinforcement({
+        profileId: input.profileId,
+        memoryIds: input.usedMemoryIds,
+        status: input.status,
+        failureKind: input.failure?.failureKind,
+        config: input.outcomeReinforcement,
+        updatedAt: occurredAt,
+      });
     });
     tx();
   }
@@ -2876,7 +3090,10 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         failureKind: input.failureKind,
         content: input.content,
         createdAt: recordedAt,
-        metadata: input.metadata,
+        metadata: {
+          ...(input.metadata ?? {}),
+          ...(input.relatedMemoryIds ? { relatedMemoryIds: uniqueMemoryIds(input.relatedMemoryIds) } : {}),
+        },
       });
       adjustMemoryReinforcement({
         profileId: input.profileId,
@@ -2884,6 +3101,20 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         signal: input.signal,
         updatedAt: recordedAt,
       });
+      const confidencePenalty = input.confidencePenalty ?? {
+        enabled: true,
+        step: 0.1,
+        floor: 0.05,
+      };
+      if (input.failureKind === "wrong_recall" && confidencePenalty.enabled) {
+        adjustMemoryConfidencePenalty({
+          profileId: input.profileId,
+          memoryIds: input.relatedMemoryIds,
+          step: confidencePenalty.step,
+          floor: confidencePenalty.floor,
+          updatedAt: recordedAt,
+        });
+      }
     });
     tx();
   }
@@ -2893,6 +3124,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     const skipped = new Map<string, number>();
     const exempted: MaintenanceExemption[] = [];
     const consolidationSkipped = new Map<string, number>();
+    const distillationSkipped = new Map<string, number>();
     const rows = db
       .prepare(
         `SELECT *
@@ -2945,6 +3177,11 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     } else if (!input.consolidation.enabled) {
       incrementSkipped(consolidationSkipped, "consolidation_disabled");
     }
+    if (!input.phases.includes("distill")) {
+      incrementSkipped(distillationSkipped, "phase_distill_not_requested");
+    } else if (!input.distillation.enabled) {
+      incrementSkipped(distillationSkipped, "distillation_disabled");
+    }
     if (!input.dryRun && (transitions.length > 0 || duplicateClusters.length > 0)) {
       const tx = db.transaction((items: MaintenanceTransition[], clusters: DuplicateConsolidationCluster[]) => {
         for (const transition of items) {
@@ -2978,6 +3215,14 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         summaryMemories: [],
         rejectedCandidates: [],
         skipped: skippedSummaries(consolidationSkipped),
+      },
+      distillation: {
+        enabled: input.distillation.enabled,
+        evaluated: 0,
+        clusters: [],
+        summaryMemories: [],
+        rejectedCandidates: [],
+        skipped: skippedSummaries(distillationSkipped),
       },
     };
   }
@@ -3147,6 +3392,279 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .filter((event) => effectiveEvidenceSensitivity(event) !== "secret_like");
   }
 
+  function clampNumber(value: number, min: number, max: number): number {
+    if (!Number.isFinite(value)) return min;
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function evolutionActionMemoryId(action: EvolutionAction): string {
+    return action.memoryId;
+  }
+
+  function memoryEvolutionPreviousValue(memory: MemoryRecord): EvolutionPreviousMemoryValue {
+    return {
+      memoryId: memory.id,
+      confidence: memory.confidence,
+      reinforcement: memory.reinforcement ?? 0,
+      status: memory.status,
+      updatedAt: memory.updatedAt,
+    };
+  }
+
+  function syncEvolutionMemoryChange(input: {
+    profileId: string;
+    memoryId: string;
+    previousStatus: MemoryRecord["status"];
+    nextStatus: MemoryRecord["status"];
+  }): void {
+    syncMemoryFts(input.memoryId);
+    syncMemoryVector(input.memoryId);
+    if (input.previousStatus === "active" && input.nextStatus !== "active") {
+      deactivateMemoryProjections(input.memoryId);
+      return;
+    }
+    if (input.nextStatus === "active") {
+      activateMemoryProjections(input.memoryId, input.profileId);
+      const row = memoryRowById(input.profileId, input.memoryId);
+      if (row) syncBeliefsForMemory(normalizeMemory(row));
+    }
+  }
+
+  function updateEvolutionMemoryValue(input: {
+    profileId: string;
+    memoryId: string;
+    confidence: number;
+    reinforcement: number;
+    status: MemoryRecord["status"];
+    updatedAt: string;
+    previousStatus: MemoryRecord["status"];
+  }): void {
+    db.prepare(
+      `UPDATE gmos_memories
+       SET confidence = ?,
+           reinforcement = ?,
+           status = ?,
+           updated_at = ?
+       WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
+    ).run(
+      input.confidence,
+      input.reinforcement,
+      input.status,
+      input.updatedAt,
+      input.profileId,
+      input.memoryId,
+    );
+    syncEvolutionMemoryChange({
+      profileId: input.profileId,
+      memoryId: input.memoryId,
+      previousStatus: input.previousStatus,
+      nextStatus: input.status,
+    });
+  }
+
+  function applyEvolutionActions(input: EvolutionApplyStoreInput): EvolutionApplyStoreResult {
+    initialize();
+    const tx = db.transaction((): EvolutionApplyStoreResult => {
+      if (input.actions.length === 0) {
+        throw new Error("gmOS evolution apply requires at least one action");
+      }
+      const memories = new Map<string, MemoryRecord>();
+      for (const memoryId of uniqueMemoryIds(input.actions.map(evolutionActionMemoryId))) {
+        const row = memoryRowById(input.profileId, memoryId);
+        if (!row || row.status === "archived") {
+          throw new Error(`gmOS evolution target memory not found or archived: ${memoryId}`);
+        }
+        memories.set(memoryId, normalizeMemory(row));
+      }
+      const previousValues = [...memories.values()].map(memoryEvolutionPreviousValue);
+      const nextValues = new Map<string, EvolutionPreviousMemoryValue>(
+        previousValues.map((value) => [value.memoryId, { ...value }]),
+      );
+      for (const action of input.actions) {
+        const value = nextValues.get(action.memoryId);
+        if (!value) throw new Error(`gmOS evolution target memory not found: ${action.memoryId}`);
+        if (action.type === "adjust_reinforcement") {
+          value.reinforcement = clampNumber(value.reinforcement + action.delta, -1, 1);
+        } else if (action.type === "adjust_confidence") {
+          value.confidence = clampNumber(value.confidence + action.delta, 0.05, 1);
+        } else if (action.type === "demote_to_dormant") {
+          value.status = "dormant";
+        } else if (action.type === "reactivate") {
+          value.status = "active";
+        }
+      }
+      for (const value of nextValues.values()) {
+        const previous = previousValues.find((entry) => entry.memoryId === value.memoryId);
+        if (!previous) continue;
+        updateEvolutionMemoryValue({
+          profileId: input.profileId,
+          memoryId: value.memoryId,
+          confidence: value.confidence,
+          reinforcement: value.reinforcement,
+          status: value.status,
+          updatedAt: input.appliedAt,
+          previousStatus: previous.status,
+        });
+      }
+      const applicationEventId = id("evidence");
+      db.prepare(
+        `INSERT INTO gmos_evidence_events (
+          id, event_key, profile_id, source_type, source_uri, content, sensitivity,
+          eligible_for_long_term_memory, payload_json, created_at
+        ) VALUES (?, ?, ?, 'evolution', ?, ?, 'normal', 0, ?, ?)`,
+      ).run(
+        applicationEventId,
+        [
+          "evolution.apply",
+          input.profileId,
+          input.proposalId,
+          input.appliedAt,
+          randomUUID(),
+        ].join(":"),
+        input.profileId,
+        null,
+        "Evolution proposal application",
+        JSON.stringify({
+          proposalId: input.proposalId,
+          approvedBy: input.approvedBy,
+          actions: input.actions,
+          previousValues,
+        }),
+        input.appliedAt,
+      );
+      return {
+        applicationEventId,
+        proposalId: input.proposalId,
+        actions: input.actions,
+        previousValues,
+        appliedAt: input.appliedAt,
+      };
+    });
+    return tx();
+  }
+
+  function previousValuesFromEvolutionPayload(
+    payload: Record<string, unknown>,
+  ): EvolutionPreviousMemoryValue[] {
+    const raw = payload.previousValues;
+    if (!Array.isArray(raw)) return [];
+    return raw.flatMap((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+      const record = entry as Record<string, unknown>;
+      if (
+        typeof record.memoryId !== "string" ||
+        typeof record.confidence !== "number" ||
+        typeof record.reinforcement !== "number" ||
+        typeof record.status !== "string" ||
+        typeof record.updatedAt !== "string"
+      ) {
+        return [];
+      }
+      if (
+        record.status !== "active" &&
+        record.status !== "dormant" &&
+        record.status !== "archived"
+      ) {
+        return [];
+      }
+      return [{
+        memoryId: record.memoryId,
+        confidence: record.confidence,
+        reinforcement: record.reinforcement,
+        status: record.status,
+        updatedAt: record.updatedAt,
+      }];
+    });
+  }
+
+  function revertEvolutionApplication(
+    input: EvolutionRevertStoreInput,
+  ): EvolutionRevertStoreResult {
+    initialize();
+    const tx = db.transaction((): EvolutionRevertStoreResult => {
+      const applicationRow = db
+        .prepare(
+          `SELECT *
+           FROM gmos_evidence_events
+           WHERE id = ? AND source_type = 'evolution'
+             ${input.profileId ? "AND profile_id = ?" : ""}
+           LIMIT 1`,
+        )
+        .get(
+          input.applicationEventId,
+          ...(input.profileId ? [input.profileId] : []),
+        ) as Record<string, unknown> | undefined;
+      if (!applicationRow) {
+        throw new Error("gmOS evolution application evidence not found");
+      }
+      const alreadyReverted = db
+        .prepare(
+          `SELECT id
+           FROM gmos_evidence_events
+           WHERE source_type = 'evolution'
+             AND json_extract(payload_json, '$.revertedApplicationEventId') = ?
+           LIMIT 1`,
+        )
+        .get(input.applicationEventId) as { id?: string } | undefined;
+      if (alreadyReverted) {
+        throw new Error("gmOS evolution application already reverted");
+      }
+      const application = normalizeEvidence(applicationRow);
+      const previousValues = previousValuesFromEvolutionPayload(application.payload);
+      if (previousValues.length === 0) {
+        throw new Error("gmOS evolution application evidence has no previousValues");
+      }
+      for (const previous of previousValues) {
+        const row = memoryRowById(application.profileId, previous.memoryId);
+        if (!row || row.status === "archived") {
+          throw new Error(`gmOS evolution revert target memory not found or archived: ${previous.memoryId}`);
+        }
+        updateEvolutionMemoryValue({
+          profileId: application.profileId,
+          memoryId: previous.memoryId,
+          confidence: previous.confidence,
+          reinforcement: previous.reinforcement,
+          status: previous.status,
+          updatedAt: previous.updatedAt,
+          previousStatus: String(row.status) as MemoryRecord["status"],
+        });
+      }
+      const revertEventId = id("evidence");
+      db.prepare(
+        `INSERT INTO gmos_evidence_events (
+          id, event_key, profile_id, source_type, source_uri, content, sensitivity,
+          eligible_for_long_term_memory, payload_json, created_at
+        ) VALUES (?, ?, ?, 'evolution', ?, ?, 'normal', 0, ?, ?)`,
+      ).run(
+        revertEventId,
+        [
+          "evolution.revert",
+          application.profileId,
+          input.applicationEventId,
+          input.revertedAt,
+          randomUUID(),
+        ].join(":"),
+        application.profileId,
+        null,
+        "Evolution proposal application revert",
+        JSON.stringify({
+          revertedApplicationEventId: input.applicationEventId,
+          proposalId: application.payload.proposalId,
+          actions: application.payload.actions,
+          restoredValues: previousValues,
+        }),
+        input.revertedAt,
+      );
+      return {
+        revertEventId,
+        applicationEventId: input.applicationEventId,
+        restoredValues: previousValues,
+        revertedAt: input.revertedAt,
+      };
+    });
+    return tx();
+  }
+
   function forget(input: ForgetInput & { profileId: string }): ForgetResult {
     initialize();
     const structuredTerms = structuredForgetTargetTerms(input.targetTerms);
@@ -3257,6 +3775,25 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       summary: input.summary ?? null,
       createdAt,
     });
+  }
+
+  function listTaskTrajectories(input: {
+    profileId: string;
+    limit?: number | undefined;
+  }): TaskTrajectoryRecord[] {
+    initialize();
+    if (!tableExists("gmos_task_trajectories")) return [];
+    return (
+      db
+        .prepare(
+          `SELECT *
+           FROM gmos_task_trajectories
+           WHERE profile_id = ?
+           ORDER BY created_at ASC, id ASC
+           LIMIT ?`,
+        )
+        .all(input.profileId, limit(input.limit, 100, 1000)) as Record<string, unknown>[]
+    ).map(normalizeTaskTrajectory);
   }
 
   function searchAssociations(input: MemoryAssociationSearchInput): MemoryAssociationRecord[] {
@@ -3488,6 +4025,10 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     recordFeedbackSignal,
     maintain,
     recordConsolidationSummary,
+    listTaskTrajectories,
+    recordProcedureDistillation,
+    applyEvolutionActions,
+    revertEvolutionApplication,
     lifecycleStatus,
     listActionPolicies,
     listEvidence,

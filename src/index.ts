@@ -17,6 +17,10 @@ export {
   resolveMemoryConsolidationConfig,
 } from "./kernel/consolidation.js";
 export {
+  MAX_PROCEDURE_DISTILLATION_CONTENT_LENGTH,
+  resolveMemoryProcedureDistillationConfig,
+} from "./kernel/distillation.js";
+export {
   classifySensitivity,
   eligibleForLongTermMemory,
   isSecretLikeMemoryContent,

@@ -20,6 +20,11 @@ import {
   selectSemanticConsolidationClusters,
   uniqueConsolidationCandidateKey,
 } from "../kernel/consolidation.js";
+import {
+  normalizeProcedureDistillationCandidate,
+  resolveMemoryProcedureDistillationConfig,
+  selectProcedureDistillationClusters,
+} from "../kernel/distillation.js";
 import { isReservedSpeakerIdentity } from "../kernel/person-identity.js";
 import { reconstructMemoryContext } from "../kernel/reconstruction.js";
 import {
@@ -54,6 +59,9 @@ import type {
   MemoryConsolidationResult,
   MemoryExtractionCandidate,
   MemoryKind,
+  MemoryProcedureDistillationCandidate,
+  MemoryProcedureDistillationCluster,
+  MemoryProcedureDistillationResult,
   MemoryRecord,
   MemoryOS,
   MemoryOSOptions,
@@ -251,11 +259,33 @@ function consolidatorName(
   return consolidator.name;
 }
 
+function procedureDistillerName(
+  procedureDistiller: MemoryOSOptions["procedureDistiller"],
+): string | undefined {
+  if (!procedureDistiller) return undefined;
+  if (typeof procedureDistiller === "function") return procedureDistiller.name || undefined;
+  return procedureDistiller.name;
+}
+
 function asConsolidationCandidateArray(
   result: MemoryConsolidationResult,
 ): MemoryConsolidationCandidate[] | null {
   if (result === null || result === undefined) return null;
   return Array.isArray(result) ? result : [result];
+}
+
+function asProcedureDistillationCandidateArray(
+  result: MemoryProcedureDistillationResult,
+): MemoryProcedureDistillationCandidate[] | null {
+  if (result === null || result === undefined) return null;
+  return Array.isArray(result) ? result : [result];
+}
+
+function publicProcedureDistillationCluster(
+  cluster: MemoryProcedureDistillationCluster,
+): Omit<MemoryProcedureDistillationCluster, "clusterKey"> {
+  const { clusterKey: _clusterKey, ...publicCluster } = cluster;
+  return publicCluster;
 }
 
 function publicSpeaker(
@@ -783,6 +813,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   );
   const lifecycle = resolveMemoryLifecycleConfig(options.lifecycle);
   const consolidation = resolveMemoryConsolidationConfig(options.consolidation);
+  const distillation = resolveMemoryProcedureDistillationConfig(options.distillation);
   let initialized = false;
 
   async function initialize(): Promise<void> {
@@ -1403,7 +1434,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         usedMemoryIds: input.usedMemoryIds,
       }, classifyRuntimeSensitivity);
       if (outcome) {
-        await store.commitOutcome(outcome);
+        await store.commitOutcome({
+          ...outcome,
+          outcomeReinforcement: lifecycle.outcomeReinforcement,
+        });
         return;
       }
       if (input.status === "failed") {
@@ -1446,14 +1480,18 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const profileId = profileIdFor(defaultProfileId, input.profileId);
     const createdAt = input.createdAt ?? nowIso();
     if (store.recordFeedbackSignal) {
-      await store.recordFeedbackSignal(runtimeFeedbackForStorage({
+      const feedback = runtimeFeedbackForStorage({
         profileId,
         failureKind: input.failureKind,
         content: input.content,
         createdAt,
         relatedMemoryIds: input.relatedMemoryIds,
         signal: input.signal,
-      }, classifyRuntimeSensitivity));
+      }, classifyRuntimeSensitivity);
+      await store.recordFeedbackSignal({
+        ...feedback,
+        confidencePenalty: lifecycle.feedbackConfidencePenalty,
+      });
       return;
     }
     if (
@@ -1634,6 +1672,168 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     }
   }
 
+  function addDistillationSkipped(
+    report: MaintenanceReport,
+    reason: string,
+    count = 1,
+  ): void {
+    const existing = report.distillation.skipped.find((entry) => entry.reason === reason);
+    if (existing) {
+      existing.count += count;
+    } else {
+      report.distillation.skipped.push({ reason, count });
+    }
+    report.distillation.skipped.sort((left, right) => left.reason.localeCompare(right.reason));
+  }
+
+  async function callProcedureDistiller(
+    cluster: MemoryProcedureDistillationCluster,
+  ): Promise<MemoryProcedureDistillationCandidate[] | null> {
+    if (!options.procedureDistiller) return null;
+    try {
+      const publicCluster = publicProcedureDistillationCluster(cluster);
+      const raw =
+        typeof options.procedureDistiller === "function"
+          ? await options.procedureDistiller(publicCluster)
+          : await options.procedureDistiller.distill(publicCluster);
+      return asProcedureDistillationCandidateArray(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  function alreadyDistilledClusterKeys(events: EvidenceEvent[]): Set<string> {
+    const keys = new Set<string>();
+    for (const event of events) {
+      const key = event.payload.clusterKey;
+      if (typeof key === "string" && key.trim().length > 0) keys.add(key);
+    }
+    return keys;
+  }
+
+  async function applyProcedureDistillation(input: {
+    profileId: string;
+    now: string;
+    dryRun: boolean;
+    report: MaintenanceReport;
+  }): Promise<void> {
+    if (!input.report.distillation.enabled) return;
+    if (!options.procedureDistiller) {
+      addDistillationSkipped(input.report, "procedure_distiller_not_configured");
+      return;
+    }
+    if (!store.listTaskTrajectories || !store.recordProcedureDistillation || !store.listEvidence) {
+      addDistillationSkipped(input.report, "store_distillation_unsupported");
+      return;
+    }
+    const trajectories = await store.listTaskTrajectories({
+      profileId: input.profileId,
+      limit: distillation.maxClustersPerRun * distillation.maxTrajectoriesPerCluster * 4,
+    });
+    const existingEvidence = await store.listEvidence({
+      profileId: input.profileId,
+      sourceType: "distillation",
+      eligibleForLongTermMemory: false,
+      includeSensitive: true,
+      limit: 500,
+    });
+    const clusters = selectProcedureDistillationClusters(
+      trajectories,
+      distillation,
+      alreadyDistilledClusterKeys(existingEvidence),
+    );
+    input.report.distillation.evaluated = trajectories.length;
+    input.report.distillation.clusters = clusters.map((cluster) => ({
+      objective: cluster.objective,
+      sourceTrajectoryIds: cluster.trajectories.map((trajectory) => trajectory.id),
+      sharedTags: cluster.sharedTags,
+      clusterKey: cluster.clusterKey,
+    }));
+    if (clusters.length === 0) {
+      addDistillationSkipped(input.report, "no_distillation_clusters");
+      return;
+    }
+    const seenCandidates = new Set<string>();
+    const name = procedureDistillerName(options.procedureDistiller);
+    for (const cluster of clusters) {
+      const rawCandidates = await callProcedureDistiller(cluster);
+      const sourceTrajectoryIds = cluster.trajectories.map((trajectory) => trajectory.id);
+      if (rawCandidates === null) {
+        addDistillationSkipped(input.report, "procedure_distiller_returned_null_or_failed");
+        continue;
+      }
+      if (rawCandidates.length === 0) {
+        addDistillationSkipped(input.report, "procedure_distiller_returned_empty");
+        continue;
+      }
+      for (const candidate of rawCandidates) {
+        const normalized = normalizeProcedureDistillationCandidate(candidate);
+        if ("reason" in normalized) {
+          input.report.distillation.rejectedCandidates.push({
+            sourceTrajectoryIds,
+            reason: normalized.reason,
+          });
+          continue;
+        }
+        const contentSensitivity = classifyRuntimeSensitivity(
+          normalized.normalized.content,
+          "content",
+        );
+        if (contentSensitivity === "secret_like") {
+          input.report.distillation.rejectedCandidates.push({
+            sourceTrajectoryIds,
+            reason: "secret_like",
+          });
+          continue;
+        }
+        const key = normalized.normalized.content.toLowerCase();
+        if (seenCandidates.has(key)) {
+          input.report.distillation.rejectedCandidates.push({
+            sourceTrajectoryIds,
+            reason: "duplicate",
+          });
+          continue;
+        }
+        seenCandidates.add(key);
+        const summary = {
+          sourceTrajectoryIds,
+          objective: cluster.objective,
+          sharedTags: cluster.sharedTags,
+          content: normalized.normalized.content,
+          confidence: normalized.normalized.confidence,
+          reasons: ["host_procedure_distiller"],
+        };
+        if (input.dryRun) {
+          input.report.distillation.summaryMemories.push(summary);
+          continue;
+        }
+        const result = await store.recordProcedureDistillation({
+          profileId: input.profileId,
+          objective: cluster.objective,
+          content: normalized.normalized.content,
+          sensitivity: contentSensitivity,
+          confidence: normalized.normalized.confidence,
+          sourceTrajectoryIds,
+          sharedTags: cluster.sharedTags,
+          clusterKey: cluster.clusterKey,
+          createdAt: input.now,
+          metadata: {
+            distillationSource: "host_procedure_distiller",
+            ...(name ? { procedureDistillerName: name } : {}),
+          },
+        });
+        if (result.alreadyExists) {
+          addDistillationSkipped(input.report, "already_distilled");
+          continue;
+        }
+        input.report.distillation.summaryMemories.push({
+          ...summary,
+          memoryId: result.memory.id,
+        });
+      }
+    }
+  }
+
   async function maintain(input: MaintenanceInput = {}) {
     await initialize();
     if (!store.maintain) throw new Error("gmOS store does not support maintenance");
@@ -1641,7 +1841,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const now = input.now ?? nowIso();
     assertValidIsoInstant(now, "maintain.now");
     const phases = input.phases ?? ["decay"];
-    const unsupportedPhase = phases.find((phase) => phase !== "decay" && phase !== "consolidate");
+    const unsupportedPhase = phases.find(
+      (phase) => phase !== "decay" && phase !== "consolidate" && phase !== "distill",
+    );
     if (unsupportedPhase) throw new Error(`Unsupported gmOS maintenance phase: ${unsupportedPhase}`);
     const dryRun = input.dryRun === true;
     const before = dryRun ? await readAuditSnapshot(store) : null;
@@ -1652,9 +1854,18 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       phases,
       lifecycle,
       consolidation,
+      distillation,
     });
     if (phases.includes("consolidate") && consolidation.enabled) {
       await applySemanticConsolidation({
+        profileId,
+        now,
+        dryRun,
+        report,
+      });
+    }
+    if (phases.includes("distill") && distillation.enabled) {
+      await applyProcedureDistillation({
         profileId,
         now,
         dryRun,

@@ -156,7 +156,7 @@ const maintainSchema = z.object({
   profileId: z.string().optional(),
   dryRun: z.boolean().optional(),
   now: z.string().optional(),
-  phases: z.array(z.enum(["decay", "consolidate"])).optional(),
+  phases: z.array(z.enum(["decay", "consolidate", "distill"])).optional(),
 }).strict();
 
 const forgetSchema = z.object({

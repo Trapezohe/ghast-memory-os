@@ -72,6 +72,14 @@ If the preview is acceptable, run the same command without `--dry-run`.
 default. Dormant memories remain available to history recall and can be restored
 to active by `commitOutcome({ usedMemoryIds })` when a host reports actual use.
 
+## M3 Experience Learning
+
+M3 does not add a SQLite schema version. Procedure distillation, outcome
+reinforcement, feedback confidence penalties, and evolution apply/revert reuse
+existing memory, task trajectory, failure, and evidence tables. Already-distilled
+clusters and evolution revert state are derived from `gmos_evidence_events`
+payloads instead of new columns.
+
 ## Index Repair
 
 Derived indexes can be rebuilt after import or SQLite drift:

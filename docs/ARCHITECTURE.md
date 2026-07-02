@@ -20,8 +20,9 @@ host event
 -> context, evidence, action policy
 -> commitOutcome() / recordFeedback()
 -> explicit maintain()
--> decay / duplicate consolidation / host semantic consolidation
--> active / dormant / archived lifecycle and consolidation evidence
+-> decay / duplicate consolidation / host semantic consolidation / host procedure distillation
+-> active / dormant / archived lifecycle, consolidation, and distillation evidence
+-> approval-gated evolution apply/revert when an admin accepts a proposal
 ```
 
 ## Sources Of Truth
@@ -49,6 +50,7 @@ Write paths:
 - `recordFeedback()`
 - `maintain()`
 - `forget()`
+- `applyEvolutionProposal()` / `revertEvolutionApplication()` through SDK/CLI admin surfaces
 - low-level admin/import operations
 - repair commands that rebuild derived indexes
 
@@ -73,9 +75,11 @@ memories, but remain visible to history-purpose recall and status-filtered
 management surfaces. Long-dormant memories can later become `archived`.
 
 `commitOutcome({ usedMemoryIds })` is the usage-signal write path. It increments
-recall counters, sets `last_recalled_at`, and reactivates dormant memories in the
-same transaction as the outcome write. `recordFeedback({ relatedMemoryIds,
-signal })` updates bounded reinforcement in the same transaction as feedback.
+recall counters, sets `last_recalled_at`, reactivates dormant memories, and
+applies bounded outcome reinforcement in the same transaction as the outcome
+write. `recordFeedback({ relatedMemoryIds, signal })` updates bounded
+reinforcement in the same transaction as feedback; `wrong_recall` feedback can
+also lower confidence to affect ranking. Reinforcement affects retention.
 
 Every maintenance transition writes a content-free evidence event with
 `source_type = "maintenance"` and `eligible_for_long_term_memory = 0`. Dry-run
@@ -97,6 +101,21 @@ structured extractor boundary. gmOS selects bounded clusters and enforces write
 gates, but only the host hook can synthesize summary prose. Accepted summaries
 are new memories whose consolidation evidence lists source memory ids; source
 episodes are demoted to dormant with lifecycle evidence.
+
+Procedure distillation is a separate explicit `maintain({ phases: ["distill"] })`
+phase. gmOS deterministically clusters repeated completed task trajectories by
+normalized objective and stable token set, but only the host `procedureDistiller`
+hook can synthesize procedure prose. Accepted candidates become active
+`procedure` memories with `source_type = "distillation"` evidence listing source
+trajectory ids. Source trajectories are not archived or modified.
+
+Evolution is propose-with-approval. `reviewFailures()` remains a read path and
+clusters failure events into hypotheses and patch proposals without writes.
+`applyEvolutionProposal()` is an SDK/CLI admin write path that requires
+`approvedBy`, applies only bounded reinforcement/confidence/status actions, and
+writes `source_type = "evolution"` evidence with previous values. Revert restores
+those previous values and writes its own evolution evidence. Nothing in
+`maintain()` runs evolution.
 
 ## Reconstruction Model
 

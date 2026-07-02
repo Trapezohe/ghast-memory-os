@@ -4,6 +4,10 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { createMemoryStatusReport } from "../diagnostics/index.js";
+import {
+  createEvolutionControlPlane,
+  EvolutionApplicationError,
+} from "../evolution/index.js";
 import { createHostAdapter } from "../host/index.js";
 import type { HostActualCompatibilityReport, HostPreset } from "../host/index.js";
 import type { EntityResolver } from "../kernel/entities.js";
@@ -1084,6 +1088,410 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "consolidation_dry_run_read_audit_pure",
   ]);
 
+  const distillProfile = "gym_distillation_success";
+  const distillMemory = createMemoryOS({
+    profileId: distillProfile,
+    store,
+    procedureDistiller(cluster) {
+      if (!cluster.objective.toLowerCase().includes("vega release checklist")) return null;
+      return {
+        content: "DistilledProcedureSignal for Vega release checklist: verify evidence chain, then ship.",
+        confidence: 0.83,
+      };
+    },
+  });
+  for (const [index, objective] of [
+    "Vega release checklist",
+    "  vega   RELEASE checklist  ",
+    "checklist release vega",
+  ].entries()) {
+    await distillMemory.commitOutcome({
+      taskId: `distill-vega-${index + 1}`,
+      objective,
+      status: "completed",
+      summary: "Verified evidence chain before shipping.",
+      createdAt: `2026-07-02T04:0${index}:00.000Z`,
+    });
+  }
+  const distillReport = await distillMemory.maintain({
+    now: "2026-07-02T04:10:00.000Z",
+    phases: ["distill"],
+  });
+  const distilledProcedureId = distillReport.distillation.summaryMemories[0]?.memoryId;
+  const distilledProcedure = distilledProcedureId
+    ? await distillMemory.get({ id: distilledProcedureId })
+    : null;
+  const distilledExplanation = distilledProcedureId
+    ? await distillMemory.explain(distilledProcedureId)
+    : null;
+  const distilledPrepared = await distillMemory.prepareTurn({
+    messages: [{ role: "user", content: "How should I run the Vega release checklist?" }],
+  });
+  gate(
+    result,
+    "distillation_writes_procedure_with_trajectory_evidence",
+    distilledProcedure?.kind === "procedure" &&
+      distilledProcedure.content.includes("DistilledProcedureSignal") &&
+      distilledExplanation?.evidence.some(
+        (event) =>
+          event.sourceType === "distillation" &&
+          Array.isArray(event.payload.sourceTrajectoryIds) &&
+          distillReport.distillation.summaryMemories[0]?.sourceTrajectoryIds.every((id) =>
+            (event.payload.sourceTrajectoryIds as string[]).includes(id)
+          ),
+      ) === true &&
+      distilledPrepared.actionPolicies.some(
+        (policy) =>
+          policy.kind === "procedure" &&
+          policy.sourceMemoryId === distilledProcedureId &&
+          policy.text.includes("DistilledProcedureSignal"),
+      ),
+    "distilled procedures should persist as procedure memories, cite source trajectories, and surface as action policies",
+    "distillation",
+  );
+  const distillSecondReport = await distillMemory.maintain({
+    now: "2026-07-02T04:10:00.000Z",
+    phases: ["distill"],
+  });
+  gate(
+    result,
+    "distillation_idempotent_same_now",
+    distillSecondReport.distillation.summaryMemories.length === 0 &&
+      distillSecondReport.distillation.clusters.length === 0,
+    "running distill twice with the same now should derive already-distilled clusters from evidence",
+    "distillation",
+  );
+
+  const insufficientDistillMemory = createMemoryOS({
+    profileId: "gym_distillation_insufficient",
+    store,
+    procedureDistiller() {
+      return {
+        content: "InsufficientDistillSignal should never be written.",
+        confidence: 0.8,
+      };
+    },
+  });
+  for (const suffix of ["alpha", "beta"]) {
+    await insufficientDistillMemory.commitOutcome({
+      objective: "Insufficient repeat procedure",
+      status: "completed",
+      summary: suffix,
+    });
+  }
+  const insufficientBefore = await store.readAuditSnapshot();
+  const insufficientReport = await insufficientDistillMemory.maintain({
+    now: "2026-07-02T04:20:00.000Z",
+    phases: ["distill"],
+  });
+  const insufficientAfter = await store.readAuditSnapshot();
+  const failedOnlyDistillMemory = createMemoryOS({
+    profileId: "gym_distillation_failed_only",
+    store,
+    procedureDistiller() {
+      return {
+        content: "FailedOnlyDistillSignal should never be written.",
+        confidence: 0.8,
+      };
+    },
+  });
+  for (const suffix of ["alpha", "beta", "gamma"]) {
+    await failedOnlyDistillMemory.commitOutcome({
+      objective: "Failed only procedure",
+      status: "failed",
+      failureKind: "task_failure",
+      summary: suffix,
+    });
+  }
+  const failedOnlyBefore = await store.readAuditSnapshot();
+  const failedOnlyReport = await failedOnlyDistillMemory.maintain({
+    now: "2026-07-02T04:30:00.000Z",
+    phases: ["distill"],
+  });
+  const failedOnlyAfter = await store.readAuditSnapshot();
+  const noHookDistillMemory = createMemoryOS({ profileId: "gym_distillation_no_hook", store });
+  for (const suffix of ["alpha", "beta", "gamma"]) {
+    await noHookDistillMemory.commitOutcome({
+      objective: "No hook procedure",
+      status: "completed",
+      summary: suffix,
+    });
+  }
+  const noHookBefore = await store.readAuditSnapshot();
+  const noHookReport = await noHookDistillMemory.maintain({
+    now: "2026-07-02T04:40:00.000Z",
+    phases: ["distill"],
+  });
+  const noHookAfter = await store.readAuditSnapshot();
+  gate(
+    result,
+    "distillation_min_repeats_failed_only_no_hook_write_nothing",
+    insufficientReport.distillation.summaryMemories.length === 0 &&
+      failedOnlyReport.distillation.summaryMemories.length === 0 &&
+      noHookReport.distillation.summaryMemories.length === 0 &&
+      JSON.stringify(insufficientBefore) === JSON.stringify(insufficientAfter) &&
+      JSON.stringify(failedOnlyBefore) === JSON.stringify(failedOnlyAfter) &&
+      JSON.stringify(noHookBefore) === JSON.stringify(noHookAfter),
+    "fewer than minRepeats, failed-only trajectories, and no-hook distill runs should write nothing",
+    "distillation",
+  );
+
+  const secretDistillMemory = createMemoryOS({
+    profileId: "gym_distillation_secret",
+    store,
+    procedureDistiller() {
+      return {
+        content: "SecretDistillSignal api key is sk-distillationsecret1234567890",
+        confidence: 0.9,
+      };
+    },
+  });
+  for (const suffix of ["alpha", "beta", "gamma"]) {
+    await secretDistillMemory.commitOutcome({
+      objective: "Secret candidate procedure",
+      status: "completed",
+      summary: suffix,
+    });
+  }
+  const secretDistillReport = await secretDistillMemory.maintain({
+    now: "2026-07-02T04:50:00.000Z",
+    phases: ["distill"],
+  });
+  const secretDistillMemories = await secretDistillMemory.list({
+    query: "SecretDistillSignal",
+    limit: 10,
+  });
+  gate(
+    result,
+    "distillation_rejects_secret_like_candidate",
+    secretDistillReport.distillation.summaryMemories.length === 0 &&
+      secretDistillReport.distillation.rejectedCandidates.some(
+        (entry) => entry.reason === "secret_like",
+      ) &&
+      secretDistillMemories.length === 0,
+    "secret-like procedure distillation candidates should be rejected without persistence",
+    "distillation",
+  );
+
+  const dryRunDistillMemory = createMemoryOS({
+    profileId: "gym_distillation_dry_run",
+    store,
+    procedureDistiller() {
+      return {
+        content: "DryRunDistillSignal should only appear in a dry-run report.",
+        confidence: 0.8,
+      };
+    },
+  });
+  for (const suffix of ["alpha", "beta", "gamma"]) {
+    await dryRunDistillMemory.commitOutcome({
+      objective: "Dry run distillation procedure",
+      status: "completed",
+      summary: suffix,
+    });
+  }
+  const dryRunDistillBefore = await store.readAuditSnapshot();
+  const dryRunDistillReport = await dryRunDistillMemory.maintain({
+    dryRun: true,
+    now: "2026-07-02T05:00:00.000Z",
+    phases: ["distill"],
+  });
+  const dryRunDistillAfter = await store.readAuditSnapshot();
+  gate(
+    result,
+    "distillation_dry_run_read_audit_pure",
+    dryRunDistillReport.distillation.summaryMemories.some(
+      (entry) => entry.content.includes("DryRunDistillSignal") && entry.memoryId === undefined,
+    ) &&
+      JSON.stringify(dryRunDistillBefore) === JSON.stringify(dryRunDistillAfter),
+    "dry-run distill should compute hook summaries without writes",
+    "distillation",
+  );
+
+  const reinforcementMemory = await memory.add({
+    profileId: "gym_outcome_reinforcement",
+    kind: "procedure",
+    content: "OutcomeReinforcementSignal memory.",
+    confidence: 0.8,
+  });
+  const reinforcementRuntime = createMemoryOS({
+    profileId: "gym_outcome_reinforcement",
+    store,
+    lifecycle: { outcomeReinforcement: { step: 0.75 } },
+  });
+  await reinforcementRuntime.commitOutcome({
+    objective: "Successful use of reinforcement memory",
+    status: "completed",
+    usedMemoryIds: [reinforcementMemory.id],
+    createdAt: "2026-07-02T05:10:00.000Z",
+  });
+  await reinforcementRuntime.commitOutcome({
+    objective: "Successful use of reinforcement memory again",
+    status: "completed",
+    usedMemoryIds: [reinforcementMemory.id],
+    createdAt: "2026-07-02T05:11:00.000Z",
+  });
+  const reinforcedHigh = await reinforcementRuntime.get({ id: reinforcementMemory.id });
+  for (const index of [0, 1, 2]) {
+    await reinforcementRuntime.commitOutcome({
+      objective: "Wrong recall should lower reinforcement",
+      status: "failed",
+      failureKind: "wrong_recall",
+      usedMemoryIds: [reinforcementMemory.id],
+      createdAt: `2026-07-02T05:1${index + 2}:00.000Z`,
+    });
+  }
+  const reinforcedLow = await reinforcementRuntime.get({ id: reinforcementMemory.id });
+  gate(
+    result,
+    "outcome_reinforcement_adjusts_and_bounds",
+    reinforcedHigh?.reinforcement === 1 &&
+      reinforcedLow?.reinforcement === -1 &&
+      (reinforcedLow?.recallCount ?? 0) >= 5,
+    "completed outcomes should raise reinforcement, wrong_recall failures should lower it, and bounds should hold",
+    "reinforcement",
+  );
+
+  const confidenceMemory = await memory.add({
+    profileId: "gym_feedback_confidence",
+    kind: "fact",
+    content: "FeedbackConfidenceSignal stale recall candidate.",
+    confidence: 0.12,
+  });
+  await memory.recordFeedback({
+    profileId: "gym_feedback_confidence",
+    content: "FeedbackConfidenceSignal was a wrong recall.",
+    failureKind: "wrong_recall",
+    relatedMemoryIds: [confidenceMemory.id],
+    signal: "negative",
+    createdAt: "2026-07-02T05:20:00.000Z",
+  });
+  const confidenceAfterFeedback = await memory.get({
+    profileId: "gym_feedback_confidence",
+    id: confidenceMemory.id,
+  });
+  gate(
+    result,
+    "wrong_recall_feedback_lowers_confidence_floor",
+    confidenceAfterFeedback?.confidence === 0.05 &&
+      (confidenceAfterFeedback?.reinforcement ?? 0) < 0,
+    "wrong_recall feedback should lower confidence to the configured floor while feedback reinforcement remains separate",
+    "reinforcement",
+  );
+
+  const evolutionTarget = await memory.add({
+    profileId: "gym_evolution",
+    kind: "fact",
+    content: "EvolutionApplySignal candidate memory.",
+    confidence: 0.7,
+  });
+  await memory.recordFeedback({
+    profileId: "gym_evolution",
+    content: "EvolutionApplySignal caused a wrong recall.",
+    failureKind: "wrong_recall",
+    relatedMemoryIds: [evolutionTarget.id],
+    signal: "negative",
+    createdAt: "2026-07-02T05:30:00.000Z",
+  });
+  const evolution = createEvolutionControlPlane({
+    store,
+    profileId: "gym_evolution",
+    now: () => "2026-07-02T05:31:00.000Z",
+  });
+  const evolutionBefore = await store.readAuditSnapshot();
+  const evolutionReport = await evolution.reviewFailures();
+  const evolutionAfter = await store.readAuditSnapshot();
+  const proposal = evolutionReport.patchProposals.find((entry) =>
+    entry.suggestedActions.some((action) => action.memoryId === evolutionTarget.id),
+  );
+  let approvedByRejected = false;
+  try {
+    await evolution.applyEvolutionProposal({
+      proposalId: proposal?.id ?? "missing",
+      approvedBy: "",
+    });
+  } catch (error) {
+    approvedByRejected =
+      error instanceof EvolutionApplicationError && error.code === "approved_by_required";
+  }
+  const beforeEvolutionApply = await memory.get({
+    profileId: "gym_evolution",
+    id: evolutionTarget.id,
+  });
+  const applied = proposal
+    ? await evolution.applyEvolutionProposal({
+        proposalId: proposal.id,
+        approvedBy: "Memory Gym",
+      })
+    : null;
+  const afterEvolutionApply = await memory.get({
+    profileId: "gym_evolution",
+    id: evolutionTarget.id,
+  });
+  const evolutionEvidence = await memory.listEvidence({
+    profileId: "gym_evolution",
+    sourceType: "evolution",
+    limit: 10,
+  });
+  const reverted = applied
+    ? await evolution.revertEvolutionApplication({
+        applicationEventId: applied.applicationEventId,
+      })
+    : null;
+  const afterEvolutionRevert = await memory.get({
+    profileId: "gym_evolution",
+    id: evolutionTarget.id,
+  });
+  let doubleRevertRejected = false;
+  if (applied) {
+    try {
+      await evolution.revertEvolutionApplication({
+        applicationEventId: applied.applicationEventId,
+      });
+    } catch (error) {
+      doubleRevertRejected =
+        error instanceof EvolutionApplicationError &&
+        error.code === "application_already_reverted";
+    }
+  }
+  gate(
+    result,
+    "evolution_review_apply_revert_approval_gated",
+    JSON.stringify(evolutionBefore) === JSON.stringify(evolutionAfter) &&
+      evolutionReport.mode === "propose_with_approval" &&
+      Boolean(proposal) &&
+      approvedByRejected &&
+      Boolean(applied) &&
+      afterEvolutionApply !== null &&
+      beforeEvolutionApply !== null &&
+      afterEvolutionApply.confidence < beforeEvolutionApply.confidence &&
+      (afterEvolutionApply.reinforcement ?? 0) < (beforeEvolutionApply.reinforcement ?? 0) &&
+      evolutionEvidence.some(
+        (event) =>
+          event.id === applied?.applicationEventId &&
+          event.sourceType === "evolution" &&
+          event.payload.proposalId === proposal?.id &&
+          Array.isArray(event.payload.previousValues),
+      ) &&
+      Boolean(reverted) &&
+      afterEvolutionRevert?.confidence === beforeEvolutionApply?.confidence &&
+      afterEvolutionRevert?.reinforcement === beforeEvolutionApply?.reinforcement &&
+      doubleRevertRejected,
+    "evolution review should be read-only; apply should require approval, mutate only safe targets with evidence, and revert exactly once",
+    "evolution",
+  );
+
+  scenario(result, "experience_learning", "dev", [
+    "distillation_writes_procedure_with_trajectory_evidence",
+    "distillation_idempotent_same_now",
+    "distillation_min_repeats_failed_only_no_hook_write_nothing",
+    "distillation_rejects_secret_like_candidate",
+    "distillation_dry_run_read_audit_pure",
+    "outcome_reinforcement_adjusts_and_bounds",
+    "wrong_recall_feedback_lowers_confidence_floor",
+    "evolution_review_apply_revert_approval_gated",
+  ]);
+
   await memory.add({
     profileId: "gym_reconstruct",
     kind: "project",
@@ -1848,6 +2256,7 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "historical_recall_keeps_sensitive_person_filters",
   ]);
 
+  const feedbackCountsBefore = await store.rowCounts();
   await memory.recordFeedback({
     profileId: "gym",
     content: "刚才召回了错误记忆。",
@@ -1857,7 +2266,7 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   gate(
     result,
     "feedback_failure_log",
-    counts.gmos_failure_events === 1,
+    (counts.gmos_failure_events ?? 0) === (feedbackCountsBefore.gmos_failure_events ?? 0) + 1,
     "feedback should enter failure log",
     "feedback",
   );

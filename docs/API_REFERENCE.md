@@ -15,7 +15,7 @@ package exports listed here and avoid importing files under `dist/` or `src/`.
   snapshot import/export helpers.
 - `@ghast/memory/diagnostics`: read-only status reports.
 - `@ghast/memory/gym`: deterministic gates and benchmark adapters.
-- `@ghast/memory/evolution`: report-only failure review control plane.
+- `@ghast/memory/evolution`: approval-gated failure review and SDK admin apply/revert control plane.
 
 ## Runtime Facade
 
@@ -41,6 +41,8 @@ const memory = createMemoryOS({
     dormantBelow: 0.25,
     archiveAfterDormantDays: 180,
     halfLivesDays: { project: 90 },
+    outcomeReinforcement: { enabled: true, step: 0.1 },
+    feedbackConfidencePenalty: { enabled: true, step: 0.1, floor: 0.05 },
   },
   consolidation: {
     enabled: true,
@@ -50,6 +52,12 @@ const memory = createMemoryOS({
     maxClustersPerRun: 10,
     maxMembersPerCluster: 8,
     eligibleKinds: ["task_trajectory", "fact", "project"],
+  },
+  distillation: {
+    enabled: true,
+    minRepeats: 3,
+    maxClustersPerRun: 10,
+    maxTrajectoriesPerCluster: 8,
   },
 });
 ```
@@ -67,6 +75,17 @@ consolidation always excludes `boundary`, `person`, archived, sensitive, and
 secret-like memories. Host semantic consolidation additionally uses
 `eligibleKinds`, defaulting to episodic-leaning `task_trajectory`, `fact`, and
 `project`.
+
+Outcome reinforcement defaults to enabled with `step: 0.1`. Completed outcomes
+add the step to each `usedMemoryIds` memory; failed outcomes with
+`failureKind: "wrong_recall"` or `"missed_recall"` subtract it. Reinforcement is
+bounded to `[-1, 1]` and affects retention. Feedback confidence penalty defaults
+to enabled with `step: 0.1` and `floor: 0.05`; `wrong_recall` feedback lowers
+related memory confidence, which affects ranking.
+
+Procedure distillation defaults are shown above. `enabled: false` disables the
+`distill` phase even when requested. Counts are positive integers. Only
+completed task trajectories are eligible; failed trajectories never count.
 
 Hosts with their own entity model can pass an `entityResolver` to both the
 SQLite store and runtime facade. This keeps current-state invalidation,
@@ -141,15 +160,19 @@ Primary methods:
 - `commitOutcome(input)`: record task outcome signals. Failed outcomes may pass
   `failureKind`; omitted values default to `task_failure`. Hosts should pass
   memory ids used in the turn as `usedMemoryIds`; gmOS increments recall
-  counters, sets `lastRecalledAt`, and reactivates dormant memories in the same
-  write transaction.
+  counters, sets `lastRecalledAt`, reactivates dormant memories, and applies
+  bounded outcome reinforcement in the same write transaction.
 - `recordFeedback(input)`: record user or host feedback into the failure loop.
   Pass `relatedMemoryIds` plus `signal: "positive" | "negative"` to adjust
   memory `reinforcement` by a deterministic bounded step within `[-1, 1]`.
+  `wrong_recall` feedback with `relatedMemoryIds` also lowers confidence down to
+  the configured floor. Confidence affects ranking; reinforcement affects
+  retention.
 - `maintain(input)`: explicit lifecycle write path. `dryRun: true` computes the
-  full report and writes nothing. Pass `phases: ["consolidate"]` or
-  `["decay", "consolidate"]` to run duplicate consolidation and the optional
-  host `consolidator` hook. Ordinary runtime reads never call this
+  full report and writes nothing. Pass `phases: ["consolidate"]`,
+  `["distill"]`, or combinations such as `["decay", "consolidate", "distill"]`
+  to run duplicate consolidation, optional host semantic consolidation, and
+  optional host procedure distillation. Ordinary runtime reads never call this
   automatically.
 - `forget(input)`: archive matching memory and remove it from future context.
   Prefer structured `targetTerms` when a host already knows the deletion target;
@@ -210,6 +233,20 @@ Hosts should pass the ids actually used by the model/tool loop back through
       { kind, sourceMemoryIds, reason }
     ],
     skipped
+  },
+  distillation: {
+    enabled,
+    evaluated,
+    clusters: [
+      { objective, sourceTrajectoryIds, sharedTags, clusterKey }
+    ],
+    summaryMemories: [
+      { sourceTrajectoryIds, objective, sharedTags, content, confidence, memoryId?, reasons }
+    ],
+    rejectedCandidates: [
+      { sourceTrajectoryIds, reason }
+    ],
+    skipped
   }
 }
 ```
@@ -265,6 +302,34 @@ memories are marked dormant with lifecycle evidence and `metadata.consolidatedIn
 If the candidate includes `subject`, `predicate`, and `object`, gmOS writes the
 corresponding world belief with the summary memory as source.
 
+Host procedure distillation is optional:
+
+```ts
+const memory = createMemoryOS({
+  profileId: "local-user",
+  store,
+  procedureDistiller: {
+    name: "host-procedure-distiller",
+    distill(cluster) {
+      return [{
+        content: "For Vega releases, verify the audit trail before shipping.",
+        confidence: 0.82,
+      }];
+    },
+  },
+});
+```
+
+The distiller input is `{ objective, sharedTags, trajectories }`, where
+`trajectories` is a bounded sanitized snapshot of `{ id, objective, status,
+summary?, createdAt }`. Returning `null`, `[]`, or throwing means no procedure
+for that cluster. gmOS rejects empty, overlong, duplicate, PERSON-routed, or
+secret-like candidates, clamps confidence to `0..1`, and never synthesizes
+procedure prose itself. Accepted candidates are stored as `kind: "procedure"`
+memories whose source evidence has `sourceType: "distillation"`,
+`eligibleForLongTermMemory: false`, and payload `sourceTrajectoryIds`. Source
+trajectories are not archived or modified.
+
 The retention score is pure and deterministic:
 
 ```text
@@ -278,6 +343,37 @@ score = clamp(recency * 0.6 + confidence * 0.2 + recall * 0.1 + reinforcement01 
 `now` is an explicit parameter to `maintain()` and `retentionScore()`. The
 runtime default is the call time for that explicit write path; read paths never
 score or transition memory in the background.
+
+## Evolution Proposals
+
+`createEvolutionControlPlane({ store, profileId })` returns an approval-gated
+admin control plane. `reviewFailures()` is read-only and returns deterministic
+clusters, hypotheses, and patch proposals whose ids are stable hashes of the
+normalized cluster signature.
+
+```ts
+const evolution = createEvolutionControlPlane({ store, profileId: "local-user" });
+const report = await evolution.reviewFailures();
+const proposal = report.patchProposals[0];
+
+const application = await evolution.applyEvolutionProposal({
+  proposalId: proposal.id,
+  approvedBy: "Song Su",
+});
+
+await evolution.revertEvolutionApplication({
+  applicationEventId: application.applicationEventId,
+});
+```
+
+`approvedBy` is required and non-empty. Actions default to the proposal's
+suggested actions; callers may pass a subset of those actions but cannot add new
+targets or wider mutations. The action set is limited to bounded reinforcement
+adjustment, bounded confidence adjustment, demote to dormant, and reactivate.
+Every apply writes `sourceType: "evolution"` evidence with `{ proposalId,
+approvedBy, actions, previousValues }`; revert restores `previousValues`, writes
+its own evolution evidence, and a second revert fails with a typed
+`EvolutionApplicationError`.
 
 ## Agent Turn Adapter
 
@@ -370,13 +466,16 @@ gmos version --format json
 gmos init --db ./gmos.db
 gmos doctor --db ./gmos.db --host ghast --format markdown
 gmos status --db ./gmos.db --profile local --host ghast --format markdown
-gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate --format markdown
+gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate,distill --format markdown
 gmos add --db ./gmos.db --profile local --kind preference --text "Response style: concise answers."
 gmos add --db ./gmos.db --profile local --kind boundary --text "Do not push release announcements without approval."
 gmos observe --db ./gmos.db --profile local --text "User opened the release planning thread."
 gmos prepare --db ./gmos.db --profile local --text "How should you answer me?"
 gmos reconstruct --db ./gmos.db --profile local --text "What is the project next step?"
 gmos forget --db ./gmos.db --profile local --query "delete old project" --target-term "old project"
+gmos evolution report --db ./gmos.db --profile local --format markdown
+gmos evolution apply --db ./gmos.db --profile local --proposal proposal_xxx --approved-by "Song Su" --yes
+gmos evolution revert --db ./gmos.db --application evidence_xxx --yes
 gmos-inspect --db ./gmos.db --profile local --query "project release" --temporal-mode current --evidence-limit 50 --failure-limit 50 --max-steps 2 --max-branch 4 --format markdown
 gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
 ```
@@ -424,8 +523,10 @@ calls instead of direct SDK imports:
 - `memory.runtime_info`
 
 Public MCP tools intentionally do not expose sensitive override switches.
-`memory.maintain` accepts optional `phases: ["decay" | "consolidate"]`; the
-local HTTP `POST /maintain` route reuses the same validation.
+`memory.maintain` accepts optional
+`phases: ["decay" | "consolidate" | "distill"]`; the local HTTP
+`POST /maintain` route reuses the same validation. Evolution apply/revert is not
+exposed over MCP or HTTP; it is SDK/CLI admin-only.
 See [MCP and HTTP integration guide](./INTEGRATION_GUIDE.md) for host boundary
 selection, lifecycle wiring, and smoke-test commands.
 

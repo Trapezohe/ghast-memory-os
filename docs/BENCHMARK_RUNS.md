@@ -26,7 +26,7 @@ Manifest completeness: full local release evidence bundle.
 The release evidence bundle verified the local PR gate, npm pack tarball generation, fresh
 tarball install, SDK smoke, agent adapter smoke, host adapter smoke, local HTTP
 smoke, MCP smoke, installed public CLI smoke for `gmos`, `ghast-memory`, and
-`gmos-inspect`, backup/restore smoke, report-only evolution smoke,
+`gmos-inspect`, backup/restore smoke, approval-gated evolution smoke,
 doctor/status/inspector content-safety checks, and cleanup of generated
 plaintext SQLite and npm cache artifacts.
 The inspector check also verifies numeric health, evidence, failure, forget,

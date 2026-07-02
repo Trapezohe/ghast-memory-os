@@ -276,7 +276,7 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
           now: { type: "string" },
           phases: {
             type: "array",
-            items: { type: "string", enum: ["decay", "consolidate"] },
+            items: { type: "string", enum: ["decay", "consolidate", "distill"] },
           },
         },
       },

@@ -107,6 +107,7 @@ import {
 } from "../src/mcp/index.js";
 import {
   createEvolutionControlPlane,
+  EvolutionApplicationError,
   renderEvolutionFailureReviewMarkdown,
 } from "../src/evolution/index.js";
 import {
@@ -13131,7 +13132,7 @@ const searchOnly = createPresetHostAdapter("search_only").compatibility;
 assert.equal(searchOnly.level, "L1");
 assert.ok(searchOnly.gaps.includes("forget/delete"));
 const reportOnlyControl = createEvolutionControlPlane();
-assert.equal(reportOnlyControl.mode, "report_only");
+assert.equal(reportOnlyControl.mode, "propose_with_approval");
 assert.equal(reportOnlyControl.autoApply, false);
 assert.equal(reportOnlyControl.autoRollout, false);
 await assert.rejects(
@@ -13141,10 +13142,10 @@ await assert.rejects(
 const evolutionBeforeCounts = await store.rowCounts();
 const evolution = createEvolutionControlPlane({ store, profileId: "test" });
 const evolutionReport = await evolution.reviewFailures({ limit: 10 });
-assert.equal(evolutionReport.mode, "report_only");
+assert.equal(evolutionReport.mode, "propose_with_approval");
 assert.equal(evolutionReport.autoApply, false);
 assert.equal(evolutionReport.autoRollout, false);
-assert.equal(evolutionReport.decision, "report_only_review");
+assert.equal(evolutionReport.decision, "propose_with_approval_review");
 assert.equal(evolutionReport.inspectedFailureCount, 3);
 assert.equal(evolutionReport.clusters.length, 3);
 assert.ok(evolutionReport.clusters.some((cluster) => cluster.failureKind === "task_failure"));
@@ -13152,6 +13153,7 @@ assert.ok(evolutionReport.clusters.some((cluster) => cluster.failureKind === "wr
 assert.ok(evolutionReport.clusters.some((cluster) => cluster.failureKind === "privacy_leak"));
 assert.ok(evolutionReport.patchProposals.every((proposal) => proposal.autoApply === false));
 assert.ok(evolutionReport.patchProposals.every((proposal) => proposal.autoRollout === false));
+assert.ok(evolutionReport.patchProposals.every((proposal) => /^proposal_[a-f0-9]{16}$/u.test(proposal.id)));
 const evolutionReportJson = JSON.stringify(evolutionReport);
 assert.equal(evolutionReportJson.includes("身份证"), false);
 assert.equal(evolutionReportJson.includes("110101199001011234"), false);
@@ -13165,6 +13167,87 @@ assert.deepEqual(await store.rowCounts(), evolutionBeforeCounts);
 const wrongRecallOnly = await evolution.reviewFailures({ failureKind: "wrong_recall" });
 assert.equal(wrongRecallOnly.inspectedFailureCount, 1);
 assert.match(renderEvolutionFailureReviewMarkdown(evolutionReport), /gmOS Evolution Failure Review/);
+const evolutionApplyMemory = await memory.add({
+  profileId: "evolution_apply",
+  kind: "fact",
+  content: "EvolutionApplyUnitSignal should be demoted by approval only.",
+  confidence: 0.7,
+});
+await memory.recordFeedback({
+  profileId: "evolution_apply",
+  content: "EvolutionApplyUnitSignal was a wrong recall.",
+  failureKind: "wrong_recall",
+  relatedMemoryIds: [evolutionApplyMemory.id],
+  signal: "negative",
+  createdAt: "2026-07-02T06:00:00.000Z",
+});
+const evolutionApply = createEvolutionControlPlane({
+  store,
+  profileId: "evolution_apply",
+  now: () => "2026-07-02T06:01:00.000Z",
+});
+const evolutionApplyReport = await evolutionApply.reviewFailures();
+const evolutionApplyProposal = evolutionApplyReport.patchProposals.find((proposal) =>
+  proposal.suggestedActions.some((action) => action.memoryId === evolutionApplyMemory.id),
+);
+assert.ok(evolutionApplyProposal);
+await assert.rejects(
+  () =>
+    evolutionApply.applyEvolutionProposal({
+      proposalId: evolutionApplyProposal.id,
+      approvedBy: "",
+    }),
+  (error) =>
+    error instanceof EvolutionApplicationError && error.code === "approved_by_required",
+);
+const beforeEvolutionApplyMemory = await memory.get({
+  profileId: "evolution_apply",
+  id: evolutionApplyMemory.id,
+});
+const evolutionApplication = await evolutionApply.applyEvolutionProposal({
+  proposalId: evolutionApplyProposal.id,
+  approvedBy: "unit-test",
+});
+const afterEvolutionApplyMemory = await memory.get({
+  profileId: "evolution_apply",
+  id: evolutionApplyMemory.id,
+});
+assert.ok(afterEvolutionApplyMemory && beforeEvolutionApplyMemory);
+assert.equal(afterEvolutionApplyMemory.confidence < beforeEvolutionApplyMemory.confidence, true);
+assert.equal(
+  (afterEvolutionApplyMemory.reinforcement ?? 0) < (beforeEvolutionApplyMemory.reinforcement ?? 0),
+  true,
+);
+const evolutionApplicationEvidence = await memory.listEvidence({
+  profileId: "evolution_apply",
+  sourceType: "evolution",
+  limit: 10,
+});
+assert.ok(
+  evolutionApplicationEvidence.some(
+    (event) =>
+      event.id === evolutionApplication.applicationEventId &&
+      event.payload.proposalId === evolutionApplyProposal.id &&
+      Array.isArray(event.payload.previousValues),
+  ),
+);
+await evolutionApply.revertEvolutionApplication({
+  applicationEventId: evolutionApplication.applicationEventId,
+});
+const afterEvolutionRevertMemory = await memory.get({
+  profileId: "evolution_apply",
+  id: evolutionApplyMemory.id,
+});
+assert.equal(afterEvolutionRevertMemory?.confidence, beforeEvolutionApplyMemory.confidence);
+assert.equal(afterEvolutionRevertMemory?.reinforcement, beforeEvolutionApplyMemory.reinforcement);
+await assert.rejects(
+  () =>
+    evolutionApply.revertEvolutionApplication({
+      applicationEventId: evolutionApplication.applicationEventId,
+    }),
+  (error) =>
+    error instanceof EvolutionApplicationError && error.code === "application_already_reverted",
+);
 const statusReport = await createMemoryStatusReport({
   store,
   profileId: "test",
@@ -14308,6 +14391,10 @@ try {
   ]);
   assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /backup" as never), false);
   assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /restore" as never), false);
+  assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /evolution/apply" as never), false);
+  assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /evolution/revert" as never), false);
+  assert.equal(PUBLIC_MEMORY_MCP_TOOL_NAMES.includes("memory.evolution_apply" as never), false);
+  assert.equal(PUBLIC_MEMORY_MCP_TOOL_NAMES.includes("memory.evolution_revert" as never), false);
   const status = await httpJson(`${httpAddress.url}/status?profileId=http`);
   assert.equal(status.status, 200);
   assert.equal(
@@ -14324,15 +14411,24 @@ try {
     profileId: "http",
     dryRun: true,
     now: "2026-07-02T00:00:00.000Z",
-    phases: ["decay", "consolidate"],
+    phases: ["decay", "consolidate", "distill"],
   });
   assert.equal(maintainWithPhases.status, 200);
   assert.equal(
     (
       maintainWithPhases.body.report as {
         consolidation?: { duplicateClusters?: unknown[] };
+        distillation?: { summaryMemories?: unknown[] };
       }
     ).consolidation?.duplicateClusters?.length,
+    0,
+  );
+  assert.equal(
+    (
+      maintainWithPhases.body.report as {
+        distillation?: { summaryMemories?: unknown[] };
+      }
+    ).distillation?.summaryMemories?.length,
     0,
   );
   const invalidMaintainPhase = await postJson(`${httpAddress.url}/maintain`, {
@@ -20681,11 +20777,32 @@ const cliEvolutionJson = JSON.parse(cliEvolutionReport.stdout) as {
   decision?: string;
   inspectedFailureCount?: number;
 };
-assert.equal(cliEvolutionJson.mode, "report_only");
+assert.equal(cliEvolutionJson.mode, "propose_with_approval");
 assert.equal(cliEvolutionJson.autoApply, false);
 assert.equal(cliEvolutionJson.autoRollout, false);
 assert.equal(cliEvolutionJson.decision, "no_failures");
 assert.equal(cliEvolutionJson.inspectedFailureCount, 0);
+const cliEvolutionApplyWithoutYes = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "evolution",
+    "apply",
+    "--db",
+    missingEvolutionDb,
+    "--profile",
+    "empty",
+    "--proposal",
+    "proposal_missing",
+    "--approved-by",
+    "unit-test",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliEvolutionApplyWithoutYes.status, 0);
+assert.match(cliEvolutionApplyWithoutYes.stderr, /without --yes/);
 const emptyExistingEvolutionDb = path.join(tmp, "evolution-existing-empty.db");
 const emptyExistingHandle = new Database(emptyExistingEvolutionDb);
 emptyExistingHandle.close();
@@ -21752,7 +21869,7 @@ assert.deepEqual(
       items?: { enum?: string[] };
     } | undefined
   )?.items?.enum,
-  ["decay", "consolidate"],
+  ["decay", "consolidate", "distill"],
 );
 for (const toolName of [
   "memory.prepare_context",
