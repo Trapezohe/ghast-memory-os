@@ -22180,6 +22180,7 @@ try {
     };
     checks?: Array<{ name?: string; status?: string }>;
     claimBoundaries?: { deterministicAdapterIsOfficialScore?: boolean; sotaClaimAllowed?: boolean };
+    invocation?: { command?: string };
   };
   assert.equal(releaseEvidenceManifest.schema, "gmos.release_evidence.v1");
   assert.deepEqual(releaseEvidenceManifest.package, {
@@ -22221,10 +22222,14 @@ try {
   );
   assert.equal(releaseEvidenceManifest.claimBoundaries?.deterministicAdapterIsOfficialScore, false);
   assert.equal(releaseEvidenceManifest.claimBoundaries?.sotaClaimAllowed, false);
+  assert.match(releaseEvidenceManifest.invocation?.command ?? "", /scripts\/create-release-evidence\.mjs/);
+  assert.match(releaseEvidenceManifest.invocation?.command ?? "", /--dry-run/);
+  assert.match(releaseEvidenceManifest.invocation?.command ?? "", /--output-dir/);
   const releaseEvidenceSummary = readFileSync(
     path.join(releaseEvidenceDir, "SUMMARY.md"),
     "utf8",
   );
+  assert.match(releaseEvidenceSummary, /Invocation: .*scripts\/create-release-evidence\.mjs/);
   assert.match(releaseEvidenceSummary, /Known limitations/);
   assert.match(releaseEvidenceDryRun.stdout, /gmos.release_evidence.v1/);
 } finally {

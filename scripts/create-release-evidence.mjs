@@ -278,6 +278,7 @@ function renderSummary(manifest) {
     `Generated at: ${manifest.createdAt}`,
     `Node: ${manifest.runtime.node}`,
     `Platform: ${manifest.runtime.platform}`,
+    `Invocation: ${manifest.invocation.command}`,
     "",
     "## Checks",
     "",
@@ -380,6 +381,9 @@ const manifest = {
   runtime: {
     node: process.version,
     platform: `${process.platform}/${process.arch}`,
+  },
+  invocation: {
+    command: commandForDisplay(nodeBin, ["scripts/create-release-evidence.mjs", ...process.argv.slice(2)]),
   },
   ci: inspectCiPolicy(),
   options: {
