@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -252,6 +252,7 @@ function renderSummary(manifest) {
 }
 
 function failAfterWriting(manifest, outputDir, message) {
+  recordFreshInstallDatabaseCleanupIfNeeded();
   writeFileSync(path.join(outputDir, "manifest.json"), JSON.stringify(manifest, null, 2));
   writeFileSync(path.join(outputDir, "SUMMARY.md"), renderSummary(manifest));
   throw new Error(message);
@@ -274,6 +275,7 @@ const skipFreshInstall = has("--skip-fresh-install");
 const logDir = path.join(outputDir, "logs");
 const packDir = path.join(outputDir, "pack");
 const freshInstallDir = path.join(outputDir, "fresh-install");
+const freshInstallDbPath = path.join(freshInstallDir, "consumer.db");
 const npmCacheDir = path.join(outputDir, ".npm-cache");
 
 mkdirSync(outputDir, { recursive: true });
@@ -435,6 +437,53 @@ function recordDoctorContentSafety(result, forbiddenValues) {
   manifest.checks.push(check);
 }
 
+function cleanupFreshInstallDatabaseFiles() {
+  const files = ["", "-shm", "-wal"].map((suffix) => `${freshInstallDbPath}${suffix}`);
+  const errors = [];
+  for (const file of files) {
+    try {
+      rmSync(file, { force: true });
+    } catch (error) {
+      errors.push(`${path.basename(file)}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const leftover = files.filter((file) => existsSync(file)).map((file) => path.basename(file));
+  return { errors, leftover };
+}
+
+function recordFreshInstallDatabaseCleanupIfNeeded(options = {}) {
+  if (manifest.checks.some((check) => check.name === "fresh_install_plaintext_db_cleanup")) {
+    return;
+  }
+  if (!options.always && !existsSync(freshInstallDir)) {
+    return;
+  }
+  const check = {
+    name: "fresh_install_plaintext_db_cleanup",
+    status: "pass",
+    command: "remove generated fresh-install plaintext sqlite database",
+  };
+  const cleanup = cleanupFreshInstallDatabaseFiles();
+  if (cleanup.leftover.length > 0 || cleanup.errors.length > 0) {
+    check.status = "fail";
+    check.reason = [
+      cleanup.leftover.length > 0
+        ? `leftover generated database files: ${cleanup.leftover.join(", ")}`
+        : "",
+      cleanup.errors.length > 0 ? `cleanup errors: ${cleanup.errors.join("; ")}` : "",
+    ].filter(Boolean).join("; ");
+  }
+  manifest.checks.push(check);
+}
+
+function recordFreshInstallDatabaseCleanup() {
+  recordFreshInstallDatabaseCleanupIfNeeded({ always: true });
+  const check = manifest.checks.find((entry) => entry.name === "fresh_install_plaintext_db_cleanup");
+  if (check?.status === "fail") {
+    failAfterWriting(manifest, outputDir, "fresh_install_plaintext_db_cleanup failed");
+  }
+}
+
 if (skipGate) {
   recordSkipped("pr_gate", "--skip-gate");
 } else {
@@ -541,8 +590,9 @@ if (skipFreshInstall) {
     "Release note response style",
     "summary first",
     "sk-releaseevidencequerysecret",
-    path.join(freshInstallDir, "consumer.db"),
+    freshInstallDbPath,
   ]);
+  recordFreshInstallDatabaseCleanup();
   manifest.artifacts.freshInstallDir = path.relative(root, freshInstallDir);
 }
 
