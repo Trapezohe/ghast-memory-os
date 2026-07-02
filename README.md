@@ -223,6 +223,7 @@ node dist/cli/gmos.js search --db ./gmos.db --profile local --query "结论 方�
 node dist/cli/gmos.js history --db ./gmos.db --profile local --query "之前的状态"
 node dist/cli/gmos.js prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
 node dist/cli/gmos.js reconstruct --db ./gmos.db --profile local --text "这个项目之前是什么状态？" --temporal-mode history
+node dist/cli/gmos-inspect.js --db ./gmos.db --profile local --query "这个项目现在是什么状态？" --temporal-mode current --format markdown
 node dist/cli/gmos.js explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --include-trace
 node dist/cli/gmos.js mcp serve --db ./gmos.db --profile local
 node dist/cli/gmos.js http serve --db ./gmos.db --profile local --port 4787 --host ghast --auth-token local-dev-token
