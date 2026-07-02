@@ -682,10 +682,39 @@ function expectCliVersionValidationFailure(name, stdout, expectedPackage) {
   throw new Error(`${name} unexpectedly passed`);
 }
 
+function expectFailureKindsValidationFailure(name, report) {
+  if (!hasExactFailureKinds(report)) return;
+  throw new Error(`${name} unexpectedly passed`);
+}
+
 function runSelfTest() {
   const expectedPackage = readJson("package.json");
   validateInspectorContentSafety(selfTestInspectorReport(), ["secret-value"]);
   validateCliVersionContentSafety(selfTestCliVersionReport(expectedPackage), ["consumer.db"], expectedPackage);
+  if (
+    !hasExactFailureKinds({
+      failureEvents: 2,
+      failureKinds: ["controller_route_error", "wrong_recall"],
+    })
+  ) {
+    throw new Error("exact failure kind report unexpectedly failed");
+  }
+  expectFailureKindsValidationFailure("missing failure kind", {
+    failureEvents: 2,
+    failureKinds: ["controller_route_error"],
+  });
+  expectFailureKindsValidationFailure("extra failure kind", {
+    failureEvents: 2,
+    failureKinds: ["controller_route_error", "privacy_leak", "wrong_recall"],
+  });
+  expectFailureKindsValidationFailure("reordered failure kind", {
+    failureEvents: 2,
+    failureKinds: ["wrong_recall", "controller_route_error"],
+  });
+  expectFailureKindsValidationFailure("wrong failure event count", {
+    failureEvents: 3,
+    failureKinds: ["controller_route_error", "wrong_recall"],
+  });
   expectCliVersionValidationFailure(
     "string cli binaries",
     selfTestCliVersionReport(expectedPackage, { cli: { binaries: Object.keys(expectedPackage.bin ?? {}).join(",") } }),
