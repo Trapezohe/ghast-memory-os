@@ -844,7 +844,8 @@ function recordEvolutionContentSafety(result, forbiddenValues) {
       report.sdkClusterCount < 2 ||
       !Number.isInteger(report.cliInspectedFailureCount) ||
       report.cliInspectedFailureCount < 2 ||
-      report.sensitiveSampleRedacted !== true
+      report.sensitiveSampleRedacted !== true ||
+      report.cliSensitiveSampleRedacted !== true
     ) {
       throw new Error("unexpected evolution smoke report shape");
     }
@@ -1708,7 +1709,9 @@ if (skipFreshInstall) {
         assert.equal(cliReport.autoApply, false);
         assert.equal(cliReport.autoRollout, false);
         assert.equal(cliReport.inspectedFailureCount >= 2, true);
-        assert.equal(JSON.stringify(cliReport).includes("123-45-6789"), false);
+        const cliReportJson = JSON.stringify(cliReport);
+        assert.equal(cliReportJson.includes("123-45-6789"), false);
+        assert.equal(cliReportJson.includes("[redacted_sensitive_failure]"), true);
         console.log(JSON.stringify({
           ok: true,
           sdkMode: sdkReport.mode,
@@ -1718,6 +1721,7 @@ if (skipFreshInstall) {
           sdkClusterCount: sdkReport.clusters.length,
           cliInspectedFailureCount: cliReport.inspectedFailureCount,
           sensitiveSampleRedacted: sdkReportJson.includes("[redacted_sensitive_failure]"),
+          cliSensitiveSampleRedacted: cliReportJson.includes("[redacted_sensitive_failure]"),
         }));
       } finally {
         await memory.close();
