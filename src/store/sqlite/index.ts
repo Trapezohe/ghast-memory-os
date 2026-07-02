@@ -30,6 +30,8 @@ import type {
   MemorySearchInput,
   MemoryStore,
   RecordEvidenceInput,
+  RecordConsolidationSummaryInput,
+  RecordConsolidationSummaryResult,
   RecordFailureInput,
   ReadAuditSnapshot,
   RepairSearchIndexResult,
@@ -42,6 +44,10 @@ import type {
   UpdateMemoryInput,
   WorldBeliefRecord,
 } from "../../kernel/types.js";
+import {
+  selectDuplicateConsolidationClusters,
+  type DuplicateConsolidationCluster,
+} from "../../kernel/consolidation.js";
 import {
   memoryKindCanAutoTransition,
   retentionScore,
@@ -1131,6 +1137,43 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     );
   }
 
+  function insertConsolidationEvidence(input: {
+    profileId: string;
+    survivorId: string;
+    memberIds: string[];
+    archivedMemberId: string;
+    createdAt: string;
+    reasons: string[];
+  }): void {
+    db.prepare(
+      `INSERT INTO gmos_evidence_events (
+        id, event_key, profile_id, source_type, source_uri, content, sensitivity,
+        eligible_for_long_term_memory, payload_json, created_at
+      ) VALUES (?, ?, ?, 'consolidation', ?, ?, 'normal', 0, ?, ?)
+      ON CONFLICT(event_key) DO UPDATE SET
+        payload_json = excluded.payload_json`,
+    ).run(
+      id("evidence"),
+      [
+        "consolidation.duplicate",
+        input.profileId,
+        input.survivorId,
+        input.archivedMemberId,
+        input.createdAt,
+      ].join(":"),
+      input.profileId,
+      null,
+      "Memory duplicate consolidation",
+      JSON.stringify({
+        survivorId: input.survivorId,
+        memberIds: input.memberIds,
+        archivedMemberId: input.archivedMemberId,
+        reasons: input.reasons,
+      }),
+      input.createdAt,
+    );
+  }
+
   function memoryRowById(profileId: string, memoryId: string): Record<string, unknown> | null {
     return (
       db
@@ -1236,6 +1279,45 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       )
       .get(memoryId) as { created_at?: string | null } | undefined;
     return row?.created_at ?? null;
+  }
+
+  function applyDuplicateConsolidationCluster(
+    cluster: DuplicateConsolidationCluster,
+    profileId: string,
+    now: string,
+  ): void {
+    const memberIds = cluster.members.map((member) => member.id);
+    const updateStmt = db.prepare(
+      `UPDATE gmos_memories
+       SET status = 'archived', updated_at = ?, metadata_json = ?
+       WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
+    );
+    for (const member of cluster.archivedMembers) {
+      const row = memoryRowById(profileId, member.id);
+      if (!row || row.status === "archived") continue;
+      const metadata = metadataWithArchiveMarker({
+        metadata: {
+          ...parseJsonObject(row.metadata_json),
+          supersededBy: cluster.survivor.id,
+        },
+        archivedAt: now,
+        reason: "consolidation:duplicate",
+      });
+      const result = updateStmt.run(now, JSON.stringify(metadata), profileId, member.id);
+      if (result.changes === 0) continue;
+      syncMemoryFts(member.id);
+      syncMemoryVector(member.id);
+      deactivateMemoryProjections(member.id);
+      rejectBeliefsForMemory(member.id, now);
+      insertConsolidationEvidence({
+        profileId,
+        survivorId: cluster.survivor.id,
+        memberIds,
+        archivedMemberId: member.id,
+        createdAt: now,
+        reasons: cluster.reasons,
+      });
+    }
   }
 
   function maintenanceTransitionForMemory(
@@ -2370,6 +2452,147 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     return tx();
   }
 
+  function recordConsolidationSummary(
+    input: RecordConsolidationSummaryInput,
+  ): RecordConsolidationSummaryResult {
+    initialize();
+    const sourceMemoryIds = [...new Set(input.sourceMemoryIds)].sort((left, right) =>
+      left.localeCompare(right)
+    );
+    const tx = db.transaction((): RecordConsolidationSummaryResult => {
+      const evidenceId = id("evidence");
+      const evidenceKey = [
+        "consolidation.summary",
+        input.profileId,
+        sourceMemoryIds.join(","),
+        input.createdAt,
+      ].join(":");
+      db.prepare(
+        `INSERT INTO gmos_evidence_events (
+          id, event_key, profile_id, source_type, source_uri, content, sensitivity,
+          eligible_for_long_term_memory, payload_json, created_at
+        ) VALUES (?, ?, ?, 'consolidation', ?, ?, 'normal', 0, ?, ?)
+        ON CONFLICT(event_key) DO UPDATE SET
+          payload_json = excluded.payload_json`,
+      ).run(
+        evidenceId,
+        evidenceKey,
+        input.profileId,
+        null,
+        "Memory consolidation summary",
+        JSON.stringify({
+          sourceMemoryIds,
+          sharedTags: input.sharedTags,
+          kind: input.kind,
+        }),
+        input.createdAt,
+      );
+      const sourceEvidence = normalizeEvidence(
+        db
+          .prepare("SELECT * FROM gmos_evidence_events WHERE event_key = ?")
+          .get(evidenceKey) as Record<string, unknown>,
+      );
+      const memoryId = id("memory");
+      const metadata = {
+        ...(input.metadata ?? {}),
+        consolidationSummary: true,
+        sourceMemoryIds,
+        sharedTags: input.sharedTags,
+      };
+      db.prepare(
+        `INSERT INTO gmos_memories (
+          id, profile_id, kind, scope, content, sensitivity, status, confidence,
+          source_event_id, metadata_json, created_at, updated_at
+        ) VALUES (?, ?, ?, 'global', ?, ?, 'active', ?, ?, ?, ?, ?)`,
+      ).run(
+        memoryId,
+        input.profileId,
+        input.kind,
+        input.content,
+        input.sensitivity,
+        input.confidence,
+        sourceEvidence.id,
+        JSON.stringify(metadata),
+        input.createdAt,
+        input.createdAt,
+      );
+      syncMemoryFts(memoryId);
+      syncMemoryVector(memoryId);
+      const memory = normalizeMemory(
+        db.prepare("SELECT * FROM gmos_memories WHERE id = ?").get(memoryId) as Record<
+          string,
+          unknown
+        >,
+      );
+      projectMemoryAssociations(memory);
+
+      const dormantSourceIds: string[] = [];
+      const sourceRow = db.prepare(
+        `SELECT *
+         FROM gmos_memories
+         WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
+      );
+      const sourceUpdate = db.prepare(
+        `UPDATE gmos_memories
+         SET status = 'dormant', updated_at = ?, metadata_json = ?
+         WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
+      );
+      for (const sourceMemoryId of sourceMemoryIds) {
+        const row = sourceRow.get(input.profileId, sourceMemoryId) as
+          | Record<string, unknown>
+          | undefined;
+        if (!row) continue;
+        const previousStatus = String(row.status) as MemoryRecord["status"];
+        const sourceMetadata = {
+          ...parseJsonObject(row.metadata_json),
+          consolidatedInto: memory.id,
+        };
+        const result = sourceUpdate.run(
+          input.createdAt,
+          JSON.stringify(sourceMetadata),
+          input.profileId,
+          sourceMemoryId,
+        );
+        if (result.changes === 0) continue;
+        dormantSourceIds.push(sourceMemoryId);
+        syncMemoryFts(sourceMemoryId);
+        syncMemoryVector(sourceMemoryId);
+        if (previousStatus === "active") {
+          deactivateMemoryProjections(sourceMemoryId);
+          insertLifecycleEvidence({
+            profileId: input.profileId,
+            sourceType: "maintenance",
+            memoryId: sourceMemoryId,
+            from: "active",
+            to: "dormant",
+            createdAt: input.createdAt,
+            reasons: ["consolidated_to_summary", `summary:${memory.id}`],
+          });
+        }
+      }
+
+      const worldBelief = input.belief
+        ? addWorldBelief({
+            profileId: input.profileId,
+            subject: input.belief.subject,
+            predicate: input.belief.predicate,
+            object: input.belief.object,
+            confidence: input.confidence,
+            sourceMemoryId: memory.id,
+            cardinality: "single",
+            createdAt: input.createdAt,
+            metadata,
+          })
+        : undefined;
+      return {
+        memory,
+        ...(worldBelief ? { worldBelief } : {}),
+        dormantSourceIds,
+      };
+    });
+    return tx();
+  }
+
   function supersededSourceMemoryIds(profileId: string): Set<string> {
     if (!tableExists("gmos_world_beliefs")) return new Set();
     const rows = db
@@ -2669,32 +2892,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     initialize();
     const skipped = new Map<string, number>();
     const exempted: MaintenanceExemption[] = [];
-    if (!input.lifecycle.enabled) {
-      incrementSkipped(skipped, "lifecycle_disabled");
-      return {
-        schema: "gmos.maintenance_report.v1",
-        profileId: input.profileId,
-        now: input.now,
-        dryRun: input.dryRun,
-        evaluated: 0,
-        transitions: [],
-        exempted,
-        skipped: skippedSummaries(skipped),
-      };
-    }
-    if (!input.phases.includes("decay")) {
-      incrementSkipped(skipped, "phase_decay_not_requested");
-      return {
-        schema: "gmos.maintenance_report.v1",
-        profileId: input.profileId,
-        now: input.now,
-        dryRun: input.dryRun,
-        evaluated: 0,
-        transitions: [],
-        exempted,
-        skipped: skippedSummaries(skipped),
-      };
-    }
+    const consolidationSkipped = new Map<string, number>();
     const rows = db
       .prepare(
         `SELECT *
@@ -2705,27 +2903,58 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .all(input.profileId) as Record<string, unknown>[];
     let evaluated = 0;
     const transitions: MaintenanceTransition[] = [];
-    for (const memory of rows.map(normalizeMemory)) {
-      if (!memoryKindCanAutoTransition(memory.kind, input.lifecycle)) {
-        exempted.push({
-          memoryId: memory.id,
-          kind: memory.kind,
-          status: memory.status,
-          reason: "kind_exempt",
-        });
-        continue;
+    const memories = rows.map(normalizeMemory);
+    if (input.phases.includes("decay")) {
+      if (!input.lifecycle.enabled) {
+        incrementSkipped(skipped, "lifecycle_disabled");
+      } else {
+        for (const memory of memories) {
+          if (!memoryKindCanAutoTransition(memory.kind, input.lifecycle)) {
+            exempted.push({
+              memoryId: memory.id,
+              kind: memory.kind,
+              status: memory.status,
+              reason: "kind_exempt",
+            });
+            continue;
+          }
+          evaluated += 1;
+          const transition = maintenanceTransitionForMemory(memory, input, skipped);
+          if (transition) transitions.push(transition);
+        }
       }
-      evaluated += 1;
-      const transition = maintenanceTransitionForMemory(memory, input, skipped);
-      if (transition) transitions.push(transition);
+    } else {
+      incrementSkipped(skipped, "phase_decay_not_requested");
     }
-    if (!input.dryRun && transitions.length > 0) {
-      const tx = db.transaction((items: MaintenanceTransition[]) => {
+
+    const transitionByMemoryId = new Map(transitions.map((transition) => [transition.memoryId, transition]));
+    const consolidationMemories = memories.flatMap((memory) => {
+      const transition = transitionByMemoryId.get(memory.id);
+      if (transition?.to === "archived") return [];
+      if (transition?.to === "dormant") {
+        return [{ ...memory, status: "dormant" as const, updatedAt: input.now }];
+      }
+      return [memory];
+    });
+    const duplicateClusters =
+      input.phases.includes("consolidate") && input.consolidation.enabled
+        ? selectDuplicateConsolidationClusters(consolidationMemories, input.consolidation)
+        : [];
+    if (!input.phases.includes("consolidate")) {
+      incrementSkipped(consolidationSkipped, "phase_consolidate_not_requested");
+    } else if (!input.consolidation.enabled) {
+      incrementSkipped(consolidationSkipped, "consolidation_disabled");
+    }
+    if (!input.dryRun && (transitions.length > 0 || duplicateClusters.length > 0)) {
+      const tx = db.transaction((items: MaintenanceTransition[], clusters: DuplicateConsolidationCluster[]) => {
         for (const transition of items) {
           applyMaintenanceTransition(transition, input.profileId, input.now);
         }
+        for (const cluster of clusters) {
+          applyDuplicateConsolidationCluster(cluster, input.profileId, input.now);
+        }
       });
-      tx(transitions);
+      tx(transitions, duplicateClusters);
     }
     return {
       schema: "gmos.maintenance_report.v1",
@@ -2736,6 +2965,20 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       transitions,
       exempted,
       skipped: skippedSummaries(skipped),
+      consolidation: {
+        enabled: input.consolidation.enabled,
+        evaluated: consolidationMemories.length,
+        duplicateClusters: duplicateClusters.map((cluster) => ({
+          kind: cluster.kind,
+          survivorId: cluster.survivor.id,
+          memberIds: cluster.members.map((member) => member.id),
+          archivedMemberIds: cluster.archivedMembers.map((member) => member.id),
+          reasons: cluster.reasons,
+        })),
+        summaryMemories: [],
+        rejectedCandidates: [],
+        skipped: skippedSummaries(consolidationSkipped),
+      },
     };
   }
 
@@ -2774,11 +3017,37 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
          LIMIT 1`,
       )
       .get(...params) as { created_at?: string | null } | undefined;
+    const consolidationCount = Number(
+      (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM gmos_evidence_events
+             WHERE source_type = 'consolidation'
+               ${input.profileId ? "AND profile_id = ?" : ""}`,
+          )
+          .get(...params) as { count: number }
+      ).count,
+    );
+    const lastConsolidationRow = db
+      .prepare(
+        `SELECT created_at
+         FROM gmos_evidence_events
+         WHERE source_type = 'consolidation'
+           ${input.profileId ? "AND profile_id = ?" : ""}
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1`,
+      )
+      .get(...params) as { created_at?: string | null } | undefined;
     return {
       schema: "gmos.lifecycle_status.v1",
       ...(input.profileId ? { profileId: input.profileId } : {}),
       counts,
       ...(lastMaintenanceRow?.created_at ? { lastMaintenanceAt: lastMaintenanceRow.created_at } : {}),
+      consolidationEvidenceCount: consolidationCount,
+      ...(lastConsolidationRow?.created_at
+        ? { lastConsolidationAt: lastConsolidationRow.created_at }
+        : {}),
     };
   }
 
@@ -3218,6 +3487,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     commitOutcome,
     recordFeedbackSignal,
     maintain,
+    recordConsolidationSummary,
     lifecycleStatus,
     listActionPolicies,
     listEvidence,

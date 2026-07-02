@@ -13189,6 +13189,10 @@ assert.equal(statusReport.storage.readAudit.tableCount >= 10, true);
 assert.equal(statusReport.storage.readAudit.auditedTables.includes("gmos_memories_fts"), true);
 assert.equal(statusReport.storage.readAudit.hashesAvailable, true);
 assert.equal(statusReport.storage.readAudit.missingTables.length, 0);
+assert.equal(
+  typeof statusReport.storage.lifecycle?.consolidationEvidenceCount,
+  "number",
+);
 assert.equal(statusReport.failureSummary.status, "ok");
 assert.equal(statusReport.failureSummary.inspectedFailureCount, 3);
 assert.equal(statusReport.failureSummary.byKind.wrong_recall, 1);
@@ -13206,6 +13210,7 @@ assert.match(renderedStatus, /memory\.runtime_info/);
 assert.match(renderedStatus, /GET \/runtime-info/);
 assert.match(renderedStatus, /Search index: ok/);
 assert.match(renderedStatus, /Read audit: ok/);
+assert.match(renderedStatus, /Consolidation evidence:/);
 assert.match(renderedStatus, /gmos_failure_events/);
 assert.equal(renderedStatus.includes("身份证"), false);
 const badStatus = await createMemoryStatusReport({
@@ -14315,6 +14320,26 @@ try {
     getGmosRuntimeInfo(),
   );
   assert.equal(status.text.includes("mcp fixture failure"), false);
+  const maintainWithPhases = await postJson(`${httpAddress.url}/maintain`, {
+    profileId: "http",
+    dryRun: true,
+    now: "2026-07-02T00:00:00.000Z",
+    phases: ["decay", "consolidate"],
+  });
+  assert.equal(maintainWithPhases.status, 200);
+  assert.equal(
+    (
+      maintainWithPhases.body.report as {
+        consolidation?: { duplicateClusters?: unknown[] };
+      }
+    ).consolidation?.duplicateClusters?.length,
+    0,
+  );
+  const invalidMaintainPhase = await postJson(`${httpAddress.url}/maintain`, {
+    profileId: "http",
+    phases: ["invalid"],
+  });
+  assert.equal(invalidMaintainPhase.status, 400);
   const statusUnknownQuery = await httpJson(`${httpAddress.url}/status?profileId=http&unsupported=true`);
   assert.equal(statusUnknownQuery.status, 400);
   assert.equal((statusUnknownQuery.body.error as { code?: string }).code, "unsupported_query");
@@ -17674,6 +17699,7 @@ const cliStatusPayload = JSON.parse(cliStatus.stdout) as {
     schemaVersion?: number;
     rowCounts?: Record<string, number>;
     searchIndex?: { status?: string; missingEntryCount?: number };
+    lifecycle?: { consolidationEvidenceCount?: number };
   };
   failureSummary?: { inspectedFailureCount?: number };
   hostCompatibility?: { level?: string };
@@ -17684,6 +17710,10 @@ assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_memories ?? 0) > 0);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_associations ?? 0) > 0);
 assert.equal(cliStatusPayload.storage?.searchIndex?.status, "ok");
 assert.equal(cliStatusPayload.storage?.searchIndex?.missingEntryCount, 0);
+assert.equal(
+  typeof cliStatusPayload.storage?.lifecycle?.consolidationEvidenceCount,
+  "number",
+);
 assert.equal(cliStatusPayload.failureSummary?.inspectedFailureCount, 3);
 assert.equal(cliStatusPayload.hostCompatibility?.level, "L4");
 assert.equal(cliStatus.stdout.includes("身份证"), false);
@@ -21714,6 +21744,16 @@ assert.ok(
 const cliPrepareToolSchema = cliMcpToolsJson.tools.find((tool) => tool.name === "memory.prepare_context")
   ?.inputSchema;
 assert.equal(typeof cliPrepareToolSchema?.properties?.reconstruction, "object");
+const cliMaintainToolSchema = cliMcpToolsJson.tools.find((tool) => tool.name === "memory.maintain")
+  ?.inputSchema;
+assert.deepEqual(
+  (
+    cliMaintainToolSchema?.properties?.phases as {
+      items?: { enum?: string[] };
+    } | undefined
+  )?.items?.enum,
+  ["decay", "consolidate"],
+);
 for (const toolName of [
   "memory.prepare_context",
   "memory.reconstruct_context",

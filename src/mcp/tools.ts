@@ -274,6 +274,10 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
           profileId: { type: "string" },
           dryRun: { type: "boolean" },
           now: { type: "string" },
+          phases: {
+            type: "array",
+            items: { type: "string", enum: ["decay", "consolidate"] },
+          },
         },
       },
     },

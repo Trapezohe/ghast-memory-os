@@ -739,6 +739,351 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "commit_outcome_reactivates_dormant_usage",
   ]);
 
+  const duplicateProfile = "gym_consolidation_duplicate";
+  const duplicateOlder = await memory.add({
+    profileId: duplicateProfile,
+    kind: "fact",
+    content: "DuplicateConsolidationSignal canonical content stays byte-for-byte.",
+    confidence: 0.4,
+    createdAt: "2026-07-02T01:00:00.000Z",
+  });
+  const duplicateSurvivor = await memory.add({
+    profileId: duplicateProfile,
+    kind: "fact",
+    content: "DuplicateConsolidationSignal canonical content stays byte-for-byte.",
+    confidence: 0.9,
+    createdAt: "2026-07-02T01:01:00.000Z",
+  });
+  const duplicateReport = await memory.maintain({
+    profileId: duplicateProfile,
+    now: "2026-07-02T02:00:00.000Z",
+    phases: ["consolidate"],
+  });
+  const duplicateCluster = duplicateReport.consolidation.duplicateClusters[0];
+  const duplicateActive = await memory.get({
+    profileId: duplicateProfile,
+    id: duplicateSurvivor.id,
+  });
+  const duplicateArchived = await memory.get({
+    profileId: duplicateProfile,
+    id: duplicateOlder.id,
+    includeArchived: true,
+  });
+  const duplicateEvidence = await memory.listEvidence({
+    profileId: duplicateProfile,
+    sourceType: "consolidation",
+    limit: 10,
+  });
+  gate(
+    result,
+    "consolidation_duplicate_archives_members",
+    duplicateCluster?.survivorId === duplicateSurvivor.id &&
+      duplicateActive?.status === "active" &&
+      duplicateActive.content === duplicateSurvivor.content &&
+      duplicateArchived?.status === "archived" &&
+      duplicateArchived.metadata.supersededBy === duplicateSurvivor.id &&
+      duplicateEvidence.some(
+        (event) =>
+          event.payload.survivorId === duplicateSurvivor.id &&
+          Array.isArray(event.payload.memberIds) &&
+          event.payload.memberIds.includes(duplicateOlder.id),
+      ),
+    "duplicate consolidation should keep canonical content and archive superseded members with evidence",
+    "consolidation",
+  );
+
+  const protectedProfile = "gym_consolidation_protected";
+  await memory.add({
+    profileId: protectedProfile,
+    kind: "boundary",
+    content: "ProtectedConsolidationSignal never consolidate this duplicate.",
+    confidence: 0.9,
+  });
+  await memory.add({
+    profileId: protectedProfile,
+    kind: "boundary",
+    content: "ProtectedConsolidationSignal never consolidate this duplicate.",
+    confidence: 0.8,
+  });
+  await memory.add({
+    profileId: protectedProfile,
+    kind: "person",
+    content: "PERSON: ProtectedConsolidationPerson duplicate never consolidates.",
+    confidence: 0.9,
+    allowPerson: true,
+  });
+  await memory.add({
+    profileId: protectedProfile,
+    kind: "person",
+    content: "PERSON: ProtectedConsolidationPerson duplicate never consolidates.",
+    confidence: 0.8,
+    allowPerson: true,
+  });
+  await memory.add({
+    profileId: protectedProfile,
+    kind: "fact",
+    content: "ProtectedConsolidationSensitive therapy duplicate never consolidates.",
+    confidence: 0.9,
+  });
+  await memory.add({
+    profileId: protectedProfile,
+    kind: "fact",
+    content: "ProtectedConsolidationSensitive therapy duplicate never consolidates.",
+    confidence: 0.8,
+  });
+  const protectedReport = await memory.maintain({
+    profileId: protectedProfile,
+    now: "2026-07-02T02:05:00.000Z",
+    phases: ["consolidate"],
+  });
+  const protectedArchived = await memory.list({
+    profileId: protectedProfile,
+    status: "archived",
+    includePerson: true,
+    includeSensitive: true,
+    query: "ProtectedConsolidationSignal ProtectedConsolidationPerson ProtectedConsolidationSensitive",
+    limit: 20,
+  });
+  gate(
+    result,
+    "consolidation_excludes_boundary_person_sensitive",
+    protectedReport.consolidation.duplicateClusters.length === 0 &&
+      protectedArchived.length === 0,
+    "boundary, person, and sensitive memories should never enter consolidation clusters",
+    "consolidation",
+  );
+
+  const hookProfile = "gym_consolidation_hook";
+  const hookMemory = createMemoryOS({
+    profileId: hookProfile,
+    store,
+    entityResolver: gymEntityResolver,
+    consolidation: { tagOverlapThreshold: 0.3 },
+    consolidator(cluster) {
+      if (!cluster.memories.some((entry) => entry.content.includes("ConsolidationHookSource"))) {
+        return null;
+      }
+      return [{
+        kind: "project",
+        content: "SemanticSummarySignal Orion rollout is ready after three source notes.",
+        confidence: 0.82,
+        subject: "project:orion",
+        predicate: "project.state",
+        object: "ready_after_three_notes",
+      }];
+    },
+  });
+  const hookSources = await Promise.all([
+    hookMemory.add({
+      kind: "project",
+      content: "ConsolidationHookSource Orion rollout source note alpha ready.",
+    }),
+    hookMemory.add({
+      kind: "project",
+      content: "ConsolidationHookSource Orion rollout source note beta ready.",
+    }),
+    hookMemory.add({
+      kind: "project",
+      content: "ConsolidationHookSource Orion rollout source note gamma ready.",
+    }),
+  ]);
+  const hookReport = await hookMemory.maintain({
+    now: "2026-07-02T03:00:00.000Z",
+    phases: ["consolidate"],
+  });
+  const hookSummaryId = hookReport.consolidation.summaryMemories[0]?.memoryId;
+  const hookSummary = hookSummaryId ? await hookMemory.get({ id: hookSummaryId }) : null;
+  const hookDormant = await hookMemory.list({
+    status: "dormant",
+    query: "ConsolidationHookSource",
+    limit: 10,
+  });
+  const hookExplanation = hookSummaryId ? await hookMemory.explain(hookSummaryId) : null;
+  gate(
+    result,
+    "consolidator_hook_writes_summary_and_dormant_sources",
+    Boolean(hookSummaryId) &&
+      hookSummary?.content.includes("SemanticSummarySignal Orion rollout") === true &&
+      hookDormant.length === hookSources.length &&
+      hookExplanation?.evidence.some(
+        (event) => {
+          const sourceMemoryIds = event.payload.sourceMemoryIds;
+          return event.sourceType === "consolidation" &&
+            Array.isArray(sourceMemoryIds) &&
+            hookSources.every((source) => sourceMemoryIds.includes(source.id));
+        },
+      ) === true &&
+      Boolean(hookReport.consolidation.summaryMemories[0]?.worldBeliefId),
+    "host consolidator should persist a summary, cite source memories, demote sources, and write structured belief",
+    "consolidation",
+  );
+  const secondHookReport = await hookMemory.maintain({
+    now: "2026-07-02T03:00:00.000Z",
+    phases: ["consolidate"],
+  });
+  gate(
+    result,
+    "consolidation_idempotent_same_now",
+    secondHookReport.consolidation.duplicateClusters.length === 0 &&
+      secondHookReport.consolidation.summaryMemories.length === 0,
+    "running consolidate twice with the same now should not create new consolidation actions",
+    "consolidation",
+  );
+  const forgottenSummary = hookSummaryId
+    ? await hookMemory.forget({ query: "SemanticSummarySignal Orion rollout" })
+    : { archivedMemoryIds: [] };
+  const summaryAfterForget = hookSummaryId
+    ? await hookMemory.get({ id: hookSummaryId, includeArchived: true })
+    : null;
+  const afterForgetPrepared = await hookMemory.prepareTurn({
+    messages: [{ role: "user", content: "SemanticSummarySignal Orion rollout" }],
+  });
+  gate(
+    result,
+    "forget_consolidated_summary_cleans_residue",
+    Boolean(hookSummaryId) &&
+      forgottenSummary.archivedMemoryIds.includes(hookSummaryId!) &&
+      summaryAfterForget?.status === "archived" &&
+      !afterForgetPrepared.contextBlock.includes("SemanticSummarySignal"),
+    "forget should archive a consolidated summary and keep derived context residue out",
+    "consolidation",
+  );
+
+  const secretHookMemory = createMemoryOS({
+    profileId: "gym_consolidation_secret_hook",
+    store,
+    consolidation: { tagOverlapThreshold: 0.3 },
+    consolidator() {
+      return {
+        kind: "fact",
+        content: "SecretSummarySignal api key is sk-secretconsolidation1234567890",
+        confidence: 0.9,
+      };
+    },
+  });
+  for (const suffix of ["alpha", "beta", "gamma"]) {
+    await secretHookMemory.add({
+      kind: "fact",
+      content: `SecretHookSource Pegasus cluster ${suffix} public note.`,
+    });
+  }
+  const secretHookReport = await secretHookMemory.maintain({
+    now: "2026-07-02T03:10:00.000Z",
+    phases: ["consolidate"],
+  });
+  const secretSummaries = await secretHookMemory.list({
+    query: "SecretSummarySignal",
+    limit: 10,
+  });
+  gate(
+    result,
+    "consolidator_rejects_secret_like_summary",
+    secretHookReport.consolidation.summaryMemories.length === 0 &&
+      secretHookReport.consolidation.rejectedCandidates.some(
+        (entry) => entry.reason === "secret_like",
+      ) &&
+      secretSummaries.length === 0,
+    "secret-like summary candidates should be rejected without persistence",
+    "consolidation",
+  );
+
+  const nullHookMemory = createMemoryOS({
+    profileId: "gym_consolidation_null_hook",
+    store,
+    consolidation: { tagOverlapThreshold: 0.3 },
+    consolidator() {
+      return null;
+    },
+  });
+  for (const suffix of ["alpha", "beta", "gamma"]) {
+    await nullHookMemory.add({
+      kind: "project",
+      content: `NullHookSource Vega cluster ${suffix} public note.`,
+    });
+  }
+  const nullHookBefore = await store.readAuditSnapshot();
+  const nullHookReport = await nullHookMemory.maintain({
+    now: "2026-07-02T03:20:00.000Z",
+    phases: ["consolidate"],
+  });
+  const nullHookAfter = await store.readAuditSnapshot();
+  const throwingHookMemory = createMemoryOS({
+    profileId: "gym_consolidation_throw_hook",
+    store,
+    consolidation: { tagOverlapThreshold: 0.3 },
+    consolidator() {
+      throw new Error("synthetic hook failure");
+    },
+  });
+  for (const suffix of ["alpha", "beta", "gamma"]) {
+    await throwingHookMemory.add({
+      kind: "project",
+      content: `ThrowHookSource Vega cluster ${suffix} public note.`,
+    });
+  }
+  const throwingBefore = await store.readAuditSnapshot();
+  const throwingReport = await throwingHookMemory.maintain({
+    now: "2026-07-02T03:30:00.000Z",
+    phases: ["consolidate"],
+  });
+  const throwingAfter = await store.readAuditSnapshot();
+  gate(
+    result,
+    "consolidator_null_and_throw_write_nothing",
+    nullHookReport.consolidation.summaryMemories.length === 0 &&
+      throwingReport.consolidation.summaryMemories.length === 0 &&
+      JSON.stringify(nullHookBefore) === JSON.stringify(nullHookAfter) &&
+      JSON.stringify(throwingBefore) === JSON.stringify(throwingAfter),
+    "null or throwing consolidator hooks should produce zero consolidation writes",
+    "consolidation",
+  );
+
+  const dryRunHookMemory = createMemoryOS({
+    profileId: "gym_consolidation_dry_run",
+    store,
+    consolidation: { tagOverlapThreshold: 0.3 },
+    consolidator() {
+      return {
+        kind: "project",
+        content: "DryRunSummarySignal should only appear in a dry-run report.",
+        confidence: 0.8,
+      };
+    },
+  });
+  for (const suffix of ["alpha", "beta", "gamma"]) {
+    await dryRunHookMemory.add({
+      kind: "project",
+      content: `DryRunHookSource Lyra cluster ${suffix} public note.`,
+    });
+  }
+  const dryRunConsolidateBefore = await store.readAuditSnapshot();
+  const dryRunConsolidate = await dryRunHookMemory.maintain({
+    dryRun: true,
+    now: "2026-07-02T03:40:00.000Z",
+    phases: ["consolidate"],
+  });
+  const dryRunConsolidateAfter = await store.readAuditSnapshot();
+  gate(
+    result,
+    "consolidation_dry_run_read_audit_pure",
+    dryRunConsolidate.consolidation.summaryMemories.some(
+      (entry) => entry.content.includes("DryRunSummarySignal") && entry.memoryId === undefined,
+    ) &&
+      JSON.stringify(dryRunConsolidateBefore) === JSON.stringify(dryRunConsolidateAfter),
+    "dry-run consolidate should compute hook summaries without writes",
+    "consolidation",
+  );
+  scenario(result, "memory_consolidation", "dev", [
+    "consolidation_duplicate_archives_members",
+    "consolidation_excludes_boundary_person_sensitive",
+    "consolidator_hook_writes_summary_and_dormant_sources",
+    "consolidation_idempotent_same_now",
+    "forget_consolidated_summary_cleans_residue",
+    "consolidator_rejects_secret_like_summary",
+    "consolidator_null_and_throw_write_nothing",
+    "consolidation_dry_run_read_audit_pure",
+  ]);
+
   await memory.add({
     profileId: "gym_reconstruct",
     kind: "project",

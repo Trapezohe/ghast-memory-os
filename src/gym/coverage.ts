@@ -81,6 +81,11 @@ export function coverageMatrix(result: MemoryGymResult): MemoryGymCoverageRow[] 
       status: statusFor(layerPass(result, "lifecycle")),
       evidence: "maintain decay, dormancy, dry-run purity, idempotence, forget, and usage reactivation are exercised",
     },
+    {
+      layer: "Layer 9: Memory Consolidation",
+      status: statusFor(layerPass(result, "consolidation")),
+      evidence: "duplicate archive, host summary hook, safety exclusions, dry-run purity, idempotence, and forget residue cleanup are exercised",
+    },
   ];
 }
 
@@ -171,6 +176,23 @@ export function memoryStackCoverage(result: MemoryGymResult): MemoryGymCoverageR
       ),
       evidence:
         "explicit lifecycle maintenance and usage signals are exercised without read-path writes",
+    },
+    {
+      layer: "Consolidation",
+      status: statusFor(
+        Boolean(
+          result.hardGates.consolidation_duplicate_archives_members &&
+            result.hardGates.consolidation_excludes_boundary_person_sensitive &&
+            result.hardGates.consolidator_hook_writes_summary_and_dormant_sources &&
+            result.hardGates.consolidation_idempotent_same_now &&
+            result.hardGates.forget_consolidated_summary_cleans_residue &&
+            result.hardGates.consolidator_rejects_secret_like_summary &&
+            result.hardGates.consolidator_null_and_throw_write_nothing &&
+            result.hardGates.consolidation_dry_run_read_audit_pure,
+        ),
+      ),
+      evidence:
+        "deterministic duplicate consolidation and host semantic consolidation are exercised through maintain",
     },
   ];
 }

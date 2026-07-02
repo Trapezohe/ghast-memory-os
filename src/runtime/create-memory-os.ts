@@ -14,6 +14,12 @@ import { buildEvidencePathExplanation } from "../kernel/evidence-path.js";
 import {
   extractMemoryCandidatePlan,
 } from "../kernel/extraction.js";
+import {
+  normalizeConsolidationCandidate,
+  resolveMemoryConsolidationConfig,
+  selectSemanticConsolidationClusters,
+  uniqueConsolidationCandidateKey,
+} from "../kernel/consolidation.js";
 import { isReservedSpeakerIdentity } from "../kernel/person-identity.js";
 import { reconstructMemoryContext } from "../kernel/reconstruction.js";
 import {
@@ -42,6 +48,10 @@ import type {
   LowLevelSearchInput,
   LowLevelUpdateMemoryInput,
   MaintenanceInput,
+  MaintenanceReport,
+  MemoryConsolidationCandidate,
+  MemoryConsolidationCluster,
+  MemoryConsolidationResult,
   MemoryExtractionCandidate,
   MemoryKind,
   MemoryRecord,
@@ -231,6 +241,21 @@ function memorySensitivityForCandidate(input: {
     ),
     input.candidateStructuredSensitivity,
   );
+}
+
+function consolidatorName(
+  consolidator: MemoryOSOptions["consolidator"],
+): string | undefined {
+  if (!consolidator) return undefined;
+  if (typeof consolidator === "function") return consolidator.name || undefined;
+  return consolidator.name;
+}
+
+function asConsolidationCandidateArray(
+  result: MemoryConsolidationResult,
+): MemoryConsolidationCandidate[] | null {
+  if (result === null || result === undefined) return null;
+  return Array.isArray(result) ? result : [result];
 }
 
 function publicSpeaker(
@@ -757,6 +782,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     options.safety?.sensitivityClassifier,
   );
   const lifecycle = resolveMemoryLifecycleConfig(options.lifecycle);
+  const consolidation = resolveMemoryConsolidationConfig(options.consolidation);
   let initialized = false;
 
   async function initialize(): Promise<void> {
@@ -1444,6 +1470,170 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     }, classifyRuntimeSensitivity);
   }
 
+  function addConsolidationSkipped(
+    report: MaintenanceReport,
+    reason: string,
+    count = 1,
+  ): void {
+    const existing = report.consolidation.skipped.find((entry) => entry.reason === reason);
+    if (existing) {
+      existing.count += count;
+    } else {
+      report.consolidation.skipped.push({ reason, count });
+    }
+    report.consolidation.skipped.sort((left, right) => left.reason.localeCompare(right.reason));
+  }
+
+  async function callConsolidator(
+    cluster: MemoryConsolidationCluster,
+  ): Promise<MemoryConsolidationCandidate[] | null> {
+    if (!options.consolidator) return null;
+    try {
+      const raw =
+        typeof options.consolidator === "function"
+          ? await options.consolidator(cluster)
+          : await options.consolidator.consolidate(cluster);
+      return asConsolidationCandidateArray(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  async function applySemanticConsolidation(input: {
+    profileId: string;
+    now: string;
+    dryRun: boolean;
+    report: MaintenanceReport;
+  }): Promise<void> {
+    if (!input.report.consolidation.enabled) return;
+    if (!options.consolidator) {
+      addConsolidationSkipped(input.report, "consolidator_not_configured");
+      return;
+    }
+    if (!store.listMemories || !store.recordConsolidationSummary) {
+      addConsolidationSkipped(input.report, "store_consolidation_summary_unsupported");
+      return;
+    }
+    const plannedArchived = new Set(
+      input.report.consolidation.duplicateClusters.flatMap((cluster) => cluster.archivedMemberIds),
+    );
+    const memories = (await store.listMemories({
+      profileId: input.profileId,
+      status: "any",
+      includeSensitive: true,
+      includePerson: true,
+      limit: consolidation.maxClustersPerRun * consolidation.maxMembersPerCluster * 4,
+    })).filter((memory) => !plannedArchived.has(memory.id));
+    const clusters = selectSemanticConsolidationClusters(memories, consolidation);
+    input.report.consolidation.evaluated = Math.max(
+      input.report.consolidation.evaluated,
+      memories.length,
+    );
+    if (clusters.length === 0) {
+      addConsolidationSkipped(input.report, "no_semantic_clusters");
+      return;
+    }
+    const seenCandidates = new Set<string>();
+    const name = consolidatorName(options.consolidator);
+    for (const cluster of clusters) {
+      const rawCandidates = await callConsolidator(cluster);
+      if (rawCandidates === null) {
+        addConsolidationSkipped(input.report, "consolidator_returned_null_or_failed");
+        continue;
+      }
+      if (rawCandidates.length === 0) {
+        addConsolidationSkipped(input.report, "consolidator_returned_empty");
+        continue;
+      }
+      for (const candidate of rawCandidates) {
+        const normalized = normalizeConsolidationCandidate(candidate, cluster);
+        const sourceMemoryIds = cluster.memories.map((memory) => memory.id);
+        if ("reason" in normalized) {
+          input.report.consolidation.rejectedCandidates.push({
+            kind: cluster.kind,
+            sourceMemoryIds,
+            reason: normalized.reason,
+          });
+          continue;
+        }
+        const contentSensitivity = classifyRuntimeSensitivity(
+          normalized.normalized.content,
+          "content",
+        );
+        const structuredSensitivity = runtimeValueSensitivity(
+          {
+            subject: normalized.normalized.subject,
+            predicate: normalized.normalized.predicate,
+            object: normalized.normalized.object,
+          },
+          classifyRuntimeSensitivity,
+          new WeakSet<object>(),
+          "structured_candidate",
+        );
+        if (contentSensitivity === "secret_like" || structuredSensitivity === "secret_like") {
+          input.report.consolidation.rejectedCandidates.push({
+            kind: cluster.kind,
+            sourceMemoryIds,
+            reason: "secret_like",
+          });
+          continue;
+        }
+        const key = uniqueConsolidationCandidateKey(normalized.normalized);
+        if (seenCandidates.has(key)) {
+          input.report.consolidation.rejectedCandidates.push({
+            kind: cluster.kind,
+            sourceMemoryIds,
+            reason: "duplicate",
+          });
+          continue;
+        }
+        seenCandidates.add(key);
+        const summary = {
+          kind: normalized.normalized.kind,
+          sourceMemoryIds,
+          sharedTags: cluster.sharedTags,
+          content: normalized.normalized.content,
+          confidence: normalized.normalized.confidence,
+          reasons: ["host_consolidator_summary"],
+        };
+        if (input.dryRun) {
+          input.report.consolidation.summaryMemories.push(summary);
+          continue;
+        }
+        const result = await store.recordConsolidationSummary({
+          profileId: input.profileId,
+          kind: normalized.normalized.kind,
+          content: normalized.normalized.content,
+          sensitivity: contentSensitivity,
+          confidence: normalized.normalized.confidence,
+          sourceMemoryIds,
+          sharedTags: cluster.sharedTags,
+          createdAt: input.now,
+          metadata: {
+            consolidationSource: "host_consolidator",
+            ...(name ? { consolidatorName: name } : {}),
+          },
+          ...(normalized.normalized.subject &&
+          normalized.normalized.predicate &&
+          normalized.normalized.object
+            ? {
+                belief: {
+                  subject: normalized.normalized.subject,
+                  predicate: normalized.normalized.predicate,
+                  object: normalized.normalized.object,
+                },
+              }
+            : {}),
+        });
+        input.report.consolidation.summaryMemories.push({
+          ...summary,
+          memoryId: result.memory.id,
+          ...(result.worldBelief ? { worldBeliefId: result.worldBelief.id } : {}),
+        });
+      }
+    }
+  }
+
   async function maintain(input: MaintenanceInput = {}) {
     await initialize();
     if (!store.maintain) throw new Error("gmOS store does not support maintenance");
@@ -1451,7 +1641,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const now = input.now ?? nowIso();
     assertValidIsoInstant(now, "maintain.now");
     const phases = input.phases ?? ["decay"];
-    const unsupportedPhase = phases.find((phase) => phase !== "decay");
+    const unsupportedPhase = phases.find((phase) => phase !== "decay" && phase !== "consolidate");
     if (unsupportedPhase) throw new Error(`Unsupported gmOS maintenance phase: ${unsupportedPhase}`);
     const dryRun = input.dryRun === true;
     const before = dryRun ? await readAuditSnapshot(store) : null;
@@ -1461,7 +1651,16 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       dryRun,
       phases,
       lifecycle,
+      consolidation,
     });
+    if (phases.includes("consolidate") && consolidation.enabled) {
+      await applySemanticConsolidation({
+        profileId,
+        now,
+        dryRun,
+        report,
+      });
+    }
     if (before) {
       assertNoReadSideEffects({
         operation: "maintain(dryRun)",

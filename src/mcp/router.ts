@@ -663,16 +663,20 @@ function feedbackInput(args: Record<string, unknown>): FeedbackInput {
 function maintainInput(args: Record<string, unknown>): MaintenanceInput {
   assertAllowedKeys(
     args,
-    new Set(["profileId", "dryRun", "now"]),
+    new Set(["profileId", "dryRun", "now", "phases"]),
     "memory.maintain",
   );
   const input: MaintenanceInput = {};
   const profileId = optionalString(args, "profileId");
   const dryRun = optionalBoolean(args, "dryRun");
   const now = optionalString(args, "now");
+  const phases = optionalStringArrayValue(args.phases, "phases");
+  const invalidPhase = phases?.find((phase) => phase !== "decay" && phase !== "consolidate");
+  if (invalidPhase) throw new Error("phases must contain only decay or consolidate");
   if (profileId !== undefined) input.profileId = profileId;
   if (dryRun !== undefined) input.dryRun = dryRun;
   if (now !== undefined) input.now = now;
+  if (phases !== undefined) input.phases = [...new Set(phases)] as MaintenanceInput["phases"];
   return input;
 }
 

@@ -18,6 +18,14 @@ checks used by every input path: sensitivity classification, PERSON isolation,
 incognito exclusion, confidence bounds, structured-field normalization, metadata
 sanitization, and forget/read-path invariants.
 
+`consolidator` is the second host meaning hook. It runs only from explicit
+`maintain({ phases: ["consolidate"] })` after gmOS selects bounded clusters of
+eligible active/dormant memories. Like the extractor, the hook may be local,
+model-backed, or deterministic, but gmOS keeps write-path authority: it rejects
+secret-like or PERSON-routed summaries, bounds confidence, deduplicates
+candidates, records consolidation evidence, and never writes summary prose that
+the hook did not return.
+
 ## Candidate Shape
 
 A candidate should be concise and evidence-backed:
@@ -60,6 +68,7 @@ and structured fields over phrasing conventions.
 The host should provide these pieces when it has them:
 
 - structured extractor candidates for durable user-world information;
+- optional consolidator summary candidates for repeated episodic memories;
 - `speakerKind: "person"` or `"human"` when a speaker should be used as a person
   cue;
 - `participants` for audit-only mentions in multi-speaker transcripts;
@@ -87,6 +96,21 @@ const memory = createMemoryOS({
   reconstruction: {
     cueExtractor({ text, phase, maxCues }) {
       return hostExtractCues({ text, phase, maxCues });
+    },
+  },
+});
+```
+
+For consolidation, the hook receives sanitized source snapshots:
+
+```ts
+const memory = createMemoryOS({
+  profileId: "local-user",
+  store,
+  consolidator: {
+    name: "host-consolidator",
+    consolidate({ kind, sharedTags, memories }) {
+      return hostSummarizeCluster({ kind, sharedTags, memories });
     },
   },
 });

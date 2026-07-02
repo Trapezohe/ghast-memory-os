@@ -62,6 +62,7 @@ import type {
   FailureKind,
   LowLevelListMemoriesInput,
   LowLevelSearchInput,
+  MaintenancePhase,
   MaintenanceReport,
   MemoryKind,
   ReadAuditSnapshot,
@@ -111,7 +112,7 @@ Usage:
   gmos repair --db ./gmos.db --search-index
   gmos repair --db ./gmos.db --associations
   gmos status --db ./gmos.db --profile local --host ghast --format markdown
-  gmos maintain --db ./gmos.db --profile local --dry-run --now 2026-07-02T00:00:00.000Z --format markdown
+  gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate --now 2026-07-02T00:00:00.000Z --format markdown
   gmos add --db ./gmos.db --profile local --kind preference --text "回答风格：简洁，先给结论"
   gmos update --db ./gmos.db --profile local --id memory_xxx --text "回答风格：先给结论，再列方案"
   gmos delete --db ./gmos.db --profile local --id memory_xxx --reason "manual cleanup"
@@ -418,6 +419,21 @@ function memoryKindOption(): MemoryKind {
   return raw;
 }
 
+function maintenancePhasesOption(): MaintenancePhase[] | undefined {
+  const raw = value("--phases");
+  if (!raw) return undefined;
+  const phases = raw.split(",").map((phase) => phase.trim());
+  if (phases.some((phase) => phase.length === 0)) {
+    throw new Error("--phases must be a comma-separated list of decay,consolidate");
+  }
+  const allowed = new Set<MaintenancePhase>(["decay", "consolidate"]);
+  const invalid = phases.find((phase): phase is string => !allowed.has(phase as MaintenancePhase));
+  if (invalid) {
+    throw new Error("--phases must contain only decay or consolidate");
+  }
+  return [...new Set(phases as MaintenancePhase[])];
+}
+
 function optionalMemoryKindOption(): MemoryKind | undefined {
   const raw = value("--kind");
   if (!raw) return undefined;
@@ -645,6 +661,18 @@ function renderMaintenanceMarkdown(report: MaintenanceReport): string {
     `| ${exemption.memoryId} | ${exemption.kind} | ${exemption.status} | ${exemption.reason} |`
   );
   const skippedRows = report.skipped.map((entry) => `| ${entry.reason} | ${entry.count} |`);
+  const duplicateRows = report.consolidation.duplicateClusters.map((cluster) =>
+    `| ${cluster.kind} | ${cluster.survivorId} | ${cluster.memberIds.join(", ")} | ${cluster.archivedMemberIds.join(", ")} | ${cluster.reasons.join(", ")} |`
+  );
+  const summaryRows = report.consolidation.summaryMemories.map((summary) =>
+    `| ${summary.kind} | ${summary.memoryId ?? "dry-run"} | ${summary.sourceMemoryIds.join(", ")} | ${summary.confidence.toFixed(4)} | ${summary.sharedTags.join(", ")} |`
+  );
+  const rejectionRows = report.consolidation.rejectedCandidates.map((rejection) =>
+    `| ${rejection.kind} | ${rejection.sourceMemoryIds.join(", ")} | ${rejection.reason} |`
+  );
+  const consolidationSkippedRows = report.consolidation.skipped.map((entry) =>
+    `| ${entry.reason} | ${entry.count} |`
+  );
   return [
     "# gmOS Maintenance Report",
     "",
@@ -672,6 +700,39 @@ function renderMaintenanceMarkdown(report: MaintenanceReport): string {
     skippedRows.length === 0
       ? "No skipped items."
       : "| Reason | Count |\n| --- | ---: |\n" + skippedRows.join("\n"),
+    "",
+    "## Consolidation",
+    "",
+    `Enabled: ${report.consolidation.enabled ? "yes" : "no"}`,
+    `Evaluated: ${report.consolidation.evaluated}`,
+    `Duplicate clusters: ${report.consolidation.duplicateClusters.length}`,
+    `Summary memories: ${report.consolidation.summaryMemories.length}`,
+    "",
+    "### Duplicate Clusters",
+    "",
+    duplicateRows.length === 0
+      ? "No duplicate clusters."
+      : "| Kind | Survivor | Members | Archived | Reasons |\n| --- | --- | --- | --- | --- |\n" +
+          duplicateRows.join("\n"),
+    "",
+    "### Summary Memories",
+    "",
+    summaryRows.length === 0
+      ? "No summary memories."
+      : "| Kind | Memory | Sources | Confidence | Shared Tags |\n| --- | --- | --- | ---: | --- |\n" +
+          summaryRows.join("\n"),
+    "",
+    "### Rejected Candidates",
+    "",
+    rejectionRows.length === 0
+      ? "No rejected candidates."
+      : "| Kind | Sources | Reason |\n| --- | --- | --- |\n" + rejectionRows.join("\n"),
+    "",
+    "### Consolidation Skipped",
+    "",
+    consolidationSkippedRows.length === 0
+      ? "No skipped consolidation items."
+      : "| Reason | Count |\n| --- | ---: |\n" + consolidationSkippedRows.join("\n"),
     "",
   ].join("\n");
 }
@@ -1122,9 +1183,11 @@ async function main(): Promise<void> {
     }
 
     if (command === "maintain") {
+      const phases = maintenancePhasesOption();
       const report = await memory.maintain({
         profileId,
         dryRun: has("--dry-run"),
+        ...(phases !== undefined ? { phases } : {}),
         ...(value("--now") !== undefined ? { now: value("--now") } : {}),
       });
       printReport(report, renderMaintenanceMarkdown(report));

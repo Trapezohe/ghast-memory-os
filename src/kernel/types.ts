@@ -307,6 +307,47 @@ export interface MemoryExtractionReport {
   decisions: MemoryExtractionDecision[];
 }
 
+export interface MemoryConsolidationSourceSnapshot {
+  id: string;
+  kind: MemoryKind;
+  content: string;
+  confidence: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MemoryConsolidationCluster {
+  kind: MemoryKind;
+  sharedTags: string[];
+  memories: MemoryConsolidationSourceSnapshot[];
+}
+
+export interface MemoryConsolidationCandidate {
+  content: string;
+  kind?: MemoryKind | undefined;
+  confidence?: number | undefined;
+  subject?: string | undefined;
+  predicate?: string | undefined;
+  object?: string | undefined;
+}
+
+export type MemoryConsolidationResult =
+  | MemoryConsolidationCandidate
+  | MemoryConsolidationCandidate[]
+  | null
+  | undefined;
+
+export type MemoryConsolidator =
+  | ((
+      input: MemoryConsolidationCluster,
+    ) => Promise<MemoryConsolidationResult> | MemoryConsolidationResult)
+  | {
+      name?: string | undefined;
+      consolidate(
+        input: MemoryConsolidationCluster,
+      ): Promise<MemoryConsolidationResult> | MemoryConsolidationResult;
+    };
+
 export type ObserveSkippedReason =
   | "forget_request"
   | "feedback_recorded"
@@ -821,6 +862,29 @@ export interface AddWorldBeliefInput {
   createdAt?: string | undefined;
 }
 
+export interface RecordConsolidationSummaryInput {
+  profileId: string;
+  kind: MemoryKind;
+  content: string;
+  sensitivity: Sensitivity;
+  confidence: number;
+  sourceMemoryIds: string[];
+  sharedTags: string[];
+  createdAt: string;
+  metadata?: Record<string, unknown> | undefined;
+  belief?: {
+    subject: string;
+    predicate: string;
+    object: string;
+  } | undefined;
+}
+
+export interface RecordConsolidationSummaryResult {
+  memory: MemoryRecord;
+  worldBelief?: WorldBeliefRecord | undefined;
+  dormantSourceIds: string[];
+}
+
 export interface RecordFailureInput {
   profileId: string;
   failureKind: FailureKind;
@@ -871,7 +935,17 @@ export interface MemoryLifecycleConfig {
   autoTransitionKinds?: MemoryKind[] | undefined;
 }
 
-export type MaintenancePhase = "decay";
+export interface MemoryConsolidationConfig {
+  enabled?: boolean | undefined;
+  tagOverlapThreshold?: number | undefined;
+  duplicateMinClusterSize?: number | undefined;
+  hookMinClusterSize?: number | undefined;
+  maxClustersPerRun?: number | undefined;
+  maxMembersPerCluster?: number | undefined;
+  eligibleKinds?: MemoryKind[] | undefined;
+}
+
+export type MaintenancePhase = "decay" | "consolidate";
 
 export interface ResolvedMemoryLifecycleConfig {
   enabled: boolean;
@@ -879,6 +953,16 @@ export interface ResolvedMemoryLifecycleConfig {
   dormantBelow: number;
   archiveAfterDormantDays: number;
   autoTransitionKinds: MemoryKind[];
+}
+
+export interface ResolvedMemoryConsolidationConfig {
+  enabled: boolean;
+  tagOverlapThreshold: number;
+  duplicateMinClusterSize: number;
+  hookMinClusterSize: number;
+  maxClustersPerRun: number;
+  maxMembersPerCluster: number;
+  eligibleKinds: MemoryKind[];
 }
 
 export interface MaintenanceInput {
@@ -909,6 +993,40 @@ export interface MaintenanceSkippedSummary {
   count: number;
 }
 
+export interface MaintenanceDuplicateConsolidation {
+  kind: MemoryKind;
+  survivorId: string;
+  memberIds: string[];
+  archivedMemberIds: string[];
+  reasons: string[];
+}
+
+export interface MaintenanceSummaryConsolidation {
+  kind: MemoryKind;
+  sourceMemoryIds: string[];
+  sharedTags: string[];
+  content: string;
+  confidence: number;
+  memoryId?: string | undefined;
+  worldBeliefId?: string | undefined;
+  reasons: string[];
+}
+
+export interface MaintenanceConsolidationRejection {
+  kind: MemoryKind;
+  sourceMemoryIds: string[];
+  reason: string;
+}
+
+export interface MaintenanceConsolidationReport {
+  enabled: boolean;
+  evaluated: number;
+  duplicateClusters: MaintenanceDuplicateConsolidation[];
+  summaryMemories: MaintenanceSummaryConsolidation[];
+  rejectedCandidates: MaintenanceConsolidationRejection[];
+  skipped: MaintenanceSkippedSummary[];
+}
+
 export interface MaintenanceReport {
   schema: "gmos.maintenance_report.v1";
   profileId: string;
@@ -918,6 +1036,7 @@ export interface MaintenanceReport {
   transitions: MaintenanceTransition[];
   exempted: MaintenanceExemption[];
   skipped: MaintenanceSkippedSummary[];
+  consolidation: MaintenanceConsolidationReport;
 }
 
 export interface MaintenanceStoreInput extends MaintenanceInput {
@@ -926,6 +1045,7 @@ export interface MaintenanceStoreInput extends MaintenanceInput {
   dryRun: boolean;
   phases: MaintenancePhase[];
   lifecycle: ResolvedMemoryLifecycleConfig;
+  consolidation: ResolvedMemoryConsolidationConfig;
 }
 
 export interface MemoryLifecycleStatus {
@@ -933,6 +1053,8 @@ export interface MemoryLifecycleStatus {
   profileId?: string | undefined;
   counts: Record<MemoryStatus, number> & { total: number };
   lastMaintenanceAt?: string | undefined;
+  consolidationEvidenceCount: number;
+  lastConsolidationAt?: string | undefined;
 }
 
 export interface ArchiveStaleHostImportsInput {
@@ -1001,6 +1123,9 @@ export interface MemoryStore {
   commitOutcome?(input: CommitOutcomeStoreInput): Promise<void> | void;
   recordFeedbackSignal?(input: FeedbackSignalStoreInput): Promise<void> | void;
   maintain?(input: MaintenanceStoreInput): Promise<MaintenanceReport> | MaintenanceReport;
+  recordConsolidationSummary?(
+    input: RecordConsolidationSummaryInput,
+  ): Promise<RecordConsolidationSummaryResult> | RecordConsolidationSummaryResult;
   lifecycleStatus?(
     input?: { profileId?: string | undefined },
   ): Promise<MemoryLifecycleStatus> | MemoryLifecycleStatus;
@@ -1031,6 +1156,7 @@ export interface MemoryOSOptions {
   profileId?: string | undefined;
   store: MemoryStore;
   extractor?: MemoryExtractor | undefined;
+  consolidator?: MemoryConsolidator | undefined;
   entityResolver?: EntityResolver | undefined;
   temporal?: {
     parser?: MemoryTemporalParser | undefined;
@@ -1045,6 +1171,7 @@ export interface MemoryOSOptions {
     inferTemporalCuesFromText?: boolean | undefined;
   } | undefined;
   lifecycle?: MemoryLifecycleConfig | undefined;
+  consolidation?: MemoryConsolidationConfig | undefined;
   safety?: {
     /**
      * Host-specific additive sensitivity classifier.

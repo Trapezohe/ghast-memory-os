@@ -42,6 +42,15 @@ const memory = createMemoryOS({
     archiveAfterDormantDays: 180,
     halfLivesDays: { project: 90 },
   },
+  consolidation: {
+    enabled: true,
+    tagOverlapThreshold: 0.6,
+    duplicateMinClusterSize: 2,
+    hookMinClusterSize: 3,
+    maxClustersPerRun: 10,
+    maxMembersPerCluster: 8,
+    eligibleKinds: ["task_trajectory", "fact", "project"],
+  },
 });
 ```
 
@@ -50,6 +59,14 @@ Default half-lives are `fact=180`, `preference=365`, `project=90`,
 are exempt from automatic lifecycle transitions unless the host explicitly
 provides `autoTransitionKinds` with those kinds included. Person memories keep
 the normal person isolation gates even if opted in.
+
+Consolidation defaults are shown above. `enabled: false` disables the
+`consolidate` phase even when requested. The tag-overlap threshold is clamped to
+`0..1`; cluster counts and member counts are positive integers. Duplicate
+consolidation always excludes `boundary`, `person`, archived, sensitive, and
+secret-like memories. Host semantic consolidation additionally uses
+`eligibleKinds`, defaulting to episodic-leaning `task_trajectory`, `fact`, and
+`project`.
 
 Hosts with their own entity model can pass an `entityResolver` to both the
 SQLite store and runtime facade. This keeps current-state invalidation,
@@ -130,7 +147,9 @@ Primary methods:
   Pass `relatedMemoryIds` plus `signal: "positive" | "negative"` to adjust
   memory `reinforcement` by a deterministic bounded step within `[-1, 1]`.
 - `maintain(input)`: explicit lifecycle write path. `dryRun: true` computes the
-  full report and writes nothing. Ordinary runtime reads never call this
+  full report and writes nothing. Pass `phases: ["consolidate"]` or
+  `["decay", "consolidate"]` to run duplicate consolidation and the optional
+  host `consolidator` hook. Ordinary runtime reads never call this
   automatically.
 - `forget(input)`: archive matching memory and remove it from future context.
   Prefer structured `targetTerms` when a host already knows the deletion target;
@@ -177,7 +196,21 @@ Hosts should pass the ids actually used by the model/tool loop back through
     { memoryId, kind, from, to, retention, reasons }
   ],
   exempted,
-  skipped
+  skipped,
+  consolidation: {
+    enabled,
+    evaluated,
+    duplicateClusters: [
+      { kind, survivorId, memberIds, archivedMemberIds, reasons }
+    ],
+    summaryMemories: [
+      { kind, sourceMemoryIds, sharedTags, content, confidence, memoryId?, worldBeliefId?, reasons }
+    ],
+    rejectedCandidates: [
+      { kind, sourceMemoryIds, reason }
+    ],
+    skipped
+  }
 }
 ```
 
@@ -187,6 +220,50 @@ and `eligibleForLongTermMemory: false`. Dormant reactivation from
 `sourceType: "memory.lifecycle"`. Maintenance is idempotent for the same `now`:
 after a transition is applied, a second run sees the new status and produces no
 duplicate transition.
+
+Duplicate consolidation runs inside `maintain()` and is deterministic. It scans
+active and dormant memories per profile/kind, excludes `boundary`, `person`,
+archived, sensitive, and secret-like rows, clusters near duplicates by
+normalized content equality/containment plus tag overlap, keeps the canonical
+survivor by highest confidence, newest `updatedAt`, then lexicographic id, and
+archives the other members. The survivor content is never rewritten. Archived
+members receive `metadata.supersededBy`; each archive writes a
+`sourceType: "consolidation"` evidence event with `eligibleForLongTermMemory:
+false` and payload fields `survivorId`, `memberIds`, `archivedMemberId`, and
+`reasons`.
+
+Host semantic consolidation is optional:
+
+```ts
+const memory = createMemoryOS({
+  profileId: "local-user",
+  store,
+  consolidator: {
+    name: "host-consolidator",
+    consolidate(cluster) {
+      return [{
+        kind: "project",
+        content: "project:vega release is ready after repeated dry-run notes.",
+        confidence: 0.84,
+        subject: "project:vega",
+        predicate: "project.state",
+        object: "ready_after_dry_runs",
+      }];
+    },
+  },
+});
+```
+
+The consolidator input is `{ kind, sharedTags, memories }`, where `memories` is
+a bounded sanitized snapshot of `{ id, kind, content, confidence, createdAt,
+updatedAt }`. Returning `null` or throwing means no summary for that cluster.
+gmOS rejects empty, overlong, duplicate, PERSON-routed, person-kind, or
+secret-like candidates, clamps confidence to `0..1`, and never synthesizes
+summary text itself. Accepted summaries are stored as new memories whose source
+evidence has `sourceType: "consolidation"` and payload `sourceMemoryIds`; source
+memories are marked dormant with lifecycle evidence and `metadata.consolidatedInto`.
+If the candidate includes `subject`, `predicate`, and `object`, gmOS writes the
+corresponding world belief with the summary memory as source.
 
 The retention score is pure and deterministic:
 
@@ -293,7 +370,7 @@ gmos version --format json
 gmos init --db ./gmos.db
 gmos doctor --db ./gmos.db --host ghast --format markdown
 gmos status --db ./gmos.db --profile local --host ghast --format markdown
-gmos maintain --db ./gmos.db --profile local --dry-run --format markdown
+gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate --format markdown
 gmos add --db ./gmos.db --profile local --kind preference --text "Response style: concise answers."
 gmos add --db ./gmos.db --profile local --kind boundary --text "Do not push release announcements without approval."
 gmos observe --db ./gmos.db --profile local --text "User opened the release planning thread."
@@ -322,7 +399,9 @@ Use `--evidence-limit` to cap evidence summary sampling. Use `--max-steps` and
 inspection, including reconstruction step, explored cue, and association counts.
 
 `doctor`, `status`, `gate`, and report-style gym commands support JSON output by
-default and markdown output with `--format markdown`. Use `--json-file` and
+default and markdown output with `--format markdown`. `status` includes
+read-only lifecycle counts plus `consolidationEvidenceCount` and
+`lastConsolidationAt` when consolidation evidence exists. Use `--json-file` and
 `--markdown-file` on commands that expose those artifact flags when building
 reproducibility bundles.
 
@@ -345,6 +424,8 @@ calls instead of direct SDK imports:
 - `memory.runtime_info`
 
 Public MCP tools intentionally do not expose sensitive override switches.
+`memory.maintain` accepts optional `phases: ["decay" | "consolidate"]`; the
+local HTTP `POST /maintain` route reuses the same validation.
 See [MCP and HTTP integration guide](./INTEGRATION_GUIDE.md) for host boundary
 selection, lifecycle wiring, and smoke-test commands.
 

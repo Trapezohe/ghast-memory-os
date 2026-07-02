@@ -12,6 +12,11 @@ export {
   retentionScore,
 } from "./kernel/retention.js";
 export {
+  DEFAULT_CONSOLIDATION_ELIGIBLE_KINDS,
+  MAX_CONSOLIDATION_SUMMARY_CONTENT_LENGTH,
+  resolveMemoryConsolidationConfig,
+} from "./kernel/consolidation.js";
+export {
   classifySensitivity,
   eligibleForLongTermMemory,
   isSecretLikeMemoryContent,

@@ -20,7 +20,8 @@ host event
 -> context, evidence, action policy
 -> commitOutcome() / recordFeedback()
 -> explicit maintain()
--> active / dormant / archived lifecycle evidence
+-> decay / duplicate consolidation / host semantic consolidation
+-> active / dormant / archived lifecycle and consolidation evidence
 ```
 
 ## Sources Of Truth
@@ -81,6 +82,21 @@ Every maintenance transition writes a content-free evidence event with
 maintenance computes the same report but writes nothing and is covered by the
 read-audit snapshot mechanism. No read path runs lifecycle maintenance in the
 background.
+
+Consolidation is an explicit `maintain()` phase, not a read-time side effect.
+The kernel-side duplicate path is deterministic: active and dormant memories are
+clustered per profile/kind by normalized content equality or containment plus
+association tag overlap, while `boundary`, `person`, archived, sensitive, and
+secret-like memories are excluded. The canonical survivor is selected by
+confidence, newest `updated_at`, then id, and its content is never rewritten.
+Archived duplicate members carry `metadata.supersededBy` and a
+`source_type = "consolidation"` evidence event.
+
+Semantic consolidation uses the second host hook, `consolidator`, mirroring the
+structured extractor boundary. gmOS selects bounded clusters and enforces write
+gates, but only the host hook can synthesize summary prose. Accepted summaries
+are new memories whose consolidation evidence lists source memory ids; source
+episodes are demoted to dormant with lifecycle evidence.
 
 ## Reconstruction Model
 

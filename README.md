@@ -91,6 +91,10 @@ npm run examples:quickstart
   with evidence events, dry-run reporting, and no background writes. Ordinary
   context excludes dormant memories; history recall and status-filtered list can
   still reach them.
+- Explicit consolidation maintenance. `maintain({ phases: ["consolidate"] })`
+  can archive deterministic duplicate memories and, when a host provides a
+  `consolidator`, persist evidence-backed semantic summaries while demoting the
+  source episodes to dormant.
 - Runtime facade: `observe`, `prepareTurn`, `commitOutcome`, `recordFeedback`,
   `reconstructContext`, `explainEvidencePath`, `maintain`, `forget`,
   `explain`.
@@ -179,6 +183,11 @@ means "extract nothing". Returning `null` or throwing does not cause gmOS to
 synthesize user facts, preferences, boundaries, people, or project state on its
 own.
 
+`createMemoryOS({ consolidator })` is the second host meaning hook. It runs only
+from explicit `maintain({ phases: ["consolidate"] })`; gmOS selects bounded
+clusters, enforces the same safety gates, records source memory ids in
+consolidation evidence, and never synthesizes summary prose without the hook.
+
 For a runnable end-to-end example of host-owned candidate generation and
 reconstruction cues:
 
@@ -225,7 +234,7 @@ npm install -g @ghast/memory
 gmos init --db ./gmos.db
 gmos doctor --db ./gmos.db --host ghast --format markdown
 gmos status --db ./gmos.db --profile local --host ghast --format markdown
-gmos maintain --db ./gmos.db --profile local --dry-run --format markdown
+gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate --format markdown
 gmos add --db ./gmos.db --profile local --kind preference --text "回答风格：简洁，先给结论"
 gmos add --db ./gmos.db --profile local --kind boundary --text "不要再提醒我这个项目延期了。"
 gmos search --db ./gmos.db --profile local --query "结论 方案"
@@ -437,9 +446,9 @@ gmos evolution report --db ./gmos.db --profile local --format markdown
 Hosts can generate a read-only status report for integration checks and support
 bundles. The report includes package version, public SDK/CLI/MCP/HTTP runtime
 surface, SQLite schema version, row counts, read-audit coverage, failure counts
-by kind, per-status memory counts, last maintenance timestamp, and optional host
-compatibility. It does not include memory content, failure samples, real SQLite
-paths, or table state hashes.
+by kind, per-status memory counts, last maintenance timestamp, consolidation
+evidence counters, and optional host compatibility. It does not include memory
+content, failure samples, real SQLite paths, or table state hashes.
 
 ```bash
 gmos doctor --db ./gmos.db --host ghast --format markdown

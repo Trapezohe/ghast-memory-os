@@ -343,6 +343,12 @@ export function renderMemoryStatusMarkdown(report: MemoryStatusReport): string {
     report.storage.lifecycle?.lastMaintenanceAt
       ? `Last maintenance: ${report.storage.lifecycle.lastMaintenanceAt}`
       : "",
+    report.storage.lifecycle
+      ? `Consolidation evidence: ${report.storage.lifecycle.consolidationEvidenceCount}`
+      : "",
+    report.storage.lifecycle?.lastConsolidationAt
+      ? `Last consolidation: ${report.storage.lifecycle.lastConsolidationAt}`
+      : "",
     "",
     "### Row Counts",
     "",
