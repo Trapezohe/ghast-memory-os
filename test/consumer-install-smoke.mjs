@@ -1110,6 +1110,12 @@ try {
     ".bin",
     process.platform === "win32" ? "gmos.cmd" : "gmos",
   );
+  const ghastMemoryBin = path.join(
+    consumerDir,
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "ghast-memory.cmd" : "ghast-memory",
+  );
   const installedCli = path.join(
     consumerDir,
     "node_modules",
@@ -1120,6 +1126,7 @@ try {
     "gmos.js",
   );
   assert.equal(existsSync(gmosBin), true);
+  assert.equal(existsSync(ghastMemoryBin), true);
   assert.equal(existsSync(installedCli), true);
   const installedPackage = JSON.parse(
     readFileSync(path.join(consumerDir, "node_modules", "@ghast", "memory", "package.json"), "utf8"),
@@ -1157,6 +1164,13 @@ try {
   assert.equal(installedVersionJson.trustContract.defaultStorage, "sqlite");
   assert.equal(installedVersionJson.trustContract.encryptedByDefault, false);
   assert.equal(installedVersionJson.trustContract.cloudRequired, false);
+  const installedAliasVersionBin = spawnCommand(ghastMemoryBin, ["version", "--format", "json"], {
+    cwd: consumerDir,
+    encoding: "utf8",
+  });
+  assert.equal(installedAliasVersionBin.status, 0, installedAliasVersionBin.stderr);
+  assert.deepEqual(JSON.parse(installedAliasVersionBin.stdout), installedVersionJson);
+  assert.equal(existsSync(installedVersionDefaultDb), false);
   const installedShortVersionBin = runInstalledCli(["--version"]);
   assert.equal(installedShortVersionBin.status, 0, installedShortVersionBin.stderr);
   assert.equal(installedShortVersionBin.stdout.trim(), installedPackage.version);
