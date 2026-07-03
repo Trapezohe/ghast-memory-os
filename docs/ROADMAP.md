@@ -199,3 +199,156 @@ start after M1 (it explains lifecycle output). M5 and M6 are parallel tracks
 once M2 is stable. Every milestone ships behind `npm run gate:pr` plus new
 Gym suites, and each release keeps the release-evidence discipline already in
 place.
+
+---
+
+# Horizon 2: From Runtime Kernel To An Open-Source Memory OS Platform
+
+Horizon 1 (M1-M6) built the experience-learning kernel. Horizon 2 turns gmOS
+into a production-form open-source Agent Memory OS that individuals and teams
+can adopt the way they adopt mem0 or Hindsight today, while keeping the
+positioning that neither of them owns: local-first personal memory with an
+evidence ledger, enforceable safety and forgetting, deterministic replay, and
+explainable context decisions.
+
+## Competitive Frame (2026)
+
+- mem0 ships as a pip/npm library, a self-hosted Docker server with a
+  dashboard, per-user API keys and request audit logs, and a hosted platform;
+  it covers 20+ framework integrations and built-in LLM extraction.
+- Hindsight (MIT, Vectorize) ships four memory networks (world facts, agent
+  experience, entity summaries, beliefs), hybrid retrieval (vector, BM25,
+  graph, temporal), disposition-configurable reflection, and markets a 91.4%
+  LongMemEval claim.
+
+gmOS parity gaps: batteries-included intelligence (both ship LLM-powered
+extraction/reflection out of the box), a hardened self-hosted service with
+keys/audit/dashboard, a Python SDK, breadth of integrations, entity-level
+summaries, and a public benchmark story. gmOS advantages to defend: evidence
+ledger, read-path purity, safety/forgetting gates, deterministic kernel,
+explainTurn, experience-horizon evaluation, release-evidence discipline.
+
+Kernel invariants from Horizon 1 remain contract. "Batteries included" always
+means official implementations of the existing host hooks, never new kernel
+synthesis paths.
+
+## M7 — Batteries-Included Intelligence (Opt-In)
+
+Goal: first-run value without writing an extractor, while the kernel boundary
+stays intact.
+
+- New subpath export (e.g. `@ghast/memory/intelligence`) with official,
+  swappable hook implementations: structured extractor, consolidator,
+  procedure distiller, embedding provider, and reranker, each backed by any
+  OpenAI-compatible endpoint (hosted or local Ollama/vLLM) through plain
+  fetch. Zero new hard dependencies; nothing loads unless the host opts in.
+- `createDefaultIntelligence({ baseUrl, apiKey, model, embedModel })` preset
+  that wires all hooks with conservative defaults and full config override.
+- Entity dossiers: a consolidator-family hook that maintains per-entity
+  summary memories (person/project dossiers) from world beliefs and memory
+  clusters — parity with entity-summary networks elsewhere, but
+  evidence-linked and forget-compliant like everything else.
+- Prompt-injection resistance tests for all shipped prompts; extraction
+  boundary scan stays green (hooks are host-side by definition).
+- Gym: recall/extraction quality report comparing no-intelligence vs preset
+  against deterministic fixtures with a stub endpoint.
+
+## M8 — Memory Service Form
+
+Goal: `docker run ghast/gmos` is a complete self-hosted memory service.
+
+- Harden the HTTP adapter into `gmos serve`: multi-profile management API,
+  scoped API keys (per agent, read-only vs read-write vs admin), request
+  audit log (who read/wrote which profile, no content in logs), rate limits,
+  CORS policy, OpenAPI 3 spec generated from the tool contract.
+- Docker image and compose file; launchd/systemd recipes for always-on local
+  service; backup/restore endpoints honoring existing safe-backup rules.
+- Python client SDK (thin typed REST client mirroring the JS facade) and a
+  slim JS/TS client for browser/edge callers; both generated or verified
+  against the OpenAPI spec.
+- Admin operations (evolution apply, encryption keys, full backups) remain
+  CLI/SDK-only; the network surface keeps refusing sensitive overrides.
+
+## M9 — Memory Console
+
+Goal: make explainability and control visible; this is the dashboard-parity
+move and the trust differentiator.
+
+- Local web console served by `gmos serve --console`: memory browser with
+  status/kind/sensitivity filters, memory timeline (lifecycle provenance),
+  explainTurn viewer (why in / why out), forget-with-preview (dry-run diff
+  before archive), maintenance dry-run diff view, evolution proposal review
+  and approval, health and vector-index panels.
+- Static bundled SPA, no external services, no telemetry; talks only to the
+  local service with an admin-scoped key.
+- Every console action maps to an existing audited API; the console adds no
+  new write paths.
+
+## M10 — Continuous Learning Autopilot (Safe)
+
+Goal: "set it and forget it" learning loops without violating explicit-write
+principles.
+
+- `gmos autopilot` (and service-mode scheduler): host-configured intervals
+  for maintain phases (decay, consolidate, distill), embedding backfill, and
+  ingestion-queue processing; every run is an ordinary explicit write with
+  evidence, dry-run preview, and per-run report retention.
+- Session ingestion pipeline: batch import of conversation logs (JSONL,
+  Claude Code transcripts, OpenAI-format threads) through observe() with the
+  usual gates; resumable and idempotent by event key.
+- Recall disposition config: named presets controlling how assertive recall
+  is (context budget, score thresholds, history inclusion), selectable
+  per-agent via scoped keys.
+- Gym: autopilot determinism (same queue, same clocks, same outcome), gate
+  that autopilot never runs evolution apply.
+
+## M11 — Interop And Migration
+
+Goal: adopting gmOS costs an afternoon; leaving it costs nothing (data
+freedom as a feature).
+
+- Canonical profile export format (versioned JSONL bundle: memories, beliefs,
+  evidence, trajectories) with import; encrypted portable bundles for device
+  moves.
+- Importers: mem0 export format, generic conversation JSONL; documented
+  mapping semantics and what cannot carry over (their extraction provenance
+  is not gmOS evidence and is imported as low-level records, honestly
+  labeled).
+- Integration packages for LangChain/LlamaIndex-style ecosystems in JS and
+  Python (thin wrappers over the client SDKs), MCP registry listing,
+  framework quickstarts.
+- Compatibility matrix in docs, tested in CI against pinned versions.
+
+## M12 — Credibility And Community
+
+Goal: the numbers, docs, and governance that make "mature, trustworthy,
+commercially adoptable" checkable rather than claimed.
+
+- Official-protocol benchmark publication: LongMemEval and LoCoMo runs with a
+  host model judge through the M6a machinery, published with full
+  reproduction bundles (git SHA, dataset hash, judge model/settings, per-case
+  outputs) in BENCHMARK_RUNS.md; an honest comparison page describing
+  methodology differences vs mem0/Hindsight claims rather than bare numbers.
+- Docs site (static, versioned) with task-oriented guides; API reference
+  generated from source; architecture and threat-model pages.
+- Community infrastructure: issue/PR templates, CODE_OF_CONDUCT, release
+  cadence policy, public CI matrix (Node LTS x macOS/Linux), security
+  disclosure process, upgrade/migration guarantees.
+- 0.2 line criteria: public API freeze proposal, documented deprecation
+  policy, 100k-memory scale targets in the gate, at least two external
+  integrations in production use.
+
+## Commercial-Form Boundary
+
+Everything that touches user memory stays open source. A future hosted
+control plane (team sync, managed judges, fleet dashboards) must build on the
+same public service API and export formats, so self-hosting is never a
+second-class citizen. No OSS feature may require a hosted service.
+
+## Horizon 2 Sequencing
+
+M7 -> M8 -> M9 is the adoption spine (value, service, visibility). M10 builds
+on M7+M8. M11 and M12 run as parallel tracks once M8 stabilizes the service
+API; the benchmark publication in M12 should start as soon as current public
+benchmark runs conclude. Every milestone still ships behind `npm run gate:pr`
+plus new gym suites, with release evidence per release.
