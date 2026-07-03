@@ -10,6 +10,10 @@ export {
   exportMemorySnapshots,
   parseMemorySnapshotExport,
 } from "./snapshot-export.js";
+export {
+  loadMem0ExportIntoStore,
+  parseMem0Export,
+} from "./mem0-import.js";
 export { createAgentMemoryAdapter } from "./agent-adapter.js";
 export type {
   HostMemorySnapshot,
@@ -22,6 +26,11 @@ export type {
   MemorySnapshotExport,
   MemorySnapshotExportInput,
 } from "./snapshot-export.js";
+export type {
+  Mem0ImportInput,
+  Mem0ImportReport,
+  Mem0ImportSkippedRecord,
+} from "./mem0-import.js";
 export type {
   AgentMemoryAdapter,
   AgentMemoryAdapterOptions,

@@ -1,6 +1,51 @@
 export type GmosJsonObject = Record<string, unknown>;
 
 export type GmosFetch = (input: string, init?: RequestInit) => Promise<Response>;
+export type GmosAgentRole = "system" | "user" | "assistant" | "tool";
+
+export interface GmosAgentMessage {
+  role: GmosAgentRole;
+  content: string;
+}
+
+export interface GmosAgentMemoryOptions {
+  profileId: string;
+  disposition?: string | undefined;
+}
+
+export interface GmosAgentMemoryLoadResult {
+  contextBlock: string;
+  prepared: GmosJsonObject;
+  memoryIds: string[];
+}
+
+export interface GmosAgentMemorySaveTurnInput {
+  messages: GmosAgentMessage[];
+  outcome?: {
+    taskId?: string | undefined;
+    objective: string;
+    status: "completed" | "failed";
+    summary?: string | undefined;
+  } | undefined;
+  usedMemoryIds?: string[] | undefined;
+}
+
+export interface GmosAgentMemoryBindings {
+  loadContext(messagesOrQuery: string | GmosAgentMessage[]): Promise<GmosAgentMemoryLoadResult>;
+  saveTurn(input: GmosAgentMemorySaveTurnInput): Promise<void>;
+}
+
+export interface GmosAgentMemoryClient {
+  prepareTurn(input: GmosJsonObject): Promise<GmosJsonObject>;
+  observe(input: GmosJsonObject): Promise<GmosJsonObject>;
+  commitOutcome(input: GmosJsonObject): Promise<GmosJsonObject>;
+}
+
+export interface GmosLangChainMemoryOptions extends GmosAgentMemoryOptions {
+  memoryKey?: string | undefined;
+  inputKey?: string | undefined;
+  outputKey?: string | undefined;
+}
 
 export interface GmosClientOptions {
   baseUrl: string;
@@ -23,6 +68,115 @@ export class GmosClientError extends Error {
     this.status = input.status;
     this.code = input.code;
     this.body = input.body;
+  }
+}
+
+function normalizeAgentMessages(input: string | GmosAgentMessage[]): GmosAgentMessage[] {
+  if (typeof input === "string") return [{ role: "user", content: input }];
+  return input.map((message, index) => {
+    if (!message.content.trim()) {
+      throw new Error(`messages[${index}].content must be non-empty`);
+    }
+    return {
+      role: message.role,
+      content: message.content,
+    };
+  });
+}
+
+function memoryIdsFromPrepared(prepared: GmosJsonObject): string[] {
+  const memories = prepared.memories;
+  if (!Array.isArray(memories)) return [];
+  return memories.flatMap((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const id = (entry as { id?: unknown }).id;
+    return typeof id === "string" ? [id] : [];
+  });
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function langChainMessages(
+  inputValues: Record<string, unknown>,
+  outputValues: Record<string, unknown> | undefined,
+  options: { inputKey: string; outputKey: string },
+): GmosAgentMessage[] {
+  const messages: GmosAgentMessage[] = [];
+  const input = stringValue(inputValues[options.inputKey]) ?? stringValue(inputValues.input);
+  if (input) messages.push({ role: "user", content: input });
+  const output = outputValues
+    ? stringValue(outputValues[options.outputKey]) ?? stringValue(outputValues.output)
+    : undefined;
+  if (output) messages.push({ role: "assistant", content: output });
+  return messages;
+}
+
+export function createAgentMemoryBindings(
+  client: GmosAgentMemoryClient,
+  options: GmosAgentMemoryOptions,
+): GmosAgentMemoryBindings {
+  return {
+    async loadContext(messagesOrQuery) {
+      const prepared = await client.prepareTurn({
+        profileId: options.profileId,
+        messages: normalizeAgentMessages(messagesOrQuery),
+        ...(options.disposition ? { dispositionPreset: options.disposition } : {}),
+      });
+      return {
+        contextBlock: typeof prepared.contextBlock === "string" ? prepared.contextBlock : "",
+        prepared,
+        memoryIds: memoryIdsFromPrepared(prepared),
+      };
+    },
+    async saveTurn(input) {
+      for (const message of input.messages) {
+        await client.observe({
+          profileId: options.profileId,
+          role: message.role,
+          content: message.content,
+        });
+      }
+      if (!input.outcome) return;
+      await client.commitOutcome({
+        profileId: options.profileId,
+        ...input.outcome,
+        ...(input.usedMemoryIds ? { usedMemoryIds: input.usedMemoryIds } : {}),
+      });
+    },
+  };
+}
+
+export class GmosLangChainMemory {
+  readonly memoryKey: string;
+  private readonly inputKey: string;
+  private readonly outputKey: string;
+  private readonly bindings: GmosAgentMemoryBindings;
+
+  constructor(client: GmosAgentMemoryClient, options: GmosLangChainMemoryOptions) {
+    this.memoryKey = options.memoryKey ?? "gmos_context";
+    this.inputKey = options.inputKey ?? "input";
+    this.outputKey = options.outputKey ?? "output";
+    this.bindings = createAgentMemoryBindings(client, options);
+  }
+
+  async loadMemoryVariables(values: Record<string, unknown> = {}): Promise<Record<string, string>> {
+    const query = stringValue(values[this.inputKey]) ?? stringValue(values.input) ?? "";
+    const loaded = await this.bindings.loadContext(query);
+    return { [this.memoryKey]: loaded.contextBlock };
+  }
+
+  async saveContext(
+    inputValues: Record<string, unknown>,
+    outputValues: Record<string, unknown> = {},
+  ): Promise<void> {
+    const messages = langChainMessages(inputValues, outputValues, {
+      inputKey: this.inputKey,
+      outputKey: this.outputKey,
+    });
+    if (messages.length === 0) return;
+    await this.bindings.saveTurn({ messages });
   }
 }
 

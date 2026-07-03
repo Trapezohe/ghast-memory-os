@@ -13,6 +13,7 @@
     "url": "https://github.com/Trapezohe/ghast-memory-os/issues"
   },
   "homepage": "https://github.com/Trapezohe/ghast-memory-os#readme",
+  "mcpName": "io.github.trapezohe/gmos",
   "keywords": [
     "agent-memory",
     "memory-runtime",
@@ -37,7 +38,8 @@
     "RELEASE_CHECKLIST.md",
     "console",
     "docs",
-    "examples"
+    "examples",
+    "server.json"
   ],
   "publishConfig": {
     "access": "public"

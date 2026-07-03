@@ -18,6 +18,7 @@ Project docs: [API reference](./docs/API_REFERENCE.md),
 [structured extraction](./docs/STRUCTURED_EXTRACTION.md),
 [architecture](./docs/ARCHITECTURE.md), [benchmarking](./docs/BENCHMARKING.md),
 [benchmark runs](./docs/BENCHMARK_RUNS.md), [migration](./docs/MIGRATION.md),
+[compatibility](./docs/COMPATIBILITY.md),
 [contributing](./CONTRIBUTING.md), [security and privacy](./SECURITY.md),
 [release checklist](./RELEASE_CHECKLIST.md).
 
@@ -486,13 +487,14 @@ yet expose full event hooks. They are intentionally not raw database access:
   provider failures fall back to lexical vectors, and ordinary `prepareTurn`,
   `reconstructContext`, and `search` calls do not call the provider.
 
-The CLI also supports portable memory snapshot migration and profile backup:
+The CLI supports canonical profile bundles. `export/import` and `backup/restore`
+delegate to the same profile machinery:
 
 ```bash
-gmos export --db ./gmos.db --profile local --output-file ./gmos-memory-export.json
-gmos import --db ./new-gmos.db --profile local --input-file ./gmos-memory-export.json
-gmos backup --db ./gmos.db --profile local --mode safe --output-file ./gmos-profile-backup.json
-gmos restore --db ./new-gmos.db --profile local-restored --input-file ./gmos-profile-backup.json
+gmos export --db ./gmos.db --profile local --mode safe --output-file ./gmos-profile-bundle.json
+gmos import --db ./new-gmos.db --profile local-restored --input-file ./gmos-profile-bundle.json
+gmos backup --db ./gmos.db --profile local --mode full --passphrase-env GMOS_BUNDLE_PASSPHRASE --output-file ./gmos-profile-bundle.encrypted.json
+gmos restore --db ./new-gmos.db --profile local-restored --passphrase-env GMOS_BUNDLE_PASSPHRASE --input-file ./gmos-profile-bundle.encrypted.json
 ```
 
 Value-taking CLI options use the next space-separated token as the value. If
@@ -500,12 +502,11 @@ that token is missing or starts with `--`, gmOS reports `<option> requires a
 value`. For path option values whose filename starts with `--`, pass
 `./--export.json` or an absolute path.
 
-Safe exports exclude archived, sensitive, and person memories by default. Safe
-backups exclude archived, sensitive, and person memories but include dormant
-memories because they remain user memory. Profile backup/restore reads and
-writes through the already opened store, so encrypted stores use their
-host-supplied driver and key. The exported profile backup document is JSON and
-should be handled inside a trusted host boundary.
+Safe bundles exclude archived, sensitive, and person memories by default but
+include dormant memories because they remain user memory. Use `--mode full` for
+lossless device moves. `--passphrase-env` encrypts the portable bundle with
+AES-256-GCM; it takes an environment variable name, never the passphrase value.
+Profile import/restore reads and writes through the already opened store.
 
 ## MCP Tools
 

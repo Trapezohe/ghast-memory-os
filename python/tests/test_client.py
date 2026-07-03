@@ -11,7 +11,7 @@ PYTHON_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PYTHON_ROOT.parent
 sys.path.insert(0, str(PYTHON_ROOT))
 
-from gmos_client import CLIENT_METHOD_ROUTES, GmosClient, GmosClientError  # noqa: E402
+from gmos_client import CLIENT_METHOD_ROUTES, GmosAgentMemory, GmosClient, GmosClientError  # noqa: E402
 
 
 class FakeResponse:
@@ -150,6 +150,66 @@ class GmosClientTests(unittest.TestCase):
         self.assertEqual(raised.exception.status, 403)
         self.assertEqual(raised.exception.code, "forbidden")
         self.assertEqual(str(raised.exception), "readwrite scope required")
+
+    def test_agent_memory_wrapper(self):
+        transport = QueueTransport([
+            FakeResponse({"contextBlock": "python context", "memories": [{"id": "memory_py"}]}),
+            FakeResponse({"ok": True}),
+            FakeResponse({"ok": True}),
+            FakeResponse({"ok": True}),
+            FakeResponse({"contextBlock": "duck context", "memories": []}),
+            FakeResponse({"ok": True}),
+            FakeResponse({"ok": True}),
+        ])
+        client = GmosClient("http://gmos.test", "client-key", transport=transport)
+        memory = GmosAgentMemory(client, profile_id="py_profile", disposition="focused")
+        loaded = memory.load_context("python query")
+        self.assertEqual(loaded["contextBlock"], "python context")
+        self.assertEqual(loaded["memoryIds"], ["memory_py"])
+        self.assertEqual(
+            json.loads(transport.requests[0][0].data.decode("utf-8")),
+            {
+                "profileId": "py_profile",
+                "messages": [{"role": "user", "content": "python query"}],
+                "dispositionPreset": "focused",
+            },
+        )
+        memory.save_turn(
+            messages=[
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi"},
+            ],
+            outcome={"objective": "answer", "status": "completed"},
+            used_memory_ids=["memory_py"],
+        )
+        self.assertEqual(
+            [
+                json.loads(transport.requests[index][0].data.decode("utf-8"))
+                for index in [1, 2, 3]
+            ],
+            [
+                {"profileId": "py_profile", "role": "user", "content": "hello"},
+                {"profileId": "py_profile", "role": "assistant", "content": "hi"},
+                {
+                    "profileId": "py_profile",
+                    "objective": "answer",
+                    "status": "completed",
+                    "usedMemoryIds": ["memory_py"],
+                },
+            ],
+        )
+        self.assertEqual(memory.load_memory_variables({"input": "duck query"}), {"gmos_context": "duck context"})
+        memory.save_context({"input": "user turn"}, {"output": "assistant turn"})
+        self.assertEqual(
+            [
+                json.loads(transport.requests[index][0].data.decode("utf-8"))
+                for index in [5, 6]
+            ],
+            [
+                {"profileId": "py_profile", "role": "user", "content": "user turn"},
+                {"profileId": "py_profile", "role": "assistant", "content": "assistant turn"},
+            ],
+        )
 
 
 if __name__ == "__main__":

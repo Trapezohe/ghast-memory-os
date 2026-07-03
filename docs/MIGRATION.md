@@ -32,19 +32,83 @@ The importer skips person and secret-like snapshots by default before they enter
 the gmOS store. Repeated imports are idempotent when the host provides stable
 metadata keys.
 
-## Profile Backup And Restore
+## Profile Bundles, Backup, And Restore
 
-Use safe profile backups for portable QA and rollback:
+Use safe profile bundles for portable QA and rollback:
 
 ```bash
-gmos backup --db ./gmos.db --profile local --mode safe --output-file ./backup.json
-gmos restore --db ./new-gmos.db --profile local-restored --input-file ./backup.json
+gmos export --db ./gmos.db --profile local --mode safe --output-file ./profile-bundle.json
+gmos import --db ./new-gmos.db --profile local-restored --input-file ./profile-bundle.json
 ```
 
-Safe backups exclude archived, sensitive, and person memories by default. They
+`gmos backup` and `gmos restore` are aliases over the same profile bundle
+machinery. New bundles use `schema: "gmos.profile_bundle.v2"`. Restores keep
+accepting the older `gmos.profile_backup.v1` schema forever.
+
+Safe bundles exclude archived, sensitive, and person memories by default. They
 include dormant memories because dormant records are still user memory, just
-excluded from ordinary context. Use `--mode full` only for explicit trusted
-migration rehearsals with appropriate handling of local files.
+excluded from ordinary context. A FULL bundle is required for a lossless device
+move because safe mode intentionally omits archived, sensitive, and person
+records. Use `--mode full` only for explicit trusted migrations with appropriate
+handling of local files.
+
+Portable bundle encryption is file-level, not SQLite encryption:
+
+```bash
+export GMOS_BUNDLE_PASSPHRASE="use a local secret manager in real migrations"
+gmos export --db ./gmos.db --profile local --mode full \
+  --passphrase-env GMOS_BUNDLE_PASSPHRASE \
+  --output-file ./profile-bundle.encrypted.json
+gmos import --db ./new-gmos.db --profile local \
+  --passphrase-env GMOS_BUNDLE_PASSPHRASE \
+  --input-file ./profile-bundle.encrypted.json
+```
+
+`--passphrase-env` takes an environment variable name, never the passphrase
+itself. Encrypted bundle envelopes use AES-256-GCM with a random 16-byte salt,
+12-byte nonce, and a 32-byte key derived by scrypt (`N=16384`, `r=8`, `p=1`).
+Wrong passphrases and tampering fail closed before restore.
+
+## mem0 Import
+
+mem0 exports can be imported from either a bare array or `{ "results": [...] }`:
+
+```bash
+gmos import --from mem0 --db ./gmos.db --profile local --input-file ./mem0.json
+```
+
+Mapping is structural only:
+
+| mem0 field | gmOS field |
+| --- | --- |
+| `memory` or `text` | memory content |
+| `metadata.kind`, `metadata.memoryKind`, `metadata.memory_kind`, `metadata.gmosKind`, `metadata.gmos_kind` when already a gmOS kind | memory kind |
+| no explicit supported kind | `fact` |
+| `metadata.scope` | scope |
+| `id` | `metadata.importSourceOriginalId` |
+| source file bytes | `sourceFileHash` used in evidence payload and stable event keys |
+
+mem0 extraction provenance is not gmOS evidence. Imported records are labeled
+`metadata.importSource = "mem0"` and `provenance = "low_level_import"`. The
+evidence event records that the import happened and links the source file hash;
+it does not claim the original mem0 extraction was observed by gmOS. Re-imports
+are idempotent by `sourceFileHash + recordIndex`. Secret-like records are
+rejected, and person-routed records require the same explicit person opt-in as
+low-level `add()`.
+
+## Conversation Log Import
+
+Conversation log import is an alias for the transcript ingestion pipeline from
+M10:
+
+```bash
+gmos import --from conversation --db ./gmos.db --profile local \
+  --input-file ./thread.jsonl --input-format jsonl
+```
+
+Supported formats are `jsonl`, `claude-code`, `openai-thread`, and auto-detect
+when `--input-format` is omitted. The import path calls `observe()`; it does not
+run linguistic synthesis inside gmOS.
 
 ## Encryption At Rest
 

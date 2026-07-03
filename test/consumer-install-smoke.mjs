@@ -136,6 +136,8 @@ try {
         PUBLIC_MEMORY_HTTP_ROUTES as HTTP_PUBLIC_MEMORY_HTTP_ROUTES,
       } from "@ghast/memory/http";
       import {
+        createAgentMemoryBindings,
+        GmosLangChainMemory,
         GmosClient,
         GMOS_CLIENT_METHOD_ROUTES,
       } from "@ghast/memory/client";
@@ -162,6 +164,8 @@ try {
       } from "@ghast/memory/mcp";
       import {
         createSqliteMemoryStore,
+        encryptSqliteProfileBundle,
+        parseSqliteProfileBundle,
         parseSqliteProfileBackup,
       } from "@ghast/memory/store/sqlite";
 
@@ -388,6 +392,29 @@ try {
       assert.deepEqual(await gmosClient.healthz(), { ok: true, version: "test" });
       assert.equal(new URL(clientRequests[0].url).pathname, "/healthz");
       assert.equal(clientRequests[0].init.headers.authorization, "Bearer consumer-key");
+      const wrapperCalls = [];
+      const wrapperClient = {
+        async prepareTurn(input) {
+          wrapperCalls.push(["prepareTurn", input]);
+          return { contextBlock: "consumer context", memories: [{ id: "memory_consumer" }] };
+        },
+        async observe(input) {
+          wrapperCalls.push(["observe", input]);
+          return { ok: true };
+        },
+        async commitOutcome(input) {
+          wrapperCalls.push(["commitOutcome", input]);
+          return { ok: true };
+        },
+      };
+      const wrapper = createAgentMemoryBindings(wrapperClient, { profileId: "consumer" });
+      assert.deepEqual((await wrapper.loadContext("consumer query")).memoryIds, ["memory_consumer"]);
+      await wrapper.saveTurn({ messages: [{ role: "user", content: "consumer turn" }] });
+      const duckMemory = new GmosLangChainMemory(wrapperClient, { profileId: "consumer" });
+      assert.deepEqual(await duckMemory.loadMemoryVariables({ input: "duck query" }), {
+        gmos_context: "consumer context",
+      });
+      assert.deepEqual(wrapperCalls.map((entry) => entry[0]), ["prepareTurn", "observe", "prepareTurn"]);
       assert.equal(Object.keys(runtimeInfoTool.inputSchema.properties).length, 0);
       assert.equal(Object.hasOwn(prepareTool.inputSchema.properties, "includeSensitive"), false);
       assert.equal(Object.hasOwn(explainTurnTool.inputSchema.properties, "includeSensitive"), false);
@@ -587,8 +614,13 @@ try {
       assert.equal(failureReview.decision, "propose_with_approval_review");
       assert.equal(failureReview.inspectedFailureCount, 1);
       const profileBackup = store.exportProfileBackup({ profileId: "consumer", mode: "full" });
-      assert.equal(profileBackup.schema, "gmos.profile_backup.v1");
+      assert.equal(profileBackup.schema, "gmos.profile_bundle.v2");
       assert.equal(profileBackup.failureEvents.length, 1);
+      const encryptedProfileBundle = encryptSqliteProfileBundle(profileBackup, "consumer passphrase");
+      assert.equal(
+        parseSqliteProfileBundle(encryptedProfileBundle, { passphrase: "consumer passphrase" }).profileId,
+        "consumer",
+      );
       const parsedProfileBackup = parseSqliteProfileBackup(JSON.parse(JSON.stringify(profileBackup)));
       const profileRestoreStore = createSqliteMemoryStore({
         path: path.join(process.cwd(), "consumer-profile-restore.db"),
@@ -1925,23 +1957,21 @@ try {
   );
   assert.equal(getShim.status, 0, getShim.stderr);
   assert.match(getShim.stdout, /Installed bin low-level add prefers stable manifests/);
-  const exportFile = path.join(consumerDir, "bin-memory-export.json");
+  const exportFile = path.join(consumerDir, "bin-profile-bundle.json");
   const exportBin = runInstalledCli([
     "export",
     "--db",
     binLowLevelDb,
     "--profile",
     "bin",
-    "--query",
-    "stable manifests",
     "--output-file",
     exportFile,
   ]);
   assert.equal(exportBin.status, 0, exportBin.stderr);
   assert.equal(existsSync(exportFile), true);
   const exportPayload = JSON.parse(readFileSync(exportFile, "utf8"));
-  assert.equal(exportPayload.schema, "gmos.memory_snapshot_export.v1");
-  assert.equal(exportPayload.memoryCount, 1);
+  assert.equal(exportPayload.schema, "gmos.profile_bundle.v2");
+  assert.equal(exportPayload.counts.memories > 0, true);
   const importDb = path.join(consumerDir, "bin-memory-import.db");
   const importBin = runInstalledCli([
     "import",
@@ -1953,7 +1983,7 @@ try {
     exportFile,
   ]);
   assert.equal(importBin.status, 0, importBin.stderr);
-  assert.equal(JSON.parse(importBin.stdout).loadedCount, 1);
+  assert.equal(JSON.parse(importBin.stdout).inserted.memories, exportPayload.counts.memories);
   const importSearchBin = runInstalledCli([
     "search",
     "--db",

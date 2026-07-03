@@ -44,11 +44,11 @@ import {
 } from "../gym/index.js";
 import {
   createPresetHostAdapter,
-  exportMemorySnapshots,
   type HostCompatibilityReport,
   type HostActualCompatibilityReport,
   type HostPreset,
   loadHostMemorySnapshotsIntoStore,
+  loadMem0ExportIntoStore,
   parseHostActualCompatibilityReports,
   parseMemorySnapshotExport,
 } from "../host/index.js";
@@ -61,7 +61,8 @@ import {
 } from "../mcp/index.js";
 import {
   createSqliteMemoryStore,
-  parseSqliteProfileBackup,
+  parseSqliteProfileBundle,
+  serializeSqliteProfileBundle,
   type SqliteProfileBackupConflictPolicy,
   type SqliteProfileBackupMode,
 } from "../store/sqlite/index.js";
@@ -131,10 +132,12 @@ Usage:
   gmos history --db ./gmos.db --profile local --query "之前的状态"
   gmos list --db ./gmos.db --profile local --query "简洁" --status active
   gmos get --db ./gmos.db --profile local --id memory_xxx
-  gmos export --db ./gmos.db --profile local --output-file ./gmos-memory-export.json
-  gmos import --db ./gmos.db --profile local --input-file ./gmos-memory-export.json
-  gmos backup --db ./gmos.db --profile local --mode safe --output-file ./gmos-profile-backup.json
-  gmos restore --db ./gmos.db --input-file ./gmos-profile-backup.json --on-conflict skip
+  gmos export --db ./gmos.db --profile local --mode safe --output-file ./gmos-profile-bundle.json
+  gmos import --db ./gmos.db --profile local --input-file ./gmos-profile-bundle.json
+  gmos backup --db ./gmos.db --profile local --mode full --passphrase-env GMOS_BUNDLE_PASSPHRASE --output-file ./gmos-profile-bundle.encrypted.json
+  gmos restore --db ./gmos.db --input-file ./gmos-profile-bundle.encrypted.json --passphrase-env GMOS_BUNDLE_PASSPHRASE --on-conflict skip
+  gmos import --from mem0 --db ./gmos.db --profile local --input-file ./mem0-export.json
+  gmos import --from conversation --db ./gmos.db --profile local --input-file ./thread.jsonl --input-format jsonl
   gmos add --db ./gmos.db --profile local --kind boundary --text "不要再提醒我这个项目延期了。"
   gmos observe --db ./gmos.db --profile local --text "记录一条普通会话事件。" --report
   gmos prepare --db ./gmos.db --profile local --text "你知道我什么偏好吗？"
@@ -678,6 +681,35 @@ function readJsonFileOption(name: string): unknown {
   const file = value(name);
   if (!file) usage();
   return JSON.parse(readFileSync(path.resolve(process.cwd(), file), "utf8")) as unknown;
+}
+
+function passphraseFromEnvOption(): string | undefined {
+  const envName = value("--passphrase-env");
+  if (envName === undefined) return undefined;
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(envName)) {
+    throw new Error("--passphrase-env must be an environment variable name");
+  }
+  const passphrase = process.env[envName];
+  if (!passphrase) {
+    throw new Error(`--passphrase-env ${envName} is not set`);
+  }
+  return passphrase;
+}
+
+function readProfileBundleFileOption(name: string) {
+  return parseSqliteProfileBundle(readJsonFileOption(name), {
+    passphrase: passphraseFromEnvOption(),
+  });
+}
+
+function profileImportSourceOption(): "gmos" | "mem0" | "conversation" {
+  const raw = value("--from", "gmos");
+  if (raw === "gmos" || raw === "mem0" || raw === "conversation") return raw;
+  throw new Error("--from must be one of: gmos, mem0, conversation");
+}
+
+function transcriptImportFormatOption(): TranscriptIngestFormat {
+  return transcriptIngestFormat(value("--input-format"), "--input-format") ?? "auto";
 }
 
 function publicOutputPath(resolved: string): string {
@@ -1996,41 +2028,7 @@ async function main(): Promise<void> {
       ) {
         throw new Error("--status archived|any requires --include-archived");
       }
-      const status = has("--include-archived")
-        ? (requestedStatus ?? "any")
-        : (requestedStatus ?? "active");
-      const exported = await exportMemorySnapshots({
-        memory,
-        profileId,
-        query: value("--query"),
-        limit: positiveIntegerOption("--limit", 500),
-        status,
-        kind: optionalMemoryKindOption(),
-        scope: value("--scope"),
-        includeSensitive: has("--include-sensitive"),
-        includePerson: has("--include-person"),
-      });
-      writeJsonOutput(exported);
-      return;
-    }
-
-    if (command === "import") {
-      const parsed = parseMemorySnapshotExport(readJsonFileOption("--input-file"));
-      const report = await loadHostMemorySnapshotsIntoStore({
-        store,
-        profileId,
-        memories: parsed.memories,
-        sourceType: "gmos.snapshot_export",
-        sourceUriPrefix: parsed.sourceUriPrefix,
-        skipPerson: !has("--include-person"),
-        skipSecretLike: true,
-      });
-      console.log(JSON.stringify({ ok: true, ...report }, null, 2));
-      return;
-    }
-
-    if (command === "backup") {
-      const backup = store.exportProfileBackup({
+      const bundle = store.exportProfileBundle({
         profileId,
         mode: profileBackupModeOption(),
         includeArchived: has("--include-archived") ? true : undefined,
@@ -2041,13 +2039,89 @@ async function main(): Promise<void> {
         includeFailures: has("--include-failures") ? true : undefined,
         includeTaskTrajectories: has("--include-task-trajectories") ? true : undefined,
       });
-      writeJsonOutput(backup);
+      writeJsonOutput(serializeSqliteProfileBundle({
+        bundle,
+        passphrase: passphraseFromEnvOption(),
+      }));
+      return;
+    }
+
+    if (command === "import") {
+      const inputFile = strictOptionValue("--input-file");
+      if (!inputFile) throw new Error("gmos import requires --input-file");
+      const source = profileImportSourceOption();
+      if (source === "mem0") {
+        const report = await loadMem0ExportIntoStore({
+          store,
+          profileId,
+          inputFile: path.resolve(process.cwd(), inputFile),
+          allowPerson: has("--include-person"),
+        });
+        console.log(JSON.stringify({ ok: true, ...report }, null, 2));
+        return;
+      }
+      if (source === "conversation") {
+        const report = await ingestTranscript({
+          memory,
+          profileId,
+          inputFile: path.resolve(process.cwd(), inputFile),
+          format: transcriptImportFormatOption(),
+          dryRun: has("--dry-run"),
+        });
+        printCustomReport(report, renderIngestMarkdown(report));
+        return;
+      }
+      const raw = readJsonFileOption("--input-file");
+      if (
+        raw &&
+        typeof raw === "object" &&
+        !Array.isArray(raw) &&
+        (raw as { schema?: unknown }).schema === "gmos.memory_snapshot_export.v1"
+      ) {
+        const parsed = parseMemorySnapshotExport(raw);
+        const report = await loadHostMemorySnapshotsIntoStore({
+          store,
+          profileId,
+          memories: parsed.memories,
+          sourceType: "gmos.snapshot_export",
+          sourceUriPrefix: parsed.sourceUriPrefix,
+          skipPerson: !has("--include-person"),
+          skipSecretLike: true,
+        });
+        console.log(JSON.stringify({ ok: true, ...report }, null, 2));
+        return;
+      }
+      const report = store.importProfileBundle({
+        backup: parseSqliteProfileBundle(raw, { passphrase: passphraseFromEnvOption() }),
+        profileId: value("--profile"),
+        onConflict: profileBackupConflictOption(),
+      });
+      console.log(JSON.stringify({ ok: true, ...report }, null, 2));
+      return;
+    }
+
+    if (command === "backup") {
+      const backup = store.exportProfileBundle({
+        profileId,
+        mode: profileBackupModeOption(),
+        includeArchived: has("--include-archived") ? true : undefined,
+        includeSensitive: has("--include-sensitive") ? true : undefined,
+        includePerson: has("--include-person") ? true : undefined,
+        includeEvidence: has("--no-evidence") ? false : undefined,
+        includeWorldBeliefs: has("--include-world-beliefs") ? true : undefined,
+        includeFailures: has("--include-failures") ? true : undefined,
+        includeTaskTrajectories: has("--include-task-trajectories") ? true : undefined,
+      });
+      writeJsonOutput(serializeSqliteProfileBundle({
+        bundle: backup,
+        passphrase: passphraseFromEnvOption(),
+      }));
       return;
     }
 
     if (command === "restore") {
-      const parsed = parseSqliteProfileBackup(readJsonFileOption("--input-file"));
-      const report = store.restoreProfileBackup({
+      const parsed = readProfileBundleFileOption("--input-file");
+      const report = store.importProfileBundle({
         backup: parsed,
         profileId: value("--profile"),
         onConflict: profileBackupConflictOption(),

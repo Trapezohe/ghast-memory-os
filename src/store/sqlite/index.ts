@@ -118,8 +118,10 @@ import {
   restoreSqliteProfileBackup,
   type ExportSqliteProfileBackupInput,
   type RestoreSqliteProfileBackupInput,
+  type SqliteEncryptedProfileBundleDocument,
   type SqliteProfileBackupDocument,
   type SqliteProfileBackupRestoreResult,
+  type SqliteProfileBundleDocument,
 } from "./backup.js";
 import { ensureSqliteSchema, sqliteSchemaVersion } from "./schema.js";
 import {
@@ -151,13 +153,25 @@ import {
 export type {
   ExportSqliteProfileBackupInput,
   RestoreSqliteProfileBackupInput,
+  SqliteEncryptedProfileBundleDocument,
   SqliteProfileBackupConflictPolicy,
   SqliteProfileBackupDocument,
   SqliteProfileBackupMode,
   SqliteProfileBackupRestoreResult,
+  SqliteProfileBundleDocument,
+  SqliteProfileBundleEncryptionErrorCode,
+  SqliteProfileBundleSchema,
   SqliteTaskTrajectoryRecord,
 } from "./backup.js";
-export { parseSqliteProfileBackup } from "./backup.js";
+export {
+  decryptSqliteProfileBundle,
+  encryptSqliteProfileBundle,
+  isSqliteEncryptedProfileBundle,
+  parseSqliteProfileBackup,
+  parseSqliteProfileBundle,
+  serializeSqliteProfileBundle,
+  SqliteProfileBundleEncryptionError,
+} from "./backup.js";
 export type {
   CreateSqliteServiceApiKeyInput,
   ListSqliteAutopilotRunsInput,
@@ -236,6 +250,8 @@ export interface SqliteMemoryStore extends MemoryStore {
   readAuditSnapshot(): ReadAuditSnapshot;
   exportProfileBackup(input: ExportSqliteProfileBackupInput): SqliteProfileBackupDocument;
   restoreProfileBackup(input: RestoreSqliteProfileBackupInput): SqliteProfileBackupRestoreResult;
+  exportProfileBundle(input: ExportSqliteProfileBackupInput): SqliteProfileBundleDocument;
+  importProfileBundle(input: RestoreSqliteProfileBackupInput): SqliteProfileBackupRestoreResult;
   listTaskTrajectories(input: { profileId: string; limit?: number | undefined }): TaskTrajectoryRecord[];
   recordProcedureDistillation(
     input: RecordProcedureDistillationInput,
@@ -5109,6 +5125,16 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       return exportSqliteProfileBackup(db, input);
     },
     restoreProfileBackup(input) {
+      initialize();
+      const report = restoreSqliteProfileBackup(db, input);
+      rebuildAssociations({ profileId: report.targetProfileId });
+      return report;
+    },
+    exportProfileBundle(input) {
+      initialize();
+      return exportSqliteProfileBackup(db, input);
+    },
+    importProfileBundle(input) {
       initialize();
       const report = restoreSqliteProfileBackup(db, input);
       rebuildAssociations({ profileId: report.targetProfileId });

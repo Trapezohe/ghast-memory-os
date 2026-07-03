@@ -1,0 +1,18 @@
+[
+  {
+    "id": "mem0-bare-1",
+    "memory": "User prefers compact migration checklists.",
+    "user_id": "user-1",
+    "agent_id": "agent-1",
+    "metadata": {
+      "kind": "preference",
+      "scope": "migration"
+    },
+    "created_at": "2026-07-01T00:00:00.000Z"
+  },
+  {
+    "id": "mem0-bare-2",
+    "text": "api key: sk-mem0secret1234567890",
+    "metadata": {}
+  }
+]

@@ -1,4 +1,10 @@
-import { createHash } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  randomBytes,
+  scryptSync,
+} from "node:crypto";
 
 import type Database from "better-sqlite3";
 
@@ -26,6 +32,24 @@ import {
 
 export type SqliteProfileBackupMode = "safe" | "full";
 export type SqliteProfileBackupConflictPolicy = "skip" | "replace" | "fail";
+export type SqliteProfileBundleSchema =
+  | "gmos.profile_bundle.v2"
+  | "gmos.profile_backup.v1";
+
+export type SqliteProfileBundleEncryptionErrorCode =
+  | "passphrase_required"
+  | "invalid_encrypted_bundle"
+  | "decrypt_failed";
+
+export class SqliteProfileBundleEncryptionError extends Error {
+  readonly code: SqliteProfileBundleEncryptionErrorCode;
+
+  constructor(code: SqliteProfileBundleEncryptionErrorCode, message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "SqliteProfileBundleEncryptionError";
+    this.code = code;
+  }
+}
 
 export interface SqliteTaskTrajectoryRecord {
   id: string;
@@ -50,7 +74,7 @@ export interface ExportSqliteProfileBackupInput {
 }
 
 export interface SqliteProfileBackupDocument {
-  schema: "gmos.profile_backup.v1";
+  schema: SqliteProfileBundleSchema;
   exportedAt: string;
   package: GmosPackageInfo;
   profileId: string;
@@ -76,6 +100,28 @@ export interface SqliteProfileBackupDocument {
   worldBeliefs: WorldBeliefRecord[];
   failureEvents: FailureEventRecord[];
   taskTrajectories: SqliteTaskTrajectoryRecord[];
+}
+
+export type SqliteProfileBundleDocument = SqliteProfileBackupDocument;
+
+export interface SqliteEncryptedProfileBundleDocument {
+  schema: "gmos.encrypted_profile_bundle.v1";
+  encryptedAt: string;
+  plaintextSchema: "gmos.profile_bundle.v2";
+  encryption: {
+    algorithm: "aes-256-gcm";
+    kdf: "scrypt";
+    kdfParams: {
+      N: number;
+      r: number;
+      p: number;
+      keyLength: number;
+    };
+    salt: string;
+    nonce: string;
+    tag: string;
+  };
+  ciphertext: string;
 }
 
 export interface RestoreSqliteProfileBackupInput {
@@ -124,6 +170,19 @@ const TASK_STATUSES = new Set<SqliteTaskTrajectoryRecord["status"]>([
   "completed",
   "failed",
 ]);
+const PROFILE_BUNDLE_SCHEMA = "gmos.profile_bundle.v2";
+const LEGACY_PROFILE_BACKUP_SCHEMA = "gmos.profile_backup.v1";
+const ENCRYPTED_PROFILE_BUNDLE_SCHEMA = "gmos.encrypted_profile_bundle.v1";
+const PROFILE_BUNDLE_SCHEMAS = new Set<SqliteProfileBundleSchema>([
+  PROFILE_BUNDLE_SCHEMA,
+  LEGACY_PROFILE_BACKUP_SCHEMA,
+]);
+const PROFILE_BUNDLE_KDF_PARAMS = {
+  N: 16384,
+  r: 8,
+  p: 1,
+  keyLength: 32,
+} as const;
 
 interface BackupOptions {
   mode: SqliteProfileBackupMode;
@@ -594,7 +653,7 @@ export function exportSqliteProfileBackup(
     taskAllowedBySensitivity(trajectory, options),
   );
   return {
-    schema: "gmos.profile_backup.v1",
+    schema: PROFILE_BUNDLE_SCHEMA,
     exportedAt: nowIso(),
     package: readGmosPackageInfo(),
     profileId,
@@ -1046,8 +1105,10 @@ function assertBackupDocument(value: unknown): asserts value is SqliteProfileBac
     throw new Error("gmOS profile backup must be an object");
   }
   const backup = value as Partial<SqliteProfileBackupDocument>;
-  if (backup.schema !== "gmos.profile_backup.v1") {
-    throw new Error("gmOS profile backup schema must be gmos.profile_backup.v1");
+  if (!PROFILE_BUNDLE_SCHEMAS.has(backup.schema as SqliteProfileBundleSchema)) {
+    throw new Error(
+      "gmOS profile bundle schema must be gmos.profile_bundle.v2 or gmos.profile_backup.v1",
+    );
   }
   if (typeof backup.profileId !== "string" || !backup.profileId.trim()) {
     throw new Error("gmOS profile backup requires profileId");
@@ -1081,6 +1142,204 @@ function assertBackupDocument(value: unknown): asserts value is SqliteProfileBac
 export function parseSqliteProfileBackup(value: unknown): SqliteProfileBackupDocument {
   assertBackupDocument(value);
   return value;
+}
+
+function base64(value: Buffer): string {
+  return value.toString("base64");
+}
+
+function bufferFromBase64(value: unknown, path: string): Buffer {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new SqliteProfileBundleEncryptionError(
+      "invalid_encrypted_bundle",
+      `gmOS encrypted profile bundle invalid ${path}`,
+    );
+  }
+  try {
+    return Buffer.from(value, "base64");
+  } catch (error) {
+    throw new SqliteProfileBundleEncryptionError(
+      "invalid_encrypted_bundle",
+      `gmOS encrypted profile bundle invalid ${path}`,
+      { cause: error },
+    );
+  }
+}
+
+function assertEncryptedProfileBundle(
+  value: unknown,
+): asserts value is SqliteEncryptedProfileBundleDocument {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new SqliteProfileBundleEncryptionError(
+      "invalid_encrypted_bundle",
+      "gmOS encrypted profile bundle must be an object",
+    );
+  }
+  const record = value as Partial<SqliteEncryptedProfileBundleDocument>;
+  if (record.schema !== ENCRYPTED_PROFILE_BUNDLE_SCHEMA) {
+    throw new SqliteProfileBundleEncryptionError(
+      "invalid_encrypted_bundle",
+      "gmOS encrypted profile bundle schema must be gmos.encrypted_profile_bundle.v1",
+    );
+  }
+  if (record.plaintextSchema !== PROFILE_BUNDLE_SCHEMA) {
+    throw new SqliteProfileBundleEncryptionError(
+      "invalid_encrypted_bundle",
+      "gmOS encrypted profile bundle plaintextSchema must be gmos.profile_bundle.v2",
+    );
+  }
+  if (typeof record.encryptedAt !== "string" || !record.encryptedAt) {
+    throw new SqliteProfileBundleEncryptionError(
+      "invalid_encrypted_bundle",
+      "gmOS encrypted profile bundle requires encryptedAt",
+    );
+  }
+  const encryption = record.encryption;
+  if (!encryption || typeof encryption !== "object" || Array.isArray(encryption)) {
+    throw new SqliteProfileBundleEncryptionError(
+      "invalid_encrypted_bundle",
+      "gmOS encrypted profile bundle requires encryption metadata",
+    );
+  }
+  if (encryption.algorithm !== "aes-256-gcm" || encryption.kdf !== "scrypt") {
+    throw new SqliteProfileBundleEncryptionError(
+      "invalid_encrypted_bundle",
+      "gmOS encrypted profile bundle uses unsupported encryption",
+    );
+  }
+  const params = encryption.kdfParams;
+  if (
+    !params ||
+    typeof params !== "object" ||
+    params.N !== PROFILE_BUNDLE_KDF_PARAMS.N ||
+    params.r !== PROFILE_BUNDLE_KDF_PARAMS.r ||
+    params.p !== PROFILE_BUNDLE_KDF_PARAMS.p ||
+    params.keyLength !== PROFILE_BUNDLE_KDF_PARAMS.keyLength
+  ) {
+    throw new SqliteProfileBundleEncryptionError(
+      "invalid_encrypted_bundle",
+      "gmOS encrypted profile bundle uses unsupported scrypt parameters",
+    );
+  }
+  bufferFromBase64(encryption.salt, "encryption.salt");
+  bufferFromBase64(encryption.nonce, "encryption.nonce");
+  bufferFromBase64(encryption.tag, "encryption.tag");
+  bufferFromBase64(record.ciphertext, "ciphertext");
+}
+
+export function isSqliteEncryptedProfileBundle(
+  value: unknown,
+): value is SqliteEncryptedProfileBundleDocument {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      (value as { schema?: unknown }).schema === ENCRYPTED_PROFILE_BUNDLE_SCHEMA,
+  );
+}
+
+function requirePassphrase(passphrase: string | undefined): string {
+  if (!passphrase) {
+    throw new SqliteProfileBundleEncryptionError(
+      "passphrase_required",
+      "gmOS encrypted profile bundle requires a passphrase",
+    );
+  }
+  return passphrase;
+}
+
+function profileBundleKey(passphrase: string, salt: Buffer): Buffer {
+  return scryptSync(passphrase, salt, PROFILE_BUNDLE_KDF_PARAMS.keyLength, {
+    N: PROFILE_BUNDLE_KDF_PARAMS.N,
+    r: PROFILE_BUNDLE_KDF_PARAMS.r,
+    p: PROFILE_BUNDLE_KDF_PARAMS.p,
+  });
+}
+
+function profileBundleAad(schema: string): Buffer {
+  return Buffer.from(`gmos-profile-bundle:${schema}`, "utf8");
+}
+
+export function encryptSqliteProfileBundle(
+  bundle: SqliteProfileBundleDocument,
+  passphrase: string,
+): SqliteEncryptedProfileBundleDocument {
+  const parsed = parseSqliteProfileBackup(bundle);
+  if (parsed.schema !== PROFILE_BUNDLE_SCHEMA) {
+    throw new SqliteProfileBundleEncryptionError(
+      "invalid_encrypted_bundle",
+      "gmOS encrypted profile bundle plaintext must be gmos.profile_bundle.v2",
+    );
+  }
+  const salt = randomBytes(16);
+  const nonce = randomBytes(12);
+  const key = profileBundleKey(passphrase, salt);
+  const cipher = createCipheriv("aes-256-gcm", key, nonce);
+  cipher.setAAD(profileBundleAad(parsed.schema));
+  const ciphertext = Buffer.concat([
+    cipher.update(JSON.stringify(parsed), "utf8"),
+    cipher.final(),
+  ]);
+  return {
+    schema: ENCRYPTED_PROFILE_BUNDLE_SCHEMA,
+    encryptedAt: nowIso(),
+    plaintextSchema: PROFILE_BUNDLE_SCHEMA,
+    encryption: {
+      algorithm: "aes-256-gcm",
+      kdf: "scrypt",
+      kdfParams: { ...PROFILE_BUNDLE_KDF_PARAMS },
+      salt: base64(salt),
+      nonce: base64(nonce),
+      tag: base64(cipher.getAuthTag()),
+    },
+    ciphertext: base64(ciphertext),
+  };
+}
+
+export function decryptSqliteProfileBundle(
+  encrypted: unknown,
+  passphrase: string,
+): SqliteProfileBundleDocument {
+  assertEncryptedProfileBundle(encrypted);
+  const salt = bufferFromBase64(encrypted.encryption.salt, "encryption.salt");
+  const nonce = bufferFromBase64(encrypted.encryption.nonce, "encryption.nonce");
+  const tag = bufferFromBase64(encrypted.encryption.tag, "encryption.tag");
+  const ciphertext = bufferFromBase64(encrypted.ciphertext, "ciphertext");
+  const key = profileBundleKey(passphrase, salt);
+  try {
+    const decipher = createDecipheriv("aes-256-gcm", key, nonce);
+    decipher.setAAD(profileBundleAad(encrypted.plaintextSchema));
+    decipher.setAuthTag(tag);
+    const plaintext = Buffer.concat([
+      decipher.update(ciphertext),
+      decipher.final(),
+    ]).toString("utf8");
+    return parseSqliteProfileBackup(JSON.parse(plaintext) as unknown);
+  } catch (error) {
+    throw new SqliteProfileBundleEncryptionError(
+      "decrypt_failed",
+      "gmOS encrypted profile bundle could not be decrypted",
+      { cause: error },
+    );
+  }
+}
+
+export function parseSqliteProfileBundle(
+  value: unknown,
+  input: { passphrase?: string | undefined } = {},
+): SqliteProfileBundleDocument {
+  if (isSqliteEncryptedProfileBundle(value)) {
+    return decryptSqliteProfileBundle(value, requirePassphrase(input.passphrase));
+  }
+  return parseSqliteProfileBackup(value);
+}
+
+export function serializeSqliteProfileBundle(input: {
+  bundle: SqliteProfileBundleDocument;
+  passphrase?: string | undefined;
+}): SqliteProfileBundleDocument | SqliteEncryptedProfileBundleDocument {
+  if (!input.passphrase) return input.bundle;
+  return encryptSqliteProfileBundle(input.bundle, input.passphrase);
 }
 
 function insertVerb(

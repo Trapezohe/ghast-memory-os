@@ -265,8 +265,113 @@ class GmosClient:
         return self._request("POST", "/mcp/call", body={"tool": tool, "args": dict(args or {})})
 
 
+def _message(role: str, content: str) -> JsonObject:
+    if not content.strip():
+        raise ValueError("message content must be non-empty")
+    return {"role": role, "content": content}
+
+
+def _messages(value: Any) -> list[JsonObject]:
+    if isinstance(value, str):
+        return [_message("user", value)]
+    if isinstance(value, list):
+        return [
+            _message(str(item.get("role", "user")), str(item.get("content", "")))
+            for item in value
+            if isinstance(item, dict)
+        ]
+    return []
+
+
+def _string_value(mapping: Mapping[str, Any], key: str) -> Optional[str]:
+    value = mapping.get(key)
+    return value if isinstance(value, str) and value.strip() else None
+
+
+class GmosAgentMemory:
+    def __init__(
+        self,
+        client: GmosClient,
+        *,
+        profile_id: str,
+        disposition: Optional[str] = None,
+        memory_key: str = "gmos_context",
+        input_key: str = "input",
+        output_key: str = "output",
+    ) -> None:
+        self.client = client
+        self.profile_id = profile_id
+        self.disposition = disposition
+        self.memory_key = memory_key
+        self.input_key = input_key
+        self.output_key = output_key
+
+    def load_context(self, messages_or_query: Any) -> JsonObject:
+        payload: JsonObject = {
+            "profileId": self.profile_id,
+            "messages": _messages(messages_or_query),
+        }
+        if self.disposition:
+            payload["dispositionPreset"] = self.disposition
+        prepared = self.client.prepare_turn(payload)
+        memories = prepared.get("memories")
+        return {
+            "contextBlock": prepared.get("contextBlock", ""),
+            "prepared": prepared,
+            "memoryIds": [
+                item["id"]
+                for item in memories
+                if isinstance(memories, list)
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            ] if isinstance(memories, list) else [],
+        }
+
+    def save_turn(
+        self,
+        *,
+        messages: list[Mapping[str, Any]],
+        outcome: Optional[Mapping[str, Any]] = None,
+        used_memory_ids: Optional[list[str]] = None,
+    ) -> None:
+        for message in _messages(list(messages)):
+            self.client.observe({
+                "profileId": self.profile_id,
+                "role": message["role"],
+                "content": message["content"],
+            })
+        if outcome is None:
+            return
+        payload = {"profileId": self.profile_id, **dict(outcome)}
+        if used_memory_ids is not None:
+            payload["usedMemoryIds"] = used_memory_ids
+        self.client.commit_outcome(payload)
+
+    def load_memory_variables(self, values: Optional[Mapping[str, Any]] = None) -> JsonObject:
+        values = values or {}
+        query = _string_value(values, self.input_key) or _string_value(values, "input") or ""
+        loaded = self.load_context(query)
+        return {self.memory_key: loaded["contextBlock"]}
+
+    def save_context(
+        self,
+        input_values: Mapping[str, Any],
+        output_values: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        output_values = output_values or {}
+        messages: list[Mapping[str, Any]] = []
+        input_text = _string_value(input_values, self.input_key) or _string_value(input_values, "input")
+        if input_text:
+            messages.append({"role": "user", "content": input_text})
+        output_text = _string_value(output_values, self.output_key) or _string_value(output_values, "output")
+        if output_text:
+            messages.append({"role": "assistant", "content": output_text})
+        if messages:
+            self.save_turn(messages=messages)
+
+
 __all__ = [
     "CLIENT_METHOD_ROUTES",
+    "GmosAgentMemory",
     "GmosClient",
     "GmosClientError",
     "GmosResponse",

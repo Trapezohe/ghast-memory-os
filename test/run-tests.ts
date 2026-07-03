@@ -90,7 +90,11 @@ import {
 import { summarizeMemoryScaleLatenciesForTest } from "../src/gym/scale.js";
 import {
   createSqliteMemoryStore,
+  decryptSqliteProfileBundle,
+  encryptSqliteProfileBundle,
   parseSqliteProfileBackup,
+  parseSqliteProfileBundle,
+  SqliteProfileBundleEncryptionError,
   SqliteMemoryStoreEncryptionError,
   type SqliteMemoryStore,
   type SqliteProfileBackupDocument,
@@ -100,6 +104,7 @@ import {
   createAgentMemoryAdapter,
   createPresetHostAdapter,
   exportMemorySnapshots,
+  loadMem0ExportIntoStore,
   loadHostMemorySnapshotsIntoStore,
   normalizeHostMemoryKind,
   normalizeHostMemorySensitivity,
@@ -126,6 +131,8 @@ import {
 } from "../src/diagnostics/index.js";
 import { createMemoryHttpOpenApiDocument, createMemoryHttpServer } from "../src/http/index.js";
 import {
+  createAgentMemoryBindings,
+  GmosLangChainMemory,
   GmosClient,
   GmosClientError,
   GMOS_CLIENT_METHOD_ROUTES,
@@ -12563,7 +12570,7 @@ await memory.commitOutcome({
   summary: "Task id carries the sensitive value.",
 });
 const safeProfileBackup = store.exportProfileBackup({ profileId: backupProfileId });
-assert.equal(safeProfileBackup.schema, "gmos.profile_backup.v1");
+assert.equal(safeProfileBackup.schema, "gmos.profile_bundle.v2");
 assert.equal(safeProfileBackup.mode, "safe");
 assert.equal(safeProfileBackup.options.includeSensitive, false);
 assert.equal(safeProfileBackup.options.includePerson, false);
@@ -12658,6 +12665,57 @@ assert.equal(
 );
 const parsedProfileBackup = parseSqliteProfileBackup(JSON.parse(JSON.stringify(fullProfileBackup)));
 assert.equal(parsedProfileBackup.counts.memories, fullProfileBackup.counts.memories);
+const legacyProfileBackup = cloneProfileBackup(fullProfileBackup);
+legacyProfileBackup.schema = "gmos.profile_backup.v1";
+const parsedLegacyProfileBackup = parseSqliteProfileBackup(legacyProfileBackup);
+assert.equal(parsedLegacyProfileBackup.schema, "gmos.profile_backup.v1");
+const encryptedProfileBundle = encryptSqliteProfileBundle(
+  fullProfileBackup,
+  "correct profile bundle passphrase",
+);
+assert.equal(encryptedProfileBundle.schema, "gmos.encrypted_profile_bundle.v1");
+assert.equal(encryptedProfileBundle.plaintextSchema, "gmos.profile_bundle.v2");
+assert.equal(
+  decryptSqliteProfileBundle(
+    encryptedProfileBundle,
+    "correct profile bundle passphrase",
+  ).counts.memories,
+  fullProfileBackup.counts.memories,
+);
+assert.equal(
+  parseSqliteProfileBundle(encryptedProfileBundle, {
+    passphrase: "correct profile bundle passphrase",
+  }).profileId,
+  backupProfileId,
+);
+assert.throws(
+  () => parseSqliteProfileBundle(encryptedProfileBundle),
+  (error) =>
+    error instanceof SqliteProfileBundleEncryptionError &&
+    error.code === "passphrase_required",
+);
+assert.throws(
+  () => decryptSqliteProfileBundle(encryptedProfileBundle, "wrong profile bundle passphrase"),
+  (error) =>
+    error instanceof SqliteProfileBundleEncryptionError &&
+    error.code === "decrypt_failed",
+);
+const tamperedEncryptedProfileBundle = JSON.parse(
+  JSON.stringify(encryptedProfileBundle),
+) as typeof encryptedProfileBundle;
+tamperedEncryptedProfileBundle.encryption.tag = tamperedEncryptedProfileBundle.encryption.tag.replace(
+  /^./u,
+  (char) => (char === "A" ? "B" : "A"),
+);
+assert.throws(
+  () => decryptSqliteProfileBundle(
+    tamperedEncryptedProfileBundle,
+    "correct profile bundle passphrase",
+  ),
+  (error) =>
+    error instanceof SqliteProfileBundleEncryptionError &&
+    error.code === "decrypt_failed",
+);
 const forgedFullDowngradedMemoryBackup = cloneProfileBackup(fullProfileBackup);
 forgedFullDowngradedMemoryBackup.memories.push({
   id: "memory_forged_full_downgraded_secret",
@@ -12736,7 +12794,7 @@ assert.throws(
 );
 assert.throws(
   () => parseSqliteProfileBackup({ schema: "gmos.unknown", memories: [] }),
-  /gmos.profile_backup.v1/,
+  /gmos.profile_bundle.v2/,
 );
 const noEvidenceFullBackup = store.exportProfileBackup({
   profileId: backupProfileId,
@@ -13416,6 +13474,11 @@ assert.equal(restoredFullBackup.counts.evidenceEvents, fullProfileBackup.counts.
 assert.equal(restoredFullBackup.counts.worldBeliefs, fullProfileBackup.counts.worldBeliefs);
 assert.equal(restoredFullBackup.counts.failureEvents, fullProfileBackup.counts.failureEvents);
 assert.equal(restoredFullBackup.counts.taskTrajectories, fullProfileBackup.counts.taskTrajectories);
+const legacyRestoreReport = restoreStore.restoreProfileBackup({
+  backup: parsedLegacyProfileBackup,
+  profileId: "backup_profile_legacy_restored",
+});
+assert.equal(legacyRestoreReport.inserted.memories, fullProfileBackup.counts.memories);
 const repeatedRestore = restoreStore.restoreProfileBackup({
   backup: parsedProfileBackup,
   profileId: "backup_profile_restored",
@@ -14324,6 +14387,54 @@ assert.equal(
     .includes("snapshot-kind-injected"),
   false,
 );
+const mem0BareImportFile = path.join(process.cwd(), "test/fixtures/mem0/bare-array.json");
+const mem0BareImport = await loadMem0ExportIntoStore({
+  store,
+  profileId: "mem0_import",
+  inputFile: mem0BareImportFile,
+});
+assert.equal(mem0BareImport.schema, "gmos.mem0_import_report.v1");
+assert.equal(mem0BareImport.inputCount, 2);
+assert.equal(mem0BareImport.loadedCount, 1);
+assert.equal(mem0BareImport.skippedCount, 1);
+assert.deepEqual(mem0BareImport.skipped.map((entry) => entry.reason), ["secret_like"]);
+const mem0Imported = await memory.list({
+  profileId: "mem0_import",
+  query: "compact migration checklists",
+  status: "any",
+});
+assert.equal(mem0Imported.length, 1);
+assert.equal(mem0Imported[0]?.kind, "preference");
+assert.equal(mem0Imported[0]?.metadata.importSource, "mem0");
+assert.equal(mem0Imported[0]?.metadata.importSourceOriginalId, "mem0-bare-1");
+const mem0Evidence = await memory.listEvidence({
+  profileId: "mem0_import",
+  sourceType: "mem0.import",
+});
+assert.equal(mem0Evidence.length, 1);
+assert.equal(mem0Evidence[0]?.payload.importSource, "mem0");
+assert.equal(mem0Evidence[0]?.payload.sourceFileHash, mem0BareImport.sourceFileHash);
+const mem0CountsAfterFirstImport = await store.rowCounts();
+const repeatedMem0BareImport = await loadMem0ExportIntoStore({
+  store,
+  profileId: "mem0_import",
+  inputFile: mem0BareImportFile,
+});
+assert.equal(repeatedMem0BareImport.loadedCount, 0);
+assert.equal(repeatedMem0BareImport.reusedCount, 1);
+assert.deepEqual(await store.rowCounts(), mem0CountsAfterFirstImport);
+const mem0WrappedImport = await loadMem0ExportIntoStore({
+  store,
+  profileId: "mem0_wrapped_import",
+  inputFile: path.join(process.cwd(), "test/fixtures/mem0/wrapped-results.json"),
+});
+assert.equal(mem0WrappedImport.inputCount, 1);
+assert.equal(mem0WrappedImport.loadedCount, 1);
+const mem0WrappedImported = await memory.list({
+  profileId: "mem0_wrapped_import",
+  query: "blue deployment lane",
+});
+assert.equal(mem0WrappedImported[0]?.kind, "project");
 const afterFirstHostImportCounts = await store.rowCounts();
 const repeatedHostImportReport = await loadHostMemorySnapshotsIntoStore({
   store,
@@ -15234,6 +15345,79 @@ try {
     if (entry.body) assert.deepEqual(JSON.parse(String(request.init?.body)), entry.body);
     else assert.equal(request.init?.body, undefined);
   }
+  const agentClientCalls: Array<{ method: string; input: Record<string, unknown> }> = [];
+  const agentClient = {
+    async prepareTurn(input: Record<string, unknown>) {
+      agentClientCalls.push({ method: "prepareTurn", input });
+      return {
+        contextBlock: "gmOS context block",
+        memories: [{ id: "memory_agent_1" }],
+      };
+    },
+    async observe(input: Record<string, unknown>) {
+      agentClientCalls.push({ method: "observe", input });
+      return { ok: true };
+    },
+    async commitOutcome(input: Record<string, unknown>) {
+      agentClientCalls.push({ method: "commitOutcome", input });
+      return { ok: true };
+    },
+  };
+  const bindings = createAgentMemoryBindings(agentClient, {
+    profileId: "agent_profile",
+    disposition: "focused",
+  });
+  const loadedAgentContext = await bindings.loadContext("agent query");
+  assert.equal(loadedAgentContext.contextBlock, "gmOS context block");
+  assert.deepEqual(loadedAgentContext.memoryIds, ["memory_agent_1"]);
+  assert.deepEqual(agentClientCalls[0], {
+    method: "prepareTurn",
+    input: {
+      profileId: "agent_profile",
+      messages: [{ role: "user", content: "agent query" }],
+      dispositionPreset: "focused",
+    },
+  });
+  await bindings.saveTurn({
+    messages: [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi" },
+    ],
+    outcome: {
+      taskId: "agent-task",
+      objective: "answer",
+      status: "completed",
+      summary: "done",
+    },
+    usedMemoryIds: ["memory_agent_1"],
+  });
+  assert.deepEqual(
+    agentClientCalls.slice(1).map((entry) => entry.method),
+    ["observe", "observe", "commitOutcome"],
+  );
+  assert.deepEqual(agentClientCalls[3], {
+    method: "commitOutcome",
+    input: {
+      profileId: "agent_profile",
+      taskId: "agent-task",
+      objective: "answer",
+      status: "completed",
+      summary: "done",
+      usedMemoryIds: ["memory_agent_1"],
+    },
+  });
+  const langChainMemory = new GmosLangChainMemory(agentClient, {
+    profileId: "agent_profile",
+    memoryKey: "memory",
+  });
+  const variables = await langChainMemory.loadMemoryVariables({ input: "langchain query" });
+  assert.deepEqual(variables, { memory: "gmOS context block" });
+  const beforeLangChainSaveCalls = agentClientCalls.length;
+  await langChainMemory.saveContext({ input: "user turn" }, { output: "assistant turn" });
+  assert.deepEqual(
+    agentClientCalls.slice(beforeLangChainSaveCalls).map((entry) => entry.method),
+    ["observe", "observe"],
+  );
   const retrySleeps: number[] = [];
   let retryAttempts = 0;
   const retryClient = new GmosClient({
@@ -16705,7 +16889,7 @@ const cliPersonIncludedGet = spawnSync(
 );
 assert.equal(cliPersonIncludedGet.status, 0, cliPersonIncludedGet.stderr);
 assert.match(cliPersonIncludedGet.stdout, /李雷/);
-const cliExportFile = path.join(tmp, "cli-snapshot-export.json");
+const cliExportFile = path.join(tmp, "cli-profile-bundle.json");
 const cliExport = spawnSync(
   process.execPath,
   [
@@ -16717,8 +16901,6 @@ const cliExport = spawnSync(
     cliLowLevelDb,
     "--profile",
     "cli_low",
-    "--query",
-    "concise answers",
     "--output-file",
     cliExportFile,
   ],
@@ -16728,13 +16910,15 @@ assert.equal(cliExport.status, 0, cliExport.stderr);
 assert.equal(existsSync(cliExportFile), true);
 const cliExportPayload = JSON.parse(readFileSync(cliExportFile, "utf8")) as {
   schema?: string;
-  memoryCount?: number;
+  mode?: string;
+  counts?: { memories?: number };
   memories?: Array<{ id?: string; content?: string }>;
 };
-assert.equal(cliExportPayload.schema, "gmos.memory_snapshot_export.v1");
-assert.equal(cliExportPayload.memoryCount, 1);
-assert.equal(cliExportPayload.memories?.[0]?.id, cliAddMemory.id);
-assert.match(cliExportPayload.memories?.[0]?.content ?? "", /concise answers/);
+assert.equal(cliExportPayload.schema, "gmos.profile_bundle.v2");
+assert.equal(cliExportPayload.mode, "safe");
+assert.equal((cliExportPayload.counts?.memories ?? 0) > 0, true);
+assert.equal(cliExportPayload.memories?.some((entry) => entry.id === cliAddMemory.id), true);
+assert.match(JSON.stringify(cliExportPayload.memories ?? []), /concise answers/);
 assert.equal(JSON.stringify(cliExportPayload).includes("护照办理偏好"), false);
 assert.equal(JSON.stringify(cliExportPayload).includes("李雷"), false);
 const cliExportMissingOutputFileValue = spawnSync(
@@ -16811,7 +16995,7 @@ const cliImport = spawnSync(
   { cwd: process.cwd(), encoding: "utf8" },
 );
 assert.equal(cliImport.status, 0, cliImport.stderr);
-assert.equal(JSON.parse(cliImport.stdout).loadedCount, 1);
+assert.equal(JSON.parse(cliImport.stdout).inserted.memories, cliExportPayload.counts?.memories);
 const cliImportSearch = spawnSync(
   process.execPath,
   [
@@ -17166,7 +17350,7 @@ const cliProfileBackupPayload = JSON.parse(readFileSync(cliProfileBackupFile, "u
   counts?: { memories?: number; evidenceEvents?: number };
   memories?: Array<{ id?: string; status?: string; content?: string }>;
 };
-assert.equal(cliProfileBackupPayload.schema, "gmos.profile_backup.v1");
+assert.equal(cliProfileBackupPayload.schema, "gmos.profile_bundle.v2");
 assert.equal(cliProfileBackupPayload.mode, "full");
 assert.equal((cliProfileBackupPayload.counts?.memories ?? 0) > 0, true);
 assert.equal((cliProfileBackupPayload.counts?.evidenceEvents ?? 0) > 0, true);
@@ -17293,6 +17477,156 @@ assert.equal(
   cliProfileRestoreOriginalArchivedList.stderr,
 );
 assert.match(cliProfileRestoreOriginalArchivedList.stdout, /risk-first answers/);
+const cliEncryptedBundleFile = path.join(tmp, "cli-profile-bundle.encrypted.json");
+const cliEncryptedBackup = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "backup",
+    "--db",
+    cliLowLevelDb,
+    "--profile",
+    "cli_low",
+    "--mode",
+    "full",
+    "--output-file",
+    cliEncryptedBundleFile,
+    "--passphrase-env",
+    "GMOS_TEST_BUNDLE_PASSPHRASE",
+  ],
+  {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: { ...process.env, GMOS_TEST_BUNDLE_PASSPHRASE: "cli bundle passphrase" },
+  },
+);
+assert.equal(cliEncryptedBackup.status, 0, cliEncryptedBackup.stderr);
+const cliEncryptedBundlePayload = JSON.parse(readFileSync(cliEncryptedBundleFile, "utf8")) as {
+  schema?: string;
+  plaintextSchema?: string;
+};
+assert.equal(cliEncryptedBundlePayload.schema, "gmos.encrypted_profile_bundle.v1");
+assert.equal(cliEncryptedBundlePayload.plaintextSchema, "gmos.profile_bundle.v2");
+const cliEncryptedRestoreDb = path.join(tmp, "cli-profile-encrypted-restore.db");
+const cliEncryptedRestore = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "restore",
+    "--db",
+    cliEncryptedRestoreDb,
+    "--profile",
+    "cli_encrypted_restored",
+    "--input-file",
+    cliEncryptedBundleFile,
+    "--passphrase-env",
+    "GMOS_TEST_BUNDLE_PASSPHRASE",
+  ],
+  {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: { ...process.env, GMOS_TEST_BUNDLE_PASSPHRASE: "cli bundle passphrase" },
+  },
+);
+assert.equal(cliEncryptedRestore.status, 0, cliEncryptedRestore.stderr);
+assert.equal(JSON.parse(cliEncryptedRestore.stdout).targetProfileId, "cli_encrypted_restored");
+const cliEncryptedRestoreMissingPassphrase = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "restore",
+    "--db",
+    path.join(tmp, "cli-profile-encrypted-missing.db"),
+    "--input-file",
+    cliEncryptedBundleFile,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliEncryptedRestoreMissingPassphrase.status, 0);
+assert.match(cliEncryptedRestoreMissingPassphrase.stderr, /passphrase/);
+const cliMem0ImportDb = path.join(tmp, "cli-mem0-import.db");
+const cliMem0Import = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "import",
+    "--from",
+    "mem0",
+    "--db",
+    cliMem0ImportDb,
+    "--profile",
+    "cli_mem0",
+    "--input-file",
+    path.join(process.cwd(), "test/fixtures/mem0/bare-array.json"),
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliMem0Import.status, 0, cliMem0Import.stderr);
+const cliMem0ImportPayload = JSON.parse(cliMem0Import.stdout) as {
+  loadedCount?: number;
+  skipped?: Array<{ reason?: string }>;
+};
+assert.equal(cliMem0ImportPayload.loadedCount, 1);
+assert.deepEqual(cliMem0ImportPayload.skipped?.map((entry) => entry.reason), ["secret_like"]);
+const cliMem0ImportRepeat = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "import",
+    "--from",
+    "mem0",
+    "--db",
+    cliMem0ImportDb,
+    "--profile",
+    "cli_mem0",
+    "--input-file",
+    path.join(process.cwd(), "test/fixtures/mem0/bare-array.json"),
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliMem0ImportRepeat.status, 0, cliMem0ImportRepeat.stderr);
+assert.equal(JSON.parse(cliMem0ImportRepeat.stdout).loadedCount, 0);
+const cliConversationFile = path.join(tmp, "cli-conversation.jsonl");
+writeFileSync(
+  cliConversationFile,
+  [
+    JSON.stringify({ role: "user", content: "Conversation import user turn." }),
+    JSON.stringify({ role: "assistant", content: "Conversation import assistant turn." }),
+  ].join("\n"),
+);
+const cliConversationImport = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "import",
+    "--from",
+    "conversation",
+    "--db",
+    path.join(tmp, "cli-conversation-import.db"),
+    "--profile",
+    "cli_conversation",
+    "--input-file",
+    cliConversationFile,
+    "--input-format",
+    "jsonl",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliConversationImport.status, 0, cliConversationImport.stderr);
+assert.equal(JSON.parse(cliConversationImport.stdout).schema, "gmos.transcript_ingest_report.v1");
+assert.equal(JSON.parse(cliConversationImport.stdout).observed, 2);
 const cliClearAdd = spawnSync(
   process.execPath,
   [

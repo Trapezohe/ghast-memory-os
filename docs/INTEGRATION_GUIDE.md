@@ -444,6 +444,14 @@ Run it with:
 npm run examples:graph-runtime-memory
 ```
 
+## Directory Listings
+
+`server.json` is the MCP registry manifest for the stdio server. It describes
+the npm package and stdio transport only. Publishing the listing is a maintainer
+action: release the npm package, verify `server.json` matches that version, then
+submit it to the MCP registry. Do not put local database paths, API keys, or
+profile ids in the registry manifest.
+
 ## MCP Contract
 
 Public MCP tools are:
@@ -618,6 +626,36 @@ memory.observe({"profileId": "default", "role": "user", "content": "User opened 
 
 The Python client has no runtime dependencies and is kept under `python/`; it is
 not included in the `@ghast/memory` npm tarball.
+
+LangChain-style JS agent:
+
+```ts
+import { GmosClient, GmosLangChainMemory } from "@ghast/memory/client";
+const client = new GmosClient({ baseUrl, apiKey });
+const memory = new GmosLangChainMemory(client, { profileId: "default" });
+const vars = await memory.loadMemoryVariables({ input: "release plan" });
+await memory.saveContext({ input: "release plan" }, { output: "ship it" });
+```
+
+Python agent:
+
+```python
+from gmos_client import GmosAgentMemory, GmosClient
+client = GmosClient(base_url, api_key)
+memory = GmosAgentMemory(client, profile_id="default")
+ctx = memory.load_memory_variables({"input": "release plan"})
+memory.save_context({"input": "release plan"}, {"output": "ship it"})
+```
+
+Plain MCP host:
+
+```bash
+gmos mcp serve --db ./gmos.db --profile default
+```
+
+```json
+{"tool":"memory.prepare_context","args":{"messages":[{"role":"user","content":"release plan"}]}}
+```
 
 ## Host Contract Tests
 
