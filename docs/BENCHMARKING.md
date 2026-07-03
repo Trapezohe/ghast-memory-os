@@ -163,6 +163,61 @@ gmos gym external \
   --progress
 ```
 
+## Running With The Intelligence Layer
+
+`gmos gym external` can attach the opt-in `@ghast/memory/intelligence` hook
+bundle for benchmark runs. This is host-side wiring: the CLI makes real network
+calls only because the user provided an intelligence endpoint for this benchmark
+run. The kernel still never discovers or calls a network service on its own.
+
+Use `--ingest-mode memory` for the legacy deterministic direct-import path. Use
+`--ingest-mode message` when running LongMemEval or LoCoMo through the
+extractor path; adapter turns become conversation observations, timestamps are
+preserved, and speaker metadata is carried where the dataset provides it.
+
+Local Ollama-style OpenAI-compatible endpoint:
+
+```bash
+gmos gym external \
+  --input-file ./long-memory-cleaned.json \
+  --dataset-format longmemeval \
+  --ingest-mode message \
+  --intelligence-base-url http://127.0.0.1:11434/v1 \
+  --intelligence-model llama3.1 \
+  --intelligence-embed-model nomic-embed-text \
+  --intelligence-concurrency 2 \
+  --intelligence-timeout-ms 20000 \
+  --format json
+```
+
+OpenAI-compatible cloud endpoint:
+
+```bash
+export GMOS_BENCH_API_KEY="..."
+gmos gym external \
+  --input-file ./multi-session-memory.json \
+  --dataset-format locomo \
+  --ingest-mode message \
+  --intelligence-base-url https://provider.example/v1 \
+  --intelligence-model provider-chat-model \
+  --intelligence-embed-model provider-embedding-model \
+  --intelligence-api-key-env GMOS_BENCH_API_KEY \
+  --maintain-phases decay \
+  --format json
+```
+
+Never pass an API key as a flag value. The CLI accepts only the environment
+variable name via `--intelligence-api-key-env`; reports record that env var name
+and the endpoint hostname only, not the secret or full URL.
+
+Privacy boundary: benchmark dataset content is sent to the configured endpoint.
+Do not run this mode on real personal profiles or private user histories unless
+that endpoint is approved for that data.
+
+Claim boundary: intelligence-backed `deterministic_local` runs are still local
+adapter scores. They are not official-protocol scores unless the SDK run uses a
+host-provided judge and the manifest says `officialProtocol=host_judge`.
+
 ## Adapter Baseline Archives
 
 Public docs should describe how to reproduce a run and how to interpret its

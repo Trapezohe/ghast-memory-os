@@ -3,6 +3,7 @@ import {
   type ExternalMemoryBenchmarkCase,
   type ExternalMemoryBenchmarkDatasetFormat,
   type ExternalMemoryBenchmarkEvent,
+  type ExternalMemoryBenchmarkIngestMode,
   type ExternalMemoryBenchmarkMessageEvent,
   type ExternalMemoryBenchmarkMemoryEvent,
 } from "./external.js";
@@ -18,6 +19,7 @@ export interface ParsedExternalMemoryBenchmarkDataset {
 
 export interface ParseExternalMemoryBenchmarkDatasetOptions {
   adapter?: ExternalMemoryBenchmarkDatasetAdapter | string | undefined;
+  ingestMode?: ExternalMemoryBenchmarkIngestMode | undefined;
   longMemEvalAbstention?: "skip" | "score_answer" | undefined;
 }
 
@@ -273,6 +275,37 @@ function memoryEvent(input: {
   };
 }
 
+function ingestMode(value: ExternalMemoryBenchmarkIngestMode | undefined): ExternalMemoryBenchmarkIngestMode {
+  if (value === undefined) return "memory";
+  if (value === "memory" || value === "message") return value;
+  throw new Error("External benchmark ingestMode must be memory or message");
+}
+
+function observationEvent(input: {
+  ingestMode: ExternalMemoryBenchmarkIngestMode;
+  content: string;
+  memoryContent?: string | undefined;
+  role?: unknown;
+  createdAt?: unknown;
+  fallbackRole?: ExternalMemoryBenchmarkMessageEvent["role"] | undefined;
+  metadata?: Record<string, unknown> | undefined;
+}): ExternalMemoryBenchmarkEvent {
+  if (input.ingestMode === "message") {
+    return messageEvent({
+      role: input.role,
+      content: input.content,
+      createdAt: input.createdAt,
+      fallbackRole: input.fallbackRole,
+      metadata: input.metadata,
+    });
+  }
+  return memoryEvent({
+    content: input.memoryContent ?? input.content,
+    createdAt: input.createdAt,
+    metadata: input.metadata,
+  });
+}
+
 function contentFromTurn(turn: Record<string, unknown>): string | null {
   const content =
     stringValue(turn.content) ?? stringValue(turn.text) ?? stringValue(turn.message);
@@ -281,7 +314,11 @@ function contentFromTurn(turn: Record<string, unknown>): string | null {
   return [content, caption ? `Image caption: ${caption}` : ""].filter(Boolean).join("\n");
 }
 
-function longMemEvalEvents(row: Record<string, unknown>, caseId: string): ExternalMemoryBenchmarkEvent[] {
+function longMemEvalEvents(
+  row: Record<string, unknown>,
+  caseId: string,
+  mode: ExternalMemoryBenchmarkIngestMode,
+): ExternalMemoryBenchmarkEvent[] {
   if (!Array.isArray(row.haystack_sessions)) {
     throw new Error(`LongMemEval case ${caseId} requires haystack_sessions`);
   }
@@ -298,7 +335,9 @@ function longMemEvalEvents(row: Record<string, unknown>, caseId: string): Extern
       const content = contentFromTurn(record);
       if (!content) continue;
       events.push(
-        memoryEvent({
+        observationEvent({
+          ingestMode: mode,
+          role: record.role,
           content,
           createdAt: dates[sessionIndex],
         }),
@@ -311,11 +350,12 @@ function longMemEvalEvents(row: Record<string, unknown>, caseId: string): Extern
 
 function parseLongMemEvalCaseSet(
   input: string,
-  options: Pick<ParseExternalMemoryBenchmarkDatasetOptions, "longMemEvalAbstention"> = {},
+  options: Pick<ParseExternalMemoryBenchmarkDatasetOptions, "ingestMode" | "longMemEvalAbstention"> = {},
 ): ParsedCaseSet {
   const cases: ExternalMemoryBenchmarkCase[] = [];
   const warnings: string[] = [];
   const abstentionMode = options.longMemEvalAbstention ?? "skip";
+  const mode = ingestMode(options.ingestMode);
   for (const [index, entry] of parseJsonArrayOrJsonl(input, "LongMemEval dataset").entries()) {
     const row = assertRecord(entry, `LongMemEval row ${index + 1}`);
     const caseId = stringValue(row.question_id) ?? `longmemeval-${index + 1}`;
@@ -332,7 +372,7 @@ function parseLongMemEvalCaseSet(
       profileId: `external_profile_${index + 1}`,
       mode: "reconstruct",
       slices: longMemEvalSlices(row),
-      events: longMemEvalEvents(row, caseId),
+      events: longMemEvalEvents(row, caseId, mode),
       question,
       expectedAny,
     });
@@ -343,8 +383,11 @@ function parseLongMemEvalCaseSet(
   return { cases, warnings };
 }
 
-export function parseLongMemEvalBenchmarkDataset(input: string): ExternalMemoryBenchmarkCase[] {
-  return parseLongMemEvalCaseSet(input).cases;
+export function parseLongMemEvalBenchmarkDataset(
+  input: string,
+  options: Pick<ParseExternalMemoryBenchmarkDatasetOptions, "ingestMode" | "longMemEvalAbstention"> = {},
+): ExternalMemoryBenchmarkCase[] {
+  return parseLongMemEvalCaseSet(input, options).cases;
 }
 
 function locomoSessionKeys(conversation: Record<string, unknown>): string[] {
@@ -361,7 +404,11 @@ function locomoSpeakerName(rawSpeaker: string | null, speakerA: string | null, s
   return raw;
 }
 
-function locomoEvents(row: Record<string, unknown>, sampleId: string): ExternalMemoryBenchmarkEvent[] {
+function locomoEvents(
+  row: Record<string, unknown>,
+  sampleId: string,
+  mode: ExternalMemoryBenchmarkIngestMode,
+): ExternalMemoryBenchmarkEvent[] {
   const conversation = assertRecord(row.conversation, `LoCoMo sample ${sampleId}.conversation`);
   const events: ExternalMemoryBenchmarkEvent[] = [];
   const speakerA = stringValue(conversation.speaker_a);
@@ -380,8 +427,10 @@ function locomoEvents(row: Record<string, unknown>, sampleId: string): ExternalM
         (entry): entry is string => typeof entry === "string" && entry.length > 0,
       );
       events.push(
-        memoryEvent({
-          content: speaker ? `${speaker}: ${content}` : content,
+        observationEvent({
+          ingestMode: mode,
+          content,
+          memoryContent: speaker ? `${speaker}: ${content}` : content,
           createdAt,
           metadata: {
             ...(speaker ? { speaker } : {}),
@@ -396,15 +445,19 @@ function locomoEvents(row: Record<string, unknown>, sampleId: string): ExternalM
   return events;
 }
 
-function parseLocomoCaseSet(input: string): ParsedCaseSet {
+function parseLocomoCaseSet(
+  input: string,
+  options: Pick<ParseExternalMemoryBenchmarkDatasetOptions, "ingestMode"> = {},
+): ParsedCaseSet {
   const samples = parseJsonArrayOrJsonl(input, "LoCoMo dataset");
   const cases: ExternalMemoryBenchmarkCase[] = [];
   const warnings: string[] = [];
+  const mode = ingestMode(options.ingestMode);
   for (const [sampleIndex, sample] of samples.entries()) {
     const row = assertRecord(sample, `LoCoMo sample ${sampleIndex + 1}`);
     const sampleId = stringValue(row.sample_id) ?? `locomo-${sampleIndex + 1}`;
     const conversation = assertRecord(row.conversation, `LoCoMo sample ${sampleId}.conversation`);
-    const events = locomoEvents(row, sampleId);
+    const events = locomoEvents(row, sampleId, mode);
     const qaRows = Array.isArray(row.qa) ? row.qa : [];
     if (qaRows.length === 0) throw new Error(`LoCoMo sample ${sampleId} requires qa annotations`);
     for (const [qaIndex, qa] of qaRows.entries()) {
@@ -433,8 +486,11 @@ function parseLocomoCaseSet(input: string): ParsedCaseSet {
   return { cases, warnings };
 }
 
-export function parseLocomoBenchmarkDataset(input: string): ExternalMemoryBenchmarkCase[] {
-  return parseLocomoCaseSet(input).cases;
+export function parseLocomoBenchmarkDataset(
+  input: string,
+  options: Pick<ParseExternalMemoryBenchmarkDatasetOptions, "ingestMode"> = {},
+): ExternalMemoryBenchmarkCase[] {
+  return parseLocomoCaseSet(input, options).cases;
 }
 
 export function parseExternalMemoryBenchmarkDataset(
@@ -455,7 +511,7 @@ export function parseExternalMemoryBenchmarkDataset(
     };
   }
   if (adapter === "locomo") {
-    const parsed = parseLocomoCaseSet(input);
+    const parsed = parseLocomoCaseSet(input, options);
     return {
       adapter,
       datasetFormat: "locomo.json",

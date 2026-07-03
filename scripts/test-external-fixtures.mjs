@@ -129,6 +129,12 @@ const longMemEvalReport = readJsonFile(path.join(mainOutputDir, "longmemeval-min
 const locomoReport = readJsonFile(path.join(mainOutputDir, "locomo-mini.json"));
 const curatedIds = jsonlIds("curated-gmos.jsonl");
 const budgetIds = jsonlIds("budget-drop-mini.jsonl");
+if (longMemEvalReport.runManifest?.runtimeIntelligence?.enabled !== false) {
+  failures.push("longmemeval runtime intelligence default was not disabled");
+}
+if (locomoReport.runManifest?.runtimeIntelligence?.ingestMode !== "memory") {
+  failures.push("locomo runtime intelligence default ingestMode was not memory");
+}
 
 for (const id of [
   "native-history-recall",

@@ -418,6 +418,8 @@ try {
       assert.equal(externalGym.pass, true);
       assert.equal(externalGym.runManifest.protocol, "deterministic_local");
       assert.equal(externalGym.runManifest.scoreSemantics.protocol, "deterministic_local");
+      assert.equal(externalGym.runManifest.runtimeIntelligence.enabled, false);
+      assert.equal(externalGym.runManifest.runtimeIntelligence.ingestMode, "memory");
       assert.equal(externalGym.runManifest.deterministicOnly, true);
       assert.equal(externalGym.officialScore, null);
       assert.match(renderExternalMemoryBenchmarkMarkdown(externalGym), /External Long-Memory QA/);
@@ -758,9 +760,11 @@ try {
         type ExternalMemoryBenchmarkDatasetAdapter,
         type ExternalMemoryBenchmarkDatasetFormat,
         type ExternalMemoryBenchmarkJudge,
+        type ExternalMemoryBenchmarkIngestMode,
         type ExternalMemoryBenchmarkProtocol,
         type ExternalMemoryBenchmarkCaseMatched,
         type ExternalMemoryBenchmarkResult,
+        type ExternalMemoryBenchmarkRuntimeIntelligenceManifest,
         type ExternalMemoryBenchmarkSliceScore,
         type ExternalMemoryBenchmarkSuiteExecution,
         type ExternalMemoryBenchmarkSuiteResult,
@@ -1034,6 +1038,15 @@ try {
       const typedProtocol: ExternalMemoryBenchmarkProtocol = externalResult.runManifest.protocol;
       if (typedProtocol !== "deterministic_local") {
         throw new Error("typed external protocol failed");
+      }
+      const typedIngestMode: ExternalMemoryBenchmarkIngestMode = externalResult.runManifest.runtimeIntelligence.ingestMode;
+      if (typedIngestMode !== "memory") {
+        throw new Error("typed external ingest mode failed");
+      }
+      const typedRuntimeIntelligence: ExternalMemoryBenchmarkRuntimeIntelligenceManifest =
+        externalResult.runManifest.runtimeIntelligence;
+      if (typedRuntimeIntelligence.enabled !== false) {
+        throw new Error("typed runtime intelligence manifest failed");
       }
       const typedJudge: ExternalMemoryBenchmarkJudge = {
         name: "typed-judge",

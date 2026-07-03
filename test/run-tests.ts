@@ -20096,6 +20096,13 @@ assert.equal(JSON.stringify(longMemEvalCases[0]?.events).includes("answer_sessio
 assert.equal(JSON.stringify(longMemEvalCases[0]?.events).includes("longmemeval"), false);
 assert.equal(JSON.stringify(longMemEvalCases[0]?.events).includes("sessionIndex"), false);
 assert.equal(JSON.stringify(longMemEvalCases[0]?.events).includes('"role"'), false);
+const longMemEvalMessageCases = parseLongMemEvalBenchmarkDataset(longMemEvalFixture, {
+  ingestMode: "message",
+});
+assert.equal(longMemEvalMessageCases[0]?.events[0]?.type, "message");
+assert.equal(longMemEvalMessageCases[0]?.events[0]?.role, "user");
+assert.equal(longMemEvalMessageCases[0]?.events[0]?.createdAt, "2026-06-20");
+assert.equal(JSON.stringify(longMemEvalMessageCases[0]?.events).includes("has_answer"), false);
 const longMemEvalJsonlCases = parseLongMemEvalBenchmarkDataset(
   longMemEvalFixture.slice(1, -1),
 );
@@ -20270,6 +20277,19 @@ assert.match(parsedLocomoDataset.cases[0]?.events[1]?.content ?? "", /^Blair:/);
 assert.equal(parsedLocomoDataset.cases[0]?.events[0]?.metadata?.speaker, "Alex");
 assert.deepEqual(parsedLocomoDataset.cases[0]?.events[0]?.metadata?.participants, ["Alex", "Blair"]);
 assert.equal(parsedLocomoDataset.cases[0]?.events[1]?.metadata?.speaker, "Blair");
+const parsedLocomoMessageDataset = parseExternalMemoryBenchmarkDataset(locomoFixture, {
+  adapter: "locomo",
+  ingestMode: "message",
+});
+assert.equal(parsedLocomoMessageDataset.cases[0]?.events[0]?.type, "message");
+assert.equal(parsedLocomoMessageDataset.cases[0]?.events[0]?.role, "user");
+assert.equal(parsedLocomoMessageDataset.cases[0]?.events[0]?.content, "Atlas 项目的流程步骤是先核证据链，再写风险清单。Atlas 年份是 2022。");
+assert.equal(parsedLocomoMessageDataset.cases[0]?.events[0]?.createdAt, "2026-06-20T09:00:00.000Z");
+assert.equal(parsedLocomoMessageDataset.cases[0]?.events[0]?.metadata?.speaker, "Alex");
+assert.equal(parsedLocomoMessageDataset.cases[0]?.events[0]?.metadata?.speakerKind, "person");
+assert.deepEqual(parsedLocomoMessageDataset.cases[0]?.events[0]?.metadata?.participants, ["Alex", "Blair"]);
+assert.equal(JSON.stringify(parsedLocomoMessageDataset.cases[0]?.events).includes("evidence"), false);
+assert.equal(JSON.stringify(parsedLocomoMessageDataset.cases[0]?.events).includes("category"), false);
 assert.equal(JSON.stringify(parsedLocomoDataset.cases[0]?.events).includes("answer"), false);
 assert.equal(JSON.stringify(parsedLocomoDataset.cases[0]?.events).includes("adversarial"), false);
 assert.equal(JSON.stringify(parsedLocomoDataset.cases[0]?.events).includes("locomo"), false);
@@ -20497,6 +20517,141 @@ assert.deepEqual(locomoProgressEvents, [
   "1/2:locomo-atlas:qa-1",
   "2/2:locomo-atlas:qa-2",
 ]);
+const externalIntelligenceFixture = JSON.stringify([
+  {
+    question_id: "external-intelligence-orbit-tea",
+    question: "What is the recall drink?",
+    answer: "orbit tea",
+    haystack_dates: ["2026-06-20T09:00:00.000Z"],
+    haystack_sessions: [
+      [
+        {
+          role: "user",
+          content: "External intelligence source says the recall drink is orbit tea.",
+        },
+        {
+          role: "user",
+          content: "External intelligence planned extraction failure should still land as evidence.",
+        },
+      ],
+    ],
+  },
+]);
+const externalIntelligenceMemoryCases = parseExternalMemoryBenchmarkDataset(
+  externalIntelligenceFixture,
+  { adapter: "longmemeval" },
+);
+const externalIntelligenceDefaultRun = await runExternalMemoryBenchmark({
+  cases: externalIntelligenceMemoryCases.cases,
+  datasetFormat: externalIntelligenceMemoryCases.datasetFormat,
+});
+assert.equal(externalIntelligenceDefaultRun.pass, true);
+assert.equal(externalIntelligenceDefaultRun.runManifest.runtimeIntelligence.enabled, false);
+assert.equal(externalIntelligenceDefaultRun.runManifest.runtimeIntelligence.ingestMode, "memory");
+const externalIntelligenceMessageCases = parseExternalMemoryBenchmarkDataset(
+  externalIntelligenceFixture,
+  { adapter: "longmemeval", ingestMode: "message" },
+);
+const previousExternalBenchKey = process.env.GMOS_BENCH_TEST_KEY;
+process.env.GMOS_BENCH_TEST_KEY = "sdk-bench-secret-1234567890";
+const externalIntelligenceAuthHeaders: Array<string | undefined> = [];
+try {
+  const externalIntelligenceRun = await runExternalMemoryBenchmark({
+    cases: externalIntelligenceMessageCases.cases,
+    datasetFormat: externalIntelligenceMessageCases.datasetFormat,
+    ingestMode: "message",
+    maintainPhases: ["decay"],
+    intelligence: {
+      baseUrl: "https://user:pass@bench-intelligence.invalid/v1",
+      apiKeyEnv: "GMOS_BENCH_TEST_KEY",
+      model: "bench-chat",
+      embedModel: "bench-embed",
+      dimensions: 3,
+      concurrency: 1,
+      timeoutMs: 5000,
+      fetchImpl: async (url, init) => {
+        const headers = init?.headers as Record<string, string> | undefined;
+        externalIntelligenceAuthHeaders.push(headers?.authorization);
+        const request = JSON.parse(String(init?.body ?? "{}")) as {
+          input?: string[];
+          messages?: Array<{ role?: string; content?: string }>;
+        };
+        if (String(url).endsWith("/embeddings")) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            text: async () => JSON.stringify({
+              data: (request.input ?? []).map((_text, index) => ({
+                index,
+                embedding: [0.1, 0.2, 0.3],
+              })),
+            }),
+          };
+        }
+        const system = request.messages?.[0]?.content ?? "";
+        const bodyText = JSON.stringify(request);
+        if (bodyText.includes("planned extraction failure")) {
+          throw new Error("planned external extraction failure");
+        }
+        const content = system.includes("structured memory extractor")
+          ? JSON.stringify({
+              memories: [{
+                kind: "preference",
+                content: "External intelligence extracted recall drink is orbit tea.",
+                confidence: 0.93,
+                predicate: "user.preference",
+              }],
+            })
+          : system.includes("retrieval reranker")
+            ? JSON.stringify({ ids: [] })
+            : system.includes("memory consolidation hook")
+              ? JSON.stringify({ summaries: [] })
+              : system.includes("procedure distillation hook")
+                ? JSON.stringify({ procedures: [] })
+                : system.includes("entity dossier synthesis hook")
+                  ? JSON.stringify({ dossiers: [] })
+                  : "{}";
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          text: async () => JSON.stringify({ choices: [{ message: { content } }] }),
+        };
+      },
+    },
+  });
+  assert.equal(externalIntelligenceRun.pass, true);
+  assert.deepEqual(externalIntelligenceRun.cases[0]?.expectedAnyMatched, ["orbit tea"]);
+  assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.enabled, true);
+  assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.baseUrlHost, "bench-intelligence.invalid");
+  assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.apiKeyEnv, "GMOS_BENCH_TEST_KEY");
+  assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.model, "bench-chat");
+  assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.embedModel, "bench-embed");
+  assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.concurrency, 1);
+  assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.timeoutMs, 5000);
+  assert.deepEqual(externalIntelligenceRun.runManifest.runtimeIntelligence.maintainPhases, ["decay"]);
+  assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.extractionFailureCount, 1);
+  assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.hookNames.extractor, "openai-compatible:bench-chat");
+  assert.equal(
+    externalIntelligenceAuthHeaders.includes("Bearer sdk-bench-secret-1234567890"),
+    true,
+  );
+  const externalIntelligenceJson = JSON.stringify(externalIntelligenceRun);
+  assert.equal(externalIntelligenceJson.includes("sdk-bench-secret"), false);
+  assert.equal(externalIntelligenceJson.includes("user:pass"), false);
+  assert.equal(externalIntelligenceJson.includes("bench-intelligence.invalid/v1"), false);
+  assert.match(
+    renderExternalMemoryBenchmarkMarkdown(externalIntelligenceRun),
+    /Runtime intelligence: enabled=true ingestMode=message model=bench-chat embedModel=bench-embed host=bench-intelligence\.invalid maintainPhases=decay concurrency=1 timeoutMs=5000 extractionFailures=1/,
+  );
+} finally {
+  if (previousExternalBenchKey === undefined) {
+    delete process.env.GMOS_BENCH_TEST_KEY;
+  } else {
+    process.env.GMOS_BENCH_TEST_KEY = previousExternalBenchKey;
+  }
+}
 const sameProfileDifferentEventsBenchmark = await runExternalMemoryBenchmark({
   cases: [
     {
@@ -21719,6 +21874,169 @@ const cliExternalOfficialProtocol = spawnSync(
 );
 assert.notEqual(cliExternalOfficialProtocol.status, 0);
 assert.match(cliExternalOfficialProtocol.stderr, /requires a host-provided SDK judge callback/);
+const cliExternalIntelligenceMissingBaseUrl = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--intelligence-model",
+    "bench-chat",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalIntelligenceMissingBaseUrl.status, 0);
+assert.match(cliExternalIntelligenceMissingBaseUrl.stderr, /require --intelligence-base-url/);
+const cliExternalIntelligenceFixtureFile = path.join(tmp, "cli-external-intelligence-longmemeval.json");
+writeFileSync(
+  cliExternalIntelligenceFixtureFile,
+  JSON.stringify([
+    {
+      question_id: "cli-intelligence-cedar",
+      question: "What anchor should the CLI remember?",
+      answer: "Cedar",
+      haystack_sessions: [[{ role: "user", content: "CLI intelligence source says the anchor is Cedar." }]],
+    },
+  ]),
+);
+const cliExternalIntelligenceMockFetchFile = path.join(tmp, "cli-intelligence-fetch.mjs");
+const cliExternalIntelligenceFetchLogFile = path.join(tmp, "cli-intelligence-fetch.log");
+writeFileSync(
+  cliExternalIntelligenceMockFetchFile,
+  `
+    import { appendFileSync } from "node:fs";
+    globalThis.fetch = async (url, init = {}) => {
+      const headers = init.headers ?? {};
+      const body = JSON.parse(String(init.body ?? "{}"));
+      appendFileSync(process.env.GMOS_CLI_INTELLIGENCE_FETCH_LOG, JSON.stringify({
+        authorization: headers.authorization,
+        model: body.model,
+      }) + "\\n");
+      if (String(url).endsWith("/embeddings")) {
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          text: async () => JSON.stringify({
+            data: (body.input ?? []).map((_text, index) => ({
+              index,
+              embedding: [0.2, 0.3, 0.4],
+            })),
+          }),
+        };
+      }
+      const system = body.messages?.[0]?.content ?? "";
+      const content = system.includes("structured memory extractor")
+        ? JSON.stringify({
+            memories: [{
+              kind: "project",
+              content: "CLI intelligence extracted anchor is Cedar.",
+              confidence: 0.91,
+              predicate: "project.state",
+              subject: "project:cli-intelligence",
+              object: "Cedar",
+            }],
+          })
+        : system.includes("retrieval reranker")
+          ? JSON.stringify({ ids: [] })
+          : JSON.stringify({ summaries: [], procedures: [], dossiers: [] });
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () => JSON.stringify({ choices: [{ message: { content } }] }),
+      };
+    };
+  `,
+);
+const cliExternalIntelligenceJsonFile = path.join(tmp, "cli-external-intelligence-report.json");
+const cliExternalIntelligenceMarkdownFile = path.join(tmp, "cli-external-intelligence-report.md");
+const cliExternalIntelligenceSecret = "cli-bench-secret-1234567890";
+const cliExternalIntelligence = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "--import",
+    cliExternalIntelligenceMockFetchFile,
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    cliExternalIntelligenceFixtureFile,
+    "--dataset-format",
+    "longmemeval",
+    "--ingest-mode",
+    "message",
+    "--intelligence-base-url",
+    "https://user:pass@cli-intelligence.invalid/v1",
+    "--intelligence-model",
+    "cli-chat",
+    "--intelligence-embed-model",
+    "cli-embed",
+    "--intelligence-api-key-env",
+    "GMOS_CLI_BENCH_SECRET",
+    "--intelligence-concurrency",
+    "1",
+    "--intelligence-timeout-ms",
+    "5000",
+    "--json-file",
+    cliExternalIntelligenceJsonFile,
+    "--markdown-file",
+    cliExternalIntelligenceMarkdownFile,
+    "--format",
+    "json",
+  ],
+  {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GMOS_CLI_BENCH_SECRET: cliExternalIntelligenceSecret,
+      GMOS_CLI_INTELLIGENCE_FETCH_LOG: cliExternalIntelligenceFetchLogFile,
+    },
+  },
+);
+assert.equal(cliExternalIntelligence.status, 0, cliExternalIntelligence.stderr);
+const cliExternalIntelligenceJson = JSON.parse(cliExternalIntelligence.stdout) as {
+  pass?: boolean;
+  runManifest?: {
+    runtimeIntelligence?: {
+      enabled?: boolean;
+      baseUrlHost?: string | null;
+      apiKeyEnv?: string | null;
+      ingestMode?: string;
+      model?: string | null;
+      embedModel?: string | null;
+      concurrency?: number | null;
+      timeoutMs?: number | null;
+      extractionFailureCount?: number;
+    };
+  };
+};
+assert.equal(cliExternalIntelligenceJson.pass, true);
+assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.enabled, true);
+assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.baseUrlHost, "cli-intelligence.invalid");
+assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.apiKeyEnv, "GMOS_CLI_BENCH_SECRET");
+assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.ingestMode, "message");
+assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.model, "cli-chat");
+assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.embedModel, "cli-embed");
+assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.concurrency, 1);
+assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.timeoutMs, 5000);
+assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.extractionFailureCount, 0);
+const cliExternalIntelligenceFetchLog = readFileSync(cliExternalIntelligenceFetchLogFile, "utf8");
+assert.match(cliExternalIntelligenceFetchLog, new RegExp(`Bearer ${cliExternalIntelligenceSecret}`));
+assert.equal(cliExternalIntelligence.stdout.includes(cliExternalIntelligenceSecret), false);
+assert.equal(readFileSync(cliExternalIntelligenceJsonFile, "utf8").includes(cliExternalIntelligenceSecret), false);
+assert.equal(readFileSync(cliExternalIntelligenceMarkdownFile, "utf8").includes(cliExternalIntelligenceSecret), false);
+assert.equal(cliExternalIntelligence.stdout.includes("user:pass"), false);
+assert.equal(cliExternalIntelligence.stdout.includes("cli-intelligence.invalid/v1"), false);
 const cliExternalSuiteOutputDir = path.join(tmp, "cli-external-suite");
 const cliExternalSuiteJsonFile = path.join(tmp, "cli-external-suite-summary.json");
 const cliExternalSuiteMarkdownFile = path.join(tmp, "cli-external-suite-summary.md");

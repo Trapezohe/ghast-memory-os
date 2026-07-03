@@ -5,15 +5,28 @@ import os from "node:os";
 import path from "node:path";
 
 import type {
+  EmbeddingProvider,
+  MaintenancePhase,
+  MemoryConsolidator,
+  MemoryDossierSynthesizer,
+  MemoryExtractor,
   MemoryKind,
   MemoryRecord,
   MemoryOS,
+  MemoryProcedureDistiller,
   PrivacyMode,
   ReconstructedContext,
   ReconstructionIntentHint,
+  MemoryRetrievalConfig,
+  MemoryRetrievalReranker,
   Sensitivity,
   TurnMessage,
 } from "../kernel/types.js";
+import {
+  createDefaultIntelligence,
+  type DefaultIntelligence,
+  type OpenAICompatibleFetch,
+} from "../intelligence/index.js";
 import { readGmosPackageInfo, readGmosPackageRoot } from "../kernel/package-info.js";
 import { eligibleForLongTermMemory, sanitizePublicPayload } from "../kernel/safety.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
@@ -23,10 +36,26 @@ export type ExternalMemoryBenchmarkMode = "prepare" | "reconstruct";
 export type ExternalMemoryBenchmarkProtocol = "deterministic_local" | "official_protocol";
 export type ExternalMemoryBenchmarkTemporalMode = "auto" | "current" | "history";
 export type ExternalMemoryBenchmarkDiagnosticsLevel = "off" | "basic" | "full";
+export type ExternalMemoryBenchmarkIngestMode = "memory" | "message";
 export type ExternalMemoryBenchmarkDatasetFormat =
   | "gmos.external_long_memory_qa.jsonl"
   | "longmemeval.json"
   | "locomo.json";
+
+export interface ExternalMemoryBenchmarkIntelligenceConfig {
+  baseUrl: string;
+  apiKeyEnv?: string | undefined;
+  model: string;
+  embedModel?: string | undefined;
+  dimensions?: number | undefined;
+  timeoutMs?: number | undefined;
+  concurrency?: number | undefined;
+  fetchImpl?: OpenAICompatibleFetch | undefined;
+}
+
+export type ExternalMemoryBenchmarkIntelligence =
+  | DefaultIntelligence
+  | ExternalMemoryBenchmarkIntelligenceConfig;
 
 export interface ExternalMemoryBenchmarkMessageEvent {
   type?: "message" | undefined;
@@ -293,6 +322,27 @@ export interface ExternalMemoryBenchmarkScoreSemantics {
   comparableToOfficialScore: boolean;
 }
 
+export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
+  enabled: boolean;
+  baseUrlHost: string | null;
+  apiKeyEnv: string | null;
+  model: string | null;
+  embedModel: string | null;
+  ingestMode: ExternalMemoryBenchmarkIngestMode;
+  maintainPhases: MaintenancePhase[];
+  concurrency: number | null;
+  timeoutMs: number | null;
+  hookNames: {
+    extractor: string | null;
+    consolidator: string | null;
+    procedureDistiller: string | null;
+    dossierSynthesizer: string | null;
+    embeddingProvider: string | null;
+    reranker: string | null;
+  };
+  extractionFailureCount: number;
+}
+
 export const EXTERNAL_MEMORY_BENCHMARK_SCORE_SEMANTICS: ExternalMemoryBenchmarkScoreSemantics = {
   scoreKind: "deterministic_adapter_context",
   primaryScore: "strictScore",
@@ -352,6 +402,7 @@ export interface ExternalMemoryBenchmarkRunManifest {
     protocol: ExternalMemoryBenchmarkProtocol;
   };
   scoreSemantics: ExternalMemoryBenchmarkScoreSemantics;
+  runtimeIntelligence: ExternalMemoryBenchmarkRuntimeIntelligenceManifest;
   deterministicOnly: boolean;
 }
 
@@ -394,6 +445,9 @@ export interface RunExternalMemoryBenchmarkOptions {
   diagnosticsLevel?: ExternalMemoryBenchmarkDiagnosticsLevel | undefined;
   protocol?: ExternalMemoryBenchmarkProtocol | undefined;
   judge?: ExternalMemoryBenchmarkJudge | undefined;
+  ingestMode?: ExternalMemoryBenchmarkIngestMode | undefined;
+  intelligence?: ExternalMemoryBenchmarkIntelligence | undefined;
+  maintainPhases?: MaintenancePhase[] | undefined;
   onCaseResult?: ((progress: ExternalMemoryBenchmarkProgress) => void) | undefined;
 }
 
@@ -1368,6 +1422,7 @@ function createRunManifest(input: {
   caseCount: number;
   caseGroupCount: number;
   options: RunExternalMemoryBenchmarkOptions;
+  runtimeIntelligence: RuntimeIntelligenceState;
   officialScore: number | null;
 }): ExternalMemoryBenchmarkRunManifest {
   const packageInfo = readGmosPackageInfo();
@@ -1420,6 +1475,10 @@ function createRunManifest(input: {
       judge,
       officialScore: input.officialScore,
     }),
+    runtimeIntelligence: {
+      ...input.runtimeIntelligence.manifest,
+      extractionFailureCount: input.runtimeIntelligence.extractionFailureCount,
+    },
     deterministicOnly: protocol === "deterministic_local",
   };
 }
@@ -1446,6 +1505,324 @@ function normalizedDiagnosticsLevel(
   if (value === undefined) return "full";
   if (value === "off" || value === "basic" || value === "full") return value;
   throw new Error("External benchmark diagnostics level must be off, basic, or full");
+}
+
+function normalizedIngestMode(
+  value: ExternalMemoryBenchmarkIngestMode | undefined,
+): ExternalMemoryBenchmarkIngestMode {
+  if (value === undefined) return "memory";
+  if (value === "memory" || value === "message") return value;
+  throw new Error("External benchmark ingest mode must be memory or message");
+}
+
+const MAINTENANCE_PHASES = new Set<MaintenancePhase>([
+  "decay",
+  "consolidate",
+  "distill",
+  "dossier",
+]);
+
+function normalizedMaintainPhases(value: MaintenancePhase[] | undefined): MaintenancePhase[] {
+  if (value === undefined) return [];
+  const output: MaintenancePhase[] = [];
+  for (const phase of value) {
+    if (!MAINTENANCE_PHASES.has(phase)) {
+      throw new Error("External benchmark maintainPhases must contain only decay, consolidate, distill, or dossier");
+    }
+    if (!output.includes(phase)) output.push(phase);
+  }
+  return output;
+}
+
+function normalizedPositiveInteger(
+  value: number | undefined,
+  fallback: number,
+  label: string,
+): number {
+  const input = value ?? fallback;
+  if (!Number.isInteger(input) || input <= 0) {
+    throw new Error(`${label} must be a positive integer`);
+  }
+  return input;
+}
+
+function hookName(value: unknown): string | null {
+  if (!value) return null;
+  if (typeof value === "function") return value.name || "anonymous";
+  const name = (value as { name?: unknown }).name;
+  return typeof name === "string" && name.trim() ? name.trim() : "anonymous";
+}
+
+function baseUrlHost(baseUrl: string): string {
+  try {
+    const parsed = new URL(baseUrl);
+    return parsed.hostname;
+  } catch {
+    throw new Error("External benchmark intelligence baseUrl must be a valid URL");
+  }
+}
+
+function apiKeyEnvName(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(value)) {
+    throw new Error("External benchmark intelligence apiKeyEnv must be an environment variable name");
+  }
+  return value;
+}
+
+function isIntelligenceConfig(
+  value: ExternalMemoryBenchmarkIntelligence,
+): value is ExternalMemoryBenchmarkIntelligenceConfig {
+  return "baseUrl" in value && "model" in value;
+}
+
+function createLimit(concurrency: number): <T>(task: () => Promise<T>) => Promise<T> {
+  let active = 0;
+  const queue: Array<() => void> = [];
+  return async (task) => {
+    if (active >= concurrency) {
+      await new Promise<void>((resolve) => queue.push(resolve));
+    }
+    active += 1;
+    try {
+      return await task();
+    } finally {
+      active -= 1;
+      queue.shift()?.();
+    }
+  };
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`External benchmark intelligence ${label} timed out`)),
+      timeoutMs,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+function wrapExtractor(
+  extractor: MemoryExtractor | undefined,
+  run: <T>(label: string, task: () => Promise<T>) => Promise<T>,
+): MemoryExtractor | undefined {
+  if (!extractor) return undefined;
+  const name = hookName(extractor) ?? "anonymous";
+  return {
+    name,
+    extract(input) {
+      return run("extractor", async () =>
+        typeof extractor === "function" ? extractor(input) : extractor.extract(input)
+      );
+    },
+  };
+}
+
+function wrapConsolidator(
+  consolidator: MemoryConsolidator | undefined,
+  run: <T>(label: string, task: () => Promise<T>) => Promise<T>,
+): MemoryConsolidator | undefined {
+  if (!consolidator) return undefined;
+  const name = hookName(consolidator) ?? "anonymous";
+  return {
+    name,
+    consolidate(input) {
+      return run("consolidator", async () =>
+        typeof consolidator === "function" ? consolidator(input) : consolidator.consolidate(input)
+      );
+    },
+  };
+}
+
+function wrapProcedureDistiller(
+  procedureDistiller: MemoryProcedureDistiller | undefined,
+  run: <T>(label: string, task: () => Promise<T>) => Promise<T>,
+): MemoryProcedureDistiller | undefined {
+  if (!procedureDistiller) return undefined;
+  const name = hookName(procedureDistiller) ?? "anonymous";
+  return {
+    name,
+    distill(input) {
+      return run("procedureDistiller", async () =>
+        typeof procedureDistiller === "function"
+          ? procedureDistiller(input)
+          : procedureDistiller.distill(input)
+      );
+    },
+  };
+}
+
+function wrapDossierSynthesizer(
+  dossierSynthesizer: MemoryDossierSynthesizer | undefined,
+  run: <T>(label: string, task: () => Promise<T>) => Promise<T>,
+): MemoryDossierSynthesizer | undefined {
+  if (!dossierSynthesizer) return undefined;
+  const name = hookName(dossierSynthesizer) ?? "anonymous";
+  return {
+    name,
+    synthesize(input) {
+      return run("dossierSynthesizer", async () =>
+        typeof dossierSynthesizer === "function"
+          ? dossierSynthesizer(input)
+          : dossierSynthesizer.synthesize(input)
+      );
+    },
+  };
+}
+
+function wrapEmbeddingProvider(
+  embeddingProvider: EmbeddingProvider | undefined,
+  run: <T>(label: string, task: () => Promise<T>) => Promise<T>,
+): EmbeddingProvider | undefined {
+  if (!embeddingProvider) return undefined;
+  if (typeof embeddingProvider === "function") {
+    return (texts) => run("embeddingProvider", async () => embeddingProvider(texts));
+  }
+  return {
+    name: embeddingProvider.name,
+    dimensions: embeddingProvider.dimensions,
+    embed(texts) {
+      return run("embeddingProvider", async () => embeddingProvider.embed(texts));
+    },
+  };
+}
+
+function wrapReranker(
+  reranker: MemoryRetrievalReranker | undefined,
+  run: <T>(label: string, task: () => Promise<T>) => Promise<T>,
+): MemoryRetrievalReranker | undefined {
+  if (!reranker) return undefined;
+  const name = hookName(reranker) ?? "anonymous";
+  return {
+    name,
+    rerank(input) {
+      return run("reranker", async () =>
+        typeof reranker === "function" ? reranker(input) : reranker.rerank(input)
+      );
+    },
+  };
+}
+
+function hookNamesFor(hooks: DefaultIntelligence): ExternalMemoryBenchmarkRuntimeIntelligenceManifest["hookNames"] {
+  return {
+    extractor: hookName(hooks.extractor),
+    consolidator: hookName(hooks.consolidator),
+    procedureDistiller: hookName(hooks.procedureDistiller),
+    dossierSynthesizer: hookName(hooks.dossierSynthesizer),
+    embeddingProvider: hookName(hooks.embeddingProvider),
+    reranker: hookName(hooks.reranker ?? hooks.retrieval?.reranker),
+  };
+}
+
+interface RuntimeIntelligenceState {
+  hooks?: DefaultIntelligence | undefined;
+  manifest: ExternalMemoryBenchmarkRuntimeIntelligenceManifest;
+  extractionFailureCount: number;
+}
+
+function disabledRuntimeIntelligence(
+  ingestMode: ExternalMemoryBenchmarkIngestMode,
+  maintainPhases: MaintenancePhase[],
+): RuntimeIntelligenceState {
+  return {
+    manifest: {
+      enabled: false,
+      baseUrlHost: null,
+      apiKeyEnv: null,
+      model: null,
+      embedModel: null,
+      ingestMode,
+      maintainPhases,
+      concurrency: null,
+      timeoutMs: null,
+      hookNames: {
+        extractor: null,
+        consolidator: null,
+        procedureDistiller: null,
+        dossierSynthesizer: null,
+        embeddingProvider: null,
+        reranker: null,
+      },
+      extractionFailureCount: 0,
+    },
+    extractionFailureCount: 0,
+  };
+}
+
+function resolveRuntimeIntelligence(input: {
+  intelligence?: ExternalMemoryBenchmarkIntelligence | undefined;
+  ingestMode: ExternalMemoryBenchmarkIngestMode;
+  maintainPhases: MaintenancePhase[];
+}): RuntimeIntelligenceState {
+  if (!input.intelligence) {
+    return disabledRuntimeIntelligence(input.ingestMode, input.maintainPhases);
+  }
+  const config = isIntelligenceConfig(input.intelligence) ? input.intelligence : null;
+  const concurrency = normalizedPositiveInteger(config?.concurrency, 2, "External benchmark intelligence concurrency");
+  const timeoutMs = normalizedPositiveInteger(config?.timeoutMs, 20_000, "External benchmark intelligence timeoutMs");
+  const apiKeyEnv = apiKeyEnvName(config?.apiKeyEnv);
+  const apiKey = apiKeyEnv ? process.env[apiKeyEnv] : undefined;
+  if (apiKeyEnv && !apiKey) {
+    throw new Error(`External benchmark intelligence API key environment variable is not set: ${apiKeyEnv}`);
+  }
+  const rawHooks: DefaultIntelligence = config
+    ? createDefaultIntelligence({
+        baseUrl: config.baseUrl,
+        model: config.model,
+        ...(config.embedModel ? { embedModel: config.embedModel } : {}),
+        ...(config.dimensions !== undefined ? { dimensions: config.dimensions } : {}),
+        ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+        ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
+        ...(apiKey ? { apiKey } : {}),
+      })
+    : input.intelligence as DefaultIntelligence;
+  const limit = createLimit(concurrency);
+  const run = <T>(label: string, task: () => Promise<T>): Promise<T> =>
+    limit(() => withTimeout(Promise.resolve().then(task), timeoutMs, label));
+  const extractor = wrapExtractor(rawHooks.extractor, run);
+  const consolidator = wrapConsolidator(rawHooks.consolidator, run);
+  const procedureDistiller = wrapProcedureDistiller(rawHooks.procedureDistiller, run);
+  const dossierSynthesizer = wrapDossierSynthesizer(rawHooks.dossierSynthesizer, run);
+  const embeddingProvider = wrapEmbeddingProvider(rawHooks.embeddingProvider, run);
+  const wrappedReranker = wrapReranker(rawHooks.reranker ?? rawHooks.retrieval?.reranker, run);
+  const hooks: DefaultIntelligence = {
+    ...(extractor ? { extractor } : {}),
+    ...(consolidator ? { consolidator } : {}),
+    ...(procedureDistiller ? { procedureDistiller } : {}),
+    ...(dossierSynthesizer ? { dossierSynthesizer } : {}),
+    ...(embeddingProvider ? { embeddingProvider } : {}),
+    ...(wrappedReranker ? { reranker: wrappedReranker } : {}),
+    ...(rawHooks.retrieval || wrappedReranker
+      ? { retrieval: { ...(rawHooks.retrieval ?? {}), ...(wrappedReranker ? { reranker: wrappedReranker } : {}) } }
+      : {}),
+  };
+  return {
+    hooks,
+    manifest: {
+      enabled: true,
+      baseUrlHost: config ? baseUrlHost(config.baseUrl) : null,
+      apiKeyEnv: apiKeyEnv ?? null,
+      model: config?.model ?? null,
+      embedModel: config?.embedModel ?? null,
+      ingestMode: input.ingestMode,
+      maintainPhases: input.maintainPhases,
+      concurrency,
+      timeoutMs,
+      hookNames: hookNamesFor(hooks),
+      extractionFailureCount: 0,
+    },
+    extractionFailureCount: 0,
+  };
 }
 
 function incrementCounter(map: Map<string, number>, name: string): void {
@@ -1698,12 +2075,14 @@ function groupCases(
 
 interface AppliedBenchmarkEvent {
   warning?: string | undefined;
+  extractionFailureCount?: number | undefined;
 }
 
 async function applyBenchmarkEvent(
   memory: MemoryOS,
   profileId: string,
   event: ExternalMemoryBenchmarkEvent,
+  options: { countExtractionFailures?: boolean | undefined } = {},
 ): Promise<AppliedBenchmarkEvent> {
   if (event.type === "task") {
     await memory.commitOutcome({
@@ -1738,7 +2117,7 @@ async function applyBenchmarkEvent(
     });
     return {};
   } else {
-    await memory.observe({
+    const report = await memory.observeWithReport({
       type: "conversation.message",
       profileId,
       role: event.role ?? "user",
@@ -1747,7 +2126,13 @@ async function applyBenchmarkEvent(
       metadata: event.metadata,
       createdAt: event.createdAt,
     });
-    return {};
+    return {
+      extractionFailureCount: options.countExtractionFailures === true &&
+        (report.extraction?.extractorFailed === true ||
+          report.extraction?.extractionSource === "none")
+        ? 1
+        : 0,
+    };
   }
 }
 
@@ -1914,23 +2299,64 @@ async function scoreCase(input: {
   };
 }
 
+function latestEventTimestamp(events: ExternalMemoryBenchmarkEvent[]): string {
+  let latestMs = Number.NEGATIVE_INFINITY;
+  let latestIso = "1970-01-01T00:00:00.000Z";
+  for (const event of events) {
+    const createdAt = "createdAt" in event ? event.createdAt : undefined;
+    if (!createdAt) continue;
+    const timestamp = Date.parse(createdAt);
+    if (!Number.isFinite(timestamp) || timestamp < latestMs) continue;
+    latestMs = timestamp;
+    latestIso = new Date(timestamp).toISOString();
+  }
+  return latestIso;
+}
+
 async function runCaseGroup(input: {
   group: CaseGroup;
   options: RunExternalMemoryBenchmarkOptions;
+  runtimeIntelligence: RuntimeIntelligenceState;
   recordResult: (index: number, result: ExternalMemoryBenchmarkCaseResult) => void;
 }): Promise<ExternalMemoryBenchmarkGroupTiming> {
   const groupStartedMs = Date.now();
   const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-external-benchmark-"));
-  const store = createSqliteMemoryStore({ path: path.join(tmp, "group.db") });
-  const memory = createMemoryOS({ profileId: "external", store });
+  const hooks = input.runtimeIntelligence.hooks;
+  const retrieval: MemoryRetrievalConfig | undefined =
+    hooks?.retrieval ?? (hooks?.reranker ? { reranker: hooks.reranker } : undefined);
+  const store = createSqliteMemoryStore({
+    path: path.join(tmp, "group.db"),
+    ...(hooks?.embeddingProvider ? { embeddingProvider: hooks.embeddingProvider } : {}),
+    ...(retrieval ? { retrieval } : {}),
+  });
+  const memory = createMemoryOS({
+    profileId: "external",
+    store,
+    ...(hooks?.extractor ? { extractor: hooks.extractor } : {}),
+    ...(hooks?.consolidator ? { consolidator: hooks.consolidator } : {}),
+    ...(hooks?.procedureDistiller ? { procedureDistiller: hooks.procedureDistiller } : {}),
+    ...(hooks?.dossierSynthesizer ? { dossierSynthesizer: hooks.dossierSynthesizer } : {}),
+    ...(hooks?.embeddingProvider ? { embeddingProvider: hooks.embeddingProvider } : {}),
+    ...(retrieval ? { retrieval } : {}),
+  });
   const results: ExternalMemoryBenchmarkCaseResult[] = [];
   const setupWarnings: string[] = [];
   let setupDurationMs = 0;
   try {
     await store.initialize();
     for (const event of input.group.events) {
-      const applied = await applyBenchmarkEvent(memory, input.group.profileId, event);
+      const applied = await applyBenchmarkEvent(memory, input.group.profileId, event, {
+        countExtractionFailures: input.runtimeIntelligence.hooks?.extractor !== undefined,
+      });
       if (applied.warning !== undefined) setupWarnings.push(applied.warning);
+      input.runtimeIntelligence.extractionFailureCount += applied.extractionFailureCount ?? 0;
+    }
+    if (input.options.maintainPhases && input.options.maintainPhases.length > 0) {
+      await memory.maintain({
+        profileId: input.group.profileId,
+        phases: input.options.maintainPhases,
+        now: latestEventTimestamp(input.group.events),
+      });
     }
     setupDurationMs = Math.max(0, Date.now() - groupStartedMs);
     for (const item of input.group.items) {
@@ -2012,6 +2438,13 @@ export async function runExternalMemoryBenchmark(
   const concurrency = normalizedConcurrency(options.concurrency);
   const failureSampleLimit = normalizedFailureSampleLimit(options.failureSampleLimit);
   const diagnosticsLevel = normalizedDiagnosticsLevel(options.diagnosticsLevel);
+  const ingestMode = normalizedIngestMode(options.ingestMode);
+  const maintainPhases = normalizedMaintainPhases(options.maintainPhases);
+  const runtimeIntelligence = resolveRuntimeIntelligence({
+    intelligence: options.intelligence,
+    ingestMode,
+    maintainPhases,
+  });
   const normalizedOptions: RunExternalMemoryBenchmarkOptions = {
     ...options,
     cases: normalizedCases,
@@ -2021,6 +2454,8 @@ export async function runExternalMemoryBenchmark(
     failureSampleLimit,
     diagnosticsLevel,
     protocol,
+    ingestMode,
+    maintainPhases,
     ...(judge ? { judge } : {}),
   };
   const groups = groupCases(normalizedCases, normalizedOptions);
@@ -2045,7 +2480,7 @@ export async function runExternalMemoryBenchmark(
     });
   };
   const groupTimings = await runGroupsWithConcurrency(groups, concurrency, (group) =>
-    runCaseGroup({ group, options: normalizedOptions, recordResult }),
+    runCaseGroup({ group, options: normalizedOptions, runtimeIntelligence, recordResult }),
   );
   const completedCases = cases.map((entry, index) => {
     if (!entry) throw new Error(`External benchmark case ${index + 1} did not produce a result`);
@@ -2090,6 +2525,7 @@ export async function runExternalMemoryBenchmark(
       caseCount: completedCases.length,
       caseGroupCount: groups.length,
       options: normalizedOptions,
+      runtimeIntelligence,
       officialScore,
     }),
     cases: completedCases,

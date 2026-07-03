@@ -79,6 +79,9 @@ npm run examples:quickstart
   embeddings, reranking, and `createDefaultIntelligence()`. These hooks are not
   loaded unless the host imports the subpath and may target hosted or local
   OpenAI-compatible endpoints.
+- External benchmark runs can explicitly attach that intelligence layer and use
+  message ingest for adapter turns; reports keep deterministic-local score
+  semantics separate from official-protocol judging.
 - SQLite read-audit snapshots for read-path purity checks. The runtime uses
   trigger-backed table revisions for durable tables and content digests for FTS
   indexes, not only row counts, to catch accidental writes during `prepareTurn`,
@@ -358,9 +361,10 @@ External reports include strict deterministic scores, normalized evidence scores
 protocol labels, judge provenance, timing, manifests, and failure-stage taxonomy
 for debugging extraction, grounding, reconstruction, context budget, temporal
 policy, and safety behavior. `deterministic_local` is the default and stays
-fully offline. `official_protocol` is available through the SDK only when the
-host provides an async judge callback; gmOS does not make network calls and does
-not silently downgrade official runs to lexical scoring.
+fully offline unless the user explicitly attaches an intelligence endpoint for
+the benchmark run. `official_protocol` is available through the SDK only when
+the host provides an async judge callback; gmOS does not silently downgrade
+official runs to lexical scoring.
 See [benchmarking](./docs/BENCHMARKING.md) and
 [benchmark runs](./docs/BENCHMARK_RUNS.md) for scoring semantics, baseline
 snapshots, and claim rules.

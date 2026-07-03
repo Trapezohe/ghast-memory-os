@@ -239,6 +239,17 @@ export function renderMemoryScaleMarkdown(report: MemoryScaleBenchmarkResult): s
 export function renderExternalMemoryBenchmarkMarkdown(
   report: ExternalMemoryBenchmarkResult,
 ): string {
+  const runtimeIntelligence = report.runManifest.runtimeIntelligence ?? {
+    enabled: false,
+    baseUrlHost: null,
+    model: null,
+    embedModel: null,
+    ingestMode: "memory",
+    maintainPhases: [],
+    concurrency: null,
+    timeoutMs: null,
+    extractionFailureCount: 0,
+  };
   return [
     "# gmOS External Long-Memory QA Benchmark",
     "",
@@ -265,6 +276,7 @@ export function renderExternalMemoryBenchmarkMarkdown(
     `Options: mode=${report.runManifest.options.mode ?? "case/default"} protocol=${report.runManifest.options.protocol} maxSteps=${report.runManifest.options.maxSteps ?? "default"} maxBranch=${report.runManifest.options.maxBranch ?? "default"} maxMemories=${report.runManifest.options.maxMemories ?? "default"} contextBudgetTokens=${report.runManifest.options.contextBudgetTokens ?? "default"} temporalMode=${report.runManifest.options.temporalMode ?? "case/default"} includeSensitive=${report.runManifest.options.includeSensitive} includeTemporalMetadata=${report.runManifest.options.includeTemporalMetadata} requireConvergence=${report.runManifest.options.requireConvergence} concurrency=${report.runManifest.options.concurrency} reuseProfiles=${report.runManifest.options.reuseProfiles} diagnosticsLevel=${report.runManifest.options.diagnosticsLevel}`,
     `Failure sample limit: ${report.runManifest.options.failureSampleLimit}`,
     `Score semantics: ${scoreSemanticsLine(report.runManifest.scoreSemantics)}`,
+    `Runtime intelligence: enabled=${runtimeIntelligence.enabled} ingestMode=${runtimeIntelligence.ingestMode} model=${runtimeIntelligence.model ?? "none"} embedModel=${runtimeIntelligence.embedModel ?? "none"} host=${runtimeIntelligence.baseUrlHost ?? "none"} maintainPhases=${runtimeIntelligence.maintainPhases.join(",") || "none"} concurrency=${runtimeIntelligence.concurrency ?? "none"} timeoutMs=${runtimeIntelligence.timeoutMs ?? "none"} extractionFailures=${runtimeIntelligence.extractionFailureCount}`,
     `Deterministic only: ${report.runManifest.deterministicOnly ? "yes" : "no"}`,
     "",
     "## Summary",

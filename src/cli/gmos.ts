@@ -145,6 +145,7 @@ Usage:
   gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --protocol deterministic-local --require-convergence --include-sensitive --temporal-metadata
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
   gmos gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --intelligence-base-url http://127.0.0.1:11434/v1 --intelligence-model llama3.1 --intelligence-embed-model nomic-embed-text --intelligence-api-key-env GMOS_BENCH_API_KEY
   gmos gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format markdown
   gmos gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
   gmos gym statebench write-agent --output-file ./STATE-Bench/agents/gmos_memory_agent.py
@@ -432,19 +433,29 @@ function memoryKindOption(): MemoryKind {
   return raw;
 }
 
-function maintenancePhasesOption(): MaintenancePhase[] | undefined {
-  const raw = value("--phases");
-  if (!raw) return undefined;
+function maintenancePhaseList(raw: string, label: string): MaintenancePhase[] {
   const phases = raw.split(",").map((phase) => phase.trim());
   if (phases.some((phase) => phase.length === 0)) {
-    throw new Error("--phases must be a comma-separated list of decay,consolidate,distill,dossier");
+    throw new Error(`${label} must be a comma-separated list of decay,consolidate,distill,dossier`);
   }
   const allowed = new Set<MaintenancePhase>(["decay", "consolidate", "distill", "dossier"]);
   const invalid = phases.find((phase): phase is string => !allowed.has(phase as MaintenancePhase));
   if (invalid) {
-    throw new Error("--phases must contain only decay, consolidate, distill, or dossier");
+    throw new Error(`${label} must contain only decay, consolidate, distill, or dossier`);
   }
   return [...new Set(phases as MaintenancePhase[])];
+}
+
+function maintenancePhasesOption(): MaintenancePhase[] | undefined {
+  const raw = value("--phases");
+  if (!raw) return undefined;
+  return maintenancePhaseList(raw, "--phases");
+}
+
+function externalMaintainPhasesOption(): MaintenancePhase[] | undefined {
+  const raw = value("--maintain-phases");
+  if (!raw) return undefined;
+  return maintenancePhaseList(raw, "--maintain-phases");
 }
 
 function optionalMemoryKindOption(): MemoryKind | undefined {
@@ -488,6 +499,57 @@ function externalProtocolOption(): "deterministic_local" | "official_protocol" {
     return "official_protocol";
   }
   throw new Error("--protocol must be deterministic-local or official-protocol");
+}
+
+function externalIngestModeOption(): "memory" | "message" {
+  const raw = value("--ingest-mode", "memory");
+  if (raw === "memory" || raw === "message") return raw;
+  throw new Error("--ingest-mode must be memory or message");
+}
+
+function positiveIntegerOptionValue(name: string): number | undefined {
+  const raw = value(name);
+  if (raw === undefined) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return parsed;
+}
+
+function externalIntelligenceOption(): {
+  baseUrl: string;
+  apiKeyEnv?: string | undefined;
+  model: string;
+  embedModel?: string | undefined;
+  timeoutMs?: number | undefined;
+  concurrency?: number | undefined;
+} | undefined {
+  const hasIntelligenceFlag = process.argv.some((arg) => arg.startsWith("--intelligence-"));
+  if (!hasIntelligenceFlag) return undefined;
+  const baseUrl = value("--intelligence-base-url");
+  if (!baseUrl) {
+    throw new Error("gmos gym external intelligence flags require --intelligence-base-url");
+  }
+  const model = value("--intelligence-model");
+  if (!model) {
+    throw new Error("gmos gym external --intelligence-base-url requires --intelligence-model");
+  }
+  const apiKeyEnv = value("--intelligence-api-key-env");
+  if (apiKeyEnv !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(apiKeyEnv)) {
+    throw new Error("--intelligence-api-key-env must be an environment variable name");
+  }
+  const embedModel = value("--intelligence-embed-model");
+  const timeoutMs = positiveIntegerOptionValue("--intelligence-timeout-ms");
+  const concurrency = positiveIntegerOptionValue("--intelligence-concurrency");
+  return {
+    baseUrl,
+    model,
+    ...(embedModel ? { embedModel } : {}),
+    ...(apiKeyEnv ? { apiKeyEnv } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    ...(concurrency !== undefined ? { concurrency } : {}),
+  };
 }
 
 function listStatusOption(): LowLevelListMemoriesInput["status"] {
@@ -1143,13 +1205,16 @@ async function main(): Promise<void> {
     ) {
       throw new Error("--dataset-format must be gmos, longmemeval, or locomo");
     }
+    const ingestMode = externalIngestModeOption();
+    const intelligence = externalIntelligenceOption();
+    const maintainPhases = externalMaintainPhasesOption();
     const parsedDataset =
       datasetFormat === "gmos"
         ? {
             datasetFormat: "gmos.external_long_memory_qa.jsonl" as const,
             cases: parseExternalMemoryBenchmarkJsonl(inputText),
           }
-        : parseExternalMemoryBenchmarkDataset(inputText, { adapter: datasetFormat });
+        : parseExternalMemoryBenchmarkDataset(inputText, { adapter: datasetFormat, ingestMode });
     const cases = parsedDataset.cases;
     const mode = value("--mode");
     if (mode !== undefined && mode !== "prepare" && mode !== "reconstruct") {
@@ -1188,6 +1253,9 @@ async function main(): Promise<void> {
       failureSampleLimit: nonNegativeIntegerOption("--failure-sample-limit", 20),
       diagnosticsLevel: diagnosticsLevelOption(),
       protocol,
+      ingestMode,
+      ...(intelligence ? { intelligence } : {}),
+      ...(maintainPhases ? { maintainPhases } : {}),
       ...(has("--progress")
         ? {
             onCaseResult: (progress) => {
