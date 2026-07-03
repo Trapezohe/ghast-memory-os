@@ -11,6 +11,8 @@ package exports listed here and avoid importing files under `dist/` or `src/`.
   and profile backup/restore helpers.
 - `@ghast/memory/mcp`: in-process MCP-style router and stdio server helpers.
 - `@ghast/memory/http`: local HTTP adapter.
+- `@ghast/memory/client`: zero-dependency fetch client for browser, edge, and
+  other-process Node callers.
 - `@ghast/memory/host`: host compatibility, generic agent-turn adapter, and
   snapshot import/export helpers.
 - `@ghast/memory/diagnostics`: read-only status reports.
@@ -18,6 +20,16 @@ package exports listed here and avoid importing files under `dist/` or `src/`.
 - `@ghast/memory/evolution`: approval-gated failure review and SDK admin apply/revert control plane.
 - `@ghast/memory/intelligence`: opt-in OpenAI-compatible hook factories and
   `createDefaultIntelligence()`.
+
+## Client Packages
+
+The JS/TS client is exported as `@ghast/memory/client` and ships in the npm
+tarball. It uses global `fetch`, accepts an injected `fetchImpl`, and maps every
+public HTTP route in the OpenAPI snapshot.
+
+The Python client lives under `python/gmos_client`. It is stdlib-only
+(`urllib`) and version-checked against `package.json`, but it is not included in
+the npm tarball.
 
 ## Runtime Facade
 
@@ -896,6 +908,7 @@ deletes its temporary plaintext SQLite database.
 The local HTTP adapter exposes:
 
 - `GET /health`
+- `GET /healthz`
 - `GET /runtime-info`
 - `GET /tools`
 - `GET /status`

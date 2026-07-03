@@ -53,6 +53,7 @@ import {
   publicCliBinariesFromManifest,
   publicCommandNameFromPackageName,
   publicPackageExportsFromManifest,
+  readGmosPackageInfo,
 } from "../src/kernel/package-info.js";
 import {
   createDefaultIntelligence,
@@ -121,6 +122,11 @@ import {
   renderMemoryStatusMarkdown,
 } from "../src/diagnostics/index.js";
 import { createMemoryHttpOpenApiDocument, createMemoryHttpServer } from "../src/http/index.js";
+import {
+  GmosClient,
+  GmosClientError,
+  GMOS_CLIENT_METHOD_ROUTES,
+} from "../src/client/index.js";
 import {
   classifyPayloadSensitivity,
   classifySensitivity,
@@ -14817,6 +14823,10 @@ try {
   assert.equal(health.status, 200);
   assert.equal(health.body.ok, true);
   assert.equal(health.body.framework, "ghast-memory-os");
+  const healthz = await httpJson(`${httpAddress.url}/healthz`);
+  assert.equal(healthz.status, 200);
+  assert.deepEqual(Object.keys(healthz.body).sort(), ["ok", "version"]);
+  assert.equal(healthz.body.version, readGmosPackageInfo().version);
   const runtimeInfo = await httpJson(`${httpAddress.url}/runtime-info`);
   assert.equal(runtimeInfo.status, 200);
   assert.deepEqual(runtimeInfo.body.runtimeInfo, getGmosRuntimeInfo());
@@ -14842,6 +14852,7 @@ try {
   assert.match(httpMcpCallUnknownField.text, /POST \/mcp\/call contains unsupported fields: unsupported/);
   assert.deepEqual(PUBLIC_MEMORY_HTTP_ROUTES, [
     "GET /health",
+    "GET /healthz",
     "GET /runtime-info",
     "GET /tools",
     "GET /status",
@@ -14884,6 +14895,170 @@ try {
   assert.equal(openApiText.includes("/restore"), false);
   assert.equal(openApiText.includes("/evolution/apply"), false);
   assert.equal(openApiText.includes("/evolution/revert"), false);
+  const clientRoutes = Object.values(GMOS_CLIENT_METHOD_ROUTES).sort();
+  assert.deepEqual(clientRoutes, [...PUBLIC_MEMORY_HTTP_ROUTES].sort());
+  const openApiSnapshot = JSON.parse(
+    readFileSync(path.join(process.cwd(), "docs", "openapi.json"), "utf8"),
+  ) as { paths?: Record<string, Record<string, unknown>> };
+  const openApiSnapshotRoutes = Object.entries(openApiSnapshot.paths ?? {})
+    .flatMap(([pathname, methods]) =>
+      Object.keys(methods).map((method) => `${method.toUpperCase()} ${pathname}`),
+    )
+    .sort();
+  assert.deepEqual(openApiSnapshotRoutes, clientRoutes);
+  const clientRequests: Array<{ url: string; init?: RequestInit }> = [];
+  const clientFetch = async (url: string, init?: RequestInit): Promise<Response> => {
+    clientRequests.push({ url, init });
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  const jsClient = new GmosClient({
+    baseUrl: "http://gmos.test/",
+    apiKey: "client-key",
+    fetchImpl: clientFetch,
+  });
+  const clientCallCases: Array<{
+    name: keyof typeof GMOS_CLIENT_METHOD_ROUTES;
+    run: () => Promise<unknown>;
+    body?: Record<string, unknown> | undefined;
+    query?: Record<string, string | undefined> | undefined;
+  }> = [
+    { name: "health", run: () => jsClient.health() },
+    { name: "healthz", run: () => jsClient.healthz() },
+    { name: "runtimeInfo", run: () => jsClient.runtimeInfo() },
+    { name: "tools", run: () => jsClient.tools() },
+    { name: "status", run: () => jsClient.status({ profileId: "client" }), query: { profileId: "client" } },
+    { name: "openapi", run: () => jsClient.openapi() },
+    { name: "profilesList", run: () => jsClient.profilesList() },
+    {
+      name: "profilesCreate",
+      run: () => jsClient.profilesCreate("client"),
+      body: { profileId: "client" },
+    },
+    { name: "keysList", run: () => jsClient.keysList() },
+    {
+      name: "add",
+      run: () => jsClient.add({ profileId: "client", kind: "fact", content: "Client route contract." }),
+      body: { profileId: "client", kind: "fact", content: "Client route contract." },
+    },
+    {
+      name: "search",
+      run: () => jsClient.search({ profileId: "client", query: "contract" }),
+      body: { profileId: "client", query: "contract" },
+    },
+    {
+      name: "observe",
+      run: () => jsClient.observe({ profileId: "client", content: "observed" }),
+      body: { profileId: "client", content: "observed" },
+    },
+    {
+      name: "prepareTurn",
+      run: () => jsClient.prepareTurn({ profileId: "client", text: "contract" }),
+      body: { profileId: "client", text: "contract" },
+    },
+    {
+      name: "explainTurn",
+      run: () => jsClient.explainTurn({ profileId: "client", text: "contract" }),
+      body: { profileId: "client", text: "contract" },
+    },
+    {
+      name: "reconstructContext",
+      run: () => jsClient.reconstructContext({ profileId: "client", text: "contract" }),
+      body: { profileId: "client", text: "contract" },
+    },
+    {
+      name: "explainPath",
+      run: () => jsClient.explainPath({ profileId: "client", text: "contract" }),
+      body: { profileId: "client", text: "contract" },
+    },
+    {
+      name: "commitOutcome",
+      run: () => jsClient.commitOutcome({ profileId: "client", objective: "ship", status: "completed" }),
+      body: { profileId: "client", objective: "ship", status: "completed" },
+    },
+    {
+      name: "recordFeedback",
+      run: () => jsClient.recordFeedback({ profileId: "client", content: "good" }),
+      body: { profileId: "client", content: "good" },
+    },
+    {
+      name: "maintain",
+      run: () => jsClient.maintain({ profileId: "client", dryRun: true }),
+      body: { profileId: "client", dryRun: true },
+    },
+    {
+      name: "forget",
+      run: () => jsClient.forget({ profileId: "client", query: "contract" }),
+      body: { profileId: "client", query: "contract" },
+    },
+    {
+      name: "explain",
+      run: () => jsClient.explain({ profileId: "client", id: "memory_1" }),
+      body: { profileId: "client", id: "memory_1" },
+    },
+    {
+      name: "mcpCall",
+      run: () => jsClient.mcpCall("memory.runtime_info", {}),
+      body: { tool: "memory.runtime_info", args: {} },
+    },
+  ];
+  for (const entry of clientCallCases) {
+    clientRequests.length = 0;
+    await entry.run();
+    const request = clientRequests[0];
+    assert.ok(request);
+    const url = new URL(request.url);
+    const [method, pathname] = GMOS_CLIENT_METHOD_ROUTES[entry.name].split(" ");
+    assert.equal(request.init?.method, method);
+    assert.equal(url.pathname, pathname);
+    for (const [key, value] of Object.entries(entry.query ?? {})) {
+      assert.equal(url.searchParams.get(key), value);
+    }
+    const headers = request.init?.headers as Record<string, string>;
+    assert.equal(headers.authorization, "Bearer client-key");
+    if (entry.body) assert.deepEqual(JSON.parse(String(request.init?.body)), entry.body);
+    else assert.equal(request.init?.body, undefined);
+  }
+  const retrySleeps: number[] = [];
+  let retryAttempts = 0;
+  const retryClient = new GmosClient({
+    baseUrl: "http://gmos.test",
+    apiKey: "client-key",
+    maxRetryAfterMs: 50,
+    sleep: async (ms) => {
+      retrySleeps.push(ms);
+    },
+    fetchImpl: async () => {
+      retryAttempts += 1;
+      if (retryAttempts === 1) {
+        return new Response(JSON.stringify({ ok: false }), {
+          status: 429,
+          headers: { "retry-after": "10" },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    },
+  });
+  await retryClient.runtimeInfo();
+  assert.equal(retryAttempts, 2);
+  assert.deepEqual(retrySleeps, [50]);
+  const errorClient = new GmosClient({
+    baseUrl: "http://gmos.test",
+    apiKey: "client-key",
+    fetchImpl: async () =>
+      new Response(JSON.stringify({
+        ok: false,
+        error: { code: "forbidden", message: "readwrite scope required" },
+      }), { status: 403 }),
+  });
+  await assert.rejects(
+    () => errorClient.observe({ profileId: "client", content: "blocked" }),
+    (error) => {
+      assert.equal(error instanceof GmosClientError, true);
+      assert.equal((error as GmosClientError).status, 403);
+      assert.equal((error as GmosClientError).code, "forbidden");
+      return true;
+    },
+  );
   const httpOpenApi = await httpJson(`${httpAddress.url}/openapi.json`);
   assert.equal(httpOpenApi.status, 200);
   assert.deepEqual(httpOpenApi.body, openApiDocument);
@@ -15177,6 +15352,9 @@ try {
   const health = await httpJson(`${authedHttpAddress.url}/health`);
   assert.equal(health.status, 200);
   assert.equal(health.body.authRequired, true);
+  const authedHealthz = await httpJson(`${authedHttpAddress.url}/healthz`);
+  assert.equal(authedHealthz.status, 200);
+  assert.deepEqual(Object.keys(authedHealthz.body).sort(), ["ok", "version"]);
   const toolsWithoutToken = await httpJson(`${authedHttpAddress.url}/tools`);
   assert.equal(toolsWithoutToken.status, 401);
   assert.equal((toolsWithoutToken.body.error as { code?: string }).code, "unauthorized");
@@ -15265,6 +15443,9 @@ try {
   const scopedHealth = await httpJson(`${scopedHttpAddress.url}/health`);
   assert.equal(scopedHealth.status, 200);
   assert.equal(scopedHealth.body.authRequired, true);
+  const scopedHealthz = await httpJson(`${scopedHttpAddress.url}/healthz`);
+  assert.equal(scopedHealthz.status, 200);
+  assert.deepEqual(Object.keys(scopedHealthz.body).sort(), ["ok", "version"]);
   const scopedUnauthorized = await httpJson(`${scopedHttpAddress.url}/runtime-info`);
   assert.equal(scopedUnauthorized.status, 401);
   const scopedRevoked = await httpJson(`${scopedHttpAddress.url}/runtime-info`, {

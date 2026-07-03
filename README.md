@@ -59,6 +59,26 @@ npm run build
 npm run examples:quickstart
 ```
 
+## Docker Quickstart
+
+The image runs `gmos serve` with a persistent SQLite DB at `/data/gmos.db`.
+Inside the container it binds `0.0.0.0`; publish ports deliberately and keep key
+custody outside the image.
+
+```bash
+docker compose up --build
+docker compose exec gmos gmos keys create --db /data/gmos.db --label agent --scope readwrite --profiles default
+curl http://127.0.0.1:4787/healthz
+```
+
+Manual smoke test:
+
+```bash
+scripts/docker-smoke.sh
+```
+
+This Docker smoke is manual and is not part of `gate:pr`.
+
 ## Current Scope
 
 - Plaintext local SQLite store by default, with opt-in encryption at rest when
@@ -516,12 +536,34 @@ stored only as sha256 hashes, and can be listed/revoked with `gmos keys`.
 `gmos audit list` reads the content-free HTTP audit log. `gmos http openapi`
 emits the generated OpenAPI 3.1 contract.
 
-Endpoints include `GET /health`, `GET /runtime-info`, `GET /status`, `GET
-/tools`, `GET /openapi.json`, `GET /profiles`, `POST /profiles`, `GET /keys`,
-`POST /add`, `POST /search`, `POST /observe`, `POST /prepare`, `POST
-/explain-turn`, `POST /reconstruct`, `POST /explain-path`, `POST
-/commit-outcome`, `POST /feedback`, `POST /maintain`, `POST /forget`, `POST
-/explain`, and `POST /mcp/call`.
+Endpoints include `GET /health`, `GET /healthz`, `GET /runtime-info`, `GET
+/status`, `GET /tools`, `GET /openapi.json`, `GET /profiles`, `POST
+/profiles`, `GET /keys`, `POST /add`, `POST /search`, `POST /observe`, `POST
+/prepare`, `POST /explain-turn`, `POST /reconstruct`, `POST /explain-path`,
+`POST /commit-outcome`, `POST /feedback`, `POST /maintain`, `POST /forget`,
+`POST /explain`, and `POST /mcp/call`.
+
+JS/TS callers can use the zero-dependency fetch client:
+
+```ts
+import { GmosClient } from "@ghast/memory/client";
+
+const memory = new GmosClient({
+  baseUrl: "http://127.0.0.1:4787",
+  apiKey: process.env.GMOS_API_KEY!,
+});
+await memory.observe({ profileId: "local", role: "user", content: "User opened the release planning thread." });
+```
+
+The Python client under `python/` is stdlib-only and is not shipped in the npm
+tarball:
+
+```python
+from gmos_client import GmosClient
+
+memory = GmosClient("http://127.0.0.1:4787", api_key)
+memory.prepare_turn({"profileId": "local", "text": "What should I remember?"})
+```
 
 Profile backup/restore is intentionally not exposed as an MCP tool or HTTP route.
 It remains an in-process SQLite store API and CLI operation for trusted

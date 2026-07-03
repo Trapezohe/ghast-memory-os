@@ -1,0 +1,21 @@
+services:
+  gmos:
+    build: .
+    ports:
+      - "127.0.0.1:4787:4787"
+    environment:
+      GMOS_SERVE_PORT: "4787"
+      GMOS_SERVE_KEYS: "1"
+      GMOS_SERVE_RATE_LIMIT: "600"
+      GMOS_SERVE_ALLOW_NON_LOOPBACK: "1"
+    volumes:
+      - gmos-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  gmos-data:

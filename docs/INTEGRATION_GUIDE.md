@@ -410,6 +410,7 @@ curl -H "Authorization: Bearer local-dev-token" \
 Useful endpoints:
 
 - `GET /health`
+- `GET /healthz`
 - `GET /runtime-info`
 - `GET /tools`
 - `GET /status`
@@ -440,9 +441,10 @@ curl -X POST -H "Authorization: Bearer local-dev-token" \
   http://127.0.0.1:4787/forget
 ```
 
-`GET /health` is intentionally open and only reports service health plus whether
-auth is required. All other endpoints return `401` when legacy `authToken` is
-set or `--keys` is enabled and the request is missing
+`GET /health` and `GET /healthz` are intentionally open. `GET /healthz` is for
+container/service health checks and returns only `{ ok, version }`. All other
+endpoints return `401` when legacy `authToken` is set or `--keys` is enabled
+and the request is missing
 `Authorization: Bearer <token>`. In scoped-key mode, profile allowlist failures
 return `403 profile_forbidden`. CORS is off by default; pass explicit
 `--cors-origin` values when a browser host needs access.
@@ -460,6 +462,54 @@ The example starts an ephemeral localhost server, verifies auth, records an
 ordinary observation, imports an explicit preference memory, prepares
 evidence-backed context, reads status, and deletes its temporary plaintext
 SQLite database.
+
+## Self-Hosting
+
+Docker:
+
+```bash
+docker compose up --build
+docker compose exec gmos gmos keys create --db /data/gmos.db --label agent --scope readwrite --profiles default
+```
+
+The container binds `0.0.0.0` internally so Docker can publish the port. The
+compose file publishes `127.0.0.1:4787:4787`; widen that only deliberately.
+`GET /healthz` is unauthenticated and returns only `{ ok, version }`.
+
+Bare Node:
+
+```bash
+gmos keys create --db ./gmos.db --label agent --scope readwrite --profiles default
+gmos serve --db ./gmos.db --profile default --keys --host-iface 127.0.0.1 --port 4787
+```
+
+Always-on templates live in `examples/service/`.
+
+## Clients
+
+JS/TS:
+
+```ts
+import { GmosClient } from "@ghast/memory/client";
+
+const memory = new GmosClient({
+  baseUrl: "http://127.0.0.1:4787",
+  apiKey: process.env.GMOS_API_KEY!,
+});
+await memory.prepareTurn({ profileId: "default", text: "release plan" });
+```
+
+Python:
+
+```python
+from gmos_client import GmosClient
+
+memory = GmosClient("http://127.0.0.1:4787", api_key)
+memory.observe({"profileId": "default", "role": "user", "content": "User opened the release planning thread."})
+```
+
+The Python client has no runtime dependencies and is kept under `python/`; it is
+not included in the `@ghast/memory` npm tarball.
 
 ## Host Contract Tests
 

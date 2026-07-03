@@ -117,6 +117,17 @@ function successSchemaFor(route: PublicMemoryHttpRouteEntry): OpenApiSchema {
       },
     };
   }
+  if (route.route === "GET /healthz") {
+    return {
+      type: "object",
+      additionalProperties: false,
+      required: ["ok", "version"],
+      properties: {
+        ok: { type: "boolean" },
+        version: { type: "string" },
+      },
+    };
+  }
   return {
     type: "object",
     additionalProperties: true,

@@ -7,6 +7,7 @@ import {
   type DiagnosticsStore,
   type MemoryStatusReportInput,
 } from "../diagnostics/index.js";
+import { readGmosPackageInfo } from "../kernel/package-info.js";
 import type { MemoryOS } from "../kernel/types.js";
 import {
   createMemoryMcpServer,
@@ -525,6 +526,15 @@ export function createMemoryHttpServer(
           framework: "ghast-memory-os",
           status: "ready",
           authRequired: options.scopedKeys === true || authToken !== undefined,
+        });
+        return;
+      }
+
+      if (route?.route === "GET /healthz") {
+        statusCode = 200;
+        sendJson(request, response, 200, {
+          ok: true,
+          version: readGmosPackageInfo().version,
         });
         return;
       }

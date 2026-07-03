@@ -16,6 +16,7 @@ export const PUBLIC_MEMORY_MCP_TOOL_NAMES = [
 
 export const PUBLIC_MEMORY_HTTP_ROUTE_REGISTRY = [
   { method: "GET", pathname: "/health", route: "GET /health", scope: "open" },
+  { method: "GET", pathname: "/healthz", route: "GET /healthz", scope: "open" },
   { method: "GET", pathname: "/runtime-info", route: "GET /runtime-info", scope: "read" },
   { method: "GET", pathname: "/tools", route: "GET /tools", scope: "read" },
   { method: "GET", pathname: "/status", route: "GET /status", scope: "read" },

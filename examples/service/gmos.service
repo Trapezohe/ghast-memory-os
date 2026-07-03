@@ -1,0 +1,22 @@
+[Unit]
+Description=gmOS Memory Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{GMOS_USER}}
+Group={{GMOS_GROUP}}
+ExecStart={{GMOS_BIN}} serve --db {{GMOS_DB}} --profile {{GMOS_PROFILE}} --keys --host-iface 127.0.0.1 --port {{GMOS_PORT}} --rate-limit 600 --audit-retention-days 90
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths={{GMOS_DATA_DIR}}
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

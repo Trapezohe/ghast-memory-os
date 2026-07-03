@@ -33,6 +33,13 @@ current behavior.
 and secret distribution. CORS is off by default; configure explicit origins
 only.
 
+The Docker image is the one intentional non-loopback exception: it starts
+`gmos serve --host-iface 0.0.0.0 --allow-non-loopback` because container
+networking requires an internal wildcard bind. Treat the published Docker port
+as the real exposure boundary. Publish only the host interface you intend, for
+example `127.0.0.1:4787:4787`, and keep key creation/revocation on the trusted
+CLI.
+
 Use one scoped key per agent or integration. `read` keys can search, prepare,
 reconstruct, explain, and read status/OpenAPI. `readwrite` keys can also
 observe, add, commit outcomes, record feedback, maintain, and forget. `admin`

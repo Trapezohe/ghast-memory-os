@@ -99,6 +99,10 @@ try {
         PUBLIC_MEMORY_HTTP_ROUTES as HTTP_PUBLIC_MEMORY_HTTP_ROUTES,
       } from "@ghast/memory/http";
       import {
+        GmosClient,
+        GMOS_CLIENT_METHOD_ROUTES,
+      } from "@ghast/memory/client";
+      import {
         renderHostCompatibilityGymMarkdown,
         renderExternalMemoryBenchmarkMarkdown,
         renderExternalMemoryBenchmarkSuiteMarkdown,
@@ -331,8 +335,22 @@ try {
       );
       assert.deepEqual(HTTP_PUBLIC_MEMORY_HTTP_ROUTES, PUBLIC_MEMORY_HTTP_ROUTES);
       assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("GET /runtime-info"), true);
+      assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("GET /healthz"), true);
       assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /backup"), false);
       assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /restore"), false);
+      assert.equal(GMOS_CLIENT_METHOD_ROUTES.healthz, "GET /healthz");
+      const clientRequests = [];
+      const gmosClient = new GmosClient({
+        baseUrl: "http://gmos.test",
+        apiKey: "consumer-key",
+        fetchImpl: async (url, init) => {
+          clientRequests.push({ url, init });
+          return new Response(JSON.stringify({ ok: true, version: "test" }), { status: 200 });
+        },
+      });
+      assert.deepEqual(await gmosClient.healthz(), { ok: true, version: "test" });
+      assert.equal(new URL(clientRequests[0].url).pathname, "/healthz");
+      assert.equal(clientRequests[0].init.headers.authorization, "Bearer consumer-key");
       assert.equal(Object.keys(runtimeInfoTool.inputSchema.properties).length, 0);
       assert.equal(Object.hasOwn(prepareTool.inputSchema.properties, "includeSensitive"), false);
       assert.equal(Object.hasOwn(explainTurnTool.inputSchema.properties, "includeSensitive"), false);

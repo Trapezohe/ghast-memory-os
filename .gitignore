@@ -10,3 +10,5 @@ coverage/
 .DS_Store
 .env
 release-evidence/
+__pycache__/
+package-lock.json

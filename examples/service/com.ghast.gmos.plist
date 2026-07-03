@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ghast.gmos</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{GMOS_BIN}}</string>
+    <string>serve</string>
+    <string>--db</string>
+    <string>{{GMOS_DB}}</string>
+    <string>--profile</string>
+    <string>{{GMOS_PROFILE}}</string>
+    <string>--keys</string>
+    <string>--host-iface</string>
+    <string>127.0.0.1</string>
+    <string>--port</string>
+    <string>{{GMOS_PORT}}</string>
+    <string>--rate-limit</string>
+    <string>600</string>
+    <string>--audit-retention-days</string>
+    <string>90</string>
+  </array>
+  <key>KeepAlive</key>
+  <true/>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>{{GMOS_LOG_DIR}}/gmos.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>{{GMOS_LOG_DIR}}/gmos.err.log</string>
+  <key>WorkingDirectory</key>
+  <string>{{GMOS_DATA_DIR}}</string>
+</dict>
+</plist>
