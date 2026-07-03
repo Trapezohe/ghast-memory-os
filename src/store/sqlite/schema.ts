@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-export const GMOS_SQLITE_SCHEMA_VERSION = 11;
+export const GMOS_SQLITE_SCHEMA_VERSION = 12;
 
 const READ_AUDIT_REVISION_TABLES = [
   "gmos_evidence_events",
@@ -489,6 +489,7 @@ export function ensureSqliteSchema(db: Database.Database): void {
       label TEXT NOT NULL,
       scope TEXT NOT NULL,
       profiles_json TEXT NOT NULL,
+      default_disposition TEXT,
       created_at TEXT NOT NULL,
       revoked_at TEXT
     );
@@ -509,6 +510,19 @@ export function ensureSqliteSchema(db: Database.Database): void {
       ON gmos_http_audit_log(key_id, timestamp);
     CREATE INDEX IF NOT EXISTS idx_gmos_http_audit_profile_time
       ON gmos_http_audit_log(profile_id, timestamp);
+
+    CREATE TABLE IF NOT EXISTS gmos_autopilot_runs (
+      id TEXT PRIMARY KEY,
+      profile_id TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      duration_ms INTEGER NOT NULL,
+      dry_run INTEGER NOT NULL,
+      phases_json TEXT NOT NULL,
+      counts_json TEXT NOT NULL,
+      report_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_gmos_autopilot_runs_profile_time
+      ON gmos_autopilot_runs(profile_id, started_at);
   `);
 
   if (!columnExists(db, "gmos_world_beliefs", "metadata_json")) {
@@ -532,6 +546,9 @@ export function ensureSqliteSchema(db: Database.Database): void {
     db.exec(
       "ALTER TABLE gmos_memory_vectors ADD COLUMN embedding_status TEXT NOT NULL DEFAULT 'embedded';",
     );
+  }
+  if (!columnExists(db, "gmos_api_keys", "default_disposition")) {
+    db.exec("ALTER TABLE gmos_api_keys ADD COLUMN default_disposition TEXT;");
   }
   db.exec(`
     INSERT OR IGNORE INTO gmos_schema_migrations(version, name, applied_at)
@@ -582,6 +599,12 @@ export function ensureSqliteSchema(db: Database.Database): void {
       VALUES (
         11,
         'service_keys_profiles_audit',
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      );
+    INSERT OR IGNORE INTO gmos_schema_migrations(version, name, applied_at)
+      VALUES (
+        12,
+        'autopilot_runs_key_disposition',
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       );
   `);

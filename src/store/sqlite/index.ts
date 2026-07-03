@@ -126,15 +126,21 @@ import {
   authenticateSqliteServiceApiKey,
   createSqliteServiceApiKey,
   ensureSqliteServiceProfile,
+  listSqliteAutopilotRuns,
   listSqliteServiceApiKeys,
   listSqliteServiceAuditRows,
   listSqliteServiceProfiles,
+  pruneSqliteAutopilotRuns,
   pruneSqliteServiceAuditRows,
+  recordSqliteAutopilotRun,
   recordSqliteServiceAudit,
   revokeSqliteServiceApiKey,
   sqliteServiceApiKeyCount,
   type CreateSqliteServiceApiKeyInput,
+  type ListSqliteAutopilotRunsInput,
   type ListSqliteServiceAuditInput,
+  type SqliteAutopilotRun,
+  type SqliteAutopilotRunInput,
   type SqliteServiceApiKey,
   type SqliteServiceApiKeyWithSecret,
   type SqliteServiceAuditInput,
@@ -154,7 +160,10 @@ export type {
 export { parseSqliteProfileBackup } from "./backup.js";
 export type {
   CreateSqliteServiceApiKeyInput,
+  ListSqliteAutopilotRunsInput,
   ListSqliteServiceAuditInput,
+  SqliteAutopilotRun,
+  SqliteAutopilotRunInput,
   SqliteServiceApiKey,
   SqliteServiceApiKeyProfiles,
   SqliteServiceApiKeyScope,
@@ -243,6 +252,9 @@ export interface SqliteMemoryStore extends MemoryStore {
   pruneServiceAuditRows(retentionDays: number): number;
   listServiceProfiles(): SqliteServiceProfileSummary[];
   ensureServiceProfile(profileId: string): SqliteServiceProfileSummary;
+  recordAutopilotRun(input: SqliteAutopilotRunInput): SqliteAutopilotRun;
+  listAutopilotRuns(input?: ListSqliteAutopilotRunsInput): SqliteAutopilotRun[];
+  pruneAutopilotRuns(retention: number, profileId?: string | undefined): number;
 }
 
 const READ_AUDIT_REVISION_TABLES = [
@@ -2861,6 +2873,14 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     return normalizeEvidence(row);
   }
 
+  function getEvidenceByEventKey(eventKey: string): EvidenceEvent | null {
+    initialize();
+    const row = db
+      .prepare("SELECT * FROM gmos_evidence_events WHERE event_key = ?")
+      .get(eventKey) as Record<string, unknown> | undefined;
+    return row ? normalizeEvidence(row) : null;
+  }
+
   async function addMemory(input: AddMemoryInput): Promise<MemoryRecord> {
     initialize();
     const embedding = await embeddingForWrite({
@@ -3789,7 +3809,10 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         })
       ) {
         reason = "sensitivity_gated";
-      } else if (query && scoreComponents.finalScore <= memory.confidence) {
+      } else if (
+        query &&
+        scoreComponents.finalScore <= memory.confidence + (input.scoreThreshold ?? 0)
+      ) {
         reason = "below_score_threshold";
       }
       if (reason) {
@@ -4821,6 +4844,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       "gmos_profiles",
       "gmos_api_keys",
       "gmos_http_audit_log",
+      "gmos_autopilot_runs",
     ];
     return Object.fromEntries(
       tables.map((table) => [
@@ -5005,6 +5029,23 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     return ensureSqliteServiceProfile(db, profileId);
   }
 
+  function recordAutopilotRun(input: SqliteAutopilotRunInput): SqliteAutopilotRun {
+    initialize();
+    return recordSqliteAutopilotRun(db, input);
+  }
+
+  function listAutopilotRuns(
+    input: ListSqliteAutopilotRunsInput = {},
+  ): SqliteAutopilotRun[] {
+    initialize();
+    return listSqliteAutopilotRuns(db, input);
+  }
+
+  function pruneAutopilotRuns(retention: number, profileId?: string | undefined): number {
+    initialize();
+    return pruneSqliteAutopilotRuns(db, retention, profileId);
+  }
+
   return {
     configureEmbeddingProvider,
     initialize,
@@ -5013,6 +5054,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       if (!options.handle) db.close();
     },
     recordEvidence,
+    getEvidenceByEventKey,
     addMemory,
     updateMemory,
     archiveMemoryById,
@@ -5059,6 +5101,9 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     pruneServiceAuditRows,
     listServiceProfiles,
     ensureServiceProfile,
+    recordAutopilotRun,
+    listAutopilotRuns,
+    pruneAutopilotRuns,
     exportProfileBackup(input) {
       initialize();
       return exportSqliteProfileBackup(db, input);

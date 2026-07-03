@@ -4,6 +4,13 @@ import path from "node:path";
 
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import {
+  ingestTranscript,
+  runAutopilot,
+  type AutopilotReport,
+  type TranscriptIngestFormat,
+  type TranscriptIngestReport,
+} from "../autopilot.js";
+import {
   createEvolutionControlPlane,
   renderEvolutionFailureReviewMarkdown,
   type FailureReviewStore,
@@ -113,6 +120,9 @@ Usage:
   gmos repair --db ./gmos.db --associations
   gmos status --db ./gmos.db --profile local --host ghast --format markdown
   gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate,distill,dossier --now 2026-07-02T00:00:00.000Z --format markdown
+  gmos ingest --db ./gmos.db --profile local --input-file ./thread.jsonl --input-format jsonl --dry-run --format markdown
+  gmos autopilot run --db ./gmos.db --profile local --phases decay,consolidate --embed-backfill-batch 32 --ingest-dir ./transcripts --dry-run --format json
+  gmos autopilot history --db ./gmos.db --profile local --limit 20
   gmos add --db ./gmos.db --profile local --kind preference --text "回答风格：简洁，先给结论"
   gmos update --db ./gmos.db --profile local --id memory_xxx --text "回答风格：先给结论，再列方案"
   gmos delete --db ./gmos.db --profile local --id memory_xxx --reason "manual cleanup"
@@ -458,6 +468,36 @@ function maintenancePhasesOption(): MaintenancePhase[] | undefined {
   return maintenancePhaseList(raw, "--phases");
 }
 
+function transcriptIngestFormat(raw: string | undefined, label: string): TranscriptIngestFormat | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === "jsonl" || raw === "claude-code" || raw === "openai-thread") return raw;
+  throw new Error(`${label} must be jsonl, claude-code, or openai-thread`);
+}
+
+function transcriptIngestFormatOption(): TranscriptIngestFormat {
+  const explicit = transcriptIngestFormat(value("--input-format"), "--input-format");
+  if (explicit) return explicit;
+  const raw = values("--format").find((entry) =>
+    entry === "jsonl" || entry === "claude-code" || entry === "openai-thread"
+  );
+  const parsed = transcriptIngestFormat(raw, "--format");
+  if (!parsed) throw new Error("gmos ingest requires --input-format jsonl|claude-code|openai-thread");
+  return parsed;
+}
+
+function outputFormatOption(defaultFormat = "json"): "json" | "markdown" {
+  const explicit = value("--output-format");
+  if (explicit !== undefined) {
+    if (explicit === "json" || explicit === "markdown") return explicit;
+    throw new Error("--output-format must be json or markdown");
+  }
+  const raw = [...values("--format")].reverse().find((entry) =>
+    entry === "json" || entry === "markdown"
+  ) ?? defaultFormat;
+  if (raw !== "json" && raw !== "markdown") throw new Error("--format must be json or markdown");
+  return raw;
+}
+
 function externalMaintainPhasesOption(): MaintenancePhase[] | undefined {
   const raw = value("--maintain-phases");
   if (!raw) return undefined;
@@ -683,6 +723,8 @@ const PUBLIC_CLI_COMMANDS = [
   "repair",
   "status",
   "maintain",
+  "ingest",
+  "autopilot",
   "add",
   "update",
   "delete",
@@ -924,6 +966,45 @@ function renderMaintenanceMarkdown(report: MaintenanceReport): string {
   ].join("\n");
 }
 
+function renderIngestMarkdown(report: TranscriptIngestReport): string {
+  return [
+    "# gmOS Transcript Ingest",
+    "",
+    `Profile: ${report.profileId}`,
+    `Dry run: ${report.dryRun ? "yes" : "no"}`,
+    `Format: ${report.format}`,
+    `Source hash: ${report.sourceFileHash}`,
+    `Parsed: ${report.parsed}`,
+    `Observed: ${report.observed}`,
+    `Deduplicated: ${report.deduplicated}`,
+    `Skipped: ${report.skipped}`,
+    `Roles: ${Object.entries(report.byRole).map(([role, count]) => `${role}=${count}`).join(", ") || "none"}`,
+    "",
+  ].join("\n");
+}
+
+function renderAutopilotMarkdown(report: AutopilotReport): string {
+  return [
+    "# gmOS Autopilot",
+    "",
+    `Profile: ${report.profileId}`,
+    `Dry run: ${report.dryRun ? "yes" : "no"}`,
+    `Started: ${report.startedAt}`,
+    `Duration: ${report.durationMs}ms`,
+    `Phases: ${report.phases.join(", ")}`,
+    `Ingested: ${report.counts.ingested}`,
+    `Embedded/backfilled: ${report.counts.embedded}`,
+    `Maintenance transitions: ${report.maintenance.transitions}`,
+    `Errors: ${report.counts.errors}`,
+    "",
+  ].join("\n");
+}
+
+function printCustomReport(json: unknown, markdown: string): void {
+  const output = outputFormatOption();
+  console.log(output === "markdown" ? markdown : JSON.stringify(json, null, 2));
+}
+
 function writeJsonOutput(payload: unknown): void {
   const output = JSON.stringify(payload, null, 2);
   const outputFile = strictOptionValue("--output-file");
@@ -994,6 +1075,94 @@ function assertServeHostAllowed(hostname: string): void {
   );
 }
 
+function autopilotIntervalMinutesOption(): number | undefined {
+  const raw = value("--autopilot-interval-minutes");
+  if (raw === undefined) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error("--autopilot-interval-minutes must be a positive number");
+  }
+  return parsed;
+}
+
+function deterministicJitterMs(profileId: string, intervalMs: number): number {
+  const seed = [...profileId].reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  const maxJitter = Math.max(1, Math.min(30_000, Math.floor(intervalMs * 0.1)));
+  return seed % maxJitter;
+}
+
+function startAutopilotScheduler(input: {
+  memory: Awaited<ReturnType<typeof createRuntime>>["memory"];
+  store: Awaited<ReturnType<typeof createRuntime>>["store"];
+  profileId: string;
+  intervalMinutes: number | undefined;
+}): {
+  status: () => { enabled: boolean; running: boolean; lastRunAt?: string; nextRunAt?: string };
+  stop: () => void;
+} {
+  if (input.intervalMinutes === undefined) {
+    return {
+      status: () => ({ enabled: false, running: false }),
+      stop: () => {},
+    };
+  }
+  const intervalMs = Math.max(1, Math.round(input.intervalMinutes * 60_000));
+  const delayMs = intervalMs + deterministicJitterMs(input.profileId, intervalMs);
+  let running = false;
+  let lastRunAt: string | undefined;
+  let nextRunAt = new Date(Date.now() + delayMs).toISOString();
+  const tick = () => {
+    nextRunAt = new Date(Date.now() + delayMs).toISOString();
+    if (running) {
+      console.error(JSON.stringify({
+        service: "gmos-autopilot",
+        profileId: input.profileId,
+        skipped: "previous_run_still_running",
+      }));
+      return;
+    }
+    running = true;
+    void runAutopilot({
+      memory: input.memory,
+      store: input.store,
+      profileId: input.profileId,
+      phases: maintenancePhasesOption(),
+      embedBackfill: embedBackfillOption(),
+      ...(value("--ingest-dir") !== undefined
+        ? { ingest: { dir: path.resolve(process.cwd(), value("--ingest-dir")!) } }
+        : {}),
+      historyRetention: autopilotHistoryRetentionOption(),
+    }).then((report) => {
+      lastRunAt = report.finishedAt;
+      console.error(JSON.stringify({
+        service: "gmos-autopilot",
+        profileId: report.profileId,
+        startedAt: report.startedAt,
+        durationMs: report.durationMs,
+        counts: report.counts,
+      }));
+    }).catch((error: unknown) => {
+      console.error(JSON.stringify({
+        service: "gmos-autopilot",
+        profileId: input.profileId,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    }).finally(() => {
+      running = false;
+    });
+  };
+  const timer = setInterval(tick, delayMs);
+  return {
+    status: () => ({
+      enabled: true,
+      running,
+      ...(lastRunAt ? { lastRunAt } : {}),
+      nextRunAt,
+    }),
+    stop: () => clearInterval(timer),
+  };
+}
+
 async function runKeysCommand(action: string | undefined): Promise<void> {
   const store = createSqliteMemoryStore({ path: value("--db", "./gmos.db")! });
   try {
@@ -1004,6 +1173,9 @@ async function runKeysCommand(action: string | undefined): Promise<void> {
         label,
         scope: serviceKeyScopeOption(),
         profiles: serviceKeyProfilesOption(),
+        ...(value("--default-disposition") !== undefined
+          ? { defaultDisposition: value("--default-disposition") }
+          : {}),
       });
       console.log(JSON.stringify({ ok: true, ...result }, null, 2));
       return;
@@ -1053,6 +1225,30 @@ async function runAuditCommand(action: string | undefined): Promise<void> {
   }
 }
 
+function embedBackfillOption(): boolean | { batchSize: number } {
+  const raw = value("--embed-backfill-batch");
+  if (raw === undefined) return true;
+  return { batchSize: positiveIntegerOption("--embed-backfill-batch", 32) };
+}
+
+function autopilotHistoryRetentionOption(): number {
+  return nonNegativeIntegerOption("--history-retention", 100);
+}
+
+async function runAutopilotHistoryCommand(): Promise<void> {
+  const store = createSqliteMemoryStore({ path: value("--db", "./gmos.db")! });
+  try {
+    const profileId = value("--profile");
+    const history = store.listAutopilotRuns({
+      ...(profileId ? { profileId } : {}),
+      limit: positiveIntegerOption("--limit", 20),
+    });
+    console.log(JSON.stringify({ ok: true, history }, null, 2));
+  } finally {
+    store.close();
+  }
+}
+
 async function runServeCommand(input: {
   memory: Awaited<ReturnType<typeof createRuntime>>["memory"];
   store: Awaited<ReturnType<typeof createRuntime>>["store"];
@@ -1062,6 +1258,12 @@ async function runServeCommand(input: {
   assertServeHostAllowed(hostname);
   const authToken = strictOptionValue("--auth-token", process.env.GMOS_HTTP_AUTH_TOKEN);
   const scopedKeys = has("--keys");
+  const autopilot = startAutopilotScheduler({
+    memory: input.memory,
+    store: input.store,
+    profileId: input.profileId,
+    intervalMinutes: autopilotIntervalMinutesOption(),
+  });
   const server = await serveMemoryHttp({
     memory: input.memory,
     store: input.store,
@@ -1074,6 +1276,7 @@ async function runServeCommand(input: {
     corsOrigins: values("--cors-origin"),
     rateLimitRequestsPerMinute: positiveIntegerOption("--rate-limit", 600),
     console: has("--console"),
+    ...(autopilotIntervalMinutesOption() !== undefined ? { autopilotStatus: autopilot.status } : {}),
     ...(value("--audit-retention-days") !== undefined
       ? { auditRetentionDays: nonNegativeIntegerOption("--audit-retention-days", 0) }
       : {}),
@@ -1086,6 +1289,7 @@ async function runServeCommand(input: {
         authRequired: scopedKeys || authToken !== undefined,
         authMode: scopedKeys ? "scoped_keys" : "legacy_token",
         console: has("--console"),
+        autopilot: autopilot.status(),
         encrypted: input.store.encryptionStatus().encrypted,
       },
       null,
@@ -1095,6 +1299,7 @@ async function runServeCommand(input: {
   try {
     await waitForServerShutdown();
   } finally {
+    autopilot.stop();
     await server.close();
   }
 }
@@ -1249,6 +1454,11 @@ async function main(): Promise<void> {
 
   if (command === "audit") {
     await runAuditCommand(subcommand);
+    return;
+  }
+
+  if (command === "autopilot" && subcommand === "history") {
+    await runAutopilotHistoryCommand();
     return;
   }
 
@@ -1621,6 +1831,39 @@ async function main(): Promise<void> {
         ...(value("--now") !== undefined ? { now: value("--now") } : {}),
       });
       printReport(report, renderMaintenanceMarkdown(report));
+      return;
+    }
+
+    if (command === "ingest") {
+      const inputFile = strictOptionValue("--input-file");
+      if (!inputFile) throw new Error("gmos ingest requires --input-file");
+      const report = await ingestTranscript({
+        memory,
+        profileId,
+        inputFile: path.resolve(process.cwd(), inputFile),
+        format: transcriptIngestFormatOption(),
+        dryRun: has("--dry-run"),
+      });
+      printCustomReport(report, renderIngestMarkdown(report));
+      return;
+    }
+
+    if (command === "autopilot" && subcommand === "run") {
+      const phases = maintenancePhasesOption();
+      const report = await runAutopilot({
+        memory,
+        store,
+        profileId,
+        dryRun: has("--dry-run"),
+        ...(phases !== undefined ? { phases } : {}),
+        embedBackfill: embedBackfillOption(),
+        ...(value("--ingest-dir") !== undefined
+          ? { ingest: { dir: path.resolve(process.cwd(), value("--ingest-dir")!) } }
+          : {}),
+        ...(value("--now") !== undefined ? { now: value("--now") } : {}),
+        historyRetention: autopilotHistoryRetentionOption(),
+      });
+      printCustomReport(report, renderAutopilotMarkdown(report));
       return;
     }
 

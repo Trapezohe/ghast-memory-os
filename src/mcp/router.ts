@@ -458,6 +458,7 @@ function prepareInput(args: Record<string, unknown>): PrepareTurnInput {
       "profileId",
       "text",
       "messages",
+      "dispositionPreset",
       "includeEvidence",
       "includeSensitive",
       "contextBudgetTokens",
@@ -472,10 +473,12 @@ function prepareInput(args: Record<string, unknown>): PrepareTurnInput {
     messages: messagesArg(args),
   };
   const profileId = optionalString(args, "profileId");
+  const dispositionPreset = optionalString(args, "dispositionPreset");
   const includeEvidence = optionalBoolean(args, "includeEvidence");
   const contextBudgetTokens = optionalPositiveNumber(args, "contextBudgetTokens");
   const reconstruction = optionalPrepareReconstruction(args);
   if (profileId !== undefined) input.profileId = profileId;
+  if (dispositionPreset !== undefined) input.dispositionPreset = dispositionPreset;
   if (includeEvidence !== undefined) input.includeEvidence = includeEvidence;
   if (contextBudgetTokens !== undefined) input.contextBudgetTokens = contextBudgetTokens;
   if (reconstruction !== undefined) input.reconstruction = reconstruction;
@@ -489,6 +492,7 @@ function explainTurnInput(args: Record<string, unknown>): ExplainTurnInput {
       "profileId",
       "text",
       "messages",
+      "dispositionPreset",
       "includeEvidence",
       "includeSensitive",
       "contextBudgetTokens",
@@ -504,11 +508,13 @@ function explainTurnInput(args: Record<string, unknown>): ExplainTurnInput {
     messages: messagesArg(args),
   };
   const profileId = optionalString(args, "profileId");
+  const dispositionPreset = optionalString(args, "dispositionPreset");
   const includeEvidence = optionalBoolean(args, "includeEvidence");
   const contextBudgetTokens = optionalPositiveNumber(args, "contextBudgetTokens");
   const reconstruction = optionalPrepareReconstruction(args);
   const maxExcluded = optionalNonNegativeInteger(args, "maxExcluded");
   if (profileId !== undefined) input.profileId = profileId;
+  if (dispositionPreset !== undefined) input.dispositionPreset = dispositionPreset;
   if (includeEvidence !== undefined) input.includeEvidence = includeEvidence;
   if (contextBudgetTokens !== undefined) input.contextBudgetTokens = contextBudgetTokens;
   if (reconstruction !== undefined) input.reconstruction = reconstruction;
@@ -523,6 +529,7 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
       "profileId",
       "text",
       "messages",
+      "dispositionPreset",
       "includeEvidence",
       "includeSensitive",
       "contextBudgetTokens",
@@ -544,6 +551,7 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
     messages: messagesArg(args),
   };
   const profileId = optionalString(args, "profileId");
+  const dispositionPreset = optionalString(args, "dispositionPreset");
   const includeEvidence = optionalBoolean(args, "includeEvidence");
   const contextBudgetTokens = optionalPositiveNumber(args, "contextBudgetTokens");
   const maxSteps = optionalPositiveInteger(args, "maxSteps");
@@ -558,6 +566,7 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
     "evidenceConvergenceThreshold",
   );
   if (profileId !== undefined) input.profileId = profileId;
+  if (dispositionPreset !== undefined) input.dispositionPreset = dispositionPreset;
   if (includeEvidence !== undefined) input.includeEvidence = includeEvidence;
   if (contextBudgetTokens !== undefined) input.contextBudgetTokens = contextBudgetTokens;
   if (maxSteps !== undefined) input.maxSteps = maxSteps;
@@ -584,6 +593,7 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
       "profileId",
       "text",
       "messages",
+      "dispositionPreset",
       "includeEvidence",
       "includeSensitive",
       "includePlannerTrace",
@@ -606,6 +616,7 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
     messages: messagesArg(args),
   };
   const profileId = optionalString(args, "profileId");
+  const dispositionPreset = optionalString(args, "dispositionPreset");
   const includeEvidence = optionalBoolean(args, "includeEvidence");
   const includePlannerTrace = optionalBoolean(args, "includePlannerTrace");
   const contextBudgetTokens = optionalPositiveNumber(args, "contextBudgetTokens");
@@ -621,6 +632,7 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
     "evidenceConvergenceThreshold",
   );
   if (profileId !== undefined) input.profileId = profileId;
+  if (dispositionPreset !== undefined) input.dispositionPreset = dispositionPreset;
   if (includeEvidence !== undefined) input.includeEvidence = includeEvidence;
   if (includePlannerTrace !== undefined) input.includePlannerTrace = includePlannerTrace;
   if (contextBudgetTokens !== undefined) input.contextBudgetTokens = contextBudgetTokens;

@@ -45,6 +45,7 @@ export interface MemoryHttpServerOptions {
   rateLimitRequestsPerMinute?: number | undefined;
   auditRetentionDays?: number | undefined;
   console?: boolean | undefined;
+  autopilotStatus?: (() => MemoryHttpAutopilotStatus) | undefined;
 }
 
 export interface MemoryHttpListenOptions {
@@ -62,6 +63,13 @@ export interface MemoryHttpServerHandle {
   server: Server;
   listen(options?: MemoryHttpListenOptions): Promise<MemoryHttpListenResult>;
   close(): Promise<void>;
+}
+
+export interface MemoryHttpAutopilotStatus {
+  enabled: boolean;
+  running: boolean;
+  lastRunAt?: string | undefined;
+  nextRunAt?: string | undefined;
 }
 
 export interface MemoryHttpServiceStore extends DiagnosticsStore {
@@ -120,6 +128,12 @@ const TOOL_SCOPES: Record<PublicMemoryMcpToolName, "read" | "readwrite" | "admin
   "memory.forget": "readwrite",
   "memory.explain_belief": "read",
 };
+const DISPOSITION_TOOLS = new Set<PublicMemoryMcpToolName>([
+  "memory.prepare_context",
+  "memory.explain_turn",
+  "memory.reconstruct_context",
+  "memory.explain_evidence_path",
+]);
 
 type HttpScope = "read" | "readwrite" | "admin";
 
@@ -127,6 +141,7 @@ interface AuthContext {
   keyId?: string | undefined;
   scope: HttpScope;
   profiles: SqliteServiceApiKeyProfiles;
+  defaultDisposition?: string | undefined;
   mode: "none" | "legacy" | "scoped";
 }
 
@@ -340,6 +355,7 @@ function authenticateScopedKey(
     keyId: key.keyId,
     scope: key.scope,
     profiles: key.profiles,
+    ...(key.defaultDisposition ? { defaultDisposition: key.defaultDisposition } : {}),
     mode: "scoped",
   };
 }
@@ -613,6 +629,22 @@ export function createMemoryHttpServer(
     });
   }
 
+  function withDefaultDisposition(
+    args: Record<string, unknown>,
+    auth: AuthContext,
+    tool: unknown,
+  ): Record<string, unknown> {
+    if (
+      !auth.defaultDisposition ||
+      typeof tool !== "string" ||
+      !DISPOSITION_TOOLS.has(tool as PublicMemoryMcpToolName) ||
+      args.dispositionPreset !== undefined
+    ) {
+      return args;
+    }
+    return { ...args, dispositionPreset: auth.defaultDisposition };
+  }
+
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const startedAt = Date.now();
     let auth: AuthContext | null = null;
@@ -713,7 +745,11 @@ export function createMemoryHttpServer(
           host: options.host,
         });
         statusCode = 200;
-        sendJson(request, response, 200, ok({ ok: true, report }));
+        sendJson(request, response, 200, ok({
+          ok: true,
+          report,
+          ...(options.autopilotStatus ? { autopilot: options.autopilotStatus() } : {}),
+        }));
         return;
       }
 
@@ -791,7 +827,10 @@ export function createMemoryHttpServer(
         assertScope(auth, toolScope(tool));
         auditProfileId = profileIdFromMcpCall(body, options.profileId);
         assertProfileAllowed(auth, auditProfileId);
-        const result = await mcp.callTool(tool, body.args ?? {});
+        const args = body.args && typeof body.args === "object" && !Array.isArray(body.args)
+          ? body.args as Record<string, unknown>
+          : {};
+        const result = await mcp.callTool(tool, withDefaultDisposition(args, auth, tool));
         statusCode = result.isError ? 400 : 200;
         sendJson(request, response, statusCode, result.structuredContent);
         return;
@@ -805,7 +844,7 @@ export function createMemoryHttpServer(
       assertProfileAllowed(auth, auditProfileId);
       const result = await mcp.callTool(
         route.toolName,
-        body,
+        withDefaultDisposition(body, auth, route.toolName),
       );
       statusCode = result.isError ? 400 : 200;
       sendJson(request, response, statusCode, result.structuredContent);

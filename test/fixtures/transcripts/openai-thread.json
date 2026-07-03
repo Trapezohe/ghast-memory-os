@@ -1,0 +1,17 @@
+[
+  {
+    "role": "user",
+    "created_at": 1783036800,
+    "content": [
+      {
+        "type": "input_text",
+        "text": "Remember that Project Maple uses the green checklist."
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "created_at": 1783036801,
+    "content": "Noted."
+  }
+]

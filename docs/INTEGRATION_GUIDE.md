@@ -52,6 +52,85 @@ or outcomes with a readwrite key. Keep admin keys out of agent runtime prompts;
 they can list/create profiles and list key metadata but cannot create or revoke
 keys over HTTP.
 
+Use `--default-disposition` when different agents should recall with different
+budgets by default:
+
+```bash
+gmos keys create \
+  --db ./gmos.db \
+  --label focused-planner \
+  --scope read \
+  --profiles local \
+  --default-disposition focused
+```
+
+The HTTP layer applies the key default only when the request does not include
+`dispositionPreset`.
+
+## Autopilot Setup
+
+Autopilot is host-scheduled. It is not remotely triggerable over HTTP.
+
+Cron-friendly one-shot:
+
+```bash
+*/15 * * * * /usr/local/bin/gmos autopilot run --db /path/gmos.db --profile local --phases decay,consolidate --embed-backfill-batch 32 --ingest-dir /path/transcripts --format json >> /path/gmos-autopilot.log 2>&1
+```
+
+launchd one-shot example:
+
+```xml
+<dict>
+  <key>Label</key><string>com.example.gmos.autopilot</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/gmos</string>
+    <string>autopilot</string>
+    <string>run</string>
+    <string>--db</string><string>/path/gmos.db</string>
+    <string>--profile</string><string>local</string>
+    <string>--ingest-dir</string><string>/path/transcripts</string>
+  </array>
+  <key>StartInterval</key><integer>900</integer>
+</dict>
+```
+
+Serve-mode local timer:
+
+```bash
+gmos serve \
+  --db ./gmos.db \
+  --profile local \
+  --keys \
+  --autopilot-interval-minutes 15 \
+  --phases decay,consolidate \
+  --embed-backfill-batch 32 \
+  --ingest-dir ./transcripts
+```
+
+The timer adds small deterministic jitter, skips a tick if the previous run is
+still active, writes normal run history, and exposes `autopilot` status through
+`GET /status`.
+
+## Transcript Ingestion
+
+One file:
+
+```bash
+gmos ingest \
+  --db ./gmos.db \
+  --profile local \
+  --input-file ./thread.jsonl \
+  --input-format jsonl \
+  --dry-run \
+  --format markdown
+```
+
+Claude Code transcript directories can be wired by pointing `--ingest-dir` at
+the host-owned export/session directory. gmOS reads supported `.jsonl` and
+`.json` files, records only the source content hash, and never moves or deletes
+files. Re-running the same file is idempotent by event key.
+
 ## Turn Lifecycle
 
 For full agent memory, hosts should wire these phases instead of only calling

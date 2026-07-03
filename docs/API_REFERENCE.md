@@ -6,7 +6,8 @@ package exports listed here and avoid importing files under `dist/` or `src/`.
 ## Package Exports
 
 - `@ghast/memory`: runtime facade, core types, structured extractor factory,
-  and `getGmosRuntimeInfo()`.
+  `runAutopilot()`, `ingestTranscript()`, recall disposition presets, and
+  `getGmosRuntimeInfo()`.
 - `@ghast/memory/store/sqlite`: SQLite store, opt-in host-driver encryption,
   and profile backup/restore helpers.
 - `@ghast/memory/mcp`: in-process MCP-style router and stdio server helpers.
@@ -141,6 +142,34 @@ The same `retrieval` read option is available on `prepareTurn()` and
 `reconstructContext()`. Without it, provider-backed stores still use lexical FTS
 and local fallback vectors on reads.
 
+### Recall Disposition Presets
+
+`createMemoryOS({ disposition })` sets a default recall disposition for
+`prepareTurn()`, `explainTurn()`, `reconstructContext()`, and
+`explainEvidencePath()`. Each call can override it with `dispositionPreset`.
+
+Supported presets are:
+
+- `focused`: tighter context/search/planner budgets and a higher score
+  threshold;
+- `balanced`: current defaults;
+- `expansive`: larger budgets, lower score threshold, and history recall where
+  reconstruction calls allow it.
+
+Presets do not affect sensitivity, person, incognito, lifecycle, or forgetting
+gates. `explainTurn()` reports the effective preset in `budgets.dispositionPreset`.
+
+Scoped HTTP API keys can carry a default disposition:
+
+```bash
+gmos keys create \
+  --db ./gmos.db \
+  --label planner-read \
+  --scope read \
+  --profiles local \
+  --default-disposition focused
+```
+
 Lifecycle maintenance is configured on the runtime facade and runs only when the
 host explicitly calls `maintain()`:
 
@@ -212,6 +241,63 @@ related memory confidence, which affects ranking.
 Procedure distillation defaults are shown above. `enabled: false` disables the
 `distill` phase even when requested. Counts are positive integers. Only
 completed task trajectories are eligible; failed trajectories never count.
+
+### Transcript Ingestion
+
+`ingestTranscript()` maps structured transcript exports into ordinary
+`observeWithReport()` calls:
+
+```ts
+import { ingestTranscript } from "@ghast/memory";
+
+await ingestTranscript({
+  memory,
+  profileId: "local-user",
+  inputFile: "./thread.jsonl",
+  format: "jsonl",
+  dryRun: true,
+});
+```
+
+Formats:
+
+- `jsonl`: one `{ role, content, createdAt?, metadata? }` object per line;
+- `claude-code`: Claude Code transcript JSONL; user and assistant text messages
+  are imported, tool calls/results and system noise are skipped;
+- `openai-thread`: exported messages array, or `{ messages }`/`{ data }`, with
+  `role`, `content`, and `created_at`.
+
+The source file content hash and record index become stable message ids, so
+re-running the same file deduplicates at `observe()` event-key level. Ingestion
+metadata stores the file hash, not the absolute path. No linguistic extraction
+is done by ingestion itself; any durable memory extraction comes from the
+runtime extractor already configured by the host.
+
+### Autopilot
+
+`runAutopilot()` is a one-shot host-scheduled composition of existing explicit
+write paths:
+
+```ts
+import { runAutopilot } from "@ghast/memory";
+
+const report = await runAutopilot({
+  store,
+  memory,
+  profileId: "local-user",
+  ingest: { dir: "./transcripts" },
+  embedBackfill: { batchSize: 32 },
+  phases: ["decay", "consolidate"],
+  dryRun: true,
+});
+```
+
+Execution order is transcript ingestion, embedding/search-index backfill, then
+`maintain()`. Dry-run threads through every step and writes nothing. Non-dry-run
+stores a content-free row in `gmos_autopilot_runs` when the SQLite store is
+used. The stored report includes ids, reasons, counts, timings, and phase
+summaries; memory content and transcript content are not stored in the run
+history. Autopilot never runs evolution apply.
 
 Hosts with their own entity model can pass an `entityResolver` to both the
 SQLite store and runtime facade. This keeps current-state invalidation,

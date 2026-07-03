@@ -2,6 +2,8 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 
 import type Database from "better-sqlite3";
 
+import { normalizeRecallDispositionPreset } from "../../kernel/disposition.js";
+
 export type SqliteServiceApiKeyScope = "read" | "readwrite" | "admin";
 export type SqliteServiceApiKeyProfiles = string[] | "*";
 
@@ -10,6 +12,7 @@ export interface SqliteServiceApiKey {
   label: string;
   scope: SqliteServiceApiKeyScope;
   profiles: SqliteServiceApiKeyProfiles;
+  defaultDisposition?: string | undefined;
   createdAt: string;
   revokedAt?: string | undefined;
 }
@@ -23,6 +26,7 @@ export interface CreateSqliteServiceApiKeyInput {
   label: string;
   scope: SqliteServiceApiKeyScope;
   profiles?: SqliteServiceApiKeyProfiles | undefined;
+  defaultDisposition?: string | undefined;
 }
 
 export interface SqliteServiceAuditInput {
@@ -54,14 +58,45 @@ export interface SqliteServiceProfileSummary {
   };
 }
 
+export interface SqliteAutopilotRunInput {
+  profileId: string;
+  startedAt: string;
+  durationMs: number;
+  dryRun: boolean;
+  phases: string[];
+  counts: Record<string, unknown>;
+  report: Record<string, unknown>;
+}
+
+export interface SqliteAutopilotRun extends SqliteAutopilotRunInput {
+  id: string;
+}
+
+export interface ListSqliteAutopilotRunsInput {
+  profileId?: string | undefined;
+  limit?: number | undefined;
+}
+
 interface SqliteServiceApiKeyRow {
   key_id: string;
   hash: string;
   label: string;
   scope: string;
   profiles_json: string;
+  default_disposition: string | null;
   created_at: string;
   revoked_at: string | null;
+}
+
+interface SqliteAutopilotRunRow {
+  id: string;
+  profile_id: string;
+  started_at: string;
+  duration_ms: number;
+  dry_run: number;
+  phases_json: string;
+  counts_json: string;
+  report_json: string;
 }
 
 function nowIso(): string {
@@ -102,6 +137,10 @@ function profilesJson(input: SqliteServiceApiKeyProfiles): string {
   return JSON.stringify(input);
 }
 
+function normalizeDefaultDisposition(input: string | undefined): string | undefined {
+  return normalizeRecallDispositionPreset(input);
+}
+
 function normalizeScope(scope: string): SqliteServiceApiKeyScope {
   if (scope !== "read" && scope !== "readwrite" && scope !== "admin") {
     throw new Error("gmOS service key scope must be read, readwrite, or admin");
@@ -115,6 +154,7 @@ function normalizeKeyRow(row: SqliteServiceApiKeyRow): SqliteServiceApiKey {
     label: row.label,
     scope: normalizeScope(row.scope),
     profiles: parseProfilesJson(row.profiles_json),
+    ...(row.default_disposition ? { defaultDisposition: row.default_disposition } : {}),
     createdAt: row.created_at,
     ...(row.revoked_at ? { revokedAt: row.revoked_at } : {}),
   };
@@ -145,16 +185,18 @@ export function createSqliteServiceApiKey(
   const keyId = `key_${randomUUID()}`;
   const createdAt = nowIso();
   const profiles = normalizeProfiles(input.profiles);
+  const defaultDisposition = normalizeDefaultDisposition(input.defaultDisposition);
   db.prepare(
     `INSERT INTO gmos_api_keys(
-      key_id, hash, label, scope, profiles_json, created_at, revoked_at
-    ) VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+      key_id, hash, label, scope, profiles_json, default_disposition, created_at, revoked_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
   ).run(
     keyId,
     sha256Hex(secret),
     requireLabel(input.label),
     normalizeScope(input.scope),
     profilesJson(profiles),
+    defaultDisposition ?? null,
     createdAt,
   );
   return {
@@ -164,6 +206,7 @@ export function createSqliteServiceApiKey(
       label: requireLabel(input.label),
       scope: input.scope,
       profiles,
+      ...(defaultDisposition ? { defaultDisposition } : {}),
       createdAt,
     },
   };
@@ -174,7 +217,7 @@ export function listSqliteServiceApiKeys(db: Database.Database): SqliteServiceAp
   return (
     db
       .prepare(
-        `SELECT key_id, hash, label, scope, profiles_json, created_at, revoked_at
+        `SELECT key_id, hash, label, scope, profiles_json, default_disposition, created_at, revoked_at
          FROM gmos_api_keys
          ORDER BY created_at ASC, key_id ASC`,
       )
@@ -194,7 +237,7 @@ export function revokeSqliteServiceApiKey(
   ).run(revokedAt, keyId);
   const row = db
     .prepare(
-      `SELECT key_id, hash, label, scope, profiles_json, created_at, revoked_at
+      `SELECT key_id, hash, label, scope, profiles_json, default_disposition, created_at, revoked_at
        FROM gmos_api_keys
        WHERE key_id = ?`,
     )
@@ -209,7 +252,7 @@ export function authenticateSqliteServiceApiKey(
   const hash = sha256Hex(secret);
   const rows = db
     .prepare(
-      `SELECT key_id, hash, label, scope, profiles_json, created_at, revoked_at
+      `SELECT key_id, hash, label, scope, profiles_json, default_disposition, created_at, revoked_at
        FROM gmos_api_keys
        WHERE revoked_at IS NULL
        ORDER BY created_at ASC, key_id ASC`,
@@ -361,4 +404,108 @@ export function listSqliteServiceProfiles(db: Database.Database): SqliteServiceP
       profileId,
       memoryCounts: counts.get(profileId) ?? { active: 0, dormant: 0, archived: 0 },
     }));
+}
+
+function parseJsonObject(value: string): Record<string, unknown> {
+  const parsed = JSON.parse(value) as unknown;
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : {};
+}
+
+function normalizeAutopilotRunRow(row: SqliteAutopilotRunRow): SqliteAutopilotRun {
+  const phases = JSON.parse(row.phases_json) as unknown;
+  return {
+    id: row.id,
+    profileId: row.profile_id,
+    startedAt: row.started_at,
+    durationMs: Number(row.duration_ms),
+    dryRun: row.dry_run === 1,
+    phases: Array.isArray(phases)
+      ? phases.filter((phase): phase is string => typeof phase === "string")
+      : [],
+    counts: parseJsonObject(row.counts_json),
+    report: parseJsonObject(row.report_json),
+  };
+}
+
+export function recordSqliteAutopilotRun(
+  db: Database.Database,
+  input: SqliteAutopilotRunInput,
+): SqliteAutopilotRun {
+  const run: SqliteAutopilotRun = { id: `autopilot_${randomUUID()}`, ...input };
+  db.prepare(
+    `INSERT INTO gmos_autopilot_runs(
+      id, profile_id, started_at, duration_ms, dry_run, phases_json, counts_json, report_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    run.id,
+    run.profileId,
+    run.startedAt,
+    Math.max(0, Math.trunc(run.durationMs)),
+    run.dryRun ? 1 : 0,
+    JSON.stringify(run.phases),
+    JSON.stringify(run.counts),
+    JSON.stringify(run.report),
+  );
+  return run;
+}
+
+export function listSqliteAutopilotRuns(
+  db: Database.Database,
+  input: ListSqliteAutopilotRunsInput = {},
+): SqliteAutopilotRun[] {
+  if (!tableExists(db, "gmos_autopilot_runs")) return [];
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  if (input.profileId) {
+    clauses.push("profile_id = ?");
+    params.push(input.profileId);
+  }
+  const limit = Math.max(1, Math.min(500, Math.trunc(input.limit ?? 20)));
+  return (
+    db.prepare(
+      `SELECT id, profile_id, started_at, duration_ms, dry_run, phases_json, counts_json, report_json
+       FROM gmos_autopilot_runs
+       ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
+       ORDER BY started_at DESC, id DESC
+       LIMIT ?`,
+    ).all(...params, limit) as SqliteAutopilotRunRow[]
+  ).map(normalizeAutopilotRunRow);
+}
+
+export function pruneSqliteAutopilotRuns(
+  db: Database.Database,
+  retention: number,
+  profileId?: string | undefined,
+): number {
+  if (!tableExists(db, "gmos_autopilot_runs")) return 0;
+  const keep = Math.max(0, Math.trunc(retention));
+  if (keep === 0) {
+    return profileId
+      ? db.prepare("DELETE FROM gmos_autopilot_runs WHERE profile_id = ?").run(profileId).changes
+      : db.prepare("DELETE FROM gmos_autopilot_runs").run().changes;
+  }
+  if (profileId) {
+    return db.prepare(
+      `DELETE FROM gmos_autopilot_runs
+       WHERE profile_id = ?
+         AND id NOT IN (
+           SELECT id
+           FROM gmos_autopilot_runs
+           WHERE profile_id = ?
+           ORDER BY started_at DESC, id DESC
+           LIMIT ?
+         )`,
+    ).run(profileId, profileId, keep).changes;
+  }
+  return db.prepare(
+    `DELETE FROM gmos_autopilot_runs
+     WHERE id NOT IN (
+       SELECT id
+       FROM gmos_autopilot_runs
+       ORDER BY started_at DESC, id DESC
+       LIMIT ?
+     )`,
+  ).run(keep).changes;
 }

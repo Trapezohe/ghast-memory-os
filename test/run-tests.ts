@@ -26,8 +26,10 @@ import {
   createOpenAICompatibleExtractor,
   eligibleForLongTermMemory as publicEligibleForLongTermMemory,
   getGmosRuntimeInfo,
+  ingestTranscript,
   isSecretLikeMemoryContent as isPublicSecretLikeMemoryContent,
   redactForReport as publicRedactForReport,
+  runAutopilot,
   type EntityResolver,
   type MemoryCueExtractor,
   type MemoryExtractionInput,
@@ -722,7 +724,7 @@ function corruptMemoryFtsEntry(
 const store: SqliteMemoryStore = createSqliteMemoryStore({ path: dbPath });
 const memory = createMemoryOS({ profileId: "test", store });
 await store.initialize();
-assert.equal(await store.schemaVersion(), 11);
+assert.equal(await store.schemaVersion(), 12);
 
 const workspaceEntityResolver: EntityResolver = (input) => {
   const subject = input.subject.trim();
@@ -936,7 +938,7 @@ legacyHandle.exec(`
 `);
 const legacyStore = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
 await legacyStore.initialize();
-assert.equal(await legacyStore.schemaVersion(), 11);
+assert.equal(await legacyStore.schemaVersion(), 12);
 assert.equal(
   (
     legacyHandle
@@ -1007,7 +1009,7 @@ assert.ok(
 );
 const legacyStoreReopen = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
 await legacyStoreReopen.initialize();
-assert.equal(await legacyStoreReopen.schemaVersion(), 11);
+assert.equal(await legacyStoreReopen.schemaVersion(), 12);
 assert.equal(
   (
     legacyHandle
@@ -1055,7 +1057,7 @@ legacyV2Handle.exec(`
 `);
 const legacyV2Store = createSqliteMemoryStore({ path: legacyV2DbPath, handle: legacyV2Handle });
 await legacyV2Store.initialize();
-assert.equal(await legacyV2Store.schemaVersion(), 11);
+assert.equal(await legacyV2Store.schemaVersion(), 12);
 assert.ok(
   (
     legacyV2Handle
@@ -1129,7 +1131,7 @@ const legacyV6ProjectionUpgradeStore = createSqliteMemoryStore({
   handle: legacyV6ProjectionHandle,
 });
 await legacyV6ProjectionUpgradeStore.initialize();
-assert.equal(await legacyV6ProjectionUpgradeStore.schemaVersion(), 11);
+assert.equal(await legacyV6ProjectionUpgradeStore.schemaVersion(), 12);
 const upgradedRelationAssociation = legacyV6ProjectionHandle
   .prepare(
     `SELECT cue, target_summary
@@ -5638,6 +5640,197 @@ assert.equal(
 const leakingDossierSearch = await leakingDossierMemory.list({ query: "Alice", status: "any" });
 assert.equal(leakingDossierSearch.some((memory) => memory.content.includes("Alice")), false);
 await leakingDossierMemory.close();
+
+const dedupeObserveStore = createSqliteMemoryStore({ path: path.join(tmp, "dedupe-observe.db") });
+const dedupeObserveMemory = createMemoryOS({
+  profileId: "dedupe_observe",
+  store: dedupeObserveStore,
+  extractor: () => [{ kind: "fact", content: "Deduped observe durable memory.", confidence: 0.9 }],
+});
+const dedupeEvent = {
+  type: "conversation.message" as const,
+  profileId: "dedupe_observe",
+  conversationId: "dedupe-conversation",
+  messageId: "dedupe-message",
+  role: "user" as const,
+  content: "Please remember the dedupe observe durable memory.",
+  createdAt: "2026-07-03T01:05:00.000Z",
+};
+const firstDedupeObserve = await dedupeObserveMemory.observeWithReport(dedupeEvent);
+const dedupeCountsAfterFirst = await dedupeObserveStore.rowCounts();
+const secondDedupeObserve = await dedupeObserveMemory.observeWithReport(dedupeEvent);
+const dedupeCountsAfterSecond = await dedupeObserveStore.rowCounts();
+assert.equal(firstDedupeObserve.memoryIds.length, 1);
+assert.equal(secondDedupeObserve.skippedReason, "deduplicated_event");
+assert.equal(dedupeCountsAfterSecond.gmos_evidence_events, dedupeCountsAfterFirst.gmos_evidence_events);
+assert.equal(dedupeCountsAfterSecond.gmos_memories, dedupeCountsAfterFirst.gmos_memories);
+await dedupeObserveMemory.close();
+
+const ingestStore = createSqliteMemoryStore({ path: path.join(tmp, "transcript-ingest.db") });
+const ingestMemory = createMemoryOS({ profileId: "ingest_profile", store: ingestStore });
+const claudeFixture = path.join(process.cwd(), "test", "fixtures", "transcripts", "claude-code.jsonl");
+const openAiFixture = path.join(process.cwd(), "test", "fixtures", "transcripts", "openai-thread.json");
+const claudeIngest = await ingestTranscript({
+  memory: ingestMemory,
+  profileId: "ingest_profile",
+  inputFile: claudeFixture,
+  format: "claude-code",
+});
+const claudeIngestAgain = await ingestTranscript({
+  memory: ingestMemory,
+  profileId: "ingest_profile",
+  inputFile: claudeFixture,
+  format: "claude-code",
+});
+const openAiDryRun = await ingestTranscript({
+  memory: ingestMemory,
+  profileId: "ingest_profile",
+  inputFile: openAiFixture,
+  format: "openai-thread",
+  dryRun: true,
+});
+assert.equal(claudeIngest.parsed, 2);
+assert.equal(claudeIngest.observed, 2);
+assert.equal(claudeIngest.skipped, 1);
+assert.equal(claudeIngestAgain.observed, 0);
+assert.equal(claudeIngestAgain.deduplicated, 2);
+assert.equal(openAiDryRun.parsed, 2);
+assert.equal(openAiDryRun.observed, 0);
+assert.equal(JSON.stringify(claudeIngest).includes(claudeFixture), false);
+await ingestMemory.close();
+
+const autopilotDir = path.join(tmp, "autopilot-transcripts");
+mkdirSync(autopilotDir, { recursive: true });
+writeFileSync(
+  path.join(autopilotDir, "autopilot.jsonl"),
+  JSON.stringify({
+    role: "user",
+    content: "Autopilot transcript durable note.",
+    createdAt: "2026-07-03T01:06:00.000Z",
+  }) + "\n",
+);
+const autopilotStore = createSqliteMemoryStore({ path: path.join(tmp, "autopilot.db") });
+const autopilotMemory = createMemoryOS({ profileId: "autopilot_profile", store: autopilotStore });
+await autopilotMemory.add({
+  profileId: "autopilot_profile",
+  kind: "fact",
+  content: "AutopilotSeedContentMustNotAppearInHistory",
+});
+const autopilotDryRunBefore = await autopilotStore.readAuditSnapshot();
+const autopilotDryRunA = await runAutopilot({
+  memory: autopilotMemory,
+  store: autopilotStore,
+  profileId: "autopilot_profile",
+  ingest: { dir: autopilotDir },
+  embedBackfill: false,
+  dryRun: true,
+  now: "2026-07-03T01:07:00.000Z",
+});
+const autopilotDryRunB = await runAutopilot({
+  memory: autopilotMemory,
+  store: autopilotStore,
+  profileId: "autopilot_profile",
+  ingest: { dir: autopilotDir },
+  embedBackfill: false,
+  dryRun: true,
+  now: "2026-07-03T01:07:00.000Z",
+});
+assert.deepEqual(autopilotDryRunA, autopilotDryRunB);
+assert.deepEqual(autopilotDryRunBefore, await autopilotStore.readAuditSnapshot());
+assert.equal(autopilotStore.listAutopilotRuns({ profileId: "autopilot_profile" }).length, 0);
+const autopilotRun = await runAutopilot({
+  memory: autopilotMemory,
+  store: autopilotStore,
+  profileId: "autopilot_profile",
+  ingest: { dir: autopilotDir },
+  phases: ["decay"],
+  embedBackfill: { batchSize: 1 },
+  now: "2026-07-03T01:08:00.000Z",
+  historyRetention: 10,
+});
+assert.equal(autopilotRun.schema, "gmos.autopilot_report.v1");
+assert.equal(autopilotRun.ingest.observed, 1);
+const autopilotHistory = autopilotStore.listAutopilotRuns({ profileId: "autopilot_profile" });
+assert.equal(autopilotHistory.length, 1);
+assert.equal(
+  JSON.stringify(autopilotHistory[0]?.report).includes("AutopilotSeedContentMustNotAppearInHistory"),
+  false,
+);
+assert.equal(
+  (await autopilotMemory.listEvidence({ profileId: "autopilot_profile", limit: 100 }))
+    .some((event) => event.sourceType.includes("evolution")),
+  false,
+);
+await autopilotMemory.close();
+
+const dispositionStore = createSqliteMemoryStore({ path: path.join(tmp, "disposition.db") });
+const dispositionMemory = createMemoryOS({
+  profileId: "disposition_profile",
+  store: dispositionStore,
+  disposition: "focused",
+});
+await dispositionMemory.add({
+  profileId: "disposition_profile",
+  kind: "fact",
+  content: "Disposition public marker belongs in recall.",
+});
+const archivedDisposition = await dispositionMemory.add({
+  profileId: "disposition_profile",
+  kind: "fact",
+  content: "ForgottenPresetUnique should stay archived.",
+});
+await dispositionMemory.archive({
+  profileId: "disposition_profile",
+  id: archivedDisposition.id,
+  reason: "preset gate fixture",
+});
+await dispositionMemory.observe({
+  type: "conversation.message",
+  profileId: "disposition_profile",
+  role: "user",
+  content: "My token is sk-disposition-secret-1234567890abcdef.",
+});
+const focusedExplanation = await dispositionMemory.explainTurn({
+  profileId: "disposition_profile",
+  dispositionPreset: "focused",
+  messages: [{ role: "user", content: "Disposition public marker?" }],
+  reconstruction: { mode: "shadow" },
+});
+const balancedExplanation = await dispositionMemory.explainTurn({
+  profileId: "disposition_profile",
+  dispositionPreset: "balanced",
+  messages: [{ role: "user", content: "Disposition public marker?" }],
+  reconstruction: { mode: "shadow" },
+});
+const expansiveExplanation = await dispositionMemory.explainTurn({
+  profileId: "disposition_profile",
+  dispositionPreset: "expansive",
+  messages: [{ role: "user", content: "Disposition public marker?" }],
+  reconstruction: { mode: "shadow" },
+});
+assert.equal(focusedExplanation.budgets.dispositionPreset, "focused");
+assert.ok(focusedExplanation.budgets.contextBudgetTokens <= balancedExplanation.budgets.contextBudgetTokens);
+assert.ok(balancedExplanation.budgets.contextBudgetTokens <= expansiveExplanation.budgets.contextBudgetTokens);
+assert.ok(focusedExplanation.budgets.memorySearchLimit <= balancedExplanation.budgets.memorySearchLimit);
+assert.ok(balancedExplanation.budgets.memorySearchLimit <= expansiveExplanation.budgets.memorySearchLimit);
+assert.ok((focusedExplanation.budgets.planner?.maxMemories ?? 0) <= (balancedExplanation.budgets.planner?.maxMemories ?? 0));
+assert.ok((balancedExplanation.budgets.planner?.maxMemories ?? 0) <= (expansiveExplanation.budgets.planner?.maxMemories ?? 0));
+for (const preset of ["focused", "balanced", "expansive"] as const) {
+  const prepared = await dispositionMemory.prepareTurn({
+    profileId: "disposition_profile",
+    dispositionPreset: preset,
+    messages: [{ role: "user", content: "ForgottenPresetUnique secret token?" }],
+    includeSensitive: true,
+  });
+  assert.equal(prepared.contextBlock.includes("ForgottenPresetUnique"), false);
+  assert.equal(prepared.contextBlock.includes("sk-disposition-secret"), false);
+}
+const defaultDispositionExplanation = await dispositionMemory.explainTurn({
+  profileId: "disposition_profile",
+  messages: [{ role: "user", content: "Disposition public marker?" }],
+});
+assert.equal(defaultDispositionExplanation.budgets.dispositionPreset, "focused");
+await dispositionMemory.close();
 
 const customCandidateSpeakerPath = path.join(tmp, "custom-candidate-speaker.db");
 const customCandidateSpeakerStore = createSqliteMemoryStore({ path: customCandidateSpeakerPath });
@@ -13719,7 +13912,7 @@ assert.deepEqual(statusReport.runtimeInfo, getGmosRuntimeInfo());
 assert.equal(statusReport.runtimeInfo.publicSurface.mcpTools.includes("memory.runtime_info"), true);
 assert.equal(statusReport.runtimeInfo.publicSurface.httpRoutes.includes("GET /runtime-info"), true);
 assert.equal(statusReport.storage.status, "ok");
-assert.equal(statusReport.storage.schemaVersion, 11);
+assert.equal(statusReport.storage.schemaVersion, 12);
 assert.equal(
   statusReport.storage.searchIndex?.status,
   "ok",
@@ -14890,6 +15083,7 @@ try {
   assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("GET /evolution/revert" as never), false);
   assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /evolution/apply" as never), false);
   assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /evolution/revert" as never), false);
+  assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.some((route) => route.includes("autopilot")), false);
   assert.equal(PUBLIC_MEMORY_MCP_TOOL_NAMES.includes("memory.evolution_apply" as never), false);
   assert.equal(PUBLIC_MEMORY_MCP_TOOL_NAMES.includes("memory.evolution_revert" as never), false);
   const openApiDocument = createMemoryHttpOpenApiDocument() as {
@@ -15088,7 +15282,7 @@ try {
   assert.equal(status.status, 200);
   assert.equal(
     ((status.body.report as { storage?: { schemaVersion?: number } }).storage ?? {}).schemaVersion,
-    11,
+    12,
   );
   assert.equal((status.body.report as { profileId?: string }).profileId, "[profile id redacted]");
   assert.deepEqual(
@@ -15492,6 +15686,7 @@ const scopedReadKey = store.createServiceApiKey({
   label: "http scoped read",
   scope: "read",
   profiles: ["http_scoped"],
+  defaultDisposition: "expansive",
 });
 const scopedReadwriteKey = store.createServiceApiKey({
   label: "http scoped readwrite",
@@ -15537,6 +15732,27 @@ try {
     headers: { authorization: `Bearer ${scopedReadKey.secret}` },
   });
   assert.equal(scopedOpenApi.status, 200);
+  await memory.add({
+    profileId: "http_scoped",
+    kind: "fact",
+    content: "Scoped disposition marker belongs to expansive key.",
+  });
+  const scopedDefaultDisposition = await postJson(
+    `${scopedHttpAddress.url}/explain-turn`,
+    {
+      profileId: "http_scoped",
+      text: "Scoped disposition marker?",
+      reconstruction: { mode: "shadow" },
+    },
+    { authorization: `Bearer ${scopedReadKey.secret}` },
+  );
+  assert.equal(scopedDefaultDisposition.status, 200);
+  assert.equal(
+    ((scopedDefaultDisposition.body.explanation as {
+      budgets?: { dispositionPreset?: string };
+    }).budgets ?? {}).dispositionPreset,
+    "expansive",
+  );
   const scopedReadCannotWrite = await postJson(
     `${scopedHttpAddress.url}/add`,
     {
@@ -15827,6 +16043,72 @@ try {
   cliConsoleHttp.kill("SIGTERM");
   await Promise.race([
     new Promise((resolve) => cliConsoleHttp.once("exit", resolve)),
+    new Promise((resolve) => setTimeout(resolve, 5000)),
+  ]);
+}
+
+const cliAutopilotHttp = spawn(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "http",
+    "serve",
+    "--db",
+    path.join(tmp, "cli-autopilot-http.db"),
+    "--profile",
+    "cli_autopilot_http",
+    "--port",
+    "0",
+    "--autopilot-interval-minutes",
+    "0.001",
+    "--embed-backfill-batch",
+    "1",
+  ],
+  { cwd: process.cwd(), stdio: ["pipe", "pipe", "pipe"] },
+);
+let cliAutopilotHttpStdout = "";
+let cliAutopilotHttpStderr = "";
+cliAutopilotHttp.stdout.setEncoding("utf8");
+cliAutopilotHttp.stderr.setEncoding("utf8");
+cliAutopilotHttp.stdout.on("data", (chunk: string) => {
+  cliAutopilotHttpStdout += chunk;
+});
+cliAutopilotHttp.stderr.on("data", (chunk: string) => {
+  cliAutopilotHttpStderr += chunk;
+});
+const cliAutopilotHttpUrl = await Promise.race([
+  new Promise<string>((resolve) => {
+    cliAutopilotHttp.stdout.on("data", () => {
+      const match = cliAutopilotHttpStdout.match(/"url": "(http:\/\/127\.0\.0\.1:\d+)"/u);
+      if (match?.[1]) resolve(match[1]);
+    });
+  }),
+  new Promise<never>((_, reject) => {
+    cliAutopilotHttp.once("exit", (code, signal) => {
+      reject(new Error(`gmos http serve --autopilot exited early: code=${code} signal=${signal} stderr=${cliAutopilotHttpStderr}`));
+    });
+  }),
+  new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error(`gmos http serve --autopilot did not print url: ${cliAutopilotHttpStderr}`)), 5000),
+  ),
+]);
+try {
+  assert.match(cliAutopilotHttpStdout, /"enabled": true/);
+  let autopilotStatus: Record<string, unknown> | undefined;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const status = await httpJson(`${cliAutopilotHttpUrl}/status`);
+    autopilotStatus = status.body.autopilot as Record<string, unknown> | undefined;
+    if (typeof autopilotStatus?.lastRunAt === "string") break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.equal(autopilotStatus?.enabled, true);
+  assert.equal(typeof autopilotStatus?.lastRunAt, "string");
+} finally {
+  cliAutopilotHttp.kill("SIGTERM");
+  await Promise.race([
+    new Promise((resolve) => cliAutopilotHttp.once("exit", resolve)),
     new Promise((resolve) => setTimeout(resolve, 5000)),
   ]);
 }
@@ -17178,6 +17460,104 @@ const cliRepairSearch = spawnSync(
 );
 assert.equal(cliRepairSearch.status, 0, cliRepairSearch.stderr);
 assert.match(cliRepairSearch.stdout, /resilient recall/);
+const cliAutopilotDb = path.join(tmp, "cli-autopilot.db");
+const cliIngestDryRun = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "ingest",
+    "--db",
+    cliAutopilotDb,
+    "--profile",
+    "cli_autopilot",
+    "--input-file",
+    path.join("test", "fixtures", "transcripts", "claude-code.jsonl"),
+    "--input-format",
+    "claude-code",
+    "--dry-run",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliIngestDryRun.status, 0, cliIngestDryRun.stderr);
+assert.equal(JSON.parse(cliIngestDryRun.stdout).parsed, 2);
+const cliIngestInvalidFormat = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "ingest",
+    "--db",
+    cliAutopilotDb,
+    "--profile",
+    "cli_autopilot",
+    "--input-file",
+    path.join("test", "fixtures", "transcripts", "claude-code.jsonl"),
+    "--input-format",
+    "bad",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliIngestInvalidFormat.status, 0);
+assert.match(cliIngestInvalidFormat.stderr, /--input-format must be jsonl, claude-code, or openai-thread/);
+const cliAutopilotDir = path.join(tmp, "cli-autopilot-dir");
+mkdirSync(cliAutopilotDir, { recursive: true });
+writeFileSync(
+  path.join(cliAutopilotDir, "thread.jsonl"),
+  JSON.stringify({
+    role: "user",
+    content: "CLI autopilot transcript marker.",
+    createdAt: "2026-07-03T02:00:00.000Z",
+  }) + "\n",
+);
+const cliAutopilotRun = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "autopilot",
+    "run",
+    "--db",
+    cliAutopilotDb,
+    "--profile",
+    "cli_autopilot",
+    "--ingest-dir",
+    cliAutopilotDir,
+    "--embed-backfill-batch",
+    "1",
+    "--history-retention",
+    "5",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliAutopilotRun.status, 0, cliAutopilotRun.stderr);
+assert.equal(JSON.parse(cliAutopilotRun.stdout).ingest.observed, 1);
+const cliAutopilotHistory = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "autopilot",
+    "history",
+    "--db",
+    cliAutopilotDb,
+    "--profile",
+    "cli_autopilot",
+    "--limit",
+    "3",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliAutopilotHistory.status, 0, cliAutopilotHistory.stderr);
+assert.equal(JSON.parse(cliAutopilotHistory.stdout).history.length, 1);
 const reconstructionDb = path.join(tmp, "reconstruction.db");
 const reconstructionStore = createSqliteMemoryStore({ path: reconstructionDb });
 const reconstructionMemory = createMemoryOS({
@@ -18943,7 +19323,7 @@ const cliStatusPayload = JSON.parse(cliStatus.stdout) as {
 };
 assert.equal(cliStatusPayload.profileId, "[profile id redacted]");
 assert.equal(cliStatusPayload.storage?.lifecycle?.profileId, "[profile id redacted]");
-assert.equal(cliStatusPayload.storage?.schemaVersion, 11);
+assert.equal(cliStatusPayload.storage?.schemaVersion, 12);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_memories ?? 0) > 0);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_associations ?? 0) > 0);
 assert.equal(cliStatusPayload.storage?.searchIndex?.status, "ok");
@@ -19535,7 +19915,7 @@ assert.equal(gym.roadmapResult.status, "clear");
 assert.equal(gym.runManifest.dbPathMode, "memory");
 assert.equal(gym.runManifest.package.name, packageJson.name);
 assert.equal(gym.runManifest.package.version, packageJson.version);
-assert.equal(gym.runManifest.sqliteSchemaVersion, 11);
+assert.equal(gym.runManifest.sqliteSchemaVersion, 12);
 assert.equal(gym.runManifest.git.branch, expectedGit.branch);
 assert.equal(gym.runManifest.git.sha, expectedGit.sha);
 assert.equal(gym.runManifest.git.dirty, expectedGit.dirty);
@@ -19549,7 +19929,7 @@ assert.match(renderedGym, /Coverage Matrix/);
 assert.match(renderedGym, /Experience Horizon/);
 assert.match(renderedGym, /Run Manifest/);
 assert.match(renderedGym, /Package: @ghast\/memory@/);
-assert.match(renderedGym, /SQLite schema: 11/);
+assert.match(renderedGym, /SQLite schema: 12/);
 const externalBenchmarkJsonl = [
   JSON.stringify({
     id: "project-next-step",
@@ -22223,7 +22603,7 @@ for (const [host, expectedLevel] of [
   assert.equal(doctorJson.runtimeInfo?.trustContract?.encryptionSupported, "host_driver");
   assert.equal(doctorJson.runtimeInfo?.trustContract?.cloudRequired, false);
   assert.equal(doctorJson.schema?.dialect, "sqlite");
-  assert.equal(doctorJson.schema?.version, 11);
+  assert.equal(doctorJson.schema?.version, 12);
   assert.equal(doctorJson.readAudit?.status, "ok");
   assert.equal(doctorJson.readAudit?.schema, "gmos.read_audit_snapshot.v1");
   assert.equal((doctorJson.readAudit?.tableCount ?? 0) >= 10, true);

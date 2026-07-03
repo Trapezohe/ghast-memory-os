@@ -8,6 +8,11 @@ import {
   sourceMetadataEntityCues,
 } from "../kernel/associations.js";
 import { composeTurnContext } from "../kernel/context-composer.js";
+import {
+  applyPrepareDisposition,
+  applyReconstructDisposition,
+  resolveRecallDispositionPreset,
+} from "../kernel/disposition.js";
 import { buildEntityMentions, resolveWorldEntitySubject } from "../kernel/entities.js";
 import type { EntityResolver } from "../kernel/entities.js";
 import { buildEvidencePathExplanation } from "../kernel/evidence-path.js";
@@ -1032,6 +1037,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   const dossier = resolveMemoryDossierConfig(options.dossier);
   const embeddingProvider = resolveEmbeddingProviderConfig(options.embeddingProvider);
   const retrieval = options.retrieval;
+  const defaultDisposition = resolveRecallDispositionPreset({
+    defaultPreset: options.disposition,
+  }).name;
   let initialized = false;
 
   async function initialize(): Promise<void> {
@@ -1391,9 +1399,21 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     if (!eligible) return { ...result, skippedReason: "not_eligible_for_long_term_memory" };
 
     const eventMetadata = sourceMetadataForEvent(event, classifyRuntimeSensitivity);
+    const dedupeEventKey = eventKey(event);
+    const existingEvidence = store.getEvidenceByEventKey
+      ? await store.getEvidenceByEventKey(dedupeEventKey)
+      : null;
+    if (existingEvidence) {
+      return {
+        ...result,
+        evidenceId: existingEvidence.id,
+        eligibleForLongTermMemory: existingEvidence.eligibleForLongTermMemory,
+        skippedReason: "deduplicated_event",
+      };
+    }
     const evidence = await store.recordEvidence({
       profileId,
-      eventKey: eventKey(event),
+      eventKey: dedupeEventKey,
       sourceType: event.type,
       sourceUri: event.conversationId ? `conversation:${event.conversationId}` : null,
       content: event.content,
@@ -1578,7 +1598,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     displayQuery: string;
     retrievalQuery: string;
     candidateMemories: MemoryRecord[];
+    dispositionPreset: string;
+    memorySearchLimit: number;
+    contextBudgetTokens: number;
+    plannerBudget?: { maxSteps: number; maxBranch: number; maxMemories: number } | undefined;
   }> {
+    const disposition = applyPrepareDisposition({ request: input, defaultPreset: defaultDisposition });
+    input = disposition.request;
     const profileId = profileIdFor(defaultProfileId, input.profileId);
     const displayQuery = prepareTurnDisplayQuery(input);
     const query = prepareTurnQuery(input, classifyRuntimeSensitivity);
@@ -1591,7 +1617,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const memories = sourceScopedMemories(await searchMemoriesWithRetrieval({
       profileId,
       query,
-      limit: 12,
+      limit: disposition.preset.memorySearchLimit,
+      scoreThreshold: disposition.preset.scoreThreshold,
       purpose: "context",
       includeSensitive: input.includeSensitive,
       ...(trace ? { trace } : {}),
@@ -1673,6 +1700,19 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       displayQuery,
       retrievalQuery: query,
       candidateMemories: memories,
+      dispositionPreset: disposition.preset.name,
+      memorySearchLimit: disposition.preset.memorySearchLimit,
+      contextBudgetTokens: input.contextBudgetTokens ?? disposition.preset.contextBudgetTokens,
+      ...(input.reconstruction
+        ? {
+            plannerBudget: {
+              maxSteps: input.reconstruction.maxSteps ?? disposition.preset.reconstruction.maxSteps,
+              maxBranch: input.reconstruction.maxBranch ?? disposition.preset.reconstruction.maxBranch,
+              maxMemories:
+                input.reconstruction.maxMemories ?? disposition.preset.reconstruction.maxMemories,
+            },
+          }
+        : {}),
     };
   }
 
@@ -1726,9 +1766,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const maxExcluded = boundedPositiveInteger(input.maxExcluded, 20, 0, 100);
     const planner = prepared.reconstruction
       ? {
-          maxSteps: boundedPositiveInteger(input.reconstruction?.maxSteps, 3, 1, 8),
-          maxBranch: boundedPositiveInteger(input.reconstruction?.maxBranch, 4, 1, 12),
-          maxMemories: boundedPositiveInteger(input.reconstruction?.maxMemories, 8, 1, 24),
+          maxSteps: execution.plannerBudget?.maxSteps ?? 3,
+          maxBranch: execution.plannerBudget?.maxBranch ?? 4,
+          maxMemories: execution.plannerBudget?.maxMemories ?? 8,
           stopReason: prepared.reconstruction.stats.stopReason,
         }
       : undefined;
@@ -1739,8 +1779,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       included,
       excluded: [...excludedById.values()].slice(0, maxExcluded),
       budgets: {
-        memorySearchLimit: 12,
-        contextBudgetTokens: input.contextBudgetTokens ?? 1800,
+        dispositionPreset: execution.dispositionPreset,
+        memorySearchLimit: execution.memorySearchLimit,
+        contextBudgetTokens: execution.contextBudgetTokens,
         promptTokenEstimate: prepared.stats.promptTokenEstimate,
         actionPolicyCount: prepared.stats.actionPolicyCount,
         ...(planner ? { planner } : {}),
@@ -1764,6 +1805,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   async function reconstructContext(input: ReconstructContextInput): Promise<ReconstructedContext> {
     await initialize();
     const before = await readAuditSnapshot(store);
+    const disposition = applyReconstructDisposition({
+      request: sanitizedReconstructRequest(input, classifyRuntimeSensitivity),
+      defaultPreset: defaultDisposition,
+    });
     const reconstructed = await reconstructMemoryContext({
       store: storeWithRetrieval(input.retrieval),
       defaultProfileId,
@@ -1771,7 +1816,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       inferTemporalCuesFromText: options.reconstruction?.inferTemporalCuesFromText,
       sanitizeEvidenceForOutput: (event) =>
         sanitizeRuntimeEvidenceForPublicOutput(event, classifyRuntimeSensitivity),
-      request: sanitizedReconstructRequest(input, classifyRuntimeSensitivity),
+      request: disposition.request,
     });
     assertNoReadSideEffects({
       operation: "reconstructContext",
@@ -1786,6 +1831,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   ): Promise<EvidencePathExplanation> {
     await initialize();
     const before = await readAuditSnapshot(store);
+    const disposition = applyReconstructDisposition({
+      request: sanitizedReconstructRequest({
+        ...input,
+        includeEvidence: input.includeEvidence ?? true,
+      }, classifyRuntimeSensitivity),
+      defaultPreset: defaultDisposition,
+    });
     const reconstructed = await reconstructMemoryContext({
       store: storeWithRetrieval(input.retrieval),
       defaultProfileId,
@@ -1793,10 +1845,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       inferTemporalCuesFromText: options.reconstruction?.inferTemporalCuesFromText,
       sanitizeEvidenceForOutput: (event) =>
         sanitizeRuntimeEvidenceForPublicOutput(event, classifyRuntimeSensitivity),
-      request: sanitizedReconstructRequest({
-        ...input,
-        includeEvidence: input.includeEvidence ?? true,
-      }, classifyRuntimeSensitivity),
+      request: disposition.request,
     });
     assertNoReadSideEffects({
       operation: "explainEvidencePath",

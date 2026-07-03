@@ -22,6 +22,7 @@ host event
 -> explicit maintain()
 -> decay / duplicate consolidation / host semantic consolidation / host procedure distillation
 -> active / dormant / archived lifecycle, consolidation, and distillation evidence
+-> optional host-scheduled autopilot composition of ingest / repair / maintain
 -> approval-gated evolution apply/revert when an admin accepts a proposal
 ```
 
@@ -39,6 +40,8 @@ host event
 - `gmos_memories_fts` and provider-aware vector tables: derived search
   indexes. Vector rows record provider name, dimensions, embedding status, and
   content hash.
+- `gmos_autopilot_runs`: content-free run history for host-scheduled autopilot
+  executions.
 
 Associations, FTS rows, and vector rows are indexes. They can be rebuilt from
 source-of-truth rows and must not become independent memory stores. The
@@ -65,6 +68,8 @@ Write paths:
 - `applyEvolutionProposal()` / `revertEvolutionApplication()` through SDK/CLI admin surfaces
 - low-level admin/import operations
 - repair commands that rebuild derived indexes
+- `runAutopilot()` / `gmos autopilot run`, which only composes transcript
+  ingestion, explicit search-index repair/backfill, and `maintain()`
 
 Read paths:
 
@@ -129,6 +134,14 @@ clusters failure events into hypotheses and patch proposals without writes.
 writes `source_type = "evolution"` evidence with previous values. Revert restores
 those previous values and writes its own evolution evidence. Nothing in
 `maintain()` runs evolution.
+
+Autopilot is the same explicit-write contract on a schedule. The host chooses
+the one-shot CLI, cron/launchd, or the local `gmos serve` timer. Each action
+inside a run is an ordinary evidence-backed write path or dry-run preview:
+transcript ingestion calls `observe()`, embedding backfill calls the existing
+repair machinery, and maintenance calls `maintain()`. The run history report is
+content-free. No HTTP route starts autopilot, and autopilot never calls
+evolution apply/revert.
 
 ## Reconstruction Model
 

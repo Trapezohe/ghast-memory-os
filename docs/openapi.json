@@ -4733,6 +4733,14 @@
                       }
                     }
                   },
+                  "dispositionPreset": {
+                    "type": "string",
+                    "enum": [
+                      "focused",
+                      "balanced",
+                      "expansive"
+                    ]
+                  },
                   "includeEvidence": {
                     "type": "boolean"
                   },
@@ -5211,6 +5219,14 @@
                         }
                       }
                     }
+                  },
+                  "dispositionPreset": {
+                    "type": "string",
+                    "enum": [
+                      "focused",
+                      "balanced",
+                      "expansive"
+                    ]
                   },
                   "includeEvidence": {
                     "type": "boolean"
@@ -5695,6 +5711,14 @@
                       }
                     }
                   },
+                  "dispositionPreset": {
+                    "type": "string",
+                    "enum": [
+                      "focused",
+                      "balanced",
+                      "expansive"
+                    ]
+                  },
                   "includeEvidence": {
                     "type": "boolean"
                   },
@@ -6158,6 +6182,14 @@
                         }
                       }
                     }
+                  },
+                  "dispositionPreset": {
+                    "type": "string",
+                    "enum": [
+                      "focused",
+                      "balanced",
+                      "expansive"
+                    ]
                   },
                   "includeEvidence": {
                     "type": "boolean"

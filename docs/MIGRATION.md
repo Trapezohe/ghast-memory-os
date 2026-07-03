@@ -139,6 +139,22 @@ Legacy `GMOS_HTTP_AUTH_TOKEN` mode keeps working. Scoped-key mode starts only
 when `gmos serve --keys` or the programmatic HTTP server `scopedKeys` option is
 used.
 
+## SQLite Schema v12
+
+Schema v12 adds safe autopilot service state:
+
+- `gmos_autopilot_runs` stores content-free one-shot run history;
+- `gmos_api_keys.default_disposition` stores an optional default recall
+  disposition for scoped HTTP keys.
+
+The migration is automatic on first writable open. `gmos autopilot run` writes a
+history row only for non-dry-run executions, then prunes to the configured
+`--history-retention` count. The stored report contains ids, reasons, counts,
+timing, and phase summaries; it must not contain memory content.
+
+Profile JSON backups still do not include service tables. Whole SQLite database
+file backups include autopilot run history and service key metadata.
+
 ## M3 Experience Learning
 
 M3 does not add a SQLite schema version. Procedure distillation, outcome

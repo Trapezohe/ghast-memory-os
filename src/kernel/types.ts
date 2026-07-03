@@ -122,6 +122,7 @@ export interface TurnMessage {
 export interface PrepareTurnInput {
   profileId?: string | undefined;
   messages: TurnMessage[];
+  dispositionPreset?: string | undefined;
   task?: {
     intent?: string | undefined;
     projectId?: string | undefined;
@@ -428,6 +429,7 @@ export type MemoryDossierSynthesizer =
     };
 
 export type ObserveSkippedReason =
+  | "deduplicated_event"
   | "forget_request"
   | "feedback_recorded"
   | "task_trajectory_recorded"
@@ -639,6 +641,7 @@ export interface TurnExplanationExcludedMemory {
 }
 
 export interface TurnExplanationBudgetReport {
+  dispositionPreset?: string | undefined;
   memorySearchLimit: number;
   contextBudgetTokens: number;
   promptTokenEstimate: number;
@@ -679,6 +682,7 @@ export interface ReconstructContextInput {
   profileId?: string | undefined;
   query?: string | undefined;
   messages?: TurnMessage[] | undefined;
+  dispositionPreset?: string | undefined;
   includeEvidence?: boolean | undefined;
   includeSensitive?: boolean | undefined;
   contextBudgetTokens?: number | undefined;
@@ -997,6 +1001,7 @@ export interface MemorySearchInput {
   profileId: string;
   query?: string;
   limit?: number;
+  scoreThreshold?: number | undefined;
   purpose?: "context" | "history" | "delete" | "manage";
   includeSensitive?: boolean | undefined;
   includePerson?: boolean | undefined;
@@ -1616,6 +1621,7 @@ export interface MemoryStore {
   initialize(): Promise<void> | void;
   close(): Promise<void> | void;
   recordEvidence(input: RecordEvidenceInput): Promise<EvidenceEvent> | EvidenceEvent;
+  getEvidenceByEventKey?(eventKey: string): Promise<EvidenceEvent | null> | EvidenceEvent | null;
   addMemory(input: AddMemoryInput): Promise<MemoryRecord> | MemoryRecord;
   updateMemory?(input: UpdateMemoryInput): Promise<MemoryRecord | null> | MemoryRecord | null;
   archiveMemoryById?(input: ArchiveMemoryInput): Promise<boolean> | boolean;
@@ -1693,6 +1699,7 @@ export interface MemoryStore {
 export interface MemoryOSOptions {
   profileId?: string | undefined;
   store: MemoryStore;
+  disposition?: string | undefined;
   extractor?: MemoryExtractor | undefined;
   consolidator?: MemoryConsolidator | undefined;
   procedureDistiller?: MemoryProcedureDistiller | undefined;

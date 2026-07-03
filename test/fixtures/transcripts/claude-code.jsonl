@@ -1,0 +1,3 @@
+{"type":"user","timestamp":"2026-07-03T00:00:00.000Z","message":{"role":"user","content":[{"type":"text","text":"Remember that Project Cedar uses the blue checklist."}]}}
+{"type":"assistant","timestamp":"2026-07-03T00:00:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Noted."},{"type":"tool_use","id":"tool_1","name":"noop","input":{}}]}}
+{"type":"system","timestamp":"2026-07-03T00:00:02.000Z","content":"system noise"}

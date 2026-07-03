@@ -9,6 +9,7 @@ import {
   EvolutionApplicationError,
 } from "../evolution/index.js";
 import { createHostAdapter } from "../host/index.js";
+import { ingestTranscript, runAutopilot } from "../autopilot.js";
 import type { HostActualCompatibilityReport, HostPreset } from "../host/index.js";
 import type { EntityResolver } from "../kernel/entities.js";
 import { createMemoryMcpServer } from "../mcp/index.js";
@@ -556,6 +557,155 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "secret_like_persistence",
     "sensitive_action_policy_exposure",
     "incognito_leakage",
+  ]);
+
+  const gymTranscript = `${JSON.stringify({
+    role: "user",
+    content: "Gym autopilot marker uses the silver checklist.",
+    createdAt: "2026-06-25T00:03:30.000Z",
+  })}\n`;
+  const gymIngestFirst = await ingestTranscript({
+    memory,
+    profileId: "gym",
+    text: gymTranscript,
+    format: "jsonl",
+  });
+  const gymIngestSecond = await ingestTranscript({
+    memory,
+    profileId: "gym",
+    text: gymTranscript,
+    format: "jsonl",
+  });
+  gate(
+    result,
+    "ingestion_idempotence",
+    gymIngestFirst.observed === 1 &&
+      gymIngestSecond.observed === 0 &&
+      gymIngestSecond.deduplicated === 1,
+    "transcript ingestion should re-run without new evidence writes",
+    "autopilot",
+  );
+
+  const autopilotDryRunBefore = await store.readAuditSnapshot();
+  const autopilotA = await runAutopilot({
+    memory,
+    store,
+    profileId: "gym",
+    embedBackfill: false,
+    dryRun: true,
+    now: "2026-06-25T00:04:00.000Z",
+  });
+  const autopilotB = await runAutopilot({
+    memory,
+    store,
+    profileId: "gym",
+    embedBackfill: false,
+    dryRun: true,
+    now: "2026-06-25T00:04:00.000Z",
+  });
+  gate(
+    result,
+    "autopilot_determinism",
+    JSON.stringify(autopilotA) === JSON.stringify(autopilotB),
+    "same autopilot inputs and fixed clock should produce the same report",
+    "autopilot",
+  );
+  gate(
+    result,
+    "autopilot_dry_run_purity",
+    JSON.stringify(autopilotDryRunBefore) === JSON.stringify(await store.readAuditSnapshot()),
+    "autopilot dry-run should leave store read-audit unchanged",
+    "autopilot",
+  );
+  await runAutopilot({
+    memory,
+    store,
+    profileId: "gym",
+    embedBackfill: false,
+    now: "2026-06-25T00:04:30.000Z",
+  });
+  const autopilotEvolutionEvidence = (await memory.listEvidence({
+    profileId: "gym",
+    limit: 100,
+  })).some((event) => event.sourceType.includes("evolution"));
+  gate(
+    result,
+    "autopilot_never_evolves",
+    !autopilotEvolutionEvidence,
+    "autopilot should not create evolution evidence",
+    "autopilot",
+  );
+
+  const gymArchivedPresetMemory = await memory.add({
+    profileId: "gym",
+    kind: "fact",
+    content: "GymPresetArchivedMarker should stay hidden.",
+  });
+  await memory.archive({
+    profileId: "gym",
+    id: gymArchivedPresetMemory.id,
+    reason: "gym preset gate",
+  });
+  const focusedPreset = await memory.explainTurn({
+    profileId: "gym",
+    dispositionPreset: "focused",
+    messages: [{ role: "user", content: "silver checklist marker?" }],
+    reconstruction: { mode: "shadow" },
+  });
+  const balancedPreset = await memory.explainTurn({
+    profileId: "gym",
+    dispositionPreset: "balanced",
+    messages: [{ role: "user", content: "silver checklist marker?" }],
+    reconstruction: { mode: "shadow" },
+  });
+  const expansivePreset = await memory.explainTurn({
+    profileId: "gym",
+    dispositionPreset: "expansive",
+    messages: [{ role: "user", content: "silver checklist marker?" }],
+    reconstruction: { mode: "shadow" },
+  });
+  const presetGateContexts = await Promise.all(
+    (["focused", "balanced", "expansive"] as const).map((preset) =>
+      memory.prepareTurn({
+        profileId: "gym",
+        dispositionPreset: preset,
+        messages: [{ role: "user", content: "GymPresetArchivedMarker sk-test1234567890abcdefg" }],
+        includeSensitive: true,
+      })
+    ),
+  );
+  gate(
+    result,
+    "disposition_budget_monotonicity",
+    focusedPreset.budgets.contextBudgetTokens <= balancedPreset.budgets.contextBudgetTokens &&
+      balancedPreset.budgets.contextBudgetTokens <= expansivePreset.budgets.contextBudgetTokens &&
+      focusedPreset.budgets.memorySearchLimit <= balancedPreset.budgets.memorySearchLimit &&
+      balancedPreset.budgets.memorySearchLimit <= expansivePreset.budgets.memorySearchLimit &&
+      (focusedPreset.budgets.planner?.maxMemories ?? 0) <=
+        (balancedPreset.budgets.planner?.maxMemories ?? 0) &&
+      (balancedPreset.budgets.planner?.maxMemories ?? 0) <=
+        (expansivePreset.budgets.planner?.maxMemories ?? 0),
+    "focused <= balanced <= expansive budgets",
+    "recall",
+  );
+  gate(
+    result,
+    "disposition_gates_hold",
+    presetGateContexts.every(
+      (prepared) =>
+        !prepared.contextBlock.includes("GymPresetArchivedMarker") &&
+        !prepared.contextBlock.includes("sk-test"),
+    ),
+    "disposition presets must not loosen archived or secret-like gates",
+    "recall",
+  );
+  scenario(result, "autopilot_and_disposition", "dev", [
+    "ingestion_idempotence",
+    "autopilot_determinism",
+    "autopilot_dry_run_purity",
+    "autopilot_never_evolves",
+    "disposition_budget_monotonicity",
+    "disposition_gates_hold",
   ]);
 
   const mcp = createMemoryMcpServer(memory);

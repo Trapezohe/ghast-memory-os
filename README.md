@@ -137,6 +137,18 @@ This Docker smoke is manual and is not part of `gate:pr`.
   clusters repeated completed task trajectories and, when a host provides a
   `procedureDistiller`, persists evidence-backed `procedure` memories without
   changing the source trajectories.
+- Safe continuous-learning autopilot. `runAutopilot()` and
+  `gmos autopilot run` compose transcript ingestion, embedding backfill, and
+  maintenance on a host-configured schedule, with dry-run preview and
+  content-free run history. Autopilot never applies evolution proposals.
+- Deterministic transcript ingestion for JSONL, Claude Code transcript JSONL,
+  and OpenAI-style thread exports. Imports flow through `observe()` with stable
+  event keys, normal safety gates, source file hashes, and no absolute path
+  persistence.
+- Recall disposition presets (`focused`, `balanced`, `expansive`) for
+  prepare/reconstruct/explain calls and scoped HTTP API keys. Presets tune
+  existing budgets and score thresholds without weakening sensitivity, person,
+  lifecycle, or forgetting gates.
 - Outcome reinforcement. `commitOutcome({ usedMemoryIds })` updates recall
   counters and bounded reinforcement; `wrong_recall` feedback can also lower
   confidence for related memories while preserving the feedback evidence path.
