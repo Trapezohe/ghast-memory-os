@@ -716,9 +716,15 @@ function maintainInput(args: Record<string, unknown>): MaintenanceInput {
   const now = optionalString(args, "now");
   const phases = optionalStringArrayValue(args.phases, "phases");
   const invalidPhase = phases?.find(
-    (phase) => phase !== "decay" && phase !== "consolidate" && phase !== "distill",
+    (phase) =>
+      phase !== "decay" &&
+      phase !== "consolidate" &&
+      phase !== "distill" &&
+      phase !== "dossier",
   );
-  if (invalidPhase) throw new Error("phases must contain only decay, consolidate, or distill");
+  if (invalidPhase) {
+    throw new Error("phases must contain only decay, consolidate, distill, or dossier");
+  }
   if (profileId !== undefined) input.profileId = profileId;
   if (dryRun !== undefined) input.dryRun = dryRun;
   if (now !== undefined) input.now = now;

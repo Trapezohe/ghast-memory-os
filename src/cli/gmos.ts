@@ -112,7 +112,7 @@ Usage:
   gmos repair --db ./gmos.db --search-index --dry-run --vector-batch-size 32
   gmos repair --db ./gmos.db --associations
   gmos status --db ./gmos.db --profile local --host ghast --format markdown
-  gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate,distill --now 2026-07-02T00:00:00.000Z --format markdown
+  gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate,distill,dossier --now 2026-07-02T00:00:00.000Z --format markdown
   gmos add --db ./gmos.db --profile local --kind preference --text "回答风格：简洁，先给结论"
   gmos update --db ./gmos.db --profile local --id memory_xxx --text "回答风格：先给结论，再列方案"
   gmos delete --db ./gmos.db --profile local --id memory_xxx --reason "manual cleanup"
@@ -437,12 +437,12 @@ function maintenancePhasesOption(): MaintenancePhase[] | undefined {
   if (!raw) return undefined;
   const phases = raw.split(",").map((phase) => phase.trim());
   if (phases.some((phase) => phase.length === 0)) {
-    throw new Error("--phases must be a comma-separated list of decay,consolidate,distill");
+    throw new Error("--phases must be a comma-separated list of decay,consolidate,distill,dossier");
   }
-  const allowed = new Set<MaintenancePhase>(["decay", "consolidate", "distill"]);
+  const allowed = new Set<MaintenancePhase>(["decay", "consolidate", "distill", "dossier"]);
   const invalid = phases.find((phase): phase is string => !allowed.has(phase as MaintenancePhase));
   if (invalid) {
-    throw new Error("--phases must contain only decay, consolidate, or distill");
+    throw new Error("--phases must contain only decay, consolidate, distill, or dossier");
   }
   return [...new Set(phases as MaintenancePhase[])];
 }
@@ -711,6 +711,18 @@ function renderMaintenanceMarkdown(report: MaintenanceReport): string {
   const distillationSkippedRows = report.distillation.skipped.map((entry) =>
     `| ${entry.reason} | ${entry.count} |`
   );
+  const dossierEntityRows = report.dossier.entities.map((entity) =>
+    `| ${entity.entityKey} | ${entity.kind} | ${entity.sourceBeliefIds.join(", ")} | ${entity.sourceMemoryIds.join(", ")} |`
+  );
+  const dossierSummaryRows = report.dossier.summaryMemories.map((summary) =>
+    `| ${summary.entityKey} | ${summary.kind} | ${summary.memoryId ?? "dry-run"} | ${summary.supersededMemoryId ?? ""} | ${summary.confidence.toFixed(4)} |`
+  );
+  const dossierRejectionRows = report.dossier.rejectedCandidates.map((rejection) =>
+    `| ${rejection.entityKey} | ${rejection.kind} | ${rejection.reason} |`
+  );
+  const dossierSkippedRows = report.dossier.skipped.map((entry) =>
+    `| ${entry.reason} | ${entry.count} |`
+  );
   return [
     "# gmOS Maintenance Report",
     "",
@@ -804,6 +816,39 @@ function renderMaintenanceMarkdown(report: MaintenanceReport): string {
     distillationSkippedRows.length === 0
       ? "No skipped distillation items."
       : "| Reason | Count |\n| --- | ---: |\n" + distillationSkippedRows.join("\n"),
+    "",
+    "## Dossiers",
+    "",
+    `Enabled: ${report.dossier.enabled ? "yes" : "no"}`,
+    `Evaluated: ${report.dossier.evaluated}`,
+    `Entities: ${report.dossier.entities.length}`,
+    `Summary memories: ${report.dossier.summaryMemories.length}`,
+    "",
+    "### Dossier Entities",
+    "",
+    dossierEntityRows.length === 0
+      ? "No dossier entities."
+      : "| Entity | Kind | Beliefs | Memories |\n| --- | --- | --- | --- |\n" +
+          dossierEntityRows.join("\n"),
+    "",
+    "### Dossier Memories",
+    "",
+    dossierSummaryRows.length === 0
+      ? "No dossier memories."
+      : "| Entity | Kind | Memory | Superseded | Confidence |\n| --- | --- | --- | --- | ---: |\n" +
+          dossierSummaryRows.join("\n"),
+    "",
+    "### Rejected Dossier Candidates",
+    "",
+    dossierRejectionRows.length === 0
+      ? "No rejected dossier candidates."
+      : "| Entity | Kind | Reason |\n| --- | --- | --- |\n" + dossierRejectionRows.join("\n"),
+    "",
+    "### Dossier Skipped",
+    "",
+    dossierSkippedRows.length === 0
+      ? "No skipped dossier items."
+      : "| Reason | Count |\n| --- | ---: |\n" + dossierSkippedRows.join("\n"),
     "",
   ].join("\n");
 }

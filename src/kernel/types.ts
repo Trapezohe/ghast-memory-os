@@ -386,6 +386,47 @@ export type MemoryProcedureDistiller =
       ): Promise<MemoryProcedureDistillationResult> | MemoryProcedureDistillationResult;
     };
 
+export interface MemoryDossierBeliefSnapshot {
+  id: string;
+  subject: string;
+  predicate: string;
+  object: string;
+  confidence: number;
+  sourceMemoryId?: string | undefined;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MemoryDossierEntitySnapshot {
+  entityKey: string;
+  entityKind: MemoryKind;
+  aliases: string[];
+  beliefs: MemoryDossierBeliefSnapshot[];
+  memories: MemoryConsolidationSourceSnapshot[];
+}
+
+export interface MemoryDossierCandidate {
+  content: string;
+  confidence?: number | undefined;
+}
+
+export type MemoryDossierResult =
+  | MemoryDossierCandidate
+  | MemoryDossierCandidate[]
+  | null
+  | undefined;
+
+export type MemoryDossierSynthesizer =
+  | ((
+      input: MemoryDossierEntitySnapshot,
+    ) => Promise<MemoryDossierResult> | MemoryDossierResult)
+  | {
+      name?: string | undefined;
+      synthesize(
+        input: MemoryDossierEntitySnapshot,
+      ): Promise<MemoryDossierResult> | MemoryDossierResult;
+    };
+
 export type ObserveSkippedReason =
   | "forget_request"
   | "feedback_recorded"
@@ -848,6 +889,7 @@ export type MemoryLifecycleHistoryEventKind =
   | "consolidated_summary"
   | "distilled_source_trajectory"
   | "distilled_procedure"
+  | "dossier_created"
   | "evolution_applied"
   | "evolution_reverted"
   | "derived_forget_archived"
@@ -1033,6 +1075,12 @@ export interface EvidenceListInput {
   sourceType?: string | undefined;
   includeSensitive?: boolean | undefined;
   eligibleForLongTermMemory?: boolean | undefined;
+}
+
+export interface WorldBeliefListInput {
+  profileId: string;
+  status?: WorldBeliefRecord["status"] | "any" | undefined;
+  limit?: number | undefined;
 }
 
 export interface AddMemoryInput {
@@ -1293,7 +1341,16 @@ export interface MemoryProcedureDistillationConfig {
   maxTrajectoriesPerCluster?: number | undefined;
 }
 
-export type MaintenancePhase = "decay" | "consolidate" | "distill";
+export interface MemoryDossierConfig {
+  enabled?: boolean | undefined;
+  minBeliefs?: number | undefined;
+  minLinkedMemories?: number | undefined;
+  maxEntitiesPerRun?: number | undefined;
+  maxBeliefsPerEntity?: number | undefined;
+  maxMemoriesPerEntity?: number | undefined;
+}
+
+export type MaintenancePhase = "decay" | "consolidate" | "distill" | "dossier";
 
 export interface ResolvedOutcomeReinforcementConfig {
   enabled: boolean;
@@ -1331,6 +1388,15 @@ export interface ResolvedMemoryProcedureDistillationConfig {
   minRepeats: number;
   maxClustersPerRun: number;
   maxTrajectoriesPerCluster: number;
+}
+
+export interface ResolvedMemoryDossierConfig {
+  enabled: boolean;
+  minBeliefs: number;
+  minLinkedMemories: number;
+  maxEntitiesPerRun: number;
+  maxBeliefsPerEntity: number;
+  maxMemoriesPerEntity: number;
 }
 
 export interface MaintenanceInput {
@@ -1426,6 +1492,34 @@ export interface MaintenanceDistillationReport {
   skipped: MaintenanceSkippedSummary[];
 }
 
+export interface MaintenanceDossierEntity {
+  entityKey: string;
+  kind: MemoryKind;
+  sourceBeliefIds: string[];
+  sourceMemoryIds: string[];
+}
+
+export interface MaintenanceDossierSummary extends MaintenanceDossierEntity {
+  content: string;
+  confidence: number;
+  memoryId?: string | undefined;
+  supersededMemoryId?: string | undefined;
+  reasons: string[];
+}
+
+export interface MaintenanceDossierRejection extends MaintenanceDossierEntity {
+  reason: string;
+}
+
+export interface MaintenanceDossierReport {
+  enabled: boolean;
+  evaluated: number;
+  entities: MaintenanceDossierEntity[];
+  summaryMemories: MaintenanceDossierSummary[];
+  rejectedCandidates: MaintenanceDossierRejection[];
+  skipped: MaintenanceSkippedSummary[];
+}
+
 export interface MaintenanceReport {
   schema: "gmos.maintenance_report.v1";
   profileId: string;
@@ -1437,6 +1531,7 @@ export interface MaintenanceReport {
   skipped: MaintenanceSkippedSummary[];
   consolidation: MaintenanceConsolidationReport;
   distillation: MaintenanceDistillationReport;
+  dossier: MaintenanceDossierReport;
 }
 
 export interface MaintenanceStoreInput extends MaintenanceInput {
@@ -1447,6 +1542,7 @@ export interface MaintenanceStoreInput extends MaintenanceInput {
   lifecycle: ResolvedMemoryLifecycleConfig;
   consolidation: ResolvedMemoryConsolidationConfig;
   distillation: ResolvedMemoryProcedureDistillationConfig;
+  dossier: ResolvedMemoryDossierConfig;
 }
 
 export interface MemoryLifecycleStatus {
@@ -1526,6 +1622,9 @@ export interface MemoryStore {
   restoreArchivedMemory?(input: RestoreArchivedMemoryInput): Promise<boolean> | boolean;
   archiveMemories?(input: ArchiveMemoriesInput): Promise<string[]> | string[];
   addWorldBelief(input: AddWorldBeliefInput): Promise<WorldBeliefRecord> | WorldBeliefRecord;
+  listWorldBeliefs?(
+    input: WorldBeliefListInput,
+  ): Promise<WorldBeliefRecord[]> | WorldBeliefRecord[];
   searchMemories(input: MemorySearchInput): Promise<MemoryRecord[]> | MemoryRecord[];
   listMemories?(input: MemoryListInput): Promise<MemoryRecord[]> | MemoryRecord[];
   getMemoryById(
@@ -1597,6 +1696,7 @@ export interface MemoryOSOptions {
   extractor?: MemoryExtractor | undefined;
   consolidator?: MemoryConsolidator | undefined;
   procedureDistiller?: MemoryProcedureDistiller | undefined;
+  dossierSynthesizer?: MemoryDossierSynthesizer | undefined;
   embeddingProvider?: EmbeddingProvider | EmbeddingProviderConfig | undefined;
   retrieval?: MemoryRetrievalConfig | undefined;
   entityResolver?: EntityResolver | undefined;
@@ -1615,6 +1715,7 @@ export interface MemoryOSOptions {
   lifecycle?: MemoryLifecycleConfig | undefined;
   consolidation?: MemoryConsolidationConfig | undefined;
   distillation?: MemoryProcedureDistillationConfig | undefined;
+  dossier?: MemoryDossierConfig | undefined;
   safety?: {
     /**
      * Host-specific additive sensitivity classifier.

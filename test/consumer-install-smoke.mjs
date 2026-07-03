@@ -85,6 +85,7 @@ try {
       import { createMemoryOS, getGmosRuntimeInfo, isSecretLikeMemoryContent } from "@ghast/memory";
       import { createMemoryStatusReport } from "@ghast/memory/diagnostics";
       import { createEvolutionControlPlane } from "@ghast/memory/evolution";
+      import { createDefaultIntelligence } from "@ghast/memory/intelligence";
       import {
         createPresetHostAdapter,
         exportMemorySnapshots,
@@ -125,6 +126,28 @@ try {
 
       const store = createSqliteMemoryStore({ path: path.join(process.cwd(), "consumer.db") });
       const memory = createMemoryOS({ profileId: "consumer", store });
+      const intelligence = createDefaultIntelligence({
+        model: "consumer-chat",
+        embedModel: "consumer-embed",
+        dimensions: 3,
+        extractor: false,
+        consolidator: false,
+        procedureDistiller: false,
+        dossierSynthesizer: false,
+        reranker: false,
+        fetchImpl: async (url) => {
+          assert.equal(String(url).endsWith("/embeddings"), true);
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            text: async () => JSON.stringify({
+              data: [{ index: 0, embedding: [0.1, 0.2, 0.3] }],
+            }),
+          };
+        },
+      });
+      assert.deepEqual(await intelligence.embeddingProvider.embed(["consumer vector"]), [[0.1, 0.2, 0.3]]);
       assert.equal(isSecretLikeMemoryContent("api key: sk-consumersmokesecret1234567890"), true);
       assert.equal(isSecretLikeMemoryContent("User prefers concise answers."), false);
       const initialReadAudit = store.readAuditSnapshot();
@@ -469,6 +492,7 @@ try {
         "./diagnostics": "./dist/diagnostics/index.d.ts",
         "./evolution": "./dist/evolution/index.d.ts",
         "./host": "./dist/host/index.d.ts",
+        "./intelligence": "./dist/intelligence/index.d.ts",
       };
       for (const [subpath, typePath] of Object.entries(expectedExportTypes)) {
         const exportEntry = installedPackage.exports[subpath];
@@ -711,6 +735,10 @@ try {
       } from "@ghast/memory/diagnostics";
       import { createEvolutionControlPlane } from "@ghast/memory/evolution";
       import {
+        createDefaultIntelligence,
+        type DefaultIntelligenceOptions,
+      } from "@ghast/memory/intelligence";
+      import {
         stateBenchAgentPythonTemplate,
         buildStateBenchLearnings,
         prepareStateBenchAgentLearningRun,
@@ -873,6 +901,30 @@ try {
         },
       });
       if (!Array.isArray(emptyExtraction)) throw new Error("typed openai-compatible extractor failed");
+      const defaultIntelligenceOptions: DefaultIntelligenceOptions = {
+        model: "consumer-types-chat",
+        dimensions: 3,
+        extractor: false,
+        consolidator: false,
+        procedureDistiller: false,
+        dossierSynthesizer: false,
+        reranker: false,
+        fetchImpl: async () => ({
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          text: async () => JSON.stringify({ data: [{ index: 0, embedding: [0, 0, 1] }] }),
+        }),
+      };
+      const typedIntelligence = createDefaultIntelligence(defaultIntelligenceOptions);
+      if (!typedIntelligence.embeddingProvider) {
+        throw new Error("typed intelligence provider missing");
+      }
+      const typedEmbed = typeof typedIntelligence.embeddingProvider === "function"
+        ? typedIntelligence.embeddingProvider
+        : typedIntelligence.embeddingProvider.embed.bind(typedIntelligence.embeddingProvider);
+      const typedVectors = await typedEmbed(["typed vector"]);
+      if (typedVectors[0]?.length !== 3) throw new Error("typed intelligence vector failed");
       await memory.add({
         profileId: "consumer-types",
         kind: "preference",

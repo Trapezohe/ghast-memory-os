@@ -60,6 +60,7 @@ import type {
   TaskTrajectoryInput,
   TaskTrajectoryRecord,
   UpdateMemoryInput,
+  WorldBeliefListInput,
   WorldBeliefRecord,
 } from "../../kernel/types.js";
 import {
@@ -541,7 +542,15 @@ function matchedMemorySearchCues(memory: MemoryRecord, query: string): string[] 
 
 function memorySearchTags(memory: MemoryRecord): string[] {
   const tags: string[] = [memory.kind];
-  for (const key of ["actionPolicyKind", "predicate", "source", "consolidationSource", "distillationSource"]) {
+  for (const key of [
+    "actionPolicyKind",
+    "predicate",
+    "source",
+    "consolidationSource",
+    "distillationSource",
+    "dossierSource",
+    "dossierKind",
+  ]) {
     const value = memory.metadata[key];
     if (typeof value === "string" && value.trim().length > 0) tags.push(value.trim());
   }
@@ -1449,14 +1458,14 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     deleteAssociationsForMemory(memoryId);
   }
 
-  function consolidationSourceMemoryIds(metadata: Record<string, unknown>): string[] {
+  function derivedSourceMemoryIds(metadata: Record<string, unknown>): string[] {
     const sourceMemoryIds = metadata.sourceMemoryIds;
     return Array.isArray(sourceMemoryIds)
       ? sourceMemoryIds.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
       : [];
   }
 
-  function derivedConsolidationSummaryIdsForForgottenSources(
+  function derivedSummaryIdsForForgottenSources(
     profileId: string,
     sourceMemoryIds: string[],
   ): string[] {
@@ -1476,8 +1485,8 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       for (const row of rows) {
         if (sourceClosure.has(row.id) || derivedIds.has(row.id)) continue;
         const metadata = parseJsonObject(row.metadata_json);
-        if (metadata.consolidationSummary !== true) continue;
-        const summarySourceIds = consolidationSourceMemoryIds(metadata);
+        if (metadata.consolidationSummary !== true && metadata.dossier !== true) continue;
+        const summarySourceIds = derivedSourceMemoryIds(metadata);
         if (!summarySourceIds.some((sourceId) => sourceClosure.has(sourceId))) continue;
         derivedIds.add(row.id);
         sourceClosure.add(row.id);
@@ -3189,6 +3198,28 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     return tx();
   }
 
+  function listWorldBeliefs(input: WorldBeliefListInput): WorldBeliefRecord[] {
+    initialize();
+    const limit = Math.max(1, Math.min(input.limit ?? 500, 5000));
+    const clauses = ["profile_id = ?"];
+    const params: unknown[] = [input.profileId];
+    if (input.status && input.status !== "any") {
+      clauses.push("status = ?");
+      params.push(input.status);
+    }
+    return (
+      db
+        .prepare(
+          `SELECT *
+           FROM gmos_world_beliefs
+           WHERE ${clauses.join(" AND ")}
+           ORDER BY updated_at DESC, id ASC
+           LIMIT ?`,
+        )
+        .all(...params, limit) as Record<string, unknown>[]
+    ).map(normalizeWorldBelief);
+  }
+
   async function recordConsolidationSummary(
     input: RecordConsolidationSummaryInput,
   ): Promise<RecordConsolidationSummaryResult> {
@@ -3956,6 +3987,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     const exempted: MaintenanceExemption[] = [];
     const consolidationSkipped = new Map<string, number>();
     const distillationSkipped = new Map<string, number>();
+    const dossierSkipped = new Map<string, number>();
     const rows = db
       .prepare(
         `SELECT *
@@ -4013,6 +4045,11 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     } else if (!input.distillation.enabled) {
       incrementSkipped(distillationSkipped, "distillation_disabled");
     }
+    if (!input.phases.includes("dossier")) {
+      incrementSkipped(dossierSkipped, "phase_dossier_not_requested");
+    } else if (!input.dossier.enabled) {
+      incrementSkipped(dossierSkipped, "dossier_disabled");
+    }
     if (!input.dryRun && (transitions.length > 0 || duplicateClusters.length > 0)) {
       const tx = db.transaction((items: MaintenanceTransition[], clusters: DuplicateConsolidationCluster[]) => {
         for (const transition of items) {
@@ -4054,6 +4091,14 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         summaryMemories: [],
         rejectedCandidates: [],
         skipped: skippedSummaries(distillationSkipped),
+      },
+      dossier: {
+        enabled: input.dossier.enabled,
+        evaluated: 0,
+        entities: [],
+        summaryMemories: [],
+        rejectedCandidates: [],
+        skipped: skippedSummaries(dossierSkipped),
       },
     };
   }
@@ -4523,7 +4568,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       limit: 100,
     }).filter((memory) => memoryMatchesForgetQuery(memory, terms));
     const matchedMemoryIds = matches.map((memory) => memory.id);
-    const derivedMemoryIds = derivedConsolidationSummaryIdsForForgottenSources(
+    const derivedMemoryIds = derivedSummaryIdsForForgottenSources(
       input.profileId,
       matchedMemoryIds,
     );
@@ -4877,6 +4922,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     restoreArchivedMemory,
     archiveMemories,
     addWorldBelief,
+    listWorldBeliefs,
     searchMemories,
     listMemories,
     getMemoryById,

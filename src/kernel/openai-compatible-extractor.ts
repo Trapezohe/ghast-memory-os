@@ -17,7 +17,9 @@ export interface OpenAICompatibleExtractorOptions {
   baseUrl?: string | undefined;
   model: string;
   fetch?: FetchLike | undefined;
+  fetchImpl?: FetchLike | undefined;
   timeoutMs?: number | undefined;
+  maxRetries?: number | undefined;
   maxCandidates?: number | undefined;
   temperature?: number | undefined;
   maxTokens?: number | undefined;
@@ -81,17 +83,8 @@ function contentFromCompletion(payload: unknown): string {
 function parseJsonObject(text: string): unknown {
   const trimmed = text.trim();
   if (!trimmed) return null;
-  if (trimmed.startsWith("```")) {
-    const withoutFence = trimmed
-      .replace(/^```(?:json)?\s*/iu, "")
-      .replace(/\s*```$/u, "")
-      .trim();
-    return JSON.parse(withoutFence) as unknown;
-  }
-  const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}");
-  if (start !== -1 && end > start) {
-    return JSON.parse(trimmed.slice(start, end + 1)) as unknown;
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+    throw new Error("OpenAI-compatible extractor returned non-JSON content");
   }
   return JSON.parse(trimmed) as unknown;
 }
@@ -136,12 +129,17 @@ function metadataRecord(value: unknown): Record<string, unknown> | undefined {
   return value as Record<string, unknown>;
 }
 
+function containsInstructionArtifact(value: string): boolean {
+  return /ignore previous instructions|system prompt|developer message|contract JSON/iu.test(value);
+}
+
 function normalizeCandidate(value: unknown): MemoryExtractionCandidate | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   const kind = record.kind;
   const content = optionalString(record.content);
   if (!MEMORY_KINDS.has(kind as MemoryKind) || !content) return null;
+  if (containsInstructionArtifact(content)) return null;
   const confidence = boundedNumber(Number(record.confidence), 0, 0, 1);
   const subjectAliases = optionalStringArray(record.subjectAliases);
   return {
@@ -205,8 +203,9 @@ export function createOpenAICompatibleExtractor(
 ): MemoryExtractor {
   const maxCandidates = boundedInteger(options.maxCandidates, 6, 1, 16);
   const timeoutMs = boundedInteger(options.timeoutMs, 20_000, 1000, 120_000);
+  const maxRetries = boundedInteger(options.maxRetries, 0, 0, 3);
   const maxTokens = boundedInteger(options.maxTokens, 1200, 64, 8192);
-  const fetchImpl = options.fetch ?? globalThis.fetch;
+  const fetchImpl = options.fetch ?? options.fetchImpl ?? globalThis.fetch;
   if (!fetchImpl) {
     throw new Error("createOpenAICompatibleExtractor requires fetch in this runtime");
   }
@@ -216,48 +215,57 @@ export function createOpenAICompatibleExtractor(
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
-        const response = await fetchImpl(endpoint(options.baseUrl), {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            ...(options.apiKey ? { authorization: `Bearer ${options.apiKey}` } : {}),
-            ...(options.headers ?? {}),
-          },
-          signal: controller.signal,
-          body: JSON.stringify({
-            model: options.model,
-            temperature: boundedNumber(options.temperature, 0, 0, 2),
-            max_tokens: maxTokens,
-            ...(options.responseFormat === false
-              ? {}
-              : { response_format: { type: "json_object" } }),
-            messages: [
-              { role: "system", content: systemPrompt(maxCandidates) },
-              { role: "user", content: userPrompt(input, options) },
-            ],
-          }),
-        });
-        const responseText = await response.text();
-        if (!response.ok) {
-          throw new Error(
-            `OpenAI-compatible extractor request failed: ${response.status} ${response.statusText}`,
-          );
+        let lastError: unknown;
+        for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+          try {
+            const response = await fetchImpl(endpoint(options.baseUrl), {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                ...(options.apiKey ? { authorization: `Bearer ${options.apiKey}` } : {}),
+                ...(options.headers ?? {}),
+              },
+              signal: controller.signal,
+              body: JSON.stringify({
+                model: options.model,
+                temperature: boundedNumber(options.temperature, 0, 0, 2),
+                max_tokens: maxTokens,
+                ...(options.responseFormat === false
+                  ? {}
+                  : { response_format: { type: "json_object" } }),
+                messages: [
+                  { role: "system", content: systemPrompt(maxCandidates) },
+                  { role: "user", content: userPrompt(input, options) },
+                ],
+              }),
+            });
+            const responseText = await response.text();
+            if (!response.ok) {
+              throw new Error(
+                `OpenAI-compatible extractor request failed: ${response.status} ${response.statusText}`,
+              );
+            }
+            const completion = JSON.parse(responseText) as unknown;
+            const content = contentFromCompletion(completion);
+            const parsed = parseJsonObject(content);
+            return candidateArray(parsed)
+              .slice(0, maxCandidates)
+              .map(normalizeCandidate)
+              .filter((candidate): candidate is MemoryExtractionCandidate => candidate !== null)
+              .map((candidate) => ({
+                ...candidate,
+                metadata: {
+                  ...(candidate.metadata ?? {}),
+                  llmExtractorModel: options.model,
+                  llmExtractorProvider: "openai-compatible",
+                },
+              }));
+          } catch (error) {
+            lastError = error;
+            if (attempt >= maxRetries) break;
+          }
         }
-        const completion = JSON.parse(responseText) as unknown;
-        const content = contentFromCompletion(completion);
-        const parsed = parseJsonObject(content);
-        return candidateArray(parsed)
-          .slice(0, maxCandidates)
-          .map(normalizeCandidate)
-          .filter((candidate): candidate is MemoryExtractionCandidate => candidate !== null)
-          .map((candidate) => ({
-            ...candidate,
-            metadata: {
-              ...(candidate.metadata ?? {}),
-              llmExtractorModel: options.model,
-              llmExtractorProvider: "openai-compatible",
-            },
-          }));
+        throw lastError instanceof Error ? lastError : new Error("OpenAI-compatible extractor failed");
       } finally {
         clearTimeout(timer);
       }

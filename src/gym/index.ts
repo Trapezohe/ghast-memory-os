@@ -1491,6 +1491,159 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     "distillation",
   );
 
+  const { createDefaultIntelligence } = await import("../intelligence/index.js");
+  let gymDossierVersion = "first";
+  const gymIntelligenceFetch = async (_url: string | URL | Request, init?: RequestInit) => {
+    const request = JSON.parse(String(init?.body ?? "{}")) as {
+      input?: string[];
+      messages?: Array<{ content: string }>;
+    };
+    if (request.input) {
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () => JSON.stringify({
+          data: request.input?.map((_text, index) => ({
+            index,
+            embedding: index % 2 === 0 ? [1, 0, 0] : [0, 1, 0],
+          })),
+        }),
+      };
+    }
+    const system = request.messages?.[0]?.content ?? "";
+    const user = request.messages?.[1]?.content ?? "";
+    const content = system.includes("structured memory extractor")
+      ? JSON.stringify({
+          memories: [{
+            kind: "project",
+            subject: "project:gym-intelligence",
+            predicate: user.includes("beta") ? "project.note.beta" : "project.note.alpha",
+            object: user.includes("beta") ? "beta" : "alpha",
+            content: user.includes("beta")
+              ? "GymIntelligenceSignal beta durable note."
+              : "GymIntelligenceSignal alpha durable note.",
+            confidence: 0.9,
+          }],
+        })
+      : system.includes("memory consolidation hook")
+        ? JSON.stringify({
+            summaries: [{
+              kind: "project",
+              content: "GymIntelligenceSummarySignal summarizes cited project notes.",
+              confidence: 0.82,
+            }],
+          })
+        : system.includes("entity dossier synthesis hook")
+          ? JSON.stringify({
+              dossiers: [{
+                content: `GymIntelligenceDossierSignal ${gymDossierVersion} dossier.`,
+                confidence: 0.84,
+              }],
+            })
+          : JSON.stringify({ procedures: [{ content: "GymIntelligenceProcedureSignal distilled.", confidence: 0.8 }] });
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ choices: [{ message: { content } }] }),
+    };
+  };
+  const intelligence = createDefaultIntelligence({
+    model: "gym-chat",
+    embedModel: "gym-embed",
+    dimensions: 3,
+    fetchImpl: gymIntelligenceFetch,
+    reranker: false,
+  });
+  const noIntelligence = createMemoryOS({
+    profileId: "gym_intelligence_none",
+    store,
+  });
+  const noIntelligenceObserve = await noIntelligence.observeWithReport({
+    type: "conversation.message",
+    role: "user",
+    content: "GymIntelligenceSignal alpha durable note.",
+  });
+  const intelligenceMemory = createMemoryOS({
+    profileId: "gym_intelligence_default",
+    store,
+    extractor: intelligence.extractor,
+    consolidator: intelligence.consolidator,
+    procedureDistiller: intelligence.procedureDistiller,
+    dossierSynthesizer: intelligence.dossierSynthesizer,
+    embeddingProvider: intelligence.embeddingProvider,
+    consolidation: { tagOverlapThreshold: 0.1, hookMinClusterSize: 2 },
+    dossier: { minLinkedMemories: 2 },
+  });
+  await intelligenceMemory.observe({
+    type: "conversation.message",
+    role: "user",
+    content: "GymIntelligenceSignal alpha durable note.",
+  });
+  await intelligenceMemory.observe({
+    type: "conversation.message",
+    role: "user",
+    content: "GymIntelligenceSignal beta durable note.",
+  });
+  const intelligenceMatches = await intelligenceMemory.search({
+    query: "durable note",
+    retrieval: { embedQuery: true },
+  });
+  const intelligenceConsolidation = await intelligenceMemory.maintain({
+    now: "2026-07-02T05:02:00.000Z",
+    phases: ["consolidate"],
+  });
+  const intelligenceDossierDryRunBefore = await store.readAuditSnapshot();
+  const intelligenceDossierDryRun = await intelligenceMemory.maintain({
+    dryRun: true,
+    now: "2026-07-02T05:03:00.000Z",
+    phases: ["dossier"],
+  });
+  const intelligenceDossierDryRunAfter = await store.readAuditSnapshot();
+  const intelligenceDossier = await intelligenceMemory.maintain({
+    now: "2026-07-02T05:04:00.000Z",
+    phases: ["dossier"],
+  });
+  const firstGymDossierId = intelligenceDossier.dossier.summaryMemories[0]?.memoryId;
+  gymDossierVersion = "second";
+  await intelligenceMemory.observe({
+    type: "conversation.message",
+    role: "user",
+    content: "GymIntelligenceSignal beta durable note.",
+  });
+  const intelligenceDossierSecond = await intelligenceMemory.maintain({
+    now: "2026-07-02T05:05:00.000Z",
+    phases: ["dossier"],
+  });
+  const firstGymDossier = firstGymDossierId
+    ? await intelligenceMemory.get({ id: firstGymDossierId, includeArchived: true })
+    : null;
+  gate(
+    result,
+    "default_intelligence_extraction_and_embedding",
+    noIntelligenceObserve.memoryIds.length === 0 &&
+      intelligenceMatches.some((entry) => entry.content.includes("GymIntelligenceSignal")),
+    "opt-in intelligence should extract durable memories and use the embedding provider path",
+    "intelligence",
+  );
+  gate(
+    result,
+    "default_intelligence_consolidation_and_dossier",
+    intelligenceConsolidation.consolidation.summaryMemories.length >= 1 &&
+      intelligenceDossierDryRun.dossier.summaryMemories.length === 1 &&
+      JSON.stringify(intelligenceDossierDryRunBefore) === JSON.stringify(intelligenceDossierDryRunAfter) &&
+      Boolean(firstGymDossierId) &&
+      intelligenceDossierSecond.dossier.summaryMemories[0]?.supersededMemoryId === firstGymDossierId &&
+      firstGymDossier?.status === "archived",
+    "default intelligence should consolidate, dry-run dossiers without writes, and supersede entity dossiers",
+    "intelligence",
+  );
+  scenario(result, "batteries_included_intelligence", "dev", [
+    "default_intelligence_extraction_and_embedding",
+    "default_intelligence_consolidation_and_dossier",
+  ]);
+
   const reinforcementMemory = await memory.add({
     profileId: "gym_outcome_reinforcement",
     kind: "procedure",

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   associationCueKey,
@@ -25,6 +25,12 @@ import {
   resolveMemoryProcedureDistillationConfig,
   selectProcedureDistillationClusters,
 } from "../kernel/distillation.js";
+import {
+  dossierInputKey,
+  normalizeDossierCandidate,
+  resolveMemoryDossierConfig,
+  selectEntityDossierSnapshots,
+} from "../kernel/dossier.js";
 import {
   embeddingForMemory,
   embeddingForQuery,
@@ -78,6 +84,9 @@ import type {
   MemoryProcedureDistillationCandidate,
   MemoryProcedureDistillationCluster,
   MemoryProcedureDistillationResult,
+  MemoryDossierCandidate,
+  MemoryDossierEntitySnapshot,
+  MemoryDossierResult,
   MemoryRecord,
   MemoryRetrievalConfig,
   MemoryOS,
@@ -288,6 +297,14 @@ function procedureDistillerName(
   return procedureDistiller.name;
 }
 
+function dossierSynthesizerName(
+  dossierSynthesizer: MemoryOSOptions["dossierSynthesizer"],
+): string | undefined {
+  if (!dossierSynthesizer) return undefined;
+  if (typeof dossierSynthesizer === "function") return dossierSynthesizer.name || undefined;
+  return dossierSynthesizer.name;
+}
+
 function asConsolidationCandidateArray(
   result: MemoryConsolidationResult,
 ): MemoryConsolidationCandidate[] | null {
@@ -298,6 +315,13 @@ function asConsolidationCandidateArray(
 function asProcedureDistillationCandidateArray(
   result: MemoryProcedureDistillationResult,
 ): MemoryProcedureDistillationCandidate[] | null {
+  if (result === null || result === undefined) return null;
+  return Array.isArray(result) ? result : [result];
+}
+
+function asDossierCandidateArray(
+  result: MemoryDossierResult,
+): MemoryDossierCandidate[] | null {
   if (result === null || result === undefined) return null;
   return Array.isArray(result) ? result : [result];
 }
@@ -1005,6 +1029,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   const lifecycle = resolveMemoryLifecycleConfig(options.lifecycle);
   const consolidation = resolveMemoryConsolidationConfig(options.consolidation);
   const distillation = resolveMemoryProcedureDistillationConfig(options.distillation);
+  const dossier = resolveMemoryDossierConfig(options.dossier);
   const embeddingProvider = resolveEmbeddingProviderConfig(options.embeddingProvider);
   const retrieval = options.retrieval;
   let initialized = false;
@@ -2212,6 +2237,232 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     }
   }
 
+  function addDossierSkipped(
+    report: MaintenanceReport,
+    reason: string,
+    count = 1,
+  ): void {
+    const existing = report.dossier.skipped.find((entry) => entry.reason === reason);
+    if (existing) {
+      existing.count += count;
+    } else {
+      report.dossier.skipped.push({ reason, count });
+    }
+    report.dossier.skipped.sort((left, right) => left.reason.localeCompare(right.reason));
+  }
+
+  async function callDossierSynthesizer(
+    snapshot: MemoryDossierEntitySnapshot,
+  ): Promise<MemoryDossierCandidate[] | null> {
+    if (!options.dossierSynthesizer) return null;
+    try {
+      const raw =
+        typeof options.dossierSynthesizer === "function"
+          ? await options.dossierSynthesizer(snapshot)
+          : await options.dossierSynthesizer.synthesize(snapshot);
+      return asDossierCandidateArray(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  function dossierSourceBeliefIds(snapshot: MemoryDossierEntitySnapshot): string[] {
+    return snapshot.beliefs.map((belief) => belief.id);
+  }
+
+  function dossierSourceMemoryIds(snapshot: MemoryDossierEntitySnapshot): string[] {
+    return snapshot.memories.map((memory) => memory.id);
+  }
+
+  function dossierReportEntity(snapshot: MemoryDossierEntitySnapshot) {
+    return {
+      entityKey: snapshot.entityKey,
+      kind: snapshot.entityKind,
+      sourceBeliefIds: dossierSourceBeliefIds(snapshot),
+      sourceMemoryIds: dossierSourceMemoryIds(snapshot),
+    };
+  }
+
+  function dossierInputFingerprint(snapshot: MemoryDossierEntitySnapshot, content: string): string {
+    return createHash("sha256")
+      .update(dossierInputKey({ snapshot, content }))
+      .digest("hex");
+  }
+
+  async function activeDossierForEntity(
+    profileId: string,
+    entityKey: string,
+  ): Promise<MemoryRecord | null> {
+    if (store.findActiveMemoryByMetadata) {
+      return store.findActiveMemoryByMetadata(profileId, "dossierFor", entityKey);
+    }
+    if (!store.listMemories) return null;
+    const existing = await store.listMemories({
+      profileId,
+      status: "any",
+      includeSensitive: true,
+      includePerson: true,
+      limit: 100,
+    });
+    return existing.find(
+      (memory) =>
+        memory.status === "active" &&
+        memory.metadata.dossier === true &&
+        memory.metadata.dossierFor === entityKey,
+    ) ?? null;
+  }
+
+  async function applyDossierSynthesis(input: {
+    profileId: string;
+    now: string;
+    dryRun: boolean;
+    report: MaintenanceReport;
+  }): Promise<void> {
+    if (!input.report.dossier.enabled) return;
+    if (!options.dossierSynthesizer) {
+      addDossierSkipped(input.report, "dossier_synthesizer_not_configured");
+      return;
+    }
+    if (!store.listWorldBeliefs || !store.listMemories || !store.archiveMemoryById) {
+      addDossierSkipped(input.report, "store_dossier_unsupported");
+      return;
+    }
+    const beliefs = await store.listWorldBeliefs({
+      profileId: input.profileId,
+      status: "active",
+      limit: dossier.maxEntitiesPerRun * dossier.maxBeliefsPerEntity * 4,
+    });
+    const memories = await store.listMemories({
+      profileId: input.profileId,
+      status: "any",
+      includeSensitive: true,
+      includePerson: true,
+      limit: dossier.maxEntitiesPerRun * dossier.maxMemoriesPerEntity * 8,
+    });
+    const snapshots = selectEntityDossierSnapshots({ beliefs, memories, config: dossier });
+    input.report.dossier.evaluated = beliefs.length;
+    input.report.dossier.entities = snapshots.map(dossierReportEntity);
+    if (snapshots.length === 0) {
+      addDossierSkipped(input.report, "no_dossier_entities");
+      return;
+    }
+    const name = dossierSynthesizerName(options.dossierSynthesizer);
+    for (const snapshot of snapshots) {
+      const entity = dossierReportEntity(snapshot);
+      const rawCandidates = await callDossierSynthesizer(snapshot);
+      if (rawCandidates === null) {
+        addDossierSkipped(input.report, "dossier_synthesizer_returned_null_or_failed");
+        continue;
+      }
+      if (rawCandidates.length === 0) {
+        addDossierSkipped(input.report, "dossier_synthesizer_returned_empty");
+        continue;
+      }
+      const candidate = rawCandidates[0];
+      if (!candidate) continue;
+      const normalized = normalizeDossierCandidate(candidate, snapshot);
+      if ("reason" in normalized) {
+        input.report.dossier.rejectedCandidates.push({ ...entity, reason: normalized.reason });
+        continue;
+      }
+      const contentSensitivity = classifyRuntimeSensitivity(
+        normalized.normalized.content,
+        "content",
+      );
+      const entitySensitivity = runtimeValueSensitivity(
+        {
+          entityKey: snapshot.entityKey,
+          aliases: snapshot.aliases,
+        },
+        classifyRuntimeSensitivity,
+        new WeakSet<object>(),
+        "structured_candidate",
+      );
+      if (contentSensitivity === "secret_like" || entitySensitivity === "secret_like") {
+        input.report.dossier.rejectedCandidates.push({ ...entity, reason: "secret_like" });
+        continue;
+      }
+      if (snapshot.entityKind !== "person" && isPersonRoutedMemory(normalized.normalized.content)) {
+        input.report.dossier.rejectedCandidates.push({ ...entity, reason: "person_routed" });
+        continue;
+      }
+      const inputKey = dossierInputFingerprint(snapshot, normalized.normalized.content);
+      const existing = await activeDossierForEntity(input.profileId, snapshot.entityKey);
+      if (
+        existing?.metadata.dossierInputKey === inputKey &&
+        existing.content === normalized.normalized.content
+      ) {
+        addDossierSkipped(input.report, "dossier_already_current");
+        continue;
+      }
+      const summary = {
+        ...entity,
+        content: normalized.normalized.content,
+        confidence: normalized.normalized.confidence,
+        ...(existing ? { supersededMemoryId: existing.id } : {}),
+        reasons: ["host_dossier_synthesizer"],
+      };
+      if (input.dryRun) {
+        input.report.dossier.summaryMemories.push(summary);
+        continue;
+      }
+      const evidence = await store.recordEvidence({
+        profileId: input.profileId,
+        eventKey: ["dossier", input.profileId, snapshot.entityKey, inputKey].join(":"),
+        sourceType: "dossier",
+        content: "Entity dossier synthesis",
+        sensitivity: "normal",
+        eligibleForLongTermMemory: false,
+        payload: {
+          entityKey: snapshot.entityKey,
+          kind: snapshot.entityKind,
+          sourceBeliefIds: entity.sourceBeliefIds,
+          sourceMemoryIds: entity.sourceMemoryIds,
+          ...(existing ? { supersededMemoryId: existing.id } : {}),
+        },
+        createdAt: input.now,
+      });
+      const embedding = await embeddingForRuntimeWrite({
+        kind: snapshot.entityKind,
+        sensitivity: contentSensitivity,
+        content: normalized.normalized.content,
+      });
+      const memory = await store.addMemory({
+        profileId: input.profileId,
+        kind: snapshot.entityKind,
+        content: normalized.normalized.content,
+        sensitivity: contentSensitivity,
+        confidence: normalized.normalized.confidence,
+        sourceEventId: evidence.id,
+        metadata: {
+          dossier: true,
+          dossierFor: snapshot.entityKey,
+          dossierKind: snapshot.entityKind,
+          dossierInputKey: inputKey,
+          dossierSource: "host_dossier_synthesizer",
+          sourceBeliefIds: entity.sourceBeliefIds,
+          sourceMemoryIds: entity.sourceMemoryIds,
+          aliases: snapshot.aliases,
+          ...(name ? { dossierSynthesizerName: name } : {}),
+        },
+        createdAt: input.now,
+        ...(embedding ? { embedding } : {}),
+      });
+      if (existing) {
+        await store.archiveMemoryById({
+          profileId: input.profileId,
+          id: existing.id,
+          reason: `dossier_superseded_by:${memory.id}`,
+          archivedAt: input.now,
+        });
+      }
+      input.report.dossier.summaryMemories.push({
+        ...summary,
+        memoryId: memory.id,
+      });
+    }
+  }
+
   async function maintain(input: MaintenanceInput = {}) {
     await initialize();
     if (!store.maintain) throw new Error("gmOS store does not support maintenance");
@@ -2220,7 +2471,11 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     assertValidIsoInstant(now, "maintain.now");
     const phases = input.phases ?? ["decay"];
     const unsupportedPhase = phases.find(
-      (phase) => phase !== "decay" && phase !== "consolidate" && phase !== "distill",
+      (phase) =>
+        phase !== "decay" &&
+        phase !== "consolidate" &&
+        phase !== "distill" &&
+        phase !== "dossier",
     );
     if (unsupportedPhase) throw new Error(`Unsupported gmOS maintenance phase: ${unsupportedPhase}`);
     const dryRun = input.dryRun === true;
@@ -2233,6 +2488,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       lifecycle,
       consolidation,
       distillation,
+      dossier,
     });
     if (phases.includes("consolidate") && consolidation.enabled) {
       await applySemanticConsolidation({
@@ -2244,6 +2500,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     }
     if (phases.includes("distill") && distillation.enabled) {
       await applyProcedureDistillation({
+        profileId,
+        now,
+        dryRun,
+        report,
+      });
+    }
+    if (phases.includes("dossier") && dossier.enabled) {
+      await applyDossierSynthesis({
         profileId,
         now,
         dryRun,
@@ -2292,6 +2556,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     if (payload.memoryId === memoryId) return true;
     if (payload.archivedMemberId === memoryId) return true;
     if (payload.survivorId === memoryId) return true;
+    if (payload.supersededMemoryId === memoryId) return true;
     if (payloadStringArray(payload.sourceMemoryIds).includes(memoryId)) return true;
     if (payloadStringArray(payload.memberIds).includes(memoryId)) return true;
     for (const key of ["actions", "previousValues", "restoredValues"]) {
@@ -2366,6 +2631,18 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           ]),
         }];
       }
+      if (sourceType === "dossier" && memory.metadata.dossier === true) {
+        return [{
+          createdAt: event.createdAt,
+          eventKind: "dossier_created",
+          eventId,
+          sourceType,
+          reasonSummary: lifecycleReasonSummary([
+            "created entity dossier",
+            `sources:${payloadStringArray(payload.sourceMemoryIds).length}`,
+          ]),
+        }];
+      }
       const imported = sourceType.includes("import") || sourceType.includes("restore");
       return [{
         createdAt: event.createdAt,
@@ -2415,6 +2692,15 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         eventId,
         sourceType,
         reasonSummary: lifecycleReasonSummary(["procedure distillation"]),
+      }];
+    }
+    if (sourceType === "dossier") {
+      return [{
+        createdAt: event.createdAt,
+        eventKind: payload.supersededMemoryId === memory.id ? "archived" : "dossier_created",
+        eventId,
+        sourceType,
+        reasonSummary: lifecycleReasonSummary(["dossier"]),
       }];
     }
     if (sourceType === "evolution") {

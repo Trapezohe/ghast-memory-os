@@ -134,6 +134,58 @@ structured candidate normalization, action-policy projection, and reconstruction
 path while keeping the same gmOS write-path safety gates that a real provider
 would use.
 
+## Batteries-Included Intelligence
+
+Hosts that want first-run value without writing hook implementations can opt in
+to `@ghast/memory/intelligence`. The subpath ships OpenAI-compatible
+implementations for the existing host hooks: extractor, consolidator, procedure
+distiller, dossier synthesizer, embedding provider, reranker, and the
+`createDefaultIntelligence()` preset.
+
+Five-minute local Ollama setup:
+
+```ts
+import { createMemoryOS } from "@ghast/memory";
+import { createDefaultIntelligence } from "@ghast/memory/intelligence";
+import { createSqliteMemoryStore } from "@ghast/memory/store/sqlite";
+
+const intelligence = createDefaultIntelligence({
+  baseUrl: "http://127.0.0.1:11434/v1",
+  model: "llama3.1",
+  embedModel: "nomic-embed-text",
+  dimensions: 768,
+});
+
+const store = createSqliteMemoryStore({ path: "./gmos.db" });
+const memory = createMemoryOS({
+  profileId: "local-user",
+  store,
+  ...intelligence,
+});
+```
+
+Five-minute OpenAI-compatible cloud setup:
+
+```ts
+const intelligence = createDefaultIntelligence({
+  baseUrl: "https://provider.example/v1",
+  apiKey: process.env.MEMORY_MODEL_API_KEY,
+  model: "provider-chat-model",
+  embedModel: "provider-embedding-model",
+  dimensions: 1536,
+});
+```
+
+Every factory also accepts `fetchImpl`, so tests and gyms can use in-process
+stub responses without real network or localhost servers.
+
+Privacy note: when these hooks target a remote endpoint, gmOS sends the selected
+event, memory, belief, trajectory, or query candidate text to that endpoint.
+M5 sensitivity gates still prevent secret-like content and secret-like queries
+from durable writes or provider embeddings, and sensitive/person embeddings
+remain opt-in, but the host is responsible for choosing whether the endpoint is
+local, trusted, or remote.
+
 ## Embedding Providers
 
 Hosts can upgrade recall by wiring a local Ollama, ONNX, or other embedding

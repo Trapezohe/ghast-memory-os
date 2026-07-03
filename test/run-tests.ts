@@ -55,6 +55,11 @@ import {
   publicPackageExportsFromManifest,
 } from "../src/kernel/package-info.js";
 import {
+  createDefaultIntelligence,
+  createOpenAICompatibleConsolidator,
+  createOpenAICompatibleEmbeddingProvider,
+} from "../src/intelligence/index.js";
+import {
   renderHostCompatibilityGymMarkdown,
   renderExternalMemoryBenchmarkMarkdown,
   renderExternalMemoryBenchmarkSuiteMarkdown,
@@ -5340,6 +5345,282 @@ assert.equal(llmNonPersonSpeakerReport.extraction?.decisions.length, 0);
 assert.equal(llmNonPersonSpeakerReport.memoryIds.length, 0);
 assert.equal(llmNonPersonSpeakerReport.worldBeliefIds.length, 0);
 await llmExtractorMemory.close();
+
+let intelligenceDossierVersion = "initial";
+const intelligenceFetch = async (url: string | URL | Request, init?: RequestInit) => {
+  const request = JSON.parse(String(init?.body ?? "{}")) as {
+    input?: string[];
+    messages?: Array<{ role: string; content: string }>;
+  };
+  if (String(url).endsWith("/embeddings")) {
+    const input = request.input ?? [];
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({
+        data: input.map((_text, index) => ({
+          index,
+          embedding: index % 2 === 0 ? [1, 0, 0] : [0, 1, 0],
+        })),
+      }),
+    };
+  }
+  const system = request.messages?.[0]?.content ?? "";
+  const user = request.messages?.[1]?.content ?? "";
+  let content: string;
+  if (system.includes("structured memory extractor")) {
+    const event = JSON.parse(user) as { event?: { content?: string } };
+    const source = event.event?.content ?? "";
+    const object = source.includes("gamma") ? "gamma" : source.includes("beta") ? "beta" : "alpha";
+    content = JSON.stringify({
+      memories: [{
+        kind: "project",
+        subject: "project:atlas",
+        predicate: `project.note.${object}`,
+        object,
+        content: `Atlas intelligence ${object} source note.`,
+        confidence: 0.9,
+      }],
+    });
+  } else if (system.includes("memory consolidation hook")) {
+    content = JSON.stringify({
+      summaries: [{
+        kind: "project",
+        subject: "project:atlas",
+        predicate: "project.summary",
+        object: "ready",
+        content: "Atlas intelligence consolidated summary cites source notes.",
+        confidence: 0.82,
+      }],
+    });
+  } else if (system.includes("procedure distillation hook")) {
+    content = JSON.stringify({
+      procedures: [{
+        content: "Atlas intelligence procedure says verify evidence before release.",
+        confidence: 0.83,
+      }],
+    });
+  } else if (system.includes("entity dossier synthesis hook")) {
+    content = JSON.stringify({
+      dossiers: [{
+        content: `Atlas intelligence dossier ${intelligenceDossierVersion} cites project beliefs.`,
+        confidence: 0.84,
+      }],
+    });
+  } else if (system.includes("retrieval reranker")) {
+    content = JSON.stringify({ ids: ["candidate-b", "candidate-a", "outside-id"] });
+  } else {
+    content = "{}";
+  }
+  return {
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    text: async () => JSON.stringify({ choices: [{ message: { content } }] }),
+  };
+};
+const defaultIntelligence = createDefaultIntelligence({
+  baseUrl: "https://intelligence.invalid/v1",
+  model: "fixture-chat-model",
+  embedModel: "fixture-embedding-model",
+  dimensions: 3,
+  fetchImpl: intelligenceFetch,
+});
+if (
+  !defaultIntelligence.extractor ||
+  !defaultIntelligence.consolidator ||
+  !defaultIntelligence.procedureDistiller ||
+  !defaultIntelligence.dossierSynthesizer ||
+  !defaultIntelligence.embeddingProvider ||
+  !defaultIntelligence.reranker
+) {
+  throw new Error("default intelligence did not create all enabled hooks");
+}
+const defaultIntelligenceEmbed = typeof defaultIntelligence.embeddingProvider === "function"
+  ? defaultIntelligence.embeddingProvider
+  : defaultIntelligence.embeddingProvider.embed.bind(defaultIntelligence.embeddingProvider);
+const defaultIntelligenceVectors = await defaultIntelligenceEmbed(["alpha", "beta"]);
+assert.deepEqual(defaultIntelligenceVectors, [[1, 0, 0], [0, 1, 0]]);
+const defaultRerank = await (typeof defaultIntelligence.reranker === "function"
+  ? defaultIntelligence.reranker
+  : defaultIntelligence.reranker.rerank)([
+  { id: "candidate-a", kind: "fact", snippet: "a", fusedScore: 0.4 },
+  { id: "candidate-b", kind: "fact", snippet: "b", fusedScore: 0.3 },
+]);
+assert.deepEqual(defaultRerank, ["candidate-b", "candidate-a"]);
+const malformedConsolidator = createOpenAICompatibleConsolidator({
+  model: "malformed",
+  fetchImpl: async () => ({
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    text: async () => JSON.stringify({ choices: [{ message: { content: "not json" } }] }),
+  }),
+});
+assert.equal(await malformedConsolidator.consolidate({
+  kind: "fact",
+  sharedTags: [],
+  memories: [],
+}), null);
+const secretConsolidator = createOpenAICompatibleConsolidator({
+  model: "secret",
+  fetchImpl: async () => ({
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    text: async () => JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            summaries: [{ content: "api key sk-intelligencesecret1234567890", confidence: 0.9 }],
+          }),
+        },
+      }],
+    }),
+  }),
+});
+assert.deepEqual(await secretConsolidator.consolidate({
+  kind: "fact",
+  sharedTags: [],
+  memories: [],
+}), []);
+const badEmbeddingProvider = createOpenAICompatibleEmbeddingProvider({
+  model: "bad-embedding",
+  dimensions: 4,
+  fetchImpl: intelligenceFetch,
+});
+await assert.rejects(
+  () => badEmbeddingProvider.embed(["dimension mismatch"]),
+  /dimensions do not match/,
+);
+const intelligenceStore = createSqliteMemoryStore({ path: path.join(tmp, "default-intelligence.db") });
+const intelligenceMemory = createMemoryOS({
+  profileId: "default_intelligence",
+  store: intelligenceStore,
+  extractor: defaultIntelligence.extractor,
+  consolidator: defaultIntelligence.consolidator,
+  procedureDistiller: defaultIntelligence.procedureDistiller,
+  dossierSynthesizer: defaultIntelligence.dossierSynthesizer,
+  embeddingProvider: defaultIntelligence.embeddingProvider,
+  retrieval: { reranker: defaultIntelligence.reranker },
+  consolidation: { tagOverlapThreshold: 0.1 },
+  dossier: { minLinkedMemories: 2 },
+});
+await intelligenceMemory.observe({
+  type: "conversation.message",
+  role: "user",
+  content: "Atlas intelligence alpha update.",
+});
+await intelligenceMemory.observe({
+  type: "conversation.message",
+  role: "user",
+  content: "Atlas intelligence beta update.",
+});
+const dryRunDossierBefore = await intelligenceStore.readAuditSnapshot();
+const dryRunDossier = await intelligenceMemory.maintain({
+  dryRun: true,
+  now: "2026-07-03T01:00:00.000Z",
+  phases: ["dossier"],
+});
+const dryRunDossierAfter = await intelligenceStore.readAuditSnapshot();
+assert.equal(dryRunDossier.dossier.summaryMemories.length, 1);
+assert.equal(JSON.stringify(dryRunDossierBefore), JSON.stringify(dryRunDossierAfter));
+const firstDossier = await intelligenceMemory.maintain({
+  now: "2026-07-03T01:01:00.000Z",
+  phases: ["dossier"],
+});
+const firstDossierId = firstDossier.dossier.summaryMemories[0]?.memoryId;
+assert.equal(typeof firstDossierId, "string");
+const sameDossier = await intelligenceMemory.maintain({
+  now: "2026-07-03T01:02:00.000Z",
+  phases: ["dossier"],
+});
+assert.equal(sameDossier.dossier.summaryMemories.length, 0);
+assert.equal(
+  sameDossier.dossier.skipped.some((entry) => entry.reason === "dossier_already_current"),
+  true,
+);
+intelligenceDossierVersion = "updated";
+await intelligenceMemory.observe({
+  type: "conversation.message",
+  role: "user",
+  content: "Atlas intelligence gamma update.",
+});
+const updatedDossier = await intelligenceMemory.maintain({
+  now: "2026-07-03T01:03:00.000Z",
+  phases: ["dossier"],
+});
+const updatedDossierId = updatedDossier.dossier.summaryMemories[0]?.memoryId;
+assert.equal(typeof updatedDossierId, "string");
+assert.notEqual(updatedDossierId, firstDossierId);
+assert.equal(updatedDossier.dossier.summaryMemories[0]?.supersededMemoryId, firstDossierId);
+const archivedFirstDossier = await intelligenceMemory.get({
+  id: firstDossierId!,
+  includeArchived: true,
+});
+assert.equal(archivedFirstDossier?.status, "archived");
+const dossierEvidence = await intelligenceMemory.listEvidence({
+  sourceType: "dossier",
+  limit: 10,
+});
+assert.equal(
+  dossierEvidence.some(
+    (event) =>
+      Array.isArray(event.payload.sourceBeliefIds) &&
+      Array.isArray(event.payload.sourceMemoryIds) &&
+      event.payload.supersededMemoryId === firstDossierId,
+  ),
+  true,
+);
+const updatedDossierMemory = await intelligenceMemory.get({ id: updatedDossierId! });
+assert.match(updatedDossierMemory?.content ?? "", /Atlas intelligence dossier updated/);
+await intelligenceMemory.close();
+const leakingDossierStore = createSqliteMemoryStore({ path: path.join(tmp, "leaking-dossier.db") });
+const leakingDossierMemory = createMemoryOS({
+  profileId: "leaking_dossier",
+  store: leakingDossierStore,
+  dossierSynthesizer() {
+    return { content: "PERSON: Alice should leak into project dossier.", confidence: 0.9 };
+  },
+  dossier: { minLinkedMemories: 2 },
+});
+const leakingSourceA = await leakingDossierMemory.add({
+  kind: "project",
+  content: "Leaking dossier project alpha source.",
+});
+const leakingSourceB = await leakingDossierMemory.add({
+  kind: "project",
+  content: "Leaking dossier project beta source.",
+});
+await leakingDossierStore.addWorldBelief({
+  profileId: "leaking_dossier",
+  subject: "project:leak",
+  predicate: "project.note.alpha",
+  object: "alpha",
+  sourceMemoryId: leakingSourceA.id,
+});
+await leakingDossierStore.addWorldBelief({
+  profileId: "leaking_dossier",
+  subject: "project:leak",
+  predicate: "project.note.beta",
+  object: "beta",
+  sourceMemoryId: leakingSourceB.id,
+});
+const leakingDossierReport = await leakingDossierMemory.maintain({
+  now: "2026-07-03T01:04:00.000Z",
+  phases: ["dossier"],
+});
+assert.equal(leakingDossierReport.dossier.summaryMemories.length, 0);
+assert.equal(
+  leakingDossierReport.dossier.rejectedCandidates.some(
+    (entry) => entry.reason === "person_routed",
+  ),
+  true,
+);
+const leakingDossierSearch = await leakingDossierMemory.list({ query: "Alice", status: "any" });
+assert.equal(leakingDossierSearch.some((memory) => memory.content.includes("Alice")), false);
+await leakingDossierMemory.close();
 
 const customCandidateSpeakerPath = path.join(tmp, "custom-candidate-speaker.db");
 const customCandidateSpeakerStore = createSqliteMemoryStore({ path: customCandidateSpeakerPath });
@@ -14598,7 +14879,7 @@ try {
     profileId: "http",
     dryRun: true,
     now: "2026-07-02T00:00:00.000Z",
-    phases: ["decay", "consolidate", "distill"],
+    phases: ["decay", "consolidate", "distill", "dossier"],
   });
   assert.equal(maintainWithPhases.status, 200);
   assert.equal(
@@ -14606,6 +14887,7 @@ try {
       maintainWithPhases.body.report as {
         consolidation?: { duplicateClusters?: unknown[] };
         distillation?: { summaryMemories?: unknown[] };
+        dossier?: { summaryMemories?: unknown[] };
       }
     ).consolidation?.duplicateClusters?.length,
     0,
@@ -14616,6 +14898,14 @@ try {
         distillation?: { summaryMemories?: unknown[] };
       }
     ).distillation?.summaryMemories?.length,
+    0,
+  );
+  assert.equal(
+    (
+      maintainWithPhases.body.report as {
+        dossier?: { summaryMemories?: unknown[] };
+      }
+    ).dossier?.summaryMemories?.length,
     0,
   );
   const invalidMaintainPhase = await postJson(`${httpAddress.url}/maintain`, {
@@ -22355,7 +22645,7 @@ assert.deepEqual(
       items?: { enum?: string[] };
     } | undefined
   )?.items?.enum,
-  ["decay", "consolidate", "distill"],
+  ["decay", "consolidate", "distill", "dossier"],
 );
 for (const toolName of [
   "memory.prepare_context",

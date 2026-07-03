@@ -16,6 +16,8 @@ package exports listed here and avoid importing files under `dist/` or `src/`.
 - `@ghast/memory/diagnostics`: read-only status reports.
 - `@ghast/memory/gym`: deterministic gates and benchmark adapters.
 - `@ghast/memory/evolution`: approval-gated failure review and SDK admin apply/revert control plane.
+- `@ghast/memory/intelligence`: opt-in OpenAI-compatible hook factories and
+  `createDefaultIntelligence()`.
 
 ## Runtime Facade
 
@@ -157,6 +159,14 @@ const memory = createMemoryOS({
     maxClustersPerRun: 10,
     maxTrajectoriesPerCluster: 8,
   },
+  dossier: {
+    enabled: true,
+    minBeliefs: 1,
+    minLinkedMemories: 2,
+    maxEntitiesPerRun: 8,
+    maxBeliefsPerEntity: 8,
+    maxMemoriesPerEntity: 8,
+  },
 });
 ```
 
@@ -173,6 +183,12 @@ consolidation always excludes `boundary`, `person`, archived, sensitive, and
 secret-like memories. Host semantic consolidation additionally uses
 `eligibleKinds`, defaulting to episodic-leaning `task_trajectory`, `fact`, and
 `project`.
+
+Dossier defaults are shown above. `enabled: false` disables the `dossier` phase
+even when requested. Dossiers are synthesized only from active world beliefs plus
+linked source memories selected by gmOS; the hook receives bounded snapshots and
+gmOS owns persistence, supersession, PERSON isolation, secret-like rejection, and
+forget residue cleanup.
 
 Outcome reinforcement defaults to enabled with `step: 0.1`. Completed outcomes
 add the step to each `usedMemoryIds` memory; failed outcomes with
@@ -250,6 +266,14 @@ Primary methods:
   message content strings, content parts, top-level `output_text`, or
   `output[].content[].text` returned by compatible proxies. Provider output
   still goes through the normal gmOS candidate validation and safety gates.
+- `@ghast/memory/intelligence`: opt-in subpath exporting
+  `createOpenAICompatibleExtractor`, `createOpenAICompatibleConsolidator`,
+  `createOpenAICompatibleProcedureDistiller`,
+  `createOpenAICompatibleDossierSynthesizer`,
+  `createOpenAICompatibleEmbeddingProvider`,
+  `createOpenAICompatibleReranker`, and `createDefaultIntelligence`. Every
+  factory accepts an injectable `fetchImpl`, uses OpenAI-compatible HTTP shapes,
+  and is loaded only when the host imports the subpath.
 - `prepareTurn(input)`: retrieve ordinary context and action policy for the next
   agent turn. This is a read path and must not write.
 - `explainTurn(input)`: run the same retrieval and context-budget pipeline as
@@ -271,10 +295,11 @@ Primary methods:
   retention.
 - `maintain(input)`: explicit lifecycle write path. `dryRun: true` computes the
   full report and writes nothing. Pass `phases: ["consolidate"]`,
-  `["distill"]`, or combinations such as `["decay", "consolidate", "distill"]`
-  to run duplicate consolidation, optional host semantic consolidation, and
-  optional host procedure distillation. Ordinary runtime reads never call this
-  automatically.
+  `["distill"]`, `["dossier"]`, or combinations such as
+  `["decay", "consolidate", "distill", "dossier"]` to run duplicate
+  consolidation, optional host semantic consolidation, optional host procedure
+  distillation, and optional entity dossier synthesis. Ordinary runtime reads
+  never call this automatically.
 - `forget(input)`: archive matching memory and remove it from future context.
   Prefer structured `targetTerms` when a host already knows the deletion target;
   `query` remains required as a human-readable request and literal compatibility
@@ -463,6 +488,20 @@ content-safe redacted strings.
       { sourceTrajectoryIds, reason }
     ],
     skipped
+  },
+  dossier: {
+    enabled,
+    evaluated,
+    entities: [
+      { entityKey, kind, sourceBeliefIds, sourceMemoryIds }
+    ],
+    summaryMemories: [
+      { entityKey, kind, sourceBeliefIds, sourceMemoryIds, content, confidence, memoryId?, supersededMemoryId?, reasons }
+    ],
+    rejectedCandidates: [
+      { entityKey, kind, sourceBeliefIds, sourceMemoryIds, reason }
+    ],
+    skipped
   }
 }
 ```
@@ -545,6 +584,34 @@ procedure prose itself. Accepted candidates are stored as `kind: "procedure"`
 memories whose source evidence has `sourceType: "distillation"`,
 `eligibleForLongTermMemory: false`, and payload `sourceTrajectoryIds`. Source
 trajectories are not archived or modified.
+
+Entity dossier synthesis is optional:
+
+```ts
+const memory = createMemoryOS({
+  profileId: "local-user",
+  store,
+  dossierSynthesizer: {
+    name: "host-dossier-synthesizer",
+    synthesize(entity) {
+      return {
+        content: `${entity.entityKey} dossier: current public state is summarized from cited beliefs.`,
+        confidence: 0.82,
+      };
+    },
+  },
+});
+```
+
+Run it with `maintain({ phases: ["dossier"] })`. gmOS selects entities with
+enough active world beliefs and linked memories, calls the hook with bounded
+belief and memory snapshots, rejects empty, overlong, secret-like, or
+wrongly PERSON-routed output, and stores one active dossier per entity. A new
+dossier archives the previous active dossier for the same `metadata.dossierFor`
+key and records `sourceType: "dossier"` evidence with `sourceBeliefIds` and
+`sourceMemoryIds`. Person subjects produce `kind: "person"` dossiers; project
+subjects produce `kind: "project"` dossiers; other subjects produce
+`kind: "fact"` dossiers.
 
 The retention score is pure and deterministic:
 
@@ -738,7 +805,7 @@ gmos version --format json
 gmos init --db ./gmos.db
 gmos doctor --db ./gmos.db --host ghast --format markdown
 gmos status --db ./gmos.db --profile local --host ghast --format markdown
-gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate,distill --format markdown
+gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate,distill,dossier --format markdown
 gmos add --db ./gmos.db --profile local --kind preference --text "Response style: concise answers."
 gmos add --db ./gmos.db --profile local --kind boundary --text "Do not push release announcements without approval."
 gmos observe --db ./gmos.db --profile local --text "User opened the release planning thread."

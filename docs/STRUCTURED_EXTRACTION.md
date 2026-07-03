@@ -18,6 +18,12 @@ checks used by every input path: sensitivity classification, PERSON isolation,
 incognito exclusion, confidence bounds, structured-field normalization, metadata
 sanitization, and forget/read-path invariants.
 
+For opt-in first-run hooks, `@ghast/memory/intelligence` provides
+OpenAI-compatible factories for extraction, consolidation, procedure
+distillation, dossier synthesis, embeddings, reranking, and
+`createDefaultIntelligence()`. They remain host-side hook implementations: the
+kernel boundary and write-path safety gates described here do not change.
+
 `consolidator` is the second host meaning hook. It runs only from explicit
 `maintain({ phases: ["consolidate"] })` after gmOS selects bounded clusters of
 eligible active/dormant memories. Like the extractor, the hook may be local,
@@ -131,6 +137,9 @@ context preparation, and active reconstruction.
 `createOpenAICompatibleExtractor()` with a fake `/chat/completions` response, so
 hosts can verify provider-shaped JSON parsing and write-path validation without
 network access or API keys.
+
+See [MCP and HTTP Integration Guide](./INTEGRATION_GUIDE.md#batteries-included-intelligence)
+for Ollama and OpenAI-compatible cloud setup snippets.
 
 ## Validation Checklist
 

@@ -8,9 +8,10 @@ twin infrastructure.
 
 The current package is the late-alpha runtime kernel for that vision. It
 provides the SDK, CLI, MCP, HTTP, SQLite storage, evidence ledger,
-world beliefs, reconstructive recall, action policies, safety gates, release
-evidence, and benchmark harness needed for stable integration. It is not a
-finished digital twin product and it is not a vector-memory CRUD wrapper.
+world beliefs, reconstructive recall, action policies, opt-in
+batteries-included intelligence hooks, safety gates, release evidence, and
+benchmark harness needed for stable integration. It is not a finished digital
+twin product and it is not a vector-memory CRUD wrapper.
 
 Project docs: [API reference](./docs/API_REFERENCE.md),
 [integration guide](./docs/INTEGRATION_GUIDE.md),
@@ -73,6 +74,11 @@ npm run examples:quickstart
   drop already gated candidates.
 - Search index health reporting and explicit repair for SQLite FTS/vector drift,
   including pending/stale provider vectors.
+- Opt-in `@ghast/memory/intelligence` factories for OpenAI-compatible
+  extraction, consolidation, procedure distillation, dossier synthesis,
+  embeddings, reranking, and `createDefaultIntelligence()`. These hooks are not
+  loaded unless the host imports the subpath and may target hosted or local
+  OpenAI-compatible endpoints.
 - SQLite read-audit snapshots for read-path purity checks. The runtime uses
   trigger-backed table revisions for durable tables and content digests for FTS
   indexes, not only row counts, to catch accidental writes during `prepareTurn`,

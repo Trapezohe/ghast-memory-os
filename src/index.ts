@@ -21,6 +21,10 @@ export {
   resolveMemoryProcedureDistillationConfig,
 } from "./kernel/distillation.js";
 export {
+  MAX_DOSSIER_CONTENT_LENGTH,
+  resolveMemoryDossierConfig,
+} from "./kernel/dossier.js";
+export {
   classifySensitivity,
   eligibleForLongTermMemory,
   isSecretLikeMemoryContent,
