@@ -184,6 +184,13 @@ const memory = createMemoryOS({
     halfLivesDays: { project: 90 },
     outcomeReinforcement: { enabled: true, step: 0.1 },
     feedbackConfidencePenalty: { enabled: true, step: 0.1, floor: 0.05 },
+    confidenceAnnealing: {
+      enabled: true,
+      windowMs: 60 * 60 * 1000,
+      boostThreshold: 2,
+      confidenceCap: 0.6,
+      retentionCap: 0.45,
+    },
   },
   consolidation: {
     enabled: true,
@@ -216,6 +223,12 @@ Default half-lives are `fact=180`, `preference=365`, `project=90`,
 are exempt from automatic lifecycle transitions unless the host explicitly
 provides `autoTransitionKinds` with those kinds included. Person memories keep
 the normal person isolation gates even if opted in.
+
+Confidence annealing is on by default. Rapid reinforcement from non-independent
+evidence within `windowMs`, and memories written from lower-trust sources, carry
+`metadata.annealing`; search, ranking, retention, `prepareTurn()`, and
+`explainTurn()` use the capped effective confidence and expose the annealing
+state in score components.
 
 Consolidation defaults are shown above. `enabled: false` disables the
 `consolidate` phase even when requested. The tag-overlap threshold is clamped to
@@ -405,8 +418,29 @@ Primary methods:
   natural-language delete commands into structured target terms. Parser
   `undefined` or `null` falls back to literal `query`; parser empty terms archive
   nothing. Empty literal queries also archive nothing.
+- `memoryRollback(input)`: replay a memory evidence ledger and restore the memory
+  as of `toEvidenceEventId`. The call requires `{ memoryId, toEvidenceEventId,
+  approvedBy }` and writes a `memory.rollback` evidence event with its own
+  `previousValues`, so rollback writes are themselves auditable. Histories that
+  predate M13 and lack sufficient `previousValues` fail with a typed
+  `MemoryRollbackError`. Rollback is an SDK/CLI admin operation like evolution
+  apply: it is intentionally absent from the MCP and HTTP public surfaces.
 - `explain(input)`: explain a memory or belief without exposing unsafe content,
   including a lifecycle history derived from evidence and feedback events.
+
+`observe()` accepts `sourceTrust?: "user" | "agent" | "external"` and
+`allowLowerTrustPolicyWrites?: boolean`. Defaults preserve existing behavior:
+user-role messages are user trust, assistant/tool/summary/note messages are
+agent trust, and foreign imports default to external trust. Agent/external
+candidates get capped confidence, are annealed by default, cannot create
+boundary/procedure policy memories without an explicit override, and cannot
+supersede higher-trust single-cardinality world beliefs.
+
+`forget()` now also redacts source evidence content when every memory derived
+from that evidence event has been forgotten. The evidence row, id, source type,
+and payload remain, but readable content is replaced with a sha256/length stub.
+If another active or dormant memory still points at the same evidence event,
+the evidence content is not redacted until that survivor is also forgotten.
 
 Low-level compatibility methods such as `add`, `search`, `history`, `list`,
 `get`, `update`, `delete`, `backup`, and `restore` exist for migration,
@@ -910,6 +944,9 @@ gmos observe --db ./gmos.db --profile local --text "User opened the release plan
 gmos prepare --db ./gmos.db --profile local --text "How should you answer me?"
 gmos reconstruct --db ./gmos.db --profile local --text "What is the project next step?"
 gmos forget --db ./gmos.db --profile local --query "delete old project" --target-term "old project"
+gmos rollback --db ./gmos.db --profile local --memory memory_xxx --to evidence_xxx --approved-by "Song Su" --yes
+gmos snapshot create --db ./gmos.db --profile local --name before-migration --snapshots-dir ./snapshots
+gmos snapshot list --db ./gmos.db --profile local
 gmos repair --db ./gmos.db --search-index --dry-run --vector-batch-size 32
 gmos evolution report --db ./gmos.db --profile local --format markdown
 gmos evolution apply --db ./gmos.db --profile local --proposal proposal_xxx --approved-by "Song Su" --yes
@@ -975,7 +1012,7 @@ calls instead of direct SDK imports:
 
 Public MCP tools intentionally do not expose sensitive override switches.
 `memory.maintain` accepts optional
-`phases: ["decay" | "consolidate" | "distill"]`; the local HTTP
+`phases: ["decay" | "consolidate" | "distill" | "dossier"]`; the local HTTP
 `POST /maintain` route reuses the same validation. Evolution apply/revert is not
 exposed over MCP or HTTP; it is SDK/CLI admin-only.
 See [MCP and HTTP integration guide](./INTEGRATION_GUIDE.md) for host boundary
@@ -1046,14 +1083,18 @@ Key creation and revocation are CLI-only:
 
 ```bash
 gmos keys create --db ./gmos.db --label claude-code --scope readwrite --profiles local
+gmos keys create --db ./gmos.db --label no-history --scope read --profiles local --no-history-access
 gmos keys list --db ./gmos.db
 gmos keys revoke --db ./gmos.db --key-id key_xxx
 ```
 
 Secrets are printed once at creation and stored only as sha256 hashes. Key
-records are `{ keyId, hash, label, scope, profiles, createdAt, revokedAt? }`;
-`list` and HTTP `/keys` never return `hash` or the secret. Profile allowlist
-failures return `403 profile_forbidden` consistently.
+records are `{ keyId, label, scope, profiles, defaultDisposition?,
+historyAccess, createdAt, revokedAt? }`; `list` and HTTP `/keys` never return
+`hash` or the secret. `--no-history-access` sets `historyAccess: false`, which
+blocks history-purpose search/reconstruction and archived/dormant visibility
+over HTTP. Profile allowlist failures return `403 profile_forbidden`
+consistently.
 
 The service audit log is content-free: key id, route, method, profile id,
 status code, timestamp, and duration. It never records request bodies, memory

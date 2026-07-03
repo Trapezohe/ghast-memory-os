@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
 import Database from "better-sqlite3";
 
+import { MemoryRollbackError } from "../../kernel/types.js";
 import type {
   ActionPolicy,
   AddMemoryInput,
@@ -37,11 +38,14 @@ import type {
   MemoryListInput,
   MemoryKind,
   MemoryRecord,
+  MemoryRollbackInput,
+  MemoryRollbackResult,
   MemoryRetrievalConfig,
   MemorySearchScoreComponents,
   MemorySearchInput,
   MemoryStore,
   MemorySearchTraceCollector,
+  MemoryVersionSnapshot,
   MemoryVectorEmbedding,
   RecordEvidenceInput,
   RecordConsolidationSummaryInput,
@@ -55,8 +59,10 @@ import type {
   RebuildAssociationsInput,
   RebuildAssociationsResult,
   RestoreArchivedMemoryInput,
+  ResolvedMemoryAnnealingConfig,
   SearchIndexStatus,
   Sensitivity,
+  SourceTrust,
   TaskTrajectoryInput,
   TaskTrajectoryRecord,
   UpdateMemoryInput,
@@ -258,6 +264,7 @@ export interface SqliteMemoryStore extends MemoryStore {
   ): Promise<RecordProcedureDistillationResult> | RecordProcedureDistillationResult;
   applyEvolutionActions(input: EvolutionApplyStoreInput): EvolutionApplyStoreResult;
   revertEvolutionApplication(input: EvolutionRevertStoreInput): EvolutionRevertStoreResult;
+  rollbackMemory(input: MemoryRollbackInput & { profileId: string }): MemoryRollbackResult;
   createServiceApiKey(input: CreateSqliteServiceApiKeyInput): SqliteServiceApiKeyWithSecret;
   listServiceApiKeys(): SqliteServiceApiKey[];
   revokeServiceApiKey(keyId: string): SqliteServiceApiKey | null;
@@ -445,6 +452,181 @@ function normalizeEvidence(row: Record<string, unknown>): EvidenceEvent {
   };
 }
 
+function memoryVersionSnapshot(memory: MemoryRecord): MemoryVersionSnapshot {
+  return {
+    memoryId: memory.id,
+    profileId: memory.profileId,
+    kind: memory.kind,
+    scope: memory.scope,
+    content: memory.content,
+    sensitivity: memory.sensitivity,
+    status: memory.status,
+    confidence: memory.confidence,
+    recallCount: memory.recallCount ?? 0,
+    lastRecalledAt: memory.lastRecalledAt ?? null,
+    reinforcement: memory.reinforcement ?? 0,
+    sourceEventId: memory.sourceEventId ?? null,
+    metadata: memory.metadata,
+    createdAt: memory.createdAt,
+    updatedAt: memory.updatedAt,
+  };
+}
+
+function memorySnapshotFromRow(row: Record<string, unknown>): MemoryVersionSnapshot {
+  return memoryVersionSnapshot(normalizeMemory(row));
+}
+
+function memoryVersionSnapshotFromPayload(value: unknown): MemoryVersionSnapshot | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const metadata = record.metadata;
+  if (
+    typeof record.memoryId !== "string" ||
+    typeof record.profileId !== "string" ||
+    typeof record.kind !== "string" ||
+    typeof record.scope !== "string" ||
+    typeof record.content !== "string" ||
+    typeof record.sensitivity !== "string" ||
+    typeof record.status !== "string" ||
+    typeof record.confidence !== "number" ||
+    typeof record.recallCount !== "number" ||
+    typeof record.reinforcement !== "number" ||
+    typeof record.createdAt !== "string" ||
+    typeof record.updatedAt !== "string" ||
+    !metadata ||
+    typeof metadata !== "object" ||
+    Array.isArray(metadata)
+  ) {
+    return null;
+  }
+  if (
+    record.kind !== "fact" &&
+    record.kind !== "preference" &&
+    record.kind !== "boundary" &&
+    record.kind !== "procedure" &&
+    record.kind !== "project" &&
+    record.kind !== "person" &&
+    record.kind !== "task_trajectory"
+  ) {
+    return null;
+  }
+  if (
+    record.sensitivity !== "normal" &&
+    record.sensitivity !== "sensitive" &&
+    record.sensitivity !== "secret_like"
+  ) {
+    return null;
+  }
+  if (
+    record.status !== "active" &&
+    record.status !== "dormant" &&
+    record.status !== "archived"
+  ) {
+    return null;
+  }
+  return {
+    memoryId: record.memoryId,
+    profileId: record.profileId,
+    kind: record.kind,
+    scope: record.scope,
+    content: record.content,
+    sensitivity: record.sensitivity,
+    status: record.status,
+    confidence: record.confidence,
+    recallCount: record.recallCount,
+    lastRecalledAt:
+      typeof record.lastRecalledAt === "string" || record.lastRecalledAt === null
+        ? record.lastRecalledAt
+        : null,
+    reinforcement: record.reinforcement,
+    sourceEventId:
+      typeof record.sourceEventId === "string" || record.sourceEventId === null
+        ? record.sourceEventId
+        : null,
+    metadata: metadata as Record<string, unknown>,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
+}
+
+function previousValuesFromPayload(payload: Record<string, unknown>): MemoryVersionSnapshot[] {
+  const raw = payload.previousValues;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry) => {
+    const snapshot = memoryVersionSnapshotFromPayload(entry);
+    return snapshot ? [snapshot] : [];
+  });
+}
+
+function isSourceTrust(value: unknown): value is SourceTrust {
+  return value === "user" || value === "agent" || value === "external";
+}
+
+function sourceTrustRank(value: SourceTrust | undefined): number {
+  if (value === "user") return 3;
+  if (value === "agent") return 2;
+  if (value === "external") return 1;
+  return 0;
+}
+
+function sourceTrustFromMetadata(metadata: Record<string, unknown>): SourceTrust | undefined {
+  if (isSourceTrust(metadata.sourceTrust)) return metadata.sourceTrust;
+  const sourceMetadata = metadata.sourceMetadata;
+  if (sourceMetadata && typeof sourceMetadata === "object" && !Array.isArray(sourceMetadata)) {
+    const trust = (sourceMetadata as Record<string, unknown>).sourceTrust;
+    if (isSourceTrust(trust)) return trust;
+  }
+  return undefined;
+}
+
+function memoryAnnealingRecord(memory: MemoryRecord): Record<string, unknown> | null {
+  const annealing = memory.metadata.annealing;
+  return annealing && typeof annealing === "object" && !Array.isArray(annealing)
+    ? annealing as Record<string, unknown>
+    : null;
+}
+
+function activeAnnealingRecord(memory: MemoryRecord): Record<string, unknown> | null {
+  const annealing = memoryAnnealingRecord(memory);
+  return annealing?.active === true ? annealing : null;
+}
+
+function effectiveMemoryConfidence(memory: MemoryRecord): number {
+  const cap = Number(activeAnnealingRecord(memory)?.capConfidence);
+  return Number.isFinite(cap) ? Math.min(memory.confidence, cap) : memory.confidence;
+}
+
+function evidenceRedactionStub(content: string, redactedAt: string): Record<string, unknown> {
+  return {
+    marker: "redacted_evidence_content",
+    originalSha256: createHash("sha256").update(content, "utf8").digest("hex"),
+    originalLength: content.length,
+    redactedAt,
+  };
+}
+
+function memoryContentRedactionStub(content: string, redactedAt: string): Record<string, unknown> {
+  return {
+    marker: "redacted_memory_content",
+    originalSha256: createHash("sha256").update(content, "utf8").digest("hex"),
+    originalLength: content.length,
+    redactedAt,
+  };
+}
+
+function evidenceIsRedacted(event: EvidenceEvent): boolean {
+  const redaction = event.payload.redaction;
+  return (
+    event.content === "[redacted_evidence_content]" ||
+    Boolean(
+      redaction &&
+      typeof redaction === "object" &&
+      !Array.isArray(redaction) &&
+      (redaction as Record<string, unknown>).marker === "redacted_evidence_content",
+    )
+  );
+}
+
 function normalizeFailure(row: Record<string, unknown>): FailureEventRecord {
   return {
     id: String(row.id),
@@ -589,11 +771,12 @@ function normalizeTaskTrajectory(row: Record<string, unknown>): TaskTrajectoryRe
 }
 
 function scoreMemory(memory: MemoryRecord, query: string): number {
+  const confidence = effectiveMemoryConfidence(memory);
   const terms = queryTerms(query);
-  if (terms.length === 0) return memory.confidence;
+  if (terms.length === 0) return confidence;
   const lower = memory.content.toLowerCase();
   const hits = terms.filter((term) => lower.includes(term)).length;
-  return hits + memory.confidence;
+  return hits + confidence;
 }
 
 function matchedMemorySearchCues(memory: MemoryRecord, query: string): string[] {
@@ -650,20 +833,37 @@ function memorySearchScoreComponents(input: {
   associationScore?: number | undefined;
   fusionScore?: number | undefined;
 }): MemorySearchScoreComponents {
+  const confidence = effectiveMemoryConfidence(input.memory);
   const contentScore = input.query
     ? scoreMemory(input.memory, input.query)
-    : input.memory.confidence;
+    : confidence;
   const finalScore = input.query
-    ? Math.max(contentScore, input.memory.confidence + input.retrievalScore)
-    : input.memory.confidence;
+    ? Math.max(contentScore, confidence + input.retrievalScore)
+    : confidence;
+  const sourceTrust = sourceTrustFromMetadata(input.memory.metadata);
+  const annealing = activeAnnealingRecord(input.memory);
   return {
-    confidence: input.memory.confidence,
+    confidence,
     retrievalScore: input.retrievalScore,
     contentScore,
     ...(input.ftsScore !== undefined ? { ftsScore: input.ftsScore } : {}),
     ...(input.vectorScore !== undefined ? { vectorScore: input.vectorScore } : {}),
     ...(input.associationScore !== undefined ? { associationScore: input.associationScore } : {}),
     ...(input.fusionScore !== undefined ? { fusionScore: input.fusionScore } : {}),
+    ...(sourceTrust ? { sourceTrust } : {}),
+    ...(annealing
+      ? {
+          annealing: {
+            active: true,
+            reason: typeof annealing.reason === "string" ? annealing.reason : "confidence_annealing",
+            ...(sourceTrust ? { sourceTrust } : {}),
+            ...(typeof annealing.capConfidence === "number" ? { capConfidence: annealing.capConfidence } : {}),
+            ...(typeof annealing.retentionCap === "number" ? { retentionCap: annealing.retentionCap } : {}),
+            ...(typeof annealing.startedAt === "string" ? { startedAt: annealing.startedAt } : {}),
+            ...(typeof annealing.confirmedAt === "string" ? { confirmedAt: annealing.confirmedAt } : {}),
+          },
+        }
+      : {}),
     finalScore,
   };
 }
@@ -1437,6 +1637,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     createdAt: string;
     retention?: number | undefined;
     reasons: string[];
+    previousValues?: MemoryVersionSnapshot[] | undefined;
   }): void {
     db.prepare(
       `INSERT INTO gmos_evidence_events (
@@ -1464,6 +1665,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         to: input.to,
         ...(input.retention !== undefined ? { retention: input.retention } : {}),
         reasons: input.reasons,
+        ...(input.previousValues?.length ? { previousValues: input.previousValues } : {}),
       }),
       input.createdAt,
     );
@@ -1476,6 +1678,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     archivedMemberId: string;
     createdAt: string;
     reasons: string[];
+    previousValues?: MemoryVersionSnapshot[] | undefined;
   }): void {
     db.prepare(
       `INSERT INTO gmos_evidence_events (
@@ -1501,6 +1704,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         memberIds: input.memberIds,
         archivedMemberId: input.archivedMemberId,
         reasons: input.reasons,
+        ...(input.previousValues?.length ? { previousValues: input.previousValues } : {}),
       }),
       input.createdAt,
     );
@@ -1512,6 +1716,144 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ?")
       .get(profileId, memoryId) as Record<string, unknown> | undefined
     ) ?? null;
+  }
+
+  function attachPreviousValuesToEvidence(
+    evidenceId: string | null | undefined,
+    previousValues: MemoryVersionSnapshot[],
+  ): void {
+    if (!evidenceId || previousValues.length === 0) return;
+    const row = db
+      .prepare("SELECT payload_json FROM gmos_evidence_events WHERE id = ?")
+      .get(evidenceId) as { payload_json?: string } | undefined;
+    if (!row) return;
+    const payload = parseJsonObject(row.payload_json);
+    const existing = previousValuesFromPayload(payload);
+    const byMemoryId = new Map(existing.map((entry) => [entry.memoryId, entry]));
+    for (const previous of previousValues) byMemoryId.set(previous.memoryId, previous);
+    db.prepare("UPDATE gmos_evidence_events SET payload_json = ? WHERE id = ?").run(
+      JSON.stringify({
+        ...payload,
+        previousValues: [...byMemoryId.values()].sort((left, right) =>
+          left.memoryId.localeCompare(right.memoryId)
+        ),
+      }),
+      evidenceId,
+    );
+  }
+
+  function insertMutationEvidence(input: {
+    profileId: string;
+    sourceType: string;
+    content: string;
+    createdAt: string;
+    payload: Record<string, unknown>;
+    previousValues: MemoryVersionSnapshot[];
+  }): string {
+    const evidenceId = id("evidence");
+    db.prepare(
+      `INSERT INTO gmos_evidence_events (
+        id, event_key, profile_id, source_type, source_uri, content, sensitivity,
+        eligible_for_long_term_memory, payload_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'normal', 0, ?, ?)`,
+    ).run(
+      evidenceId,
+      [
+        input.sourceType,
+        input.profileId,
+        input.createdAt,
+        randomUUID(),
+      ].join(":"),
+      input.profileId,
+      input.sourceType,
+      null,
+      input.content,
+      JSON.stringify({
+        ...input.payload,
+        previousValues: input.previousValues,
+      }),
+      input.createdAt,
+    );
+    return evidenceId;
+  }
+
+  function applyMemorySnapshot(snapshot: MemoryVersionSnapshot): void {
+    db.prepare(
+      `UPDATE gmos_memories
+       SET kind = ?,
+           scope = ?,
+           content = ?,
+           sensitivity = ?,
+           status = ?,
+           confidence = ?,
+           recall_count = ?,
+           last_recalled_at = ?,
+           reinforcement = ?,
+           source_event_id = ?,
+           metadata_json = ?,
+           created_at = ?,
+           updated_at = ?
+       WHERE profile_id = ? AND id = ?`,
+    ).run(
+      snapshot.kind,
+      snapshot.scope,
+      snapshot.content,
+      snapshot.sensitivity,
+      snapshot.status,
+      snapshot.confidence,
+      snapshot.recallCount,
+      snapshot.lastRecalledAt ?? null,
+      snapshot.reinforcement,
+      snapshot.sourceEventId ?? null,
+      JSON.stringify(snapshot.metadata),
+      snapshot.createdAt,
+      snapshot.updatedAt,
+      snapshot.profileId,
+      snapshot.memoryId,
+    );
+    syncMemoryVector(snapshot.memoryId);
+    if (snapshot.status === "active") {
+      activateMemoryProjections(snapshot.memoryId, snapshot.profileId);
+      const row = memoryRowById(snapshot.profileId, snapshot.memoryId);
+      if (row) syncBeliefsForMemory(normalizeMemory(row));
+    } else {
+      deactivateMemoryProjections(snapshot.memoryId);
+      if (snapshot.status === "archived") rejectBeliefsForMemory(snapshot.memoryId, snapshot.updatedAt);
+    }
+  }
+
+  function payloadStringArray(value: unknown): string[] {
+    return Array.isArray(value)
+      ? value.filter((entry): entry is string => typeof entry === "string")
+      : [];
+  }
+
+  function payloadReferencesMemory(payload: Record<string, unknown>, memoryId: string): boolean {
+    if (payload.memoryId === memoryId) return true;
+    if (payload.archivedMemberId === memoryId) return true;
+    if (payload.survivorId === memoryId) return true;
+    if (payload.supersededMemoryId === memoryId) return true;
+    if (payloadStringArray(payload.memoryIds).includes(memoryId)) return true;
+    if (payloadStringArray(payload.usedMemoryIds).includes(memoryId)) return true;
+    if (payloadStringArray(payload.relatedMemoryIds).includes(memoryId)) return true;
+    if (payloadStringArray(payload.sourceMemoryIds).includes(memoryId)) return true;
+    if (payloadStringArray(payload.memberIds).includes(memoryId)) return true;
+    for (const key of ["actions", "previousValues", "restoredValues"]) {
+      const values = payload[key];
+      if (!Array.isArray(values)) continue;
+      if (
+        values.some(
+          (entry) =>
+            entry &&
+            typeof entry === "object" &&
+            !Array.isArray(entry) &&
+            (entry as Record<string, unknown>).memoryId === memoryId,
+        )
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   function activateMemoryProjections(memoryId: string, profileId: string): void {
@@ -1593,6 +1935,8 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           | { id: string; status: MemoryRecord["status"]; metadata_json: string }
           | undefined;
         if (!row) continue;
+        const fullRow = memoryRowById(input.profileId, memoryId);
+        const previousValues = fullRow ? [memorySnapshotFromRow(fullRow)] : [];
         const reason = directIds.has(memoryId)
           ? "user_forget"
           : "derived_from_forgotten_source";
@@ -1620,11 +1964,106 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           to: "archived",
           createdAt: input.archivedAt,
           reasons: [reason],
+          previousValues,
         });
       }
     });
     tx(orderedIds);
     return archivedIds;
+  }
+
+  function redactEvidenceForForgottenMemories(input: {
+    profileId: string;
+    archivedMemoryIds: string[];
+    redactedAt: string;
+  }): number {
+    if (input.archivedMemoryIds.length === 0) return 0;
+    const evidenceRows = db
+      .prepare(
+        `SELECT DISTINCT e.*
+         FROM gmos_memories m
+         JOIN gmos_evidence_events e ON e.id = m.source_event_id
+         WHERE m.profile_id = ?
+           AND m.id IN (${input.archivedMemoryIds.map(() => "?").join(", ")})`,
+      )
+      .all(input.profileId, ...input.archivedMemoryIds) as Record<string, unknown>[];
+    let redacted = 0;
+    for (const row of evidenceRows) {
+      const event = normalizeEvidence(row);
+      if (evidenceIsRedacted(event)) continue;
+      const surviving = db
+        .prepare(
+          `SELECT id
+           FROM gmos_memories
+           WHERE profile_id = ?
+             AND source_event_id = ?
+             AND status IN ('active', 'dormant')
+           LIMIT 1`,
+        )
+        .get(input.profileId, event.id) as { id?: string } | undefined;
+      if (surviving) continue;
+      db.prepare(
+        `UPDATE gmos_evidence_events
+         SET content = ?, payload_json = ?
+         WHERE id = ?`,
+      ).run(
+        "[redacted_evidence_content]",
+        JSON.stringify({
+          ...event.payload,
+          redaction: evidenceRedactionStub(event.content, input.redactedAt),
+        }),
+        event.id,
+      );
+      redacted += 1;
+    }
+    const archivedIds = new Set(input.archivedMemoryIds);
+    const payloadRows = db
+      .prepare(
+        `SELECT id, payload_json
+         FROM gmos_evidence_events
+         WHERE profile_id = ?
+           AND (
+             payload_json LIKE '%previousValues%' OR
+             payload_json LIKE '%restoredValues%'
+           )`,
+      )
+      .all(input.profileId) as Array<{ id: string; payload_json: string }>;
+    for (const row of payloadRows) {
+      const payload = parseJsonObject(row.payload_json);
+      let changed = false;
+      const nextPayload = { ...payload };
+      for (const key of ["previousValues", "restoredValues"]) {
+        const values = payload[key];
+        if (!Array.isArray(values)) continue;
+        const nextValues = values.map((entry) => {
+          if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+          const record = entry as Record<string, unknown>;
+          if (!archivedIds.has(String(record.memoryId))) return entry;
+          if (record.content === "[redacted_memory_content]") return entry;
+          const content = typeof record.content === "string" ? record.content : "";
+          changed = true;
+          const metadata = record.metadata && typeof record.metadata === "object" && !Array.isArray(record.metadata)
+            ? record.metadata as Record<string, unknown>
+            : {};
+          return {
+            ...record,
+            content: "[redacted_memory_content]",
+            metadata: {
+              ...metadata,
+              redaction: memoryContentRedactionStub(content, input.redactedAt),
+            },
+          };
+        });
+        nextPayload[key] = nextValues;
+      }
+      if (!changed) continue;
+      db.prepare(
+        `UPDATE gmos_evidence_events
+         SET payload_json = ?
+         WHERE id = ?`,
+      ).run(JSON.stringify(nextPayload), row.id);
+    }
+    return redacted;
   }
 
   function recordMemoryUsageSignals(input: {
@@ -1635,7 +2074,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     const uniqueIds = [...new Set((input.memoryIds ?? []).filter((entry) => entry.trim().length > 0))];
     if (uniqueIds.length === 0) return;
     const rowStmt = db.prepare(
-      `SELECT id, status
+      `SELECT *
        FROM gmos_memories
        WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
     );
@@ -1647,11 +2086,12 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
            updated_at = ?
        WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
     );
+    const previousValues: MemoryVersionSnapshot[] = [];
     for (const memoryId of uniqueIds) {
-      const row = rowStmt.get(input.profileId, memoryId) as
-        | { id: string; status: MemoryRecord["status"] }
-        | undefined;
+      const row = rowStmt.get(input.profileId, memoryId) as Record<string, unknown> | undefined;
       if (!row) continue;
+      const previousValue = memorySnapshotFromRow(row);
+      previousValues.push(previousValue);
       updateStmt.run(input.usedAt, input.usedAt, input.profileId, memoryId);
       syncMemoryVector(memoryId);
       if (row.status === "dormant") {
@@ -1664,8 +2104,19 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           to: "active",
           createdAt: input.usedAt,
           reasons: ["used_memory_id"],
+          previousValues: [previousValue],
         });
       }
+    }
+    if (previousValues.length > 0) {
+      insertMutationEvidence({
+        profileId: input.profileId,
+        sourceType: "memory.usage",
+        content: "Memory usage signal",
+        createdAt: input.usedAt,
+        payload: { memoryIds: uniqueIds },
+        previousValues,
+      });
     }
   }
 
@@ -1678,6 +2129,9 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     memoryIds: string[] | undefined;
     delta: number;
     updatedAt: string;
+    sourceType?: string | undefined;
+    reason?: string | undefined;
+    confidenceAnnealing?: ResolvedMemoryAnnealingConfig | undefined;
   }): void {
     const uniqueIds = uniqueMemoryIds(input.memoryIds);
     if (uniqueIds.length === 0 || input.delta === 0) return;
@@ -1691,7 +2145,15 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
            updated_at = ?
        WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
     );
+    const rowStmt = db.prepare(
+      `SELECT *
+       FROM gmos_memories
+       WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
+    );
+    const previousValues: MemoryVersionSnapshot[] = [];
     for (const memoryId of uniqueIds) {
+      const row = rowStmt.get(input.profileId, memoryId) as Record<string, unknown> | undefined;
+      if (!row) continue;
       const result = stmt.run(
         input.delta,
         input.delta,
@@ -1701,9 +2163,103 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         memoryId,
       );
       if (result.changes > 0) {
+        previousValues.push(memorySnapshotFromRow(row));
+        if (input.delta > 0) {
+          annealRapidBoostIfNeeded({
+            profileId: input.profileId,
+            memoryId,
+            previousRow: row,
+            boostedAt: input.updatedAt,
+            config: input.confidenceAnnealing,
+          });
+        }
         syncMemoryVector(memoryId);
       }
     }
+    if (previousValues.length > 0) {
+      insertMutationEvidence({
+        profileId: input.profileId,
+        sourceType: input.sourceType ?? "memory.reinforcement",
+        content: "Memory reinforcement adjustment",
+        createdAt: input.updatedAt,
+        payload: {
+          memoryIds: uniqueIds,
+          delta: input.delta,
+          ...(input.reason ? { reason: input.reason } : {}),
+        },
+        previousValues,
+      });
+    }
+  }
+
+  function annealRapidBoostIfNeeded(input: {
+    profileId: string;
+    memoryId: string;
+    previousRow: Record<string, unknown>;
+    boostedAt: string;
+    config?: ResolvedMemoryAnnealingConfig | undefined;
+  }): void {
+    const config = input.config ?? {
+      enabled: true,
+      windowMs: 60 * 60 * 1000,
+      boostThreshold: 2,
+      confidenceCap: 0.6,
+      retentionCap: 0.45,
+    };
+    if (!config.enabled) return;
+    const boostedAtMs = Date.parse(input.boostedAt);
+    if (!Number.isFinite(boostedAtMs)) return;
+    const sourceEventId =
+      input.previousRow.source_event_id == null ? null : String(input.previousRow.source_event_id);
+    if (!sourceEventId) return;
+    const cutoff = new Date(boostedAtMs - config.windowMs).toISOString();
+    const rows = db
+      .prepare(
+        `SELECT payload_json
+         FROM gmos_evidence_events
+         WHERE profile_id = ?
+           AND source_type IN ('outcome', 'feedback', 'memory.reinforcement')
+           AND created_at >= ?
+           AND created_at <= ?`,
+      )
+      .all(input.profileId, cutoff, input.boostedAt) as Array<{ payload_json: string }>;
+    let recentBoosts = 1;
+    for (const row of rows) {
+      const payload = parseJsonObject(row.payload_json);
+      if (Number(payload.delta) <= 0) continue;
+      if (!payloadStringArray(payload.memoryIds).includes(input.memoryId)) continue;
+      recentBoosts += 1;
+    }
+    if (recentBoosts < config.boostThreshold) return;
+    const metadata = parseJsonObject(input.previousRow.metadata_json);
+    const existing = metadata.annealing;
+    if (
+      existing &&
+      typeof existing === "object" &&
+      !Array.isArray(existing) &&
+      (existing as Record<string, unknown>).active === true
+    ) {
+      return;
+    }
+    db.prepare(
+      `UPDATE gmos_memories
+       SET metadata_json = ?
+       WHERE profile_id = ? AND id = ?`,
+    ).run(
+      JSON.stringify({
+        ...metadata,
+        annealing: {
+          active: true,
+          reason: "rapid_non_independent_boost",
+          sourceEventId,
+          capConfidence: Math.min(Number(input.previousRow.confidence ?? 0.5), config.confidenceCap),
+          retentionCap: config.retentionCap,
+          startedAt: input.boostedAt,
+        },
+      }),
+      input.profileId,
+      input.memoryId,
+    );
   }
 
   function adjustMemoryReinforcement(input: {
@@ -1711,6 +2267,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     memoryIds: string[] | undefined;
     signal?: "positive" | "negative" | undefined;
     updatedAt: string;
+    confidenceAnnealing?: ResolvedMemoryAnnealingConfig | undefined;
   }): void {
     if (!input.signal) return;
     const delta = input.signal === "positive" ? 0.2 : -0.2;
@@ -1719,6 +2276,9 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       memoryIds: input.memoryIds,
       delta,
       updatedAt: input.updatedAt,
+      sourceType: "feedback",
+      reason: input.signal,
+      confidenceAnnealing: input.confidenceAnnealing,
     });
   }
 
@@ -1729,6 +2289,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     failureKind?: FailureKind | undefined;
     config: CommitOutcomeStoreInput["outcomeReinforcement"];
     updatedAt: string;
+    confidenceAnnealing?: ResolvedMemoryAnnealingConfig | undefined;
   }): void {
     const config = input.config ?? { enabled: true, step: 0.1 };
     if (!config.enabled) return;
@@ -1743,6 +2304,9 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       memoryIds: input.memoryIds,
       delta,
       updatedAt: input.updatedAt,
+      sourceType: "outcome",
+      reason: input.status,
+      confidenceAnnealing: input.confidenceAnnealing,
     });
   }
 
@@ -1764,7 +2328,15 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
            updated_at = ?
        WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
     );
+    const rowStmt = db.prepare(
+      `SELECT *
+       FROM gmos_memories
+       WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
+    );
+    const previousValues: MemoryVersionSnapshot[] = [];
     for (const memoryId of uniqueIds) {
+      const rowBefore = rowStmt.get(input.profileId, memoryId) as Record<string, unknown> | undefined;
+      if (!rowBefore) continue;
       const result = stmt.run(
         input.step,
         input.floor,
@@ -1775,11 +2347,27 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         memoryId,
       );
       if (result.changes > 0) {
+        previousValues.push(memorySnapshotFromRow(rowBefore));
         syncMemoryVector(memoryId);
         activateMemoryProjections(memoryId, input.profileId);
         const row = memoryRowById(input.profileId, memoryId);
         if (row) syncBeliefsForMemory(normalizeMemory(row));
       }
+    }
+    if (previousValues.length > 0) {
+      insertMutationEvidence({
+        profileId: input.profileId,
+        sourceType: "feedback",
+        content: "Memory confidence penalty",
+        createdAt: input.updatedAt,
+        payload: {
+          memoryIds: uniqueIds,
+          step: input.step,
+          floor: input.floor,
+          reason: "wrong_recall",
+        },
+        previousValues,
+      });
     }
   }
 
@@ -1812,6 +2400,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     for (const member of cluster.archivedMembers) {
       const row = memoryRowById(profileId, member.id);
       if (!row || row.status === "archived") continue;
+      const previousValues = [memorySnapshotFromRow(row)];
       const metadata = metadataWithArchiveMarker({
         metadata: {
           ...parseJsonObject(row.metadata_json),
@@ -1832,6 +2421,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         archivedMemberId: member.id,
         createdAt: now,
         reasons: cluster.reasons,
+        previousValues,
       });
     }
   }
@@ -1893,6 +2483,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   ): void {
     const row = memoryRowById(profileId, transition.memoryId);
     if (!row || row.status !== transition.from) return;
+    const previousValues = [memorySnapshotFromRow(row)];
     const existingMetadata = parseJsonObject(row.metadata_json);
     const metadata =
       transition.to === "archived"
@@ -1932,6 +2523,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       createdAt: now,
       retention: transition.retention,
       reasons: transition.reasons,
+      previousValues,
     });
   }
 
@@ -2945,6 +3537,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .get(input.profileId, input.id) as Record<string, unknown> | undefined;
     if (!existing) return null;
     const previous = normalizeMemory(existing);
+    const previousValues = [memoryVersionSnapshot(previous)];
     const updatedAt = input.updatedAt ?? nowIso();
     const next = {
       kind: input.kind ?? previous.kind,
@@ -2988,6 +3581,23 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       input.profileId,
       input.id,
     );
+    if (input.sourceEventId === undefined) {
+      const evidenceId = insertMutationEvidence({
+        profileId: input.profileId,
+        sourceType: "memory.update",
+        content: "Memory update",
+        createdAt: updatedAt,
+        payload: { memoryId: input.id },
+        previousValues,
+      });
+      db.prepare(
+        `UPDATE gmos_memories
+         SET source_event_id = ?
+         WHERE profile_id = ? AND id = ?`,
+      ).run(evidenceId, input.profileId, input.id);
+    } else {
+      attachPreviousValuesToEvidence(input.sourceEventId, previousValues);
+    }
     syncMemoryVector(input.id, embedding);
     const memory = normalizeMemory(
       db
@@ -3009,6 +3619,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       )
       .get(input.profileId, input.id) as Record<string, unknown> | undefined;
     if (!existing) return false;
+    const previousValues = [memorySnapshotFromRow(existing)];
     const metadata = metadataWithArchiveMarker({
       metadata: parseJsonObject(existing.metadata_json),
       archivedAt,
@@ -3024,6 +3635,16 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     syncMemoryVector(input.id);
     deleteAssociationsForMemory(input.id);
     rejectBeliefsForMemory(input.id, archivedAt);
+    insertLifecycleEvidence({
+      profileId: input.profileId,
+      sourceType: "memory.lifecycle",
+      memoryId: input.id,
+      from: String(existing.status) as MemoryRecord["status"],
+      to: "archived",
+      createdAt: archivedAt,
+      reasons: [input.reason ?? "manual_archive"],
+      previousValues,
+    });
     return result.changes > 0;
   }
 
@@ -3034,6 +3655,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ? AND status = 'archived'")
       .get(input.profileId, input.id) as Record<string, unknown> | undefined;
     if (!existing) return false;
+    const previousValues = [memorySnapshotFromRow(existing)];
     const metadata = metadataWithRestoreMarker({
       metadata: parseJsonObject(existing.metadata_json),
       restoredAt,
@@ -3051,6 +3673,16 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ?")
       .get(input.profileId, input.id) as Record<string, unknown> | undefined;
     if (restored) projectMemoryAssociations(normalizeMemory(restored));
+    insertLifecycleEvidence({
+      profileId: input.profileId,
+      sourceType: "memory.lifecycle",
+      memoryId: input.id,
+      from: "archived",
+      to: "active",
+      createdAt: restoredAt,
+      reasons: [input.reason ?? "manual_restore"],
+      previousValues,
+    });
     return result.changes > 0;
   }
 
@@ -3071,9 +3703,9 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     }
     const where = clauses.join(" AND ");
     const rows = db
-      .prepare(`SELECT id, metadata_json FROM gmos_memories WHERE ${where}`)
-      .all(...params) as Array<{ id: string; metadata_json: string }>;
-    const ids = rows.map((row) => row.id);
+      .prepare(`SELECT * FROM gmos_memories WHERE ${where}`)
+      .all(...params) as Array<Record<string, unknown>>;
+    const ids = rows.map((row) => String(row.id));
     if (ids.length === 0) return [];
     const stmt = db.prepare(
       `UPDATE gmos_memories
@@ -3081,17 +3713,29 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
        WHERE profile_id = ? AND id = ?`,
     );
     const archivedAt = input.archivedAt ?? nowIso();
-    const tx = db.transaction((memoryRows: Array<{ id: string; metadata_json: string }>) => {
+    const tx = db.transaction((memoryRows: Array<Record<string, unknown>>) => {
       for (const row of memoryRows) {
+        const previousValues = [memorySnapshotFromRow(row)];
+        const memoryId = String(row.id);
         const metadata = metadataWithArchiveMarker({
           metadata: parseJsonObject(row.metadata_json),
           archivedAt,
           reason: input.reason,
         });
-        stmt.run(archivedAt, JSON.stringify(metadata), input.profileId, row.id);
-        syncMemoryVector(row.id);
-        deleteAssociationsForMemory(row.id);
-        rejectBeliefsForMemory(row.id, archivedAt);
+        stmt.run(archivedAt, JSON.stringify(metadata), input.profileId, memoryId);
+        syncMemoryVector(memoryId);
+        deleteAssociationsForMemory(memoryId);
+        rejectBeliefsForMemory(memoryId, archivedAt);
+        insertLifecycleEvidence({
+          profileId: input.profileId,
+          sourceType: "memory.lifecycle",
+          memoryId,
+          from: String(row.status) as MemoryRecord["status"],
+          to: "archived",
+          createdAt: archivedAt,
+          reasons: [input.reason ?? "manual_clear"],
+          previousValues,
+        });
       }
     });
     tx(rows);
@@ -3165,6 +3809,16 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           .filter((belief) => canonicalSubjectForBelief(belief, options.entityResolver) === canonicalSubject);
         const sameObjectRows = activeBeliefs.filter((belief) => belief.object === input.object);
         const sameObject = sameObjectRows[0];
+        const incomingTrust = sourceTrustFromMetadata(input.metadata ?? {});
+        const activeHigherTrust = activeBeliefs.some(
+          (belief) =>
+            belief.object !== input.object &&
+            sourceTrustRank(sourceTrustFromMetadata(belief.metadata) ?? "user") >
+              sourceTrustRank(incomingTrust ?? "user"),
+        );
+        if (activeHigherTrust && !sameObject) {
+          return insertBelief("rejected");
+        }
         const incomingInstant = parseInstant(createdAt);
         const incomingIsOlderThanActive =
           incomingInstant !== null &&
@@ -3391,6 +4045,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           | Record<string, unknown>
           | undefined;
         if (!row) continue;
+        const previousValues = [memorySnapshotFromRow(row)];
         const previousStatus = String(row.status) as MemoryRecord["status"];
         const sourceMetadata = {
           ...parseJsonObject(row.metadata_json),
@@ -3415,6 +4070,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
             to: "dormant",
             createdAt: input.createdAt,
             reasons: ["consolidated_to_summary", `summary:${memory.id}`],
+            previousValues,
           });
         }
       }
@@ -3962,28 +4618,40 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         : "";
     const candidates = db
       .prepare(
-        `SELECT id FROM gmos_memories
+        `SELECT * FROM gmos_memories
          WHERE profile_id = ?
            AND status IN ('active', 'dormant')
            AND json_extract(metadata_json, '$.hostSnapshotImport') = 1
            AND json_extract(metadata_json, '$.hostImportSourceType') = ?
            ${activeKeyClause}`,
       )
-      .all(input.profileId, input.sourceType, ...activeKeys) as Array<{ id: string }>;
-    const ids = candidates.map((row) => row.id);
+      .all(input.profileId, input.sourceType, ...activeKeys) as Array<Record<string, unknown>>;
+    const ids = candidates.map((row) => String(row.id));
     if (ids.length === 0) return [];
     const stmt = db.prepare(
       "UPDATE gmos_memories SET status = 'archived', updated_at = ? WHERE id = ?",
     );
-    const tx = db.transaction((memoryIds: string[]) => {
-      for (const memoryId of memoryIds) {
+    const tx = db.transaction((memoryRows: Array<Record<string, unknown>>) => {
+      for (const row of memoryRows) {
+        const memoryId = String(row.id);
+        const previousValues = [memorySnapshotFromRow(row)];
         stmt.run(archivedAt, memoryId);
         syncMemoryVector(memoryId);
         deleteAssociationsForMemory(memoryId);
         rejectBeliefsForMemory(memoryId, archivedAt);
+        insertLifecycleEvidence({
+          profileId: input.profileId,
+          sourceType: "memory.lifecycle",
+          memoryId,
+          from: String(row.status) as MemoryRecord["status"],
+          to: "archived",
+          createdAt: archivedAt,
+          reasons: ["host_import_stale"],
+          previousValues,
+        });
       }
     });
-    tx(ids);
+    tx(candidates);
     return ids;
   }
 
@@ -4017,6 +4685,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         failureKind: input.failure?.failureKind,
         config: input.outcomeReinforcement,
         updatedAt: occurredAt,
+        confidenceAnnealing: input.confidenceAnnealing,
       });
     });
     tx();
@@ -4041,6 +4710,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         memoryIds: input.relatedMemoryIds,
         signal: input.signal,
         updatedAt: recordedAt,
+        confidenceAnnealing: input.confidenceAnnealing,
       });
       const confidencePenalty = input.confidencePenalty ?? {
         enabled: true,
@@ -4431,6 +5101,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         memories.set(memoryId, normalizeMemory(row));
       }
       const previousValues = [...memories.values()].map(memoryEvolutionPreviousValue);
+      const rollbackPreviousValues = [...memories.values()].map(memoryVersionSnapshot);
       const nextValues = new Map<string, EvolutionPreviousMemoryValue>(
         previousValues.map((value) => [value.memoryId, { ...value }]),
       );
@@ -4482,7 +5153,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           proposalId: input.proposalId,
           approvedBy: input.approvedBy,
           actions: input.actions,
-          previousValues,
+          previousValues: rollbackPreviousValues,
         }),
         input.appliedAt,
       );
@@ -4568,11 +5239,13 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       if (previousValues.length === 0) {
         throw new Error("gmOS evolution application evidence has no previousValues");
       }
+      const rollbackPreviousValues: MemoryVersionSnapshot[] = [];
       for (const previous of previousValues) {
         const row = memoryRowById(application.profileId, previous.memoryId);
         if (!row || row.status === "archived") {
           throw new Error(`gmOS evolution revert target memory not found or archived: ${previous.memoryId}`);
         }
+        rollbackPreviousValues.push(memorySnapshotFromRow(row));
         updateEvolutionMemoryValue({
           profileId: application.profileId,
           memoryId: previous.memoryId,
@@ -4605,6 +5278,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           revertedApplicationEventId: input.applicationEventId,
           proposalId: application.payload.proposalId,
           actions: application.payload.actions,
+          previousValues: rollbackPreviousValues,
           restoredValues: previousValues,
         }),
         input.revertedAt,
@@ -4614,6 +5288,119 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         applicationEventId: input.applicationEventId,
         restoredValues: previousValues,
         revertedAt: input.revertedAt,
+      };
+    });
+    return tx();
+  }
+
+  function rollbackMemory(
+    input: MemoryRollbackInput & { profileId: string },
+  ): MemoryRollbackResult {
+    initialize();
+    const approvedBy = input.approvedBy.trim();
+    if (!approvedBy) {
+      throw new MemoryRollbackError(
+        "approved_by_required",
+        "gmOS memory rollback requires approvedBy",
+      );
+    }
+    const rolledBackAt = input.rolledBackAt ?? nowIso();
+    const tx = db.transaction((): MemoryRollbackResult => {
+      const currentRow = memoryRowById(input.profileId, input.memoryId);
+      if (!currentRow) {
+        throw new MemoryRollbackError(
+          "memory_not_found",
+          `gmOS rollback target memory not found: ${input.memoryId}`,
+        );
+      }
+      const current = memorySnapshotFromRow(currentRow);
+      const targetRow = db
+        .prepare(
+          `SELECT *
+           FROM gmos_evidence_events
+           WHERE profile_id = ? AND id = ?
+           LIMIT 1`,
+        )
+        .get(input.profileId, input.toEvidenceEventId) as Record<string, unknown> | undefined;
+      if (!targetRow) {
+        throw new MemoryRollbackError(
+          "target_event_not_found",
+          `gmOS rollback target evidence event not found: ${input.toEvidenceEventId}`,
+        );
+      }
+      const target = normalizeEvidence(targetRow);
+      const rows = db
+        .prepare(
+          `SELECT *
+           FROM gmos_evidence_events
+           WHERE profile_id = ?
+           ORDER BY created_at DESC, id DESC`,
+        )
+        .all(input.profileId) as Record<string, unknown>[];
+      const historicalSourceEventIds = new Set<string>();
+      if (current.sourceEventId) historicalSourceEventIds.add(current.sourceEventId);
+      for (const row of rows) {
+        const event = normalizeEvidence(row);
+        for (const previous of previousValuesFromPayload(event.payload)) {
+          if (previous.memoryId === input.memoryId && previous.sourceEventId) {
+            historicalSourceEventIds.add(previous.sourceEventId);
+          }
+        }
+      }
+      if (
+        !historicalSourceEventIds.has(target.id) &&
+        !payloadReferencesMemory(target.payload, input.memoryId)
+      ) {
+        throw new MemoryRollbackError(
+          "target_event_not_in_chain",
+          "gmOS rollback target evidence event is not in the memory chain",
+        );
+      }
+
+      let restored = current;
+      for (const row of rows) {
+        const event = normalizeEvidence(row);
+        const afterTarget =
+          event.createdAt > target.createdAt ||
+          (event.createdAt === target.createdAt && event.id > target.id);
+        if (!afterTarget) continue;
+        if (!historicalSourceEventIds.has(event.id) && !payloadReferencesMemory(event.payload, input.memoryId)) {
+          continue;
+        }
+        const previous = previousValuesFromPayload(event.payload)
+          .find((value) => value.memoryId === input.memoryId);
+        if (!previous) {
+          throw new MemoryRollbackError(
+            "missing_previous_values",
+            `gmOS rollback cannot cross pre-M13 evidence without previousValues: ${event.id}`,
+          );
+        }
+        restored = previous;
+      }
+
+      applyMemorySnapshot(restored);
+      const rollbackEventId = insertMutationEvidence({
+        profileId: input.profileId,
+        sourceType: "memory.rollback",
+        content: "Memory forensic rollback",
+        createdAt: rolledBackAt,
+        payload: {
+          memoryId: input.memoryId,
+          toEvidenceEventId: input.toEvidenceEventId,
+          approvedBy,
+          restoredValues: [restored],
+        },
+        previousValues: [current],
+      });
+      return {
+        rollbackEventId,
+        profileId: input.profileId,
+        memoryId: input.memoryId,
+        toEvidenceEventId: input.toEvidenceEventId,
+        approvedBy,
+        restoredValue: restored,
+        previousValues: [current],
+        rolledBackAt,
       };
     });
     return tx();
@@ -4651,11 +5438,17 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       input.profileId,
       matchedMemoryIds,
     );
+    const forgottenAt = nowIso();
     const archivedMemoryIds = archiveForgetMemoryIds({
       profileId: input.profileId,
       memoryIds: matchedMemoryIds,
       derivedMemoryIds,
-      archivedAt: nowIso(),
+      archivedAt: forgottenAt,
+    });
+    redactEvidenceForForgottenMemories({
+      profileId: input.profileId,
+      archivedMemoryIds,
+      redactedAt: forgottenAt,
     });
     return { archivedMemoryIds };
   }
@@ -5091,6 +5884,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     recordProcedureDistillation,
     applyEvolutionActions,
     revertEvolutionApplication,
+    rollbackMemory,
     lifecycleStatus,
     listActionPolicies,
     listEvidence,

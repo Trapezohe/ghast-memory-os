@@ -165,7 +165,7 @@ This Docker smoke is manual and is not part of `gate:pr`.
   evolution, forget, and restore entries when present.
 - Runtime facade: `observe`, `prepareTurn`, `commitOutcome`, `recordFeedback`,
   `explainTurn`, `reconstructContext`, `explainEvidencePath`, `maintain`,
-  `forget`, `explain`.
+  `memoryRollback`, `forget`, `explain`.
 - Pluggable extraction pipeline for host-provided structured extractors. gmOS
   keeps write-path authority for evidence, PERSON, secret-like, incognito, and
   forgetting gates, but it does not synthesize durable memory from built-in
@@ -179,7 +179,9 @@ This Docker smoke is manual and is not part of `gate:pr`.
   forgetting, and do-not-push action policies.
 - Built-in deterministic Memory Gym smoke benchmark, including the
   `experience_horizon` group for multi-week preference adherence, forgetting
-  compliance, contradiction resolution, and procedure reuse diagnostics.
+  compliance, contradiction resolution, procedure reuse, rollback, trust-tiered
+  provenance, annealing, scoped history access, and poisoning-lifecycle
+  diagnostics.
 - Built-in release gate runner that combines Memory Gym, host compatibility,
   scale, and diagnostics checks for CI/release candidates.
 - External benchmark reports label their protocol explicitly:
@@ -194,7 +196,8 @@ This Docker smoke is manual and is not part of `gate:pr`.
 - SQLite profile backup/restore for portable QA reproduction, migration, and
   rollback. Safe backups exclude archived, sensitive, and person memories by
   default, but include dormant memories because they remain user memory; full
-  backups are explicit.
+  backups are explicit. `gmos snapshot create/list` is a thin naming layer over
+  full bundle export plus content-free snapshot evidence.
 - In-process MCP-style tool router and real MCP stdio server for host/agent
   runtime adapters.
 - Local HTTP adapter for hosts that need a small service boundary instead of
@@ -561,7 +564,8 @@ Endpoints include `GET /health`, `GET /healthz`, `GET /runtime-info`, `GET
 /profiles`, `GET /keys`, `GET /evolution/review`, `POST /add`, `POST
 /search`, `POST /observe`, `POST /prepare`, `POST /explain-turn`, `POST
 /reconstruct`, `POST /explain-path`, `POST /commit-outcome`, `POST /feedback`,
-`POST /maintain`, `POST /forget`, `POST /explain`, and `POST /mcp/call`.
+`POST /maintain`, `POST /rollback`, `POST /forget`, `POST /explain`, and
+`POST /mcp/call`.
 
 JS/TS callers can use the zero-dependency fetch client:
 

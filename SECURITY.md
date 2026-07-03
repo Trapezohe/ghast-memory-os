@@ -35,6 +35,24 @@ compatibility, deprecation, and upgrade guarantees.
 - Forget operations archive matching memory and remove it from future context.
 - Read paths are expected to be side-effect free and are covered by gate checks.
 
+## Mnemonic Sovereignty Compliance
+
+gmOS maps the nine memory-governance primitives from arXiv:2604.16548 to
+executable gates. No row below is documentation-only; each named gate runs in
+`gmos gym run`.
+
+| Primitive | Implementation summary | Executable gate(s) |
+| --- | --- | --- |
+| Typed-write schemas with chain-of-custody provenance | `observe()` writes structured evidence with source role, source trust, event metadata, candidate schema decisions, and source event ids before memory/world-belief writes. | `experience_horizon_trust_tiered_write_provenance`, `evidence_idempotency` |
+| Principal-scoped retrieval | Scoped HTTP keys carry profile allowlists, scope, default disposition, and `historyAccess`; history-purpose recall and archived/dormant visibility require that bit. | `experience_horizon_principal_history_access_scope`, `mcp_public_sensitive_rejection` |
+| Compression-lineage preservation | Consolidation, distillation, dossiers, and imported summaries preserve source ids and lifecycle histories instead of replacing source evidence. | `consolidator_hook_writes_summary_and_dormant_sources`, `distillation_writes_procedure_with_trajectory_evidence`, `experience_horizon_poisoning_lifecycle` |
+| Audit/deletable separation | `forget()` archives memories but keeps audit rows; evidence content for fully forgotten source events becomes a content-free sha256/length redaction stub, while shared-source evidence remains readable until all derived memories are forgotten. | `experience_horizon_forgetting_compliance_full_surface`, `explain_turn_forget_residue_redacts_content` |
+| Cross-substrate deletion verification | Forget removes readable residue from memory rows, context, history recall, explanations, lifecycle payload snapshots, associations, FTS, vector indexes, and evidence read surfaces. | `experience_horizon_forgetting_compliance_full_surface`, `reconstruction_forget_repair_no_belief_residue` |
+| Metadata-bearing storage | Stored memories, world beliefs, evidence, vectors, and associations carry source ids, sensitivity, provider/index state, source trust, annealing state, and lifecycle metadata. | `experience_horizon_trust_tiered_write_provenance`, `embedding_privacy_defaults`, `semantic_fusion_respects_visibility_gates` |
+| Harness-level governance | The deterministic gym exercises poisoning, lifecycle, reconstruction, privacy, consolidation, distillation, and host-boundary gates as release criteria. | `experience_horizon_poisoning_lifecycle`, `secret_like_persistence`, `do_not_push_policy` |
+| Snapshot/versioning with forensic rollback | Memory-mutating writes record `previousValues`; `memoryRollback()`/`gmos rollback` replay evidence chains and write rollback evidence. CLI snapshots are named full-bundle exports with content-free evidence pointers. | `experience_horizon_forensic_rollback_and_versioning`, `evolution_review_apply_revert_approval_gated` |
+| Confidence annealing | Rapid non-independent boosts and lower-trust writes set annealing metadata; ranking and retention use effective capped confidence until independent confirmation. | `experience_horizon_confidence_annealing`, `experience_horizon_poisoning_lifecycle` |
+
 ## Service Boundary
 
 `gmos serve` binds to `127.0.0.1` by default. Non-loopback interfaces require

@@ -235,6 +235,7 @@ export async function loadHostMemorySnapshotsIntoStore(
       payload: {
         hostMemoryId: snapshot.id,
         hostMemoryKind: kind,
+        sourceTrust: "external",
       },
       createdAt: snapshot.createdAt ?? nowIso,
     });
@@ -253,6 +254,7 @@ export async function loadHostMemorySnapshotsIntoStore(
         hostMemoryKind: kind,
         hostContentHash: contentHash(content),
         hostSnapshotImport: true,
+        sourceTrust: "external",
       },
       createdAt: snapshot.createdAt ?? nowIso,
     })) as MemoryRecord;

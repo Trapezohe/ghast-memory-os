@@ -209,6 +209,7 @@ export async function loadMem0ExportIntoStore(input: Mem0ImportInput): Promise<M
         sourceFileHash,
         recordIndex: index,
         provenance: "low_level_import",
+        sourceTrust: "external",
       },
       createdAt,
     });
@@ -228,6 +229,7 @@ export async function loadMem0ExportIntoStore(input: Mem0ImportInput): Promise<M
         sourceFileHash,
         recordIndex: index,
         provenance: "low_level_import",
+        sourceTrust: "external",
       },
       createdAt,
     }) as MemoryRecord;

@@ -19,6 +19,7 @@ import type {
   PrivacyMode,
   ReconstructContextInput,
   ReconstructionIntentHint,
+  SourceTrust,
   TurnMessage,
 } from "../kernel/types.js";
 import {
@@ -50,6 +51,7 @@ export interface MemoryMcpServer {
 const TOOL_NAMES = new Set(listMemoryMcpTools().map((tool) => tool.name));
 const ROLES = new Set<MemoryRole>(["system", "user", "assistant", "tool"]);
 const PRIVACY_MODES = new Set<PrivacyMode>(["normal", "incognito"]);
+const SOURCE_TRUST = new Set<SourceTrust>(["user", "agent", "external"]);
 const PUBLIC_ADD_KINDS = new Set<MemoryKind>([
   "fact",
   "preference",
@@ -311,6 +313,15 @@ function optionalPrivacyMode(args: Record<string, unknown>): PrivacyMode | undef
   return value as PrivacyMode;
 }
 
+function optionalSourceTrust(args: Record<string, unknown>): SourceTrust | undefined {
+  const value = args.sourceTrust;
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !SOURCE_TRUST.has(value as SourceTrust)) {
+    throw new Error("sourceTrust must be one of: user, agent, external");
+  }
+  return value as SourceTrust;
+}
+
 function optionalFailureKind(args: Record<string, unknown>): FailureKind | undefined {
   const value = args.failureKind;
   if (value === undefined) return undefined;
@@ -383,6 +394,8 @@ function observeEvent(args: Record<string, unknown>): HostEvent {
       "messageId",
       "role",
       "content",
+      "sourceTrust",
+      "allowLowerTrustPolicyWrites",
       "privacyMode",
       "createdAt",
       "metadata",
@@ -398,11 +411,17 @@ function observeEvent(args: Record<string, unknown>): HostEvent {
   const conversationId = optionalString(args, "conversationId");
   const messageId = optionalString(args, "messageId");
   const privacyMode = optionalPrivacyMode(args);
+  const sourceTrust = optionalSourceTrust(args);
+  const allowLowerTrustPolicyWrites = optionalBoolean(args, "allowLowerTrustPolicyWrites");
   const createdAt = optionalString(args, "createdAt");
   const metadata = optionalMetadata(args);
   if (profileId !== undefined) event.profileId = profileId;
   if (conversationId !== undefined) event.conversationId = conversationId;
   if (messageId !== undefined) event.messageId = messageId;
+  if (sourceTrust !== undefined) event.sourceTrust = sourceTrust;
+  if (allowLowerTrustPolicyWrites !== undefined) {
+    event.allowLowerTrustPolicyWrites = allowLowerTrustPolicyWrites;
+  }
   if (privacyMode !== undefined) event.privacyMode = privacyMode;
   if (createdAt !== undefined) event.createdAt = createdAt;
   if (metadata !== undefined) event.metadata = metadata;

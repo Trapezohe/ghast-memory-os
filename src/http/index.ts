@@ -142,6 +142,7 @@ interface AuthContext {
   scope: HttpScope;
   profiles: SqliteServiceApiKeyProfiles;
   defaultDisposition?: string | undefined;
+  historyAccess: boolean;
   mode: "none" | "legacy" | "scoped";
 }
 
@@ -314,6 +315,43 @@ function assertProfileAllowed(auth: AuthContext, profileId: string | undefined):
   }
 }
 
+function objectValue(record: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
+  const value = record[key];
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+export function memoryHttpRequestNeedsHistoryAccess(
+  tool: PublicMemoryMcpToolName | string,
+  args: Record<string, unknown>,
+): boolean {
+  if (args.includeArchived === true) return true;
+  if (args.status === "dormant" || args.status === "archived" || args.status === "any") return true;
+  if (tool === "memory.search") return args.purpose === "history";
+  if (tool === "memory.reconstruct_context" || tool === "memory.explain_evidence_path") {
+    return args.temporalMode === "history";
+  }
+  if (tool === "memory.prepare_context" || tool === "memory.explain_turn") {
+    return objectValue(args, "reconstruction")?.temporalMode === "history";
+  }
+  return false;
+}
+
+function assertHistoryAccess(
+  auth: AuthContext,
+  tool: PublicMemoryMcpToolName | string,
+  args: Record<string, unknown>,
+): void {
+  if (auth.mode !== "scoped" || auth.historyAccess) return;
+  if (!memoryHttpRequestNeedsHistoryAccess(tool, args)) return;
+  throw new HttpError(
+    403,
+    "history_access_forbidden",
+    "history access is not allowed for this key",
+  );
+}
+
 function profileIdFromRecord(
   body: Record<string, unknown>,
   fallback: string | undefined,
@@ -356,6 +394,7 @@ function authenticateScopedKey(
     scope: key.scope,
     profiles: key.profiles,
     ...(key.defaultDisposition ? { defaultDisposition: key.defaultDisposition } : {}),
+    historyAccess: key.historyAccess,
     mode: "scoped",
   };
 }
@@ -371,6 +410,7 @@ function authenticateRequest(
     keyId: authToken ? "legacy" : undefined,
     scope: "readwrite",
     profiles: "*",
+    historyAccess: true,
     mode: authToken ? "legacy" : "none",
   };
 }
@@ -830,6 +870,7 @@ export function createMemoryHttpServer(
         const args = body.args && typeof body.args === "object" && !Array.isArray(body.args)
           ? body.args as Record<string, unknown>
           : {};
+        assertHistoryAccess(auth, tool, args);
         const result = await mcp.callTool(tool, withDefaultDisposition(args, auth, tool));
         statusCode = result.isError ? 400 : 200;
         sendJson(request, response, statusCode, result.structuredContent);
@@ -842,6 +883,7 @@ export function createMemoryHttpServer(
       const body = assertObjectBody(await readJsonBody(request, maxBodyBytes));
       auditProfileId = profileIdFromRecord(body, options.profileId);
       assertProfileAllowed(auth, auditProfileId);
+      assertHistoryAccess(auth, route.toolName, body);
       const result = await mcp.callTool(
         route.toolName,
         withDefaultDisposition(body, auth, route.toolName),

@@ -219,6 +219,18 @@ timing, and phase summaries; it must not contain memory content.
 Profile JSON backups still do not include service tables. Whole SQLite database
 file backups include autopilot run history and service key metadata.
 
+## SQLite Schema v13
+
+Schema v13 adds `gmos_api_keys.history_access`, defaulting to `1` for existing
+and new scoped HTTP keys. Keys created with `gmos keys create
+--no-history-access` store `0` and cannot use HTTP history-purpose recall or
+archived/dormant visibility. The migration is automatic on first writable open.
+
+Profile JSON bundles still do not include service API keys, key hashes,
+`history_access`, HTTP audit rows, or autopilot run rows. Whole SQLite database
+file backups include those service tables and should be treated as sensitive
+operational data.
+
 ## M3 Experience Learning
 
 M3 does not add a SQLite schema version. Procedure distillation, outcome

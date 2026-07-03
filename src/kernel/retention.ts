@@ -40,6 +40,16 @@ function positiveStep(value: number | undefined, fallback: number): number {
   return clamp(value, 0, 1);
 }
 
+function positiveMilliseconds(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) return fallback;
+  return Math.max(1, Math.trunc(value));
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) return fallback;
+  return Math.max(1, Math.trunc(value));
+}
+
 function parseInstant(value: string | null | undefined): number | null {
   if (!value) return null;
   const instant = Date.parse(value);
@@ -77,6 +87,13 @@ export function resolveMemoryLifecycleConfig(
       step: positiveStep(input?.feedbackConfidencePenalty?.step, 0.1),
       floor: clamp(input?.feedbackConfidencePenalty?.floor ?? 0.05, 0, 1),
     },
+    confidenceAnnealing: {
+      enabled: input?.confidenceAnnealing?.enabled ?? true,
+      windowMs: positiveMilliseconds(input?.confidenceAnnealing?.windowMs, 60 * 60 * 1000),
+      boostThreshold: positiveInteger(input?.confidenceAnnealing?.boostThreshold, 2),
+      confidenceCap: clamp(input?.confidenceAnnealing?.confidenceCap ?? 0.6, 0, 1),
+      retentionCap: clamp(input?.confidenceAnnealing?.retentionCap ?? 0.45, 0, 1),
+    },
   };
 }
 
@@ -103,7 +120,21 @@ export function retentionScore(
     0,
     1,
   );
-  const confidence = clamp(memory.confidence, 0, 1);
+  const annealing = memory.metadata.annealing;
+  const annealingCap =
+    annealing &&
+    typeof annealing === "object" &&
+    !Array.isArray(annealing) &&
+    (annealing as Record<string, unknown>).active === true
+      ? Number((annealing as Record<string, unknown>).capConfidence)
+      : NaN;
+  const confidence = clamp(
+    Number.isFinite(annealingCap)
+      ? Math.min(memory.confidence, annealingCap)
+      : memory.confidence,
+    0,
+    1,
+  );
   const reinforcement = (clamp(memory.reinforcement ?? 0, -1, 1) + 1) / 2;
 
   /*
@@ -113,7 +144,7 @@ export function retentionScore(
    * - confidence carries extraction/store confidence;
    * - reinforcement maps [-1, 1] feedback into [0, 1].
    */
-  return clamp(
+  const score = clamp(
     recency * 0.6 +
       confidence * 0.2 +
       recall * 0.1 +
@@ -121,4 +152,12 @@ export function retentionScore(
     0,
     1,
   );
+  const retentionCap =
+    annealing &&
+    typeof annealing === "object" &&
+    !Array.isArray(annealing) &&
+    (annealing as Record<string, unknown>).active === true
+      ? Number((annealing as Record<string, unknown>).retentionCap)
+      : NaN;
+  return Number.isFinite(retentionCap) ? Math.min(score, clamp(retentionCap, 0, 1)) : score;
 }

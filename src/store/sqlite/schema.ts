@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-export const GMOS_SQLITE_SCHEMA_VERSION = 12;
+export const GMOS_SQLITE_SCHEMA_VERSION = 13;
 
 const READ_AUDIT_REVISION_TABLES = [
   "gmos_evidence_events",
@@ -490,6 +490,7 @@ export function ensureSqliteSchema(db: Database.Database): void {
       scope TEXT NOT NULL,
       profiles_json TEXT NOT NULL,
       default_disposition TEXT,
+      history_access INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       revoked_at TEXT
     );
@@ -550,6 +551,9 @@ export function ensureSqliteSchema(db: Database.Database): void {
   if (!columnExists(db, "gmos_api_keys", "default_disposition")) {
     db.exec("ALTER TABLE gmos_api_keys ADD COLUMN default_disposition TEXT;");
   }
+  if (!columnExists(db, "gmos_api_keys", "history_access")) {
+    db.exec("ALTER TABLE gmos_api_keys ADD COLUMN history_access INTEGER NOT NULL DEFAULT 1;");
+  }
   db.exec(`
     INSERT OR IGNORE INTO gmos_schema_migrations(version, name, applied_at)
       VALUES (
@@ -605,6 +609,12 @@ export function ensureSqliteSchema(db: Database.Database): void {
       VALUES (
         12,
         'autopilot_runs_key_disposition',
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      );
+    INSERT OR IGNORE INTO gmos_schema_migrations(version, name, applied_at)
+      VALUES (
+        13,
+        'service_key_history_access',
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       );
   `);

@@ -6,6 +6,8 @@ export type PrivacyMode = "normal" | "incognito";
 
 export type Sensitivity = "normal" | "sensitive" | "secret_like";
 
+export type SourceTrust = "user" | "agent" | "external";
+
 export interface MemorySensitivityClassifierInput {
   value: string;
   surface:
@@ -68,6 +70,7 @@ export interface ConversationSourceMetadata extends Record<string, unknown> {
   sessionKey?: string | undefined;
   sourceId?: string | undefined;
   sourceUri?: string | undefined;
+  sourceTrust?: SourceTrust | undefined;
 }
 
 export interface ConversationMessageEvent {
@@ -77,6 +80,8 @@ export interface ConversationMessageEvent {
   messageId?: string | undefined;
   role: MemoryRole;
   content: string;
+  sourceTrust?: SourceTrust | undefined;
+  allowLowerTrustPolicyWrites?: boolean | undefined;
   privacyMode?: PrivacyMode | undefined;
   createdAt?: string | undefined;
   metadata?: ConversationSourceMetadata | undefined;
@@ -526,6 +531,8 @@ export interface MemorySearchScoreComponents {
   vectorScore?: number | undefined;
   associationScore?: number | undefined;
   fusionScore?: number | undefined;
+  sourceTrust?: SourceTrust | undefined;
+  annealing?: MemoryAnnealingState | undefined;
   finalScore: number;
 }
 
@@ -871,6 +878,60 @@ export interface RestoreArchivedResult {
   restoredMemoryIds: string[];
 }
 
+export interface MemoryVersionSnapshot {
+  memoryId: string;
+  profileId: string;
+  kind: MemoryKind;
+  scope: string;
+  content: string;
+  sensitivity: Sensitivity;
+  status: MemoryStatus;
+  confidence: number;
+  recallCount: number;
+  lastRecalledAt?: string | null | undefined;
+  reinforcement: number;
+  sourceEventId?: string | null | undefined;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MemoryRollbackInput {
+  profileId?: string | undefined;
+  memoryId: string;
+  toEvidenceEventId: string;
+  approvedBy: string;
+  rolledBackAt?: string | undefined;
+}
+
+export interface MemoryRollbackResult {
+  rollbackEventId: string;
+  profileId: string;
+  memoryId: string;
+  toEvidenceEventId: string;
+  approvedBy: string;
+  restoredValue: MemoryVersionSnapshot;
+  previousValues: MemoryVersionSnapshot[];
+  rolledBackAt: string;
+}
+
+export type MemoryRollbackErrorCode =
+  | "approved_by_required"
+  | "memory_not_found"
+  | "target_event_not_found"
+  | "target_event_not_in_chain"
+  | "missing_previous_values";
+
+export class MemoryRollbackError extends Error {
+  readonly code: MemoryRollbackErrorCode;
+
+  constructor(code: MemoryRollbackErrorCode, message: string) {
+    super(message);
+    this.name = "MemoryRollbackError";
+    this.code = code;
+  }
+}
+
 export interface ExplainResult {
   id: string;
   kind: "memory" | "belief";
@@ -894,8 +955,10 @@ export type MemoryLifecycleHistoryEventKind =
   | "distilled_source_trajectory"
   | "distilled_procedure"
   | "dossier_created"
+  | "annealed"
   | "evolution_applied"
   | "evolution_reverted"
+  | "rolled_back"
   | "derived_forget_archived"
   | "forgotten"
   | "restored"
@@ -1225,6 +1288,32 @@ export interface EvolutionPreviousMemoryValue {
   updatedAt: string;
 }
 
+export interface MemoryAnnealingConfig {
+  enabled?: boolean | undefined;
+  windowMs?: number | undefined;
+  boostThreshold?: number | undefined;
+  confidenceCap?: number | undefined;
+  retentionCap?: number | undefined;
+}
+
+export interface ResolvedMemoryAnnealingConfig {
+  enabled: boolean;
+  windowMs: number;
+  boostThreshold: number;
+  confidenceCap: number;
+  retentionCap: number;
+}
+
+export interface MemoryAnnealingState {
+  active: boolean;
+  reason: string;
+  sourceTrust?: SourceTrust | undefined;
+  capConfidence?: number | undefined;
+  retentionCap?: number | undefined;
+  startedAt?: string | undefined;
+  confirmedAt?: string | undefined;
+}
+
 export interface EvolutionApplyStoreInput {
   profileId: string;
   proposalId: string;
@@ -1300,12 +1389,14 @@ export interface CommitOutcomeStoreInput extends TaskTrajectoryInput {
   usedMemoryIds?: string[] | undefined;
   failure?: RecordFailureInput | undefined;
   outcomeReinforcement?: ResolvedOutcomeReinforcementConfig | undefined;
+  confidenceAnnealing?: ResolvedMemoryAnnealingConfig | undefined;
 }
 
 export interface FeedbackSignalStoreInput extends RecordFailureInput {
   relatedMemoryIds?: string[] | undefined;
   signal?: "positive" | "negative" | undefined;
   confidencePenalty?: ResolvedFeedbackConfidencePenaltyConfig | undefined;
+  confidenceAnnealing?: ResolvedMemoryAnnealingConfig | undefined;
 }
 
 export interface OutcomeReinforcementConfig {
@@ -1327,6 +1418,19 @@ export interface MemoryLifecycleConfig {
   autoTransitionKinds?: MemoryKind[] | undefined;
   outcomeReinforcement?: OutcomeReinforcementConfig | undefined;
   feedbackConfidencePenalty?: FeedbackConfidencePenaltyConfig | undefined;
+  confidenceAnnealing?: MemoryAnnealingConfig | undefined;
+}
+
+export interface MemoryTrustConfig {
+  agentConfidenceCap?: number | undefined;
+  externalConfidenceCap?: number | undefined;
+  allowLowerTrustPolicyWrites?: boolean | undefined;
+}
+
+export interface ResolvedMemoryTrustConfig {
+  agentConfidenceCap: number;
+  externalConfidenceCap: number;
+  allowLowerTrustPolicyWrites: boolean;
 }
 
 export interface MemoryConsolidationConfig {
@@ -1376,6 +1480,7 @@ export interface ResolvedMemoryLifecycleConfig {
   autoTransitionKinds: MemoryKind[];
   outcomeReinforcement: ResolvedOutcomeReinforcementConfig;
   feedbackConfidencePenalty: ResolvedFeedbackConfidencePenaltyConfig;
+  confidenceAnnealing: ResolvedMemoryAnnealingConfig;
 }
 
 export interface ResolvedMemoryConsolidationConfig {
@@ -1668,6 +1773,9 @@ export interface MemoryStore {
   revertEvolutionApplication?(
     input: EvolutionRevertStoreInput,
   ): Promise<EvolutionRevertStoreResult> | EvolutionRevertStoreResult;
+  rollbackMemory?(
+    input: MemoryRollbackInput & { profileId: string },
+  ): Promise<MemoryRollbackResult> | MemoryRollbackResult;
   lifecycleStatus?(
     input?: { profileId?: string | undefined },
   ): Promise<MemoryLifecycleStatus> | MemoryLifecycleStatus;
@@ -1720,6 +1828,7 @@ export interface MemoryOSOptions {
     inferTemporalCuesFromText?: boolean | undefined;
   } | undefined;
   lifecycle?: MemoryLifecycleConfig | undefined;
+  trust?: MemoryTrustConfig | undefined;
   consolidation?: MemoryConsolidationConfig | undefined;
   distillation?: MemoryProcedureDistillationConfig | undefined;
   dossier?: MemoryDossierConfig | undefined;
@@ -1761,6 +1870,7 @@ export interface MemoryOS {
   commitOutcome(input: CommitOutcomeInput): Promise<void>;
   recordFeedback(input: FeedbackInput): Promise<void>;
   maintain(input?: MaintenanceInput): Promise<MaintenanceReport>;
+  memoryRollback(input: MemoryRollbackInput): Promise<MemoryRollbackResult>;
   forget(input: ForgetInput): Promise<ForgetResult>;
   explain(id: string, profileId?: string): Promise<ExplainResult | null>;
   close(): Promise<void>;

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
@@ -77,6 +78,7 @@ import type {
   ReadAuditSnapshot,
   ReconstructionIntentHint,
   SearchIndexStatus,
+  SourceTrust,
 } from "../kernel/types.js";
 import { getGmosRuntimeInfo, type GmosRuntimeInfo } from "../runtime-info.js";
 
@@ -137,19 +139,22 @@ Usage:
   gmos import --db ./gmos.db --profile local --input-file ./gmos-profile-bundle.json
   gmos backup --db ./gmos.db --profile local --mode full --passphrase-env GMOS_BUNDLE_PASSPHRASE --output-file ./gmos-profile-bundle.encrypted.json
   gmos restore --db ./gmos.db --input-file ./gmos-profile-bundle.encrypted.json --passphrase-env GMOS_BUNDLE_PASSPHRASE --on-conflict skip
+  gmos snapshot create --db ./gmos.db --profile local --name before-migration --snapshots-dir ./snapshots
+  gmos snapshot list --db ./gmos.db --profile local
   gmos import --from mem0 --db ./gmos.db --profile local --input-file ./mem0-export.json
   gmos import --from conversation --db ./gmos.db --profile local --input-file ./thread.jsonl --input-format jsonl
   gmos add --db ./gmos.db --profile local --kind boundary --text "不要再提醒我这个项目延期了。"
-  gmos observe --db ./gmos.db --profile local --text "记录一条普通会话事件。" --report
+  gmos observe --db ./gmos.db --profile local --text "记录一条普通会话事件。" --source-trust user --report
   gmos prepare --db ./gmos.db --profile local --text "你知道我什么偏好吗？"
   gmos reconstruct --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:<project-id>"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}'
   gmos explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --reconstruction-intent-json '{"queryCues":["project:<project-id>"],"requiredTagGroups":[{"name":"procedure_or_next_step","tags":["procedure","task_trajectory","project.state","world_belief"]}]}'
   gmos forget --db ./gmos.db --profile local --query "delete request" --target-term "Moonbase"
+  gmos rollback --db ./gmos.db --profile local --memory memory_xxx --to evidence_xxx --approved-by "Song Su" --yes
   gmos explain --db ./gmos.db --profile local --id memory_xxx
   gmos mcp tools
   gmos mcp call --db ./gmos.db --tool memory.prepare_context --input '{"text":"你知道我什么偏好吗？"}'
   gmos mcp serve --db ./gmos.db --profile local
-  gmos keys create --db ./gmos.db --label claude-code --scope readwrite --profiles local
+  gmos keys create --db ./gmos.db --label claude-code --scope readwrite --profiles local --no-history-access
   gmos keys list --db ./gmos.db
   gmos keys revoke --db ./gmos.db --key-id key_xxx
   gmos audit list --db ./gmos.db --key-id key_xxx --since 2026-07-01T00:00:00.000Z
@@ -771,11 +776,13 @@ const PUBLIC_CLI_COMMANDS = [
   "import",
   "backup",
   "restore",
+  "snapshot",
   "observe",
   "prepare",
   "reconstruct",
   "explain-path",
   "forget",
+  "rollback",
   "explain",
   "mcp",
   "keys",
@@ -1079,6 +1086,13 @@ function serviceKeyProfilesOption(): string[] | "*" {
   return profiles.sort();
 }
 
+function sourceTrustOption(): SourceTrust | undefined {
+  const raw = value("--source-trust");
+  if (raw === undefined) return undefined;
+  if (raw === "user" || raw === "agent" || raw === "external") return raw;
+  throw new Error("--source-trust must be one of: user, agent, external");
+}
+
 function auditSinceOption(): string | undefined {
   const raw = value("--since");
   if (!raw) return undefined;
@@ -1210,6 +1224,7 @@ async function runKeysCommand(action: string | undefined): Promise<void> {
         ...(value("--default-disposition") !== undefined
           ? { defaultDisposition: value("--default-disposition") }
           : {}),
+        historyAccess: !has("--no-history-access"),
       });
       console.log(JSON.stringify({ ok: true, ...result }, null, 2));
       return;
@@ -1231,6 +1246,101 @@ async function runKeysCommand(action: string | undefined): Promise<void> {
       return;
     }
     throw new Error("gmos keys action must be create, list, or revoke");
+  } finally {
+    store.close();
+  }
+}
+
+function safeSnapshotName(raw: string): string {
+  const normalized = raw.trim().replace(/[^A-Za-z0-9_.-]+/gu, "-").replace(/^-+|-+$/gu, "");
+  if (!normalized) throw new Error("snapshot name must contain at least one filename-safe character");
+  return normalized.slice(0, 80);
+}
+
+function snapshotTimestampForFile(timestamp: string): string {
+  return timestamp.replace(/[:.]/gu, "-");
+}
+
+async function runSnapshotCommand(action: string | undefined): Promise<void> {
+  const store = createSqliteMemoryStore({ path: value("--db", "./gmos.db")! });
+  const profileId = value("--profile", "default")!;
+  try {
+    if (action === "create") {
+      const createdAt = new Date().toISOString();
+      const name = safeSnapshotName(value("--name", createdAt) ?? createdAt);
+      const snapshotsDir = path.resolve(process.cwd(), value("--snapshots-dir", "snapshots") ?? "snapshots");
+      mkdirSync(snapshotsDir, { recursive: true });
+      const bundle = store.exportProfileBundle({
+        profileId,
+        mode: "full",
+        includeArchived: true,
+        includeSensitive: true,
+        includePerson: true,
+        includeEvidence: true,
+        includeWorldBeliefs: true,
+        includeFailures: true,
+        includeTaskTrajectories: true,
+      });
+      const serialized = serializeSqliteProfileBundle({
+        bundle,
+        passphrase: passphraseFromEnvOption(),
+      });
+      const body = `${JSON.stringify(serialized, null, 2)}\n`;
+      const fileName = `${snapshotTimestampForFile(createdAt)}-${name}.gmos-profile-bundle.json`;
+      const outputPath = path.join(snapshotsDir, fileName);
+      writeFileSync(outputPath, body);
+      const sha256 = createHash("sha256").update(body, "utf8").digest("hex");
+      const evidence = await store.recordEvidence({
+        profileId,
+        eventKey: ["snapshot", profileId, createdAt, name].join(":"),
+        sourceType: "snapshot",
+        content: "Profile snapshot point",
+        sensitivity: "normal",
+        eligibleForLongTermMemory: false,
+        createdAt,
+        payload: {
+          schema: "gmos.profile_snapshot_point.v1",
+          name,
+          fileName,
+          sha256,
+          bytes: Buffer.byteLength(body, "utf8"),
+          createdAt,
+          bundleSchema: serialized.schema,
+          mode: "full",
+        },
+      });
+      console.log(JSON.stringify({
+        ok: true,
+        snapshot: {
+          id: evidence.id,
+          name,
+          createdAt,
+          outputFile: publicOutputPath(outputPath),
+          sha256,
+        },
+      }, null, 2));
+      return;
+    }
+    if (action === "list") {
+      if (!store.listEvidence) throw new Error("gmOS store does not support snapshot listing");
+      const snapshots = await store.listEvidence({
+        profileId,
+        sourceType: "snapshot",
+        eligibleForLongTermMemory: false,
+        includeSensitive: true,
+        limit: positiveIntegerOption("--limit", 50),
+      });
+      console.log(JSON.stringify({
+        ok: true,
+        snapshots: snapshots.map((snapshot) => ({
+          id: snapshot.id,
+          createdAt: snapshot.createdAt,
+          ...snapshot.payload,
+        })),
+      }, null, 2));
+      return;
+    }
+    throw new Error("gmos snapshot action must be create or list");
   } finally {
     store.close();
   }
@@ -1483,6 +1593,11 @@ async function main(): Promise<void> {
 
   if (command === "keys") {
     await runKeysCommand(subcommand);
+    return;
+  }
+
+  if (command === "snapshot") {
+    await runSnapshotCommand(subcommand);
     return;
   }
 
@@ -2144,6 +2259,7 @@ async function main(): Promise<void> {
     if (command === "observe") {
       const text = value("--text");
       if (!text) usage();
+      const sourceTrust = sourceTrustOption();
       const event = {
         type: "conversation.message",
         profileId,
@@ -2151,6 +2267,7 @@ async function main(): Promise<void> {
         content: text,
         privacyMode: has("--incognito") ? "incognito" : "normal",
         createdAt: new Date().toISOString(),
+        ...(sourceTrust ? { sourceTrust } : {}),
       } as const;
       if (has("--report")) {
         console.log(JSON.stringify(await memory.observeWithReport(event), null, 2));
@@ -2243,6 +2360,21 @@ async function main(): Promise<void> {
           2,
         ),
       );
+      return;
+    }
+
+    if (command === "rollback") {
+      if (!has("--yes")) throw new Error("gmos rollback requires --yes");
+      const memoryId = value("--memory");
+      const toEvidenceEventId = value("--to");
+      const approvedBy = value("--approved-by");
+      if (!memoryId || !toEvidenceEventId || !approvedBy) usage();
+      console.log(JSON.stringify(await memory.memoryRollback({
+        profileId,
+        memoryId,
+        toEvidenceEventId,
+        approvedBy,
+      }), null, 2));
       return;
     }
 

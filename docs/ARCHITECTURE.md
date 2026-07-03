@@ -24,6 +24,7 @@ host event
 -> active / dormant / archived lifecycle, consolidation, and distillation evidence
 -> optional host-scheduled autopilot composition of ingest / repair / maintain
 -> approval-gated evolution apply/revert when an admin accepts a proposal
+-> forensic rollback when an approved operator restores a memory from evidence
 ```
 
 ## Sources Of Truth
@@ -65,6 +66,7 @@ Write paths:
 - `recordFeedback()`
 - `maintain()`
 - `forget()`
+- `memoryRollback()` / `gmos rollback`
 - `applyEvolutionProposal()` / `revertEvolutionApplication()` through SDK/CLI admin surfaces
 - low-level admin/import operations
 - repair commands that rebuild derived indexes
@@ -135,6 +137,13 @@ writes `source_type = "evolution"` evidence with previous values. Revert restore
 those previous values and writes its own evolution evidence. Nothing in
 `maintain()` runs evolution.
 
+Forensic rollback is also a write path. Every memory-mutating path records
+`previousValues` sufficient to reconstruct prior state. `memoryRollback()` and
+`gmos rollback` replay a memory's evidence chain to a target evidence event,
+restore that snapshot, and write `source_type = "memory.rollback"` evidence
+with its own `previousValues`. If the chain crosses pre-M13 evidence without
+state snapshots, rollback fails closed instead of guessing.
+
 Autopilot is the same explicit-write contract on a schedule. The host chooses
 the one-shot CLI, cron/launchd, or the local `gmos serve` timer. Each action
 inside a run is an ordinary evidence-backed write path or dry-run preview:
@@ -181,8 +190,24 @@ Safety gates are part of the runtime contract:
 - incognito/private events are not promoted;
 - public MCP and HTTP surfaces do not expose sensitive override switches;
 - PERSON/person memory is isolated from ordinary user memory;
-- forget archives matching memory and removes derived context residue;
+- forget archives matching memory, removes derived context residue, and redacts
+  source evidence content when all derived memories from that event are
+  forgotten;
 - do-not-push boundaries become action policy, not optional prose.
+
+Write provenance is trust-tiered. Host events can declare
+`sourceTrust: "user" | "agent" | "external"`; defaults are user trust for
+user-role events, agent trust for assistant/tool/summary/note events, and
+external trust for foreign imports. Agent/external evidence can create ordinary
+memories only with capped confidence and annealing metadata. It cannot create
+boundary/procedure policy memories or supersede a higher-trust
+single-cardinality world belief unless the host explicitly records an override.
+
+Confidence annealing is derived from evidence history and metadata. Rapid
+reinforcement from non-independent evidence, or a lower-trust source, caps the
+memory's effective ranking and retention contribution until independent
+confirmation. `explainTurn()` and lifecycle history expose active annealing so
+hosts can see why a memory was downweighted.
 
 Hosts can provide an additive sensitivity classifier for product-specific local
 terms. The built-in detector remains active and gmOS uses the maximum

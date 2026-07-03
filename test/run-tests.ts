@@ -803,7 +803,7 @@ function corruptMemoryFtsEntry(
 const store: SqliteMemoryStore = createSqliteMemoryStore({ path: dbPath });
 const memory = createMemoryOS({ profileId: "test", store });
 await store.initialize();
-assert.equal(await store.schemaVersion(), 12);
+assert.equal(await store.schemaVersion(), 13);
 
 const workspaceEntityResolver: EntityResolver = (input) => {
   const subject = input.subject.trim();
@@ -1017,7 +1017,7 @@ legacyHandle.exec(`
 `);
 const legacyStore = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
 await legacyStore.initialize();
-assert.equal(await legacyStore.schemaVersion(), 12);
+assert.equal(await legacyStore.schemaVersion(), 13);
 assert.equal(
   (
     legacyHandle
@@ -1088,7 +1088,7 @@ assert.ok(
 );
 const legacyStoreReopen = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
 await legacyStoreReopen.initialize();
-assert.equal(await legacyStoreReopen.schemaVersion(), 12);
+assert.equal(await legacyStoreReopen.schemaVersion(), 13);
 assert.equal(
   (
     legacyHandle
@@ -1136,7 +1136,7 @@ legacyV2Handle.exec(`
 `);
 const legacyV2Store = createSqliteMemoryStore({ path: legacyV2DbPath, handle: legacyV2Handle });
 await legacyV2Store.initialize();
-assert.equal(await legacyV2Store.schemaVersion(), 12);
+assert.equal(await legacyV2Store.schemaVersion(), 13);
 assert.ok(
   (
     legacyV2Handle
@@ -1210,7 +1210,7 @@ const legacyV6ProjectionUpgradeStore = createSqliteMemoryStore({
   handle: legacyV6ProjectionHandle,
 });
 await legacyV6ProjectionUpgradeStore.initialize();
-assert.equal(await legacyV6ProjectionUpgradeStore.schemaVersion(), 12);
+assert.equal(await legacyV6ProjectionUpgradeStore.schemaVersion(), 13);
 const upgradedRelationAssociation = legacyV6ProjectionHandle
   .prepare(
     `SELECT cue, target_summary
@@ -14047,7 +14047,7 @@ assert.deepEqual(statusReport.runtimeInfo, getGmosRuntimeInfo());
 assert.equal(statusReport.runtimeInfo.publicSurface.mcpTools.includes("memory.runtime_info"), true);
 assert.equal(statusReport.runtimeInfo.publicSurface.httpRoutes.includes("GET /runtime-info"), true);
 assert.equal(statusReport.storage.status, "ok");
-assert.equal(statusReport.storage.schemaVersion, 12);
+assert.equal(statusReport.storage.schemaVersion, 13);
 assert.equal(
   statusReport.storage.searchIndex?.status,
   "ok",
@@ -15269,6 +15269,8 @@ try {
   assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.some((route) => route.includes("autopilot")), false);
   assert.equal(PUBLIC_MEMORY_MCP_TOOL_NAMES.includes("memory.evolution_apply" as never), false);
   assert.equal(PUBLIC_MEMORY_MCP_TOOL_NAMES.includes("memory.evolution_revert" as never), false);
+  assert.equal(PUBLIC_MEMORY_MCP_TOOL_NAMES.includes("memory.rollback" as never), false);
+  assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /rollback" as never), false);
   const openApiDocument = createMemoryHttpOpenApiDocument() as {
     paths?: Record<string, Record<string, unknown>>;
   };
@@ -15538,7 +15540,7 @@ try {
   assert.equal(status.status, 200);
   assert.equal(
     ((status.body.report as { storage?: { schemaVersion?: number } }).storage ?? {}).schemaVersion,
-    12,
+    13,
   );
   assert.equal((status.body.report as { profileId?: string }).profileId, "[profile id redacted]");
   assert.deepEqual(
@@ -18144,7 +18146,14 @@ async function assertReadAuditRejectsSameRowMutation(
       new RegExp(`${operation} produced write side effects`),
     );
   }
-  assert.equal(JSON.stringify(beforeCounts), JSON.stringify(auditStore.rowCounts()));
+  const countsAfterInjectedMutation = {
+    ...beforeCounts,
+    gmos_evidence_events: (beforeCounts.gmos_evidence_events ?? 0) + 1,
+  };
+  assert.equal(
+    JSON.stringify(countsAfterInjectedMutation),
+    JSON.stringify(auditStore.rowCounts()),
+  );
   await auditMemory.close();
 }
 
@@ -19729,7 +19738,7 @@ const cliStatusPayload = JSON.parse(cliStatus.stdout) as {
 };
 assert.equal(cliStatusPayload.profileId, "[profile id redacted]");
 assert.equal(cliStatusPayload.storage?.lifecycle?.profileId, "[profile id redacted]");
-assert.equal(cliStatusPayload.storage?.schemaVersion, 12);
+assert.equal(cliStatusPayload.storage?.schemaVersion, 13);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_memories ?? 0) > 0);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_associations ?? 0) > 0);
 assert.equal(cliStatusPayload.storage?.searchIndex?.status, "ok");
@@ -20315,13 +20324,18 @@ assert.deepEqual(
     "forgetting_compliance_full_surface",
     "contradiction_resolution_over_time",
     "procedure_reuse_over_time",
+    "forensic_rollback_and_versioning",
+    "trust_tiered_write_provenance",
+    "confidence_annealing",
+    "principal_history_access_scope",
+    "poisoning_lifecycle",
   ],
 );
 assert.equal(gym.roadmapResult.status, "clear");
 assert.equal(gym.runManifest.dbPathMode, "memory");
 assert.equal(gym.runManifest.package.name, packageJson.name);
 assert.equal(gym.runManifest.package.version, packageJson.version);
-assert.equal(gym.runManifest.sqliteSchemaVersion, 12);
+assert.equal(gym.runManifest.sqliteSchemaVersion, 13);
 assert.equal(gym.runManifest.git.branch, expectedGit.branch);
 assert.equal(gym.runManifest.git.sha, expectedGit.sha);
 assert.equal(gym.runManifest.git.dirty, expectedGit.dirty);
@@ -20335,7 +20349,7 @@ assert.match(renderedGym, /Coverage Matrix/);
 assert.match(renderedGym, /Experience Horizon/);
 assert.match(renderedGym, /Run Manifest/);
 assert.match(renderedGym, /Package: @ghast\/memory@/);
-assert.match(renderedGym, /SQLite schema: 12/);
+assert.match(renderedGym, /SQLite schema: 13/);
 const externalBenchmarkJsonl = [
   JSON.stringify({
     id: "project-next-step",
@@ -23055,7 +23069,7 @@ for (const [host, expectedLevel] of [
   assert.equal(doctorJson.runtimeInfo?.trustContract?.encryptionSupported, "host_driver");
   assert.equal(doctorJson.runtimeInfo?.trustContract?.cloudRequired, false);
   assert.equal(doctorJson.schema?.dialect, "sqlite");
-  assert.equal(doctorJson.schema?.version, 12);
+  assert.equal(doctorJson.schema?.version, 13);
   assert.equal(doctorJson.readAudit?.status, "ok");
   assert.equal(doctorJson.readAudit?.schema, "gmos.read_audit_snapshot.v1");
   assert.equal((doctorJson.readAudit?.tableCount ?? 0) >= 10, true);

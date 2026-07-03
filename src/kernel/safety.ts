@@ -141,6 +141,7 @@ const PUBLIC_SOURCE_METADATA_KEYS = new Set([
   "sessionKey",
   "sourceId",
   "sourceUri",
+  "sourceTrust",
 ]);
 
 const PUBLIC_SOURCE_STRING_METADATA_KEYS = new Set([
@@ -151,6 +152,7 @@ const PUBLIC_SOURCE_STRING_METADATA_KEYS = new Set([
   "sessionKey",
   "sourceId",
   "sourceUri",
+  "sourceTrust",
 ]);
 
 const PUBLIC_SOURCE_STRING_ARRAY_METADATA_KEYS = new Set([

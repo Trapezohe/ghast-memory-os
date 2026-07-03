@@ -13,6 +13,7 @@ export interface SqliteServiceApiKey {
   scope: SqliteServiceApiKeyScope;
   profiles: SqliteServiceApiKeyProfiles;
   defaultDisposition?: string | undefined;
+  historyAccess: boolean;
   createdAt: string;
   revokedAt?: string | undefined;
 }
@@ -27,6 +28,7 @@ export interface CreateSqliteServiceApiKeyInput {
   scope: SqliteServiceApiKeyScope;
   profiles?: SqliteServiceApiKeyProfiles | undefined;
   defaultDisposition?: string | undefined;
+  historyAccess?: boolean | undefined;
 }
 
 export interface SqliteServiceAuditInput {
@@ -84,6 +86,7 @@ interface SqliteServiceApiKeyRow {
   scope: string;
   profiles_json: string;
   default_disposition: string | null;
+  history_access: number;
   created_at: string;
   revoked_at: string | null;
 }
@@ -155,6 +158,7 @@ function normalizeKeyRow(row: SqliteServiceApiKeyRow): SqliteServiceApiKey {
     scope: normalizeScope(row.scope),
     profiles: parseProfilesJson(row.profiles_json),
     ...(row.default_disposition ? { defaultDisposition: row.default_disposition } : {}),
+    historyAccess: row.history_access !== 0,
     createdAt: row.created_at,
     ...(row.revoked_at ? { revokedAt: row.revoked_at } : {}),
   };
@@ -186,10 +190,11 @@ export function createSqliteServiceApiKey(
   const createdAt = nowIso();
   const profiles = normalizeProfiles(input.profiles);
   const defaultDisposition = normalizeDefaultDisposition(input.defaultDisposition);
+  const historyAccess = input.historyAccess ?? true;
   db.prepare(
     `INSERT INTO gmos_api_keys(
-      key_id, hash, label, scope, profiles_json, default_disposition, created_at, revoked_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+      key_id, hash, label, scope, profiles_json, default_disposition, history_access, created_at, revoked_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
   ).run(
     keyId,
     sha256Hex(secret),
@@ -197,6 +202,7 @@ export function createSqliteServiceApiKey(
     normalizeScope(input.scope),
     profilesJson(profiles),
     defaultDisposition ?? null,
+    historyAccess ? 1 : 0,
     createdAt,
   );
   return {
@@ -207,6 +213,7 @@ export function createSqliteServiceApiKey(
       scope: input.scope,
       profiles,
       ...(defaultDisposition ? { defaultDisposition } : {}),
+      historyAccess,
       createdAt,
     },
   };
@@ -217,7 +224,7 @@ export function listSqliteServiceApiKeys(db: Database.Database): SqliteServiceAp
   return (
     db
       .prepare(
-        `SELECT key_id, hash, label, scope, profiles_json, default_disposition, created_at, revoked_at
+        `SELECT key_id, hash, label, scope, profiles_json, default_disposition, history_access, created_at, revoked_at
          FROM gmos_api_keys
          ORDER BY created_at ASC, key_id ASC`,
       )
@@ -237,7 +244,7 @@ export function revokeSqliteServiceApiKey(
   ).run(revokedAt, keyId);
   const row = db
     .prepare(
-      `SELECT key_id, hash, label, scope, profiles_json, default_disposition, created_at, revoked_at
+      `SELECT key_id, hash, label, scope, profiles_json, default_disposition, history_access, created_at, revoked_at
        FROM gmos_api_keys
        WHERE key_id = ?`,
     )
@@ -252,7 +259,7 @@ export function authenticateSqliteServiceApiKey(
   const hash = sha256Hex(secret);
   const rows = db
     .prepare(
-      `SELECT key_id, hash, label, scope, profiles_json, default_disposition, created_at, revoked_at
+      `SELECT key_id, hash, label, scope, profiles_json, default_disposition, history_access, created_at, revoked_at
        FROM gmos_api_keys
        WHERE revoked_at IS NULL
        ORDER BY created_at ASC, key_id ASC`,

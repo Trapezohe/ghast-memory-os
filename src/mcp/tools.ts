@@ -126,6 +126,8 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
           messageId: { type: "string" },
           role: { type: "string", enum: ["system", "user", "assistant", "tool"] },
           content: { type: "string" },
+          sourceTrust: { type: "string", enum: ["user", "agent", "external"] },
+          allowLowerTrustPolicyWrites: { type: "boolean" },
           privacyMode: { type: "string", enum: ["normal", "incognito"] },
           createdAt: { type: "string" },
           metadata: { type: "object" },

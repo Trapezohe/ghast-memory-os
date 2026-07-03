@@ -215,7 +215,8 @@ export function createMemoryHttpOpenApiDocument(): OpenApiDocument {
           type: "http",
           scheme: "bearer",
           bearerFormat: "gmOS service API key or legacy GMOS_HTTP_AUTH_TOKEN",
-          description: "Scopes: read, readwrite, admin.",
+          description:
+            "Scopes: read, readwrite, admin. Scoped keys may additionally disable historyAccess, which blocks history-purpose recall and archived/dormant visibility over HTTP.",
         },
       },
       schemas: {

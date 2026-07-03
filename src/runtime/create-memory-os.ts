@@ -93,6 +93,8 @@ import type {
   MemoryDossierEntitySnapshot,
   MemoryDossierResult,
   MemoryRecord,
+  MemoryRollbackInput,
+  MemoryRollbackResult,
   MemoryRetrievalConfig,
   MemoryOS,
   MemoryOSOptions,
@@ -103,8 +105,11 @@ import type {
   ReconstructionIntentHint,
   ReconstructContextInput,
   ReconstructedContext,
+  ResolvedMemoryLifecycleConfig,
+  ResolvedMemoryTrustConfig,
   RestoreArchivedResult,
   Sensitivity,
+  SourceTrust,
   TurnExplanationExcludedMemory,
   TurnExplanationIncludedMemory,
   TurnExplanationReport,
@@ -158,7 +163,10 @@ function sourceMetadataForEvent(
   event: Extract<HostEvent, { type: "conversation.message" }>,
   classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
 ): Record<string, unknown> {
-  return redactRuntimeSourceMetadataRecord(event.metadata, classifyRuntimeSensitivity);
+  return redactRuntimeSourceMetadataRecord(
+    event.metadata ?? {},
+    classifyRuntimeSensitivity,
+  );
 }
 
 function sourceMetadataForCandidate(
@@ -269,6 +277,104 @@ function maxSensitivity(left: Sensitivity, right: Sensitivity): Sensitivity {
   if (left === "secret_like" || right === "secret_like") return "secret_like";
   if (left === "sensitive" || right === "sensitive") return "sensitive";
   return "normal";
+}
+
+function clamp01(value: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(1, value));
+}
+
+function resolveMemoryTrustConfig(
+  input: MemoryOSOptions["trust"],
+): ResolvedMemoryTrustConfig {
+  return {
+    agentConfidenceCap: clamp01(input?.agentConfidenceCap ?? 0.65, 0.65),
+    externalConfidenceCap: clamp01(input?.externalConfidenceCap ?? 0.55, 0.55),
+    allowLowerTrustPolicyWrites: input?.allowLowerTrustPolicyWrites ?? false,
+  };
+}
+
+function normalizeSourceTrust(value: unknown): SourceTrust | undefined {
+  return value === "user" || value === "agent" || value === "external" ? value : undefined;
+}
+
+function sourceTrustFromMemory(memory: MemoryRecord): SourceTrust {
+  const metadataTrust = normalizeSourceTrust(memory.metadata.sourceTrust);
+  if (metadataTrust) return metadataTrust;
+  const sourceMetadata = memory.metadata.sourceMetadata;
+  if (sourceMetadata && typeof sourceMetadata === "object" && !Array.isArray(sourceMetadata)) {
+    const sourceMetadataTrust = normalizeSourceTrust(
+      (sourceMetadata as Record<string, unknown>).sourceTrust,
+    );
+    if (sourceMetadataTrust) return sourceMetadataTrust;
+  }
+  return "user";
+}
+
+function lowerTrust(left: SourceTrust, right: SourceTrust): SourceTrust {
+  if (left === "external" || right === "external") return "external";
+  if (left === "agent" || right === "agent") return "agent";
+  return "user";
+}
+
+function sourceTrustForMemoryIds(
+  memoryIds: readonly string[],
+  memoriesById: ReadonlyMap<string, MemoryRecord>,
+): SourceTrust {
+  return memoryIds.reduce<SourceTrust>(
+    (trust, memoryId) => {
+      const memory = memoriesById.get(memoryId);
+      return memory ? lowerTrust(trust, sourceTrustFromMemory(memory)) : trust;
+    },
+    "user",
+  );
+}
+
+function sourceTrustForEvent(event: Extract<HostEvent, { type: "conversation.message" }>): SourceTrust {
+  const declared = normalizeSourceTrust(event.sourceTrust ?? event.metadata?.sourceTrust);
+  if (declared) return declared;
+  return event.role === "user" ? "user" : "agent";
+}
+
+function sourceTrustConfidenceCap(
+  sourceTrust: SourceTrust,
+  trust: ResolvedMemoryTrustConfig,
+): number | undefined {
+  if (sourceTrust === "agent") return trust.agentConfidenceCap;
+  if (sourceTrust === "external") return trust.externalConfidenceCap;
+  return undefined;
+}
+
+function lowerTrustPolicyWrite(candidate: MemoryExtractionCandidate): boolean {
+  return (
+    candidate.kind === "boundary" ||
+    candidate.kind === "procedure" ||
+    candidate.actionPolicyKind === "do_not_push" ||
+    candidate.actionPolicyKind === "procedure"
+  );
+}
+
+function lowerTrustConsolidationPolicyKind(candidate: MemoryConsolidationCandidate): boolean {
+  return candidate.kind === "boundary" || candidate.kind === "procedure";
+}
+
+function lowerTrustAnnealingMetadata(input: {
+  sourceTrust: SourceTrust;
+  confidence: number;
+  startedAt: string;
+  lifecycle: ResolvedMemoryLifecycleConfig;
+}): Record<string, unknown> {
+  if (input.sourceTrust === "user" || !input.lifecycle.confidenceAnnealing.enabled) return {};
+  return {
+    annealing: {
+      active: true,
+      reason: "lower_trust_source",
+      sourceTrust: input.sourceTrust,
+      capConfidence: Math.min(input.confidence, input.lifecycle.confidenceAnnealing.confidenceCap),
+      retentionCap: input.lifecycle.confidenceAnnealing.retentionCap,
+      startedAt: input.startedAt,
+    },
+  };
 }
 
 function memorySensitivityForCandidate(input: {
@@ -926,8 +1032,23 @@ function hideRouteActionPolicy<T extends { text: string }>(
   };
 }
 
+const LOW_LEVEL_MEMORY_KINDS = new Set<MemoryKind>([
+  "fact",
+  "preference",
+  "boundary",
+  "procedure",
+  "project",
+  "person",
+  "task_trajectory",
+]);
+
+function isLowLevelMemoryKind(value: unknown): value is MemoryKind {
+  return typeof value === "string" && LOW_LEVEL_MEMORY_KINDS.has(value as MemoryKind);
+}
+
 function lowLevelKind(input: LowLevelAddMemoryInput): MemoryKind {
-  return isPersonRoutedMemory(input.content) ? "person" : input.kind;
+  if (isPersonRoutedMemory(input.content)) return "person";
+  return isLowLevelMemoryKind(input.kind) ? input.kind : "fact";
 }
 
 function lowLevelSensitivity(input: {
@@ -1032,6 +1153,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     options.safety?.sensitivityClassifier,
   );
   const lifecycle = resolveMemoryLifecycleConfig(options.lifecycle);
+  const trust = resolveMemoryTrustConfig(options.trust);
   const consolidation = resolveMemoryConsolidationConfig(options.consolidation);
   const distillation = resolveMemoryProcedureDistillationConfig(options.distillation);
   const dossier = resolveMemoryDossierConfig(options.dossier);
@@ -1159,7 +1281,11 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     if (!existing) return null;
     const content = (input.content ?? existing.content).trim();
     if (!content) throw new Error("gmOS low-level update requires non-empty content");
-    const kind = isPersonRoutedMemory(content) ? "person" : input.kind ?? existing.kind;
+    const kind = isPersonRoutedMemory(content)
+      ? "person"
+      : isLowLevelMemoryKind(input.kind)
+        ? input.kind
+        : existing.kind;
     assertLowLevelPersonAllowed({
       kind,
       content,
@@ -1398,6 +1524,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
 
     if (!eligible) return { ...result, skippedReason: "not_eligible_for_long_term_memory" };
 
+    const sourceTrust = sourceTrustForEvent(event);
+    const allowLowerTrustPolicyWrites =
+      event.allowLowerTrustPolicyWrites === true || trust.allowLowerTrustPolicyWrites;
     const eventMetadata = sourceMetadataForEvent(event, classifyRuntimeSensitivity);
     const dedupeEventKey = eventKey(event);
     const existingEvidence = store.getEvidenceByEventKey
@@ -1423,6 +1552,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         role: event.role,
         messageId: event.messageId,
         privacyMode: event.privacyMode ?? "normal",
+        sourceTrust,
+        ...(allowLowerTrustPolicyWrites && sourceTrust !== "user"
+          ? { trustOverride: { allowPolicyWrites: true } }
+          : {}),
         metadata: eventMetadata,
       },
       createdAt: event.createdAt,
@@ -1465,6 +1598,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         subject: subject ?? "user",
         entityResolver: options.entityResolver,
       });
+      if (
+        sourceTrust !== "user" &&
+        lowerTrustPolicyWrite(writeCandidate) &&
+        !allowLowerTrustPolicyWrites
+      ) {
+        continue;
+      }
       const candidateSensitivity = classifyRuntimeSensitivity(writeCandidate.content, "content");
       const candidateStructuredSensitivity = structuredCandidateSensitivity(
         writeCandidate,
@@ -1497,6 +1637,16 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         candidateMetadataSensitivity,
         candidateStructuredSensitivity,
       });
+      const confidenceCap = sourceTrustConfidenceCap(sourceTrust, trust);
+      const confidence = confidenceCap === undefined
+        ? writeCandidate.confidence
+        : Math.min(writeCandidate.confidence, confidenceCap);
+      const annealingMetadata = lowerTrustAnnealingMetadata({
+        sourceTrust,
+        confidence,
+        startedAt: event.createdAt ?? evidence.createdAt,
+        lifecycle,
+      });
       const embedding = await embeddingForRuntimeWrite({
         kind: writeCandidate.kind,
         sensitivity: memorySensitivity,
@@ -1506,7 +1656,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         profileId,
         kind: writeCandidate.kind,
         content: writeCandidate.content,
-        confidence: writeCandidate.confidence,
+        confidence,
         sensitivity: memorySensitivity,
         sourceEventId: evidence.id,
         metadata: {
@@ -1515,6 +1665,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
             classifyRuntimeSensitivity,
           ),
           ...structuredMetadata,
+          sourceTrust,
+          ...annealingMetadata,
           sourceRole: event.role,
           ...(Object.keys(candidateSourceMetadata).length > 0 ? { sourceMetadata: candidateSourceMetadata } : {}),
           ...(memoryEntityMentions.length > 0 ? { entityMentions: memoryEntityMentions } : {}),
@@ -1543,7 +1695,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           subjectAliases,
           predicate: writeCandidate.predicate,
           object: writeCandidate.object ?? writeCandidate.content,
-          confidence: writeCandidate.confidence,
+          confidence,
           sourceMemoryId: memory.id,
           cardinality: writeCandidate.cardinality,
           createdAt: event.createdAt ?? memory.createdAt,
@@ -1553,6 +1705,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
               classifyRuntimeSensitivity,
             ),
             ...structuredMetadata,
+            sourceTrust,
+            ...annealingMetadata,
             sourceRole: event.role,
             ...(Object.keys(candidateSourceMetadata).length > 0 ? { sourceMetadata: candidateSourceMetadata } : {}),
             ...(beliefEntityMentions.length > 0 ? { entityMentions: beliefEntityMentions } : {}),
@@ -1877,6 +2031,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         await store.commitOutcome({
           ...outcome,
           outcomeReinforcement: lifecycle.outcomeReinforcement,
+          confidenceAnnealing: lifecycle.confidenceAnnealing,
         });
         return;
       }
@@ -1931,6 +2086,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       await store.recordFeedbackSignal({
         ...feedback,
         confidencePenalty: lifecycle.feedbackConfidencePenalty,
+        confidenceAnnealing: lifecycle.confidenceAnnealing,
       });
       return;
     }
@@ -2011,9 +2167,12 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       addConsolidationSkipped(input.report, "no_semantic_clusters");
       return;
     }
+    const memoriesById = new Map(memories.map((memory) => [memory.id, memory]));
     const seenCandidates = new Set<string>();
     const name = consolidatorName(options.consolidator);
     for (const cluster of clusters) {
+      const sourceMemoryIds = cluster.memories.map((memory) => memory.id);
+      const clusterSourceTrust = sourceTrustForMemoryIds(sourceMemoryIds, memoriesById);
       const rawCandidates = await callConsolidator(cluster);
       if (rawCandidates === null) {
         addConsolidationSkipped(input.report, "consolidator_returned_null_or_failed");
@@ -2025,12 +2184,22 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       }
       for (const candidate of rawCandidates) {
         const normalized = normalizeConsolidationCandidate(candidate, cluster);
-        const sourceMemoryIds = cluster.memories.map((memory) => memory.id);
         if ("reason" in normalized) {
           input.report.consolidation.rejectedCandidates.push({
             kind: cluster.kind,
             sourceMemoryIds,
             reason: normalized.reason,
+          });
+          continue;
+        }
+        if (
+          clusterSourceTrust !== "user" &&
+          lowerTrustConsolidationPolicyKind(normalized.normalized)
+        ) {
+          input.report.consolidation.rejectedCandidates.push({
+            kind: cluster.kind,
+            sourceMemoryIds,
+            reason: "lower_trust_policy_write",
           });
           continue;
         }
@@ -2066,12 +2235,25 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           continue;
         }
         seenCandidates.add(key);
+        const confidenceCap = sourceTrustConfidenceCap(clusterSourceTrust, trust);
+        const confidence = confidenceCap === undefined
+          ? normalized.normalized.confidence
+          : Math.min(normalized.normalized.confidence, confidenceCap);
+        const trustMetadata = {
+          sourceTrust: clusterSourceTrust,
+          ...lowerTrustAnnealingMetadata({
+            sourceTrust: clusterSourceTrust,
+            confidence,
+            startedAt: input.now,
+            lifecycle,
+          }),
+        };
         const summary = {
           kind: normalized.normalized.kind,
           sourceMemoryIds,
           sharedTags: cluster.sharedTags,
           content: normalized.normalized.content,
-          confidence: normalized.normalized.confidence,
+          confidence,
           reasons: ["host_consolidator_summary"],
         };
         if (input.dryRun) {
@@ -2088,12 +2270,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           kind: normalized.normalized.kind,
           content: normalized.normalized.content,
           sensitivity: contentSensitivity,
-          confidence: normalized.normalized.confidence,
+          confidence,
           sourceMemoryIds,
           sharedTags: cluster.sharedTags,
           createdAt: input.now,
           metadata: {
             consolidationSource: "host_consolidator",
+            ...trustMetadata,
             ...(name ? { consolidatorName: name } : {}),
           },
           ...(embedding ? { embedding } : {}),
@@ -2573,6 +2756,18 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     return report;
   }
 
+  async function memoryRollback(input: MemoryRollbackInput): Promise<MemoryRollbackResult> {
+    await initialize();
+    if (!store.rollbackMemory) throw new Error("gmOS store does not support memory rollback");
+    return store.rollbackMemory({
+      profileId: profileIdFor(defaultProfileId, input.profileId),
+      memoryId: input.memoryId,
+      toEvidenceEventId: input.toEvidenceEventId,
+      approvedBy: input.approvedBy,
+      rolledBackAt: input.rolledBackAt,
+    });
+  }
+
   async function forget(input: ForgetInput): Promise<ForgetResult> {
     await initialize();
     return store.forget({
@@ -2765,6 +2960,18 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         ]),
       }];
     }
+    if (sourceType === "memory.rollback") {
+      return [{
+        createdAt: event.createdAt,
+        eventKind: "rolled_back",
+        eventId,
+        sourceType,
+        reasonSummary: lifecycleReasonSummary([
+          "forensic rollback",
+          typeof payload.toEvidenceEventId === "string" ? `to:${payload.toEvidenceEventId}` : "",
+        ]),
+      }];
+    }
     return [];
   }
 
@@ -2807,6 +3014,19 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           reasonSummary: lifecycleReasonSummary([`failure:${failure.failureKind}`]),
         });
       }
+    }
+    const annealing = payloadRecord(memory.metadata.annealing);
+    if (annealing.active === true) {
+      entries.push({
+        createdAt:
+          typeof annealing.startedAt === "string" ? annealing.startedAt : memory.updatedAt,
+        eventKind: "annealed",
+        sourceType: "memory.annealing",
+        reasonSummary: lifecycleReasonSummary([
+          typeof annealing.reason === "string" ? annealing.reason : "confidence_annealing",
+          typeof annealing.sourceTrust === "string" ? `sourceTrust:${annealing.sourceTrust}` : "",
+        ]),
+      });
     }
     if (entries.length === 0) {
       entries.push({
@@ -2905,6 +3125,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     commitOutcome,
     recordFeedback,
     maintain,
+    memoryRollback,
     forget,
     explain,
     async close() {
