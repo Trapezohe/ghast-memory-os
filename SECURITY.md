@@ -11,6 +11,15 @@ Security fixes target the current `main` branch and the latest published alpha.
 Older alpha versions should be upgraded before reporting a reproduction as
 current behavior.
 
+| Version line | Security support |
+| --- | --- |
+| `main` | Supported for current development fixes. |
+| Latest published alpha | Supported for reproducible security fixes. |
+| Older alpha releases | Not supported; upgrade first and retest. |
+
+See [release policy](./docs/RELEASE_POLICY.md) for release cadence, pre-1.0
+compatibility, deprecation, and upgrade guarantees.
+
 ## Trust Model
 
 - Host applications own filesystem permissions and database placement.
@@ -156,14 +165,22 @@ Repeat the second command with a different `GMOS_DB_KEY`; it should fail before
 schema setup. Do not add `better-sqlite3-multiple-ciphers` to gmOS core or dev
 dependencies for this check.
 
-## Reporting
+## Disclosure Process
 
 Do not include real user memory, API keys, private transcripts, or production
 SQLite files in a public issue.
 
-Use GitHub private vulnerability reporting when available. If private reporting
-is not available, open a public issue with a minimal synthetic reproduction and
-omit sensitive data.
+Report suspected vulnerabilities through GitHub private vulnerability reporting
+when available, or through `[INSERT PRIVATE SECURITY CONTACT]` after the
+maintainer fills that placeholder. If no private channel is available, open a
+public issue with only a minimal synthetic reproduction and omit sensitive data.
+
+Expected response:
+
+- Acknowledgement within 3 business days.
+- Initial triage or request for reproduction details within 10 business days.
+- Public advisory or release note after a fix is available when the issue is
+  confirmed and externally relevant.
 
 Useful reports include:
 

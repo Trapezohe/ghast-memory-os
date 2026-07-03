@@ -34,6 +34,7 @@
     "dist",
     "README.md",
     "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
     "SECURITY.md",
     "RELEASE_CHECKLIST.md",
     "console",
@@ -99,6 +100,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "node --import tsx test/run-tests.ts",
+    "docs:site": "node scripts/build-docs-site.mjs",
     "test:consumer": "node test/consumer-install-smoke.mjs",
     "test:external-fixtures": "node scripts/test-external-fixtures.mjs",
     "check:ci-trigger-policy": "node scripts/check-ci-trigger-policy.mjs",

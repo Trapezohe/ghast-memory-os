@@ -2125,7 +2125,13 @@ try {
     ["docs/INTEGRATION_GUIDE.md", "# gmOS MCP and HTTP Integration Guide"],
     ["docs/ARCHITECTURE.md", "# gmOS Architecture Guide"],
     ["docs/BENCHMARKING.md", "# gmOS Benchmark Guide"],
+    ["docs/BENCHMARK_CLAIMS.md", "# gmOS Benchmark Claims Methodology"],
+    ["docs/BENCHMARK_RUNS.md", "# gmOS Benchmark Runs"],
+    ["docs/API_STABILITY.md", "# gmOS API Stability"],
+    ["docs/RELEASE_POLICY.md", "# gmOS Release Policy"],
+    ["docs/COMPATIBILITY.md", "# gmOS Compatibility Matrix"],
     ["docs/MIGRATION.md", "# gmOS Migration Guide"],
+    ["CODE_OF_CONDUCT.md", "# Contributor Covenant Code of Conduct"],
   ]) {
     const installedDoc = path.join(installedPackageRoot, ...docFile.split("/"));
     assert.equal(existsSync(installedDoc), true, `${docFile} should ship with the npm package`);

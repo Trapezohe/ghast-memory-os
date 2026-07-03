@@ -17,10 +17,12 @@ Project docs: [API reference](./docs/API_REFERENCE.md),
 [integration guide](./docs/INTEGRATION_GUIDE.md),
 [structured extraction](./docs/STRUCTURED_EXTRACTION.md),
 [architecture](./docs/ARCHITECTURE.md), [benchmarking](./docs/BENCHMARKING.md),
-[benchmark runs](./docs/BENCHMARK_RUNS.md), [migration](./docs/MIGRATION.md),
-[compatibility](./docs/COMPATIBILITY.md),
+[benchmark claims](./docs/BENCHMARK_CLAIMS.md),
+[benchmark runs](./docs/BENCHMARK_RUNS.md),
+[API stability](./docs/API_STABILITY.md), [migration](./docs/MIGRATION.md),
+[compatibility](./docs/COMPATIBILITY.md), [release policy](./docs/RELEASE_POLICY.md),
 [contributing](./CONTRIBUTING.md), [security and privacy](./SECURITY.md),
-[release checklist](./RELEASE_CHECKLIST.md).
+[code of conduct](./CODE_OF_CONDUCT.md), [release checklist](./RELEASE_CHECKLIST.md).
 
 ## Install And Quickstart
 
@@ -368,14 +370,10 @@ upgrading. The directory is git-ignored. Use `--skip-gate`,
 `--skip-fresh-install`, and `--allow-dirty` only for local diagnostics; do not
 use those flags for public release evidence.
 
-The GitHub Actions CI runs these gates on Linux and macOS with Node 20.19 and
-Node 24, and on Windows with Node 24. Windows Node 20.19 is not part of the
-official CI matrix because the current `better-sqlite3` prebuild coverage can
-fall back to native compilation on GitHub-hosted Windows runners. Remote CI is
-opt-in: use `workflow_dispatch` or add the `run-ci` / `full-ci` label on a pull
-request when remote matrix evidence is needed. Branch pushes and release tag
-pushes do not run CI by default. The benchmark jobs are deterministic SDK gates;
-they do not call an external LLM.
+The public GitHub Actions gate is opt-in through `workflow_dispatch` and runs
+Linux/macOS across Node 20, 22, and 24. Branch pushes and release tag pushes do
+not run CI by default. The benchmark jobs are deterministic SDK gates; they do
+not call an external LLM.
 
 ## Benchmarking
 
@@ -398,7 +396,8 @@ fully offline unless the user explicitly attaches an intelligence endpoint for
 the benchmark run. `official_protocol` is available through the SDK only when
 the host provides an async judge callback; gmOS does not silently downgrade
 official runs to lexical scoring.
-See [benchmarking](./docs/BENCHMARKING.md) and
+See [benchmarking](./docs/BENCHMARKING.md),
+[benchmark claims](./docs/BENCHMARK_CLAIMS.md), and
 [benchmark runs](./docs/BENCHMARK_RUNS.md) for scoring semantics, baseline
 snapshots, and claim rules.
 

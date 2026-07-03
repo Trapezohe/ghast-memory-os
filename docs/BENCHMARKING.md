@@ -78,6 +78,24 @@ report includes `experienceHorizon` with per-scenario pass/fail results,
 diagnostic counters, and a deterministic replay meta-gate. It is an SDK
 engineering gate, not proof of mature digital twin capability.
 
+## Release-Signal Scale Profile
+
+The PR gate keeps scale smoke small. Release candidates should also record a
+larger scale signal outside `gate:pr`:
+
+```bash
+gmos gym scale --sizes 10000 --threshold-p95-ms 2000 --ingest-threshold-p95-ms 100 --ingest-last-to-first-factor 8 --format json
+```
+
+Release machines may also run the documented 100k target:
+
+```bash
+gmos gym scale --sizes 100000 --threshold-p95-ms 1500 --ingest-threshold-p95-ms 150 --ingest-last-to-first-factor 10 --format json
+```
+
+The 100k profile is not a sandbox or PR-gate requirement. Publish the JSON
+output with release evidence when using it as a release signal.
+
 ## External Adapters
 
 `gmos gym external` supports:

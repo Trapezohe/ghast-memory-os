@@ -15,6 +15,7 @@ import {
 import { connect } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import ts from "typescript";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -86,6 +87,7 @@ import {
   prepareStateBenchAgentLearningRun,
   summarizeStateBenchResults,
   stateBenchAgentPythonTemplate,
+  writeExternalMemoryBenchmarkReproductionBundle,
 } from "../src/gym/index.js";
 import { summarizeMemoryScaleLatenciesForTest } from "../src/gym/scale.js";
 import {
@@ -546,7 +548,77 @@ const packageJson = JSON.parse(readFileSync(path.join(process.cwd(), "package.js
   version: string;
   bin: Record<string, string>;
   exports: Record<string, unknown>;
+  scripts: Record<string, string>;
 };
+assert.equal(packageJson.scripts["docs:site"], "node scripts/build-docs-site.mjs");
+const docsSiteOutputDir = path.join(tmp, "docs-site");
+const docsSiteBuild = spawnSync(
+  process.execPath,
+  ["scripts/build-docs-site.mjs", "--output-dir", docsSiteOutputDir, "--check"],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(docsSiteBuild.status, 0, docsSiteBuild.stderr);
+assert.equal(existsSync(path.join(docsSiteOutputDir, "index.html")), true);
+assert.equal(existsSync(path.join(docsSiteOutputDir, "docs", "API_STABILITY.html")), true);
+
+function publicSubpathIndexFiles(): Record<string, string> {
+  const output: Record<string, string> = {};
+  for (const subpath of Object.keys(packageJson.exports).sort()) {
+    output[subpath] = subpath === "."
+      ? "src/index.ts"
+      : path.posix.join("src", subpath.replace(/^\.\//u, ""), "index.ts");
+  }
+  return output;
+}
+
+function exportedSymbolsBySubpath(): Record<string, string[]> {
+  const files = publicSubpathIndexFiles();
+  const program = ts.createProgram(
+    Object.values(files).map((file) => path.join(process.cwd(), file)),
+    {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.NodeNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeNext,
+      strict: true,
+      skipLibCheck: true,
+      esModuleInterop: true,
+      allowSyntheticDefaultImports: true,
+      types: ["node"],
+    },
+  );
+  const checker = program.getTypeChecker();
+  const output: Record<string, string[]> = {};
+  for (const [subpath, file] of Object.entries(files)) {
+    const source = program.getSourceFile(path.join(process.cwd(), file));
+    assert.ok(source, `${file} should be readable`);
+    const symbol = checker.getSymbolAtLocation(source);
+    assert.ok(symbol, `${file} should have module symbol`);
+    output[subpath] = checker.getExportsOfModule(symbol)
+      .map((entry) => entry.getName())
+      .filter((name) => name !== "default")
+      .sort();
+  }
+  return output;
+}
+
+function documentedApiStabilityExports(): Record<string, string[]> {
+  const markdown = readFileSync(path.join(process.cwd(), "docs", "API_STABILITY.md"), "utf8");
+  const output: Record<string, Set<string>> = {};
+  for (const line of markdown.split(/\r?\n/u)) {
+    if (!line.startsWith("| `")) continue;
+    const cells = line.split("|").map((cell) => cell.trim());
+    const subpath = /^`([^`]+)`$/u.exec(cells[1] ?? "")?.[1];
+    if (!subpath) continue;
+    const names = [...(cells[3] ?? "").matchAll(/`([^`]+)`/gu)].map((match) => match[1]);
+    output[subpath] ??= new Set<string>();
+    for (const name of names) output[subpath].add(name);
+  }
+  return Object.fromEntries(
+    Object.entries(output).map(([subpath, names]) => [subpath, [...names].sort()]),
+  );
+}
+
+assert.deepEqual(documentedApiStabilityExports(), exportedSymbolsBySubpath());
 assert.equal(publicCommandNameFromPackageName("@scope/tool"), "tool");
 assert.equal(publicCommandNameFromPackageName("plain-tool"), "plain-tool");
 assert.deepEqual(
@@ -20605,6 +20677,52 @@ assert.equal(officialJudgeCalls[0]?.expectedAnswer, "Blue Comet");
 assert.match(officialJudgeCalls[0]?.actualAnswer ?? "", /Blue Comet/);
 assert.equal(JSON.stringify(officialJudgeCalls[0]).includes("Official judge answer is"), true);
 assert.equal(JSON.stringify(officialJudgeCalls[0]).includes("memory_"), false);
+const officialJudgeBundleDir = path.join(tmp, "official-judge-reproduction-bundle");
+const officialJudgeBundle = writeExternalMemoryBenchmarkReproductionBundle({
+  outputDir: officialJudgeBundleDir,
+  report: officialJudgeBenchmark,
+  command: [
+    "gmos",
+    "gym",
+    "external",
+    "--protocol",
+    "official-protocol",
+    "--intelligence-base-url",
+    "https://user:pass@official.invalid/v1",
+    "--intelligence-api-key-env",
+    "GMOS_OFFICIAL_JUDGE_KEY",
+  ],
+  envVarNames: ["GMOS_OFFICIAL_JUDGE_KEY"],
+});
+for (const file of [
+  officialJudgeBundle.manifestFile,
+  officialJudgeBundle.resultsJsonFile,
+  officialJudgeBundle.resultsMarkdownFile,
+  officialJudgeBundle.failureSamplesFile,
+  officialJudgeBundle.reproduceFile,
+]) {
+  assert.equal(existsSync(file), true);
+}
+const officialJudgeBundleManifest = JSON.parse(readFileSync(officialJudgeBundle.manifestFile, "utf8")) as {
+  schema?: string;
+  protocol?: string;
+  judgeProvenance?: { kind?: string; name?: string | null };
+  envVarNames?: string[];
+  options?: { protocol?: string };
+};
+assert.equal(officialJudgeBundleManifest.schema, "gmos.external_benchmark_reproduction_bundle.v1");
+assert.equal(officialJudgeBundleManifest.protocol, "official_protocol");
+assert.deepEqual(officialJudgeBundleManifest.judgeProvenance, {
+  kind: "host_provided",
+  name: "recording-official-judge",
+});
+assert.deepEqual(officialJudgeBundleManifest.envVarNames, ["GMOS_OFFICIAL_JUDGE_KEY"]);
+assert.equal(officialJudgeBundleManifest.options?.protocol, "official_protocol");
+assert.equal(JSON.parse(readFileSync(officialJudgeBundle.resultsJsonFile, "utf8")).runManifest.protocol, "official_protocol");
+assert.deepEqual(JSON.parse(readFileSync(officialJudgeBundle.failureSamplesFile, "utf8")), []);
+assert.match(readFileSync(officialJudgeBundle.reproduceFile, "utf8"), /GMOS_OFFICIAL_JUDGE_KEY/);
+assert.equal(readFileSync(officialJudgeBundle.reproduceFile, "utf8").includes("user:pass"), false);
+assert.match(readFileSync(officialJudgeBundle.reproduceFile, "utf8"), /redacted_credentials/);
 const externalBenchmarkWithManifest = await runExternalMemoryBenchmark({
   cases: externalCases,
   datasetHash: externalHash,
@@ -23132,6 +23250,7 @@ assert.notEqual(cliScaleFail.status, 0);
 assert.match(cliScaleFail.stdout, /Status: FAIL/);
 const cliExternalJsonFile = path.join(tmp, "cli-external-report.json");
 const cliExternalMarkdownFile = path.join(tmp, "cli-external-report.md");
+const cliExternalReproductionBundleDir = path.join(tmp, "cli-external-reproduction-bundle");
 const cliExternal = spawnSync(
   process.execPath,
   [
@@ -23156,6 +23275,8 @@ const cliExternal = spawnSync(
     "3",
     "--diagnostics-level",
     "basic",
+    "--reproduction-bundle",
+    cliExternalReproductionBundleDir,
   ],
   { cwd: process.cwd(), encoding: "utf8" },
 );
@@ -23227,6 +23348,37 @@ assert.match(
   readFileSync(cliExternalMarkdownFile, "utf8"),
   /Score semantics: protocol=deterministic_local kind=deterministic_adapter_context primary=strictScore judge=none:none officialProtocol=not_run officialScore=none officialComparable=no normalizedEvidence=diagnostic_only/,
 );
+for (const file of [
+  "manifest.json",
+  "results.json",
+  "results.md",
+  "failure-samples.json",
+  "REPRODUCE.md",
+]) {
+  assert.equal(existsSync(path.join(cliExternalReproductionBundleDir, file)), true);
+}
+const cliExternalBundleManifest = JSON.parse(
+  readFileSync(path.join(cliExternalReproductionBundleDir, "manifest.json"), "utf8"),
+) as {
+  schema?: string;
+  protocol?: string;
+  dataset?: { hash?: string | null; id?: string | null };
+  options?: { protocol?: string; failureSampleLimit?: number };
+  runtimeIntelligence?: { apiKeyEnv?: string | null };
+  redactionRules?: { envVarValues?: string };
+};
+assert.equal(cliExternalBundleManifest.schema, "gmos.external_benchmark_reproduction_bundle.v1");
+assert.equal(cliExternalBundleManifest.protocol, "deterministic_local");
+assert.equal(cliExternalBundleManifest.dataset?.id, path.basename(externalBenchmarkFile));
+assert.match(cliExternalBundleManifest.dataset?.hash ?? "", /^sha256:[a-f0-9]{64}$/);
+assert.equal(cliExternalBundleManifest.options?.protocol, "deterministic_local");
+assert.equal(cliExternalBundleManifest.options?.failureSampleLimit, 3);
+assert.equal(cliExternalBundleManifest.runtimeIntelligence?.apiKeyEnv, null);
+assert.equal(cliExternalBundleManifest.redactionRules?.envVarValues, "never_recorded");
+assert.equal(JSON.parse(readFileSync(path.join(cliExternalReproductionBundleDir, "results.json"), "utf8")).schema, "gmos.external_long_memory_qa.v1");
+assert.deepEqual(JSON.parse(readFileSync(path.join(cliExternalReproductionBundleDir, "failure-samples.json"), "utf8")), []);
+assert.match(readFileSync(path.join(cliExternalReproductionBundleDir, "results.md"), "utf8"), /Failure sample limit: 3/);
+assert.match(readFileSync(path.join(cliExternalReproductionBundleDir, "REPRODUCE.md"), "utf8"), /gmos gym external/);
 const cliExternalOfficialProtocol = spawnSync(
   process.execPath,
   [
@@ -24856,9 +25008,11 @@ try {
   assert.equal(releaseEvidenceManifest.ci?.present, true);
   assert.deepEqual(releaseEvidenceManifest.ci?.workflowFiles, [
     ".github/workflows/ci.yml",
+    ".github/workflows/docs-site.yml",
+    ".github/workflows/gate.yml",
     ".github/workflows/release-evidence-extra.yaml",
   ]);
-  assert.equal(releaseEvidenceManifest.ci?.workflows?.length, 2);
+  assert.equal(releaseEvidenceManifest.ci?.workflows?.length, 4);
   assert.deepEqual(releaseEvidenceManifest.ci?.triggerNames, [
     "pull_request",
     "workflow_dispatch",
@@ -24873,10 +25027,20 @@ try {
   assert.equal(releaseEvidenceManifest.ci?.workflows?.[0]?.optInRemoteCi, true);
   assert.equal(
     releaseEvidenceManifest.ci?.workflows?.[1]?.workflowFile,
+    ".github/workflows/docs-site.yml",
+  );
+  assert.equal(
+    releaseEvidenceManifest.ci?.workflows?.[2]?.workflowFile,
+    ".github/workflows/gate.yml",
+  );
+  assert.equal(
+    releaseEvidenceManifest.ci?.workflows?.[3]?.workflowFile,
     ".github/workflows/release-evidence-extra.yaml",
   );
-  assert.equal(releaseEvidenceManifest.ci?.workflows?.[1]?.nonOptInTriggerPresent, false);
-  assert.equal(releaseEvidenceManifest.ci?.workflows?.[1]?.optInRemoteCi, true);
+  for (const workflow of releaseEvidenceManifest.ci?.workflows ?? []) {
+    assert.equal(workflow?.nonOptInTriggerPresent, false);
+    assert.equal(workflow?.optInRemoteCi, true);
+  }
   assert.equal(
     releaseEvidenceManifest.checks?.find((check) => check.name === "pr_gate")?.status,
     "skipped",

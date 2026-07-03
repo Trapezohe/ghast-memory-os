@@ -32,6 +32,7 @@ Run before publishing a new alpha:
 ```bash
 npm run gate:pr
 npm run release:evidence -- --output-dir ./release-evidence/<version>-<short-sha>
+node dist/cli/gmos.js gym scale --sizes 10000 --threshold-p95-ms 2000 --ingest-threshold-p95-ms 100 --ingest-last-to-first-factor 8 --format json
 node dist/cli/gmos.js gym external-suite --suite-file <release-suite.json> --output-dir ./external-runs --format json --markdown-file ./external-suite.md
 ```
 
@@ -53,6 +54,14 @@ report must include:
 - scored case counts;
 - failure-stage taxonomy;
 - failed case samples.
+
+The 10k scale run is a release signal, not a PR-gate requirement. Archive its
+JSON output with release evidence. The documented 100k profile is for release
+machines only:
+
+```bash
+node dist/cli/gmos.js gym scale --sizes 100000 --threshold-p95-ms 1500 --ingest-threshold-p95-ms 150 --ingest-last-to-first-factor 10 --format json
+```
 
 Alpha benchmark output is a deterministic adapter baseline. Do not call it an
 official LongMemEval, LoCoMo, STATE-Bench, or SOTA score.

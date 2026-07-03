@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -28,9 +28,10 @@ import {
   type OpenAICompatibleFetch,
 } from "../intelligence/index.js";
 import { readGmosPackageInfo, readGmosPackageRoot } from "../kernel/package-info.js";
-import { eligibleForLongTermMemory, sanitizePublicPayload } from "../kernel/safety.js";
+import { eligibleForLongTermMemory, redactForReport, sanitizePublicPayload } from "../kernel/safety.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
+import { renderExternalMemoryBenchmarkMarkdown } from "./report.js";
 
 export type ExternalMemoryBenchmarkMode = "prepare" | "reconstruct";
 export type ExternalMemoryBenchmarkProtocol = "deterministic_local" | "official_protocol";
@@ -449,6 +450,155 @@ export interface RunExternalMemoryBenchmarkOptions {
   intelligence?: ExternalMemoryBenchmarkIntelligence | undefined;
   maintainPhases?: MaintenancePhase[] | undefined;
   onCaseResult?: ((progress: ExternalMemoryBenchmarkProgress) => void) | undefined;
+}
+
+export interface ExternalMemoryBenchmarkReproductionBundleOptions {
+  outputDir: string;
+  report: ExternalMemoryBenchmarkResult;
+  command?: string | string[] | undefined;
+  envVarNames?: string[] | undefined;
+}
+
+export interface ExternalMemoryBenchmarkReproductionBundleResult {
+  outputDir: string;
+  manifestFile: string;
+  resultsJsonFile: string;
+  resultsMarkdownFile: string;
+  failureSamplesFile: string;
+  reproduceFile: string;
+}
+
+function shellQuote(value: string): string {
+  return /^[A-Za-z0-9_./:=@+-]+$/u.test(value) ? value : `'${value.replace(/'/gu, "'\\''")}'`;
+}
+
+function redactCommandArgument(value: string): string {
+  return redactForReport(value).replace(/(https?:\/\/)[^/?#@\s]+@/giu, "$1[redacted_credentials]@");
+}
+
+function redactedCommand(command: string | string[] | undefined): string | null {
+  if (command === undefined) return null;
+  if (typeof command === "string") return redactCommandArgument(command);
+  return command.map((entry) => shellQuote(redactCommandArgument(entry))).join(" ");
+}
+
+function uniqueEnvVarNames(names: Array<string | null | undefined>): string[] {
+  return [...new Set(names.filter((name): name is string => /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name ?? "")))].sort();
+}
+
+function redactBenchmarkBundleValue(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (typeof value === "string") return redactForReport(value);
+  if (value === null || typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.map((entry) => redactBenchmarkBundleValue(entry, seen));
+  if (value && typeof value === "object") {
+    if (seen.has(value)) return "[redacted_circular]";
+    seen.add(value);
+    const output: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      output[key] = redactBenchmarkBundleValue(entry, seen);
+    }
+    seen.delete(value);
+    return output;
+  }
+  return null;
+}
+
+function reproductionReadme(input: {
+  report: ExternalMemoryBenchmarkResult;
+  command: string | null;
+  envVarNames: string[];
+}): string {
+  const dataset = input.report.runManifest.dataset;
+  return [
+    "# Reproduce gmOS External Benchmark Run",
+    "",
+    `Package: ${input.report.runManifest.package.name ?? "unknown"}@${input.report.runManifest.package.version ?? "unknown"}`,
+    `Git SHA: ${input.report.runManifest.git.sha ?? "unknown"}`,
+    `Dataset: ${dataset.id ?? "unknown"} (${dataset.format}, ${dataset.hash ?? "hash not recorded"})`,
+    `Protocol: ${input.report.runManifest.protocol}`,
+    `Judge: ${input.report.runManifest.judgeProvenance.kind}:${input.report.runManifest.judgeProvenance.name ?? "none"}`,
+    "",
+    "## Command",
+    "",
+    input.command ? "```bash" : "",
+    input.command ?? "Command was not recorded by this runner.",
+    input.command ? "```" : "",
+    "",
+    "## Environment Variables",
+    "",
+    ...(input.envVarNames.length === 0
+      ? ["No required environment variable names were recorded."]
+      : input.envVarNames.map((name) => `- \`${name}\` value intentionally not stored`)),
+    "",
+    "## Redaction",
+    "",
+    "- Environment variable names may be recorded; values are never recorded.",
+    "- Failure samples are bounded by the run's failure sample limit.",
+    "- Bundle JSON is passed through the public gmOS report redaction helpers.",
+    "",
+  ].join("\n");
+}
+
+export function writeExternalMemoryBenchmarkReproductionBundle(
+  input: ExternalMemoryBenchmarkReproductionBundleOptions,
+): ExternalMemoryBenchmarkReproductionBundleResult {
+  const outputDir = path.resolve(process.cwd(), input.outputDir);
+  mkdirSync(outputDir, { recursive: true });
+  const command = redactedCommand(input.command);
+  const envVarNames = uniqueEnvVarNames([
+    ...(input.envVarNames ?? []),
+    input.report.runManifest.runtimeIntelligence.apiKeyEnv,
+  ]);
+  const manifest = redactBenchmarkBundleValue({
+    schema: "gmos.external_benchmark_reproduction_bundle.v1",
+    createdAt: new Date().toISOString(),
+    package: input.report.runManifest.package,
+    git: input.report.runManifest.git,
+    dataset: input.report.runManifest.dataset,
+    node: input.report.runManifest.node,
+    platform: input.report.runManifest.platform,
+    protocol: input.report.runManifest.protocol,
+    judgeProvenance: input.report.runManifest.judgeProvenance,
+    options: input.report.runManifest.options,
+    scoreSemantics: input.report.runManifest.scoreSemantics,
+    runtimeIntelligence: input.report.runManifest.runtimeIntelligence,
+    command,
+    envVarNames,
+    redactionRules: {
+      envVarValues: "never_recorded",
+      apiKeyHandling: "env_var_names_only",
+      failureSamples: "bounded_by_failureSampleLimit_and_sanitized_with_public_report_redaction",
+      intelligenceEndpoint: "run_manifest_records_hostname_only",
+    },
+    files: [
+      "manifest.json",
+      "results.json",
+      "results.md",
+      "failure-samples.json",
+      "REPRODUCE.md",
+    ],
+  });
+  const manifestFile = path.join(outputDir, "manifest.json");
+  const resultsJsonFile = path.join(outputDir, "results.json");
+  const resultsMarkdownFile = path.join(outputDir, "results.md");
+  const failureSamplesFile = path.join(outputDir, "failure-samples.json");
+  const reproduceFile = path.join(outputDir, "REPRODUCE.md");
+  writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(resultsJsonFile, `${JSON.stringify(redactBenchmarkBundleValue(input.report), null, 2)}\n`);
+  writeFileSync(resultsMarkdownFile, renderExternalMemoryBenchmarkMarkdown(input.report));
+  writeFileSync(
+    failureSamplesFile,
+    `${JSON.stringify(redactBenchmarkBundleValue(input.report.summary.failureSamples), null, 2)}\n`,
+  );
+  writeFileSync(reproduceFile, reproductionReadme({ report: input.report, command, envVarNames }));
+  return {
+    outputDir,
+    manifestFile,
+    resultsJsonFile,
+    resultsMarkdownFile,
+    failureSamplesFile,
+    reproduceFile,
+  };
 }
 
 export interface ExternalMemoryBenchmarkProgress {

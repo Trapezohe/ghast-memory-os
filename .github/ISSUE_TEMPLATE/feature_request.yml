@@ -1,0 +1,53 @@
+name: Feature request
+description: Propose a gmOS capability or integration.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep examples content-free. Use synthetic memory text and avoid private transcripts, API keys, or production database files.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What real integration or user workflow is blocked?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful behavior change.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: gmos doctor output
+      description: If this depends on an existing installation, paste `gmos doctor --format markdown` output without memory content.
+      render: markdown
+    validations:
+      required: false
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - SDK
+        - CLI
+        - MCP
+        - HTTP
+        - Store / SQLite
+        - Benchmarks
+        - Docs
+        - Integration
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false

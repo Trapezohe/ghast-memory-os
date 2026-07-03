@@ -5,6 +5,42 @@ explicitly says `protocol=official_protocol` and names a host-provided judge,
 these are `protocol=deterministic_local` reports, not official benchmark
 scores, leaderboard claims, or SOTA claims.
 
+## Publishing a run
+
+Public benchmark entries require a reproduction bundle generated with
+`gmos gym external --reproduction-bundle <dir>` (or the optional
+`gmos gym external gains --reproduction-bundle <dir>` label) or the equivalent
+`@ghast/memory/gym` SDK helper after an official-protocol SDK run.
+
+Required manifest fields:
+
+- git branch, SHA, and dirty status;
+- package name and version;
+- Node.js version and platform;
+- dataset id, format, case count, hash, and warnings;
+- full run options, including protocol, convergence, temporal mode,
+  sensitivity, diagnostics, concurrency, and failure sample limit;
+- judge provenance for `official_protocol` runs;
+- score semantics and official-comparability flag;
+- intelligence provenance when enabled: model names, endpoint hostname, ingest
+  mode, maintenance phases, concurrency, timeout, hook names, and API key
+  environment variable name only.
+
+Bundles live in a `release-evidence/` style local directory that stays
+git-ignored. Maintainers publish the bundle as a release asset for public
+numbers; this repository does not vendor datasets or generated run archives.
+
+Claim language rules:
+
+- `deterministic_local` means local adapter diagnostics only.
+- `official_protocol` requires a host-provided judge and disclosed judge
+  provenance.
+- Intelligence-enabled runs disclose model names and endpoint hostnames, never
+  secret values.
+- No run may be called official, leaderboard, or SOTA unless the manifest says
+  `protocol=official_protocol`, `officialProtocol=host_judge`, and the public
+  bundle is available.
+
 ## alpha.69 release evidence snapshot
 
 Run date: 2026-07-02.

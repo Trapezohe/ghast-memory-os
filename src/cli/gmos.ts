@@ -41,6 +41,7 @@ import {
   runMemoryReleaseGate,
   runMemoryScaleBenchmark,
   stateBenchAgentPythonTemplate,
+  writeExternalMemoryBenchmarkReproductionBundle,
 } from "../gym/index.js";
 import {
   createPresetHostAdapter,
@@ -165,6 +166,7 @@ Usage:
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
   gmos gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --intelligence-base-url http://127.0.0.1:11434/v1 --intelligence-model llama3.1 --intelligence-embed-model nomic-embed-text --intelligence-api-key-env GMOS_BENCH_API_KEY
+  gmos gym external gains --input-file ./long-memory-cleaned.json --dataset-format longmemeval --reproduction-bundle ./release-evidence/bench-run
   gmos gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format markdown
   gmos gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
   gmos gym statebench write-agent --output-file ./STATE-Bench/agents/gmos_memory_agent.py
@@ -1688,6 +1690,15 @@ async function main(): Promise<void> {
         : {}),
       ...(requireConvergence ? { requireConvergence: true } : {}),
     });
+    const reproductionBundle = strictOptionValue("--reproduction-bundle");
+    if (reproductionBundle) {
+      writeExternalMemoryBenchmarkReproductionBundle({
+        outputDir: reproductionBundle,
+        report,
+        command: ["gmos", ...process.argv.slice(2)],
+        envVarNames: values("--intelligence-api-key-env"),
+      });
+    }
     printReport(report, renderExternalMemoryBenchmarkMarkdown(report));
     if (!report.pass) process.exitCode = 1;
     return;

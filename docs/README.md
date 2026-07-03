@@ -26,10 +26,16 @@ runtime branches.
   flow.
 - [Benchmark guide](./BENCHMARKING.md): SDK gates, external adapters, and
   claim boundaries.
+- [Benchmark claims](./BENCHMARK_CLAIMS.md): comparison methodology and public
+  claim rules.
 - [Benchmark runs](./BENCHMARK_RUNS.md): archived local deterministic baseline
   snapshots.
+- [API stability](./API_STABILITY.md): stable-candidate and experimental public
+  exports.
 - [Migration guide](./MIGRATION.md): host snapshot import, profile backup, and
   safe rollout steps.
+- [Release policy](./RELEASE_POLICY.md): alpha cadence, deprecation, and upgrade
+  guarantees.
 
 Runnable examples are shipped under `examples/`: `quickstart.mjs`,
 `structured-extractor.mjs`, `openai-compatible-extractor.mjs`,
