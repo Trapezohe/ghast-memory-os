@@ -4759,6 +4759,16 @@
                     "type": "number",
                     "exclusiveMinimum": 0
                   },
+                  "curiosityBudget": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "suppressGapIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "reconstruction": {
                     "type": "object",
                     "additionalProperties": false,
@@ -5245,6 +5255,16 @@
                   "contextBudgetTokens": {
                     "type": "number",
                     "exclusiveMinimum": 0
+                  },
+                  "curiosityBudget": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "suppressGapIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
                   },
                   "reconstruction": {
                     "type": "object",
@@ -7453,7 +7473,8 @@
                         "decay",
                         "consolidate",
                         "distill",
-                        "dossier"
+                        "dossier",
+                        "explore"
                       ]
                     }
                   }

@@ -37,6 +37,11 @@ import {
   selectEntityDossierSnapshots,
 } from "../kernel/dossier.js";
 import {
+  curiosityActionPolicy,
+  curiosityBudgetForTurn,
+  resolveMemoryExplorationConfig,
+} from "../kernel/exploration.js";
+import {
   embeddingForMemory,
   embeddingForQuery,
   queryEligibleForEmbeddingProvider,
@@ -54,6 +59,7 @@ import {
 } from "../kernel/safety.js";
 import type {
   CommitOutcomeInput,
+  ActionPolicy,
   EvidencePathExplanation,
   EvidenceEvent,
   EvidenceListInput,
@@ -92,6 +98,7 @@ import type {
   MemoryDossierCandidate,
   MemoryDossierEntitySnapshot,
   MemoryDossierResult,
+  MemoryGapSuppressionReason,
   MemoryRecord,
   MemoryRollbackInput,
   MemoryRollbackResult,
@@ -1157,6 +1164,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   const consolidation = resolveMemoryConsolidationConfig(options.consolidation);
   const distillation = resolveMemoryProcedureDistillationConfig(options.distillation);
   const dossier = resolveMemoryDossierConfig(options.dossier);
+  const exploration = resolveMemoryExplorationConfig(options.exploration);
   const embeddingProvider = resolveEmbeddingProviderConfig(options.embeddingProvider);
   const retrieval = options.retrieval;
   const defaultDisposition = resolveRecallDispositionPreset({
@@ -1752,6 +1760,11 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     displayQuery: string;
     retrievalQuery: string;
     candidateMemories: MemoryRecord[];
+    curiosityPolicies: ActionPolicy[];
+    suppressedCuriosity: Array<{
+      policy: ActionPolicy;
+      reason: MemoryGapSuppressionReason;
+    }>;
     dispositionPreset: string;
     memorySearchLimit: number;
     contextBudgetTokens: number;
@@ -1780,6 +1793,34 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const actionPolicies = await store.listActionPolicies(profileId, {
       includeSensitive: input.includeSensitive,
     });
+    const curiosityBudget = store.listGapCandidates
+      ? curiosityBudgetForTurn({
+          configuredMax: exploration.enabled ? exploration.curiosityBudget : 0,
+          requested: input.curiosityBudget,
+          dispositionPreset: disposition.preset.name,
+        })
+      : 0;
+    const gapResults = curiosityBudget > 0 && store.listGapCandidates
+      ? await store.listGapCandidates({
+          profileId,
+          query,
+          limit: trace ? Math.max(curiosityBudget, 10) : Math.max(curiosityBudget, 1),
+          suppressGapIds: input.suppressGapIds,
+          includeSuppressed: trace !== undefined,
+        })
+      : [];
+    const curiosityPolicies = gapResults
+      .filter((result) => !result.suppressedReason)
+      .slice(0, curiosityBudget)
+      .map((result) => curiosityActionPolicy(result.candidate));
+    const suppressedCuriosity = gapResults
+      .filter((result) => result.suppressedReason)
+      .slice(0, 10)
+      .map((result) => ({
+        policy: curiosityActionPolicy(result.candidate),
+        reason: result.suppressedReason!,
+      }));
+    const allActionPolicies = [...actionPolicies, ...curiosityPolicies];
     const evidence: EvidenceEvent[] = [];
     const seenEvidenceIds = new Set<string>();
     async function appendEvidenceForMemory(memoryId: string): Promise<void> {
@@ -1801,7 +1842,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       for (const memory of memories) {
         await appendEvidenceForMemory(memory.id);
       }
-      for (const policy of actionPolicies) {
+      for (const policy of allActionPolicies) {
         if (policy.sourceMemoryId) await appendEvidenceForMemory(policy.sourceMemoryId);
       }
     }
@@ -1811,8 +1852,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         ? memories.map((memory) => hideRouteMemoryMetadata(memory, privateRouteSignals))
         : memories,
       actionPolicies: hideTaskRetrievalHints
-        ? actionPolicies.map((policy) => hideRouteActionPolicy(policy, privateRouteSignals))
-        : actionPolicies,
+        ? allActionPolicies.map((policy) => hideRouteActionPolicy(policy, privateRouteSignals))
+        : allActionPolicies,
       evidence,
       includeEvidence: input.includeEvidence,
       contextBudgetTokens: input.contextBudgetTokens,
@@ -1854,6 +1895,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       displayQuery,
       retrievalQuery: query,
       candidateMemories: memories,
+      curiosityPolicies,
+      suppressedCuriosity,
       dispositionPreset: disposition.preset.name,
       memorySearchLimit: disposition.preset.memorySearchLimit,
       contextBudgetTokens: input.contextBudgetTokens ?? disposition.preset.contextBudgetTokens,
@@ -1932,6 +1975,24 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       query: execution.displayQuery,
       included,
       excluded: [...excludedById.values()].slice(0, maxExcluded),
+      curiosity: {
+        emitted: prepared.actionPolicies
+          .filter((policy) => policy.kind === "curiosity" && policy.gapId && policy.gapKind)
+          .map((policy) => ({
+            gapId: policy.gapId!,
+            kind: policy.gapKind!,
+            score: policy.score ?? 0,
+            sourceIds: policy.sourceIds ?? [],
+            text: policy.text,
+        })),
+        suppressed: execution.suppressedCuriosity.map(({ policy, reason }) => ({
+          gapId: policy.gapId!,
+          kind: policy.gapKind!,
+          score: policy.score ?? 0,
+          reason,
+          sourceIds: policy.sourceIds ?? [],
+        })),
+      },
       budgets: {
         dispositionPreset: execution.dispositionPreset,
         memorySearchLimit: execution.memorySearchLimit,
@@ -2707,7 +2768,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         phase !== "decay" &&
         phase !== "consolidate" &&
         phase !== "distill" &&
-        phase !== "dossier",
+        phase !== "dossier" &&
+        phase !== "explore",
     );
     if (unsupportedPhase) throw new Error(`Unsupported gmOS maintenance phase: ${unsupportedPhase}`);
     const dryRun = input.dryRun === true;
@@ -2721,6 +2783,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       consolidation,
       distillation,
       dossier,
+      exploration,
     });
     if (phases.includes("consolidate") && consolidation.enabled) {
       await applySemanticConsolidation({

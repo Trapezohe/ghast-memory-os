@@ -21,6 +21,9 @@ is proactive. Response: Horizon 3 adds gap-driven proactive exploration
 (deterministic detection of user-model blind spots surfaced as ask-the-user
 action policies) and cross-trajectory abstraction beyond objective equality.
 
+Shipped in M15: deterministic proactive gap detection and curiosity action
+policies are maintained as a rebuildable derived index with privacy gates.
+
 ## Signal 2 — Agent-native systems thinking: white-box, workload-aligned
 
 "Are We Ready For An Agent-Native Memory System?" (arXiv:2606.24775) studies

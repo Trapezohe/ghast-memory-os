@@ -21,7 +21,8 @@ host event
 -> commitOutcome() / recordFeedback()
 -> explicit maintain()
 -> decay / duplicate consolidation / host semantic consolidation / host procedure distillation
--> active / dormant / archived lifecycle, consolidation, and distillation evidence
+-> active / dormant / archived lifecycle, consolidation, distillation evidence, and gap projection
+-> curiosity action policies from the precomputed gap index
 -> optional host-scheduled autopilot composition of ingest / repair / maintain
 -> approval-gated evolution apply/revert when an admin accepts a proposal
 -> forensic rollback when an approved operator restores a memory from evidence
@@ -38,13 +39,15 @@ host event
 - `gmos_failure_events`: feedback and failure loop events.
 - `gmos_associations`: derived cue/tag/content projection for reconstructive
   retrieval.
+- `gmos_gap_candidates`: derived proactive-exploration projection for bounded
+  curiosity prompts.
 - `gmos_memories_fts` and provider-aware vector tables: derived search
   indexes. Vector rows record provider name, dimensions, embedding status, and
   content hash.
 - `gmos_autopilot_runs`: content-free run history for host-scheduled autopilot
   executions.
 
-Associations, FTS rows, and vector rows are indexes. They can be rebuilt from
+Associations, gap candidates, FTS rows, and vector rows are indexes. They can be rebuilt from
 source-of-truth rows and must not become independent memory stores. The
 `local-hash-v1` 384-dimensional vector is the deterministic fallback; host
 embedding providers are optional write/repair-path upgrades.
@@ -83,7 +86,8 @@ Read paths:
 - `doctor` and `status`
 
 Read paths are checked by gate tests and read-audit snapshots. They should not
-write to memory, evidence, failure, association, FTS, or vector tables.
+write to memory, evidence, failure, association, gap candidate, FTS, or vector
+tables.
 
 ## Lifecycle Model
 
@@ -137,6 +141,15 @@ normalized objective and stable token set, but only the host `procedureDistiller
 hook can synthesize procedure prose. Accepted candidates become active
 `procedure` memories with `source_type = "distillation"` evidence listing source
 trajectory ids. Source trajectories are not archived or modified.
+
+Proactive exploration is a separate explicit `maintain({ phases: ["explore"] })`
+phase. It runs deterministic analyzers over source state and rebuilds
+`gmos_gap_candidates` for stale load-bearing beliefs, contradiction hotspots,
+coverage gaps, and decaying procedures. Generation gates suppress boundary,
+forgotten/redacted, sensitive, and person material before persistence.
+`prepareTurn()` only reads this precomputed index, applies the same current
+privacy gates again, and emits low-priority `curiosity` action policies with
+deterministic template text. It never computes or writes gaps on a read path.
 
 Evolution is propose-with-approval. `reviewFailures()` remains a read path and
 clusters failure events into hypotheses, memory-target patch proposals, and

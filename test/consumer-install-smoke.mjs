@@ -589,7 +589,7 @@ try {
       assert.equal(memoryGym.runManifest.package.name, installedPackage.name);
       assert.equal(memoryGym.runManifest.package.version, installedPackage.version);
       assert.notEqual(memoryGym.runManifest.package.name, "host-app-should-not-leak");
-      assert.equal(memoryGym.runManifest.sqliteSchemaVersion, 13);
+      assert.equal(memoryGym.runManifest.sqliteSchemaVersion, 14);
       const releaseGate = await runMemoryReleaseGate({
         generatedSeeds: 1,
         scaleSizes: [10],
@@ -652,7 +652,7 @@ try {
       assert.deepEqual(status.runtimeInfo, getGmosRuntimeInfo());
       assert.equal(status.runtimeInfo.publicSurface.mcpTools.includes("memory.runtime_info"), true);
       assert.equal(status.runtimeInfo.publicSurface.httpRoutes.includes("GET /runtime-info"), true);
-      assert.equal(status.storage.schemaVersion, 13);
+      assert.equal(status.storage.schemaVersion, 14);
       assert.equal(status.storage.searchIndex.status, "ok");
       assert.equal(status.storage.searchIndex.missingEntryCount, 0);
       assert.equal(status.hostCompatibility.level, "L4");
@@ -1588,7 +1588,7 @@ try {
   assert.equal(doctor.runtimeInfo.trustContract.encryptionSupported, "host_driver");
   assert.equal(doctor.runtimeInfo.trustContract.cloudRequired, false);
   assert.equal(doctor.schema.dialect, "sqlite");
-  assert.equal(doctor.schema.version, 13);
+  assert.equal(doctor.schema.version, 14);
   assert.equal(doctor.readAudit.status, "ok");
   assert.equal(doctor.readAudit.schema, "gmos.read_audit_snapshot.v1");
   assert.equal(doctor.readAudit.tableCount >= 10, true);
@@ -2010,7 +2010,7 @@ try {
   );
   assert.equal(statusBin.status, 0, statusBin.stderr);
   const status = JSON.parse(statusBin.stdout);
-  assert.equal(status.storage.schemaVersion, 13);
+  assert.equal(status.storage.schemaVersion, 14);
   assert.equal(status.storage.searchIndex.status, "ok");
   assert.equal(status.storage.searchIndex.missingEntryCount, 0);
   assert.equal(status.hostCompatibility.level, "L4");
@@ -2096,7 +2096,7 @@ try {
   assert.equal(quickstartOutput.ok, true);
   assert.equal(quickstartOutput.contextHasPreference, true);
   assert.equal(quickstartOutput.importedSearchHit, true);
-  assert.equal(quickstartOutput.schemaVersion, 13);
+  assert.equal(quickstartOutput.schemaVersion, 14);
   assert.equal(quickstartOutput.hostLevel, "L4");
   const installedAgentAdapterExample = path.join(
     consumerDir,
@@ -2179,7 +2179,7 @@ try {
   assert.equal(httpAdapterOutput.runtimeInfoSchema, "gmos.runtime_info.v1");
   assert.equal(httpAdapterOutput.preparedHasPreference, true);
   assert.equal(httpAdapterOutput.reconstructedPathCount > 0, true);
-  assert.equal(httpAdapterOutput.statusSchemaVersion, 13);
+  assert.equal(httpAdapterOutput.statusSchemaVersion, 14);
   assert.equal(httpAdapterOutput.hostLevel, "L4");
   const installedMcpRouterExample = path.join(
     consumerDir,

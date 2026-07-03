@@ -94,8 +94,11 @@ const prepareContextSchema = z.object({
   profileId: z.string().optional(),
   text: z.string().optional(),
   messages: z.array(messageSchema).optional(),
+  dispositionPreset: z.enum(["focused", "balanced", "expansive"]).optional(),
   includeEvidence: z.boolean().optional(),
   contextBudgetTokens: z.number().positive().optional(),
+  curiosityBudget: z.number().int().nonnegative().optional(),
+  suppressGapIds: z.array(z.string()).optional(),
   reconstruction: prepareReconstructionSchema.optional(),
 }).strict();
 
@@ -103,8 +106,11 @@ const explainTurnSchema = z.object({
   profileId: z.string().optional(),
   text: z.string().optional(),
   messages: z.array(messageSchema).optional(),
+  dispositionPreset: z.enum(["focused", "balanced", "expansive"]).optional(),
   includeEvidence: z.boolean().optional(),
   contextBudgetTokens: z.number().positive().optional(),
+  curiosityBudget: z.number().int().nonnegative().optional(),
+  suppressGapIds: z.array(z.string()).optional(),
   reconstruction: prepareReconstructionSchema.optional(),
   maxExcluded: z.number().int().nonnegative().optional(),
 }).strict();
@@ -113,6 +119,7 @@ const reconstructContextSchema = z.object({
   profileId: z.string().optional(),
   text: z.string().optional(),
   messages: z.array(messageSchema).optional(),
+  dispositionPreset: z.enum(["focused", "balanced", "expansive"]).optional(),
   includeEvidence: z.boolean().optional(),
   contextBudgetTokens: z.number().positive().optional(),
   maxSteps: z.number().int().positive().optional(),
@@ -166,7 +173,7 @@ const maintainSchema = z.object({
   profileId: z.string().optional(),
   dryRun: z.boolean().optional(),
   now: z.string().optional(),
-  phases: z.array(z.enum(["decay", "consolidate", "distill", "dossier"])).optional(),
+  phases: z.array(z.enum(["decay", "consolidate", "distill", "dossier", "explore"])).optional(),
 }).strict();
 
 const forgetSchema = z.object({

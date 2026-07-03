@@ -28,12 +28,18 @@ import type {
   EmbeddingProviderConfig,
   ListFailuresInput,
   MaintenanceExemption,
+  MaintenanceExplorationCandidate,
   MaintenanceReport,
   MaintenanceSkippedSummary,
   MaintenanceStoreInput,
   MaintenanceTransition,
   MemoryAssociationRecord,
   MemoryAssociationSearchInput,
+  MemoryGapCandidate,
+  MemoryGapCandidateListInput,
+  MemoryGapCandidateSearchResult,
+  MemoryGapKind,
+  MemoryGapSuppressionReason,
   MemoryLifecycleStatus,
   MemoryListInput,
   MemoryKind,
@@ -78,8 +84,10 @@ import {
   memoryKindCanAutoTransition,
   retentionScore,
 } from "../../kernel/retention.js";
+import { memoryGapId } from "../../kernel/exploration.js";
 import {
   associationCueKey,
+  associationCueMatchesQuery,
   associationCuesForBelief,
   associationCuesForMemory,
   associationCuesForTaskTrajectory,
@@ -98,6 +106,7 @@ import {
 } from "../../kernel/entities.js";
 import {
   classifySensitivity,
+  isPersonRoutedMemory,
   sanitizePublicPayloadRecord,
   shouldHideFromOrdinaryContext,
 } from "../../kernel/safety.js";
@@ -260,6 +269,7 @@ export interface SqliteMemoryStore extends MemoryStore {
   exportProfileBundle(input: ExportSqliteProfileBackupInput): SqliteProfileBundleDocument;
   importProfileBundle(input: RestoreSqliteProfileBackupInput): SqliteProfileBackupRestoreResult;
   listTaskTrajectories(input: { profileId: string; limit?: number | undefined }): TaskTrajectoryRecord[];
+  listGapCandidates(input: MemoryGapCandidateListInput): MemoryGapCandidateSearchResult[];
   recordProcedureDistillation(
     input: RecordProcedureDistillationInput,
   ): Promise<RecordProcedureDistillationResult> | RecordProcedureDistillationResult;
@@ -288,6 +298,7 @@ const READ_AUDIT_REVISION_TABLES = [
   "gmos_failure_events",
   "gmos_task_trajectories",
   "gmos_associations",
+  "gmos_gap_candidates",
   "gmos_memory_vectors",
   "gmos_memory_vector_terms",
 ] as const;
@@ -302,6 +313,17 @@ const READ_AUDIT_FTS_TABLES = [
     columns: ["id", "profile_id", "status", "target_type", "cue", "tag", "target_summary"],
   },
 ] as const;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+interface RawGapCandidate {
+  kind: MemoryGapKind;
+  subject: string;
+  cue?: string | undefined;
+  score: number;
+  supportingRecordIds: string[];
+  payload: Record<string, unknown>;
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -318,6 +340,16 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
   } catch {
     return {};
+  }
+}
+
+function parseJsonArray(value: unknown): unknown[] {
+  if (typeof value !== "string") return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
   }
 }
 
@@ -676,6 +708,20 @@ function normalizeWorldBelief(row: Record<string, unknown>): WorldBeliefRecord {
     metadata: parseJsonObject(row.metadata_json),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
+  };
+}
+
+function normalizeGapCandidate(row: Record<string, unknown>): MemoryGapCandidate {
+  return {
+    id: String(row.id),
+    profileId: String(row.profile_id),
+    kind: String(row.gap_kind) as MemoryGapKind,
+    subject: String(row.subject),
+    cue: row.cue == null ? undefined : String(row.cue),
+    score: Number(row.score),
+    supportingRecordIds: stringArrayFromUnknown(parseJsonArray(row.supporting_record_ids_json)),
+    computedAt: String(row.computed_at),
+    payload: parseJsonObject(row.payload_json),
   };
 }
 
@@ -5122,6 +5168,504 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     tx();
   }
 
+  function roundedScore(value: number): number {
+    if (!Number.isFinite(value)) return 0;
+    return Math.max(0, Math.min(1, Number(value.toFixed(6))));
+  }
+
+  function explorationCandidate(input: {
+    profileId: string;
+    computedAt: string;
+    raw: RawGapCandidate;
+  }): MemoryGapCandidate {
+    const subject = input.raw.subject.trim();
+    const cue = input.raw.cue?.trim();
+    return {
+      id: memoryGapId({
+        profileId: input.profileId,
+        kind: input.raw.kind,
+        subject,
+        ...(cue ? { cue } : {}),
+      }),
+      profileId: input.profileId,
+      kind: input.raw.kind,
+      subject,
+      ...(cue ? { cue } : {}),
+      score: roundedScore(input.raw.score),
+      supportingRecordIds: uniqueStrings(input.raw.supportingRecordIds).sort((left, right) =>
+        left.localeCompare(right)
+      ),
+      computedAt: input.computedAt,
+      payload: input.raw.payload,
+    };
+  }
+
+  function explorationReportCandidate(
+    candidate: MemoryGapCandidate,
+  ): MaintenanceExplorationCandidate {
+    return {
+      id: candidate.id,
+      kind: candidate.kind,
+      subject: candidate.subject,
+      ...(candidate.cue ? { cue: candidate.cue } : {}),
+      score: candidate.score,
+      supportingRecordIds: candidate.supportingRecordIds,
+      computedAt: candidate.computedAt,
+    };
+  }
+
+  function gapCandidateText(candidate: MemoryGapCandidate): string {
+    return [
+      candidate.subject,
+      candidate.cue ?? "",
+      candidate.kind,
+      typeof candidate.payload.predicate === "string" ? candidate.payload.predicate : "",
+      typeof candidate.payload.lastKnown === "string" ? candidate.payload.lastKnown : "",
+    ].join(" ");
+  }
+
+  function gapPersonMaterial(candidate: MemoryGapCandidate): boolean {
+    const predicate = typeof candidate.payload.predicate === "string" ? candidate.payload.predicate : "";
+    if (predicate.startsWith("person.")) return true;
+    if (isPersonRoutedMemory(candidate.subject) || isPersonRoutedMemory(candidate.cue ?? "")) return true;
+    const sourceKinds = stringArrayFromUnknown(candidate.payload.sourceKinds);
+    if (sourceKinds.includes("person")) return true;
+    if (
+      candidate.supportingRecordIds.some((recordId) => {
+        const memory = db
+          .prepare("SELECT kind, content FROM gmos_memories WHERE profile_id = ? AND id = ?")
+          .get(candidate.profileId, recordId) as
+          | { kind?: string; content?: string }
+          | undefined;
+        if (memory?.kind === "person") return true;
+        if (memory?.content && isPersonRoutedMemory(memory.content)) return true;
+        const belief = db
+          .prepare("SELECT predicate, subject FROM gmos_world_beliefs WHERE profile_id = ? AND id = ?")
+          .get(candidate.profileId, recordId) as
+          | { predicate?: string; subject?: string }
+          | undefined;
+        return Boolean(
+          belief?.predicate?.startsWith("person.") ||
+            (belief?.subject && isPersonRoutedMemory(belief.subject)),
+        );
+      })
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  function gapHasRedactedEvidence(candidate: MemoryGapCandidate): boolean {
+    for (const recordId of candidate.supportingRecordIds) {
+      const direct = db
+        .prepare("SELECT * FROM gmos_evidence_events WHERE profile_id = ? AND id = ?")
+        .get(candidate.profileId, recordId) as Record<string, unknown> | undefined;
+      if (direct && evidenceIsRedacted(normalizeEvidence(direct))) return true;
+      const memory = db
+        .prepare(
+          `SELECT e.*
+           FROM gmos_memories m
+           JOIN gmos_evidence_events e ON e.id = m.source_event_id
+           WHERE m.profile_id = ? AND m.id = ?`,
+        )
+        .get(candidate.profileId, recordId) as Record<string, unknown> | undefined;
+      if (memory && evidenceIsRedacted(normalizeEvidence(memory))) return true;
+    }
+    return false;
+  }
+
+  function gapMatchesForgottenSubject(candidate: MemoryGapCandidate): boolean {
+    const text = gapCandidateText(candidate).toLowerCase();
+    const rows = db
+      .prepare(
+        `SELECT content, metadata_json
+         FROM gmos_memories
+         WHERE profile_id = ? AND status = 'archived'`,
+      )
+      .all(candidate.profileId) as Array<{ content: string; metadata_json: string }>;
+    for (const row of rows) {
+      const archive = parseJsonObject(row.metadata_json).archive;
+      if (!archive || typeof archive !== "object" || Array.isArray(archive)) continue;
+      const reason = (archive as Record<string, unknown>).reason;
+      if (reason !== "user_forget" && reason !== "derived_from_forgotten_source") continue;
+      if (candidate.supportingRecordIds.some((id) => row.content.includes(id))) return true;
+      const terms = queryTerms(row.content).filter((term) => term.length >= 6);
+      if (terms.length > 0 && terms.some((term) => text.includes(term))) return true;
+    }
+    return false;
+  }
+
+  function gapMatchesBoundary(candidate: MemoryGapCandidate): boolean {
+    const candidateText = gapCandidateText(candidate).toLowerCase();
+    const candidateKeys = [
+      associationCueKey(candidate.subject),
+      associationCueKey(candidate.cue ?? ""),
+    ].filter(Boolean);
+    const rows = db
+      .prepare(
+        `SELECT content
+         FROM gmos_memories
+         WHERE profile_id = ? AND status = 'active' AND kind = 'boundary'`,
+      )
+      .all(candidate.profileId) as Array<{ content: string }>;
+    for (const row of rows) {
+      const boundaryText = row.content.toLowerCase();
+      if (candidateKeys.some((key) => key.length >= 2 && boundaryText.includes(key))) return true;
+      const terms = queryTerms(row.content).filter((term) => term.length >= 6);
+      if (terms.length > 0 && terms.some((term) => candidateText.includes(term))) return true;
+    }
+    return false;
+  }
+
+  function gapSuppressionReason(input: {
+    candidate: MemoryGapCandidate;
+    suppressGapIds?: Set<string> | undefined;
+  }): MemoryGapSuppressionReason | null {
+    if (input.suppressGapIds?.has(input.candidate.id)) return "host_suppressed";
+    if (classifySensitivity(gapCandidateText(input.candidate)) !== "normal") {
+      return "sensitive_material";
+    }
+    if (gapPersonMaterial(input.candidate)) return "person_material";
+    if (gapHasRedactedEvidence(input.candidate)) return "redacted_evidence";
+    if (gapMatchesForgottenSubject(input.candidate)) return "forgotten_subject";
+    if (gapMatchesBoundary(input.candidate)) return "boundary_protected";
+    return null;
+  }
+
+  function sourceMemoryForBelief(belief: WorldBeliefRecord): MemoryRecord | null {
+    if (!belief.sourceMemoryId) return null;
+    const row = memoryRowById(belief.profileId, belief.sourceMemoryId);
+    return row ? normalizeMemory(row) : null;
+  }
+
+  function validFromOrCreatedAt(belief: WorldBeliefRecord): string {
+    return metadataString(belief.metadata, ["validFrom", "valid_from"]) ?? belief.createdAt;
+  }
+
+  function staleBeliefCandidates(input: MaintenanceStoreInput): RawGapCandidate[] {
+    const nowMs = Date.parse(input.now);
+    if (!Number.isFinite(nowMs)) return [];
+    const rows = db
+      .prepare(
+        `SELECT *
+         FROM gmos_world_beliefs
+         WHERE profile_id = ? AND status = 'active'
+         ORDER BY updated_at ASC, id ASC
+         LIMIT ?`,
+      )
+      .all(input.profileId, input.exploration.maxCandidatesPerRun * 8) as Record<string, unknown>[];
+    const candidates: RawGapCandidate[] = [];
+    for (const belief of rows.map(normalizeWorldBelief)) {
+      const sourceMemory = sourceMemoryForBelief(belief);
+      const kind = sourceMemory?.kind ?? "fact";
+      const validTo = parseInstant(metadataString(belief.metadata, ["validTo", "valid_to", "expiresAt"]));
+      const validFrom = parseInstant(validFromOrCreatedAt(belief));
+      const halfLifeDays = input.lifecycle.halfLivesDays[kind] ?? input.lifecycle.halfLivesDays.fact;
+      const halfLifeMs = halfLifeDays * DAY_MS;
+      const expired = validTo !== null && validTo <= nowMs;
+      const tooOld = validFrom !== null && nowMs - validFrom > halfLifeMs;
+      if (!expired && !tooOld) continue;
+      const recall = sourceMemory?.recallCount ?? 0;
+      const reinforcement = Math.max(0, sourceMemory?.reinforcement ?? 0);
+      const demand = Math.min(1, Math.log1p(recall) / Math.log1p(20) + reinforcement / 2);
+      const ageScore = expired
+        ? 0.55
+        : validFrom === null
+          ? 0.2
+          : Math.min(0.55, (nowMs - validFrom) / Math.max(1, halfLifeMs) * 0.25);
+      candidates.push({
+        kind: "stale_belief",
+        subject: belief.subject,
+        cue: belief.predicate,
+        score: ageScore + demand * 0.45,
+        supportingRecordIds: [belief.id, ...(sourceMemory ? [sourceMemory.id] : [])],
+        payload: {
+          predicate: belief.predicate,
+          lastKnown: belief.object,
+          validFrom: metadataString(belief.metadata, ["validFrom", "valid_from"]),
+          validTo: metadataString(belief.metadata, ["validTo", "valid_to", "expiresAt"]),
+          sourceKinds: sourceMemory ? [sourceMemory.kind] : [],
+        },
+      });
+    }
+    return candidates;
+  }
+
+  function contradictionHotspotCandidates(input: MaintenanceStoreInput): RawGapCandidate[] {
+    const cutoff = new Date(Date.parse(input.now) - input.exploration.recentWindowDays * DAY_MS).toISOString();
+    const rows = db
+      .prepare(
+        `SELECT active.*, COUNT(superseded.id) AS superseded_count
+         FROM gmos_world_beliefs active
+         JOIN gmos_world_beliefs superseded
+           ON superseded.profile_id = active.profile_id
+          AND superseded.subject = active.subject
+          AND superseded.predicate = active.predicate
+          AND superseded.status = 'superseded'
+          AND superseded.updated_at >= ?
+         WHERE active.profile_id = ?
+           AND active.status = 'active'
+           AND active.confidence < 0.65
+         GROUP BY active.id
+         ORDER BY superseded_count DESC, active.confidence ASC, active.updated_at DESC, active.id ASC
+         LIMIT ?`,
+      )
+      .all(cutoff, input.profileId, input.exploration.maxCandidatesPerKind) as Array<
+        Record<string, unknown> & { superseded_count?: number }
+      >;
+    return rows.map((row) => {
+      const belief = normalizeWorldBelief(row);
+      const sourceMemory = sourceMemoryForBelief(belief);
+      const supersededCount = Number(row.superseded_count ?? 0);
+      return {
+        kind: "contradiction_hotspot" as const,
+        subject: belief.subject,
+        cue: belief.predicate,
+        score: 0.35 + Math.min(0.3, supersededCount * 0.1) + (1 - belief.confidence) * 0.35,
+        supportingRecordIds: [belief.id, ...(sourceMemory ? [sourceMemory.id] : [])],
+        payload: {
+          predicate: belief.predicate,
+          lastKnown: belief.object,
+          supersededCount,
+          sourceKinds: sourceMemory ? [sourceMemory.kind] : [],
+        },
+      };
+    });
+  }
+
+  function coverageGapCandidates(input: MaintenanceStoreInput): RawGapCandidate[] {
+    const rows = db
+      .prepare(
+        `SELECT
+           a.cue AS cue,
+           a.cue_kind AS cue_kind,
+           COUNT(DISTINCT m.id) AS memory_count,
+           AVG(m.confidence) AS avg_confidence,
+           SUM(COALESCE(m.recall_count, 0)) AS recall_count,
+           SUM(MAX(COALESCE(m.reinforcement, 0), 0)) AS reinforcement_sum,
+           GROUP_CONCAT(DISTINCT a.id) AS association_ids,
+           GROUP_CONCAT(DISTINCT m.id) AS memory_ids,
+           GROUP_CONCAT(DISTINCT m.kind) AS memory_kinds
+         FROM gmos_associations a
+         JOIN gmos_memories m ON m.id = a.source_memory_id
+         WHERE a.profile_id = ?
+           AND a.status = 'active'
+           AND a.cue_kind IN ('entity', 'scope', 'predicate', 'task')
+           AND m.status = 'active'
+         GROUP BY a.cue
+         HAVING recall_count >= 2
+            AND (memory_count <= 2 OR avg_confidence < 0.6)
+         ORDER BY recall_count DESC, avg_confidence ASC, a.cue ASC
+         LIMIT ?`,
+      )
+      .all(input.profileId, input.exploration.maxCandidatesPerKind) as Array<{
+        cue: string;
+        memory_count: number;
+        avg_confidence: number;
+        recall_count: number;
+        reinforcement_sum: number;
+        association_ids?: string | null;
+        memory_ids?: string | null;
+        memory_kinds?: string | null;
+      }>;
+    return rows.map((row) => {
+      const memoryCount = Number(row.memory_count);
+      const avgConfidence = Number(row.avg_confidence);
+      const recall = Number(row.recall_count);
+      const reinforcement = Number(row.reinforcement_sum);
+      const associationIds = String(row.association_ids ?? "").split(",").filter(Boolean);
+      const memoryIds = String(row.memory_ids ?? "").split(",").filter(Boolean);
+      return {
+        kind: "coverage_gap" as const,
+        subject: row.cue,
+        cue: row.cue,
+        score:
+          Math.min(0.45, Math.log1p(recall) / Math.log1p(20) * 0.45) +
+          Math.min(0.25, reinforcement * 0.1) +
+          Math.max(0, 0.6 - avgConfidence) * 0.5 +
+          (memoryCount <= 1 ? 0.2 : 0.1),
+        supportingRecordIds: [...associationIds, ...memoryIds],
+        payload: {
+          memoryCount,
+          averageConfidence: Number.isFinite(avgConfidence) ? Number(avgConfidence.toFixed(6)) : 0,
+          recallCount: recall,
+          lastKnown: `${memoryCount} linked memories`,
+          sourceKinds: String(row.memory_kinds ?? "").split(",").filter(Boolean),
+        },
+      };
+    });
+  }
+
+  function decayingProcedureCandidates(input: MaintenanceStoreInput): RawGapCandidate[] {
+    const procedures = db
+      .prepare(
+        `SELECT *
+         FROM gmos_memories
+         WHERE profile_id = ? AND status = 'active' AND kind = 'procedure'
+         ORDER BY updated_at DESC, id ASC
+         LIMIT ?`,
+      )
+      .all(input.profileId, input.exploration.maxCandidatesPerRun) as Record<string, unknown>[];
+    const outcomes = (
+      db
+        .prepare(
+          `SELECT id, payload_json, created_at
+           FROM gmos_evidence_events
+           WHERE profile_id = ? AND source_type = 'outcome'
+           ORDER BY created_at DESC, id DESC
+           LIMIT 200`,
+        )
+        .all(input.profileId) as Array<{ id: string; payload_json: string; created_at: string }>
+    ).map((row) => ({
+      id: row.id,
+      payload: parseJsonObject(row.payload_json),
+      createdAt: row.created_at,
+    }));
+    const candidates: RawGapCandidate[] = [];
+    for (const procedure of procedures.map(normalizeMemory)) {
+      const related = outcomes.filter((event) =>
+        payloadStringArray(event.payload.memoryIds).includes(procedure.id)
+      );
+      const negative = related.filter((event) => Number(event.payload.delta) < 0);
+      const positive = related.filter((event) => Number(event.payload.delta) > 0);
+      if (negative.length === 0 || negative.length < positive.length) continue;
+      candidates.push({
+        kind: "decaying_procedure",
+        subject: procedure.content,
+        cue: procedure.scope !== "global" ? procedure.scope : "procedure",
+        score:
+          0.35 +
+          Math.min(0.35, negative.length * 0.12) +
+          Math.max(0, -(procedure.reinforcement ?? 0)) * 0.3,
+        supportingRecordIds: [procedure.id, ...negative.map((event) => event.id)],
+        payload: {
+          lastKnown: procedure.content,
+          negativeOutcomeCount: negative.length,
+          positiveOutcomeCount: positive.length,
+          sourceKinds: [procedure.kind],
+        },
+      });
+    }
+    return candidates;
+  }
+
+  function computeGapCandidates(input: MaintenanceStoreInput): MemoryGapCandidate[] {
+    const raw = [
+      ...staleBeliefCandidates(input),
+      ...contradictionHotspotCandidates(input),
+      ...coverageGapCandidates(input),
+      ...decayingProcedureCandidates(input),
+    ];
+    const perKind = new Map<MemoryGapKind, number>();
+    const byId = new Map<string, MemoryGapCandidate>();
+    for (const candidate of raw
+      .map((entry) => explorationCandidate({
+        profileId: input.profileId,
+        computedAt: input.now,
+        raw: entry,
+      }))
+      .filter((entry) => entry.subject.trim().length > 0 && entry.score >= input.exploration.minScore)
+      .sort((left, right) => {
+        const score = right.score - left.score;
+        if (score !== 0) return score;
+        const kind = left.kind.localeCompare(right.kind);
+        if (kind !== 0) return kind;
+        return left.id.localeCompare(right.id);
+      })) {
+      const count = perKind.get(candidate.kind) ?? 0;
+      if (count >= input.exploration.maxCandidatesPerKind) continue;
+      perKind.set(candidate.kind, count + 1);
+      if (!byId.has(candidate.id)) byId.set(candidate.id, candidate);
+      if (byId.size >= input.exploration.maxCandidatesPerRun) break;
+    }
+    return [...byId.values()];
+  }
+
+  function replaceGapCandidates(profileId: string, candidates: MemoryGapCandidate[]): void {
+    const tx = db.transaction((items: MemoryGapCandidate[]) => {
+      db.prepare("DELETE FROM gmos_gap_candidates WHERE profile_id = ?").run(profileId);
+      const stmt = db.prepare(
+        `INSERT INTO gmos_gap_candidates (
+          id, profile_id, gap_kind, subject, cue, score, supporting_record_ids_json,
+          payload_json, computed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const candidate of items) {
+        stmt.run(
+          candidate.id,
+          candidate.profileId,
+          candidate.kind,
+          candidate.subject,
+          candidate.cue ?? null,
+          candidate.score,
+          JSON.stringify(candidate.supportingRecordIds),
+          JSON.stringify(candidate.payload),
+          candidate.computedAt,
+        );
+      }
+    });
+    tx(candidates);
+  }
+
+  function previousGapIds(profileId: string): Set<string> {
+    if (!tableExists("gmos_gap_candidates")) return new Set();
+    return new Set(
+      (
+        db
+          .prepare("SELECT id FROM gmos_gap_candidates WHERE profile_id = ?")
+          .all(profileId) as Array<{ id: string }>
+      ).map((row) => row.id),
+    );
+  }
+
+  function gapCandidateMatchesQuery(candidate: MemoryGapCandidate, query: string): boolean {
+    const terms = queryTerms(query);
+    if (terms.length === 0) return true;
+    const haystack = gapCandidateText(candidate).toLowerCase();
+    if (terms.some((term) => haystack.includes(term))) return true;
+    return associationCueMatchesQuery(candidate.subject, terms) ||
+      Boolean(candidate.cue && associationCueMatchesQuery(candidate.cue, terms));
+  }
+
+  function listGapCandidates(
+    input: MemoryGapCandidateListInput,
+  ): MemoryGapCandidateSearchResult[] {
+    initialize();
+    if (!tableExists("gmos_gap_candidates")) return [];
+    const suppressGapIds = new Set(input.suppressGapIds ?? []);
+    const requestedLimit = limit(input.limit, 8, 100);
+    const rows = db
+      .prepare(
+        `SELECT *
+         FROM gmos_gap_candidates
+         WHERE profile_id = ?
+         ORDER BY score DESC, gap_kind ASC, subject ASC, id ASC
+         LIMIT ?`,
+      )
+      .all(input.profileId, requestedLimit * 8) as Record<string, unknown>[];
+    const results: MemoryGapCandidateSearchResult[] = [];
+    let visibleCount = 0;
+    let suppressedCount = 0;
+    for (const candidate of rows.map(normalizeGapCandidate)) {
+      if (!gapCandidateMatchesQuery(candidate, input.query ?? "")) continue;
+      const suppressedReason = gapSuppressionReason({ candidate, suppressGapIds });
+      if (suppressedReason) {
+        if (input.includeSuppressed && suppressedCount < requestedLimit) {
+          suppressedCount += 1;
+          results.push({ candidate, suppressedReason });
+        }
+      } else if (visibleCount < requestedLimit) {
+        visibleCount += 1;
+        results.push({ candidate });
+      }
+      if (
+        visibleCount >= requestedLimit &&
+        (!input.includeSuppressed || suppressedCount >= requestedLimit)
+      ) break;
+    }
+    return results;
+  }
+
   function maintain(input: MaintenanceStoreInput): MaintenanceReport {
     initialize();
     const skipped = new Map<string, number>();
@@ -5129,6 +5673,8 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     const consolidationSkipped = new Map<string, number>();
     const distillationSkipped = new Map<string, number>();
     const dossierSkipped = new Map<string, number>();
+    const explorationSkipped = new Map<string, number>();
+    const explorationSuppressed = new Map<string, number>();
     const rows = db
       .prepare(
         `SELECT *
@@ -5191,6 +5737,32 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     } else if (!input.dossier.enabled) {
       incrementSkipped(dossierSkipped, "dossier_disabled");
     }
+    let explorationGenerated: MemoryGapCandidate[] = [];
+    let explorationCandidates: MemoryGapCandidate[] = [];
+    let explorationClosedSinceLastRun = 0;
+    if (!input.phases.includes("explore")) {
+      incrementSkipped(explorationSkipped, "phase_explore_not_requested");
+    } else if (!input.exploration.enabled) {
+      incrementSkipped(explorationSkipped, "exploration_disabled");
+    } else {
+      const previousIds = previousGapIds(input.profileId);
+      explorationGenerated = computeGapCandidates(input);
+      const suppressedIds = new Set<string>();
+      for (const candidate of explorationGenerated) {
+        const reason = gapSuppressionReason({ candidate });
+        if (reason) {
+          incrementSkipped(explorationSuppressed, reason);
+          suppressedIds.add(candidate.id);
+          continue;
+        }
+        explorationCandidates.push(candidate);
+      }
+      const currentIds = new Set([
+        ...explorationCandidates.map((candidate) => candidate.id),
+        ...suppressedIds,
+      ]);
+      explorationClosedSinceLastRun = [...previousIds].filter((id) => !currentIds.has(id)).length;
+    }
     if (!input.dryRun && (transitions.length > 0 || duplicateClusters.length > 0)) {
       const tx = db.transaction((items: MaintenanceTransition[], clusters: DuplicateConsolidationCluster[]) => {
         for (const transition of items) {
@@ -5201,6 +5773,9 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         }
       });
       tx(transitions, duplicateClusters);
+    }
+    if (!input.dryRun && input.phases.includes("explore") && input.exploration.enabled) {
+      replaceGapCandidates(input.profileId, explorationCandidates);
     }
     return {
       schema: "gmos.maintenance_report.v1",
@@ -5240,6 +5815,16 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         summaryMemories: [],
         rejectedCandidates: [],
         skipped: skippedSummaries(dossierSkipped),
+      },
+      exploration: {
+        enabled: input.exploration.enabled,
+        evaluated: explorationGenerated.length,
+        generated: explorationGenerated.length,
+        persisted: input.dryRun ? 0 : explorationCandidates.length,
+        closedSinceLastRun: explorationClosedSinceLastRun,
+        candidates: explorationCandidates.map(explorationReportCandidate),
+        suppressed: skippedSummaries(explorationSuppressed),
+        skipped: skippedSummaries(explorationSkipped),
       },
     };
   }
@@ -6042,6 +6627,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       "gmos_failure_events",
       "gmos_task_trajectories",
       "gmos_associations",
+      "gmos_gap_candidates",
       "gmos_memory_vectors",
       "gmos_memory_vector_terms",
       "gmos_profiles",
@@ -6281,6 +6867,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     rollbackMemory,
     lifecycleStatus,
     listActionPolicies,
+    listGapCandidates,
     listEvidence,
     listEvidenceForMemory,
     searchAssociations,

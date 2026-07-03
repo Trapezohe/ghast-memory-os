@@ -29,6 +29,7 @@ export {
   MAX_DOSSIER_CONTENT_LENGTH,
   resolveMemoryDossierConfig,
 } from "./kernel/dossier.js";
+export { resolveMemoryExplorationConfig } from "./kernel/exploration.js";
 export {
   classifySensitivity,
   eligibleForLongTermMemory,

@@ -55,6 +55,7 @@ export interface MemoryStorageStatus {
   status: "ok" | "unavailable";
   schemaVersion: number | null;
   rowCounts: Record<string, number>;
+  gapCandidateCount: number;
   encryption: MemoryStorageEncryptionStatus;
   lifecycle?: MemoryLifecycleStatus | undefined;
   readAudit: MemoryReadAuditStatus;
@@ -218,6 +219,7 @@ async function storageStatus(input: {
       status: "ok",
       schemaVersion,
       rowCounts,
+      gapCandidateCount: rowCounts.gmos_gap_candidates ?? 0,
       encryption,
       ...(redactedLifecycle !== undefined ? { lifecycle: redactedLifecycle } : {}),
       readAudit,
@@ -228,6 +230,7 @@ async function storageStatus(input: {
       status: "unavailable",
       schemaVersion: null,
       rowCounts: {},
+      gapCandidateCount: 0,
       encryption: { encrypted: false, mode: "plaintext" },
       readAudit: {
         status: "unavailable",
@@ -342,6 +345,7 @@ export function renderMemoryStatusMarkdown(report: MemoryStatusReport): string {
     `Schema version: ${report.storage.schemaVersion ?? "unknown"}`,
     `Encrypted: ${report.trustContract.encrypted ? "yes" : "no"}`,
     `Read audit: ${report.storage.readAudit.status} (${report.storage.readAudit.tableCount} tables; rows=${report.storage.readAudit.rowCountTotal}; missing=${report.storage.readAudit.missingTables.length})`,
+    `Gap candidates: ${report.storage.gapCandidateCount}`,
     report.storage.error
       ? `Error: ${report.storage.error.name}: ${report.storage.error.code}`
       : "",

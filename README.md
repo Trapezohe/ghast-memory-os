@@ -140,6 +140,9 @@ This Docker smoke is manual and is not part of `gate:pr`.
   clusters repeated completed task trajectories and, when a host provides a
   `procedureDistiller`, persists evidence-backed `procedure` memories without
   changing the source trajectories.
+- Proactive exploration maintenance. `maintain({ phases: ["explore"] })`
+  rebuilds a derived gap-candidate index and lets `prepareTurn()` emit bounded,
+  privacy-gated `curiosity` action policies from that precomputed index only.
 - Safe continuous-learning autopilot. `runAutopilot()` and
   `gmos autopilot run` compose transcript ingestion, embedding backfill, and
   maintenance on a host-configured schedule, with dry-run preview and
@@ -326,7 +329,7 @@ npm install -g @ghast/memory
 gmos init --db ./gmos.db
 gmos doctor --db ./gmos.db --host ghast --format markdown
 gmos status --db ./gmos.db --profile local --host ghast --format markdown
-gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate,distill --format markdown
+gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate,distill,dossier,explore --format markdown
 gmos add --db ./gmos.db --profile local --kind preference --text "回答风格：简洁，先给结论"
 gmos add --db ./gmos.db --profile local --kind boundary --text "不要再提醒我这个项目延期了。"
 gmos search --db ./gmos.db --profile local --query "结论 方案"

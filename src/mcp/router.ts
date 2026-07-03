@@ -481,6 +481,8 @@ function prepareInput(args: Record<string, unknown>): PrepareTurnInput {
       "includeEvidence",
       "includeSensitive",
       "contextBudgetTokens",
+      "curiosityBudget",
+      "suppressGapIds",
       "reconstruction",
     ]),
     "memory.prepare_context",
@@ -495,11 +497,15 @@ function prepareInput(args: Record<string, unknown>): PrepareTurnInput {
   const dispositionPreset = optionalString(args, "dispositionPreset");
   const includeEvidence = optionalBoolean(args, "includeEvidence");
   const contextBudgetTokens = optionalPositiveNumber(args, "contextBudgetTokens");
+  const curiosityBudget = optionalNonNegativeInteger(args, "curiosityBudget");
+  const suppressGapIds = optionalStringArrayValue(args.suppressGapIds, "suppressGapIds");
   const reconstruction = optionalPrepareReconstruction(args);
   if (profileId !== undefined) input.profileId = profileId;
   if (dispositionPreset !== undefined) input.dispositionPreset = dispositionPreset;
   if (includeEvidence !== undefined) input.includeEvidence = includeEvidence;
   if (contextBudgetTokens !== undefined) input.contextBudgetTokens = contextBudgetTokens;
+  if (curiosityBudget !== undefined) input.curiosityBudget = curiosityBudget;
+  if (suppressGapIds !== undefined) input.suppressGapIds = suppressGapIds;
   if (reconstruction !== undefined) input.reconstruction = reconstruction;
   return input;
 }
@@ -515,6 +521,8 @@ function explainTurnInput(args: Record<string, unknown>): ExplainTurnInput {
       "includeEvidence",
       "includeSensitive",
       "contextBudgetTokens",
+      "curiosityBudget",
+      "suppressGapIds",
       "reconstruction",
       "maxExcluded",
     ]),
@@ -530,12 +538,16 @@ function explainTurnInput(args: Record<string, unknown>): ExplainTurnInput {
   const dispositionPreset = optionalString(args, "dispositionPreset");
   const includeEvidence = optionalBoolean(args, "includeEvidence");
   const contextBudgetTokens = optionalPositiveNumber(args, "contextBudgetTokens");
+  const curiosityBudget = optionalNonNegativeInteger(args, "curiosityBudget");
+  const suppressGapIds = optionalStringArrayValue(args.suppressGapIds, "suppressGapIds");
   const reconstruction = optionalPrepareReconstruction(args);
   const maxExcluded = optionalNonNegativeInteger(args, "maxExcluded");
   if (profileId !== undefined) input.profileId = profileId;
   if (dispositionPreset !== undefined) input.dispositionPreset = dispositionPreset;
   if (includeEvidence !== undefined) input.includeEvidence = includeEvidence;
   if (contextBudgetTokens !== undefined) input.contextBudgetTokens = contextBudgetTokens;
+  if (curiosityBudget !== undefined) input.curiosityBudget = curiosityBudget;
+  if (suppressGapIds !== undefined) input.suppressGapIds = suppressGapIds;
   if (reconstruction !== undefined) input.reconstruction = reconstruction;
   if (maxExcluded !== undefined) input.maxExcluded = maxExcluded;
   return input;
@@ -751,10 +763,11 @@ function maintainInput(args: Record<string, unknown>): MaintenanceInput {
       phase !== "decay" &&
       phase !== "consolidate" &&
       phase !== "distill" &&
-      phase !== "dossier",
+      phase !== "dossier" &&
+      phase !== "explore",
   );
   if (invalidPhase) {
-    throw new Error("phases must contain only decay, consolidate, distill, or dossier");
+    throw new Error("phases must contain only decay, consolidate, distill, dossier, or explore");
   }
   if (profileId !== undefined) input.profileId = profileId;
   if (dryRun !== undefined) input.dryRun = dryRun;

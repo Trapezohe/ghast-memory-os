@@ -1670,6 +1670,7 @@ const MAINTENANCE_PHASES = new Set<MaintenancePhase>([
   "consolidate",
   "distill",
   "dossier",
+  "explore",
 ]);
 
 function normalizedMaintainPhases(value: MaintenancePhase[] | undefined): MaintenancePhase[] {
@@ -1677,7 +1678,7 @@ function normalizedMaintainPhases(value: MaintenancePhase[] | undefined): Mainte
   const output: MaintenancePhase[] = [];
   for (const phase of value) {
     if (!MAINTENANCE_PHASES.has(phase)) {
-      throw new Error("External benchmark maintainPhases must contain only decay, consolidate, distill, or dossier");
+      throw new Error("External benchmark maintainPhases must contain only decay, consolidate, distill, dossier, or explore");
     }
     if (!output.includes(phase)) output.push(phase);
   }

@@ -123,7 +123,7 @@ Usage:
   gmos repair --db ./gmos.db --search-index --dry-run --vector-batch-size 32
   gmos repair --db ./gmos.db --associations
   gmos status --db ./gmos.db --profile local --host ghast --format markdown
-  gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate,distill,dossier --now 2026-07-02T00:00:00.000Z --format markdown
+  gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate,distill,dossier,explore --now 2026-07-02T00:00:00.000Z --format markdown
   gmos ingest --db ./gmos.db --profile local --input-file ./thread.jsonl --input-format jsonl --dry-run --format markdown
   gmos autopilot run --db ./gmos.db --profile local --phases decay,consolidate --embed-backfill-batch 32 --ingest-dir ./transcripts --dry-run --format json
   gmos autopilot history --db ./gmos.db --profile local --limit 20
@@ -462,12 +462,12 @@ function memoryKindOption(): MemoryKind {
 function maintenancePhaseList(raw: string, label: string): MaintenancePhase[] {
   const phases = raw.split(",").map((phase) => phase.trim());
   if (phases.some((phase) => phase.length === 0)) {
-    throw new Error(`${label} must be a comma-separated list of decay,consolidate,distill,dossier`);
+    throw new Error(`${label} must be a comma-separated list of decay,consolidate,distill,dossier,explore`);
   }
-  const allowed = new Set<MaintenancePhase>(["decay", "consolidate", "distill", "dossier"]);
+  const allowed = new Set<MaintenancePhase>(["decay", "consolidate", "distill", "dossier", "explore"]);
   const invalid = phases.find((phase): phase is string => !allowed.has(phase as MaintenancePhase));
   if (invalid) {
-    throw new Error(`${label} must contain only decay, consolidate, distill, or dossier`);
+    throw new Error(`${label} must contain only decay, consolidate, distill, dossier, or explore`);
   }
   return [...new Set(phases as MaintenancePhase[])];
 }
@@ -877,6 +877,15 @@ function renderMaintenanceMarkdown(report: MaintenanceReport): string {
   const dossierSkippedRows = report.dossier.skipped.map((entry) =>
     `| ${entry.reason} | ${entry.count} |`
   );
+  const explorationCandidateRows = report.exploration.candidates.map((candidate) =>
+    `| ${candidate.id} | ${candidate.kind} | ${candidate.subject} | ${candidate.cue ?? ""} | ${candidate.score.toFixed(4)} | ${candidate.supportingRecordIds.join(", ")} |`
+  );
+  const explorationSuppressedRows = report.exploration.suppressed.map((entry) =>
+    `| ${entry.reason} | ${entry.count} |`
+  );
+  const explorationSkippedRows = report.exploration.skipped.map((entry) =>
+    `| ${entry.reason} | ${entry.count} |`
+  );
   return [
     "# gmOS Maintenance Report",
     "",
@@ -1003,6 +1012,33 @@ function renderMaintenanceMarkdown(report: MaintenanceReport): string {
     dossierSkippedRows.length === 0
       ? "No skipped dossier items."
       : "| Reason | Count |\n| --- | ---: |\n" + dossierSkippedRows.join("\n"),
+    "",
+    "## Exploration",
+    "",
+    `Enabled: ${report.exploration.enabled ? "yes" : "no"}`,
+    `Evaluated: ${report.exploration.evaluated}`,
+    `Generated: ${report.exploration.generated}`,
+    `Persisted: ${report.exploration.persisted}`,
+    `Closed since last run: ${report.exploration.closedSinceLastRun}`,
+    "",
+    "### Gap Candidates",
+    "",
+    explorationCandidateRows.length === 0
+      ? "No gap candidates."
+      : "| Gap | Kind | Subject | Cue | Score | Sources |\n| --- | --- | --- | --- | ---: | --- |\n" +
+          explorationCandidateRows.join("\n"),
+    "",
+    "### Suppressed Gap Candidates",
+    "",
+    explorationSuppressedRows.length === 0
+      ? "No suppressed gap candidates."
+      : "| Reason | Count |\n| --- | ---: |\n" + explorationSuppressedRows.join("\n"),
+    "",
+    "### Exploration Skipped",
+    "",
+    explorationSkippedRows.length === 0
+      ? "No skipped exploration items."
+      : "| Reason | Count |\n| --- | ---: |\n" + explorationSkippedRows.join("\n"),
     "",
   ].join("\n");
 }

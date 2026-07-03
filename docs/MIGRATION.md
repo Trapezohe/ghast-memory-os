@@ -231,6 +231,21 @@ Profile JSON bundles still do not include service API keys, key hashes,
 file backups include those service tables and should be treated as sensitive
 operational data.
 
+## SQLite Schema v14
+
+Schema v14 adds `gmos_gap_candidates`, a derived proactive-exploration index
+rebuilt by `maintain({ phases: ["explore"] })`. The table stores stable gap ids,
+gap kind, subject/cue, score, supporting record ids, structured payload, and
+`computedAt`. It is not a source of truth and can be cleared/recomputed from
+memories, world beliefs, associations, task trajectories, evidence, and failure
+signals.
+
+The migration is automatic on first writable open. Profile JSON backups may
+include the table only as rebuildable derived data; hosts should treat it like
+associations or FTS/vector indexes and prefer an `explore` run after restore.
+Read-audit snapshots include the table so `prepareTurn()` curiosity emission
+stays read-pure.
+
 ## M3 Experience Learning
 
 M3 does not add a SQLite schema version. Procedure distillation, outcome

@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-export const GMOS_SQLITE_SCHEMA_VERSION = 13;
+export const GMOS_SQLITE_SCHEMA_VERSION = 14;
 
 const READ_AUDIT_REVISION_TABLES = [
   "gmos_evidence_events",
@@ -9,6 +9,7 @@ const READ_AUDIT_REVISION_TABLES = [
   "gmos_failure_events",
   "gmos_task_trajectories",
   "gmos_associations",
+  "gmos_gap_candidates",
   "gmos_memory_vectors",
   "gmos_memory_vector_terms",
 ] as const;
@@ -524,6 +525,22 @@ export function ensureSqliteSchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_gmos_autopilot_runs_profile_time
       ON gmos_autopilot_runs(profile_id, started_at);
+
+    CREATE TABLE IF NOT EXISTS gmos_gap_candidates (
+      id TEXT PRIMARY KEY,
+      profile_id TEXT NOT NULL,
+      gap_kind TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      cue TEXT,
+      score REAL NOT NULL,
+      supporting_record_ids_json TEXT NOT NULL DEFAULT '[]',
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      computed_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_gmos_gap_candidates_profile_score
+      ON gmos_gap_candidates(profile_id, score, computed_at);
+    CREATE INDEX IF NOT EXISTS idx_gmos_gap_candidates_profile_kind
+      ON gmos_gap_candidates(profile_id, gap_kind, computed_at);
   `);
 
   if (!columnExists(db, "gmos_world_beliefs", "metadata_json")) {
@@ -615,6 +632,12 @@ export function ensureSqliteSchema(db: Database.Database): void {
       VALUES (
         13,
         'service_key_history_access',
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      );
+    INSERT OR IGNORE INTO gmos_schema_migrations(version, name, applied_at)
+      VALUES (
+        14,
+        'proactive_gap_candidates',
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       );
   `);

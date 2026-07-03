@@ -136,6 +136,8 @@ export interface PrepareTurnInput {
   includeEvidence?: boolean | undefined;
   includeSensitive?: boolean | undefined;
   contextBudgetTokens?: number | undefined;
+  curiosityBudget?: number | undefined;
+  suppressGapIds?: string[] | undefined;
   reconstruction?: {
     mode: "shadow";
     maxSteps?: number | undefined;
@@ -489,10 +491,14 @@ export interface WorldBeliefRecord {
 
 export interface ActionPolicy {
   id: string;
-  kind: "do_not_push" | "prefer" | "procedure";
+  kind: "do_not_push" | "prefer" | "procedure" | "curiosity";
   text: string;
   priority: number;
   sourceMemoryId?: string | null | undefined;
+  gapId?: string | undefined;
+  gapKind?: MemoryGapKind | undefined;
+  score?: number | undefined;
+  sourceIds?: string[] | undefined;
 }
 
 export interface PreparedTurn {
@@ -668,8 +674,69 @@ export interface TurnExplanationReport {
   query: string;
   included: TurnExplanationIncludedMemory[];
   excluded: TurnExplanationExcludedMemory[];
+  curiosity: TurnExplanationCuriosityReport;
   budgets: TurnExplanationBudgetReport;
   stats: PreparedTurn["stats"];
+}
+
+export type MemoryGapKind =
+  | "stale_belief"
+  | "contradiction_hotspot"
+  | "coverage_gap"
+  | "decaying_procedure";
+
+export type MemoryGapSuppressionReason =
+  | "boundary_protected"
+  | "forgotten_subject"
+  | "host_suppressed"
+  | "person_material"
+  | "redacted_evidence"
+  | "sensitive_material";
+
+export interface MemoryGapCandidate {
+  id: string;
+  profileId: string;
+  kind: MemoryGapKind;
+  subject: string;
+  cue?: string | undefined;
+  score: number;
+  supportingRecordIds: string[];
+  computedAt: string;
+  payload: Record<string, unknown>;
+}
+
+export interface MemoryGapCandidateSearchResult {
+  candidate: MemoryGapCandidate;
+  suppressedReason?: MemoryGapSuppressionReason | undefined;
+}
+
+export interface MemoryGapCandidateListInput {
+  profileId: string;
+  query?: string | undefined;
+  limit?: number | undefined;
+  suppressGapIds?: string[] | undefined;
+  includeSuppressed?: boolean | undefined;
+}
+
+export interface TurnExplanationCuriosityPrompt {
+  gapId: string;
+  kind: MemoryGapKind;
+  score: number;
+  sourceIds: string[];
+  text: string;
+}
+
+export interface TurnExplanationCuriositySuppression {
+  gapId: string;
+  kind: MemoryGapKind;
+  score: number;
+  reason: MemoryGapSuppressionReason;
+  sourceIds: string[];
+}
+
+export interface TurnExplanationCuriosityReport {
+  emitted: TurnExplanationCuriosityPrompt[];
+  suppressed: TurnExplanationCuriositySuppression[];
 }
 
 export type ReconstructionRecallPurpose = "context" | "history";
@@ -1468,7 +1535,16 @@ export interface MemoryDossierConfig {
   maxMemoriesPerEntity?: number | undefined;
 }
 
-export type MaintenancePhase = "decay" | "consolidate" | "distill" | "dossier";
+export interface MemoryExplorationConfig {
+  enabled?: boolean | undefined;
+  curiosityBudget?: number | undefined;
+  maxCandidatesPerRun?: number | undefined;
+  maxCandidatesPerKind?: number | undefined;
+  minScore?: number | undefined;
+  recentWindowDays?: number | undefined;
+}
+
+export type MaintenancePhase = "decay" | "consolidate" | "distill" | "dossier" | "explore";
 
 export interface ResolvedOutcomeReinforcementConfig {
   enabled: boolean;
@@ -1524,6 +1600,15 @@ export interface ResolvedMemoryDossierConfig {
   maxEntitiesPerRun: number;
   maxBeliefsPerEntity: number;
   maxMemoriesPerEntity: number;
+}
+
+export interface ResolvedMemoryExplorationConfig {
+  enabled: boolean;
+  curiosityBudget: number;
+  maxCandidatesPerRun: number;
+  maxCandidatesPerKind: number;
+  minScore: number;
+  recentWindowDays: number;
 }
 
 export interface MaintenanceInput {
@@ -1647,6 +1732,27 @@ export interface MaintenanceDossierReport {
   skipped: MaintenanceSkippedSummary[];
 }
 
+export interface MaintenanceExplorationCandidate {
+  id: string;
+  kind: MemoryGapKind;
+  subject: string;
+  cue?: string | undefined;
+  score: number;
+  supportingRecordIds: string[];
+  computedAt: string;
+}
+
+export interface MaintenanceExplorationReport {
+  enabled: boolean;
+  evaluated: number;
+  generated: number;
+  persisted: number;
+  closedSinceLastRun: number;
+  candidates: MaintenanceExplorationCandidate[];
+  suppressed: MaintenanceSkippedSummary[];
+  skipped: MaintenanceSkippedSummary[];
+}
+
 export interface MaintenanceReport {
   schema: "gmos.maintenance_report.v1";
   profileId: string;
@@ -1659,6 +1765,7 @@ export interface MaintenanceReport {
   consolidation: MaintenanceConsolidationReport;
   distillation: MaintenanceDistillationReport;
   dossier: MaintenanceDossierReport;
+  exploration: MaintenanceExplorationReport;
 }
 
 export interface MaintenanceStoreInput extends MaintenanceInput {
@@ -1670,6 +1777,7 @@ export interface MaintenanceStoreInput extends MaintenanceInput {
   consolidation: ResolvedMemoryConsolidationConfig;
   distillation: ResolvedMemoryProcedureDistillationConfig;
   dossier: ResolvedMemoryDossierConfig;
+  exploration: ResolvedMemoryExplorationConfig;
 }
 
 export interface MemoryLifecycleStatus {
@@ -1800,6 +1908,9 @@ export interface MemoryStore {
     profileId: string,
     options?: { includeSensitive?: boolean | undefined },
   ): Promise<ActionPolicy[]> | ActionPolicy[];
+  listGapCandidates?(
+    input: MemoryGapCandidateListInput,
+  ): Promise<MemoryGapCandidateSearchResult[]> | MemoryGapCandidateSearchResult[];
   listEvidence?(input: EvidenceListInput): Promise<EvidenceEvent[]> | EvidenceEvent[];
   listEvidenceForMemory(memoryId: string): Promise<EvidenceEvent[]> | EvidenceEvent[];
   searchAssociations?(
@@ -1849,6 +1960,7 @@ export interface MemoryOSOptions {
   consolidation?: MemoryConsolidationConfig | undefined;
   distillation?: MemoryProcedureDistillationConfig | undefined;
   dossier?: MemoryDossierConfig | undefined;
+  exploration?: MemoryExplorationConfig | undefined;
   safety?: {
     /**
      * Host-specific additive sensitivity classifier.

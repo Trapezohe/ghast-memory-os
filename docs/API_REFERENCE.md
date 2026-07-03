@@ -157,7 +157,8 @@ Supported presets are:
   reconstruction calls allow it.
 
 Presets do not affect sensitivity, person, incognito, lifecycle, or forgetting
-gates. `explainTurn()` reports the effective preset in `budgets.dispositionPreset`.
+gates. They may lower, but never raise, the configured curiosity budget.
+`explainTurn()` reports the effective preset in `budgets.dispositionPreset`.
 
 Scoped HTTP API keys can carry a default disposition:
 
@@ -224,6 +225,14 @@ const memory = createMemoryOS({
     maxBeliefsPerEntity: 8,
     maxMemoriesPerEntity: 8,
   },
+  exploration: {
+    enabled: true,
+    curiosityBudget: 1,
+    maxCandidatesPerRun: 32,
+    maxCandidatesPerKind: 8,
+    minScore: 0.1,
+    recentWindowDays: 30,
+  },
 });
 ```
 
@@ -265,6 +274,15 @@ even when requested. Dossiers are synthesized only from active world beliefs plu
 linked source memories selected by gmOS; the hook receives bounded snapshots and
 gmOS owns persistence, supersession, PERSON isolation, secret-like rejection, and
 forget residue cleanup.
+
+Exploration defaults are shown above. `maintain({ phases: ["explore"] })`
+deterministically rebuilds the derived `gmos_gap_candidates` index from source
+state. Gap kinds are `stale_belief`, `contradiction_hotspot`, `coverage_gap`,
+and `decaying_procedure`. Candidate ids are stable content hashes over
+profile/kind/subject/cue. Generation suppresses candidates touching active
+do-not-push boundary topics, forgotten/redacted evidence, sensitive material, or
+person material; dry-run reports the same generated/suppressed/closed counts
+without writing.
 
 Outcome reinforcement defaults to enabled with `step: 0.1`. Completed outcomes
 add the step to each `usedMemoryIds` memory; failed outcomes with
@@ -322,7 +340,7 @@ const report = await runAutopilot({
   profileId: "local-user",
   ingest: { dir: "./transcripts" },
   embedBackfill: { batchSize: 32 },
-  phases: ["decay", "consolidate"],
+  phases: ["decay", "consolidate", "explore"],
   dryRun: true,
 });
 ```
@@ -408,10 +426,14 @@ Primary methods:
   factory accepts an injectable `fetchImpl`, uses OpenAI-compatible HTTP shapes,
   and is loaded only when the host imports the subpath.
 - `prepareTurn(input)`: retrieve ordinary context and action policy for the next
-  agent turn. This is a read path and must not write.
+  agent turn. This is a read path and must not write. When the exploration index
+  has relevant candidates, gmOS may emit deterministic `kind: "curiosity"`
+  action policies up to `curiosityBudget` (default max `1`; `0` disables). A
+  call can pass `suppressGapIds` to hide specific candidates without writing.
 - `explainTurn(input)`: run the same retrieval and context-budget pipeline as
   `prepareTurn()` in explanation mode. It returns included and excluded memory
-  decision traces but no context block for prompt injection.
+  decision traces, emitted curiosity prompts, and notable suppressed curiosity
+  candidates, but no context block for prompt injection.
 - `reconstructContext(input)`: run bounded cue/tag/content reconstruction with
   evidence convergence and planner trace metadata.
 - `explainEvidencePath(input)`: explain why evidence was selected for a query.
@@ -428,11 +450,11 @@ Primary methods:
   retention.
 - `maintain(input)`: explicit lifecycle write path. `dryRun: true` computes the
   full report and writes nothing. Pass `phases: ["consolidate"]`,
-  `["distill"]`, `["dossier"]`, or combinations such as
-  `["decay", "consolidate", "distill", "dossier"]` to run duplicate
+  `["distill"]`, `["dossier"]`, `["explore"]`, or combinations such as
+  `["decay", "consolidate", "distill", "dossier", "explore"]` to run duplicate
   consolidation, optional host semantic consolidation, optional host procedure
-  distillation, and optional entity dossier synthesis. Ordinary runtime reads
-  never call this automatically.
+  distillation, optional entity dossier synthesis, and proactive gap detection.
+  Ordinary runtime reads never call this automatically.
 - `forget(input)`: archive matching memory and remove it from future context.
   Prefer structured `targetTerms` when a host already knows the deletion target;
   `query` remains required as a human-readable request and literal compatibility
@@ -657,6 +679,20 @@ strings.
       { entityKey, kind, sourceBeliefIds, sourceMemoryIds, reason }
     ],
     skipped
+  },
+  exploration: {
+    enabled,
+    evaluated,
+    generated,
+    persisted,
+    closedSinceLastRun,
+    candidates: [
+      { id, kind, subject, cue?, score, supportingRecordIds, computedAt }
+    ],
+    suppressed: [
+      { reason, count }
+    ],
+    skipped
   }
 }
 ```
@@ -767,6 +803,27 @@ key and records `sourceType: "dossier"` evidence with `sourceBeliefIds` and
 `sourceMemoryIds`. Person subjects produce `kind: "person"` dossiers; project
 subjects produce `kind: "project"` dossiers; other subjects produce
 `kind: "fact"` dossiers.
+
+Proactive exploration is kernel-only and deterministic:
+
+```ts
+await memory.maintain({ phases: ["explore"], dryRun: true });
+
+const prepared = await memory.prepareTurn({
+  profileId: "local-user",
+  messages: [{ role: "user", content: "What changed with the release plan?" }],
+  curiosityBudget: 1,
+  suppressGapIds: ["gap_abc123"],
+});
+```
+
+The kernel composes curiosity text from structured candidate fields only, for
+example subject, gap kind, cue, and last-known value. It never calls a model to
+write or phrase the prompt. Curiosity action policies carry `gapId`, `gapKind`,
+`score`, and `sourceIds`; they are ranked below do-not-push policies. If the
+user answers a host question, that answer flows through ordinary `observe()`;
+the next `explore` run drops candidates whose subject gained fresh confirming or
+contradicting evidence.
 
 The retention score is pure and deterministic:
 
@@ -971,7 +1028,7 @@ gmos version --format json
 gmos init --db ./gmos.db
 gmos doctor --db ./gmos.db --host ghast --format markdown
 gmos status --db ./gmos.db --profile local --host ghast --format markdown
-gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate,distill,dossier --format markdown
+gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate,distill,dossier,explore --format markdown
 gmos add --db ./gmos.db --profile local --kind preference --text "Response style: concise answers."
 gmos add --db ./gmos.db --profile local --kind boundary --text "Do not push release announcements without approval."
 gmos observe --db ./gmos.db --profile local --text "User opened the release planning thread."
@@ -1046,7 +1103,7 @@ calls instead of direct SDK imports:
 
 Public MCP tools intentionally do not expose sensitive override switches.
 `memory.maintain` accepts optional
-`phases: ["decay" | "consolidate" | "distill" | "dossier"]`; the local HTTP
+`phases: ["decay" | "consolidate" | "distill" | "dossier" | "explore"]`; the local HTTP
 `POST /maintain` route reuses the same validation. Evolution apply/revert is not
 exposed over MCP or HTTP; it is SDK/CLI admin-only.
 See [MCP and HTTP integration guide](./INTEGRATION_GUIDE.md) for host boundary

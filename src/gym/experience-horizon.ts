@@ -1218,6 +1218,320 @@ async function provenanceWeightedExperienceCredit(): Promise<MemoryGymExperience
   });
 }
 
+async function proactiveExploration(): Promise<MemoryGymExperienceHorizonScenario> {
+  const profileId = "experience_proactive_exploration";
+  const extractor: MemoryExtractor = ({ event }) => {
+    if (!event.content.includes("StaleLoadSubject")) return [];
+    return [{
+      kind: "project",
+      content: "StaleLoadSubject current owner is FreshOwnerSignal.",
+      subject: "StaleLoadSubject",
+      predicate: "project.owner",
+      object: "FreshOwnerSignal",
+      cardinality: "single",
+      confidence: 0.94,
+    }];
+  };
+  const store = createSqliteMemoryStore({ path: ":memory:" });
+  const memory = createMemoryOS({ profileId, store, extractor });
+  try {
+    const staleSource = await memory.add({
+      kind: "project",
+      content: "StaleLoadSubject owner was OldOwnerSignal.",
+      confidence: 0.86,
+      createdAt: weekIso(0),
+    });
+    await store.addWorldBelief({
+      profileId,
+      subject: "StaleLoadSubject",
+      predicate: "project.owner",
+      object: "OldOwnerSignal",
+      confidence: 0.82,
+      sourceMemoryId: staleSource.id,
+      cardinality: "single",
+      metadata: { validFrom: weekIso(0), validTo: weekIso(2) },
+      createdAt: weekIso(0, 1),
+    });
+    await memory.commitOutcome({
+      objective: "StaleLoadSubject recall demand",
+      status: "completed",
+      usedMemoryIds: [staleSource.id],
+      createdAt: weekIso(3),
+    });
+
+    const contradictionOld = await memory.add({
+      kind: "project",
+      content: "ContradictionHotspotSubject status was GreenSignal.",
+      confidence: 0.88,
+      createdAt: weekIso(1),
+    });
+    await store.addWorldBelief({
+      profileId,
+      subject: "ContradictionHotspotSubject",
+      predicate: "project.status",
+      object: "GreenSignal",
+      confidence: 0.88,
+      sourceMemoryId: contradictionOld.id,
+      cardinality: "single",
+      createdAt: weekIso(1, 1),
+    });
+    const contradictionNew = await memory.add({
+      kind: "project",
+      content: "ContradictionHotspotSubject status might be YellowSignal.",
+      confidence: 0.42,
+      createdAt: weekIso(2),
+    });
+    await store.addWorldBelief({
+      profileId,
+      subject: "ContradictionHotspotSubject",
+      predicate: "project.status",
+      object: "YellowSignal",
+      confidence: 0.42,
+      sourceMemoryId: contradictionNew.id,
+      cardinality: "single",
+      createdAt: weekIso(2, 1),
+    });
+
+    const coverage = await memory.add({
+      kind: "project",
+      content: "CoverageGapEntity has one low-confidence planning note.",
+      confidence: 0.35,
+      createdAt: weekIso(1, 2),
+    });
+    await memory.commitOutcome({
+      objective: "CoverageGapEntity demand one",
+      status: "completed",
+      usedMemoryIds: [coverage.id],
+      createdAt: weekIso(3, 1),
+    });
+    await memory.commitOutcome({
+      objective: "CoverageGapEntity demand two",
+      status: "completed",
+      usedMemoryIds: [coverage.id],
+      createdAt: weekIso(3, 2),
+    });
+
+    const procedure = await memory.add({
+      kind: "procedure",
+      content: "DecayingProcedureSubject procedure currently fails retries.",
+      confidence: 0.8,
+      createdAt: weekIso(1, 3),
+    });
+    await memory.commitOutcome({
+      objective: "DecayingProcedureSubject failed run",
+      status: "failed",
+      failureKind: "wrong_recall",
+      usedMemoryIds: [procedure.id],
+      createdAt: weekIso(4),
+    });
+
+    await memory.add({
+      kind: "boundary",
+      content: "Do not ask about BoundaryGapSubject.",
+      confidence: 0.9,
+      createdAt: weekIso(1, 4),
+    });
+    await store.addWorldBelief({
+      profileId,
+      subject: "BoundaryGapSubject",
+      predicate: "project.owner",
+      object: "BoundaryOwnerSignal",
+      confidence: 0.7,
+      cardinality: "single",
+      metadata: { validTo: weekIso(2) },
+      createdAt: weekIso(1, 5),
+    });
+    await store.addWorldBelief({
+      profileId,
+      subject: "ForgottenGapSubject",
+      predicate: "project.owner",
+      object: "ForgottenOwnerSignal",
+      confidence: 0.7,
+      cardinality: "single",
+      metadata: { validTo: weekIso(2) },
+      createdAt: weekIso(1, 6),
+    });
+    await memory.add({
+      kind: "project",
+      content: "ForgottenGapSubject archived note.",
+      confidence: 0.7,
+      createdAt: weekIso(1, 7),
+    });
+    await memory.forget({
+      query: "ForgottenGapSubject",
+      targetTerms: ["ForgottenGapSubject"],
+      reason: "proactive exploration generation gate",
+    });
+    await store.addWorldBelief({
+      profileId,
+      subject: "PERSON: ExplorationFriend",
+      predicate: "person.preference",
+      object: "PersonOnlySignal",
+      confidence: 0.7,
+      cardinality: "single",
+      metadata: { validTo: weekIso(2) },
+      createdAt: weekIso(1, 8),
+    });
+
+    await store.addWorldBelief({
+      profileId,
+      subject: "EmissionBoundarySubject",
+      predicate: "project.owner",
+      object: "EmissionBoundaryOwnerSignal",
+      confidence: 0.7,
+      cardinality: "single",
+      metadata: { validTo: weekIso(2) },
+      createdAt: weekIso(1, 9),
+    });
+    await store.addWorldBelief({
+      profileId,
+      subject: "EmissionForgetSubject",
+      predicate: "project.owner",
+      object: "EmissionForgetOwnerSignal",
+      confidence: 0.7,
+      cardinality: "single",
+      metadata: { validTo: weekIso(2) },
+      createdAt: weekIso(1, 10),
+    });
+
+    const beforeDryRun = JSON.stringify(store.rowCounts());
+    const dryRun = await memory.maintain({
+      now: weekIso(8),
+      phases: ["explore"],
+      dryRun: true,
+    });
+    const dryRunPure = beforeDryRun === JSON.stringify(store.rowCounts());
+
+    const firstExplore = await memory.maintain({
+      now: weekIso(8),
+      phases: ["explore"],
+    });
+    const secondExplore = await memory.maintain({
+      now: weekIso(8),
+      phases: ["explore"],
+    });
+    const firstIds = firstExplore.exploration.candidates.map((candidate) => candidate.id);
+    const secondIds = secondExplore.exploration.candidates.map((candidate) => candidate.id);
+    const firstKinds = new Set(firstExplore.exploration.candidates.map((candidate) => candidate.kind));
+    const persistedSerialized = JSON.stringify(await store.listGapCandidates({
+      profileId,
+      query: "",
+      limit: 50,
+      includeSuppressed: true,
+    }));
+
+    await memory.add({
+      kind: "boundary",
+      content: "Do not ask about EmissionBoundarySubject.",
+      confidence: 0.9,
+      createdAt: weekIso(8, 1),
+    });
+    await memory.add({
+      kind: "project",
+      content: "EmissionForgetSubject archived note.",
+      confidence: 0.7,
+      createdAt: weekIso(8, 2),
+    });
+    await memory.forget({
+      query: "EmissionForgetSubject",
+      targetTerms: ["EmissionForgetSubject"],
+      reason: "proactive exploration emission gate",
+    });
+
+    const beforePrepareAudit = JSON.stringify(store.readAuditSnapshot());
+    const prepared = await memory.prepareTurn({
+      messages: [{ role: "user", content: "StaleLoadSubject" }],
+    });
+    const prepareReadPure = beforePrepareAudit === JSON.stringify(store.readAuditSnapshot());
+    const explainEmission = await memory.explainTurn({
+      messages: [{ role: "user", content: "EmissionBoundarySubject EmissionForgetSubject" }],
+      maxExcluded: 20,
+    });
+    const focused = await memory.prepareTurn({
+      dispositionPreset: "focused",
+      messages: [{ role: "user", content: "StaleLoadSubject" }],
+    });
+    const expansiveRaised = await memory.prepareTurn({
+      dispositionPreset: "expansive",
+      curiosityBudget: 8,
+      messages: [{ role: "user", content: "StaleLoadSubject" }],
+    });
+
+    await memory.observeWithReport({
+      type: "conversation.message",
+      role: "user",
+      content: "StaleLoadSubject current owner is FreshOwnerSignal.",
+      createdAt: weekIso(8, 3),
+    });
+    const afterClosure = await memory.maintain({
+      now: weekIso(9),
+      phases: ["explore"],
+    });
+
+    const curiosityPriorities = prepared.actionPolicies
+      .filter((policy) => policy.kind === "curiosity")
+      .map((policy) => policy.priority);
+    const boundaryPriorities = prepared.actionPolicies
+      .filter((policy) => policy.kind === "do_not_push")
+      .map((policy) => policy.priority);
+    const emittedGapId = prepared.actionPolicies.find((policy) => policy.kind === "curiosity")?.gapId;
+    return scenarioResult({
+      name: "proactive_exploration",
+      assertions: {
+        dry_run_explore_writes_nothing: dryRunPure && dryRun.exploration.generated > 0,
+        expected_gap_kinds_generated:
+          firstKinds.has("stale_belief") &&
+          firstKinds.has("contradiction_hotspot") &&
+          firstKinds.has("coverage_gap") &&
+          firstKinds.has("decaying_procedure"),
+        stable_ids_and_ordering:
+          firstIds.length > 0 &&
+          firstIds.every((id) => /^gap_[a-f0-9]{24}$/u.test(id)) &&
+          JSON.stringify(firstIds) === JSON.stringify(secondIds),
+        generation_privacy_gates:
+          (firstExplore.exploration.suppressed.find((entry) => entry.reason === "boundary_protected")?.count ?? 0) > 0 &&
+          (firstExplore.exploration.suppressed.find((entry) => entry.reason === "forgotten_subject")?.count ?? 0) > 0 &&
+          (firstExplore.exploration.suppressed.find((entry) => entry.reason === "person_material")?.count ?? 0) > 0 &&
+          !persistedSerialized.includes("BoundaryGapSubject") &&
+          !persistedSerialized.includes("ForgottenGapSubject") &&
+          !persistedSerialized.includes("ExplorationFriend"),
+        prepare_turn_emits_within_budget_and_read_pure:
+          prepareReadPure &&
+          prepared.actionPolicies.filter((policy) => policy.kind === "curiosity").length <= 1 &&
+          emittedGapId !== undefined,
+        emission_privacy_gates:
+          explainEmission.curiosity.suppressed.some((entry) => entry.reason === "boundary_protected") &&
+          explainEmission.curiosity.suppressed.some((entry) => entry.reason === "forgotten_subject") &&
+          !explainEmission.curiosity.emitted.some((entry) =>
+            entry.text.includes("EmissionBoundarySubject") ||
+            entry.text.includes("EmissionForgetSubject")
+          ),
+        budget_and_priority:
+          focused.actionPolicies.every((policy) => policy.kind !== "curiosity") &&
+          expansiveRaised.actionPolicies.filter((policy) => policy.kind === "curiosity").length <= 1 &&
+          curiosityPriorities.every((priority) =>
+            boundaryPriorities.length === 0 || priority < Math.max(...boundaryPriorities)
+          ),
+        answer_observe_closes_gap:
+          afterClosure.exploration.closedSinceLastRun > 0 &&
+          !afterClosure.exploration.candidates.some((candidate) => candidate.id === emittedGapId),
+      },
+      counters: {
+        generatedGapCandidates: firstExplore.exploration.generated,
+        persistedGapCandidates: firstExplore.exploration.persisted,
+        suppressedGapCandidates: firstExplore.exploration.suppressed
+          .reduce((sum, entry) => sum + entry.count, 0),
+        emittedCuriosityPrompts: prepared.actionPolicies
+          .filter((policy) => policy.kind === "curiosity").length,
+        suppressedEmissionCuriosity: explainEmission.curiosity.suppressed.length,
+        gapClosureRate: afterClosure.exploration.closedSinceLastRun > 0 ? 1 : 0,
+      },
+    });
+  } finally {
+    await memory.close();
+  }
+}
+
 async function principalHistoryAccessScope(): Promise<MemoryGymExperienceHorizonScenario> {
   const profileId = "experience_principal_scope";
   const store = createSqliteMemoryStore({ path: ":memory:" });
@@ -1484,6 +1798,7 @@ async function runExperienceHorizonOnce(): Promise<MemoryGymExperienceHorizonSce
     await trustTieredWriteProvenance(),
     await confidenceAnnealing(),
     await provenanceWeightedExperienceCredit(),
+    await proactiveExploration(),
     await principalHistoryAccessScope(),
     await poisoningLifecycle(),
   ];
