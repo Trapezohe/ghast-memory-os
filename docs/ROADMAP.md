@@ -352,3 +352,76 @@ on M7+M8. M11 and M12 run as parallel tracks once M8 stabilizes the service
 API; the benchmark publication in M12 should start as soon as current public
 benchmark runs conclude. Every milestone still ships behind `npm run gate:pr`
 plus new gym suites, with release evidence per release.
+
+---
+
+# Horizon 3: Next-Generation Bets (Research-Grounded)
+
+Grounded in the 2026 H1 literature review in
+[research frontier](./RESEARCH_FRONTIER.md). Horizon 2 makes gmOS adoptable;
+Horizon 3 makes it the reference next-generation architecture instead of a
+competent follower. Three bets, chosen because the field's direction and
+gmOS's existing invariants intersect there.
+
+## M13 — Mnemonic Sovereignty: All Nine Primitives, Verifiably
+
+Goal: be the first memory architecture that can check all nine governance
+primitives from the 2026 security literature (arXiv:2604.16548), with gym
+gates as proof rather than claims.
+
+- Close the partials: per-write versioning with forensic rollback (snapshot
+  points beyond profile backups), separation of audit-mandatory evidence
+  from user-deletable memory tiers (forget keeps a content-free audit stub),
+  confidence annealing for suspiciously promoted memories (rapid
+  reinforcement gains decay faster until re-confirmed by independent
+  evidence), trust-tiered write provenance for cross-agent and
+  environmental sources (host-declared source trust levels gate promotion).
+- Publish a primitive-by-primitive compliance matrix in SECURITY.md, each
+  row backed by a named gym gate; add poisoning-lifecycle suites (write
+  injection, compression amplification, retrieval reactivation, control
+  hijack, propagation, recovery) to the experience-horizon group.
+- Principal-scoped retrieval lands with M8 scoped keys; M13 extends scopes
+  to memory tiers and audit access.
+
+## M14 — Provenance-Weighted Experience Credit
+
+Goal: close the learning loop the way MemQ-style work (arXiv:2605.08374)
+points, but deterministic and explainable instead of black-box RL.
+
+- Outcome credit propagates through the evidence DAG: a used consolidation
+  summary credits its source memories, a used procedure credits its source
+  trajectories, a used dossier credits its beliefs — bounded depth,
+  deterministic decay per hop, visible in lifecycle history and explainTurn
+  score components.
+- Evolution proposals gain parameter-tuning candidates derived from outcome
+  and failure statistics (retention thresholds, fusion weights, novelty
+  gates), still propose-with-approval only. Hosts may run their own RL over
+  the same surfaces; gmOS guarantees auditability of whatever is applied.
+- Gym: credit-propagation determinism, no credit through forgotten or
+  sensitivity-gated links, anneal interaction (M13) covered.
+
+## M15 — Proactive User-Model Exploration
+
+Goal: the digital-twin move — the memory system knows what it does not know
+about the user and asks, entering the Experience stage
+(arXiv:2605.06716) on gmOS terms.
+
+- Deterministic gap detection over the user model: stale validity intervals
+  on load-bearing beliefs, contradiction hotspots, low-coverage entities
+  with high recall demand, procedures with decaying success rates.
+- Gaps surface as a new action-policy class ("curiosity prompts") in
+  prepareTurn, budgeted and boundary-aware (never probe forgotten,
+  incognito, or boundary-protected topics — a do-not-ask list derived from
+  the same gates), so the host agent can ask the user naturally.
+- Answers flow back through observe() as ordinary evidence; a gym suite
+  measures gap-closure rate across simulated weeks without violating any
+  privacy gate.
+
+## Horizon 3 Sequencing
+
+M13 starts after M8 (needs scoped keys). M14 needs M7 (dossiers) but not the
+console. M15 builds on M14's credit signals to rank gaps. All three publish
+through the M12 credibility machinery. Watch-list (build only when the
+research shows an auditability story): latent/KV-cache memory substrates,
+parametric distillation into weights — until then, opaque host artifacts may
+attach to evidence events by reference only.

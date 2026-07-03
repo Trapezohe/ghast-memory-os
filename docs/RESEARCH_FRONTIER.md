@@ -1,0 +1,128 @@
+# Research Frontier: Memory System Design Paradigms (2026 H1)
+
+This page distills the 2026 first-half arXiv literature on agent memory into
+the paradigm signals that inform the gmOS roadmap. It exists so roadmap bets
+are traceable to evidence about where the field is going, not to fashion.
+Each signal lists the primary sources and what gmOS does about it.
+
+## Signal 1 — Memory is graduating from storage to experience
+
+"From Storage to Experience" (arXiv:2605.06716) formalizes three stages:
+Storage (trajectory preservation), Reflection (trajectory refinement), and
+Experience (trajectory abstraction). The frontier stage is defined by
+cross-trajectory abstraction (patterns synthesized across many interactions)
+and proactive exploration (the memory system actively seeks what it is
+missing instead of passively recording).
+
+gmOS position: M3 procedure distillation and M2/M7 consolidation/dossiers are
+stage-three mechanisms with a governance twist (host hooks, evidence links).
+Gap: distillation only abstracts within same-objective clusters, and nothing
+is proactive. Response: Horizon 3 adds gap-driven proactive exploration
+(deterministic detection of user-model blind spots surfaced as ask-the-user
+action policies) and cross-trajectory abstraction beyond objective equality.
+
+## Signal 2 — Agent-native systems thinking: white-box, workload-aligned
+
+"Are We Ready For An Agent-Native Memory System?" (arXiv:2606.24775) studies
+12 memory systems across five benchmarks: no architecture dominates, and
+end-to-end scores hide operational cost, update correctness, and long-horizon
+stability. It calls for modular designs evaluated per component (retrieval
+precision, representation fidelity, update correctness, stability) and for
+localized maintenance over global reorganization.
+
+gmOS position: strongly aligned — Memory Gym gates are white-box contract
+tests, maintain() is localized and bounded, and the release gate tracks p95
+cost. Gap: we do not yet publish per-component metrics. Response: M12
+benchmark publication gains a component-level report (retrieval precision on
+fixtures, update correctness, long-horizon stability from the
+experience-horizon suites, maintenance cost) alongside end-to-end scores.
+
+## Signal 3 — Learned memory policies over heuristics, with provenance credit
+
+MemQ (arXiv:2605.08374) assigns credit to memories through a provenance DAG —
+which memories were retrieved when each new memory was created — propagating
+TD(lambda) credit backward with depth decay, and wins across six benchmarks.
+Memory-R1 and AgeMem train RL policies over store/retrieve/update/summarize/
+discard operations. The 2026 surveys (arXiv:2602.06052, arXiv:2603.07670)
+name learned memory-operation policies a defining capability of
+next-generation systems.
+
+gmOS position: the evidence ledger IS a provenance DAG, and
+commitOutcome({ usedMemoryIds }) already carries the outcome signal — we have
+the substrate these methods require, which most systems lack. Gap: credit
+stops at directly-used memories; policy parameters are static config.
+Response (two deliberate bets):
+- Provenance-weighted credit, deterministic: outcome reinforcement propagates
+  through evidence links (a used consolidation summary credits its source
+  memories, a used procedure credits its trajectories) with bounded depth
+  decay — explainable in lifecycle history, no black-box policy.
+- Policy learning stays approval-gated: evolution proposals may recommend
+  parameter changes (retention thresholds, fusion weights, novelty gates)
+  derived from failure/outcome statistics; hosts may layer RL on top, but
+  nothing self-modifies without approval. This is the auditable answer to
+  black-box RL memory managers.
+
+## Signal 4 — Memory security becomes architecture: mnemonic sovereignty
+
+The security survey (arXiv:2604.16548) maps a six-phase attack lifecycle
+(write injection, store/compress toxin amplification, retrieval reactivation,
+execute-time control hijack, cross-agent propagation, unrecoverable
+forgetting) and defines mnemonic sovereignty: verifiable, recoverable
+governance over what may be written, who may read, when updates are
+authorized, what must remain auditable, and what may be forgotten. It
+enumerates nine governance primitives and finds that NO published
+architecture covers all nine; write-gate validation and post-deletion
+verification are called universal blind spots. SSGM (arXiv:2603.11768) and
+MemGuard (arXiv:2605.28009) reinforce the same direction.
+
+gmOS position: the two "universal blind spots" are things gmOS already ships
+(observe-time safety gates; forget-residue verification across derived
+indexes, strengthened in M6a). Against the nine primitives: typed writes with
+provenance (yes), compression lineage (yes — consolidation/dossier evidence),
+metadata-bearing storage (yes), cross-substrate deletion verification (yes),
+audit/deletable-state separation (partial), principal-scoped retrieval
+(planned, M8 scoped keys), harness-level governance (partial — host
+boundary), snapshot/versioning for forensic rollback (partial — backups, no
+per-write rollback), confidence annealing against promoted toxins (partial —
+bounded reinforcement, no anneal). Response: Horizon 3 includes a Mnemonic
+Sovereignty milestone that closes the partials and publishes a
+primitive-by-primitive compliance matrix backed by gym gates — the goal is to
+be the first architecture that can check all nine boxes verifiably.
+
+## Signal 5 — Temporal semantics beyond dialogue time
+
+"Beyond Dialogue Time" (arXiv:2601.07468) separates event time from dialogue
+time and attaches validity intervals so preferences and facts can expire and
+supersede; Zep-lineage temporal knowledge graphs push the same direction.
+
+gmOS position: already shipped — eventTime/validFrom/validTo, temporal
+validity windows, current-vs-history recall, superseded/out_of_window
+exclusion reasons in explainTurn. This signal validates an existing bet;
+the remaining work is keeping it visible in benchmarks and docs.
+
+## Signal 6 — Substrate diversification: context vs latent vs parametric
+
+KEEP (arXiv:2602.23592) and the KV-cache line (IndexMem, arXiv:2605.25475)
+frame three memory substrates: parametric (weights), context (text/records),
+latent (compressed states / KV artifacts). Latent memory is gaining ground
+for cost reasons.
+
+gmOS position: deliberately context-substrate — auditability, evidence
+links, explainability, and forgetting compliance all depend on inspectable
+records; latent substrates currently cannot honor them. Response: watch, do
+not build. Keep the door open by allowing hosts to attach opaque artifacts
+(hashes/references, never authoritative state) to evidence events, so a
+future latent cache can be provenance-tracked without becoming a second
+source of truth. Revisit when latent-memory work shows an auditability
+story.
+
+## Net Assessment
+
+The field is converging on exactly the properties gmOS chose as invariants —
+provenance, governed writes, verifiable forgetting, white-box evaluation,
+temporal validity. The differentiated next-generation position is not a new
+retrieval trick; it is: (1) the first verifiably sovereign memory
+architecture (all nine governance primitives, gym-gated), (2) experience
+learning with provenance-weighted, approval-gated credit instead of black-box
+RL, and (3) proactive user-model gap exploration for the digital-twin goal.
+Horizon 3 in the roadmap encodes these three bets.
