@@ -13442,6 +13442,7 @@ const statusReport = await createMemoryStatusReport({
 });
 assert.equal(statusReport.framework, "ghast-memory-os");
 assert.equal(statusReport.profileId, "[profile id redacted]");
+assert.equal(statusReport.storage.lifecycle?.profileId, "[profile id redacted]");
 assert.equal(statusReport.package.name, packageJson.name);
 assert.equal(statusReport.package.version, packageJson.version);
 assert.deepEqual(statusReport.runtimeInfo, getGmosRuntimeInfo());
@@ -18030,6 +18031,7 @@ const cliStatusPayload = JSON.parse(cliStatus.stdout) as {
   hostCompatibility?: { level?: string };
 };
 assert.equal(cliStatusPayload.profileId, "[profile id redacted]");
+assert.equal(cliStatusPayload.storage?.lifecycle?.profileId, "[profile id redacted]");
 assert.equal(cliStatusPayload.storage?.schemaVersion, 9);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_memories ?? 0) > 0);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_associations ?? 0) > 0);

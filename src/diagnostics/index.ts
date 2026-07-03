@@ -212,12 +212,14 @@ async function storageStatus(input: {
     const lifecycle = input.store.lifecycleStatus
       ? await input.store.lifecycleStatus({ profileId: input.profileId })
       : undefined;
+    const redactedLifecycle =
+      lifecycle === undefined ? undefined : { ...lifecycle, profileId: REDACTED_PROFILE_ID };
     return {
       status: "ok",
       schemaVersion,
       rowCounts,
       encryption,
-      ...(lifecycle !== undefined ? { lifecycle } : {}),
+      ...(redactedLifecycle !== undefined ? { lifecycle: redactedLifecycle } : {}),
       readAudit,
       ...(searchIndex !== undefined ? { searchIndex } : {}),
     };
