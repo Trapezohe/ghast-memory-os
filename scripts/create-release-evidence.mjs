@@ -931,7 +931,7 @@ function selfTestStatusReport(overrides = {}) {
         ? null
         : {
             status: "ok",
-            schemaVersion: 7,
+            schemaVersion: 10,
             rowCounts: { ...baseRowCounts, ...rowCounts },
             readAudit: {
               status: "ok",

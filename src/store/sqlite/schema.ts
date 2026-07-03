@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-export const GMOS_SQLITE_SCHEMA_VERSION = 9;
+export const GMOS_SQLITE_SCHEMA_VERSION = 10;
 
 const READ_AUDIT_REVISION_TABLES = [
   "gmos_evidence_events",
@@ -23,8 +23,215 @@ function columnExists(db: Database.Database, table: string, column: string): boo
     });
 }
 
+function tableExists(db: Database.Database, table: string): boolean {
+  const row = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(table) as { name?: string } | undefined;
+  return row?.name === table;
+}
+
+function schemaMigrationApplied(db: Database.Database, version: number): boolean {
+  if (!tableExists(db, "gmos_schema_migrations")) return false;
+  const row = db
+    .prepare("SELECT version FROM gmos_schema_migrations WHERE version = ?")
+    .get(version) as { version?: number } | undefined;
+  return row?.version === version;
+}
+
 function quotedIdentifier(input: string): string {
   return `"${input.replaceAll('"', '""')}"`;
+}
+
+function sqliteObjectSql(db: Database.Database, name: string): string {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE name = ?")
+    .get(name) as { sql?: string | null } | undefined;
+  return row?.sql ?? "";
+}
+
+function ftsUsesExternalContent(
+  db: Database.Database,
+  table: string,
+  contentTable: string,
+): boolean {
+  const sql = sqliteObjectSql(db, table).replace(/\s+/gu, " ").toLowerCase();
+  return (
+    sql.includes(`content='${contentTable.toLowerCase()}'`) &&
+    sql.includes("content_rowid='rowid'")
+  );
+}
+
+function ensureMemoryFtsTriggers(db: Database.Database): void {
+  db.exec(`
+    DROP TRIGGER IF EXISTS trg_gmos_memories_fts_ai;
+    DROP TRIGGER IF EXISTS trg_gmos_memories_fts_ad;
+    DROP TRIGGER IF EXISTS trg_gmos_memories_fts_au;
+
+    CREATE TRIGGER trg_gmos_memories_fts_ai
+      AFTER INSERT ON gmos_memories
+      BEGIN
+        INSERT INTO gmos_memories_fts(rowid, id, profile_id, kind, scope, status, content)
+          VALUES (new.rowid, new.id, new.profile_id, new.kind, new.scope, new.status, new.content);
+      END;
+
+    CREATE TRIGGER trg_gmos_memories_fts_ad
+      AFTER DELETE ON gmos_memories
+      BEGIN
+        INSERT INTO gmos_memories_fts(
+          gmos_memories_fts, rowid, id, profile_id, kind, scope, status, content
+        ) VALUES (
+          'delete', old.rowid, old.id, old.profile_id, old.kind, old.scope, old.status, old.content
+        );
+      END;
+
+    CREATE TRIGGER trg_gmos_memories_fts_au
+      AFTER UPDATE ON gmos_memories
+      BEGIN
+        INSERT INTO gmos_memories_fts(
+          gmos_memories_fts, rowid, id, profile_id, kind, scope, status, content
+        ) VALUES (
+          'delete', old.rowid, old.id, old.profile_id, old.kind, old.scope, old.status, old.content
+        );
+        INSERT INTO gmos_memories_fts(rowid, id, profile_id, kind, scope, status, content)
+          VALUES (new.rowid, new.id, new.profile_id, new.kind, new.scope, new.status, new.content);
+      END;
+  `);
+}
+
+function ensureAssociationFtsTriggers(db: Database.Database): void {
+  db.exec(`
+    DROP TRIGGER IF EXISTS trg_gmos_associations_fts_ai;
+    DROP TRIGGER IF EXISTS trg_gmos_associations_fts_ad;
+    DROP TRIGGER IF EXISTS trg_gmos_associations_fts_au;
+
+    CREATE TRIGGER trg_gmos_associations_fts_ai
+      AFTER INSERT ON gmos_associations
+      BEGIN
+        INSERT INTO gmos_associations_fts(
+          rowid, id, profile_id, status, target_type, cue, tag, target_summary
+        ) VALUES (
+          new.rowid, new.id, new.profile_id, new.status, new.target_type,
+          new.cue, new.tag, new.target_summary
+        );
+      END;
+
+    CREATE TRIGGER trg_gmos_associations_fts_ad
+      AFTER DELETE ON gmos_associations
+      BEGIN
+        INSERT INTO gmos_associations_fts(
+          gmos_associations_fts, rowid, id, profile_id, status, target_type,
+          cue, tag, target_summary
+        ) VALUES (
+          'delete', old.rowid, old.id, old.profile_id, old.status, old.target_type,
+          old.cue, old.tag, old.target_summary
+        );
+      END;
+
+    CREATE TRIGGER trg_gmos_associations_fts_au
+      AFTER UPDATE ON gmos_associations
+      BEGIN
+        INSERT INTO gmos_associations_fts(
+          gmos_associations_fts, rowid, id, profile_id, status, target_type,
+          cue, tag, target_summary
+        ) VALUES (
+          'delete', old.rowid, old.id, old.profile_id, old.status, old.target_type,
+          old.cue, old.tag, old.target_summary
+        );
+        INSERT INTO gmos_associations_fts(
+          rowid, id, profile_id, status, target_type, cue, tag, target_summary
+        ) VALUES (
+          new.rowid, new.id, new.profile_id, new.status, new.target_type,
+          new.cue, new.tag, new.target_summary
+        );
+      END;
+  `);
+}
+
+function createMemoryFts(db: Database.Database): void {
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS gmos_memories_fts USING fts5(
+      id UNINDEXED,
+      profile_id UNINDEXED,
+      kind UNINDEXED,
+      scope UNINDEXED,
+      status UNINDEXED,
+      content,
+      content='gmos_memories',
+      content_rowid='rowid',
+      tokenize = 'unicode61'
+    );
+  `);
+}
+
+function createAssociationFts(db: Database.Database): void {
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS gmos_associations_fts USING fts5(
+      id UNINDEXED,
+      profile_id UNINDEXED,
+      status UNINDEXED,
+      target_type UNINDEXED,
+      cue,
+      tag,
+      target_summary,
+      content='gmos_associations',
+      content_rowid='rowid',
+      tokenize = 'unicode61'
+    );
+  `);
+}
+
+function rebuildExternalContentFts(db: Database.Database, table: string): void {
+  db.prepare(
+    `INSERT INTO ${quotedIdentifier(table)}(${quotedIdentifier(table)}) VALUES('rebuild')`,
+  ).run();
+}
+
+function ensureExternalContentFtsSchema(
+  db: Database.Database,
+  previousSchemaVersion: number,
+): void {
+  const needsMemoryFtsRebuild =
+    previousSchemaVersion < 10 ||
+    !schemaMigrationApplied(db, 10) ||
+    !ftsUsesExternalContent(db, "gmos_memories_fts", "gmos_memories");
+  const needsAssociationFtsRebuild =
+    previousSchemaVersion < 10 ||
+    !schemaMigrationApplied(db, 10) ||
+    !ftsUsesExternalContent(db, "gmos_associations_fts", "gmos_associations");
+
+  if (needsMemoryFtsRebuild) {
+    db.exec(`
+      DROP TRIGGER IF EXISTS trg_gmos_memories_fts_ai;
+      DROP TRIGGER IF EXISTS trg_gmos_memories_fts_ad;
+      DROP TRIGGER IF EXISTS trg_gmos_memories_fts_au;
+      DROP TABLE IF EXISTS gmos_memories_fts;
+    `);
+    createMemoryFts(db);
+  }
+  if (needsAssociationFtsRebuild) {
+    db.exec(`
+      DROP TRIGGER IF EXISTS trg_gmos_associations_fts_ai;
+      DROP TRIGGER IF EXISTS trg_gmos_associations_fts_ad;
+      DROP TRIGGER IF EXISTS trg_gmos_associations_fts_au;
+      DROP TABLE IF EXISTS gmos_associations_fts;
+    `);
+    createAssociationFts(db);
+  }
+
+  ensureMemoryFtsTriggers(db);
+  ensureAssociationFtsTriggers(db);
+
+  if (needsMemoryFtsRebuild) rebuildExternalContentFts(db, "gmos_memories_fts");
+  if (needsAssociationFtsRebuild) rebuildExternalContentFts(db, "gmos_associations_fts");
+
+  db.exec(`
+    INSERT OR IGNORE INTO gmos_schema_migrations(version, name, applied_at)
+      VALUES (
+        10,
+        'external_content_fts',
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      );
+  `);
 }
 
 function ensureReadAuditRevisionSchema(db: Database.Database): void {
@@ -82,6 +289,7 @@ export function ensureSqliteSchema(db: Database.Database): void {
   db.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA foreign_keys = ON;
+    PRAGMA recursive_triggers = ON;
 
     CREATE TABLE IF NOT EXISTS gmos_schema_migrations (
       version INTEGER PRIMARY KEY,
@@ -179,6 +387,8 @@ export function ensureSqliteSchema(db: Database.Database): void {
       scope UNINDEXED,
       status UNINDEXED,
       content,
+      content='gmos_memories',
+      content_rowid='rowid',
       tokenize = 'unicode61'
     );
 
@@ -214,6 +424,14 @@ export function ensureSqliteSchema(db: Database.Database): void {
       ON gmos_associations(profile_id, cue, status, updated_at);
     CREATE INDEX IF NOT EXISTS idx_gmos_associations_profile_target
       ON gmos_associations(profile_id, target_type, target_id, status);
+    CREATE INDEX IF NOT EXISTS idx_gmos_associations_source_memory
+      ON gmos_associations(source_memory_id);
+    CREATE INDEX IF NOT EXISTS idx_gmos_associations_source_belief
+      ON gmos_associations(source_belief_id);
+    CREATE INDEX IF NOT EXISTS idx_gmos_associations_source_task_trajectory
+      ON gmos_associations(source_task_trajectory_id);
+    CREATE INDEX IF NOT EXISTS idx_gmos_associations_target_id
+      ON gmos_associations(target_id);
 
     CREATE VIRTUAL TABLE IF NOT EXISTS gmos_associations_fts USING fts5(
       id UNINDEXED,
@@ -223,6 +441,8 @@ export function ensureSqliteSchema(db: Database.Database): void {
       cue,
       tag,
       target_summary,
+      content='gmos_associations',
+      content_rowid='rowid',
       tokenize = 'unicode61'
     );
 
@@ -324,14 +544,7 @@ export function ensureSqliteSchema(db: Database.Database): void {
       );
   `);
 
-  if (previousSchemaVersion < 2) {
-    db.exec(`
-      DELETE FROM gmos_memories_fts;
-      INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
-        SELECT id, profile_id, kind, scope, status, content
-        FROM gmos_memories;
-    `);
-  }
+  ensureExternalContentFtsSchema(db, previousSchemaVersion);
 }
 
 export function sqliteSchemaVersion(db: Database.Database): number {

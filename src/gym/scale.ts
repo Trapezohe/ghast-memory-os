@@ -16,9 +16,18 @@ export interface LatencySummary {
   avgMs: number;
 }
 
+export interface MemoryIngestScaleSummary {
+  samples: number;
+  firstQuintileAvgMs: number;
+  lastQuintileAvgMs: number;
+  lastToFirstRatio: number;
+  latency: LatencySummary;
+}
+
 export interface MemoryScaleBenchmarkRow {
   size: number;
   seedMs: number;
+  ingest: MemoryIngestScaleSummary;
   prepareTurn: LatencySummary;
   reconstructContext: LatencySummary;
   contextNoHitSearch: LatencySummary;
@@ -41,7 +50,10 @@ export interface MemoryScaleBenchmarkRow {
 
 export interface MemoryScaleFailedOperation {
   size: number;
-  operation: "prepareTurn" | "reconstructContext" | "contextNoHitSearch";
+  operation: "ingest" | "prepareTurn" | "reconstructContext" | "contextNoHitSearch";
+  metric: "p95Ms" | "lastToFirstRatio";
+  value: number;
+  threshold: number;
   p95Ms: number;
   thresholdMs: number;
 }
@@ -51,12 +63,17 @@ export interface MemoryScaleBenchmarkResult {
   thresholds: {
     prepareTurnP95Ms: number;
     reconstructContextP95Ms: number;
+    contextNoHitSearchP95Ms: number;
+    ingestP95Ms: number;
+    ingestLastToFirstFactor: number;
   };
   failedOperations: MemoryScaleFailedOperation[];
   results: MemoryScaleBenchmarkRow[];
 }
 
 const DEFAULT_SCALE_ITERATIONS = 32;
+const DEFAULT_INGEST_LAST_TO_FIRST_FACTOR = 3;
+const DEFAULT_INGEST_P95_MS = 25;
 
 function percentile(values: number[], rate: number): number {
   if (values.length === 0) return 0;
@@ -83,16 +100,57 @@ export function summarizeMemoryScaleLatenciesForTest(values: number[]): LatencyS
   };
 }
 
+function average(values: number[]): number {
+  if (values.length === 0) return 0;
+  return values.reduce((total, value) => total + value, 0) / values.length;
+}
+
+function summarizeMemoryIngestScale(values: number[]): MemoryIngestScaleSummary {
+  const quintileSize = Math.max(1, Math.floor(values.length / 5));
+  const firstQuintileAvgMs = average(values.slice(0, quintileSize));
+  const lastQuintileAvgMs = average(values.slice(-quintileSize));
+  return {
+    samples: values.length,
+    firstQuintileAvgMs,
+    lastQuintileAvgMs,
+    lastToFirstRatio: lastQuintileAvgMs / Math.max(firstQuintileAvgMs, 0.001),
+    latency: summarizeMemoryScaleLatenciesForTest(values),
+  };
+}
+
+function scaleFailure(input: {
+  size: number;
+  operation: MemoryScaleFailedOperation["operation"];
+  metric: MemoryScaleFailedOperation["metric"];
+  value: number;
+  threshold: number;
+}): MemoryScaleFailedOperation {
+  return {
+    size: input.size,
+    operation: input.operation,
+    metric: input.metric,
+    value: input.value,
+    threshold: input.threshold,
+    p95Ms: input.value,
+    thresholdMs: input.threshold,
+  };
+}
+
 export async function runMemoryScaleBenchmark(
   options: {
     sizes?: number[] | undefined;
     iterations?: number | undefined;
     thresholdP95Ms?: number | undefined;
+    ingestLastToFirstFactor?: number | undefined;
+    ingestP95Ms?: number | undefined;
   } = {},
 ): Promise<MemoryScaleBenchmarkResult> {
   const sizes = options.sizes ?? [100, 1000];
   const iterations = options.iterations ?? DEFAULT_SCALE_ITERATIONS;
   const thresholdP95Ms = options.thresholdP95Ms ?? 250;
+  const ingestLastToFirstFactor =
+    options.ingestLastToFirstFactor ?? DEFAULT_INGEST_LAST_TO_FIRST_FACTOR;
+  const ingestP95Ms = options.ingestP95Ms ?? DEFAULT_INGEST_P95_MS;
   if (
     sizes.length === 0 ||
     sizes.some((size) => !Number.isInteger(size) || size <= 0)
@@ -101,6 +159,12 @@ export async function runMemoryScaleBenchmark(
   }
   if (!Number.isInteger(iterations) || iterations <= 0) {
     throw new Error("Memory scale benchmark iterations must be a positive integer");
+  }
+  if (!Number.isFinite(ingestLastToFirstFactor) || ingestLastToFirstFactor <= 0) {
+    throw new Error("Memory scale benchmark ingest factor must be a positive number");
+  }
+  if (!Number.isFinite(ingestP95Ms) || ingestP95Ms < 0) {
+    throw new Error("Memory scale benchmark ingest p95 threshold must be a non-negative number");
   }
   const results: MemoryScaleBenchmarkRow[] = [];
 
@@ -112,6 +176,7 @@ export async function runMemoryScaleBenchmark(
     const seedStart = performance.now();
     await store.initialize();
     const routeBucketCount = Math.max(1, Math.min(20, Math.floor(size / 3)));
+    const ingestLatencies: number[] = [];
     for (let index = 0; index < size; index += 1) {
       const routeBucket = index % routeBucketCount;
       let kind: MemoryKind;
@@ -129,15 +194,18 @@ export async function runMemoryScaleBenchmark(
         kind = index % 5 === 0 ? "boundary" : index % 3 === 0 ? "preference" : "fact";
         content = `scale memory ${index} project-${routeBucket} preference-${index % 11} distractor-${index}`;
       }
-      await store.addMemory({
+      const ingestStarted = performance.now();
+      await memory.add({
         profileId: "scale",
         kind,
         content,
         confidence: 0.5 + (index % 10) / 20,
         metadata: { synthetic: true, bucket: routeBucket },
       });
+      ingestLatencies.push(performance.now() - ingestStarted);
     }
     const seedMs = performance.now() - seedStart;
+    const ingest = summarizeMemoryIngestScale(ingestLatencies);
     const prepareTurnLatencies: number[] = [];
     const reconstructContextLatencies: number[] = [];
     const contextNoHitSearchLatencies: number[] = [];
@@ -178,6 +246,7 @@ export async function runMemoryScaleBenchmark(
     results.push({
       size,
       seedMs,
+      ingest,
       prepareTurn: summarizeMemoryScaleLatenciesForTest(prepareTurnLatencies),
       reconstructContext: summarizeMemoryScaleLatenciesForTest(reconstructContextLatencies),
       contextNoHitSearch: summarizeMemoryScaleLatenciesForTest(contextNoHitSearchLatencies),
@@ -200,29 +269,52 @@ export async function runMemoryScaleBenchmark(
   }
   const failedOperations = results.flatMap((row) => {
     const failures: MemoryScaleFailedOperation[] = [];
+    if (row.ingest.latency.p95Ms > ingestP95Ms) {
+      failures.push(scaleFailure({
+        size: row.size,
+        operation: "ingest",
+        metric: "p95Ms",
+        value: row.ingest.latency.p95Ms,
+        threshold: ingestP95Ms,
+      }));
+    }
+    // Quintiles need >= 20 samples for the ratio to measure growth instead of
+    // GC/scheduler noise; smaller sizes still report the ratio without gating.
+    if (row.size >= 100 && row.ingest.lastToFirstRatio > ingestLastToFirstFactor) {
+      failures.push(scaleFailure({
+        size: row.size,
+        operation: "ingest",
+        metric: "lastToFirstRatio",
+        value: row.ingest.lastToFirstRatio,
+        threshold: ingestLastToFirstFactor,
+      }));
+    }
     if (row.prepareTurn.p95Ms > thresholdP95Ms) {
-      failures.push({
+      failures.push(scaleFailure({
         size: row.size,
         operation: "prepareTurn",
-        p95Ms: row.prepareTurn.p95Ms,
-        thresholdMs: thresholdP95Ms,
-      });
+        metric: "p95Ms",
+        value: row.prepareTurn.p95Ms,
+        threshold: thresholdP95Ms,
+      }));
     }
     if (row.reconstructContext.p95Ms > thresholdP95Ms) {
-      failures.push({
+      failures.push(scaleFailure({
         size: row.size,
         operation: "reconstructContext",
-        p95Ms: row.reconstructContext.p95Ms,
-        thresholdMs: thresholdP95Ms,
-      });
+        metric: "p95Ms",
+        value: row.reconstructContext.p95Ms,
+        threshold: thresholdP95Ms,
+      }));
     }
     if (row.contextNoHitSearch.p95Ms > thresholdP95Ms) {
-      failures.push({
+      failures.push(scaleFailure({
         size: row.size,
         operation: "contextNoHitSearch",
-        p95Ms: row.contextNoHitSearch.p95Ms,
-        thresholdMs: thresholdP95Ms,
-      });
+        metric: "p95Ms",
+        value: row.contextNoHitSearch.p95Ms,
+        threshold: thresholdP95Ms,
+      }));
     }
     return failures;
   });
@@ -232,6 +324,9 @@ export async function runMemoryScaleBenchmark(
     thresholds: {
       prepareTurnP95Ms: thresholdP95Ms,
       reconstructContextP95Ms: thresholdP95Ms,
+      contextNoHitSearchP95Ms: thresholdP95Ms,
+      ingestP95Ms,
+      ingestLastToFirstFactor,
     },
     failedOperations,
     results,

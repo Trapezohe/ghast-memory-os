@@ -2982,6 +2982,8 @@ export interface RunMemoryReleaseGateOptions {
   generatedSeeds?: number | undefined;
   scaleSizes?: number[] | undefined;
   scaleThresholdP95Ms?: number | undefined;
+  scaleIngestP95Ms?: number | undefined;
+  scaleIngestLastToFirstFactor?: number | undefined;
   hosts?: HostPreset[] | undefined;
   actualReports?: HostActualCompatibilityReport[] | undefined;
 }
@@ -3007,6 +3009,8 @@ export async function runMemoryReleaseGate(
   const generatedSeeds = options.generatedSeeds ?? 3;
   const scaleSizes = options.scaleSizes ?? [100, 1000];
   const scaleThresholdP95Ms = options.scaleThresholdP95Ms ?? 250;
+  const scaleIngestP95Ms = options.scaleIngestP95Ms ?? 25;
+  const scaleIngestLastToFirstFactor = options.scaleIngestLastToFirstFactor ?? 3;
   const hosts: HostPreset[] =
     options.hosts ?? ["ghast", "mock_l3", "mcp", "search_only"];
 
@@ -3022,6 +3026,8 @@ export async function runMemoryReleaseGate(
       runMemoryScaleBenchmark({
         sizes: scaleSizes,
         thresholdP95Ms: scaleThresholdP95Ms,
+        ingestP95Ms: scaleIngestP95Ms,
+        ingestLastToFirstFactor: scaleIngestLastToFirstFactor,
       }),
       createMemoryStatusReport({
         store: diagnosticsStore,
@@ -3055,6 +3061,8 @@ export async function runMemoryReleaseGate(
         generatedSeeds,
         scaleSizes,
         scaleThresholdP95Ms,
+        scaleIngestP95Ms,
+        scaleIngestLastToFirstFactor,
         hosts,
         actualHostReports: options.actualReports?.length ?? 0,
       },
@@ -3078,6 +3086,8 @@ export async function runMemoryReleaseGate(
           pass: scale.pass,
           sizes: scale.results.map((row) => row.size),
           thresholdP95Ms: scale.thresholds.prepareTurnP95Ms,
+          ingestP95Ms: scale.thresholds.ingestP95Ms,
+          ingestLastToFirstFactor: scale.thresholds.ingestLastToFirstFactor,
           failedSizes,
           failedOperations: scale.failedOperations,
         },

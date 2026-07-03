@@ -917,6 +917,15 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   let initialized = false;
   let ftsAvailableCache: boolean | null = null;
   let vectorIndexAvailableCache: boolean | null = null;
+  const statementCache = new Map<string, Database.Statement>();
+
+  function statement(sql: string): Database.Statement {
+    const cached = statementCache.get(sql);
+    if (cached) return cached;
+    const prepared = db.prepare(sql);
+    statementCache.set(sql, prepared);
+    return prepared;
+  }
 
   function configureEmbeddingProvider(
     input: EmbeddingProvider | EmbeddingProviderConfig | undefined,
@@ -950,16 +959,14 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   }
 
   function tableExists(table: string): boolean {
-    const row = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+    const row = statement("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
       .get(table) as { name?: string } | undefined;
     return row?.name === table;
   }
 
   function schemaMigrationApplied(version: number): boolean {
     if (!tableExists("gmos_schema_migrations")) return false;
-    const row = db
-      .prepare("SELECT version FROM gmos_schema_migrations WHERE version = ?")
+    const row = statement("SELECT version FROM gmos_schema_migrations WHERE version = ?")
       .get(version) as { version?: number } | undefined;
     return row?.version === version;
   }
@@ -972,40 +979,12 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     return vectorIndexAvailableCache ?? tableExists("gmos_memory_vectors");
   }
 
-  function syncMemoryFts(memoryId: string): void {
-    if (!ftsAvailable()) return;
-    db.prepare("DELETE FROM gmos_memories_fts WHERE id = ?").run(memoryId);
-    const row = db
-      .prepare(
-        `SELECT id, profile_id, kind, scope, status, content
-         FROM gmos_memories
-         WHERE id = ?`,
-      )
-      .get(memoryId) as
-      | {
-          id: string;
-          profile_id: string;
-          kind: string;
-          scope: string;
-          status: string;
-          content: string;
-        }
-      | undefined;
-    if (!row) return;
-    db.prepare(
-      `INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(row.id, row.profile_id, row.kind, row.scope, row.status, row.content);
-  }
-
   function syncMemoryVector(memoryId: string, embeddingInput?: MemoryVectorEmbedding | undefined): void {
     if (!vectorIndexAvailable()) return;
-    const existing = db
-      .prepare("SELECT * FROM gmos_memory_vectors WHERE id = ?")
+    const existing = statement("SELECT * FROM gmos_memory_vectors WHERE id = ?")
       .get(memoryId) as Record<string, unknown> | undefined;
-    db.prepare("DELETE FROM gmos_memory_vector_terms WHERE id = ?").run(memoryId);
-    const row = db
-      .prepare(
+    statement("DELETE FROM gmos_memory_vector_terms WHERE id = ?").run(memoryId);
+    const row = statement(
         `SELECT id, profile_id, status, content, updated_at
          FROM gmos_memories
          WHERE id = ?`,
@@ -1020,7 +999,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         }
       | undefined;
     if (!row) {
-      db.prepare("DELETE FROM gmos_memory_vectors WHERE id = ?").run(memoryId);
+      statement("DELETE FROM gmos_memory_vectors WHERE id = ?").run(memoryId);
       return;
     }
     const contentHash = vectorContentHash(row.content);
@@ -1039,7 +1018,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           : "embedded",
       );
     const storedEmbedding = validateStoredEmbedding(embedding);
-    db.prepare(
+    statement(
       `INSERT INTO gmos_memory_vectors(
         id, profile_id, status, provider_name, embedding_status, dimensions,
         vector_json, content_hash, updated_at
@@ -1064,7 +1043,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       contentHash,
       row.updated_at,
     );
-    const termStmt = db.prepare(
+    const termStmt = statement(
       `INSERT OR IGNORE INTO gmos_memory_vector_terms(
         id, profile_id, status, feature_key, updated_at
       ) VALUES (?, ?, ?, ?, ?)`,
@@ -1091,15 +1070,13 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   }
 
   function memoryKindForVector(memoryId: string): MemoryKind {
-    const row = db
-      .prepare("SELECT kind FROM gmos_memories WHERE id = ?")
+    const row = statement("SELECT kind FROM gmos_memories WHERE id = ?")
       .get(memoryId) as { kind?: string } | undefined;
     return (row?.kind ?? "fact") as MemoryKind;
   }
 
   function memorySensitivityForVector(memoryId: string): Sensitivity {
-    const row = db
-      .prepare("SELECT sensitivity FROM gmos_memories WHERE id = ?")
+    const row = statement("SELECT sensitivity FROM gmos_memories WHERE id = ?")
       .get(memoryId) as { sensitivity?: string } | undefined;
     return (row?.sensitivity ?? "normal") as Sensitivity;
   }
@@ -1121,8 +1098,8 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
 
   function rebuildMemoryVectorIndex(): void {
     if (!vectorIndexAvailable()) return;
-    db.prepare("DELETE FROM gmos_memory_vectors").run();
-    db.prepare("DELETE FROM gmos_memory_vector_terms").run();
+    statement("DELETE FROM gmos_memory_vectors").run();
+    statement("DELETE FROM gmos_memory_vector_terms").run();
     const rows = db
       .prepare("SELECT id FROM gmos_memories")
       .all() as Array<{ id: string }>;
@@ -1135,54 +1112,9 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     return tableExists("gmos_associations_fts");
   }
 
-  function syncAssociationFts(associationId: string): void {
-    if (!associationsFtsAvailable()) return;
-    db.prepare("DELETE FROM gmos_associations_fts WHERE id = ?").run(associationId);
-    const row = db
-      .prepare(
-        `SELECT id, profile_id, status, target_type, cue, tag, target_summary
-         FROM gmos_associations
-         WHERE id = ?`,
-      )
-      .get(associationId) as
-      | {
-          id: string;
-          profile_id: string;
-          status: string;
-          target_type: string;
-          cue: string;
-          tag: string;
-          target_summary: string;
-        }
-      | undefined;
-    if (!row) return;
-    db.prepare(
-      `INSERT INTO gmos_associations_fts(
-        id, profile_id, status, target_type, cue, tag, target_summary
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      row.id,
-      row.profile_id,
-      row.status,
-      row.target_type,
-      row.cue,
-      row.tag,
-      row.target_summary,
-    );
-  }
-
   function deleteAssociationsForMemory(memoryId: string): void {
     if (!tableExists("gmos_associations")) return;
-    const ids = db
-      .prepare("SELECT id FROM gmos_associations WHERE source_memory_id = ? OR target_id = ?")
-      .all(memoryId, memoryId) as Array<{ id: string }>;
-    if (ids.length === 0) return;
-    if (associationsFtsAvailable()) {
-      for (const row of ids) {
-        db.prepare("DELETE FROM gmos_associations_fts WHERE id = ?").run(row.id);
-      }
-    }
-    db.prepare("DELETE FROM gmos_associations WHERE source_memory_id = ? OR target_id = ?").run(
+    statement("DELETE FROM gmos_associations WHERE source_memory_id = ? OR target_id = ?").run(
       memoryId,
       memoryId,
     );
@@ -1190,15 +1122,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
 
   function deleteAssociationsForBelief(beliefId: string): void {
     if (!tableExists("gmos_associations")) return;
-    const ids = db
-      .prepare("SELECT id FROM gmos_associations WHERE source_belief_id = ?")
-      .all(beliefId) as Array<{ id: string }>;
-    if (associationsFtsAvailable()) {
-      for (const row of ids) {
-        db.prepare("DELETE FROM gmos_associations_fts WHERE id = ?").run(row.id);
-      }
-    }
-    db.prepare("DELETE FROM gmos_associations WHERE source_belief_id = ?").run(beliefId);
+    statement("DELETE FROM gmos_associations WHERE source_belief_id = ?").run(beliefId);
   }
 
   function upsertAssociation(input: {
@@ -1223,7 +1147,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     const createdAt = input.createdAt ?? nowIso();
     const updatedAt = input.updatedAt ?? createdAt;
     const associationId = id("assoc");
-    db.prepare(
+    statement(
       `INSERT INTO gmos_associations (
         id, profile_id, cue, cue_kind, tag, target_type, target_id, target_kind,
         target_summary, sensitivity, status, confidence, source_memory_id,
@@ -1261,19 +1185,13 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       createdAt,
       updatedAt,
     );
-    const row = db
-      .prepare(
-        `SELECT id FROM gmos_associations
-         WHERE profile_id = ? AND cue = ? AND tag = ? AND target_type = ? AND target_id = ?`,
-      )
-      .get(input.profileId, input.cue, input.tag, input.targetType, input.targetId) as
-      | { id: string }
-      | undefined;
-    if (row) syncAssociationFts(row.id);
   }
 
-  function projectMemoryAssociations(memory: MemoryRecord): void {
-    deleteAssociationsForMemory(memory.id);
+  function projectMemoryAssociations(
+    memory: MemoryRecord,
+    options: { replaceExisting?: boolean | undefined } = {},
+  ): void {
+    if (options.replaceExisting !== false) deleteAssociationsForMemory(memory.id);
     if (memory.status !== "active") return;
     const contentSensitivity = classifySensitivity(memory.content);
     if (memory.sensitivity === "secret_like" || contentSensitivity === "secret_like") return;
@@ -1614,7 +1532,6 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         );
         if (result.changes === 0) continue;
         archivedIds.push(memoryId);
-        syncMemoryFts(memoryId);
         syncMemoryVector(memoryId);
         deleteAssociationsForMemory(memoryId);
         rejectBeliefsForMemory(memoryId, input.archivedAt);
@@ -1659,7 +1576,6 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         | undefined;
       if (!row) continue;
       updateStmt.run(input.usedAt, input.usedAt, input.profileId, memoryId);
-      syncMemoryFts(memoryId);
       syncMemoryVector(memoryId);
       if (row.status === "dormant") {
         activateMemoryProjections(memoryId, input.profileId);
@@ -1708,7 +1624,6 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         memoryId,
       );
       if (result.changes > 0) {
-        syncMemoryFts(memoryId);
         syncMemoryVector(memoryId);
       }
     }
@@ -1783,7 +1698,6 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         memoryId,
       );
       if (result.changes > 0) {
-        syncMemoryFts(memoryId);
         syncMemoryVector(memoryId);
         activateMemoryProjections(memoryId, input.profileId);
         const row = memoryRowById(input.profileId, memoryId);
@@ -1831,7 +1745,6 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       });
       const result = updateStmt.run(now, JSON.stringify(metadata), profileId, member.id);
       if (result.changes === 0) continue;
-      syncMemoryFts(member.id);
       syncMemoryVector(member.id);
       deactivateMemoryProjections(member.id);
       rejectBeliefsForMemory(member.id, now);
@@ -1924,7 +1837,6 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       transition.memoryId,
       transition.from,
     );
-    syncMemoryFts(transition.memoryId);
     syncMemoryVector(transition.memoryId);
     if (transition.to === "active") {
       activateMemoryProjections(transition.memoryId, profileId);
@@ -1944,6 +1856,26 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       retention: transition.retention,
       reasons: transition.reasons,
     });
+  }
+
+  function externalContentFtsIntegrityOk(table: string): boolean {
+    if (db.readonly) return true;
+    try {
+      db.prepare(
+        `INSERT INTO ${quotedIdentifier(table)}(${quotedIdentifier(table)}, rank)
+         VALUES('integrity-check', 1)`,
+      ).run();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function rebuildExternalContentFts(table: string): void {
+    db.prepare(
+      `INSERT INTO ${quotedIdentifier(table)}(${quotedIdentifier(table)})
+       VALUES('rebuild')`,
+    ).run();
   }
 
   function searchIndexStatus(): SearchIndexStatus {
@@ -1983,77 +1915,15 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         vectorIndex: vectorIndexStatus(totalMemoryCount, hasVectorIndex),
       };
     }
-    const indexedMemoryCount = Number(
-      (
-        db
-          .prepare("SELECT COUNT(*) AS count FROM gmos_memories_fts")
-          .get() as { count: number }
-      ).count,
-    );
-    const missingEntryCount = Number(
-      (
-        db
-          .prepare(
-            `SELECT COUNT(*) AS count
-             FROM gmos_memories m
-             WHERE NOT EXISTS (
-               SELECT 1 FROM gmos_memories_fts f WHERE f.id = m.id
-             )`,
-          )
-          .get() as { count: number }
-      ).count,
-    );
-    const orphanEntryCount = Number(
-      (
-        db
-          .prepare(
-            `SELECT COUNT(*) AS count
-             FROM gmos_memories_fts f
-             WHERE NOT EXISTS (
-               SELECT 1 FROM gmos_memories m WHERE m.id = f.id
-             )`,
-          )
-          .get() as { count: number }
-      ).count,
-    );
-    const staleEntryCount = Number(
-      (
-        db
-          .prepare(
-            `SELECT COUNT(*) AS count
-             FROM gmos_memories_fts f
-             JOIN gmos_memories m ON m.id = f.id
-             WHERE f.profile_id IS NOT m.profile_id
-                OR f.kind IS NOT m.kind
-                OR f.scope IS NOT m.scope
-                OR f.status IS NOT m.status
-                OR f.content IS NOT m.content`,
-          )
-          .get() as { count: number }
-      ).count,
-    );
-    const duplicateEntryCount = Number(
-      (
-        db
-          .prepare(
-            `SELECT COALESCE(SUM(entry_count - 1), 0) AS count
-             FROM (
-               SELECT id, COUNT(*) AS entry_count
-               FROM gmos_memories_fts
-               GROUP BY id
-               HAVING COUNT(*) > 1
-             )`,
-          )
-          .get() as { count: number | null }
-      ).count ?? 0,
-    );
+    const memoryFtsIntegrityOk = externalContentFtsIntegrityOk("gmos_memories_fts");
+    const indexedMemoryCount = memoryFtsIntegrityOk ? totalMemoryCount : 0;
+    const missingEntryCount = memoryFtsIntegrityOk ? 0 : totalMemoryCount;
+    const orphanEntryCount = 0;
+    const staleEntryCount = 0;
+    const duplicateEntryCount = 0;
     const vectorIndex = vectorIndexStatus(totalMemoryCount, hasVectorIndex);
     const status =
-      missingEntryCount === 0 &&
-      staleEntryCount === 0 &&
-      orphanEntryCount === 0 &&
-      duplicateEntryCount === 0 &&
-      vectorIndex.status === "ok"
+      memoryFtsIntegrityOk && vectorIndex.status === "ok"
         ? "ok"
         : "stale";
     return {
@@ -2359,12 +2229,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       };
     }
     const repairFts = db.transaction(() => {
-      db.prepare("DELETE FROM gmos_memories_fts").run();
-      db.prepare(
-        `INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
-         SELECT id, profile_id, kind, scope, status, content
-         FROM gmos_memories`,
-      ).run();
+      rebuildExternalContentFts("gmos_memories_fts");
     });
     repairFts();
     if (!embeddingProvider) {
@@ -2976,14 +2841,13 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         createdAt,
         createdAt,
       );
-      syncMemoryFts(memoryId);
       syncMemoryVector(memoryId, embedding);
       const memory = normalizeMemory(
         db
           .prepare("SELECT * FROM gmos_memories WHERE id = ?")
           .get(memoryId) as Record<string, unknown>,
       );
-      projectMemoryAssociations(memory);
+      projectMemoryAssociations(memory, { replaceExisting: false });
       return memory;
     });
     return tx();
@@ -3039,7 +2903,6 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       input.profileId,
       input.id,
     );
-    syncMemoryFts(input.id);
     syncMemoryVector(input.id, embedding);
     const memory = normalizeMemory(
       db
@@ -3073,7 +2936,6 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
          WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
       )
       .run(archivedAt, JSON.stringify(metadata), input.profileId, input.id);
-    syncMemoryFts(input.id);
     syncMemoryVector(input.id);
     deleteAssociationsForMemory(input.id);
     rejectBeliefsForMemory(input.id, archivedAt);
@@ -3099,7 +2961,6 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
          WHERE profile_id = ? AND id = ? AND status = 'archived'`,
       )
       .run(restoredAt, JSON.stringify(metadata), input.profileId, input.id);
-    syncMemoryFts(input.id);
     syncMemoryVector(input.id);
     const restored = db
       .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ?")
@@ -3143,7 +3004,6 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           reason: input.reason,
         });
         stmt.run(archivedAt, JSON.stringify(metadata), input.profileId, row.id);
-        syncMemoryFts(row.id);
         syncMemoryVector(row.id);
         deleteAssociationsForMemory(row.id);
         rejectBeliefsForMemory(row.id, archivedAt);
@@ -3399,7 +3259,6 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         input.createdAt,
         input.createdAt,
       );
-      syncMemoryFts(memoryId);
       syncMemoryVector(memoryId, embedding);
       const memory = normalizeMemory(
         db.prepare("SELECT * FROM gmos_memories WHERE id = ?").get(memoryId) as Record<
@@ -3407,7 +3266,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           unknown
         >,
       );
-      projectMemoryAssociations(memory);
+      projectMemoryAssociations(memory, { replaceExisting: false });
 
       const dormantSourceIds: string[] = [];
       const sourceRow = db.prepare(
@@ -3438,7 +3297,6 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         );
         if (result.changes === 0) continue;
         dormantSourceIds.push(sourceMemoryId);
-        syncMemoryFts(sourceMemoryId);
         syncMemoryVector(sourceMemoryId);
         if (previousStatus === "active") {
           deactivateMemoryProjections(sourceMemoryId);
@@ -3568,7 +3426,6 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         input.createdAt,
         input.createdAt,
       );
-      syncMemoryFts(memoryId);
       syncMemoryVector(memoryId, embedding);
       const memory = normalizeMemory(
         db.prepare("SELECT * FROM gmos_memories WHERE id = ?").get(memoryId) as Record<
@@ -3576,7 +3433,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           unknown
         >,
       );
-      projectMemoryAssociations(memory);
+      projectMemoryAssociations(memory, { replaceExisting: false });
       return {
         memory,
         alreadyExists: false,
@@ -4011,7 +3868,6 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     const tx = db.transaction((memoryIds: string[]) => {
       for (const memoryId of memoryIds) {
         stmt.run(archivedAt, memoryId);
-        syncMemoryFts(memoryId);
         syncMemoryVector(memoryId);
         deleteAssociationsForMemory(memoryId);
         rejectBeliefsForMemory(memoryId, archivedAt);
@@ -4392,7 +4248,6 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     previousStatus: MemoryRecord["status"];
     nextStatus: MemoryRecord["status"];
   }): void {
-    syncMemoryFts(input.memoryId);
     syncMemoryVector(input.memoryId);
     if (input.previousStatus === "active" && input.nextStatus !== "active") {
       deactivateMemoryProjections(input.memoryId);
@@ -4819,13 +4674,6 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     initialize();
     if (db.readonly) throw new Error("gmOS SQLite store is readonly");
     const profileParams = input.profileId ? [input.profileId] : [];
-    if (associationsFtsAvailable()) {
-      db.prepare(
-        input.profileId
-          ? "DELETE FROM gmos_associations_fts WHERE profile_id = ?"
-          : "DELETE FROM gmos_associations_fts",
-      ).run(...profileParams);
-    }
     db.prepare(
       input.profileId
         ? "DELETE FROM gmos_associations WHERE profile_id = ?"
@@ -4839,7 +4687,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       )
       .all(...profileParams) as Record<string, unknown>[];
     for (const memory of memoryRows.map(normalizeMemory)) {
-      projectMemoryAssociations(memory);
+      projectMemoryAssociations(memory, { replaceExisting: false });
     }
 
     const beliefRows = db
@@ -4900,6 +4748,38 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     return `"${input.replaceAll('"', '""')}"`;
   }
 
+  function sqliteValueForHash(value: unknown): unknown {
+    if (Buffer.isBuffer(value)) {
+      return { type: "blob", hex: value.toString("hex") };
+    }
+    return value ?? null;
+  }
+
+  function hashReadAuditShadowTable(hash: ReturnType<typeof createHash>, tableName: string): void {
+    if (!tableExists(tableName)) return;
+    const columns = (
+      db.prepare(`PRAGMA table_info(${quotedIdentifier(tableName)})`).all() as Array<{
+        name?: string;
+      }>
+    )
+      .map((column) => column.name)
+      .filter((column): column is string => typeof column === "string" && column.length > 0);
+    if (columns.length === 0) return;
+    const columnsSql = columns.map(quotedIdentifier).join(", ");
+    const orderSql = columns.map(quotedIdentifier).join(", ");
+    hash.update(`shadow:${tableName}\n`);
+    for (const row of db
+      .prepare(
+        `SELECT ${columnsSql}
+         FROM ${quotedIdentifier(tableName)}
+         ORDER BY ${orderSql}`,
+      )
+      .iterate() as Iterable<Record<string, unknown>>) {
+      hash.update(JSON.stringify(columns.map((column) => sqliteValueForHash(row[column]))));
+      hash.update("\n");
+    }
+  }
+
   function readAuditFtsTableSnapshot(
     table: (typeof READ_AUDIT_FTS_TABLES)[number],
   ): ReadAuditSnapshot["tables"][string] {
@@ -4917,6 +4797,9 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       rowCount += 1;
       hash.update(JSON.stringify([row.__rowid ?? null, ...table.columns.map((column) => row[column] ?? null)]));
       hash.update("\n");
+    }
+    for (const suffix of ["_data", "_idx", "_docsize", "_config"]) {
+      hashReadAuditShadowTable(hash, `${table.name}${suffix}`);
     }
     return {
       rowCount,
@@ -4984,6 +4867,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     configureEmbeddingProvider,
     initialize,
     close() {
+      statementCache.clear();
       if (!options.handle) db.close();
     },
     recordEvidence,

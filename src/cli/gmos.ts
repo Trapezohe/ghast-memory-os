@@ -141,7 +141,7 @@ Usage:
   gmos evolution revert --db ./gmos.db --application evidence_xxx --yes
   gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
   gmos gym run --db :memory: --generated-seeds 3 --format markdown --report-file ./memory-gym.md
-  gmos gym scale --sizes 100,1000 --threshold-p95-ms 250
+  gmos gym scale --sizes 100,1000 --threshold-p95-ms 250 --ingest-threshold-p95-ms 25 --ingest-last-to-first-factor 3
   gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --protocol deterministic-local --require-convergence --include-sensitive --temporal-metadata
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
   gmos gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
@@ -236,6 +236,16 @@ function nonNegativeNumberOption(name: string, fallback: number): number {
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed < 0) {
     throw new Error(`${name} must be a non-negative number`);
+  }
+  return parsed;
+}
+
+function positiveNumberOption(name: string, fallback: number): number {
+  const raw = value(name);
+  if (raw === undefined) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive number`);
   }
   return parsed;
 }
@@ -965,6 +975,8 @@ async function main(): Promise<void> {
         "--scale-sizes",
       ),
       scaleThresholdP95Ms: nonNegativeNumberOption("--threshold-p95-ms", 250),
+      scaleIngestP95Ms: nonNegativeNumberOption("--ingest-threshold-p95-ms", 25),
+      scaleIngestLastToFirstFactor: positiveNumberOption("--ingest-last-to-first-factor", 3),
       hosts: hostPresetList(value("--hosts")),
       actualReports: actualHostReportsFromOption(),
     });
@@ -988,6 +1000,8 @@ async function main(): Promise<void> {
     const report = await runMemoryScaleBenchmark({
       sizes,
       thresholdP95Ms: nonNegativeNumberOption("--threshold-p95-ms", 250),
+      ingestP95Ms: nonNegativeNumberOption("--ingest-threshold-p95-ms", 25),
+      ingestLastToFirstFactor: positiveNumberOption("--ingest-last-to-first-factor", 3),
     });
     printReport(report, renderMemoryScaleMarkdown(report));
     if (!report.pass) process.exitCode = 1;

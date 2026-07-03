@@ -1124,32 +1124,6 @@ function assertNoEvidenceConflicts(
   }
 }
 
-function syncRestoredMemoryFts(db: Database.Database, memoryId: string): void {
-  if (!tableExists(db, "gmos_memories_fts")) return;
-  db.prepare("DELETE FROM gmos_memories_fts WHERE id = ?").run(memoryId);
-  const row = db
-    .prepare(
-      `SELECT id, profile_id, kind, scope, status, content
-       FROM gmos_memories
-       WHERE id = ?`,
-    )
-    .get(memoryId) as
-    | {
-        id: string;
-        profile_id: string;
-        kind: string;
-        scope: string;
-        status: string;
-        content: string;
-      }
-    | undefined;
-  if (!row) return;
-  db.prepare(
-    `INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(row.id, row.profile_id, row.kind, row.scope, row.status, row.content);
-}
-
 function syncRestoredMemoryVector(db: Database.Database, memoryId: string): void {
   if (!tableExists(db, "gmos_memory_vectors")) return;
   db.prepare("DELETE FROM gmos_memory_vectors WHERE id = ?").run(memoryId);
@@ -1355,7 +1329,6 @@ export function restoreSqliteProfileBackup(
       );
       applyChangeCount(result, inserted, skipped, "memories");
       if (result.changes > 0) {
-        syncRestoredMemoryFts(db, memory.id);
         syncRestoredMemoryVector(db, memory.id);
       }
     }

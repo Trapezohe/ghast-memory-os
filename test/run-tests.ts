@@ -654,10 +654,53 @@ function rawHttpRequest(port: number, payload: string): Promise<string> {
   });
 }
 
+function corruptMemoryFtsEntry(
+  db: Database.Database,
+  memoryId: string,
+  replacementContent?: string,
+): void {
+  const row = db
+    .prepare(
+      `SELECT rowid, id, profile_id, kind, scope, status, content
+       FROM gmos_memories
+       WHERE id = ?`,
+    )
+    .get(memoryId) as
+    | {
+        rowid: number;
+        id: string;
+        profile_id: string;
+        kind: string;
+        scope: string;
+        status: string;
+        content: string;
+      }
+    | undefined;
+  assert.ok(row);
+  db.prepare(
+    `INSERT INTO gmos_memories_fts(
+      gmos_memories_fts, rowid, id, profile_id, kind, scope, status, content
+    ) VALUES ('delete', ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(row.rowid, row.id, row.profile_id, row.kind, row.scope, row.status, row.content);
+  if (replacementContent === undefined) return;
+  db.prepare(
+    `INSERT INTO gmos_memories_fts(rowid, id, profile_id, kind, scope, status, content)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    row.rowid,
+    row.id,
+    row.profile_id,
+    row.kind,
+    row.scope,
+    row.status,
+    replacementContent,
+  );
+}
+
 const store: SqliteMemoryStore = createSqliteMemoryStore({ path: dbPath });
 const memory = createMemoryOS({ profileId: "test", store });
 await store.initialize();
-assert.equal(await store.schemaVersion(), 9);
+assert.equal(await store.schemaVersion(), 10);
 
 const workspaceEntityResolver: EntityResolver = (input) => {
   const subject = input.subject.trim();
@@ -871,7 +914,7 @@ legacyHandle.exec(`
 `);
 const legacyStore = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
 await legacyStore.initialize();
-assert.equal(await legacyStore.schemaVersion(), 9);
+assert.equal(await legacyStore.schemaVersion(), 10);
 assert.equal(
   (
     legacyHandle
@@ -942,7 +985,7 @@ assert.ok(
 );
 const legacyStoreReopen = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
 await legacyStoreReopen.initialize();
-assert.equal(await legacyStoreReopen.schemaVersion(), 9);
+assert.equal(await legacyStoreReopen.schemaVersion(), 10);
 assert.equal(
   (
     legacyHandle
@@ -990,7 +1033,7 @@ legacyV2Handle.exec(`
 `);
 const legacyV2Store = createSqliteMemoryStore({ path: legacyV2DbPath, handle: legacyV2Handle });
 await legacyV2Store.initialize();
-assert.equal(await legacyV2Store.schemaVersion(), 9);
+assert.equal(await legacyV2Store.schemaVersion(), 10);
 assert.ok(
   (
     legacyV2Handle
@@ -1064,7 +1107,7 @@ const legacyV6ProjectionUpgradeStore = createSqliteMemoryStore({
   handle: legacyV6ProjectionHandle,
 });
 await legacyV6ProjectionUpgradeStore.initialize();
-assert.equal(await legacyV6ProjectionUpgradeStore.schemaVersion(), 9);
+assert.equal(await legacyV6ProjectionUpgradeStore.schemaVersion(), 10);
 const upgradedRelationAssociation = legacyV6ProjectionHandle
   .prepare(
     `SELECT cue, target_summary
@@ -1530,10 +1573,6 @@ try {
       created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
-  const insertAssociationFts = unsafeAssociationDb.prepare(
-    `INSERT INTO gmos_associations_fts(id, profile_id, status, target_type, cue, tag, target_summary)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  );
   for (const field of unsafeAssociationFields) {
     const marker = `sk-dirtyassociation${field.replaceAll("_", "")}1234567890`;
     const row = {
@@ -1595,15 +1634,6 @@ try {
       row.createdAt,
       row.updatedAt,
     );
-    insertAssociationFts.run(
-      row.id,
-      row.profileId,
-      row.status,
-      row.targetType,
-      row.cue,
-      row.tag,
-      row.targetSummary,
-    );
   }
   const dirtyProfileMarker = "sk-dirtyassociationprofileid1234567890";
   const dirtyAssociationProfileId = `unsafe_association_visibility api key ${dirtyProfileMarker}`;
@@ -1626,15 +1656,6 @@ try {
     null,
     "2026-06-25T00:00:00.000Z",
     "2026-06-25T00:00:00.000Z",
-  );
-  insertAssociationFts.run(
-    "assoc_dirty_secret_visibility_profile_id",
-    dirtyAssociationProfileId,
-    "active",
-    "memory",
-    "dirtyassociationcandidate",
-    "dirtyassociationcandidate",
-    "Safe dirtyassociationcandidate target.",
   );
 } finally {
   unsafeAssociationDb.close();
@@ -1675,6 +1696,32 @@ assert.equal(
   unsafeAssociationProfileReconstructed.contextBlock.includes("sk-dirtyassociation"),
   false,
 );
+await memory.add({
+  profileId: "association_fts_rebuild",
+  kind: "project",
+  content: "Calypso project release gate owner is Redwood Team.",
+  confidence: 0.88,
+});
+const associationFtsBeforeRebuild = await store.searchAssociations({
+  profileId: "association_fts_rebuild",
+  query: "Calypso Redwood",
+  limit: 10,
+});
+assert.equal(associationFtsBeforeRebuild.length > 0, true);
+const associationFtsRebuildDb = new Database(dbPath);
+try {
+  associationFtsRebuildDb
+    .prepare("INSERT INTO gmos_associations_fts(gmos_associations_fts) VALUES('rebuild')")
+    .run();
+} finally {
+  associationFtsRebuildDb.close();
+}
+const associationFtsAfterRebuild = await store.searchAssociations({
+  profileId: "association_fts_rebuild",
+  query: "Calypso Redwood",
+  limit: 10,
+});
+assert.deepEqual(associationFtsAfterRebuild, associationFtsBeforeRebuild);
 const unsafeKindReconstructed = await memory.reconstructContext({
   profileId: "unsafe_kind_reconstruction_label",
   query: "safe reconstruction memory kind content",
@@ -11140,9 +11187,7 @@ assert.equal(repairStatus.vectorIndex?.indexedMemoryCount, 1);
 assert.equal(repairStatus.vectorIndex?.dimensions, 384);
 const corruptRepairDb = new Database(repairDbPath);
 try {
-  corruptRepairDb
-    .prepare("DELETE FROM gmos_memories_fts WHERE id = ?")
-    .run(repairFixture.id);
+  corruptMemoryFtsEntry(corruptRepairDb, repairFixture.id);
 } finally {
   corruptRepairDb.close();
 }
@@ -11240,88 +11285,15 @@ assert.equal(repairStatus.status, "stale");
 assert.equal(repairStatus.vectorIndex?.status, "stale");
 assert.equal(repairStatus.vectorIndex?.orphanEntryCount, 1);
 assert.equal((await repairStore.repairSearchIndex()).after.vectorIndex?.status, "ok");
-const duplicateRepairDb = new Database(repairDbPath);
+const staleFtsRepairDb = new Database(repairDbPath);
 try {
-  duplicateRepairDb
-    .prepare(
-      `INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      repairFixture.id,
-      "repair",
-      "preference",
-      "global",
-      "active",
-      "Repair index fixture prefers resilient recall.",
-    );
+  corruptMemoryFtsEntry(staleFtsRepairDb, repairFixture.id, "stale derived search index content");
 } finally {
-  duplicateRepairDb.close();
+  staleFtsRepairDb.close();
 }
 repairStatus = await repairStore.searchIndexStatus();
 assert.equal(repairStatus.status, "stale");
-assert.equal(repairStatus.duplicateEntryCount, 1);
-assert.equal((await repairStore.repairSearchIndex()).after.status, "ok");
-const staleRepairDb = new Database(repairDbPath);
-try {
-  staleRepairDb.prepare("DELETE FROM gmos_memories_fts WHERE id = ?").run(repairFixture.id);
-  staleRepairDb
-    .prepare(
-      `INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      repairFixture.id,
-      "repair",
-      "preference",
-      "global",
-      "active",
-      "stale derived search index content",
-    );
-} finally {
-  staleRepairDb.close();
-}
-repairStatus = await repairStore.searchIndexStatus();
-assert.equal(repairStatus.status, "stale");
-assert.equal(repairStatus.staleEntryCount, 1);
-assert.equal((await repairStore.repairSearchIndex()).after.status, "ok");
-const nullStaleRepairDb = new Database(repairDbPath);
-try {
-  nullStaleRepairDb.prepare("DELETE FROM gmos_memories_fts WHERE id = ?").run(repairFixture.id);
-  nullStaleRepairDb
-    .prepare(
-      `INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      repairFixture.id,
-      null,
-      "preference",
-      "global",
-      "active",
-      "Repair index fixture prefers resilient recall.",
-    );
-} finally {
-  nullStaleRepairDb.close();
-}
-repairStatus = await repairStore.searchIndexStatus();
-assert.equal(repairStatus.status, "stale");
-assert.equal(repairStatus.staleEntryCount, 1);
-assert.equal((await repairStore.repairSearchIndex()).after.status, "ok");
-const orphanRepairDb = new Database(repairDbPath);
-try {
-  orphanRepairDb
-    .prepare(
-      `INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    )
-    .run("memory_orphan", "repair", "fact", "global", "active", "orphan fts row");
-} finally {
-  orphanRepairDb.close();
-}
-repairStatus = await repairStore.searchIndexStatus();
-assert.equal(repairStatus.status, "stale");
-assert.equal(repairStatus.orphanEntryCount, 1);
+assert.equal(repairStatus.missingEntryCount, 1);
 assert.equal((await repairStore.repairSearchIndex()).after.status, "ok");
 await repairMemory.close();
 const lowLevelExplanation = await memory.explain(lowLevelMemory.id, "test");
@@ -13449,8 +13421,12 @@ assert.deepEqual(statusReport.runtimeInfo, getGmosRuntimeInfo());
 assert.equal(statusReport.runtimeInfo.publicSurface.mcpTools.includes("memory.runtime_info"), true);
 assert.equal(statusReport.runtimeInfo.publicSurface.httpRoutes.includes("GET /runtime-info"), true);
 assert.equal(statusReport.storage.status, "ok");
-assert.equal(statusReport.storage.schemaVersion, 9);
-assert.equal(statusReport.storage.searchIndex?.status, "ok");
+assert.equal(statusReport.storage.schemaVersion, 10);
+assert.equal(
+  statusReport.storage.searchIndex?.status,
+  "ok",
+  JSON.stringify(statusReport.storage.searchIndex),
+);
 assert.equal(statusReport.storage.searchIndex?.missingEntryCount, 0);
 assert.equal(statusReport.storage.rowCounts.gmos_failure_events >= testProfileFailures.length, true);
 assert.equal(statusReport.storage.readAudit.status, "ok");
@@ -14610,7 +14586,7 @@ try {
   assert.equal(status.status, 200);
   assert.equal(
     ((status.body.report as { storage?: { schemaVersion?: number } }).storage ?? {}).schemaVersion,
-    9,
+    10,
   );
   assert.equal((status.body.report as { profileId?: string }).profileId, "[profile id redacted]");
   assert.deepEqual(
@@ -16184,7 +16160,7 @@ const cliRepairMemory = JSON.parse(cliRepairAdd.stdout) as { id?: string };
 assert.ok(cliRepairMemory.id);
 const corruptCliRepairDb = new Database(cliRepairSearchDb);
 try {
-  corruptCliRepairDb.prepare("DELETE FROM gmos_memories_fts WHERE id = ?").run(cliRepairMemory.id);
+  corruptMemoryFtsEntry(corruptCliRepairDb, String(cliRepairMemory.id));
 } finally {
   corruptCliRepairDb.close();
 }
@@ -16466,23 +16442,11 @@ async function assertReadAuditRejectsFtsSameRowMutation(
   function mutateFtsSameRows(): void {
     if (mutated) return;
     mutated = true;
-    assert.equal(
-      auditHandle.prepare("DELETE FROM gmos_memories_fts WHERE id = ?").run(memory.id).changes,
-      1,
+    corruptMemoryFtsEntry(
+      auditHandle,
+      memory.id,
+      "FTS drift keeps the same row count but changes searchable content.",
     );
-    auditHandle
-      .prepare(
-        `INSERT INTO gmos_memories_fts(id, profile_id, kind, scope, status, content)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        memory.id,
-        memory.profileId,
-        memory.kind,
-        memory.scope,
-        memory.status,
-        "FTS drift keeps the same row count but changes searchable content.",
-      );
   }
 
   try {
@@ -17590,7 +17554,6 @@ assert.doesNotMatch(cliPrivateRouteExplainPath.stdout, internalRouteLeakPattern)
 const corruptAssociationsDb = new Database(reconstructionDb);
 try {
   corruptAssociationsDb.prepare("DELETE FROM gmos_associations WHERE profile_id = 'recon'").run();
-  corruptAssociationsDb.prepare("DELETE FROM gmos_associations_fts WHERE profile_id = 'recon'").run();
 } finally {
   corruptAssociationsDb.close();
 }
@@ -18032,7 +17995,7 @@ const cliStatusPayload = JSON.parse(cliStatus.stdout) as {
 };
 assert.equal(cliStatusPayload.profileId, "[profile id redacted]");
 assert.equal(cliStatusPayload.storage?.lifecycle?.profileId, "[profile id redacted]");
-assert.equal(cliStatusPayload.storage?.schemaVersion, 9);
+assert.equal(cliStatusPayload.storage?.schemaVersion, 10);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_memories ?? 0) > 0);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_associations ?? 0) > 0);
 assert.equal(cliStatusPayload.storage?.searchIndex?.status, "ok");
@@ -18624,7 +18587,7 @@ assert.equal(gym.roadmapResult.status, "clear");
 assert.equal(gym.runManifest.dbPathMode, "memory");
 assert.equal(gym.runManifest.package.name, packageJson.name);
 assert.equal(gym.runManifest.package.version, packageJson.version);
-assert.equal(gym.runManifest.sqliteSchemaVersion, 9);
+assert.equal(gym.runManifest.sqliteSchemaVersion, 10);
 assert.equal(gym.runManifest.git.branch, expectedGit.branch);
 assert.equal(gym.runManifest.git.sha, expectedGit.sha);
 assert.equal(gym.runManifest.git.dirty, expectedGit.dirty);
@@ -18638,7 +18601,7 @@ assert.match(renderedGym, /Coverage Matrix/);
 assert.match(renderedGym, /Experience Horizon/);
 assert.match(renderedGym, /Run Manifest/);
 assert.match(renderedGym, /Package: @ghast\/memory@/);
-assert.match(renderedGym, /SQLite schema: 9/);
+assert.match(renderedGym, /SQLite schema: 10/);
 const externalBenchmarkJsonl = [
   JSON.stringify({
     id: "project-next-step",
@@ -20998,10 +20961,12 @@ await assert.rejects(
 );
 const scale = await runMemoryScaleBenchmark({ sizes: [10, 50], iterations: 3 });
 assert.equal(scale.pass, true);
+assert.equal(scale.results[0]?.ingest.samples, 10);
 assert.equal(scale.results[0]?.reconstructContext.samples, 3);
 assert.equal(scale.results[0]?.contextNoHitSearch.samples, 3);
 assert.ok((scale.results[0]?.reconstructedPathCount.p95 ?? 0) > 0);
 assert.match(renderMemoryScaleMarkdown(scale), /gmOS Memory Scale Benchmark/);
+assert.match(renderMemoryScaleMarkdown(scale), /ingest/);
 assert.match(renderMemoryScaleMarkdown(scale), /reconstructContext/);
 assert.match(renderMemoryScaleMarkdown(scale), /contextNoHitSearch/);
 const defaultScale = await runMemoryScaleBenchmark({ sizes: [10] });
@@ -21155,7 +21120,7 @@ for (const [host, expectedLevel] of [
   assert.equal(doctorJson.runtimeInfo?.trustContract?.encryptionSupported, "host_driver");
   assert.equal(doctorJson.runtimeInfo?.trustContract?.cloudRequired, false);
   assert.equal(doctorJson.schema?.dialect, "sqlite");
-  assert.equal(doctorJson.schema?.version, 9);
+  assert.equal(doctorJson.schema?.version, 10);
   assert.equal(doctorJson.readAudit?.status, "ok");
   assert.equal(doctorJson.readAudit?.schema, "gmos.read_audit_snapshot.v1");
   assert.equal((doctorJson.readAudit?.tableCount ?? 0) >= 10, true);

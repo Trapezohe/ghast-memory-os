@@ -100,6 +100,26 @@ Sensitive and person memories remain on local fallback vectors unless the host
 explicitly opts in through provider config. Secret-like content is never sent to
 the provider.
 
+## SQLite Schema v10
+
+Schema v10 rebuilds the derived full-text indexes as external-content FTS5
+tables. `gmos_memories_fts` and `gmos_associations_fts` become
+`content='gmos_memories'` / `content='gmos_associations'` tables maintained by
+`AFTER INSERT/UPDATE/DELETE` triggers on their base tables, and the store
+enables `PRAGMA recursive_triggers` so `INSERT OR REPLACE` cannot bypass the
+delete trigger.
+
+This fixes an O(N^2) ingest blowup: the previous standalone FTS tables were
+deleted through `WHERE id = ?` on an UNINDEXED column, which SQLite executes
+as a full virtual-table scan, so every memory insert scanned the whole
+association index. Ingest throughput is now flat with profile size.
+
+The migration drops and recreates both FTS structures and repopulates them
+from source rows; it is idempotent and runs automatically on first open.
+Search-index health changes semantics under external content: when the FTS
+integrity check fails, `missingEntryCount` reports the total indexed-memory
+count (repair rebuilds the whole index) instead of a per-row gap count.
+
 ## M3 Experience Learning
 
 M3 does not add a SQLite schema version. Procedure distillation, outcome

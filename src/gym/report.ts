@@ -214,14 +214,14 @@ export function renderMemoryScaleMarkdown(report: MemoryScaleBenchmarkResult): s
     "# gmOS Memory Scale Benchmark",
     "",
     `Status: ${report.pass ? "PASS" : "FAIL"}`,
-    "Scope: local SQLite prepareTurn, reconstructContext, and no-hit context search cost curve; not an external benchmark proof.",
-    `Thresholds: prepareTurn p95 <= ${report.thresholds.prepareTurnP95Ms}ms; reconstructContext p95 <= ${report.thresholds.reconstructContextP95Ms}ms; contextNoHitSearch p95 <= ${report.thresholds.prepareTurnP95Ms}ms`,
+    "Scope: local SQLite ingest, prepareTurn, reconstructContext, and no-hit context search cost curve; not an external benchmark proof.",
+    `Thresholds: ingest p95 <= ${report.thresholds.ingestP95Ms}ms; ingest last/first quintile <= ${report.thresholds.ingestLastToFirstFactor}x; prepareTurn p95 <= ${report.thresholds.prepareTurnP95Ms}ms; reconstructContext p95 <= ${report.thresholds.reconstructContextP95Ms}ms; contextNoHitSearch p95 <= ${report.thresholds.contextNoHitSearchP95Ms}ms`,
     "",
-    "| Memories | Seed ms | prepareTurn p50/p95/max ms | reconstructContext p50/p95/max ms | contextNoHitSearch p50/p95/max ms | Prompt p95 tokens | Reconstructed p95 tokens | Reconstructed p95 paths |",
-    "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| Memories | Seed ms | ingest p50/p95/max ms | ingest last/first | prepareTurn p50/p95/max ms | reconstructContext p50/p95/max ms | contextNoHitSearch p50/p95/max ms | Prompt p95 tokens | Reconstructed p95 tokens | Reconstructed p95 paths |",
+    "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ...report.results.map(
       (row) =>
-        `| ${row.size} | ${row.seedMs.toFixed(3)} | ${row.prepareTurn.p50Ms.toFixed(3)}/${row.prepareTurn.p95Ms.toFixed(3)}/${row.prepareTurn.maxMs.toFixed(3)} | ${row.reconstructContext.p50Ms.toFixed(3)}/${row.reconstructContext.p95Ms.toFixed(3)}/${row.reconstructContext.maxMs.toFixed(3)} | ${row.contextNoHitSearch.p50Ms.toFixed(3)}/${row.contextNoHitSearch.p95Ms.toFixed(3)}/${row.contextNoHitSearch.maxMs.toFixed(3)} | ${row.promptTokenEstimate.p95} | ${row.reconstructedTokenEstimate.p95} | ${row.reconstructedPathCount.p95} |`,
+        `| ${row.size} | ${row.seedMs.toFixed(3)} | ${row.ingest.latency.p50Ms.toFixed(3)}/${row.ingest.latency.p95Ms.toFixed(3)}/${row.ingest.latency.maxMs.toFixed(3)} | ${row.ingest.lastToFirstRatio.toFixed(3)}x | ${row.prepareTurn.p50Ms.toFixed(3)}/${row.prepareTurn.p95Ms.toFixed(3)}/${row.prepareTurn.maxMs.toFixed(3)} | ${row.reconstructContext.p50Ms.toFixed(3)}/${row.reconstructContext.p95Ms.toFixed(3)}/${row.reconstructContext.maxMs.toFixed(3)} | ${row.contextNoHitSearch.p50Ms.toFixed(3)}/${row.contextNoHitSearch.p95Ms.toFixed(3)}/${row.contextNoHitSearch.maxMs.toFixed(3)} | ${row.promptTokenEstimate.p95} | ${row.reconstructedTokenEstimate.p95} | ${row.reconstructedPathCount.p95} |`,
     ),
     "",
     "## Failed Operations",
@@ -230,7 +230,7 @@ export function renderMemoryScaleMarkdown(report: MemoryScaleBenchmarkResult): s
       ? ["None"]
       : report.failedOperations.map(
           (failure) =>
-            `- size=${failure.size} operation=${failure.operation} p95=${failure.p95Ms.toFixed(3)}ms threshold=${failure.thresholdMs}ms`,
+            `- size=${failure.size} operation=${failure.operation} metric=${failure.metric} value=${failure.value.toFixed(3)} threshold=${failure.threshold}`,
         )),
     "",
   ].join("\n");
@@ -431,6 +431,8 @@ export function renderMemoryReleaseGateMarkdown(
     `Generated seeds: ${report.inputs.generatedSeeds}`,
     `Scale sizes: ${report.inputs.scaleSizes.join(", ")}`,
     `Scale threshold p95 ms: ${report.inputs.scaleThresholdP95Ms}`,
+    `Scale ingest p95 ms: ${report.inputs.scaleIngestP95Ms}`,
+    `Scale ingest last/first factor: ${report.inputs.scaleIngestLastToFirstFactor}`,
     `Hosts: ${report.inputs.hosts.join(", ")}`,
     `Actual host reports: ${report.inputs.actualHostReports}`,
     "",
@@ -457,7 +459,7 @@ export function renderMemoryReleaseGateMarkdown(
           ...(scaleFailedOperations.length > 0
             ? scaleFailedOperations.map(
                 (failure) =>
-                  `- scale:${failure.size}:${failure.operation}:p95=${failure.p95Ms.toFixed(3)}ms threshold=${failure.thresholdMs}ms`,
+                  `- scale:${failure.size}:${failure.operation}:${failure.metric}=${failure.value.toFixed(3)} threshold=${failure.threshold}`,
               )
             : report.components.scale.failedSizes.map((size) => `- scale:${size}`)),
           ...(!report.components.diagnostics.pass ? ["- diagnostics"] : []),

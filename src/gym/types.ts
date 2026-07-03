@@ -130,6 +130,8 @@ export interface MemoryReleaseGateResult {
     generatedSeeds: number;
     scaleSizes: number[];
     scaleThresholdP95Ms: number;
+    scaleIngestP95Ms: number;
+    scaleIngestLastToFirstFactor: number;
     hosts: HostPreset[];
     actualHostReports: number;
   };
@@ -152,6 +154,8 @@ export interface MemoryReleaseGateResult {
       pass: boolean;
       sizes: number[];
       thresholdP95Ms: number;
+      ingestP95Ms?: number | undefined;
+      ingestLastToFirstFactor?: number | undefined;
       failedSizes: number[];
       failedOperations?: import("./scale.js").MemoryScaleFailedOperation[] | undefined;
     };
