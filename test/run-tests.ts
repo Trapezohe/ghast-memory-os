@@ -18860,6 +18860,62 @@ assert.equal((externalBenchmark.cases[0]?.wideBudgetDiagnosticRuntimeMs ?? -1) >
 assert.equal(typeof externalBenchmark.cases[0]?.diagnostics.evidenceConvergenceScore, "number");
 const externalHash = hashExternalMemoryBenchmarkInput(externalBenchmarkJsonl);
 assert.match(externalHash, /^sha256:[a-f0-9]{64}$/);
+const externalSecretLikeSkipBenchmark = await runExternalMemoryBenchmark({
+  cases: [{
+    id: "external-secret-like-memory-skip",
+    events: [
+      {
+        type: "memory",
+        kind: "project",
+        content: "Project Cipher public marker is Green Finch.",
+      },
+      {
+        type: "memory",
+        kind: "fact",
+        content: "Project Cipher api key is sk-external-secret-1234567890",
+      },
+    ],
+    question: "What is Project Cipher public marker?",
+    expectedAny: ["Green Finch"],
+    forbiddenAny: ["sk-external-secret"],
+  }],
+});
+assert.equal(externalSecretLikeSkipBenchmark.pass, true);
+assert.equal(
+  externalSecretLikeSkipBenchmark.cases[0]?.warnings.includes(
+    "skipped_external_memory_event_secret_like",
+  ),
+  true,
+);
+assert.deepEqual(externalSecretLikeSkipBenchmark.cases[0]?.forbiddenMatches, []);
+assert.equal(
+  externalSecretLikeSkipBenchmark.summary.warnings.some(
+    (entry) => entry.name === "skipped_external_memory_event_secret_like" && entry.count === 1,
+  ),
+  true,
+);
+const externalSecretLikeOnlyBenchmark = await runExternalMemoryBenchmark({
+  cases: [{
+    id: "external-secret-like-only-memory-fails",
+    events: [{
+      type: "memory",
+      kind: "fact",
+      content: "Project Cipher api key is sk-external-secret-1234567890",
+    }],
+    question: "What is Project Cipher api key?",
+    expectedAny: ["sk-external-secret"],
+  }],
+});
+assert.equal(externalSecretLikeOnlyBenchmark.pass, false);
+assert.deepEqual(externalSecretLikeOnlyBenchmark.cases[0]?.failureReasons, [
+  "expected_any_missing",
+]);
+assert.equal(
+  externalSecretLikeOnlyBenchmark.cases[0]?.warnings.includes(
+    "skipped_external_memory_event_secret_like",
+  ),
+  true,
+);
 await assert.rejects(
   () =>
     runExternalMemoryBenchmark({

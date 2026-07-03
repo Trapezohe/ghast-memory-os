@@ -1696,11 +1696,15 @@ function groupCases(
   return [...groupsByKey.values()];
 }
 
+interface AppliedBenchmarkEvent {
+  warning?: string | undefined;
+}
+
 async function applyBenchmarkEvent(
   memory: MemoryOS,
   profileId: string,
   event: ExternalMemoryBenchmarkEvent,
-): Promise<void> {
+): Promise<AppliedBenchmarkEvent> {
   if (event.type === "task") {
     await memory.commitOutcome({
       profileId,
@@ -1710,6 +1714,7 @@ async function applyBenchmarkEvent(
       summary: event.summary,
       createdAt: event.createdAt,
     });
+    return {};
   } else if (event.type === "forget") {
     await memory.forget({
       profileId,
@@ -1717,7 +1722,11 @@ async function applyBenchmarkEvent(
       targetTerms: event.targetTerms,
       reason: event.reason,
     });
+    return {};
   } else if (event.type === "memory") {
+    if (!eventEligibleForLongTermMemory(event)) {
+      return { warning: "skipped_external_memory_event_secret_like" };
+    }
     await memory.add({
       profileId,
       kind: event.kind,
@@ -1727,6 +1736,7 @@ async function applyBenchmarkEvent(
       createdAt: event.createdAt,
       ...(event.metadata !== undefined ? { metadata: event.metadata } : {}),
     });
+    return {};
   } else {
     await memory.observe({
       type: "conversation.message",
@@ -1737,6 +1747,7 @@ async function applyBenchmarkEvent(
       metadata: event.metadata,
       createdAt: event.createdAt,
     });
+    return {};
   }
 }
 
@@ -1746,6 +1757,7 @@ async function scoreCase(input: {
   benchmarkCase: ExternalMemoryBenchmarkCase;
   index: number;
   options: RunExternalMemoryBenchmarkOptions;
+  setupWarnings?: string[] | undefined;
 }): Promise<ExternalMemoryBenchmarkCaseResult> {
   const startedMs = Date.now();
   const coreScoringStartedMs = Date.now();
@@ -1853,6 +1865,7 @@ async function scoreCase(input: {
       })
     : { entries: [], runtimeMs: 0, wideBudgetDiagnosticRuntimeMs: 0 };
   const warnings = diagnosticsLevel === "off" ? [] : warningsForCase({ mode, diagnostics });
+  const allWarnings = [...(input.setupWarnings ?? []), ...warnings];
   const strictPass = failureReasons.length === 0;
   const normalizedEvidencePass = normalizedFailureReasons.length === 0;
   const officialPass = judgeResult
@@ -1887,7 +1900,7 @@ async function scoreCase(input: {
     matched,
     failureReasons: primaryFailureReasons,
     failureTaxonomy: taxonomyResult.entries,
-    warnings,
+    warnings: allWarnings,
     diagnostics,
     promptTokenEstimate:
       prepared?.stats.promptTokenEstimate ?? reconstructed?.stats.promptTokenEstimate ?? 0,
@@ -1911,11 +1924,13 @@ async function runCaseGroup(input: {
   const store = createSqliteMemoryStore({ path: path.join(tmp, "group.db") });
   const memory = createMemoryOS({ profileId: "external", store });
   const results: ExternalMemoryBenchmarkCaseResult[] = [];
+  const setupWarnings: string[] = [];
   let setupDurationMs = 0;
   try {
     await store.initialize();
     for (const event of input.group.events) {
-      await applyBenchmarkEvent(memory, input.group.profileId, event);
+      const applied = await applyBenchmarkEvent(memory, input.group.profileId, event);
+      if (applied.warning !== undefined) setupWarnings.push(applied.warning);
     }
     setupDurationMs = Math.max(0, Date.now() - groupStartedMs);
     for (const item of input.group.items) {
@@ -1925,6 +1940,7 @@ async function runCaseGroup(input: {
         benchmarkCase: item.benchmarkCase,
         index: item.index,
         options: input.options,
+        setupWarnings,
       });
       results.push(result);
       input.recordResult(item.index, result);
