@@ -12,18 +12,33 @@ import {
   createMemoryMcpServer,
   PUBLIC_MEMORY_HTTP_ROUTE_REGISTRY,
   PUBLIC_MEMORY_HTTP_ROUTES,
+  type PublicMemoryMcpToolName,
 } from "../mcp/index.js";
 import { getGmosRuntimeInfo } from "../runtime-info.js";
+import { createMemoryHttpOpenApiDocument } from "./openapi.js";
+import type {
+  ListSqliteServiceAuditInput,
+  SqliteServiceApiKey,
+  SqliteServiceApiKeyProfiles,
+  SqliteServiceAuditInput,
+  SqliteServiceAuditRow,
+  SqliteServiceProfileSummary,
+} from "../store/sqlite/index.js";
 
 export { PUBLIC_MEMORY_HTTP_ROUTE_REGISTRY, PUBLIC_MEMORY_HTTP_ROUTES };
+export { createMemoryHttpOpenApiDocument };
 
 export interface MemoryHttpServerOptions {
   memory: MemoryOS;
-  store?: DiagnosticsStore | undefined;
+  store?: MemoryHttpServiceStore | undefined;
   profileId?: string | undefined;
   host?: MemoryStatusReportInput["host"] | undefined;
   maxBodyBytes?: number | undefined;
   authToken?: string | undefined;
+  scopedKeys?: boolean | undefined;
+  corsOrigins?: string[] | undefined;
+  rateLimitRequestsPerMinute?: number | undefined;
+  auditRetentionDays?: number | undefined;
 }
 
 export interface MemoryHttpListenOptions {
@@ -43,8 +58,50 @@ export interface MemoryHttpServerHandle {
   close(): Promise<void>;
 }
 
+export interface MemoryHttpServiceStore extends DiagnosticsStore {
+  authenticateServiceApiKey?(secret: string): SqliteServiceApiKey | null;
+  serviceApiKeyCount?(): number;
+  recordServiceAudit?(input: SqliteServiceAuditInput): void;
+  listServiceAuditRows?(input?: ListSqliteServiceAuditInput): SqliteServiceAuditRow[];
+  pruneServiceAuditRows?(retentionDays: number): number;
+  listServiceProfiles?(): SqliteServiceProfileSummary[];
+  ensureServiceProfile?(profileId: string): SqliteServiceProfileSummary;
+  listServiceApiKeys?(): SqliteServiceApiKey[];
+}
+
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+const DEFAULT_RATE_LIMIT_REQUESTS_PER_MINUTE = 600;
 const STATUS_QUERY_PARAMS = new Set(["profileId"]);
+const PROFILE_QUERY_PARAMS = new Set<string>();
+const TOOL_SCOPES: Record<PublicMemoryMcpToolName, "read" | "readwrite" | "admin"> = {
+  "memory.runtime_info": "read",
+  "memory.add": "readwrite",
+  "memory.search": "read",
+  "memory.observe": "readwrite",
+  "memory.prepare_context": "read",
+  "memory.explain_turn": "read",
+  "memory.reconstruct_context": "read",
+  "memory.explain_evidence_path": "read",
+  "memory.commit_outcome": "readwrite",
+  "memory.record_feedback": "readwrite",
+  "memory.maintain": "readwrite",
+  "memory.forget": "readwrite",
+  "memory.explain_belief": "read",
+};
+
+type HttpScope = "read" | "readwrite" | "admin";
+
+interface AuthContext {
+  keyId?: string | undefined;
+  scope: HttpScope;
+  profiles: SqliteServiceApiKeyProfiles;
+  mode: "none" | "legacy" | "scoped";
+}
+
+interface RateBucket {
+  windowStartedAt: number;
+  count: number;
+}
 
 function writeJson(
   response: ServerResponse,
@@ -158,11 +215,132 @@ function assertAuthorized(request: IncomingMessage, authToken: string | undefine
   }
 }
 
+function bearerTokenFromRequest(request: IncomingMessage): string | null {
+  const authorization = request.headers.authorization;
+  const header = Array.isArray(authorization) ? authorization[0] : authorization;
+  if (!header?.startsWith("Bearer ")) return null;
+  const token = header.slice("Bearer ".length);
+  return token.length > 0 ? token : null;
+}
+
+function scopeRank(scope: HttpScope): number {
+  if (scope === "admin") return 3;
+  if (scope === "readwrite") return 2;
+  return 1;
+}
+
+function assertScope(auth: AuthContext, required: HttpScope): void {
+  if (scopeRank(auth.scope) < scopeRank(required)) {
+    throw new HttpError(403, "forbidden", `${required} scope required`);
+  }
+}
+
+function profilesInclude(profiles: SqliteServiceApiKeyProfiles, profileId: string): boolean {
+  return profiles === "*" || profiles.includes(profileId);
+}
+
+function assertProfileAllowed(auth: AuthContext, profileId: string | undefined): void {
+  if (auth.mode !== "scoped") return;
+  if (auth.profiles === "*") return;
+  if (!profileId) throw new HttpError(400, "profile_required", "profileId is required");
+  if (!profilesInclude(auth.profiles, profileId)) {
+    throw new HttpError(403, "profile_forbidden", "profile is not allowed for this key");
+  }
+}
+
+function profileIdFromRecord(
+  body: Record<string, unknown>,
+  fallback: string | undefined,
+): string | undefined {
+  const value = body.profileId;
+  if (value === undefined) return fallback;
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function profileIdFromMcpCall(
+  body: Record<string, unknown>,
+  fallback: string | undefined,
+): string | undefined {
+  const args = body.args;
+  if (!args || typeof args !== "object" || Array.isArray(args)) return fallback;
+  return profileIdFromRecord(args as Record<string, unknown>, fallback);
+}
+
+function requireServiceStore(
+  store: MemoryHttpServiceStore | undefined,
+  method: keyof MemoryHttpServiceStore,
+): MemoryHttpServiceStore {
+  if (!store || typeof store[method] !== "function") {
+    throw new HttpError(500, "service_store_unavailable", "service store is unavailable");
+  }
+  return store;
+}
+
+function authenticateScopedKey(
+  request: IncomingMessage,
+  store: MemoryHttpServiceStore | undefined,
+): AuthContext {
+  const serviceStore = requireServiceStore(store, "authenticateServiceApiKey");
+  const token = bearerTokenFromRequest(request);
+  if (!token) throw new HttpError(401, "unauthorized", "valid bearer token required");
+  const key = serviceStore.authenticateServiceApiKey!(token);
+  if (!key) throw new HttpError(401, "unauthorized", "valid bearer token required");
+  return {
+    keyId: key.keyId,
+    scope: key.scope,
+    profiles: key.profiles,
+    mode: "scoped",
+  };
+}
+
+function authenticateRequest(
+  request: IncomingMessage,
+  options: MemoryHttpServerOptions,
+  authToken: string | undefined,
+): AuthContext {
+  if (options.scopedKeys) return authenticateScopedKey(request, options.store);
+  assertAuthorized(request, authToken);
+  return {
+    keyId: authToken ? "legacy" : undefined,
+    scope: "readwrite",
+    profiles: "*",
+    mode: authToken ? "legacy" : "none",
+  };
+}
+
+function routeRequiredScope(
+  route: (typeof PUBLIC_MEMORY_HTTP_ROUTE_REGISTRY)[number],
+): HttpScope | null {
+  return route.scope === "open" ? null : route.scope;
+}
+
+function toolScope(tool: unknown): HttpScope {
+  if (typeof tool !== "string") return "read";
+  return TOOL_SCOPES[tool as PublicMemoryMcpToolName] ?? "read";
+}
+
+function allowedCorsOrigins(input: string[] | undefined): Set<string> {
+  const origins = new Set<string>();
+  for (const origin of input ?? []) {
+    const normalized = origin.trim();
+    if (!normalized) continue;
+    if (normalized === "*") throw new Error("gmOS CORS origin must not be '*'");
+    origins.add(normalized);
+  }
+  return origins;
+}
+
+function requestOrigin(request: IncomingMessage): string | undefined {
+  const origin = request.headers.origin;
+  return Array.isArray(origin) ? origin[0] : origin;
+}
+
 class HttpError extends Error {
   constructor(
     readonly status: number,
     readonly code: string,
     message: string,
+    readonly headers: Record<string, string> = {},
   ) {
     super(message);
     this.name = "MemoryHttpError";
@@ -209,8 +387,120 @@ export function createMemoryHttpServer(
   const mcp = createMemoryMcpServer(options.memory);
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const authToken = normalizeAuthToken(options.authToken);
+  const corsOrigins = allowedCorsOrigins(options.corsOrigins);
+  const rateLimit = options.rateLimitRequestsPerMinute ?? DEFAULT_RATE_LIMIT_REQUESTS_PER_MINUTE;
+  const rateBuckets = new Map<string, RateBucket>();
+  if (options.auditRetentionDays !== undefined) {
+    requireServiceStore(options.store, "pruneServiceAuditRows")
+      .pruneServiceAuditRows!(options.auditRetentionDays);
+  }
+
+  function corsHeaders(request: IncomingMessage): Record<string, string> {
+    const origin = requestOrigin(request);
+    if (!origin || !corsOrigins.has(origin)) return {};
+    return {
+      "access-control-allow-origin": origin,
+      "access-control-allow-credentials": "true",
+      "access-control-allow-headers": "authorization, content-type",
+      "access-control-allow-methods": "GET, POST, OPTIONS",
+      vary: "Origin",
+    };
+  }
+
+  function sendJson(
+    request: IncomingMessage,
+    response: ServerResponse,
+    status: number,
+    payload: unknown,
+    headers: Record<string, string> = {},
+  ): void {
+    writeJson(response, status, payload, { ...corsHeaders(request), ...headers });
+  }
+
+  function applyRateLimit(auth: AuthContext): void {
+    if (!auth.keyId || rateLimit <= 0) return;
+    const now = Date.now();
+    const bucket = rateBuckets.get(auth.keyId);
+    if (!bucket || now - bucket.windowStartedAt >= 60_000) {
+      rateBuckets.set(auth.keyId, { windowStartedAt: now, count: 1 });
+      return;
+    }
+    bucket.count += 1;
+    if (bucket.count > rateLimit) {
+      const retryAfter = Math.max(1, Math.ceil((60_000 - (now - bucket.windowStartedAt)) / 1000));
+      throw new HttpError(
+        429,
+        "rate_limited",
+        "rate limit exceeded",
+        { "retry-after": String(retryAfter) },
+      );
+    }
+  }
+
+  function audit(input: {
+    auth: AuthContext | null;
+    route: string;
+    method: string;
+    profileId: string | undefined;
+    statusCode: number;
+    startedAt: number;
+  }): void {
+    if (!input.auth?.keyId || !options.store?.recordServiceAudit) return;
+    options.store.recordServiceAudit({
+      keyId: input.auth.keyId,
+      route: input.route,
+      method: input.method,
+      profileId: input.profileId ?? "service",
+      statusCode: input.statusCode,
+      timestamp: new Date(input.startedAt).toISOString(),
+      durationMs: Math.max(0, Date.now() - input.startedAt),
+    });
+  }
+
+  function logRequest(input: {
+    auth: AuthContext | null;
+    route: string;
+    method: string;
+    profileId: string | undefined;
+    statusCode: number;
+    startedAt: number;
+  }): void {
+    console.error(
+      JSON.stringify({
+        service: "gmos-http",
+        method: input.method,
+        route: input.route,
+        profileId: input.profileId ?? "service",
+        keyId: input.auth?.keyId ?? "anonymous",
+        statusCode: input.statusCode,
+        durationMs: Math.max(0, Date.now() - input.startedAt),
+      }),
+    );
+  }
+
+  function filteredProfiles(auth: AuthContext): SqliteServiceProfileSummary[] {
+    const profiles = requireServiceStore(options.store, "listServiceProfiles")
+      .listServiceProfiles!();
+    if (auth.mode !== "scoped" || auth.profiles === "*") return profiles;
+    return profiles.filter((profile) => auth.profiles.includes(profile.profileId));
+  }
+
+  function filteredKeys(auth: AuthContext): SqliteServiceApiKey[] {
+    const keys = requireServiceStore(options.store, "listServiceApiKeys")
+      .listServiceApiKeys!();
+    if (auth.mode !== "scoped" || auth.profiles === "*") return keys;
+    return keys.filter((key) => {
+      if (key.profiles === "*") return true;
+      return key.profiles.some((profileId) => auth.profiles.includes(profileId));
+    });
+  }
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const startedAt = Date.now();
+    let auth: AuthContext | null = null;
+    let auditRoute = `${request.method ?? "UNKNOWN"} ${request.url ?? "/"}`;
+    let auditProfileId = options.profileId;
+    let statusCode = 500;
     try {
       let url: URL;
       try {
@@ -219,18 +509,28 @@ export function createMemoryHttpServer(
         throw new HttpError(400, "invalid_url", "request url is invalid");
       }
       const route = routeFor(request.method, url.pathname);
+      auditRoute = route?.route ?? `${request.method ?? "UNKNOWN"} ${url.pathname}`;
+
+      if (request.method === "OPTIONS") {
+        response.writeHead(204, corsHeaders(request));
+        response.end();
+        statusCode = 204;
+        return;
+      }
 
       if (route?.route === "GET /health") {
-        writeJson(response, 200, {
+        statusCode = 200;
+        sendJson(request, response, 200, {
           ok: true,
           framework: "ghast-memory-os",
           status: "ready",
-          authRequired: authToken !== undefined,
+          authRequired: options.scopedKeys === true || authToken !== undefined,
         });
         return;
       }
 
-      assertAuthorized(request, authToken);
+      auth = authenticateRequest(request, options, authToken);
+      applyRateLimit(auth);
 
       if (!route) {
         throw pathExists(url.pathname)
@@ -238,27 +538,79 @@ export function createMemoryHttpServer(
           : new HttpError(404, "not_found", "route not found");
       }
 
+      const requiredScope = routeRequiredScope(route);
+      if (requiredScope) assertScope(auth, requiredScope);
+
       if (route.route === "GET /tools") {
-        writeJson(response, 200, ok({ ok: true, tools: mcp.listTools() }));
+        assertProfileAllowed(auth, options.profileId);
+        statusCode = 200;
+        sendJson(request, response, 200, ok({ ok: true, tools: mcp.listTools() }));
         return;
       }
 
       if (route.route === "GET /runtime-info") {
-        writeJson(response, 200, ok({ ok: true, runtimeInfo: getGmosRuntimeInfo() }));
+        assertProfileAllowed(auth, options.profileId);
+        statusCode = 200;
+        sendJson(request, response, 200, ok({ ok: true, runtimeInfo: getGmosRuntimeInfo() }));
+        return;
+      }
+
+      if (route.route === "GET /openapi.json") {
+        assertProfileAllowed(auth, options.profileId);
+        statusCode = 200;
+        sendJson(request, response, 200, createMemoryHttpOpenApiDocument());
         return;
       }
 
       if (route.route === "GET /status") {
         assertAllowedSearchParams(url.searchParams, STATUS_QUERY_PARAMS, "GET /status");
+        auditProfileId = optionalString(url.searchParams, "profileId") ?? options.profileId;
+        assertProfileAllowed(auth, auditProfileId);
         if (!options.store) {
           throw new HttpError(503, "diagnostics_store_unavailable", "status requires a store");
         }
         const report = await createMemoryStatusReport({
           store: options.store,
-          profileId: optionalString(url.searchParams, "profileId") ?? options.profileId,
+          profileId: auditProfileId,
           host: options.host,
         });
-        writeJson(response, 200, ok({ ok: true, report }));
+        statusCode = 200;
+        sendJson(request, response, 200, ok({ ok: true, report }));
+        return;
+      }
+
+      if (route.route === "GET /profiles") {
+        assertAllowedSearchParams(url.searchParams, PROFILE_QUERY_PARAMS, "GET /profiles");
+        statusCode = 200;
+        sendJson(request, response, 200, ok({ ok: true, profiles: filteredProfiles(auth) }));
+        return;
+      }
+
+      if (route.route === "POST /profiles") {
+        const body = assertObjectBody(await readJsonBody(request, maxBodyBytes));
+        const unsupported = Object.keys(body).filter((key) => key !== "profileId");
+        if (unsupported.length > 0) {
+          throw new HttpError(
+            400,
+            "unsupported_fields",
+            `POST /profiles contains unsupported fields: ${unsupported.join(", ")}`,
+          );
+        }
+        const profileId = profileIdFromRecord(body, undefined);
+        if (!profileId) throw new HttpError(400, "invalid_profile", "profileId must be a non-empty string");
+        auditProfileId = profileId;
+        assertProfileAllowed(auth, profileId);
+        const profile = requireServiceStore(options.store, "ensureServiceProfile")
+          .ensureServiceProfile!(profileId);
+        statusCode = 200;
+        sendJson(request, response, 200, ok({ ok: true, profile }));
+        return;
+      }
+
+      if (route.route === "GET /keys") {
+        assertAllowedSearchParams(url.searchParams, PROFILE_QUERY_PARAMS, "GET /keys");
+        statusCode = 200;
+        sendJson(request, response, 200, ok({ ok: true, keys: filteredKeys(auth) }));
         return;
       }
 
@@ -276,27 +628,56 @@ export function createMemoryHttpServer(
         if (typeof tool !== "string" || tool.trim().length === 0) {
           throw new HttpError(400, "invalid_tool", "tool must be a non-empty string");
         }
+        assertScope(auth, toolScope(tool));
+        auditProfileId = profileIdFromMcpCall(body, options.profileId);
+        assertProfileAllowed(auth, auditProfileId);
         const result = await mcp.callTool(tool, body.args ?? {});
-        writeJson(response, result.isError ? 400 : 200, result.structuredContent);
+        statusCode = result.isError ? 400 : 200;
+        sendJson(request, response, statusCode, result.structuredContent);
         return;
       }
 
       if (!("toolName" in route)) {
         throw new HttpError(500, "route_not_implemented", "route has no implementation");
       }
+      const body = assertObjectBody(await readJsonBody(request, maxBodyBytes));
+      auditProfileId = profileIdFromRecord(body, options.profileId);
+      assertProfileAllowed(auth, auditProfileId);
       const result = await mcp.callTool(
         route.toolName,
-        assertObjectBody(await readJsonBody(request, maxBodyBytes)),
+        body,
       );
-      writeJson(response, result.isError ? 400 : 200, result.structuredContent);
+      statusCode = result.isError ? 400 : 200;
+      sendJson(request, response, statusCode, result.structuredContent);
     } catch (error) {
-      const status = error instanceof HttpError ? error.status : 500;
-      writeJson(
+      statusCode = error instanceof HttpError ? error.status : 500;
+      sendJson(
+        request,
         response,
-        status,
+        statusCode,
         errorPayload(error),
-        status === 401 ? { "www-authenticate": 'Bearer realm="gmos-http"' } : {},
+        {
+          ...(statusCode === 401 ? { "www-authenticate": 'Bearer realm="gmos-http"' } : {}),
+          ...(error instanceof HttpError ? error.headers : {}),
+        },
       );
+    } finally {
+      audit({
+        auth,
+        route: auditRoute,
+        method: request.method ?? "UNKNOWN",
+        profileId: auditProfileId,
+        statusCode,
+        startedAt,
+      });
+      logRequest({
+        auth,
+        route: auditRoute,
+        method: request.method ?? "UNKNOWN",
+        profileId: auditProfileId,
+        statusCode,
+        startedAt,
+      });
     }
   }
 

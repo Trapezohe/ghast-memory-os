@@ -29,15 +29,28 @@ switches.
 gmos mcp serve --db ./gmos.db --profile local
 ```
 
-Use the local HTTP adapter when the host cannot import the Node SDK directly,
+Use the local HTTP service when the host cannot import the Node SDK directly,
 for example another runtime process, a desktop shell, or a language bridge.
-Bind it to loopback and pass an auth token when the service crosses a process
-boundary.
+Bind it to loopback. Existing local adapters can keep the legacy token mode:
 
 ```bash
 GMOS_HTTP_AUTH_TOKEN=local-dev-token \
   gmos http serve --db ./gmos.db --profile local --port 4787 --host ghast
 ```
+
+For self-hosted agents, prefer scoped keys:
+
+```bash
+gmos keys create --db ./gmos.db --label planner-read --scope read --profiles local
+gmos keys create --db ./gmos.db --label worker-write --scope readwrite --profiles local
+gmos serve --db ./gmos.db --profile local --keys --port 4787
+```
+
+Wire read-only agents to `GET /status`, `POST /search`, `POST /prepare`, and
+explain/reconstruct routes with their read key. Wire agents that ingest events
+or outcomes with a readwrite key. Keep admin keys out of agent runtime prompts;
+they can list/create profiles and list key metadata but cannot create or revoke
+keys over HTTP.
 
 ## Turn Lifecycle
 
@@ -400,6 +413,10 @@ Useful endpoints:
 - `GET /runtime-info`
 - `GET /tools`
 - `GET /status`
+- `GET /openapi.json`
+- `GET /profiles`
+- `POST /profiles`
+- `GET /keys`
 - `POST /add`
 - `POST /search`
 - `POST /observe`
@@ -424,8 +441,14 @@ curl -X POST -H "Authorization: Bearer local-dev-token" \
 ```
 
 `GET /health` is intentionally open and only reports service health plus whether
-auth is required. All other endpoints return `401` when `authToken` is set and
-the request is missing `Authorization: Bearer <token>`.
+auth is required. All other endpoints return `401` when legacy `authToken` is
+set or `--keys` is enabled and the request is missing
+`Authorization: Bearer <token>`. In scoped-key mode, profile allowlist failures
+return `403 profile_forbidden`. CORS is off by default; pass explicit
+`--cors-origin` values when a browser host needs access.
+
+There is no HTTP profile deletion route. Use `forget()` for user-requested
+memory deletion and trusted CLI/SDK workflows for database administration.
 
 Run the HTTP smoke example:
 

@@ -122,6 +122,25 @@ import {
   type SqliteProfileBackupRestoreResult,
 } from "./backup.js";
 import { ensureSqliteSchema, sqliteSchemaVersion } from "./schema.js";
+import {
+  authenticateSqliteServiceApiKey,
+  createSqliteServiceApiKey,
+  ensureSqliteServiceProfile,
+  listSqliteServiceApiKeys,
+  listSqliteServiceAuditRows,
+  listSqliteServiceProfiles,
+  pruneSqliteServiceAuditRows,
+  recordSqliteServiceAudit,
+  revokeSqliteServiceApiKey,
+  sqliteServiceApiKeyCount,
+  type CreateSqliteServiceApiKeyInput,
+  type ListSqliteServiceAuditInput,
+  type SqliteServiceApiKey,
+  type SqliteServiceApiKeyWithSecret,
+  type SqliteServiceAuditInput,
+  type SqliteServiceAuditRow,
+  type SqliteServiceProfileSummary,
+} from "./service.js";
 
 export type {
   ExportSqliteProfileBackupInput,
@@ -133,6 +152,17 @@ export type {
   SqliteTaskTrajectoryRecord,
 } from "./backup.js";
 export { parseSqliteProfileBackup } from "./backup.js";
+export type {
+  CreateSqliteServiceApiKeyInput,
+  ListSqliteServiceAuditInput,
+  SqliteServiceApiKey,
+  SqliteServiceApiKeyProfiles,
+  SqliteServiceApiKeyScope,
+  SqliteServiceApiKeyWithSecret,
+  SqliteServiceAuditInput,
+  SqliteServiceAuditRow,
+  SqliteServiceProfileSummary,
+} from "./service.js";
 
 export interface SqliteMemoryStoreOptions {
   path: string;
@@ -203,6 +233,16 @@ export interface SqliteMemoryStore extends MemoryStore {
   ): Promise<RecordProcedureDistillationResult> | RecordProcedureDistillationResult;
   applyEvolutionActions(input: EvolutionApplyStoreInput): EvolutionApplyStoreResult;
   revertEvolutionApplication(input: EvolutionRevertStoreInput): EvolutionRevertStoreResult;
+  createServiceApiKey(input: CreateSqliteServiceApiKeyInput): SqliteServiceApiKeyWithSecret;
+  listServiceApiKeys(): SqliteServiceApiKey[];
+  revokeServiceApiKey(keyId: string): SqliteServiceApiKey | null;
+  authenticateServiceApiKey(secret: string): SqliteServiceApiKey | null;
+  serviceApiKeyCount(): number;
+  recordServiceAudit(input: SqliteServiceAuditInput): void;
+  listServiceAuditRows(input?: ListSqliteServiceAuditInput): SqliteServiceAuditRow[];
+  pruneServiceAuditRows(retentionDays: number): number;
+  listServiceProfiles(): SqliteServiceProfileSummary[];
+  ensureServiceProfile(profileId: string): SqliteServiceProfileSummary;
 }
 
 const READ_AUDIT_REVISION_TABLES = [
@@ -4778,6 +4818,9 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       "gmos_associations",
       "gmos_memory_vectors",
       "gmos_memory_vector_terms",
+      "gmos_profiles",
+      "gmos_api_keys",
+      "gmos_http_audit_log",
     ];
     return Object.fromEntries(
       tables.map((table) => [
@@ -4908,6 +4951,60 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     };
   }
 
+  function createServiceApiKey(
+    input: CreateSqliteServiceApiKeyInput,
+  ): SqliteServiceApiKeyWithSecret {
+    initialize();
+    return createSqliteServiceApiKey(db, input);
+  }
+
+  function listServiceApiKeys(): SqliteServiceApiKey[] {
+    initialize();
+    return listSqliteServiceApiKeys(db);
+  }
+
+  function revokeServiceApiKey(keyId: string): SqliteServiceApiKey | null {
+    initialize();
+    return revokeSqliteServiceApiKey(db, keyId);
+  }
+
+  function authenticateServiceApiKey(secret: string): SqliteServiceApiKey | null {
+    initialize();
+    return authenticateSqliteServiceApiKey(db, secret);
+  }
+
+  function serviceApiKeyCount(): number {
+    initialize();
+    return sqliteServiceApiKeyCount(db);
+  }
+
+  function recordServiceAudit(input: SqliteServiceAuditInput): void {
+    initialize();
+    recordSqliteServiceAudit(db, input);
+  }
+
+  function listServiceAuditRows(
+    input: ListSqliteServiceAuditInput = {},
+  ): SqliteServiceAuditRow[] {
+    initialize();
+    return listSqliteServiceAuditRows(db, input);
+  }
+
+  function pruneServiceAuditRows(retentionDays: number): number {
+    initialize();
+    return pruneSqliteServiceAuditRows(db, retentionDays);
+  }
+
+  function listServiceProfiles(): SqliteServiceProfileSummary[] {
+    initialize();
+    return listSqliteServiceProfiles(db);
+  }
+
+  function ensureServiceProfile(profileId: string): SqliteServiceProfileSummary {
+    initialize();
+    return ensureSqliteServiceProfile(db, profileId);
+  }
+
   return {
     configureEmbeddingProvider,
     initialize,
@@ -4952,6 +5049,16 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     schemaVersion,
     searchIndexStatus,
     repairSearchIndex,
+    createServiceApiKey,
+    listServiceApiKeys,
+    revokeServiceApiKey,
+    authenticateServiceApiKey,
+    serviceApiKeyCount,
+    recordServiceAudit,
+    listServiceAuditRows,
+    pruneServiceAuditRows,
+    listServiceProfiles,
+    ensureServiceProfile,
     exportProfileBackup(input) {
       initialize();
       return exportSqliteProfileBackup(db, input);

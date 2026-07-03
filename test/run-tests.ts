@@ -120,7 +120,7 @@ import {
   createMemoryStatusReport,
   renderMemoryStatusMarkdown,
 } from "../src/diagnostics/index.js";
-import { createMemoryHttpServer } from "../src/http/index.js";
+import { createMemoryHttpOpenApiDocument, createMemoryHttpServer } from "../src/http/index.js";
 import {
   classifyPayloadSensitivity,
   classifySensitivity,
@@ -615,13 +615,14 @@ function refreshProfileBackupCounts(backup: SqliteProfileBackupDocument): void {
 async function httpJson(
   url: string,
   init?: RequestInit,
-): Promise<{ status: number; body: Record<string, unknown>; text: string }> {
+): Promise<{ status: number; body: Record<string, unknown>; text: string; headers: Headers }> {
   const response = await fetch(url, init);
   const text = await response.text();
   return {
     status: response.status,
     body: JSON.parse(text) as Record<string, unknown>,
     text,
+    headers: response.headers,
   };
 }
 
@@ -633,6 +634,7 @@ function postJson(
   status: number;
   body: Record<string, unknown>;
   text: string;
+  headers: Headers;
 }> {
   return httpJson(url, {
     method: "POST",
@@ -705,7 +707,7 @@ function corruptMemoryFtsEntry(
 const store: SqliteMemoryStore = createSqliteMemoryStore({ path: dbPath });
 const memory = createMemoryOS({ profileId: "test", store });
 await store.initialize();
-assert.equal(await store.schemaVersion(), 10);
+assert.equal(await store.schemaVersion(), 11);
 
 const workspaceEntityResolver: EntityResolver = (input) => {
   const subject = input.subject.trim();
@@ -919,7 +921,7 @@ legacyHandle.exec(`
 `);
 const legacyStore = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
 await legacyStore.initialize();
-assert.equal(await legacyStore.schemaVersion(), 10);
+assert.equal(await legacyStore.schemaVersion(), 11);
 assert.equal(
   (
     legacyHandle
@@ -990,7 +992,7 @@ assert.ok(
 );
 const legacyStoreReopen = createSqliteMemoryStore({ path: legacyDbPath, handle: legacyHandle });
 await legacyStoreReopen.initialize();
-assert.equal(await legacyStoreReopen.schemaVersion(), 10);
+assert.equal(await legacyStoreReopen.schemaVersion(), 11);
 assert.equal(
   (
     legacyHandle
@@ -1038,7 +1040,7 @@ legacyV2Handle.exec(`
 `);
 const legacyV2Store = createSqliteMemoryStore({ path: legacyV2DbPath, handle: legacyV2Handle });
 await legacyV2Store.initialize();
-assert.equal(await legacyV2Store.schemaVersion(), 10);
+assert.equal(await legacyV2Store.schemaVersion(), 11);
 assert.ok(
   (
     legacyV2Handle
@@ -1112,7 +1114,7 @@ const legacyV6ProjectionUpgradeStore = createSqliteMemoryStore({
   handle: legacyV6ProjectionHandle,
 });
 await legacyV6ProjectionUpgradeStore.initialize();
-assert.equal(await legacyV6ProjectionUpgradeStore.schemaVersion(), 10);
+assert.equal(await legacyV6ProjectionUpgradeStore.schemaVersion(), 11);
 const upgradedRelationAssociation = legacyV6ProjectionHandle
   .prepare(
     `SELECT cue, target_summary
@@ -13702,7 +13704,7 @@ assert.deepEqual(statusReport.runtimeInfo, getGmosRuntimeInfo());
 assert.equal(statusReport.runtimeInfo.publicSurface.mcpTools.includes("memory.runtime_info"), true);
 assert.equal(statusReport.runtimeInfo.publicSurface.httpRoutes.includes("GET /runtime-info"), true);
 assert.equal(statusReport.storage.status, "ok");
-assert.equal(statusReport.storage.schemaVersion, 10);
+assert.equal(statusReport.storage.schemaVersion, 11);
 assert.equal(
   statusReport.storage.searchIndex?.status,
   "ok",
@@ -14843,6 +14845,10 @@ try {
     "GET /runtime-info",
     "GET /tools",
     "GET /status",
+    "GET /openapi.json",
+    "GET /profiles",
+    "POST /profiles",
+    "GET /keys",
     "POST /add",
     "POST /search",
     "POST /observe",
@@ -14863,11 +14869,29 @@ try {
   assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /evolution/revert" as never), false);
   assert.equal(PUBLIC_MEMORY_MCP_TOOL_NAMES.includes("memory.evolution_apply" as never), false);
   assert.equal(PUBLIC_MEMORY_MCP_TOOL_NAMES.includes("memory.evolution_revert" as never), false);
+  const openApiDocument = createMemoryHttpOpenApiDocument() as {
+    paths?: Record<string, Record<string, unknown>>;
+  };
+  const openApiRoutes = Object.entries(openApiDocument.paths ?? {})
+    .flatMap(([pathname, methods]) =>
+      Object.keys(methods).map((method) => `${method.toUpperCase()} ${pathname}`),
+    )
+    .sort();
+  assert.deepEqual(openApiRoutes, [...PUBLIC_MEMORY_HTTP_ROUTES].sort());
+  const openApiText = JSON.stringify(openApiDocument);
+  assert.equal(openApiText.includes("includeSensitive"), false);
+  assert.equal(openApiText.includes("/backup"), false);
+  assert.equal(openApiText.includes("/restore"), false);
+  assert.equal(openApiText.includes("/evolution/apply"), false);
+  assert.equal(openApiText.includes("/evolution/revert"), false);
+  const httpOpenApi = await httpJson(`${httpAddress.url}/openapi.json`);
+  assert.equal(httpOpenApi.status, 200);
+  assert.deepEqual(httpOpenApi.body, openApiDocument);
   const status = await httpJson(`${httpAddress.url}/status?profileId=http`);
   assert.equal(status.status, 200);
   assert.equal(
     ((status.body.report as { storage?: { schemaVersion?: number } }).storage ?? {}).schemaVersion,
-    10,
+    11,
   );
   assert.equal((status.body.report as { profileId?: string }).profileId, "[profile id redacted]");
   assert.deepEqual(
@@ -15205,6 +15229,166 @@ try {
   await authedHttpServer.close();
 }
 
+const scopedReadKey = store.createServiceApiKey({
+  label: "http scoped read",
+  scope: "read",
+  profiles: ["http_scoped"],
+});
+const scopedReadwriteKey = store.createServiceApiKey({
+  label: "http scoped readwrite",
+  scope: "readwrite",
+  profiles: ["http_scoped"],
+});
+const scopedAdminKey = store.createServiceApiKey({
+  label: "http scoped admin",
+  scope: "admin",
+  profiles: "*",
+});
+const revokedScopedKey = store.createServiceApiKey({
+  label: "http scoped revoked",
+  scope: "read",
+  profiles: ["http_scoped"],
+});
+assert.equal(scopedReadKey.secret.startsWith("gmos_"), true);
+assert.equal(scopedReadKey.key.keyId.startsWith("key_"), true);
+assert.equal(JSON.stringify(store.listServiceApiKeys()).includes(scopedReadKey.secret), false);
+assert.equal(JSON.stringify(store.listServiceApiKeys()).includes("hash"), false);
+store.revokeServiceApiKey(revokedScopedKey.key.keyId);
+const scopedHttpServer = createMemoryHttpServer({
+  memory,
+  store,
+  profileId: "http_scoped",
+  scopedKeys: true,
+});
+const scopedHttpAddress = await scopedHttpServer.listen();
+try {
+  const scopedHealth = await httpJson(`${scopedHttpAddress.url}/health`);
+  assert.equal(scopedHealth.status, 200);
+  assert.equal(scopedHealth.body.authRequired, true);
+  const scopedUnauthorized = await httpJson(`${scopedHttpAddress.url}/runtime-info`);
+  assert.equal(scopedUnauthorized.status, 401);
+  const scopedRevoked = await httpJson(`${scopedHttpAddress.url}/runtime-info`, {
+    headers: { authorization: `Bearer ${revokedScopedKey.secret}` },
+  });
+  assert.equal(scopedRevoked.status, 401);
+  const scopedOpenApi = await httpJson(`${scopedHttpAddress.url}/openapi.json`, {
+    headers: { authorization: `Bearer ${scopedReadKey.secret}` },
+  });
+  assert.equal(scopedOpenApi.status, 200);
+  const scopedReadCannotWrite = await postJson(
+    `${scopedHttpAddress.url}/add`,
+    {
+      profileId: "http_scoped",
+      kind: "preference",
+      content: "Scoped read key must not write this memory.",
+    },
+    { authorization: `Bearer ${scopedReadKey.secret}` },
+  );
+  assert.equal(scopedReadCannotWrite.status, 403);
+  const scopedReadCannotMcpWrite = await postJson(
+    `${scopedHttpAddress.url}/mcp/call`,
+    {
+      tool: "memory.observe",
+      args: {
+        profileId: "http_scoped",
+        role: "user",
+        content: "Scoped read key must not observe.",
+      },
+    },
+    { authorization: `Bearer ${scopedReadKey.secret}` },
+  );
+  assert.equal(scopedReadCannotMcpWrite.status, 403);
+  const scopedForbiddenProfile = await postJson(
+    `${scopedHttpAddress.url}/search`,
+    { profileId: "other_profile", query: "anything" },
+    { authorization: `Bearer ${scopedReadKey.secret}` },
+  );
+  assert.equal(scopedForbiddenProfile.status, 403);
+  assert.equal((scopedForbiddenProfile.body.error as { code?: string }).code, "profile_forbidden");
+  const scopedWrite = await postJson(
+    `${scopedHttpAddress.url}/add`,
+    {
+      profileId: "http_scoped",
+      kind: "preference",
+      content: "Scoped readwrite key can write via HTTP.",
+    },
+    { authorization: `Bearer ${scopedReadwriteKey.secret}` },
+  );
+  assert.equal(scopedWrite.status, 200);
+  const scopedAdminProfiles = await postJson(
+    `${scopedHttpAddress.url}/profiles`,
+    { profileId: "http_admin_created" },
+    { authorization: `Bearer ${scopedAdminKey.secret}` },
+  );
+  assert.equal(scopedAdminProfiles.status, 200);
+  const scopedReadwriteProfiles = await httpJson(`${scopedHttpAddress.url}/profiles`, {
+    headers: { authorization: `Bearer ${scopedReadwriteKey.secret}` },
+  });
+  assert.equal(scopedReadwriteProfiles.status, 403);
+  const scopedProfiles = await httpJson(`${scopedHttpAddress.url}/profiles`, {
+    headers: { authorization: `Bearer ${scopedAdminKey.secret}` },
+  });
+  assert.equal(scopedProfiles.status, 200);
+  assert.match(scopedProfiles.text, /http_admin_created/);
+  const scopedKeys = await httpJson(`${scopedHttpAddress.url}/keys`, {
+    headers: { authorization: `Bearer ${scopedAdminKey.secret}` },
+  });
+  assert.equal(scopedKeys.status, 200);
+  assert.equal(scopedKeys.text.includes(scopedReadKey.secret), false);
+  assert.equal(scopedKeys.text.includes("hash"), false);
+  const scopedCreateKeyOverHttp = await postJson(
+    `${scopedHttpAddress.url}/keys`,
+    { label: "forbidden", scope: "read" },
+    { authorization: `Bearer ${scopedAdminKey.secret}` },
+  );
+  assert.equal(scopedCreateKeyOverHttp.status, 405);
+  const auditNeedle = "Scoped audit must not log NeedleAuditContent.";
+  const scopedObserve = await postJson(
+    `${scopedHttpAddress.url}/observe`,
+    {
+      profileId: "http_scoped",
+      role: "user",
+      content: auditNeedle,
+    },
+    { authorization: `Bearer ${scopedReadwriteKey.secret}` },
+  );
+  assert.equal(scopedObserve.status, 200);
+  const auditRows = store.listServiceAuditRows({ keyId: scopedReadwriteKey.key.keyId, limit: 50 });
+  assert.equal(auditRows.some((row) => row.route === "POST /observe"), true);
+  const auditText = JSON.stringify(auditRows);
+  assert.equal(auditText.includes("NeedleAuditContent"), false);
+  assert.equal(auditText.includes("Scoped audit must not log"), false);
+} finally {
+  await scopedHttpServer.close();
+}
+
+const rateLimitedKey = store.createServiceApiKey({
+  label: "http scoped rate",
+  scope: "read",
+  profiles: ["http_rate"],
+});
+const rateLimitedHttpServer = createMemoryHttpServer({
+  memory,
+  store,
+  profileId: "http_rate",
+  scopedKeys: true,
+  rateLimitRequestsPerMinute: 1,
+});
+const rateLimitedHttpAddress = await rateLimitedHttpServer.listen();
+try {
+  const firstRateRequest = await httpJson(`${rateLimitedHttpAddress.url}/runtime-info`, {
+    headers: { authorization: `Bearer ${rateLimitedKey.secret}` },
+  });
+  assert.equal(firstRateRequest.status, 200);
+  const secondRateRequest = await httpJson(`${rateLimitedHttpAddress.url}/runtime-info`, {
+    headers: { authorization: `Bearer ${rateLimitedKey.secret}` },
+  });
+  assert.equal(secondRateRequest.status, 429);
+  assert.equal(secondRateRequest.headers.get("retry-after") !== null, true);
+} finally {
+  await rateLimitedHttpServer.close();
+}
+
 const cliHttp = spawn(
   process.execPath,
   [
@@ -15383,6 +15567,123 @@ try {
     new Promise((resolve) => setTimeout(resolve, 5000)),
   ]);
 }
+
+const cliKeysDb = path.join(tmp, "cli-keys.db");
+const cliKeyCreate = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "keys",
+    "create",
+    "--db",
+    cliKeysDb,
+    "--label",
+    "cli test key",
+    "--scope",
+    "read",
+    "--profiles",
+    "cli_profile",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliKeyCreate.status, 0, cliKeyCreate.stderr);
+const cliKeyCreatePayload = JSON.parse(cliKeyCreate.stdout) as {
+  key?: { keyId?: string; profiles?: string[] };
+  secret?: string;
+};
+assert.equal(cliKeyCreatePayload.secret?.startsWith("gmos_"), true);
+assert.equal(cliKeyCreatePayload.key?.profiles?.includes("cli_profile"), true);
+assert.equal(cliKeyCreate.stdout.includes("hash"), false);
+const cliKeyList = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "keys",
+    "list",
+    "--db",
+    cliKeysDb,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliKeyList.status, 0, cliKeyList.stderr);
+assert.equal(cliKeyList.stdout.includes(cliKeyCreatePayload.secret ?? "missing-secret"), false);
+assert.equal(cliKeyList.stdout.includes("hash"), false);
+const cliKeyRevoke = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "keys",
+    "revoke",
+    "--db",
+    cliKeysDb,
+    "--key-id",
+    cliKeyCreatePayload.key?.keyId ?? "missing-key",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliKeyRevoke.status, 0, cliKeyRevoke.stderr);
+assert.match(cliKeyRevoke.stdout, /revokedAt/);
+assert.equal(cliKeyRevoke.stdout.includes("hash"), false);
+const cliAuditDb = path.join(tmp, "cli-audit.db");
+const cliAuditStore = createSqliteMemoryStore({ path: cliAuditDb });
+const cliAuditKey = cliAuditStore.createServiceApiKey({
+  label: "cli audit key",
+  scope: "readwrite",
+  profiles: ["cli_audit"],
+});
+cliAuditStore.recordServiceAudit({
+  keyId: cliAuditKey.key.keyId,
+  route: "POST /observe",
+  method: "POST",
+  profileId: "cli_audit",
+  statusCode: 200,
+  timestamp: "2026-07-03T00:00:00.000Z",
+  durationMs: 3,
+});
+cliAuditStore.close();
+const cliAuditList = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "audit",
+    "list",
+    "--db",
+    cliAuditDb,
+    "--key-id",
+    cliAuditKey.key.keyId,
+    "--since",
+    "2026-07-01T00:00:00.000Z",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliAuditList.status, 0, cliAuditList.stderr);
+assert.match(cliAuditList.stdout, /POST \/observe/);
+const cliNonLoopbackRefusal = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "serve",
+    "--db",
+    path.join(tmp, "cli-non-loopback.db"),
+    "--host-iface",
+    "0.0.0.0",
+    "--port",
+    "0",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliNonLoopbackRefusal.status, 0);
+assert.match(cliNonLoopbackRefusal.stderr, /refuses non-loopback/);
 
 const cliLowLevelDb = path.join(tmp, "cli-low-level.db");
 const cliMissingDbValue = spawnSync(
@@ -18285,7 +18586,7 @@ const cliStatusPayload = JSON.parse(cliStatus.stdout) as {
 };
 assert.equal(cliStatusPayload.profileId, "[profile id redacted]");
 assert.equal(cliStatusPayload.storage?.lifecycle?.profileId, "[profile id redacted]");
-assert.equal(cliStatusPayload.storage?.schemaVersion, 10);
+assert.equal(cliStatusPayload.storage?.schemaVersion, 11);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_memories ?? 0) > 0);
 assert.ok((cliStatusPayload.storage?.rowCounts?.gmos_associations ?? 0) > 0);
 assert.equal(cliStatusPayload.storage?.searchIndex?.status, "ok");
@@ -18877,7 +19178,7 @@ assert.equal(gym.roadmapResult.status, "clear");
 assert.equal(gym.runManifest.dbPathMode, "memory");
 assert.equal(gym.runManifest.package.name, packageJson.name);
 assert.equal(gym.runManifest.package.version, packageJson.version);
-assert.equal(gym.runManifest.sqliteSchemaVersion, 10);
+assert.equal(gym.runManifest.sqliteSchemaVersion, 11);
 assert.equal(gym.runManifest.git.branch, expectedGit.branch);
 assert.equal(gym.runManifest.git.sha, expectedGit.sha);
 assert.equal(gym.runManifest.git.dirty, expectedGit.dirty);
@@ -18891,7 +19192,7 @@ assert.match(renderedGym, /Coverage Matrix/);
 assert.match(renderedGym, /Experience Horizon/);
 assert.match(renderedGym, /Run Manifest/);
 assert.match(renderedGym, /Package: @ghast\/memory@/);
-assert.match(renderedGym, /SQLite schema: 10/);
+assert.match(renderedGym, /SQLite schema: 11/);
 const externalBenchmarkJsonl = [
   JSON.stringify({
     id: "project-next-step",
@@ -21565,7 +21866,7 @@ for (const [host, expectedLevel] of [
   assert.equal(doctorJson.runtimeInfo?.trustContract?.encryptionSupported, "host_driver");
   assert.equal(doctorJson.runtimeInfo?.trustContract?.cloudRequired, false);
   assert.equal(doctorJson.schema?.dialect, "sqlite");
-  assert.equal(doctorJson.schema?.version, 10);
+  assert.equal(doctorJson.schema?.version, 11);
   assert.equal(doctorJson.readAudit?.status, "ok");
   assert.equal(doctorJson.readAudit?.schema, "gmos.read_audit_snapshot.v1");
   assert.equal((doctorJson.readAudit?.tableCount ?? 0) >= 10, true);

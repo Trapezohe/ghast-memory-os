@@ -45,7 +45,7 @@ import {
   parseHostActualCompatibilityReports,
   parseMemorySnapshotExport,
 } from "../host/index.js";
-import { serveMemoryHttp } from "../http/index.js";
+import { createMemoryHttpOpenApiDocument, serveMemoryHttp } from "../http/index.js";
 import { readGmosPackageInfo } from "../kernel/package-info.js";
 import {
   createMemoryMcpServer,
@@ -135,7 +135,13 @@ Usage:
   gmos mcp tools
   gmos mcp call --db ./gmos.db --tool memory.prepare_context --input '{"text":"你知道我什么偏好吗？"}'
   gmos mcp serve --db ./gmos.db --profile local
+  gmos keys create --db ./gmos.db --label claude-code --scope readwrite --profiles local
+  gmos keys list --db ./gmos.db
+  gmos keys revoke --db ./gmos.db --key-id key_xxx
+  gmos audit list --db ./gmos.db --key-id key_xxx --since 2026-07-01T00:00:00.000Z
+  gmos serve --db ./gmos.db --profile local --port 4787 --keys --cors-origin http://127.0.0.1:3000
   gmos http serve --db ./gmos.db --profile local --port 4787 --host ghast --auth-token local-dev-token
+  gmos http openapi
   gmos evolution report --db ./gmos.db --profile local --format markdown
   gmos evolution apply --db ./gmos.db --profile local --proposal proposal_xxx --approved-by "Song Su" --yes
   gmos evolution revert --db ./gmos.db --application evidence_xxx --yes
@@ -696,6 +702,9 @@ const PUBLIC_CLI_COMMANDS = [
   "forget",
   "explain",
   "mcp",
+  "keys",
+  "audit",
+  "serve",
   "http",
   "evolution",
   "gate",
@@ -936,6 +945,158 @@ async function createRuntime() {
   return { memory, store, profileId, dbPath };
 }
 
+type CliServiceKeyScope = "read" | "readwrite" | "admin";
+
+function serviceKeyScopeOption(): CliServiceKeyScope {
+  const raw = value("--scope");
+  if (raw !== "read" && raw !== "readwrite" && raw !== "admin") {
+    throw new Error("--scope must be one of: read, readwrite, admin");
+  }
+  return raw;
+}
+
+function serviceKeyProfilesOption(): string[] | "*" {
+  const raw = value("--profiles");
+  if (!raw) return "*";
+  const profiles = [...new Set(raw.split(",").map((entry) => entry.trim()).filter(Boolean))];
+  if (profiles.length === 0) throw new Error("--profiles must be '*' or comma-separated profile ids");
+  if (profiles.includes("*")) return "*";
+  return profiles.sort();
+}
+
+function auditSinceOption(): string | undefined {
+  const raw = value("--since");
+  if (!raw) return undefined;
+  if (Number.isNaN(Date.parse(raw))) throw new Error("--since must be an ISO timestamp");
+  return raw;
+}
+
+function loopbackHost(hostname: string): boolean {
+  return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+}
+
+function serveHostnameOption(): string {
+  return value("--host-iface", value("--listen-host", "127.0.0.1"))!;
+}
+
+function assertServeHostAllowed(hostname: string): void {
+  if (loopbackHost(hostname)) return;
+  if (!has("--allow-non-loopback")) {
+    throw new Error("gmos serve refuses non-loopback host interfaces without --allow-non-loopback");
+  }
+  console.error(
+    JSON.stringify({
+      level: "warn",
+      service: "gmos",
+      warning: "non_loopback_bind",
+      host: hostname,
+    }),
+  );
+}
+
+async function runKeysCommand(action: string | undefined): Promise<void> {
+  const store = createSqliteMemoryStore({ path: value("--db", "./gmos.db")! });
+  try {
+    if (action === "create") {
+      const label = strictOptionValue("--label");
+      if (!label) throw new Error("gmos keys create requires --label");
+      const result = store.createServiceApiKey({
+        label,
+        scope: serviceKeyScopeOption(),
+        profiles: serviceKeyProfilesOption(),
+      });
+      console.log(JSON.stringify({ ok: true, ...result }, null, 2));
+      return;
+    }
+    if (action === "list") {
+      console.log(JSON.stringify({ ok: true, keys: store.listServiceApiKeys() }, null, 2));
+      return;
+    }
+    if (action === "revoke") {
+      const keyId = strictOptionValue("--key-id");
+      if (!keyId) throw new Error("gmos keys revoke requires --key-id");
+      const key = store.revokeServiceApiKey(keyId);
+      if (!key) {
+        console.error(`Key not found: ${keyId}`);
+        process.exitCode = 1;
+        return;
+      }
+      console.log(JSON.stringify({ ok: true, key }, null, 2));
+      return;
+    }
+    throw new Error("gmos keys action must be create, list, or revoke");
+  } finally {
+    store.close();
+  }
+}
+
+async function runAuditCommand(action: string | undefined): Promise<void> {
+  if (action !== "list") throw new Error("gmos audit action must be list");
+  const store = createSqliteMemoryStore({ path: value("--db", "./gmos.db")! });
+  try {
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          audit: store.listServiceAuditRows({
+            keyId: value("--key-id"),
+            since: auditSinceOption(),
+            limit: positiveIntegerOption("--limit", 100),
+          }),
+        },
+        null,
+        2,
+      ),
+    );
+  } finally {
+    store.close();
+  }
+}
+
+async function runServeCommand(input: {
+  memory: Awaited<ReturnType<typeof createRuntime>>["memory"];
+  store: Awaited<ReturnType<typeof createRuntime>>["store"];
+  profileId: string;
+}): Promise<void> {
+  const hostname = serveHostnameOption();
+  assertServeHostAllowed(hostname);
+  const authToken = strictOptionValue("--auth-token", process.env.GMOS_HTTP_AUTH_TOKEN);
+  const scopedKeys = has("--keys");
+  const server = await serveMemoryHttp({
+    memory: input.memory,
+    store: input.store,
+    profileId: input.profileId,
+    host: hostPreset(),
+    port: nonNegativeIntegerOption("--port", 4787),
+    hostname,
+    authToken,
+    scopedKeys,
+    corsOrigins: values("--cors-origin"),
+    rateLimitRequestsPerMinute: positiveIntegerOption("--rate-limit", 600),
+    ...(value("--audit-retention-days") !== undefined
+      ? { auditRetentionDays: nonNegativeIntegerOption("--audit-retention-days", 0) }
+      : {}),
+  });
+  console.log(
+    JSON.stringify(
+      {
+        ok: true,
+        url: server.address.url,
+        authRequired: scopedKeys || authToken !== undefined,
+        authMode: scopedKeys ? "scoped_keys" : "legacy_token",
+        encrypted: input.store.encryptionStatus().encrypted,
+      },
+      null,
+      2,
+    ),
+  );
+  try {
+    await waitForServerShutdown();
+  } finally {
+    await server.close();
+  }
+}
+
 async function runEvolutionReport(): Promise<void> {
   const dbPath = value("--db", "./gmos.db")!;
   const profileId = value("--profile", "default")!;
@@ -1071,6 +1232,21 @@ async function main(): Promise<void> {
   if (command === "version") {
     const report = createCliVersionReport();
     printReport(report, renderCliVersionMarkdown(report));
+    return;
+  }
+
+  if (command === "http" && subcommand === "openapi") {
+    console.log(JSON.stringify(createMemoryHttpOpenApiDocument(), null, 2));
+    return;
+  }
+
+  if (command === "keys") {
+    await runKeysCommand(subcommand);
+    return;
+  }
+
+  if (command === "audit") {
+    await runAuditCommand(subcommand);
     return;
   }
 
@@ -1767,34 +1943,8 @@ async function main(): Promise<void> {
       return;
     }
 
-    if (command === "http" && subcommand === "serve") {
-      const authToken = strictOptionValue("--auth-token", process.env.GMOS_HTTP_AUTH_TOKEN);
-      const server = await serveMemoryHttp({
-        memory,
-        store,
-        profileId,
-        host: hostPreset(),
-        port: nonNegativeIntegerOption("--port", 4787),
-        hostname: value("--listen-host", "127.0.0.1"),
-        authToken,
-      });
-      console.log(
-        JSON.stringify(
-          {
-            ok: true,
-            url: server.address.url,
-            authRequired: authToken !== undefined,
-            encrypted: store.encryptionStatus().encrypted,
-          },
-          null,
-          2,
-        ),
-      );
-      try {
-        await waitForServerShutdown();
-      } finally {
-        await server.close();
-      }
+    if (command === "serve" || (command === "http" && subcommand === "serve")) {
+      await runServeCommand({ memory, store, profileId });
       return;
     }
 

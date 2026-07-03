@@ -21,8 +21,29 @@ current behavior.
 - Ordinary context excludes sensitive memory unless a trusted host caller
   explicitly requests it.
 - Public MCP/HTTP surfaces do not expose sensitive override switches.
+- Scoped HTTP API keys are bearer secrets. gmOS stores only sha256 hashes, shows
+  the secret once at creation, and never returns hashes from list routes.
 - Forget operations archive matching memory and remove it from future context.
 - Read paths are expected to be side-effect free and are covered by gate checks.
+
+## Service Boundary
+
+`gmos serve` binds to `127.0.0.1` by default. Non-loopback interfaces require
+`--allow-non-loopback` and should be placed behind host-owned TLS, firewalling,
+and secret distribution. CORS is off by default; configure explicit origins
+only.
+
+Use one scoped key per agent or integration. `read` keys can search, prepare,
+reconstruct, explain, and read status/OpenAPI. `readwrite` keys can also
+observe, add, commit outcomes, record feedback, maintain, and forget. `admin`
+keys can additionally list/create profiles and list key metadata. Key creation
+and revocation stay CLI-only; an admin bearer token over HTTP cannot mint new
+keys.
+
+The HTTP audit table records key id, route, method, profile id, status code,
+timestamp, and duration. It does not record request bodies, memory content,
+query text, secrets, or prompt context. Audit rows are service state, not kernel
+memory evidence, and are written only in the HTTP layer.
 
 ## Encryption At Rest
 

@@ -48,8 +48,8 @@ migration rehearsals with appropriate handling of local files.
 
 ## Encryption At Rest
 
-Encryption is an open-time store option, not a SQLite schema migration. Schema
-version remains v9. A host that wants encryption should open the source or target
+Encryption is an open-time store option, not a SQLite schema migration; it does
+not change the schema version. A host that wants encryption should open the source or target
 store with `createSqliteMemoryStore({ encryption: { driver, key, pragmas } })`
 and run normal import, backup, restore, or cutover checks through that opened
 store. gmOS does not rewrite an existing plaintext database into an encrypted
@@ -119,6 +119,25 @@ from source rows; it is idempotent and runs automatically on first open.
 Search-index health changes semantics under external content: when the FTS
 integrity check fails, `missingEntryCount` reports the total indexed-memory
 count (repair rebuilds the whole index) instead of a per-row gap count.
+
+## SQLite Schema v11
+
+Schema v11 adds service-mode tables:
+
+- `gmos_profiles` for explicit profile creation through `POST /profiles`;
+- `gmos_api_keys` for scoped API keys, storing only sha256 secret hashes;
+- `gmos_http_audit_log` for content-free HTTP request audit rows.
+
+The migration is automatic on first writable open. `gmos doctor` and
+`/status` row counts include the new tables. Profile JSON backups created by
+`gmos backup --mode safe` and `--mode full` do not include service API keys,
+key hashes, or HTTP audit rows; they remain profile memory backups. Whole
+SQLite database file backups include those service tables and should be treated
+as sensitive operational data.
+
+Legacy `GMOS_HTTP_AUTH_TOKEN` mode keeps working. Scoped-key mode starts only
+when `gmos serve --keys` or the programmatic HTTP server `scopedKeys` option is
+used.
 
 ## M3 Experience Learning
 

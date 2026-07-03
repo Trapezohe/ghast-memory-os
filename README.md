@@ -499,12 +499,26 @@ memory records.
 Hosts that cannot embed the Node SDK directly can run gmOS as a local HTTP
 service. This adapter reuses the MCP tool router for memory operations, so it
 does not bypass the public safety boundary. It defaults to `127.0.0.1` and does
-not add TLS, cloud sync, or key custody. For local service boundaries that cross
-a process boundary, pass `authToken` or `--auth-token`; all non-health endpoints
-will then require `Authorization: Bearer <token>`.
+not add TLS, cloud sync, or hosted key custody.
+
+For existing local adapters, pass `authToken`, `--auth-token`, or
+`GMOS_HTTP_AUTH_TOKEN`; all non-health endpoints then require
+`Authorization: Bearer <token>`. For self-hosted service mode, create scoped
+keys and start with `--keys`:
+
+```bash
+gmos keys create --db ./gmos.db --label agent-a --scope readwrite --profiles local
+gmos serve --db ./gmos.db --profile local --keys --port 4787
+```
+
+Scoped keys support `read`, `readwrite`, and `admin`. Secrets are shown once,
+stored only as sha256 hashes, and can be listed/revoked with `gmos keys`.
+`gmos audit list` reads the content-free HTTP audit log. `gmos http openapi`
+emits the generated OpenAPI 3.1 contract.
 
 Endpoints include `GET /health`, `GET /runtime-info`, `GET /status`, `GET
-/tools`, `POST /add`, `POST /search`, `POST /observe`, `POST /prepare`, `POST
+/tools`, `GET /openapi.json`, `GET /profiles`, `POST /profiles`, `GET /keys`,
+`POST /add`, `POST /search`, `POST /observe`, `POST /prepare`, `POST
 /explain-turn`, `POST /reconstruct`, `POST /explain-path`, `POST
 /commit-outcome`, `POST /feedback`, `POST /maintain`, `POST /forget`, `POST
 /explain`, and `POST /mcp/call`.

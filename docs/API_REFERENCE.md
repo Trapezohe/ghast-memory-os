@@ -899,6 +899,10 @@ The local HTTP adapter exposes:
 - `GET /runtime-info`
 - `GET /tools`
 - `GET /status`
+- `GET /openapi.json`
+- `GET /profiles` (admin scope)
+- `POST /profiles` (admin scope; create/ensure only)
+- `GET /keys` (admin scope; no hashes or secrets)
 - `POST /add`
 - `POST /search`
 - `POST /observe`
@@ -913,8 +917,49 @@ The local HTTP adapter exposes:
 - `POST /explain`
 - `POST /mcp/call`
 
-Use an auth token for local service boundaries that are reachable by more than
-one process.
+`gmos serve` is the hardened service command. `gmos http serve` remains a
+compatibility alias. Defaults stay local-first: `--host-iface` defaults to
+`127.0.0.1`, and binding to a non-loopback interface requires
+`--allow-non-loopback`. Useful service flags are `--keys`, `--cors-origin`,
+`--rate-limit`, and `--audit-retention-days`.
+
+Without `--keys`, legacy bearer mode keeps `GMOS_HTTP_AUTH_TOKEN` /
+`--auth-token` behavior for existing local adapters. With `--keys`, auth uses
+SQLite-backed scoped API keys:
+
+- `read`: `/status`, `/openapi.json`, tools/runtime info, search, prepare,
+  reconstruct, explain routes.
+- `readwrite`: `read` plus add, observe, commit outcome, feedback, maintain,
+  and forget.
+- `admin`: `readwrite` plus profile management and key listing.
+
+Key creation and revocation are CLI-only:
+
+```bash
+gmos keys create --db ./gmos.db --label claude-code --scope readwrite --profiles local
+gmos keys list --db ./gmos.db
+gmos keys revoke --db ./gmos.db --key-id key_xxx
+```
+
+Secrets are printed once at creation and stored only as sha256 hashes. Key
+records are `{ keyId, hash, label, scope, profiles, createdAt, revokedAt? }`;
+`list` and HTTP `/keys` never return `hash` or the secret. Profile allowlist
+failures return `403 profile_forbidden` consistently.
+
+The service audit log is content-free: key id, route, method, profile id,
+status code, timestamp, and duration. It never records request bodies, memory
+content, or query text. Read it with:
+
+```bash
+gmos audit list --db ./gmos.db --key-id key_xxx --since 2026-07-01T00:00:00.000Z
+```
+
+Use `gmos http openapi > openapi.json` or `GET /openapi.json` for the OpenAPI
+3.1 contract generated from the public route registry and MCP tool schemas.
+
+Sensitive override switches, profile deletion, key creation/revocation,
+backup/restore, evolution apply/revert, and encryption key management are not
+HTTP routes. They remain trusted CLI/SDK operations.
 
 Run `examples/http-adapter.mjs` for a minimal host-style smoke test. The example
 starts an ephemeral localhost server with bearer auth, rejects unauthenticated

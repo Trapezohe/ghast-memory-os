@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-export const GMOS_SQLITE_SCHEMA_VERSION = 10;
+export const GMOS_SQLITE_SCHEMA_VERSION = 11;
 
 const READ_AUDIT_REVISION_TABLES = [
   "gmos_evidence_events",
@@ -477,6 +477,38 @@ export function ensureSqliteSchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_gmos_memory_vector_terms_lookup
       ON gmos_memory_vector_terms(profile_id, status, feature_key, updated_at);
+
+    CREATE TABLE IF NOT EXISTS gmos_profiles (
+      profile_id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS gmos_api_keys (
+      key_id TEXT PRIMARY KEY,
+      hash TEXT NOT NULL UNIQUE,
+      label TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      profiles_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      revoked_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_gmos_api_keys_created
+      ON gmos_api_keys(created_at, key_id);
+
+    CREATE TABLE IF NOT EXISTS gmos_http_audit_log (
+      id TEXT PRIMARY KEY,
+      key_id TEXT NOT NULL,
+      route TEXT NOT NULL,
+      method TEXT NOT NULL,
+      profile_id TEXT NOT NULL,
+      status_code INTEGER NOT NULL,
+      timestamp TEXT NOT NULL,
+      duration_ms INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_gmos_http_audit_key_time
+      ON gmos_http_audit_log(key_id, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_gmos_http_audit_profile_time
+      ON gmos_http_audit_log(profile_id, timestamp);
   `);
 
   if (!columnExists(db, "gmos_world_beliefs", "metadata_json")) {
@@ -545,6 +577,14 @@ export function ensureSqliteSchema(db: Database.Database): void {
   `);
 
   ensureExternalContentFtsSchema(db, previousSchemaVersion);
+  db.exec(`
+    INSERT OR IGNORE INTO gmos_schema_migrations(version, name, applied_at)
+      VALUES (
+        11,
+        'service_keys_profiles_audit',
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      );
+  `);
 }
 
 export function sqliteSchemaVersion(db: Database.Database): number {
