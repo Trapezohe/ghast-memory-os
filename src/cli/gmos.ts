@@ -139,7 +139,7 @@ Usage:
   gmos keys list --db ./gmos.db
   gmos keys revoke --db ./gmos.db --key-id key_xxx
   gmos audit list --db ./gmos.db --key-id key_xxx --since 2026-07-01T00:00:00.000Z
-  gmos serve --db ./gmos.db --profile local --port 4787 --keys --cors-origin http://127.0.0.1:3000
+  gmos serve --db ./gmos.db --profile local --port 4787 --keys --console
   gmos http serve --db ./gmos.db --profile local --port 4787 --host ghast --auth-token local-dev-token
   gmos http openapi
   gmos evolution report --db ./gmos.db --profile local --format markdown
@@ -1073,6 +1073,7 @@ async function runServeCommand(input: {
     scopedKeys,
     corsOrigins: values("--cors-origin"),
     rateLimitRequestsPerMinute: positiveIntegerOption("--rate-limit", 600),
+    console: has("--console"),
     ...(value("--audit-retention-days") !== undefined
       ? { auditRetentionDays: nonNegativeIntegerOption("--audit-retention-days", 0) }
       : {}),
@@ -1084,6 +1085,7 @@ async function runServeCommand(input: {
         url: server.address.url,
         authRequired: scopedKeys || authToken !== undefined,
         authMode: scopedKeys ? "scoped_keys" : "legacy_token",
+        console: has("--console"),
         encrypted: input.store.encryptionStatus().encrypted,
       },
       null,

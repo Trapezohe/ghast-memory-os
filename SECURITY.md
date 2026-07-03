@@ -52,6 +52,31 @@ timestamp, and duration. It does not record request bodies, memory content,
 query text, secrets, or prompt context. Audit rows are service state, not kernel
 memory evidence, and are written only in the HTTP layer.
 
+## Memory Console Threat Model
+
+`gmos serve --console` serves a static shell from `/console/` without
+authentication. That route intentionally contains no memory data, no embedded
+API key, and no write endpoint. All data requests from the browser call the
+existing HTTP API with `Authorization: Bearer <key>`, so scoped-key checks,
+profile allowlists, rate limits, and the content-free audit log still apply.
+
+Console responses set a restrictive CSP (`default-src 'self'; connect-src
+'self'`), `X-Content-Type-Options: nosniff`, and
+`Referrer-Policy: no-referrer`. Scripts and styles are local files under
+`console/`; there are no CDN, font, analytics, telemetry, or other external
+asset URLs.
+
+The pasted API key is kept in JavaScript memory and `sessionStorage`. gmOS does
+not use cookies or `localStorage` for the console: cookies would be sent
+implicitly to every request on the origin, and `localStorage` would persist
+longer than a tab session. `sessionStorage` still belongs to the browser profile,
+so close the tab or use "Forget key" when sharing a machine.
+
+The console deliberately does not render sensitive override switches, HTTP key
+creation, evolution apply, or evolution revert. Forget and maintenance controls
+must preview or dry-run first, then require typed confirmation before using the
+existing audited write routes.
+
 ## Encryption At Rest
 
 Encryption at rest protects the SQLite database file from ordinary offline reads

@@ -528,7 +528,7 @@ keys and start with `--keys`:
 
 ```bash
 gmos keys create --db ./gmos.db --label agent-a --scope readwrite --profiles local
-gmos serve --db ./gmos.db --profile local --keys --port 4787
+gmos serve --db ./gmos.db --profile local --keys --port 4787 --console
 ```
 
 Scoped keys support `read`, `readwrite`, and `admin`. Secrets are shown once,
@@ -536,12 +536,20 @@ stored only as sha256 hashes, and can be listed/revoked with `gmos keys`.
 `gmos audit list` reads the content-free HTTP audit log. `gmos http openapi`
 emits the generated OpenAPI 3.1 contract.
 
+Open `http://127.0.0.1:4787/console/` for the local Memory Console. The static
+shell is unauthenticated, but it contains no data; paste a scoped API key in the
+browser to browse memories, explain a turn, preview forget/maintain operations,
+and review evolution proposals. Keys stay in memory plus `sessionStorage`.
+
+Screenshot placeholder: Memory Console overview with status cards, memory counts,
+vector-index health, and profile scope badge.
+
 Endpoints include `GET /health`, `GET /healthz`, `GET /runtime-info`, `GET
 /status`, `GET /tools`, `GET /openapi.json`, `GET /profiles`, `POST
-/profiles`, `GET /keys`, `POST /add`, `POST /search`, `POST /observe`, `POST
-/prepare`, `POST /explain-turn`, `POST /reconstruct`, `POST /explain-path`,
-`POST /commit-outcome`, `POST /feedback`, `POST /maintain`, `POST /forget`,
-`POST /explain`, and `POST /mcp/call`.
+/profiles`, `GET /keys`, `GET /evolution/review`, `POST /add`, `POST
+/search`, `POST /observe`, `POST /prepare`, `POST /explain-turn`, `POST
+/reconstruct`, `POST /explain-path`, `POST /commit-outcome`, `POST /feedback`,
+`POST /maintain`, `POST /forget`, `POST /explain`, and `POST /mcp/call`.
 
 JS/TS callers can use the zero-dependency fetch client:
 
@@ -582,6 +590,9 @@ gmos evolution report --db ./gmos.db --profile local --format markdown
 gmos evolution apply --db ./gmos.db --profile local --proposal proposal_xxx --approved-by "Song Su" --yes
 gmos evolution revert --db ./gmos.db --application evidence_xxx --yes
 ```
+
+HTTP exposes only the admin-scoped read review route, `GET /evolution/review`.
+Apply and revert remain CLI/SDK-only.
 
 ## Diagnostics
 

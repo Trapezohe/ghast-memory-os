@@ -916,6 +916,7 @@ The local HTTP adapter exposes:
 - `GET /profiles` (admin scope)
 - `POST /profiles` (admin scope; create/ensure only)
 - `GET /keys` (admin scope; no hashes or secrets)
+- `GET /evolution/review` (admin scope; read-only)
 - `POST /add`
 - `POST /search`
 - `POST /observe`
@@ -934,7 +935,15 @@ The local HTTP adapter exposes:
 compatibility alias. Defaults stay local-first: `--host-iface` defaults to
 `127.0.0.1`, and binding to a non-loopback interface requires
 `--allow-non-loopback`. Useful service flags are `--keys`, `--cors-origin`,
-`--rate-limit`, and `--audit-retention-days`.
+`--rate-limit`, `--audit-retention-days`, and `--console`.
+
+`--console` serves the packaged static console at `/console/`. Static console
+assets are GET-only and unauthenticated because the shell contains no data. Data
+requests made by the browser still use ordinary HTTP routes with
+`Authorization: Bearer <key>` and are audited like any other service request.
+Console responses include `Content-Security-Policy: default-src 'self';
+connect-src 'self'`, `X-Content-Type-Options: nosniff`, and
+`Referrer-Policy: no-referrer`; scripts and styles are separate local files.
 
 Without `--keys`, legacy bearer mode keeps `GMOS_HTTP_AUTH_TOKEN` /
 `--auth-token` behavior for existing local adapters. With `--keys`, auth uses
@@ -944,7 +953,8 @@ SQLite-backed scoped API keys:
   reconstruct, explain routes.
 - `readwrite`: `read` plus add, observe, commit outcome, feedback, maintain,
   and forget.
-- `admin`: `readwrite` plus profile management and key listing.
+- `admin`: `readwrite` plus profile management, key listing, and
+  `/evolution/review`.
 
 Key creation and revocation are CLI-only:
 
@@ -969,6 +979,11 @@ gmos audit list --db ./gmos.db --key-id key_xxx --since 2026-07-01T00:00:00.000Z
 
 Use `gmos http openapi > openapi.json` or `GET /openapi.json` for the OpenAPI
 3.1 contract generated from the public route registry and MCP tool schemas.
+
+`GET /evolution/review` returns the same report-only failure review as
+`createEvolutionControlPlane().reviewFailures()`. Query parameters are
+`profileId`, `failureKind`, and `limit`. It is read-pure apart from the normal
+content-free HTTP audit row.
 
 Sensitive override switches, profile deletion, key creation/revocation,
 backup/restore, evolution apply/revert, and encryption key management are not

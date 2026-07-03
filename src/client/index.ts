@@ -36,6 +36,7 @@ export const GMOS_CLIENT_METHOD_ROUTES = {
   profilesList: "GET /profiles",
   profilesCreate: "POST /profiles",
   keysList: "GET /keys",
+  evolutionReview: "GET /evolution/review",
   add: "POST /add",
   search: "POST /search",
   observe: "POST /observe",
@@ -200,6 +201,20 @@ export class GmosClient {
 
   keysList(): Promise<GmosJsonObject> {
     return this.request("GET", "/keys");
+  }
+
+  evolutionReview(input: {
+    profileId?: string | undefined;
+    failureKind?: string | undefined;
+    limit?: number | undefined;
+  } = {}): Promise<GmosJsonObject> {
+    return this.request("GET", "/evolution/review", {
+      query: {
+        profileId: input.profileId,
+        failureKind: input.failureKind,
+        limit: input.limit === undefined ? undefined : String(input.limit),
+      },
+    });
   }
 
   add(input: GmosJsonObject): Promise<GmosJsonObject> {

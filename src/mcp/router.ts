@@ -775,8 +775,11 @@ function publicMemoryRecord(memory: MemoryRecord): Record<string, unknown> {
     kind: memory.kind,
     scope: memory.scope,
     content: memory.content,
+    sensitivity: memory.sensitivity,
     status: memory.status,
     confidence: memory.confidence,
+    recallCount: memory.recallCount,
+    reinforcement: memory.reinforcement,
     createdAt: memory.createdAt,
     updatedAt: memory.updatedAt,
   };

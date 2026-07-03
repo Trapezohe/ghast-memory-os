@@ -68,6 +68,12 @@ class GmosClientTests(unittest.TestCase):
             ("profiles_create", lambda: client.profiles_create("client"), {"profileId": "client"}, {}),
             ("keys_list", lambda: client.keys_list(), None, {}),
             (
+                "evolution_review",
+                lambda: client.evolution_review(profile_id="client", failure_kind="wrong_recall", limit=5),
+                None,
+                {"profileId": ["client"], "failureKind": ["wrong_recall"], "limit": ["5"]},
+            ),
+            (
                 "add",
                 lambda: client.add({"profileId": "client", "kind": "fact", "content": "Client route contract."}),
                 {"profileId": "client", "kind": "fact", "content": "Client route contract."},

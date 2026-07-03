@@ -1,14 +1,18 @@
 import { timingSafeEqual } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   createMemoryStatusReport,
   type DiagnosticsStore,
   type MemoryStatusReportInput,
 } from "../diagnostics/index.js";
+import { createEvolutionControlPlane, type FailureReviewStore } from "../evolution/index.js";
 import { readGmosPackageInfo } from "../kernel/package-info.js";
-import type { MemoryOS } from "../kernel/types.js";
+import type { FailureKind, MemoryOS } from "../kernel/types.js";
 import {
   createMemoryMcpServer,
   PUBLIC_MEMORY_HTTP_ROUTE_REGISTRY,
@@ -40,6 +44,7 @@ export interface MemoryHttpServerOptions {
   corsOrigins?: string[] | undefined;
   rateLimitRequestsPerMinute?: number | undefined;
   auditRetentionDays?: number | undefined;
+  console?: boolean | undefined;
 }
 
 export interface MemoryHttpListenOptions {
@@ -74,6 +79,32 @@ const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const DEFAULT_RATE_LIMIT_REQUESTS_PER_MINUTE = 600;
 const STATUS_QUERY_PARAMS = new Set(["profileId"]);
 const PROFILE_QUERY_PARAMS = new Set<string>();
+const EVOLUTION_REVIEW_QUERY_PARAMS = new Set(["profileId", "failureKind", "limit"]);
+const FAILURE_KINDS = new Set<FailureKind>([
+  "missed_recall",
+  "wrong_recall",
+  "privacy_leak",
+  "forget_failure",
+  "controller_route_error",
+  "action_policy_missing",
+  "task_failure",
+]);
+const CONSOLE_ROOT_PATH = "/console";
+const CONSOLE_DIRECTORY = fileURLToPath(new URL("../../console/", import.meta.url));
+const CONSOLE_SECURITY_HEADERS = {
+  "content-security-policy":
+    "default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer",
+  "cache-control": "no-store",
+};
+const CONSOLE_CONTENT_TYPES: Record<string, string> = {
+  ".css": "text/css; charset=utf-8",
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+};
 const TOOL_SCOPES: Record<PublicMemoryMcpToolName, "read" | "readwrite" | "admin"> = {
   "memory.runtime_info": "read",
   "memory.add": "readwrite",
@@ -167,6 +198,25 @@ function optionalString(searchParams: URLSearchParams, key: string): string | un
   const raw = searchParams.get(key);
   if (raw === null || raw.trim().length === 0) return undefined;
   return raw;
+}
+
+function optionalPositiveInteger(searchParams: URLSearchParams, key: string): number | undefined {
+  const raw = optionalString(searchParams, key);
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new HttpError(400, "invalid_query", `${key} must be a positive integer`);
+  }
+  return value;
+}
+
+function optionalFailureKind(searchParams: URLSearchParams): FailureKind | undefined {
+  const raw = optionalString(searchParams, "failureKind");
+  if (raw === undefined) return undefined;
+  if (!FAILURE_KINDS.has(raw as FailureKind)) {
+    throw new HttpError(400, "invalid_query", "failureKind is not supported");
+  }
+  return raw as FailureKind;
 }
 
 function assertAllowedSearchParams(
@@ -382,6 +432,73 @@ function pathExists(pathname: string): boolean {
   return PUBLIC_MEMORY_HTTP_ROUTE_REGISTRY.some((route) => route.pathname === pathname);
 }
 
+function rawRequestPathname(rawUrl: string | undefined): string {
+  const value = rawUrl ?? "/";
+  const pathOnly = value.split("#", 1)[0]!.split("?", 1)[0]!;
+  if (/^https?:\/\//iu.test(pathOnly)) {
+    try {
+      return new URL(pathOnly).pathname;
+    } catch {
+      return pathOnly;
+    }
+  }
+  return pathOnly;
+}
+
+function isConsolePath(rawPathname: string): boolean {
+  return rawPathname === CONSOLE_ROOT_PATH || rawPathname.startsWith(`${CONSOLE_ROOT_PATH}/`);
+}
+
+function consoleRelativePath(rawPathname: string): string {
+  const rawRelative =
+    rawPathname === CONSOLE_ROOT_PATH ? "/" : rawPathname.slice(CONSOLE_ROOT_PATH.length);
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(rawRelative);
+  } catch {
+    throw new HttpError(400, "invalid_url", "console path is invalid");
+  }
+  if (
+    decoded.includes("\0") ||
+    decoded.includes("\\") ||
+    decoded.split("/").some((part) => part === "..")
+  ) {
+    throw new HttpError(404, "not_found", "console asset not found");
+  }
+  const relative = decoded === "/" || decoded === "" ? "index.html" : decoded.replace(/^\/+/u, "");
+  return relative.endsWith("/") ? `${relative}index.html` : relative;
+}
+
+function serveConsoleAsset(
+  request: IncomingMessage,
+  response: ServerResponse,
+  rawPathname: string,
+): number {
+  if (request.method !== "GET") {
+    throw new HttpError(405, "method_not_allowed", "method is not allowed");
+  }
+  const root = path.resolve(CONSOLE_DIRECTORY);
+  const candidate = path.resolve(root, consoleRelativePath(rawPathname));
+  if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
+    throw new HttpError(404, "not_found", "console asset not found");
+  }
+  let status;
+  try {
+    status = statSync(candidate);
+  } catch {
+    throw new HttpError(404, "not_found", "console asset not found");
+  }
+  if (!status.isFile()) {
+    throw new HttpError(404, "not_found", "console asset not found");
+  }
+  response.writeHead(200, {
+    ...CONSOLE_SECURITY_HEADERS,
+    "content-type": CONSOLE_CONTENT_TYPES[path.extname(candidate)] ?? "application/octet-stream",
+  });
+  response.end(readFileSync(candidate));
+  return 200;
+}
+
 export function createMemoryHttpServer(
   options: MemoryHttpServerOptions,
 ): MemoryHttpServerHandle {
@@ -502,12 +619,23 @@ export function createMemoryHttpServer(
     let auditRoute = `${request.method ?? "UNKNOWN"} ${request.url ?? "/"}`;
     let auditProfileId = options.profileId;
     let statusCode = 500;
+    let consoleRequest = false;
     try {
       let url: URL;
       try {
         url = new URL(request.url ?? "/", "http://127.0.0.1");
       } catch {
         throw new HttpError(400, "invalid_url", "request url is invalid");
+      }
+      const rawPathname = rawRequestPathname(request.url);
+      if (isConsolePath(rawPathname)) {
+        consoleRequest = true;
+        auditRoute = `${request.method ?? "UNKNOWN"} /console/*`;
+        if (options.console !== true) {
+          throw new HttpError(404, "not_found", "console is not enabled");
+        }
+        statusCode = serveConsoleAsset(request, response, rawPathname);
+        return;
       }
       const route = routeFor(request.method, url.pathname);
       auditRoute = route?.route ?? `${request.method ?? "UNKNOWN"} ${url.pathname}`;
@@ -624,6 +752,28 @@ export function createMemoryHttpServer(
         return;
       }
 
+      if (route.route === "GET /evolution/review") {
+        assertAllowedSearchParams(
+          url.searchParams,
+          EVOLUTION_REVIEW_QUERY_PARAMS,
+          "GET /evolution/review",
+        );
+        auditProfileId = optionalString(url.searchParams, "profileId") ?? options.profileId;
+        assertProfileAllowed(auth, auditProfileId);
+        const evolutionStore = requireServiceStore(options.store, "listFailures") as FailureReviewStore;
+        const report = await createEvolutionControlPlane({
+          store: evolutionStore,
+          profileId: auditProfileId,
+        }).reviewFailures({
+          profileId: auditProfileId,
+          failureKind: optionalFailureKind(url.searchParams),
+          limit: optionalPositiveInteger(url.searchParams, "limit"),
+        });
+        statusCode = 200;
+        sendJson(request, response, 200, ok({ ok: true, report }));
+        return;
+      }
+
       if (route.route === "POST /mcp/call") {
         const body = assertObjectBody(await readJsonBody(request, maxBodyBytes));
         const unsupported = Object.keys(body).filter((key) => key !== "tool" && key !== "args");
@@ -667,6 +817,7 @@ export function createMemoryHttpServer(
         statusCode,
         errorPayload(error),
         {
+          ...(consoleRequest ? CONSOLE_SECURITY_HEADERS : {}),
           ...(statusCode === 401 ? { "www-authenticate": 'Bearer realm="gmos-http"' } : {}),
           ...(error instanceof HttpError ? error.headers : {}),
         },

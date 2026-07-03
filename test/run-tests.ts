@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -646,6 +647,14 @@ function postJson(
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(body),
+  });
+}
+
+function listFilesRecursive(root: string): string[] {
+  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const fullPath = path.join(root, entry.name);
+    if (entry.isDirectory()) return listFilesRecursive(fullPath);
+    return [fullPath];
   });
 }
 
@@ -14860,6 +14869,7 @@ try {
     "GET /profiles",
     "POST /profiles",
     "GET /keys",
+    "GET /evolution/review",
     "POST /add",
     "POST /search",
     "POST /observe",
@@ -14876,6 +14886,8 @@ try {
   ]);
   assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /backup" as never), false);
   assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /restore" as never), false);
+  assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("GET /evolution/apply" as never), false);
+  assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("GET /evolution/revert" as never), false);
   assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /evolution/apply" as never), false);
   assert.equal(PUBLIC_MEMORY_HTTP_ROUTES.includes("POST /evolution/revert" as never), false);
   assert.equal(PUBLIC_MEMORY_MCP_TOOL_NAMES.includes("memory.evolution_apply" as never), false);
@@ -14935,6 +14947,16 @@ try {
       body: { profileId: "client" },
     },
     { name: "keysList", run: () => jsClient.keysList() },
+    {
+      name: "evolutionReview",
+      run: () =>
+        jsClient.evolutionReview({
+          profileId: "client",
+          failureKind: "wrong_recall",
+          limit: 5,
+        }),
+      query: { profileId: "client", failureKind: "wrong_recall", limit: "5" },
+    },
     {
       name: "add",
       run: () => jsClient.add({ profileId: "client", kind: "fact", content: "Client route contract." }),
@@ -15310,6 +15332,8 @@ try {
   assert.match(await invalidJson.text(), /invalid_json/);
   const missingRoute = await httpJson(`${httpAddress.url}/missing`);
   assert.equal(missingRoute.status, 404);
+  const consoleOff = await httpJson(`${httpAddress.url}/console/`);
+  assert.equal(consoleOff.status, 404);
   const malformedResponse = await rawHttpRequest(
     httpAddress.port,
     "GET http://[::1 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
@@ -15320,6 +15344,63 @@ try {
   assert.equal(stillHealthy.status, 200);
 } finally {
   await httpServer.close();
+}
+
+const consoleDirectory = path.join(process.cwd(), "console");
+const consoleFiles = listFilesRecursive(consoleDirectory);
+assert.equal(consoleFiles.some((file) => path.basename(file) === "index.html"), true);
+for (const file of consoleFiles) {
+  const consoleAssetSource = readFileSync(file, "utf8").replaceAll(
+    'xmlns="http://www.w3.org/2000/svg"',
+    "",
+  );
+  assert.doesNotMatch(
+    consoleAssetSource,
+    /https?:\/\//iu,
+    `${path.relative(process.cwd(), file)} must not reference external URLs`,
+  );
+}
+const consoleShellSource = readFileSync(path.join(consoleDirectory, "index.html"), "utf8");
+assert.doesNotMatch(consoleShellSource, /<script\b(?![^>]*\bsrc=)[^>]*>/iu);
+assert.doesNotMatch(consoleShellSource, /<style\b/iu);
+assert.doesNotMatch(consoleShellSource, /\sstyle\s*=/iu);
+
+const consoleHttpServer = createMemoryHttpServer({
+  memory,
+  store,
+  profileId: "http_console",
+  authToken: "console-token",
+  console: true,
+});
+const consoleHttpAddress = await consoleHttpServer.listen();
+try {
+  const consoleShell = await fetch(`${consoleHttpAddress.url}/console/`);
+  assert.equal(consoleShell.status, 200);
+  assert.match(await consoleShell.text(), /Memory Console/);
+  assert.equal(
+    consoleShell.headers.get("content-security-policy")?.includes("default-src 'self'"),
+    true,
+  );
+  assert.equal(
+    consoleShell.headers.get("content-security-policy")?.includes("connect-src 'self'"),
+    true,
+  );
+  assert.equal(consoleShell.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(consoleShell.headers.get("referrer-policy"), "no-referrer");
+  const consoleScript = await fetch(`${consoleHttpAddress.url}/console/app.js`);
+  assert.equal(consoleScript.status, 200);
+  assert.match(consoleScript.headers.get("content-type") ?? "", /text\/javascript/);
+  const consolePost = await fetch(`${consoleHttpAddress.url}/console/`, { method: "POST" });
+  assert.equal(consolePost.status, 405);
+  const consoleTraversal = await rawHttpRequest(
+    consoleHttpAddress.port,
+    "GET /console/../../etc/passwd HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+  );
+  assert.match(consoleTraversal, /404 Not Found/);
+  const consoleDataRoute = await httpJson(`${consoleHttpAddress.url}/runtime-info`);
+  assert.equal(consoleDataRoute.status, 401);
+} finally {
+  await consoleHttpServer.close();
 }
 
 const tinyHttpServer = createMemoryHttpServer({
@@ -15517,6 +15598,38 @@ try {
   assert.equal(scopedKeys.status, 200);
   assert.equal(scopedKeys.text.includes(scopedReadKey.secret), false);
   assert.equal(scopedKeys.text.includes("hash"), false);
+  const scopedEvolutionReadDenied = await httpJson(
+    `${scopedHttpAddress.url}/evolution/review?profileId=mcp`,
+    { headers: { authorization: `Bearer ${scopedReadKey.secret}` } },
+  );
+  assert.equal(scopedEvolutionReadDenied.status, 403);
+  const scopedEvolutionReadwriteDenied = await httpJson(
+    `${scopedHttpAddress.url}/evolution/review?profileId=mcp`,
+    { headers: { authorization: `Bearer ${scopedReadwriteKey.secret}` } },
+  );
+  assert.equal(scopedEvolutionReadwriteDenied.status, 403);
+  const evolutionReviewBefore = store.readAuditSnapshot();
+  const scopedEvolutionAdmin = await httpJson(
+    `${scopedHttpAddress.url}/evolution/review?profileId=mcp&failureKind=privacy_leak&limit=5`,
+    { headers: { authorization: `Bearer ${scopedAdminKey.secret}` } },
+  );
+  assert.equal(scopedEvolutionAdmin.status, 200);
+  assert.equal((scopedEvolutionAdmin.body.report as { mode?: string }).mode, "propose_with_approval");
+  assert.equal(
+    ((scopedEvolutionAdmin.body.report as { inspectedFailureCount?: number }).inspectedFailureCount ?? 0) >= 1,
+    true,
+  );
+  assert.deepEqual(store.readAuditSnapshot(), evolutionReviewBefore);
+  const scopedEvolutionAuditRows = store.listServiceAuditRows({
+    keyId: scopedAdminKey.key.keyId,
+    limit: 20,
+  });
+  assert.equal(scopedEvolutionAuditRows.some((row) => row.route === "GET /evolution/review"), true);
+  const scopedEvolutionInvalidQuery = await httpJson(
+    `${scopedHttpAddress.url}/evolution/review?failureKind=unknown`,
+    { headers: { authorization: `Bearer ${scopedAdminKey.secret}` } },
+  );
+  assert.equal(scopedEvolutionInvalidQuery.status, 400);
   const scopedCreateKeyOverHttp = await postJson(
     `${scopedHttpAddress.url}/keys`,
     { label: "forbidden", scope: "read" },
@@ -15624,6 +15737,8 @@ try {
   assert.equal(cliHealth.body.authRequired, true);
   const cliUnauthedRuntimeInfo = await httpJson(`${cliHttpUrl}/runtime-info`);
   assert.equal(cliUnauthedRuntimeInfo.status, 401);
+  const cliConsoleOff = await httpJson(`${cliHttpUrl}/console/`);
+  assert.equal(cliConsoleOff.status, 404);
   const cliRuntimeInfo = await httpJson(`${cliHttpUrl}/runtime-info`, {
     headers: { authorization: "Bearer cli-local-token" },
   });
@@ -15651,6 +15766,67 @@ try {
   cliHttp.kill("SIGTERM");
   await Promise.race([
     new Promise((resolve) => cliHttp.once("exit", resolve)),
+    new Promise((resolve) => setTimeout(resolve, 5000)),
+  ]);
+}
+
+const cliConsoleHttp = spawn(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "http",
+    "serve",
+    "--db",
+    path.join(tmp, "cli-console-http.db"),
+    "--profile",
+    "cli_console_http",
+    "--port",
+    "0",
+    "--auth-token",
+    "cli-console-token",
+    "--console",
+  ],
+  { cwd: process.cwd(), stdio: ["pipe", "pipe", "pipe"] },
+);
+let cliConsoleHttpStdout = "";
+let cliConsoleHttpStderr = "";
+cliConsoleHttp.stdout.setEncoding("utf8");
+cliConsoleHttp.stderr.setEncoding("utf8");
+cliConsoleHttp.stdout.on("data", (chunk: string) => {
+  cliConsoleHttpStdout += chunk;
+});
+cliConsoleHttp.stderr.on("data", (chunk: string) => {
+  cliConsoleHttpStderr += chunk;
+});
+const cliConsoleHttpUrl = await Promise.race([
+  new Promise<string>((resolve) => {
+    cliConsoleHttp.stdout.on("data", () => {
+      const match = cliConsoleHttpStdout.match(/"url": "(http:\/\/127\.0\.0\.1:\d+)"/u);
+      if (match?.[1]) resolve(match[1]);
+    });
+  }),
+  new Promise<never>((_, reject) => {
+    cliConsoleHttp.once("exit", (code, signal) => {
+      reject(new Error(`gmos http serve --console exited early: code=${code} signal=${signal} stderr=${cliConsoleHttpStderr}`));
+    });
+  }),
+  new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error(`gmos http serve --console did not print url: ${cliConsoleHttpStderr}`)), 5000),
+  ),
+]);
+try {
+  assert.match(cliConsoleHttpStdout, /"console": true/);
+  const cliConsoleShell = await fetch(`${cliConsoleHttpUrl}/console/`);
+  assert.equal(cliConsoleShell.status, 200);
+  assert.match(await cliConsoleShell.text(), /Memory Console/);
+  const cliConsoleDataRoute = await httpJson(`${cliConsoleHttpUrl}/runtime-info`);
+  assert.equal(cliConsoleDataRoute.status, 401);
+} finally {
+  cliConsoleHttp.kill("SIGTERM");
+  await Promise.race([
+    new Promise((resolve) => cliConsoleHttp.once("exit", resolve)),
     new Promise((resolve) => setTimeout(resolve, 5000)),
   ]);
 }

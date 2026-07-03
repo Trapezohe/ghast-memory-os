@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -32,6 +32,43 @@ function spawnCommand(command, args, options = {}) {
     ...options,
     shell: options.shell ?? needsWindowsCommandShell(command),
   });
+}
+
+function waitForServeUrl(child, label) {
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  return Promise.race([
+    new Promise((resolve) => {
+      child.stdout.on("data", () => {
+        const match = stdout.match(/"url": "(http:\/\/127\.0\.0\.1:\d+)"/u);
+        if (match?.[1]) resolve({ url: match[1], stdout, stderr });
+      });
+    }),
+    new Promise((_, reject) => {
+      child.once("exit", (code, signal) => {
+        reject(new Error(`${label} exited early: code=${code} signal=${signal} stderr=${stderr}`));
+      });
+    }),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} did not print url: ${stderr}`)), 5000),
+    ),
+  ]);
+}
+
+async function stopServe(child) {
+  child.kill("SIGTERM");
+  await Promise.race([
+    new Promise((resolve) => child.once("exit", resolve)),
+    new Promise((resolve) => setTimeout(resolve, 5000)),
+  ]);
 }
 
 function corruptMemoryFtsEntry(db, memoryId) {
@@ -720,6 +757,66 @@ try {
     `,
   );
   run(process.execPath, [consumerScript], { cwd: consumerDir, stdio: "pipe" });
+
+  const consoleGmosBin = path.join(consumerDir, "node_modules", ".bin", isWindows ? "gmos.cmd" : "gmos");
+  const consoleOffServe = spawn(
+    consoleGmosBin,
+    [
+      "serve",
+      "--db",
+      path.join(consumerDir, "consumer-console-off.db"),
+      "--profile",
+      "consumer_console_off",
+      "--port",
+      "0",
+      "--auth-token",
+      "consumer-console-token",
+    ],
+    {
+      cwd: consumerDir,
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: needsWindowsCommandShell(consoleGmosBin),
+      env: { ...process.env, npm_config_cache: npmCacheDir, npm_config_prefer_offline: "true" },
+    },
+  );
+  try {
+    const { url } = await waitForServeUrl(consoleOffServe, "consumer gmos serve");
+    const response = await fetch(`${url}/console/`);
+    assert.equal(response.status, 404);
+  } finally {
+    await stopServe(consoleOffServe);
+  }
+
+  const consoleOnServe = spawn(
+    consoleGmosBin,
+    [
+      "serve",
+      "--db",
+      path.join(consumerDir, "consumer-console-on.db"),
+      "--profile",
+      "consumer_console_on",
+      "--port",
+      "0",
+      "--auth-token",
+      "consumer-console-token",
+      "--console",
+    ],
+    {
+      cwd: consumerDir,
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: needsWindowsCommandShell(consoleGmosBin),
+      env: { ...process.env, npm_config_cache: npmCacheDir, npm_config_prefer_offline: "true" },
+    },
+  );
+  try {
+    const { url, stdout } = await waitForServeUrl(consoleOnServe, "consumer gmos serve --console");
+    assert.match(stdout, /"console": true/);
+    const response = await fetch(`${url}/console/`);
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /Memory Console/);
+  } finally {
+    await stopServe(consoleOnServe);
+  }
 
   const consumerTypes = path.join(consumerDir, "consumer-types.ts");
   writeFileSync(

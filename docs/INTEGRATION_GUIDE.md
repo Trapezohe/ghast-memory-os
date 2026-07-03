@@ -418,6 +418,7 @@ Useful endpoints:
 - `GET /profiles`
 - `POST /profiles`
 - `GET /keys`
+- `GET /evolution/review`
 - `POST /add`
 - `POST /search`
 - `POST /observe`
@@ -451,6 +452,34 @@ return `403 profile_forbidden`. CORS is off by default; pass explicit
 
 There is no HTTP profile deletion route. Use `forget()` for user-requested
 memory deletion and trusted CLI/SDK workflows for database administration.
+
+## Memory Console
+
+Start the local web console with the hardened service command:
+
+```bash
+gmos serve --db ./gmos.db --profile local --keys --port 4787 --console
+```
+
+Then open `/console/` on the same service origin. The shell is static and
+unauthenticated, but it contains no memory data. Paste a scoped API key in the
+browser; the key is kept only in memory plus `sessionStorage`, never cookies or
+`localStorage`.
+
+Scope behavior:
+
+- `read` keys can open overview/status, search context-safe memories, inspect
+  allowed memory evidence/timelines, and run explain-turn.
+- `readwrite` keys also see Forget and Maintain controls. The UI previews
+  forget matches through `POST /search` before enabling `POST /forget`, and
+  dry-runs `POST /maintain` before enabling a real maintenance run.
+- `admin` keys additionally see profile lists, key metadata, and
+  `GET /evolution/review` proposals. The console renders copyable CLI commands
+  for evolution apply; it does not render an apply button.
+
+The console does not add write capability. It calls only existing audited HTTP
+routes plus the read-only `GET /evolution/review` route, and it never renders
+sensitive override switches, key creation, evolution apply, or evolution revert.
 
 Run the HTTP smoke example:
 

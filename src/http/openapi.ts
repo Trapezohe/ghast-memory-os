@@ -93,15 +93,50 @@ function bodySchemaFor(route: PublicMemoryHttpRouteEntry): OpenApiSchema | undef
 }
 
 function parametersFor(route: PublicMemoryHttpRouteEntry): OpenApiSchema[] {
-  if (route.route !== "GET /status") return [];
-  return [
-    {
-      name: "profileId",
-      in: "query",
-      required: false,
-      schema: { type: "string" },
-    },
-  ];
+  if (route.route === "GET /status") {
+    return [
+      {
+        name: "profileId",
+        in: "query",
+        required: false,
+        schema: { type: "string" },
+      },
+    ];
+  }
+  if (route.route === "GET /evolution/review") {
+    return [
+      {
+        name: "profileId",
+        in: "query",
+        required: false,
+        schema: { type: "string" },
+      },
+      {
+        name: "failureKind",
+        in: "query",
+        required: false,
+        schema: {
+          type: "string",
+          enum: [
+            "missed_recall",
+            "wrong_recall",
+            "privacy_leak",
+            "forget_failure",
+            "controller_route_error",
+            "action_policy_missing",
+            "task_failure",
+          ],
+        },
+      },
+      {
+        name: "limit",
+        in: "query",
+        required: false,
+        schema: { type: "integer", minimum: 1 },
+      },
+    ];
+  }
+  return [];
 }
 
 function successSchemaFor(route: PublicMemoryHttpRouteEntry): OpenApiSchema {

@@ -41,6 +41,7 @@ CLIENT_METHOD_ROUTES: Mapping[str, str] = {
     "profiles_list": "GET /profiles",
     "profiles_create": "POST /profiles",
     "keys_list": "GET /keys",
+    "evolution_review": "GET /evolution/review",
     "add": "POST /add",
     "search": "POST /search",
     "observe": "POST /observe",
@@ -206,6 +207,23 @@ class GmosClient:
 
     def keys_list(self) -> JsonObject:
         return self._request("GET", "/keys")
+
+    def evolution_review(
+        self,
+        *,
+        profile_id: Optional[str] = None,
+        failure_kind: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> JsonObject:
+        return self._request(
+            "GET",
+            "/evolution/review",
+            query={
+                "profileId": profile_id,
+                "failureKind": failure_kind,
+                "limit": None if limit is None else str(limit),
+            },
+        )
 
     def add(self, payload: Mapping[str, Any]) -> JsonObject:
         return self._request("POST", "/add", body=payload)

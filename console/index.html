@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>gmOS Memory Console</title>
+    <link rel="icon" type="image/svg+xml" href="/console/favicon.svg">
+    <link rel="stylesheet" href="/console/styles.css">
+    <script type="module" src="/console/app.js"></script>
+  </head>
+  <body>
+    <section id="auth" class="auth">
+      <form id="authForm" class="auth-card">
+        <p class="mark">gmOS</p>
+        <h1>Memory Console</h1>
+        <label for="apiKey">API key</label>
+        <textarea id="apiKey" name="apiKey" rows="3" autocomplete="off" spellcheck="false"></textarea>
+        <button type="submit">Connect</button>
+        <p id="authMessage" class="message" role="status"></p>
+      </form>
+    </section>
+    <section id="shell" class="shell" hidden>
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark">gm</span>
+          <div>
+            <strong>Memory Console</strong>
+            <span id="scopeBadge" class="badge">read</span>
+          </div>
+        </div>
+        <nav id="nav" class="nav" aria-label="Console views">
+          <a href="#overview" data-route="overview">Overview</a>
+          <a href="#memories" data-route="memories">Memories</a>
+          <a href="#explain" data-route="explain">Explain Turn</a>
+          <a href="#forget" data-route="forget">Forget</a>
+          <a href="#maintain" data-route="maintain">Maintain</a>
+          <a href="#evolution" data-route="evolution">Evolution</a>
+        </nav>
+        <button id="signOut" class="secondary" type="button">Forget key</button>
+      </aside>
+      <main class="main">
+        <header class="topbar">
+          <label>
+            Profile
+            <input id="profileId" type="text" autocomplete="off" placeholder="served default">
+          </label>
+          <p id="notice" class="message" role="status"></p>
+        </header>
+        <section id="view" class="view" aria-live="polite"></section>
+      </main>
+    </section>
+  </body>
+</html>

@@ -24,6 +24,7 @@ export const PUBLIC_MEMORY_HTTP_ROUTE_REGISTRY = [
   { method: "GET", pathname: "/profiles", route: "GET /profiles", scope: "admin" },
   { method: "POST", pathname: "/profiles", route: "POST /profiles", scope: "admin" },
   { method: "GET", pathname: "/keys", route: "GET /keys", scope: "admin" },
+  { method: "GET", pathname: "/evolution/review", route: "GET /evolution/review", scope: "admin" },
   {
     method: "POST",
     pathname: "/add",
