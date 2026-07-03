@@ -1,4 +1,8 @@
 import { memoryHttpRequestNeedsHistoryAccess } from "../http/index.js";
+import {
+  createEvolutionControlPlane,
+  EvolutionApplicationError,
+} from "../evolution/index.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 import type {
@@ -80,6 +84,39 @@ function memoryAnnealed(memory: MemoryRecord | null | undefined): boolean {
   return payloadRecord(memory?.metadata.annealing).active === true;
 }
 
+function payloadArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function closeTo(actual: number | undefined, expected: number): boolean {
+  return Math.abs((actual ?? Number.NaN) - expected) < 0.000001;
+}
+
+function normalizedProvenancePayload(
+  payload: Record<string, unknown>,
+  labels: Map<string, string>,
+): Record<string, unknown> {
+  const label = (value: unknown) =>
+    typeof value === "string" ? labels.get(value) ?? value : value;
+  const provenanceCredit = payloadRecord(payload.provenanceCredit);
+  const creditedMemories = payloadArray(provenanceCredit.creditedMemories)
+    .map((entry) => payloadRecord(entry))
+    .map((entry) => ({
+      id: label(entry.id),
+      hop: entry.hop,
+      delta: entry.delta,
+      path: payloadArray(entry.path).map(label),
+      viaMemoryId: label(entry.viaMemoryId),
+      derivedFromMemoryId: label(entry.derivedFromMemoryId),
+      nonIndependent: entry.nonIndependent,
+    }))
+    .sort((left, right) => String(left.id).localeCompare(String(right.id)));
+  return {
+    delta: payload.delta,
+    propagatedMemoryIds: payloadArray(payload.propagatedMemoryIds).map(label).sort(),
+    creditedMemories,
+  };
+}
 
 async function preferenceAdherenceOverTime(): Promise<MemoryGymExperienceHorizonScenario> {
   const profileId = "experience_preference_horizon";
@@ -799,6 +836,388 @@ async function confidenceAnnealing(): Promise<MemoryGymExperienceHorizonScenario
   }
 }
 
+async function runProvenanceCreditFixture(suffix: string): Promise<{
+  normalizedMain: Record<string, unknown>;
+  assertions: Record<string, boolean>;
+  counters: Record<string, number>;
+}> {
+  const profileId = `experience_provenance_credit_${suffix}`;
+  const evolutionProfileId = `experience_provenance_evolution_${suffix}`;
+  const store = createSqliteMemoryStore({ path: ":memory:" });
+  const memory = createMemoryOS({
+    profileId,
+    store,
+    lifecycle: {
+      outcomeReinforcement: {
+        step: 0.2,
+        provenanceCredit: {
+          hopDecay: 0.5,
+          maxCreditDepth: 2,
+          maxCreditFanout: 2,
+        },
+      },
+    },
+  });
+  if (!store.recordConsolidationSummary) {
+    throw new Error("SQLite store must support recordConsolidationSummary");
+  }
+  const recordConsolidationSummary = store.recordConsolidationSummary.bind(store);
+  try {
+    const deepSource = await memory.add({
+      kind: "fact",
+      content: "M14DeepSourceSignal should not receive hop three credit.",
+      confidence: 0.8,
+      createdAt: weekIso(0),
+    });
+    const midSummary = await recordConsolidationSummary({
+      profileId,
+      kind: "project",
+      content: "M14MidSummarySignal summarizes the deep source.",
+      sensitivity: "normal",
+      confidence: 0.95,
+      sourceMemoryIds: [deepSource.id],
+      sharedTags: ["m14"],
+      createdAt: weekIso(0, 1),
+    });
+    const olderHigh = await memory.add({
+      kind: "fact",
+      content: "M14OlderHighSourceSignal is an older high-confidence source.",
+      confidence: 0.9,
+      createdAt: weekIso(0, 2),
+    });
+    const newerHigh = await memory.add({
+      kind: "fact",
+      content: "M14NewerHighSourceSignal is the newer high-confidence source.",
+      confidence: 0.9,
+      createdAt: weekIso(0, 3),
+    });
+    const lowSource = await memory.add({
+      kind: "fact",
+      content: "M14LowSourceSignal should lose the fan-out tie.",
+      confidence: 0.2,
+      createdAt: weekIso(0, 4),
+    });
+    const firstSummary = await recordConsolidationSummary({
+      profileId,
+      kind: "project",
+      content: "M14FirstSummarySignal summarizes fan-out candidates.",
+      sensitivity: "normal",
+      confidence: 0.88,
+      sourceMemoryIds: [olderHigh.id, newerHigh.id, lowSource.id, midSummary.memory.id],
+      sharedTags: ["m14"],
+      createdAt: weekIso(0, 5),
+    });
+    const secondSummary = await recordConsolidationSummary({
+      profileId,
+      kind: "project",
+      content: "M14SecondSummarySignal summarizes a summary.",
+      sensitivity: "normal",
+      confidence: 0.86,
+      sourceMemoryIds: [firstSummary.memory.id],
+      sharedTags: ["m14"],
+      createdAt: weekIso(0, 6),
+    });
+    await memory.commitOutcome({
+      objective: "M14 positive provenance credit",
+      status: "completed",
+      usedMemoryIds: [secondSummary.memory.id],
+      createdAt: weekIso(0, 7),
+    });
+    const mainOutcome = (await memory.listEvidence({
+      sourceType: "outcome",
+      limit: 10,
+      includeSensitive: true,
+    })).find((event) => payloadRecord(event.payload.provenanceCredit).creditedMemories !== undefined);
+    const labels = new Map([
+      [deepSource.id, "deepSource"],
+      [midSummary.memory.id, "midSummary"],
+      [olderHigh.id, "olderHigh"],
+      [newerHigh.id, "newerHigh"],
+      [lowSource.id, "lowSource"],
+      [firstSummary.memory.id, "firstSummary"],
+      [secondSummary.memory.id, "secondSummary"],
+    ]);
+    const mainPayload = normalizedProvenancePayload(payloadRecord(mainOutcome?.payload), labels);
+    const mainState = {
+      secondSummary: (await memory.get({ id: secondSummary.memory.id, includeArchived: true }))?.reinforcement,
+      firstSummary: (await memory.get({ id: firstSummary.memory.id, includeArchived: true }))?.reinforcement,
+      midSummary: (await memory.get({ id: midSummary.memory.id, includeArchived: true }))?.reinforcement,
+      newerHigh: (await memory.get({ id: newerHigh.id, includeArchived: true }))?.reinforcement,
+      olderHigh: (await memory.get({ id: olderHigh.id, includeArchived: true }))?.reinforcement,
+      lowSource: (await memory.get({ id: lowSource.id, includeArchived: true }))?.reinforcement,
+      deepSource: (await memory.get({ id: deepSource.id, includeArchived: true }))?.reinforcement,
+    };
+    await memory.commitOutcome({
+      objective: "M14 lifecycle propagated credit reactivation",
+      status: "completed",
+      usedMemoryIds: [newerHigh.id],
+      createdAt: weekIso(0, 8),
+    });
+    const lifecycle = await memory.explain(newerHigh.id);
+
+    const forgotten = await memory.add({
+      kind: "fact",
+      content: "M14ForgottenSourceSignal should block propagated credit.",
+      confidence: 0.9,
+      createdAt: weekIso(1),
+    });
+    await memory.forget({
+      query: "M14ForgottenSourceSignal",
+      targetTerms: ["M14ForgottenSourceSignal"],
+      reason: "M14 provenance blocked source",
+    });
+    const redactedEvidence = await store.recordEvidence({
+      profileId,
+      eventKey: `m14_redacted_${suffix}`,
+      sourceType: "test.redacted",
+      content: "[redacted_evidence_content]",
+      sensitivity: "normal",
+      eligibleForLongTermMemory: false,
+      payload: {
+        redaction: {
+          marker: "redacted_evidence_content",
+          originalSha256: "m14",
+          originalLength: 3,
+          redactedAt: weekIso(1, 1),
+        },
+      },
+      createdAt: weekIso(1, 1),
+    });
+    const redactedSource = await store.addMemory({
+      profileId,
+      kind: "fact",
+      content: "M14RedactedSourceSignal should block propagated credit.",
+      confidence: 0.9,
+      sourceEventId: redactedEvidence.id,
+      createdAt: weekIso(1, 2),
+    });
+    const personSource = await store.addMemory({
+      profileId,
+      kind: "person",
+      content: "M14PersonSourceSignal should block propagated credit.",
+      confidence: 0.9,
+      createdAt: weekIso(1, 3),
+    });
+    const blockedSummary = await recordConsolidationSummary({
+      profileId,
+      kind: "project",
+      content: "M14BlockedSummarySignal references blocked sources.",
+      sensitivity: "normal",
+      confidence: 0.8,
+      sourceMemoryIds: [forgotten.id, redactedSource.id, personSource.id],
+      sharedTags: ["m14-blocked"],
+      createdAt: weekIso(1, 4),
+    });
+    await memory.commitOutcome({
+      objective: "M14 blocked provenance credit",
+      status: "completed",
+      usedMemoryIds: [blockedSummary.memory.id],
+      createdAt: weekIso(1, 5),
+    });
+
+    const negativeSource = await memory.add({
+      kind: "fact",
+      content: "M14NegativeSourceSignal should receive negative propagated credit.",
+      confidence: 0.9,
+      createdAt: weekIso(2),
+    });
+    const negativeSummary = await recordConsolidationSummary({
+      profileId,
+      kind: "project",
+      content: "M14NegativeSummarySignal references negative source.",
+      sensitivity: "normal",
+      confidence: 0.8,
+      sourceMemoryIds: [negativeSource.id],
+      sharedTags: ["m14-negative"],
+      createdAt: weekIso(2, 1),
+    });
+    await memory.commitOutcome({
+      objective: "M14 negative provenance credit",
+      status: "failed",
+      failureKind: "wrong_recall",
+      summary: "wrong recall from derived summary",
+      usedMemoryIds: [negativeSummary.memory.id],
+      createdAt: weekIso(2, 2),
+    });
+
+    const annealEvidence = await store.recordEvidence({
+      profileId,
+      eventKey: `m14_anneal_source_${suffix}`,
+      sourceType: "test.anneal",
+      content: "M14AnnealSourceSignal external evidence.",
+      sensitivity: "normal",
+      eligibleForLongTermMemory: true,
+      createdAt: weekIso(3),
+    });
+    const annealSource = await store.addMemory({
+      profileId,
+      kind: "fact",
+      content: "M14AnnealSourceSignal should ignore propagated boosts for annealing.",
+      confidence: 0.72,
+      sourceEventId: annealEvidence.id,
+      createdAt: weekIso(3),
+    });
+    const annealSummary = await recordConsolidationSummary({
+      profileId,
+      kind: "project",
+      content: "M14AnnealSummarySignal references anneal source.",
+      sensitivity: "normal",
+      confidence: 0.8,
+      sourceMemoryIds: [annealSource.id],
+      sharedTags: ["m14-anneal"],
+      createdAt: weekIso(3, 1),
+    });
+    await memory.commitOutcome({
+      objective: "M14 propagated anneal one",
+      status: "completed",
+      usedMemoryIds: [annealSummary.memory.id],
+      createdAt: weekIso(3, 2),
+    });
+    await memory.commitOutcome({
+      objective: "M14 propagated anneal two",
+      status: "completed",
+      usedMemoryIds: [annealSummary.memory.id],
+      createdAt: weekIso(3, 3),
+    });
+    const propagatedOnlyAnneal = await memory.get({ id: annealSource.id, includeArchived: true });
+    await memory.commitOutcome({
+      objective: "M14 direct anneal one",
+      status: "completed",
+      usedMemoryIds: [annealSource.id],
+      createdAt: weekIso(3, 4),
+    });
+    await memory.recordFeedback({
+      content: "M14 direct anneal two",
+      signal: "positive",
+      relatedMemoryIds: [annealSource.id],
+      createdAt: weekIso(3, 5),
+    });
+    const directAnneal = await memory.get({ id: annealSource.id });
+
+    const weakMemory = await memory.add({
+      profileId: evolutionProfileId,
+      kind: "fact",
+      content: "M14EvolutionWeakMemorySignal should drive proposals.",
+      confidence: 0.4,
+      createdAt: weekIso(4),
+    });
+    await memory.recordFeedback({
+      profileId: evolutionProfileId,
+      content: "M14EvolutionWeakMemorySignal wrong recall one",
+      failureKind: "wrong_recall",
+      relatedMemoryIds: [weakMemory.id],
+      signal: "negative",
+      createdAt: weekIso(4, 1),
+    });
+    await memory.recordFeedback({
+      profileId: evolutionProfileId,
+      content: "M14EvolutionWeakMemorySignal wrong recall two",
+      failureKind: "wrong_recall",
+      relatedMemoryIds: [weakMemory.id],
+      signal: "negative",
+      createdAt: weekIso(4, 2),
+    });
+    const evolution = createEvolutionControlPlane({ store, profileId: evolutionProfileId });
+    const report = await evolution.reviewFailures();
+    const replayReport = await evolution.reviewFailures();
+    const parameterProposal = report.parameterProposals.find(
+      (proposal) => proposal.configKeyPath === "lifecycle.feedbackConfidencePenalty.step",
+    );
+    let parameterRejected = false;
+    try {
+      if (parameterProposal) {
+        await evolution.applyEvolutionProposal({
+          proposalId: parameterProposal.id,
+          approvedBy: "memory-gym",
+        });
+      }
+    } catch (error) {
+      parameterRejected =
+        error instanceof EvolutionApplicationError &&
+        error.code === "parameter_proposal_host_owned";
+    }
+    const memoryProposal = report.patchProposals.find((proposal) =>
+      proposal.suggestedActions.some((action) => action.memoryId === weakMemory.id)
+    );
+    const beforeApply = await memory.get({ profileId: evolutionProfileId, id: weakMemory.id });
+    if (memoryProposal) {
+      await evolution.applyEvolutionProposal({
+        proposalId: memoryProposal.id,
+        approvedBy: "memory-gym",
+      });
+    }
+    const afterApply = await memory.get({ profileId: evolutionProfileId, id: weakMemory.id });
+
+    const forgottenAfter = await memory.get({ id: forgotten.id, includeArchived: true });
+    const redactedAfter = await memory.get({ id: redactedSource.id, includeArchived: true });
+    const personAfter = await memory.get({
+      id: personSource.id,
+      includeArchived: true,
+      includePerson: true,
+    });
+    const negativeAfter = await memory.get({ id: negativeSource.id, includeArchived: true });
+    return {
+      normalizedMain: {
+        mainState,
+        mainPayload,
+      },
+      assertions: {
+        hop_one_summary_credit: closeTo(mainState.firstSummary, 0.1),
+        hop_two_mid_summary_credit: closeTo(mainState.midSummary, 0.05),
+        hop_two_newer_source_credit: closeTo(mainState.newerHigh, 0.05),
+        depth_bound_blocks_hop_three: closeTo(mainState.deepSource, 0),
+        fanout_prefers_newest_high_confidence:
+          closeTo(mainState.olderHigh, 0) && closeTo(mainState.lowSource, 0),
+        evidence_payload_records_propagation:
+          payloadArray(mainPayload.propagatedMemoryIds).includes("firstSummary") &&
+          payloadArray(mainPayload.propagatedMemoryIds).includes("midSummary") &&
+          payloadArray(mainPayload.propagatedMemoryIds).includes("newerHigh"),
+        lifecycle_marks_propagated_credit:
+          lifecycle?.lifecycle.entries.some(
+            (entry) => entry.eventKind === "propagated_reinforced",
+          ) === true,
+        blocked_forgotten_source_receives_nothing: closeTo(forgottenAfter?.reinforcement, 0),
+        blocked_redacted_source_receives_nothing: closeTo(redactedAfter?.reinforcement, 0),
+        blocked_person_source_receives_nothing: closeTo(personAfter?.reinforcement, 0),
+        negative_credit_propagates: closeTo(negativeAfter?.reinforcement, -0.1),
+        propagated_credit_does_not_anneal: !memoryAnnealed(propagatedOnlyAnneal),
+        direct_independent_boost_still_anneals: memoryAnnealed(directAnneal),
+        parameter_proposal_stable:
+          parameterProposal !== undefined &&
+          parameterProposal.id === replayReport.parameterProposals.find(
+            (proposal) => proposal.configKeyPath === parameterProposal.configKeyPath,
+          )?.id,
+        parameter_proposal_apply_rejected: parameterRejected,
+        memory_target_proposal_applies:
+          memoryProposal !== undefined &&
+          beforeApply !== null &&
+          afterApply !== null &&
+          (afterApply.reinforcement ?? 0) < (beforeApply.reinforcement ?? 0),
+      },
+      counters: {
+        propagatedMemoryCredits: payloadArray(mainPayload.propagatedMemoryIds).length,
+        parameterProposalCount: report.parameterProposals.length,
+      },
+    };
+  } finally {
+    await memory.close();
+  }
+}
+
+async function provenanceWeightedExperienceCredit(): Promise<MemoryGymExperienceHorizonScenario> {
+  const first = await runProvenanceCreditFixture("a");
+  const second = await runProvenanceCreditFixture("b");
+  return scenarioResult({
+    name: "provenance_weighted_experience_credit",
+    assertions: {
+      ...first.assertions,
+      deterministic_reinforcement_and_payload:
+        JSON.stringify(first.normalizedMain) === JSON.stringify(second.normalizedMain),
+    },
+    counters: first.counters,
+  });
+}
+
 async function principalHistoryAccessScope(): Promise<MemoryGymExperienceHorizonScenario> {
   const profileId = "experience_principal_scope";
   const store = createSqliteMemoryStore({ path: ":memory:" });
@@ -1064,6 +1483,7 @@ async function runExperienceHorizonOnce(): Promise<MemoryGymExperienceHorizonSce
     await forensicRollbackAndVersioning(),
     await trustTieredWriteProvenance(),
     await confidenceAnnealing(),
+    await provenanceWeightedExperienceCredit(),
     await principalHistoryAccessScope(),
     await poisoningLifecycle(),
   ];

@@ -101,6 +101,15 @@ write. `recordFeedback({ relatedMemoryIds, signal })` updates bounded
 reinforcement in the same transaction as feedback; `wrong_recall` feedback can
 also lower confidence to affect ranking. Reinforcement affects retention.
 
+Derived memories carry their provenance in existing evidence and metadata. When
+an outcome credits a consolidation summary, distilled procedure, or dossier,
+gmOS propagates bounded non-independent credit through that provenance DAG.
+Memory-typed sources receive decayed reinforcement; task trajectories and world
+beliefs are only recorded as credited provenance in the outcome payload. The
+walk is deterministic and bounded by depth and fan-out, and hard stops apply at
+forgotten/archived-by-forget sources, redacted evidence stubs, and person
+memories.
+
 Every maintenance transition writes a content-free evidence event with
 `source_type = "maintenance"` and `eligible_for_long_term_memory = 0`. Dry-run
 maintenance computes the same report but writes nothing and is covered by the
@@ -130,10 +139,12 @@ hook can synthesize procedure prose. Accepted candidates become active
 trajectory ids. Source trajectories are not archived or modified.
 
 Evolution is propose-with-approval. `reviewFailures()` remains a read path and
-clusters failure events into hypotheses and patch proposals without writes.
-`applyEvolutionProposal()` is an SDK/CLI admin write path that requires
-`approvedBy`, applies only bounded reinforcement/confidence/status actions, and
-writes `source_type = "evolution"` evidence with previous values. Revert restores
+clusters failure events into hypotheses, memory-target patch proposals, and
+recommendation-only parameter proposals without writes. `applyEvolutionProposal()`
+is an SDK/CLI admin write path that requires `approvedBy`, applies only bounded
+reinforcement/confidence/status actions, and writes `source_type = "evolution"`
+evidence with previous values. Parameter proposals are host-owned config
+recommendations and are rejected by apply with a typed error. Revert restores
 those previous values and writes its own evolution evidence. Nothing in
 `maintain()` runs evolution.
 
@@ -206,8 +217,9 @@ single-cardinality world belief unless the host explicitly records an override.
 Confidence annealing is derived from evidence history and metadata. Rapid
 reinforcement from non-independent evidence, or a lower-trust source, caps the
 memory's effective ranking and retention contribution until independent
-confirmation. `explainTurn()` and lifecycle history expose active annealing so
-hosts can see why a memory was downweighted.
+confirmation. Propagated provenance credit is explicitly non-independent and
+does not lift annealing caps. `explainTurn()` and lifecycle history expose active
+annealing so hosts can see why a memory was downweighted.
 
 Hosts can provide an additive sensitivity classifier for product-specific local
 terms. The built-in detector remains active and gmOS uses the maximum

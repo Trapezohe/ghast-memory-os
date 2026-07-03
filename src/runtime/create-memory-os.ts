@@ -2947,6 +2947,48 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         reasonSummary: lifecycleReasonSummary(["dossier"]),
       }];
     }
+    if (sourceType === "outcome" || sourceType === "feedback" || sourceType === "memory.reinforcement") {
+      const entries: MemoryLifecycleHistoryEntry[] = [];
+      if (payloadStringArray(payload.memoryIds).includes(memory.id)) {
+        entries.push({
+          createdAt: event.createdAt,
+          eventKind: "reinforced",
+          eventId,
+          sourceType,
+          reasonSummary: lifecycleReasonSummary([
+            `source:${sourceType}`,
+            typeof payload.reason === "string" ? `reason:${payload.reason}` : "",
+            Number.isFinite(Number(payload.delta)) ? `delta:${Number(payload.delta)}` : "",
+          ]),
+        });
+      }
+      if (payloadStringArray(payload.propagatedMemoryIds).includes(memory.id)) {
+        const provenanceCredit = payloadRecord(payload.provenanceCredit);
+        const creditedMemories = Array.isArray(provenanceCredit.creditedMemories)
+          ? provenanceCredit.creditedMemories
+          : [];
+        const credit = creditedMemories.find(
+          (entry) =>
+            entry &&
+            typeof entry === "object" &&
+            !Array.isArray(entry) &&
+            (entry as Record<string, unknown>).id === memory.id,
+        ) as Record<string, unknown> | undefined;
+        entries.push({
+          createdAt: event.createdAt,
+          eventKind: "propagated_reinforced",
+          eventId,
+          sourceType,
+          reasonSummary: lifecycleReasonSummary([
+            "provenance_credit",
+            Number.isFinite(Number(credit?.hop)) ? `hop:${Number(credit?.hop)}` : "",
+            Number.isFinite(Number(credit?.delta)) ? `delta:${Number(credit?.delta)}` : "",
+            typeof credit?.viaMemoryId === "string" ? `via:${credit.viaMemoryId}` : "",
+          ]),
+        });
+      }
+      return entries;
+    }
     if (sourceType === "evolution") {
       const reverted = typeof payload.revertedApplicationEventId === "string";
       return [{

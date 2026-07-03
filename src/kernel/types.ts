@@ -947,6 +947,7 @@ export type MemoryLifecycleHistoryEventKind =
   | "imported"
   | "updated"
   | "reinforced"
+  | "propagated_reinforced"
   | "decayed_to_dormant"
   | "archived"
   | "consolidated_source"
@@ -1402,12 +1403,20 @@ export interface FeedbackSignalStoreInput extends RecordFailureInput {
 export interface OutcomeReinforcementConfig {
   enabled?: boolean | undefined;
   step?: number | undefined;
+  provenanceCredit?: ProvenanceCreditConfig | undefined;
 }
 
 export interface FeedbackConfidencePenaltyConfig {
   enabled?: boolean | undefined;
   step?: number | undefined;
   floor?: number | undefined;
+}
+
+export interface ProvenanceCreditConfig {
+  enabled?: boolean | undefined;
+  hopDecay?: number | undefined;
+  maxCreditDepth?: number | undefined;
+  maxCreditFanout?: number | undefined;
 }
 
 export interface MemoryLifecycleConfig {
@@ -1464,12 +1473,20 @@ export type MaintenancePhase = "decay" | "consolidate" | "distill" | "dossier";
 export interface ResolvedOutcomeReinforcementConfig {
   enabled: boolean;
   step: number;
+  provenanceCredit: ResolvedProvenanceCreditConfig;
 }
 
 export interface ResolvedFeedbackConfidencePenaltyConfig {
   enabled: boolean;
   step: number;
   floor: number;
+}
+
+export interface ResolvedProvenanceCreditConfig {
+  enabled: boolean;
+  hopDecay: number;
+  maxCreditDepth: number;
+  maxCreditFanout: number;
 }
 
 export interface ResolvedMemoryLifecycleConfig {

@@ -153,16 +153,18 @@ This Docker smoke is manual and is not part of `gate:pr`.
   existing budgets and score thresholds without weakening sensitivity, person,
   lifecycle, or forgetting gates.
 - Outcome reinforcement. `commitOutcome({ usedMemoryIds })` updates recall
-  counters and bounded reinforcement; `wrong_recall` feedback can also lower
-  confidence for related memories while preserving the feedback evidence path.
+  counters and bounded reinforcement. Credit also propagates through derived
+  memory provenance with bounded decay, while `wrong_recall` feedback can lower
+  confidence for related memories without hiding the evidence path.
 - Deep explainability for turn context decisions. `explainTurn()` shares the
   `prepareTurn()` retrieval path and reports included memories, notable excluded
   candidates, score components, lifecycle-sensitive reasons, and budget stops
   without returning a prompt injection block.
 - Lifecycle provenance on `explain()`. The runtime derives a content-safe memory
   timeline from evidence and feedback events, including creation/import,
-  reinforcement, dormancy/reactivation, archive, consolidation, distillation,
-  evolution, forget, and restore entries when present.
+  direct and propagated reinforcement, dormancy/reactivation, archive,
+  consolidation, distillation, evolution, forget, and restore entries when
+  present.
 - Runtime facade: `observe`, `prepareTurn`, `commitOutcome`, `recordFeedback`,
   `explainTurn`, `reconstructContext`, `explainEvidencePath`, `maintain`,
   `memoryRollback`, `forget`, `explain`.
@@ -180,8 +182,8 @@ This Docker smoke is manual and is not part of `gate:pr`.
 - Built-in deterministic Memory Gym smoke benchmark, including the
   `experience_horizon` group for multi-week preference adherence, forgetting
   compliance, contradiction resolution, procedure reuse, rollback, trust-tiered
-  provenance, annealing, scoped history access, and poisoning-lifecycle
-  diagnostics.
+  provenance, provenance-weighted credit, annealing, scoped history access, and
+  poisoning-lifecycle diagnostics.
 - Built-in release gate runner that combines Memory Gym, host compatibility,
   scale, and diagnostics checks for CI/release candidates.
 - External benchmark reports label their protocol explicitly:
@@ -597,9 +599,11 @@ engineering workflows.
 
 The alpha SDK includes an approval-gated self-evolution control plane. Review is
 read-only: it reads the failure log, clusters failures by kind, proposes repair
-hypotheses, and emits policy patch candidates. SDK/CLI apply requires explicit
+hypotheses, emits policy patch candidates, and may recommend host-owned
+parameter changes with copyable config snippets. SDK/CLI apply requires explicit
 approval, writes evolution evidence with previous values, and can be reverted
-once. Nothing auto-applies or rolls out.
+once; parameter proposals are rejected by apply because only the host can change
+`createMemoryOS()` config. Nothing auto-applies or rolls out.
 
 ```bash
 gmos evolution report --db ./gmos.db --profile local --format markdown

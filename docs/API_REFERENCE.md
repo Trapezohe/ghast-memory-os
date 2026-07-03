@@ -182,7 +182,16 @@ const memory = createMemoryOS({
     dormantBelow: 0.25,
     archiveAfterDormantDays: 180,
     halfLivesDays: { project: 90 },
-    outcomeReinforcement: { enabled: true, step: 0.1 },
+    outcomeReinforcement: {
+      enabled: true,
+      step: 0.1,
+      provenanceCredit: {
+        enabled: true,
+        hopDecay: 0.5,
+        maxCreditDepth: 2,
+        maxCreditFanout: 8,
+      },
+    },
     feedbackConfidencePenalty: { enabled: true, step: 0.1, floor: 0.05 },
     confidenceAnnealing: {
       enabled: true,
@@ -229,6 +238,19 @@ evidence within `windowMs`, and memories written from lower-trust sources, carry
 `metadata.annealing`; search, ranking, retention, `prepareTurn()`, and
 `explainTurn()` use the capped effective confidence and expose the annealing
 state in score components.
+
+Outcome provenance credit is on by default under
+`lifecycle.outcomeReinforcement.provenanceCredit`. When
+`commitOutcome({ usedMemoryIds })` reinforces a derived memory, gmOS follows
+existing `sourceMemoryIds` / `sourceBeliefIds` / `sourceTrajectoryIds` metadata
+through the evidence DAG in the same transaction. Memory sources receive
+`delta * hopDecay^hop`, bounded by `maxCreditDepth` and `maxCreditFanout`.
+Fan-out is deterministic: highest source confidence, newest source timestamp,
+then id. Archived/forgotten sources, redacted evidence branches, and person
+memories terminate propagation. Non-memory provenance is not numerically
+mutated; it is recorded in the outcome evidence payload under
+`provenanceCredit.creditedProvenance`. Propagated boosts are marked
+non-independent and do not count as independent annealing evidence.
 
 Consolidation defaults are shown above. `enabled: false` disables the
 `consolidate` phase even when requested. The tag-overlap threshold is clamped to
@@ -570,13 +592,14 @@ by memory-search or context-token budgets.
 ```
 
 `eventKind` can be `created`, `imported`, `updated`, `reinforced`,
-`decayed_to_dormant`, `archived`, `consolidated_source`,
+`propagated_reinforced`, `decayed_to_dormant`, `archived`, `consolidated_source`,
 `consolidated_survivor`, `consolidated_summary`, `distilled_source_trajectory`,
-`distilled_procedure`, `evolution_applied`, `evolution_reverted`, `forgotten`,
+`distilled_procedure`, `dossier_created`, `annealed`, `evolution_applied`,
+`evolution_reverted`, `rolled_back`, `derived_forget_archived`, `forgotten`,
 `restored`, or `reactivated`. Entries are ordered by `createdAt` and derived
-from existing evidence/failure payloads; gmOS does not add schema fields or
-write new rows for lifecycle explanation. Reason summaries and ids are
-content-safe redacted strings.
+from existing evidence/failure payloads; gmOS does not add schema fields for
+lifecycle explanation. Reason summaries and ids are content-safe redacted
+strings.
 
 `maintain({ profileId, dryRun, now, phases })` defaults to
 `phases: ["decay"]` and returns:
@@ -764,7 +787,10 @@ score or transition memory in the background.
 `createEvolutionControlPlane({ store, profileId })` returns an approval-gated
 admin control plane. `reviewFailures()` is read-only and returns deterministic
 clusters, hypotheses, and patch proposals whose ids are stable hashes of the
-normalized cluster signature.
+normalized cluster signature. It can also return `parameterProposals`, which are
+recommendation-only host config changes with stable ids, a documented config key
+path, current default, proposed value, id-only supporting statistics, rationale,
+and a copyable `createMemoryOS()` config snippet.
 
 ```ts
 const evolution = createEvolutionControlPlane({ store, profileId: "local-user" });
@@ -789,6 +815,14 @@ Every apply writes `sourceType: "evolution"` evidence with `{ proposalId,
 approvedBy, actions, previousValues }`; revert restores `previousValues`, writes
 its own evolution evidence, and a second revert fails with a typed
 `EvolutionApplicationError`.
+
+Parameter proposals are deliberately not self-applicable. Passing a
+`parameter_proposal_*` id to `applyEvolutionProposal()` throws
+`EvolutionApplicationError` with code `parameter_proposal_host_owned`; the host
+must copy the reported config snippet into its own `createMemoryOS()` config if
+it accepts the recommendation. The CLI renders these under a separate
+"Parameter Proposals" section; `gmos evolution apply` remains limited to memory
+target patch proposals.
 
 ## Agent Turn Adapter
 

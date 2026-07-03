@@ -13938,6 +13938,8 @@ assert.ok(evolutionReport.clusters.some((cluster) => cluster.failureKind === "pr
 assert.ok(evolutionReport.patchProposals.every((proposal) => proposal.autoApply === false));
 assert.ok(evolutionReport.patchProposals.every((proposal) => proposal.autoRollout === false));
 assert.ok(evolutionReport.patchProposals.every((proposal) => /^proposal_[a-f0-9]{16}$/u.test(proposal.id)));
+assert.ok(evolutionReport.parameterProposals.every((proposal) => proposal.autoApply === false));
+assert.ok(evolutionReport.parameterProposals.every((proposal) => proposal.autoRollout === false));
 const evolutionReportJson = JSON.stringify(evolutionReport);
 assert.equal(evolutionReportJson.includes("身份证"), false);
 assert.equal(evolutionReportJson.includes("110101199001011234"), false);
@@ -13951,11 +13953,12 @@ assert.deepEqual(await store.rowCounts(), evolutionBeforeCounts);
 const wrongRecallOnly = await evolution.reviewFailures({ failureKind: "wrong_recall" });
 assert.equal(wrongRecallOnly.inspectedFailureCount, 1);
 assert.match(renderEvolutionFailureReviewMarkdown(evolutionReport), /gmOS Evolution Failure Review/);
+assert.match(renderEvolutionFailureReviewMarkdown(evolutionReport), /Parameter Proposals/);
 const evolutionApplyMemory = await memory.add({
   profileId: "evolution_apply",
   kind: "fact",
   content: "EvolutionApplyUnitSignal should be demoted by approval only.",
-  confidence: 0.7,
+  confidence: 0.4,
 });
 await memory.recordFeedback({
   profileId: "evolution_apply",
@@ -13965,16 +13968,45 @@ await memory.recordFeedback({
   signal: "negative",
   createdAt: "2026-07-02T06:00:00.000Z",
 });
+await memory.recordFeedback({
+  profileId: "evolution_apply",
+  content: "EvolutionApplyUnitSignal was a repeated wrong recall.",
+  failureKind: "wrong_recall",
+  relatedMemoryIds: [evolutionApplyMemory.id],
+  signal: "negative",
+  createdAt: "2026-07-02T06:00:30.000Z",
+});
 const evolutionApply = createEvolutionControlPlane({
   store,
   profileId: "evolution_apply",
   now: () => "2026-07-02T06:01:00.000Z",
 });
 const evolutionApplyReport = await evolutionApply.reviewFailures();
+const evolutionApplyReplayReport = await evolutionApply.reviewFailures();
+const evolutionParameterProposal = evolutionApplyReport.parameterProposals.find(
+  (proposal) => proposal.configKeyPath === "lifecycle.feedbackConfidencePenalty.step",
+);
+assert.ok(evolutionParameterProposal);
+assert.equal(
+  evolutionParameterProposal.id,
+  evolutionApplyReplayReport.parameterProposals.find(
+    (proposal) => proposal.configKeyPath === evolutionParameterProposal.configKeyPath,
+  )?.id,
+);
 const evolutionApplyProposal = evolutionApplyReport.patchProposals.find((proposal) =>
   proposal.suggestedActions.some((action) => action.memoryId === evolutionApplyMemory.id),
 );
 assert.ok(evolutionApplyProposal);
+await assert.rejects(
+  () =>
+    evolutionApply.applyEvolutionProposal({
+      proposalId: evolutionParameterProposal.id,
+      approvedBy: "unit-test",
+    }),
+  (error) =>
+    error instanceof EvolutionApplicationError &&
+    error.code === "parameter_proposal_host_owned",
+);
 await assert.rejects(
   () =>
     evolutionApply.applyEvolutionProposal({
@@ -20327,6 +20359,7 @@ assert.deepEqual(
     "forensic_rollback_and_versioning",
     "trust_tiered_write_provenance",
     "confidence_annealing",
+    "provenance_weighted_experience_credit",
     "principal_history_access_scope",
     "poisoning_lifecycle",
   ],

@@ -1,19 +1,30 @@
 import { createHash } from "node:crypto";
 
 import { classifySensitivity, redactForReport } from "../kernel/safety.js";
+import { DEFAULT_MEMORY_HALF_LIVES_DAYS } from "../kernel/retention.js";
 import type {
   EvolutionAction,
   EvolutionApplyStoreInput,
   EvolutionApplyStoreResult,
   EvolutionRevertStoreInput,
   EvolutionRevertStoreResult,
+  EvidenceEvent,
   FailureEventRecord,
   FailureKind,
   ListFailuresInput,
+  MemoryListInput,
+  MemoryRecord,
 } from "../kernel/types.js";
 
 export interface FailureReviewStore {
   listFailures(input: ListFailuresInput): Promise<FailureEventRecord[]> | FailureEventRecord[];
+  listMemories?(input: MemoryListInput): Promise<MemoryRecord[]> | MemoryRecord[];
+  listEvidence?(input: {
+    profileId: string;
+    limit?: number | undefined;
+    sourceType?: string | undefined;
+    includeSensitive?: boolean | undefined;
+  }): Promise<EvidenceEvent[]> | EvidenceEvent[];
 }
 
 export interface EvolutionApplicationStore extends FailureReviewStore {
@@ -55,6 +66,19 @@ export interface EvolutionPolicyPatchProposal {
   autoRollout: false;
 }
 
+export interface EvolutionParameterTuningProposal {
+  id: string;
+  title: string;
+  configKeyPath: string;
+  currentDefault: unknown;
+  proposedValue: unknown;
+  supportingStatistics: Record<string, unknown>;
+  rationale: string;
+  configSnippet: string;
+  autoApply: false;
+  autoRollout: false;
+}
+
 export interface EvolutionFailureReviewReport {
   mode: "propose_with_approval";
   autoApply: false;
@@ -66,6 +90,7 @@ export interface EvolutionFailureReviewReport {
   clusters: EvolutionFailureCluster[];
   hypotheses: EvolutionRepairHypothesis[];
   patchProposals: EvolutionPolicyPatchProposal[];
+  parameterProposals: EvolutionParameterTuningProposal[];
   hardGateReminders: string[];
 }
 
@@ -107,6 +132,7 @@ export interface EvolutionControlPlaneOptions {
 export type EvolutionApplicationErrorCode =
   | "approved_by_required"
   | "proposal_not_found"
+  | "parameter_proposal_host_owned"
   | "actions_not_allowed"
   | "no_actions"
   | "store_apply_unsupported"
@@ -259,6 +285,209 @@ function patchProposalFor(cluster: EvolutionFailureCluster): EvolutionPolicyPatc
   };
 }
 
+const MAX_PARAMETER_PROPOSALS = 5;
+
+function parameterProposal(input: {
+  title: string;
+  configKeyPath: string;
+  currentDefault: unknown;
+  proposedValue: unknown;
+  supportingStatistics: Record<string, unknown>;
+  rationale: string;
+  configSnippet: string;
+}): EvolutionParameterTuningProposal {
+  const hash = signatureHash({
+    configKeyPath: input.configKeyPath,
+    proposedValue: input.proposedValue,
+    supportingStatistics: input.supportingStatistics,
+  });
+  return {
+    id: `parameter_proposal_${hash}`,
+    title: input.title,
+    configKeyPath: input.configKeyPath,
+    currentDefault: input.currentDefault,
+    proposedValue: input.proposedValue,
+    supportingStatistics: input.supportingStatistics,
+    rationale: input.rationale,
+    configSnippet: input.configSnippet,
+    autoApply: false,
+    autoRollout: false,
+  };
+}
+
+function createMemoryOsSnippet(body: string): string {
+  return [
+    "createMemoryOS({",
+    "  store,",
+    "  profileId,",
+    body,
+    "});",
+  ].join("\n");
+}
+
+function sampleIds(ids: string[]): string[] {
+  return uniqueSorted(ids).slice(0, 5);
+}
+
+function reviewTerms(content: string): string[] {
+  return uniqueSorted(
+    (content.toLowerCase().match(/[\p{Letter}\p{Number}_-]{3,}/gu) ?? [])
+      .filter((term) => classifySensitivity(term) === "normal"),
+  ).slice(0, 12);
+}
+
+function memoryMatchesTerms(memory: MemoryRecord, terms: string[]): boolean {
+  if (terms.length === 0) return false;
+  const lower = memory.content.toLowerCase();
+  return terms.some((term) => lower.includes(term));
+}
+
+function mostCommonMemoryKind(memories: MemoryRecord[]): MemoryRecord["kind"] | null {
+  const counts = new Map<MemoryRecord["kind"], number>();
+  for (const memory of memories) counts.set(memory.kind, (counts.get(memory.kind) ?? 0) + 1);
+  return [...counts.entries()]
+    .sort((left, right) => {
+      const count = right[1] - left[1];
+      if (count !== 0) return count;
+      return left[0].localeCompare(right[0]);
+    })[0]?.[0] ?? null;
+}
+
+async function listReviewMemories(
+  store: FailureReviewStore,
+  input: MemoryListInput,
+): Promise<MemoryRecord[]> {
+  return store.listMemories ? await store.listMemories(input) : [];
+}
+
+async function listReviewEvidence(
+  store: FailureReviewStore,
+  input: { profileId: string; sourceType: string; limit: number },
+): Promise<EvidenceEvent[]> {
+  return store.listEvidence
+    ? await store.listEvidence({ ...input, includeSensitive: true })
+    : [];
+}
+
+async function parameterProposalsFor(input: {
+  store: FailureReviewStore;
+  profileId: string;
+  failures: FailureEventRecord[];
+}): Promise<EvolutionParameterTuningProposal[]> {
+  const proposals: EvolutionParameterTuningProposal[] = [];
+  const failuresByKind = new Map<FailureKind, FailureEventRecord[]>();
+  for (const failure of input.failures) {
+    const events = failuresByKind.get(failure.failureKind) ?? [];
+    events.push(failure);
+    failuresByKind.set(failure.failureKind, events);
+  }
+
+  const targetIds = uniqueSorted(input.failures.flatMap(targetMemoryIdsForFailure));
+  const memories = targetIds.length > 0
+    ? await listReviewMemories(input.store, {
+        profileId: input.profileId,
+        status: "any",
+        includeSensitive: true,
+        includePerson: true,
+        limit: 500,
+      })
+    : [];
+  const memoryById = new Map(memories.map((memory) => [memory.id, memory]));
+  const wrongRecallEvents = failuresByKind.get("wrong_recall") ?? [];
+  const weakWrongRecallTargets = uniqueSorted(
+    wrongRecallEvents
+      .flatMap(targetMemoryIdsForFailure)
+      .filter((memoryId) => {
+        const memory = memoryById.get(memoryId);
+        return memory && (memory.confidence <= 0.5 || (memory.reinforcement ?? 0) <= 0);
+      }),
+  );
+  if (wrongRecallEvents.length >= 2 && weakWrongRecallTargets.length > 0) {
+    proposals.push(parameterProposal({
+      title: "Increase wrong-recall confidence penalty",
+      configKeyPath: "lifecycle.feedbackConfidencePenalty.step",
+      currentDefault: 0.1,
+      proposedValue: 0.15,
+      supportingStatistics: {
+        failureKind: "wrong_recall",
+        failureCount: wrongRecallEvents.length,
+        sampleEventIds: sampleIds(wrongRecallEvents.map((event) => event.id)),
+        targetMemoryIds: sampleIds(weakWrongRecallTargets),
+      },
+      rationale:
+        "Repeated wrong_recall failures target low-confidence or non-reinforced memories; a larger penalty makes later review demote them faster.",
+      configSnippet: createMemoryOsSnippet(
+        "  lifecycle: { feedbackConfidencePenalty: { step: 0.15 } },",
+      ),
+    }));
+  }
+
+  const missedRecallEvents = failuresByKind.get("missed_recall") ?? [];
+  if (missedRecallEvents.length > 0) {
+    const dormantMemories = await listReviewMemories(input.store, {
+      profileId: input.profileId,
+      status: "dormant",
+      includeSensitive: true,
+      limit: 500,
+    });
+    const matches = dormantMemories.filter((memory) =>
+      missedRecallEvents.some((event) => memoryMatchesTerms(memory, reviewTerms(event.content)))
+    );
+    const kind = mostCommonMemoryKind(matches);
+    if (kind) {
+      const currentDefault = DEFAULT_MEMORY_HALF_LIVES_DAYS[kind];
+      const proposedValue = Math.max(currentDefault + 1, Math.round(currentDefault * 1.25));
+      proposals.push(parameterProposal({
+        title: `Lengthen ${kind} half-life after missed recall`,
+        configKeyPath: `lifecycle.halfLivesDays.${kind}`,
+        currentDefault,
+        proposedValue,
+        supportingStatistics: {
+          failureKind: "missed_recall",
+          failureCount: missedRecallEvents.length,
+          sampleEventIds: sampleIds(missedRecallEvents.map((event) => event.id)),
+          dormantMemoryIds: sampleIds(matches.map((memory) => memory.id)),
+        },
+        rationale:
+          "Missed recall failures had dormant memories matching the failure terms; a longer half-life keeps that kind active longer.",
+        configSnippet: createMemoryOsSnippet(
+          `  lifecycle: { halfLivesDays: { ${kind}: ${proposedValue} } },`,
+        ),
+      }));
+    }
+  }
+
+  const consolidationEvidence = await listReviewEvidence(input.store, {
+    profileId: input.profileId,
+    sourceType: "consolidation",
+    limit: 100,
+  });
+  const duplicateConsolidationEvidence = consolidationEvidence.filter(
+    (event) => typeof event.payload.archivedMemberId === "string",
+  );
+  if (duplicateConsolidationEvidence.length >= 2) {
+    proposals.push(parameterProposal({
+      title: "Tighten duplicate consolidation threshold",
+      configKeyPath: "consolidation.tagOverlapThreshold",
+      currentDefault: 0.6,
+      proposedValue: 0.7,
+      supportingStatistics: {
+        evidenceCount: duplicateConsolidationEvidence.length,
+        sampleEvidenceIds: sampleIds(duplicateConsolidationEvidence.map((event) => event.id)),
+      },
+      rationale:
+        "Repeated duplicate consolidation evidence suggests near-duplicate grouping is too broad for this profile.",
+      configSnippet: createMemoryOsSnippet(
+        "  consolidation: { tagOverlapThreshold: 0.7 },",
+      ),
+    }));
+  }
+
+  return proposals
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .slice(0, MAX_PARAMETER_PROPOSALS);
+}
+
 function actionKey(action: EvolutionAction): string {
   if (action.type === "adjust_confidence" || action.type === "adjust_reinforcement") {
     return JSON.stringify({
@@ -352,6 +581,7 @@ export function createEvolutionControlPlane(
       });
     const hypotheses = clusters.map(hypothesisFor);
     const patchProposals = clusters.map(patchProposalFor);
+    const parameterProposals = await parameterProposalsFor({ store, profileId, failures });
     return {
       mode: "propose_with_approval",
       autoApply: false,
@@ -363,6 +593,7 @@ export function createEvolutionControlPlane(
       clusters,
       hypotheses,
       patchProposals,
+      parameterProposals,
       hardGateReminders: HARD_GATE_REMINDERS,
     };
   }
@@ -383,6 +614,13 @@ export function createEvolutionControlPlane(
       const profileId = input.profileId ?? options.profileId ?? "default";
       const report = await reviewFailures({ profileId });
       const proposal = report.patchProposals.find((entry) => entry.id === input.proposalId);
+      const parameterProposal = report.parameterProposals.find((entry) => entry.id === input.proposalId);
+      if (parameterProposal) {
+        throw new EvolutionApplicationError(
+          "parameter_proposal_host_owned",
+          `gmOS parameter proposal is recommendation-only; apply it in createMemoryOS config: ${parameterProposal.configSnippet}`,
+        );
+      }
       if (!proposal) {
         throw new EvolutionApplicationError(
           "proposal_not_found",
@@ -460,6 +698,27 @@ export function renderEvolutionFailureReviewMarkdown(
           .map(
             (proposal) =>
               `- ${proposal.id}: ${proposal.title}: ${proposal.summary} actions=${proposal.suggestedActions.length} autoApply=${proposal.autoApply} autoRollout=${proposal.autoRollout}`,
+          )
+          .join("\n"),
+    "",
+    "## Parameter Proposals",
+    "",
+    report.parameterProposals.length === 0
+      ? "No parameter proposals generated."
+      : report.parameterProposals
+          .map(
+            (proposal) =>
+              [
+                `- ${proposal.id}: ${proposal.title}`,
+                `  - Config: ${proposal.configKeyPath}`,
+                `  - Current default: ${JSON.stringify(proposal.currentDefault)}`,
+                `  - Proposed value: ${JSON.stringify(proposal.proposedValue)}`,
+                `  - Rationale: ${proposal.rationale}`,
+                "  - Copy:",
+                "```ts",
+                proposal.configSnippet,
+                "```",
+              ].join("\n"),
           )
           .join("\n"),
     "",

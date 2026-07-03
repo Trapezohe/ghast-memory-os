@@ -60,6 +60,7 @@ import type {
   RebuildAssociationsResult,
   RestoreArchivedMemoryInput,
   ResolvedMemoryAnnealingConfig,
+  ResolvedProvenanceCreditConfig,
   SearchIndexStatus,
   Sensitivity,
   SourceTrust,
@@ -1834,6 +1835,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     if (payload.survivorId === memoryId) return true;
     if (payload.supersededMemoryId === memoryId) return true;
     if (payloadStringArray(payload.memoryIds).includes(memoryId)) return true;
+    if (payloadStringArray(payload.propagatedMemoryIds).includes(memoryId)) return true;
     if (payloadStringArray(payload.usedMemoryIds).includes(memoryId)) return true;
     if (payloadStringArray(payload.relatedMemoryIds).includes(memoryId)) return true;
     if (payloadStringArray(payload.sourceMemoryIds).includes(memoryId)) return true;
@@ -2132,9 +2134,13 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     sourceType?: string | undefined;
     reason?: string | undefined;
     confidenceAnnealing?: ResolvedMemoryAnnealingConfig | undefined;
-  }): void {
+    writeEvidence?: boolean | undefined;
+    allowAnnealing?: boolean | undefined;
+  }): { evidenceId: string | null; previousValues: MemoryVersionSnapshot[] } {
     const uniqueIds = uniqueMemoryIds(input.memoryIds);
-    if (uniqueIds.length === 0 || input.delta === 0) return;
+    if (uniqueIds.length === 0 || input.delta === 0) {
+      return { evidenceId: null, previousValues: [] };
+    }
     const stmt = db.prepare(
       `UPDATE gmos_memories
        SET reinforcement = CASE
@@ -2164,7 +2170,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       );
       if (result.changes > 0) {
         previousValues.push(memorySnapshotFromRow(row));
-        if (input.delta > 0) {
+        if (input.delta > 0 && input.allowAnnealing !== false) {
           annealRapidBoostIfNeeded({
             profileId: input.profileId,
             memoryId,
@@ -2176,20 +2182,24 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         syncMemoryVector(memoryId);
       }
     }
+    let evidenceId: string | null = null;
     if (previousValues.length > 0) {
-      insertMutationEvidence({
-        profileId: input.profileId,
-        sourceType: input.sourceType ?? "memory.reinforcement",
-        content: "Memory reinforcement adjustment",
-        createdAt: input.updatedAt,
-        payload: {
-          memoryIds: uniqueIds,
-          delta: input.delta,
-          ...(input.reason ? { reason: input.reason } : {}),
-        },
-        previousValues,
-      });
+      if (input.writeEvidence !== false) {
+        evidenceId = insertMutationEvidence({
+          profileId: input.profileId,
+          sourceType: input.sourceType ?? "memory.reinforcement",
+          content: "Memory reinforcement adjustment",
+          createdAt: input.updatedAt,
+          payload: {
+            memoryIds: uniqueIds,
+            delta: input.delta,
+            ...(input.reason ? { reason: input.reason } : {}),
+          },
+          previousValues,
+        });
+      }
     }
+    return { evidenceId, previousValues };
   }
 
   function annealRapidBoostIfNeeded(input: {
@@ -2290,16 +2300,16 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     config: CommitOutcomeStoreInput["outcomeReinforcement"];
     updatedAt: string;
     confidenceAnnealing?: ResolvedMemoryAnnealingConfig | undefined;
-  }): void {
+  }): { delta: number; evidenceId: string | null; previousValues: MemoryVersionSnapshot[] } {
     const config = input.config ?? { enabled: true, step: 0.1 };
-    if (!config.enabled) return;
+    if (!config.enabled) return { delta: 0, evidenceId: null, previousValues: [] };
     const delta =
       input.status === "completed"
         ? config.step
         : input.failureKind === "wrong_recall" || input.failureKind === "missed_recall"
           ? -config.step
           : 0;
-    adjustMemoryReinforcementDelta({
+    const result = adjustMemoryReinforcementDelta({
       profileId: input.profileId,
       memoryIds: input.memoryIds,
       delta,
@@ -2308,6 +2318,371 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       reason: input.status,
       confidenceAnnealing: input.confidenceAnnealing,
     });
+    return { delta, ...result };
+  }
+
+  type ProvenanceNonMemorySourceType = "task_trajectory" | "world_belief";
+
+  interface ProvenanceMemoryCredit {
+    id: string;
+    hop: number;
+    delta: number;
+    path: string[];
+    viaMemoryId: string;
+    derivedFromMemoryId: string;
+    nonIndependent: true;
+  }
+
+  interface ProvenanceNonMemoryCredit {
+    id: string;
+    sourceType: ProvenanceNonMemorySourceType;
+    hop: number;
+    wouldBeDelta: number;
+    path: string[];
+    viaMemoryId: string;
+    derivedFromMemoryId: string;
+  }
+
+  function resolvedProvenanceCreditConfig(
+    config: CommitOutcomeStoreInput["outcomeReinforcement"],
+  ): ResolvedProvenanceCreditConfig {
+    return config?.provenanceCredit ?? {
+      enabled: true,
+      hopDecay: 0.5,
+      maxCreditDepth: 2,
+      maxCreditFanout: 8,
+    };
+  }
+
+  function roundedCreditDelta(delta: number, hopDecay: number): number {
+    return Number((delta * hopDecay).toFixed(6));
+  }
+
+  function evidenceById(evidenceId: string | null | undefined): EvidenceEvent | null {
+    if (!evidenceId) return null;
+    const row = db
+      .prepare("SELECT * FROM gmos_evidence_events WHERE id = ?")
+      .get(evidenceId) as Record<string, unknown> | undefined;
+    return row ? normalizeEvidence(row) : null;
+  }
+
+  function memorySourceEvidence(memory: MemoryRecord): EvidenceEvent | null {
+    return evidenceById(memory.sourceEventId ?? null);
+  }
+
+  function memorySourceEvidenceIsRedacted(memory: MemoryRecord): boolean {
+    const event = memorySourceEvidence(memory);
+    return event ? evidenceIsRedacted(event) : false;
+  }
+
+  function memoryArchivedByForget(memory: MemoryRecord): boolean {
+    if (memory.status !== "archived") return false;
+    const archive = memory.metadata.archive;
+    if (!archive || typeof archive !== "object" || Array.isArray(archive)) return false;
+    const reason = (archive as Record<string, unknown>).reason;
+    return reason === "user_forget" || reason === "derived_from_forgotten_source";
+  }
+
+  function memoryCanReceivePropagatedCredit(memory: MemoryRecord): boolean {
+    if (memory.status !== "active" && memory.status !== "dormant") return false;
+    if (memory.kind === "person") return false;
+    if (memoryArchivedByForget(memory)) return false;
+    return !memorySourceEvidenceIsRedacted(memory);
+  }
+
+  function sourceIdsFromMetadataAndEvidence(input: {
+    memory: MemoryRecord;
+    metadataKey: string;
+    payloadKey: string;
+  }): string[] {
+    const event = memorySourceEvidence(input.memory);
+    return uniqueStrings([
+      ...stringArrayFromUnknown(input.memory.metadata[input.metadataKey]),
+      ...stringArrayFromUnknown(event ? event.payload[input.payloadKey] : undefined),
+    ]).sort((left, right) => left.localeCompare(right));
+  }
+
+  function derivedProvenance(memory: MemoryRecord): {
+    sourceMemoryIds: string[];
+    sourceBeliefIds: string[];
+    sourceTrajectoryIds: string[];
+  } | null {
+    const event = memorySourceEvidence(memory);
+    if (event && evidenceIsRedacted(event)) return null;
+    const derived =
+      memory.metadata.consolidationSummary === true ||
+      memory.metadata.dossier === true ||
+      memory.metadata.procedureDistillation === true ||
+      event?.sourceType === "consolidation" ||
+      event?.sourceType === "dossier" ||
+      event?.sourceType === "distillation";
+    if (!derived) return null;
+    const provenance = {
+      sourceMemoryIds: sourceIdsFromMetadataAndEvidence({
+        memory,
+        metadataKey: "sourceMemoryIds",
+        payloadKey: "sourceMemoryIds",
+      }),
+      sourceBeliefIds: sourceIdsFromMetadataAndEvidence({
+        memory,
+        metadataKey: "sourceBeliefIds",
+        payloadKey: "sourceBeliefIds",
+      }),
+      sourceTrajectoryIds: sourceIdsFromMetadataAndEvidence({
+        memory,
+        metadataKey: "sourceTrajectoryIds",
+        payloadKey: "sourceTrajectoryIds",
+      }),
+    };
+    return provenance.sourceMemoryIds.length > 0 ||
+      provenance.sourceBeliefIds.length > 0 ||
+      provenance.sourceTrajectoryIds.length > 0
+      ? provenance
+      : null;
+  }
+
+  function sourceMemoriesForFanout(
+    profileId: string,
+    sourceMemoryIds: string[],
+    maxCreditFanout: number,
+  ): MemoryRecord[] {
+    return sourceMemoryIds
+      .flatMap((memoryId) => {
+        const row = memoryRowById(profileId, memoryId);
+        return row ? [normalizeMemory(row)] : [];
+      })
+      .sort((left, right) => {
+        const confidence = right.confidence - left.confidence;
+        if (confidence !== 0) return confidence;
+        const updatedAt = right.updatedAt.localeCompare(left.updatedAt);
+        if (updatedAt !== 0) return updatedAt;
+        const createdAt = right.createdAt.localeCompare(left.createdAt);
+        if (createdAt !== 0) return createdAt;
+        return left.id.localeCompare(right.id);
+      })
+      .slice(0, maxCreditFanout);
+  }
+
+  function nonMemoryCreditsFor(
+    input: {
+      sourceIds: string[];
+      sourceType: ProvenanceNonMemorySourceType;
+      hop: number;
+      delta: number;
+      path: string[];
+      viaMemoryId: string;
+      derivedFromMemoryId: string;
+      maxCreditFanout: number;
+    },
+  ): ProvenanceNonMemoryCredit[] {
+    return input.sourceIds
+      .slice(0, input.maxCreditFanout)
+      .map((sourceId) => ({
+        id: sourceId,
+        sourceType: input.sourceType,
+        hop: input.hop,
+        wouldBeDelta: input.delta,
+        path: [...input.path, sourceId],
+        viaMemoryId: input.viaMemoryId,
+        derivedFromMemoryId: input.derivedFromMemoryId,
+      }));
+  }
+
+  function collectProvenanceCredit(input: {
+    profileId: string;
+    rootMemoryIds: string[] | undefined;
+    delta: number;
+    config: ResolvedProvenanceCreditConfig;
+  }): { memoryCredits: ProvenanceMemoryCredit[]; nonMemoryCredits: ProvenanceNonMemoryCredit[] } {
+    if (
+      !input.config.enabled ||
+      input.delta === 0 ||
+      input.config.hopDecay === 0 ||
+      input.config.maxCreditDepth <= 0
+    ) {
+      return { memoryCredits: [], nonMemoryCredits: [] };
+    }
+    const memoryCredits: ProvenanceMemoryCredit[] = [];
+    const nonMemoryCredits: ProvenanceNonMemoryCredit[] = [];
+    const creditedMemoryIds = new Set<string>();
+    const queue = uniqueMemoryIds(input.rootMemoryIds).flatMap((memoryId) => {
+      const row = memoryRowById(input.profileId, memoryId);
+      if (!row) return [];
+      const memory = normalizeMemory(row);
+      if (memory.status !== "active" && memory.status !== "dormant") return [];
+      return [{
+        memory,
+        hop: 0,
+        delta: input.delta,
+        path: [memory.id],
+        derivedFromMemoryId: memory.id,
+      }];
+    });
+    for (const item of queue) {
+      if (item.hop >= input.config.maxCreditDepth) continue;
+      const provenance = derivedProvenance(item.memory);
+      if (!provenance) continue;
+      const hop = item.hop + 1;
+      const delta = roundedCreditDelta(item.delta, input.config.hopDecay);
+      if (delta === 0) continue;
+      for (const source of sourceMemoriesForFanout(
+        input.profileId,
+        provenance.sourceMemoryIds,
+        input.config.maxCreditFanout,
+      )) {
+        if (!memoryCanReceivePropagatedCredit(source)) continue;
+        if (creditedMemoryIds.has(source.id)) continue;
+        creditedMemoryIds.add(source.id);
+        const path = [...item.path, source.id];
+        memoryCredits.push({
+          id: source.id,
+          hop,
+          delta,
+          path,
+          viaMemoryId: item.memory.id,
+          derivedFromMemoryId: item.derivedFromMemoryId,
+          nonIndependent: true,
+        });
+        if (hop < input.config.maxCreditDepth && derivedProvenance(source)) {
+          queue.push({
+            memory: source,
+            hop,
+            delta,
+            path,
+            derivedFromMemoryId: item.derivedFromMemoryId,
+          });
+        }
+      }
+      nonMemoryCredits.push(
+        ...nonMemoryCreditsFor({
+          sourceIds: provenance.sourceTrajectoryIds,
+          sourceType: "task_trajectory",
+          hop,
+          delta,
+          path: item.path,
+          viaMemoryId: item.memory.id,
+          derivedFromMemoryId: item.derivedFromMemoryId,
+          maxCreditFanout: input.config.maxCreditFanout,
+        }),
+        ...nonMemoryCreditsFor({
+          sourceIds: provenance.sourceBeliefIds,
+          sourceType: "world_belief",
+          hop,
+          delta,
+          path: item.path,
+          viaMemoryId: item.memory.id,
+          derivedFromMemoryId: item.derivedFromMemoryId,
+          maxCreditFanout: input.config.maxCreditFanout,
+        }),
+      );
+    }
+    memoryCredits.sort((left, right) =>
+      [
+        left.hop.toString().padStart(4, "0"),
+        left.derivedFromMemoryId,
+        left.viaMemoryId,
+        left.id,
+      ].join(":").localeCompare([
+        right.hop.toString().padStart(4, "0"),
+        right.derivedFromMemoryId,
+        right.viaMemoryId,
+        right.id,
+      ].join(":"))
+    );
+    nonMemoryCredits.sort((left, right) =>
+      [
+        left.hop.toString().padStart(4, "0"),
+        left.sourceType,
+        left.derivedFromMemoryId,
+        left.viaMemoryId,
+        left.id,
+      ].join(":").localeCompare([
+        right.hop.toString().padStart(4, "0"),
+        right.sourceType,
+        right.derivedFromMemoryId,
+        right.viaMemoryId,
+        right.id,
+      ].join(":"))
+    );
+    return { memoryCredits, nonMemoryCredits };
+  }
+
+  function applyProvenanceCredit(input: {
+    profileId: string;
+    rootMemoryIds: string[] | undefined;
+    delta: number;
+    updatedAt: string;
+    config: ResolvedProvenanceCreditConfig;
+  }): {
+    memoryCredits: ProvenanceMemoryCredit[];
+    nonMemoryCredits: ProvenanceNonMemoryCredit[];
+    previousValues: MemoryVersionSnapshot[];
+  } {
+    const { memoryCredits, nonMemoryCredits } = collectProvenanceCredit({
+      profileId: input.profileId,
+      rootMemoryIds: input.rootMemoryIds,
+      delta: input.delta,
+      config: input.config,
+    });
+    const previousValues: MemoryVersionSnapshot[] = [];
+    const creditsByDelta = new Map<number, string[]>();
+    for (const credit of memoryCredits) {
+      const memoryIds = creditsByDelta.get(credit.delta) ?? [];
+      memoryIds.push(credit.id);
+      creditsByDelta.set(credit.delta, memoryIds);
+    }
+    for (const [delta, memoryIds] of [...creditsByDelta.entries()].sort((left, right) =>
+      left[0] - right[0]
+    )) {
+      const result = adjustMemoryReinforcementDelta({
+        profileId: input.profileId,
+        memoryIds,
+        delta,
+        updatedAt: input.updatedAt,
+        writeEvidence: false,
+        allowAnnealing: false,
+      });
+      previousValues.push(...result.previousValues);
+    }
+    return { memoryCredits, nonMemoryCredits, previousValues };
+  }
+
+  function attachProvenanceCreditToOutcomeEvidence(input: {
+    evidenceId: string | null;
+    config: ResolvedProvenanceCreditConfig;
+    memoryCredits: ProvenanceMemoryCredit[];
+    nonMemoryCredits: ProvenanceNonMemoryCredit[];
+    previousValues: MemoryVersionSnapshot[];
+  }): void {
+    if (!input.evidenceId) return;
+    if (input.memoryCredits.length === 0 && input.nonMemoryCredits.length === 0) return;
+    const row = db
+      .prepare("SELECT payload_json FROM gmos_evidence_events WHERE id = ?")
+      .get(input.evidenceId) as { payload_json?: string } | undefined;
+    if (!row) return;
+    const payload = parseJsonObject(row.payload_json);
+    const previousByMemoryId = new Map(
+      previousValuesFromPayload(payload).map((entry) => [entry.memoryId, entry]),
+    );
+    for (const previous of input.previousValues) previousByMemoryId.set(previous.memoryId, previous);
+    db.prepare("UPDATE gmos_evidence_events SET payload_json = ? WHERE id = ?").run(
+      JSON.stringify({
+        ...payload,
+        propagatedMemoryIds: input.memoryCredits.map((credit) => credit.id),
+        provenanceCredit: {
+          nonIndependent: true,
+          hopDecay: input.config.hopDecay,
+          maxCreditDepth: input.config.maxCreditDepth,
+          maxCreditFanout: input.config.maxCreditFanout,
+          creditedMemories: input.memoryCredits,
+          creditedProvenance: input.nonMemoryCredits,
+        },
+        previousValues: [...previousByMemoryId.values()].sort((left, right) =>
+          left.memoryId.localeCompare(right.memoryId)
+        ),
+      }),
+      input.evidenceId,
+    );
   }
 
   function adjustMemoryConfidencePenalty(input: {
@@ -4678,7 +5053,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         memoryIds: input.usedMemoryIds,
         usedAt: occurredAt,
       });
-      adjustOutcomeReinforcement({
+      const outcomeReinforcement = adjustOutcomeReinforcement({
         profileId: input.profileId,
         memoryIds: input.usedMemoryIds,
         status: input.status,
@@ -4686,6 +5061,23 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         config: input.outcomeReinforcement,
         updatedAt: occurredAt,
         confidenceAnnealing: input.confidenceAnnealing,
+      });
+      const provenanceCredit = applyProvenanceCredit({
+        profileId: input.profileId,
+        rootMemoryIds: input.usedMemoryIds,
+        delta: outcomeReinforcement.delta,
+        updatedAt: occurredAt,
+        config: resolvedProvenanceCreditConfig(input.outcomeReinforcement),
+      });
+      attachProvenanceCreditToOutcomeEvidence({
+        evidenceId: outcomeReinforcement.evidenceId,
+        config: resolvedProvenanceCreditConfig(input.outcomeReinforcement),
+        memoryCredits: provenanceCredit.memoryCredits,
+        nonMemoryCredits: provenanceCredit.nonMemoryCredits,
+        previousValues: [
+          ...outcomeReinforcement.previousValues,
+          ...provenanceCredit.previousValues,
+        ],
       });
     });
     tx();
@@ -4962,6 +5354,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
 
   function listEvidence(input: EvidenceListInput): EvidenceEvent[] {
     initialize();
+    if (!tableExists("gmos_evidence_events")) return [];
     const clauses = ["profile_id = ?"];
     const params: Array<string | number> = [input.profileId];
     clauses.push(
@@ -5004,6 +5397,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
 
   function listEvidenceForMemory(memoryId: string): EvidenceEvent[] {
     initialize();
+    if (!tableExists("gmos_memories") || !tableExists("gmos_evidence_events")) return [];
     const row = db
       .prepare("SELECT source_event_id FROM gmos_memories WHERE id = ?")
       .get(memoryId) as { source_event_id?: string | null } | undefined;

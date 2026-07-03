@@ -62,6 +62,9 @@ Response (two deliberate bets):
   nothing self-modifies without approval. This is the auditable answer to
   black-box RL memory managers.
 
+Shipped in M14: deterministic provenance credit and recommendation-only
+parameter proposals are gym-gated without schema changes.
+
 ## Signal 4 — Memory security becomes architecture: mnemonic sovereignty
 
 The security survey (arXiv:2604.16548) maps a six-phase attack lifecycle

@@ -81,6 +81,18 @@ export function resolveMemoryLifecycleConfig(
     outcomeReinforcement: {
       enabled: input?.outcomeReinforcement?.enabled ?? true,
       step: positiveStep(input?.outcomeReinforcement?.step, 0.1),
+      provenanceCredit: {
+        enabled: input?.outcomeReinforcement?.provenanceCredit?.enabled ?? true,
+        hopDecay: positiveStep(input?.outcomeReinforcement?.provenanceCredit?.hopDecay, 0.5),
+        maxCreditDepth: positiveInteger(
+          input?.outcomeReinforcement?.provenanceCredit?.maxCreditDepth,
+          2,
+        ),
+        maxCreditFanout: positiveInteger(
+          input?.outcomeReinforcement?.provenanceCredit?.maxCreditFanout,
+          8,
+        ),
+      },
     },
     feedbackConfidencePenalty: {
       enabled: input?.feedbackConfidencePenalty?.enabled ?? true,
