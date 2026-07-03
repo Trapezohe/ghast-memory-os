@@ -1567,7 +1567,7 @@ function recordBackupRestoreContentSafety(result, forbiddenValues) {
     const report = JSON.parse(result.stdout);
     if (
       report.ok !== true ||
-      report.backupSchema !== "gmos.profile_backup.v1" ||
+      report.backupSchema !== "gmos.profile_bundle.v2" ||
       report.restoreSchema !== "gmos.profile_backup_restore_result.v1" ||
       !Number.isInteger(report.backupMemoryCount) ||
       report.backupMemoryCount < 1 ||
@@ -2433,7 +2433,7 @@ if (skipFreshInstall) {
         assert.equal(backupCommandReport.ok, true);
         assert.equal(backupCommandReport.outputFile, backupFile);
         const backup = JSON.parse(readFileSync(path.join(process.cwd(), backupFile), "utf8"));
-        assert.equal(backup.schema, "gmos.profile_backup.v1");
+        assert.equal(backup.schema, "gmos.profile_bundle.v2");
         assert.equal(backup.mode, "safe");
         assert.equal(backup.counts.memories >= 1, true);
         assert.equal(JSON.stringify(backup).includes("summary first"), true);

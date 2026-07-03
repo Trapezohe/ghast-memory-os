@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "gmOS Memory HTTP API",
-    "version": "0.1.0-alpha.71"
+    "version": "0.1.0-alpha.72"
   },
   "paths": {
     "/health": {

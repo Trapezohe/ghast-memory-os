@@ -204,6 +204,9 @@ place.
 
 # Horizon 2: From Runtime Kernel To An Open-Source Memory OS Platform
 
+Status: M7-M12 shipped in the alpha.72 development line. Shipped behavior is
+tracked in the API reference, not this planning section.
+
 Horizon 1 (M1-M6) built the experience-learning kernel. Horizon 2 turns gmOS
 into a production-form open-source Agent Memory OS that individuals and teams
 can adopt the way they adopt mem0 or Hindsight today, while keeping the
@@ -356,6 +359,9 @@ plus new gym suites, with release evidence per release.
 ---
 
 # Horizon 3: Next-Generation Bets (Research-Grounded)
+
+Status: M13-M15 shipped in the alpha.72 development line. Shipped behavior is
+tracked in the API reference, not this planning section.
 
 Grounded in the 2026 H1 literature review in
 [research frontier](./RESEARCH_FRONTIER.md). Horizon 2 makes gmOS adoptable;
