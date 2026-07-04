@@ -114,9 +114,14 @@ Every external report carries a protocol label:
 
 - `deterministic_local`: default offline adapter scoring. This is the local
   reproducible baseline and never calls a model judge.
-- `official_protocol`: host-provided judge scoring. This is available through
-  the SDK runner when the host passes a judge callback; gmOS never makes
-  network calls itself.
+- `official_protocol` + `officialProtocol=host_judge_context`: host-provided
+  judge scoring over the sanitized context. This checks the M6a judge wiring,
+  but it is not leaderboard-comparable because there is no reader step.
+- `official_protocol` + `officialProtocol=host_reader_and_judge`: host-provided
+  reader plus judge. The reader receives only the question and sanitized context,
+  generates an answer, and the judge scores that generated answer. This is the
+  only gmOS external mode that can be compared to reader+judge leaderboard
+  protocols, assuming the dataset, judge, prompt, and settings also match.
 
 The CLI can run `deterministic_local` only:
 
@@ -128,8 +133,8 @@ gmos gym external \
   --format json
 ```
 
-If `--protocol official-protocol` is passed to the CLI, the command refuses
-with a clear error instead of downgrading to lexical scoring.
+Claim ladder: `deterministic_local` < `host_judge_context` <
+`host_reader_and_judge`. Do not compare a lower rung to leaderboard claims.
 
 Host SDK official-protocol sketch:
 
@@ -155,6 +160,36 @@ The judge receives only benchmark dataset content (`question`,
 `expectedAnswer`) plus the answer text produced by the gmOS runtime
 (`actualAnswer`). It does not receive gmOS memory ids, evidence ids, source
 metadata, profile ids, or store handles.
+
+Reader-mode SDK sketch:
+
+```ts
+import { runExternalMemoryBenchmark } from "@ghast/memory/gym";
+
+const report = await runExternalMemoryBenchmark({
+  cases,
+  protocol: "official_protocol",
+  answerer: {
+    name: "host-reader-v1",
+    async answer(question, context) {
+      return hostReader(question, context);
+    },
+  },
+  judge: {
+    name: "host-fixed-judge-v1",
+    async judge(question, expectedAnswer, generatedAnswer) {
+      return {
+        correct: await hostJudge(question, expectedAnswer, generatedAnswer),
+      };
+    },
+  },
+});
+```
+
+The answerer receives only `question` and the same sanitized context that would
+be sent to the judge in judge-only mode. gmOS removes internal ids and
+reconstruction diagnostics before calling the answerer. Generated answers are
+recorded per case with a bounded length for failure analysis.
 
 Example:
 
@@ -228,13 +263,55 @@ Never pass an API key as a flag value. The CLI accepts only the environment
 variable name via `--intelligence-api-key-env`; reports record that env var name
 and the endpoint hostname only, not the secret or full URL.
 
+## Reader Mode
+
+Reader mode adds a host-side answerer before the judge. Use it when comparing
+against protocols where a model reads retrieved context and emits an answer
+before a model judge scores the answer.
+
+Local Ollama-style reader and judge:
+
+```bash
+gmos gym external \
+  --input-file ./long-memory-cleaned.json \
+  --dataset-format longmemeval \
+  --protocol official-protocol \
+  --answerer-base-url http://127.0.0.1:11434/v1 \
+  --answerer-model llama3.1 \
+  --format json
+```
+
+OpenAI-compatible cloud reader and judge:
+
+```bash
+export GMOS_BENCH_API_KEY="..."
+gmos gym external \
+  --input-file ./multi-session-memory.json \
+  --dataset-format locomo \
+  --protocol official-protocol \
+  --answerer-base-url https://provider.example/v1 \
+  --answerer-model provider-reader-model \
+  --answerer-api-key-env GMOS_BENCH_API_KEY \
+  --format json
+```
+
+When only `--answerer-model` is provided, the answerer uses the
+`--intelligence-base-url` and `--intelligence-api-key-env` endpoint. This keeps
+reader and extraction runs on the same disclosed host while still recording the
+reader model separately.
+
+For CLI runs, the configured OpenAI-compatible endpoint is also the host-side
+judge endpoint. SDK users who need a custom judge prompt, retry policy, or
+rubric should pass explicit `judge` and `answerer` callbacks instead.
+
 Privacy boundary: benchmark dataset content is sent to the configured endpoint.
 Do not run this mode on real personal profiles or private user histories unless
 that endpoint is approved for that data.
 
 Claim boundary: intelligence-backed `deterministic_local` runs are still local
-adapter scores. They are not official-protocol scores unless the SDK run uses a
-host-provided judge and the manifest says `officialProtocol=host_judge`.
+adapter scores. Judge-only official runs are still not leaderboard-comparable.
+Only reader+judge runs may be described as official-protocol comparable, and
+only when the manifest says `officialProtocol=host_reader_and_judge`.
 
 ## Adapter Baseline Archives
 
@@ -273,8 +350,11 @@ External reports should separate:
 - strict score;
 - normalized evidence score;
 - deterministic adapter score (`protocol=deterministic_local`);
-- official protocol score (`protocol=official_protocol`, `officialProtocol=host_judge`);
+- judge-only official score (`officialProtocol=host_judge_context`);
+- reader+judge official score (`officialProtocol=host_reader_and_judge`);
+- lexical ceiling and reachable score for deterministic reports;
 - judge provenance;
+- answerer provenance when reader mode is enabled;
 - setup/runtime ingestion cost;
 - scoring runtime;
 - diagnostics runtime;
@@ -287,9 +367,9 @@ state, reconstruction, context composition, safety, action policy, or feedback.
 ## Claim Rules
 
 - Do not call deterministic adapter results official benchmark scores.
-- Do not quote a report as official unless its manifest says
-  `protocol=official_protocol`, `officialProtocol=host_judge`, and names the
-  judge.
+- Do not quote a report as leaderboard-comparable unless its manifest says
+  `protocol=official_protocol`, `officialProtocol=host_reader_and_judge`, and
+  names both the answerer and judge.
 - Do not claim SOTA without the official dataset, official or strictly
   equivalent runner, fixed model/judge settings, and a public reproduction
   bundle.

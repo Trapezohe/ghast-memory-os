@@ -7,6 +7,7 @@ import {
   parseExternalMemoryBenchmarkJsonl,
   runExternalMemoryBenchmark,
   type ExternalMemoryBenchmarkCase,
+  type ExternalMemoryBenchmarkCeilingMetrics,
   type ExternalMemoryBenchmarkCounter,
   type ExternalMemoryBenchmarkDatasetFormat,
   type ExternalMemoryBenchmarkDiagnosticsLevel,
@@ -70,6 +71,7 @@ export interface ExternalMemoryBenchmarkSuiteRunSummary {
   normalizedEvidencePassedCount: number;
   officialScore: number | null;
   officialPassedCount: number | null;
+  ceilingMetrics: ExternalMemoryBenchmarkCeilingMetrics | null;
   protocol: ExternalMemoryBenchmarkProtocol;
   judgeName: string | null;
   caseGroupCount: number;
@@ -99,9 +101,14 @@ export interface ExternalMemoryBenchmarkSuiteResult {
   strictScoreWeighted: number;
   normalizedEvidenceScoreMean: number;
   normalizedEvidenceScoreWeighted: number;
+  reachableScoreWeighted: number | null;
+  lexicalCeilingWeighted: number | null;
   totalCaseCount: number;
   totalPassedCount: number;
   totalNormalizedEvidencePassedCount: number;
+  totalReachableCount: number;
+  totalUnreachableCount: number;
+  totalReachablePassedCount: number;
   totalFailedCount: number;
   totalWarningCount: number;
   totalFailureReasons: ExternalMemoryBenchmarkCounter[];
@@ -120,6 +127,7 @@ export interface ExternalMemoryBenchmarkSuiteResult {
     package: ExternalMemoryBenchmarkResult["runManifest"]["package"] | null;
     git: ExternalMemoryBenchmarkResult["runManifest"]["git"] | null;
     scoreSemantics: ExternalMemoryBenchmarkScoreSemantics;
+    ceilingMetrics: ExternalMemoryBenchmarkCeilingMetrics | null;
     protocols: ExternalMemoryBenchmarkProtocol[];
     deterministicOnly: boolean;
   };
@@ -455,6 +463,7 @@ export async function runExternalMemoryBenchmarkSuite(
       normalizedEvidencePassedCount: report.normalizedEvidencePassedCount,
       officialScore: report.officialScore,
       officialPassedCount: report.officialPassedCount,
+      ceilingMetrics: report.ceilingMetrics,
       protocol: report.runManifest.protocol,
       judgeName: report.runManifest.judgeProvenance.name,
       caseGroupCount: report.runManifest.execution.caseGroupCount,
@@ -485,6 +494,18 @@ export async function runExternalMemoryBenchmarkSuite(
     (sum, run) => sum + run.normalizedEvidencePassedCount,
     0,
   );
+  const totalReachableCount = runs.reduce(
+    (sum, run) => sum + (run.ceilingMetrics?.reachableCount ?? 0),
+    0,
+  );
+  const totalUnreachableCount = runs.reduce(
+    (sum, run) => sum + (run.ceilingMetrics?.unreachableCount ?? 0),
+    0,
+  );
+  const totalReachablePassedCount = runs.reduce(
+    (sum, run) => sum + (run.ceilingMetrics?.reachablePassedCount ?? 0),
+    0,
+  );
   const totalFailedCount = runs.reduce((sum, run) => sum + run.failedCount, 0);
   const totalWarningCount = runs.reduce((sum, run) => sum + run.warningCount, 0);
   const totalFailureReasons = aggregateCounters(runs.map((run) => run.failureReasons));
@@ -492,6 +513,17 @@ export async function runExternalMemoryBenchmarkSuite(
   const totalScoreAttribution = aggregateCounters(runs.map((run) => run.scoreAttribution));
   const firstRunManifest = Object.values(reports)[0]?.runManifest;
   const protocols = [...new Set(runs.map((run) => run.protocol))].sort();
+  const deterministicOnly = protocols.every((protocol) => protocol === "deterministic_local");
+  const ceilingMetrics = deterministicOnly
+    ? {
+        caseCount: totalCaseCount,
+        reachableCount: totalReachableCount,
+        unreachableCount: totalUnreachableCount,
+        lexicalCeiling: totalCaseCount ? totalReachableCount / totalCaseCount : 0,
+        reachablePassedCount: totalReachablePassedCount,
+        reachableScore: totalReachableCount ? totalReachablePassedCount / totalReachableCount : 0,
+      }
+    : null;
   const failOnBenchmarkFail = options.failOnBenchmarkFail === true;
   const finishedAt = new Date().toISOString();
   return {
@@ -510,9 +542,14 @@ export async function runExternalMemoryBenchmarkSuite(
       normalizedEvidenceScoreWeighted: totalCaseCount
         ? totalNormalizedEvidencePassedCount / totalCaseCount
         : 0,
+      reachableScoreWeighted: ceilingMetrics?.reachableScore ?? null,
+      lexicalCeilingWeighted: ceilingMetrics?.lexicalCeiling ?? null,
       totalCaseCount,
       totalPassedCount,
       totalNormalizedEvidencePassedCount,
+      totalReachableCount,
+      totalUnreachableCount,
+      totalReachablePassedCount,
       totalFailedCount,
       totalWarningCount,
       totalFailureReasons,
@@ -531,8 +568,9 @@ export async function runExternalMemoryBenchmarkSuite(
         package: firstRunManifest?.package ?? null,
         git: firstRunManifest?.git ?? null,
         scoreSemantics: firstRunManifest?.scoreSemantics ?? { ...EXTERNAL_MEMORY_BENCHMARK_SCORE_SEMANTICS },
+        ceilingMetrics,
         protocols,
-        deterministicOnly: protocols.every((protocol) => protocol === "deterministic_local"),
+        deterministicOnly,
       },
       runs,
     },

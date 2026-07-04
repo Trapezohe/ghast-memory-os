@@ -904,6 +904,8 @@ try {
         type SummarizeStateBenchResultsOptions,
         type StateBenchResultsSummary,
         type StateBenchPreparedRunManifest,
+        type ExternalMemoryBenchmarkAnswerer,
+        type ExternalMemoryBenchmarkCeilingMetrics,
         type ExternalMemoryBenchmarkDatasetAdapter,
         type ExternalMemoryBenchmarkDatasetFormat,
         type ExternalMemoryBenchmarkJudge,
@@ -1200,6 +1202,15 @@ try {
         judge: () => ({ correct: true }),
       };
       void typedJudge;
+      const typedAnswerer: ExternalMemoryBenchmarkAnswerer = {
+        name: "typed-answerer",
+        answer: () => "rollback matrix",
+      };
+      void typedAnswerer;
+      const typedCeilingMetrics: ExternalMemoryBenchmarkCeilingMetrics | null = externalResult.ceilingMetrics;
+      if (typedCeilingMetrics?.reachableScore !== 1) {
+        throw new Error("typed external ceiling metrics failed");
+      }
       const typedMatched: ExternalMemoryBenchmarkCaseMatched | undefined = externalResult.cases[0]?.matched;
       if (typedMatched?.expectedAll[0] !== "rollback matrix") {
         throw new Error("typed external matched diagnostics failed");
@@ -1228,9 +1239,14 @@ try {
           strictScoreWeighted: 0,
           normalizedEvidenceScoreMean: 0,
           normalizedEvidenceScoreWeighted: 0,
+          reachableScoreWeighted: null,
+          lexicalCeilingWeighted: null,
           totalCaseCount: 0,
           totalPassedCount: 0,
           totalNormalizedEvidencePassedCount: 0,
+          totalReachableCount: 0,
+          totalUnreachableCount: 0,
+          totalReachablePassedCount: 0,
           totalFailedCount: 0,
           totalWarningCount: 0,
           totalFailureReasons: [],
@@ -1256,6 +1272,10 @@ try {
                 kind: "none",
                 name: null,
               },
+              answererProvenance: {
+                kind: "none",
+                name: null,
+              },
               deterministicAdapterScoreField: "score",
               strictScoreField: "strictScore",
               normalizedEvidenceScoreField: "normalizedEvidenceScore",
@@ -1264,6 +1284,7 @@ try {
               officialScore: null,
               comparableToOfficialScore: false,
             },
+            ceilingMetrics: null,
             protocols: ["deterministic_local"],
             deterministicOnly: true,
           },
@@ -2307,6 +2328,9 @@ try {
   assert.equal(externalMiniOutput.comparableToOfficialScore, false);
   assert.equal(externalMiniOutput.caseCount, 3);
   assert.equal(externalMiniOutput.passedCount, 3);
+  assert.equal(externalMiniOutput.lexicalCeiling, 1);
+  assert.equal(externalMiniOutput.reachableScore, 1);
+  assert.equal(externalMiniOutput.unreachableCount, 0);
   assert.equal(externalMiniOutput.strictScore, 1);
   assert.equal(externalMiniOutput.normalizedEvidenceScore, 1);
   assert.equal(externalMiniOutput.failureReasonCount, 0);

@@ -1,9 +1,9 @@
 # gmOS Benchmark Runs
 
-This page archives local deterministic benchmark snapshots. Unless an entry
-explicitly says `protocol=official_protocol` and names a host-provided judge,
-these are `protocol=deterministic_local` reports, not official benchmark
-scores, leaderboard claims, or SOTA claims.
+This page archives benchmark snapshots. Unless an entry explicitly says
+`protocol=official_protocol`, `officialProtocol=host_reader_and_judge`, and
+names both the host-provided answerer and judge, it is not an official
+leaderboard-comparable claim.
 
 ## Publishing a run
 
@@ -22,6 +22,9 @@ Required manifest fields:
   sensitivity, diagnostics, concurrency, and failure sample limit;
 - judge provenance for `official_protocol` runs;
 - score semantics and official-comparability flag;
+- lexical ceiling, reachable score, and unreachable count for deterministic
+  runs;
+- answerer provenance for reader-mode official runs;
 - intelligence provenance when enabled: model names, endpoint hostname, ingest
   mode, maintenance phases, concurrency, timeout, hook names, and API key
   environment variable name only.
@@ -33,13 +36,18 @@ numbers; this repository does not vendor datasets or generated run archives.
 Claim language rules:
 
 - `deterministic_local` means local adapter diagnostics only.
-- `official_protocol` requires a host-provided judge and disclosed judge
-  provenance.
+- `officialProtocol=host_judge_context` means a host judge scored sanitized
+  context; it is not leaderboard-comparable.
+- `officialProtocol=host_reader_and_judge` means a host reader generated an
+  answer from sanitized context and a host judge scored that answer.
 - Intelligence-enabled runs disclose model names and endpoint hostnames, never
   secret values.
 - No run may be called official, leaderboard, or SOTA unless the manifest says
-  `protocol=official_protocol`, `officialProtocol=host_judge`, and the public
-  bundle is available.
+  `protocol=official_protocol`, `officialProtocol=host_reader_and_judge`, names
+  both answerer and judge, and the public bundle is available.
+
+Future run table columns should include raw score, lexical ceiling, reachable
+score, unreachable count, protocol, officialProtocol, judge, and answerer.
 
 ## alpha.69 release evidence snapshot
 

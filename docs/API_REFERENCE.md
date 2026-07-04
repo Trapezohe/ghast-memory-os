@@ -975,9 +975,11 @@ Common exports:
 
 Important report and option types include `MemoryGymResult`,
 `MemoryGymExperienceHorizonReport`, `ExternalMemoryBenchmarkResult`,
-`ExternalMemoryBenchmarkProtocol`, `ExternalMemoryBenchmarkJudge`,
+`ExternalMemoryBenchmarkProtocol`, `ExternalMemoryBenchmarkAnswerer`,
+`ExternalMemoryBenchmarkJudge`,
 `ExternalMemoryBenchmarkJudgeResult`,
 `ExternalMemoryBenchmarkJudgeProvenance`,
+`ExternalMemoryBenchmarkAnswererProvenance`,
 `ExternalMemoryBenchmarkSuiteResult`, and
 `ExternalMemoryBenchmarkSuiteExecution`.
 
@@ -1001,14 +1003,41 @@ const officialReport = await runExternalMemoryBenchmark({
     },
   },
 });
+
+const readerReport = await runExternalMemoryBenchmark({
+  cases,
+  protocol: "official_protocol",
+  answerer: {
+    name: "host-reader-v1",
+    answer(question, context) {
+      return hostReader(question, context);
+    },
+  },
+  judge: {
+    name: "host-judge-v1",
+    judge(question, expectedAnswer, generatedAnswer) {
+      return { correct: hostCheck(question, expectedAnswer, generatedAnswer) };
+    },
+  },
+});
 ```
 
 `deterministic_local` is the default and remains fully offline. An
 `official_protocol` run requires a host-provided judge; without one the runner
-throws instead of falling back to lexical scoring. The judge callback receives
-only benchmark dataset content (`question`, `expectedAnswer`) and the answer
-text produced by the runtime (`actualAnswer`). It does not receive gmOS memory
-ids, evidence ids, profile ids, store handles, or private memory metadata.
+throws instead of falling back to lexical scoring. Without an answerer, the
+judge callback receives benchmark dataset content (`question`, `expectedAnswer`)
+and the sanitized context as `actualAnswer`; this is
+`officialProtocol=host_judge_context` and is not leaderboard-comparable.
+
+With an answerer, the answerer callback receives only `question` and sanitized
+`context`. It does not receive `expectedAnswer`, gmOS memory ids, evidence ids,
+profile ids, store handles, or reconstruction diagnostics. The judge then scores
+the generated answer. This is `officialProtocol=host_reader_and_judge`, and
+generated answers are recorded per case with a bounded length.
+
+For OpenAI-compatible hosts, `@ghast/memory/gym` also exports
+`createOpenAICompatibleExternalBenchmarkAnswerer()` and
+`createOpenAICompatibleExternalBenchmarkJudge()`.
 
 ## CLI
 

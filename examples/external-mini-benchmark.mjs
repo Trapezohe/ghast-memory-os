@@ -39,6 +39,8 @@ assert.equal(report.runManifest.scoreSemantics.protocol, "deterministic_local");
 assert.equal(report.runManifest.scoreSemantics.officialProtocol, "not_run");
 assert.equal(report.runManifest.scoreSemantics.comparableToOfficialScore, false);
 assert.equal(report.runManifest.deterministicOnly, true);
+assert.equal(report.ceilingMetrics.lexicalCeiling, 1);
+assert.equal(report.ceilingMetrics.reachableScore, 1);
 
 const sliceScores = Object.fromEntries(
   (report.summary.sliceScores ?? []).map((slice) => [slice.name, slice.score]),
@@ -57,6 +59,9 @@ console.log(
       comparableToOfficialScore: report.runManifest.scoreSemantics.comparableToOfficialScore,
       caseCount: report.caseCount,
       passedCount: report.passedCount,
+      lexicalCeiling: report.ceilingMetrics.lexicalCeiling,
+      reachableScore: report.ceilingMetrics.reachableScore,
+      unreachableCount: report.ceilingMetrics.unreachableCount,
       strictScore: report.strictScore,
       normalizedEvidenceScore: report.normalizedEvidenceScore,
       sliceScores,

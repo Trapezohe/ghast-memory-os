@@ -119,6 +119,8 @@ if (report.totalCaseCount !== 53) failures.push(`totalCaseCount=${report.totalCa
 if (report.totalPassedCount !== 53) failures.push(`totalPassedCount=${report.totalPassedCount}`);
 if (report.totalFailedCount !== 0) failures.push(`totalFailedCount=${report.totalFailedCount}`);
 if (report.scoreWeighted !== 1) failures.push(`scoreWeighted=${report.scoreWeighted}`);
+if (report.lexicalCeilingWeighted !== 1) failures.push(`lexicalCeilingWeighted=${report.lexicalCeilingWeighted}`);
+if (report.reachableScoreWeighted !== 1) failures.push(`reachableScoreWeighted=${report.reachableScoreWeighted}`);
 
 const runs = new Map((report.runs ?? []).map((run) => [run.id, run]));
 const gmosRun = runs.get("curated-gmos");
@@ -372,6 +374,12 @@ try {
   }
   if (artifactManifest?.scoreSemantics?.officialProtocol !== "not_run") {
     failures.push("json artifact did not mark official protocol as not_run");
+  }
+  if (artifactManifest?.ceilingMetrics?.unreachableCount === undefined) {
+    failures.push("json artifact missing ceiling metrics");
+  }
+  if (failureRun?.ceilingMetrics?.unreachableCount === undefined) {
+    failures.push("failure run missing ceiling metrics");
   }
   if (jsonArtifact.runs?.[0]?.runtime?.diagnosticRuntimeMs === undefined) {
     failures.push("json artifact missing diagnostics runtime split");

@@ -42,11 +42,28 @@ function scoreSemanticsLine(semantics: ExternalMemoryBenchmarkScoreSemantics): s
     `kind=${semantics.scoreKind}`,
     `primary=${semantics.primaryScore}`,
     `judge=${semantics.judgeProvenance.kind}:${semantics.judgeProvenance.name ?? "none"}`,
+    `answerer=${semantics.answererProvenance.kind}:${semantics.answererProvenance.name ?? "none"}`,
     `officialProtocol=${semantics.officialProtocol}`,
     `officialScore=${semantics.officialScore ?? "none"}`,
     `officialComparable=${semantics.comparableToOfficialScore ? "yes" : "no"}`,
     `normalizedEvidence=${semantics.normalizedEvidenceScorePurpose}`,
   ].join(" ");
+}
+
+function ceilingMetricLine(
+  metrics: ExternalMemoryBenchmarkResult["ceilingMetrics"],
+): string {
+  return metrics
+    ? `${metrics.lexicalCeiling.toFixed(4)} (${metrics.reachableCount}/${metrics.caseCount} reachable, ${metrics.unreachableCount} unreachable)`
+    : "not_applicable";
+}
+
+function reachableScoreLine(
+  metrics: ExternalMemoryBenchmarkResult["ceilingMetrics"],
+): string {
+  return metrics
+    ? `${metrics.reachableScore.toFixed(4)} (${metrics.reachablePassedCount}/${metrics.reachableCount})`
+    : "not_applicable";
 }
 
 function markdownSliceScores(
@@ -249,6 +266,22 @@ export function renderExternalMemoryBenchmarkMarkdown(
     concurrency: null,
     timeoutMs: null,
     extractionFailureCount: 0,
+    answerer: {
+      enabled: false,
+      name: null,
+      baseUrlHost: null,
+      apiKeyEnv: null,
+      model: null,
+      timeoutMs: null,
+    },
+  };
+  const runtimeAnswerer = runtimeIntelligence.answerer ?? {
+    enabled: false,
+    name: null,
+    baseUrlHost: null,
+    apiKeyEnv: null,
+    model: null,
+    timeoutMs: null,
   };
   return [
     "# gmOS External Long-Memory QA Benchmark",
@@ -262,6 +295,11 @@ export function renderExternalMemoryBenchmarkMarkdown(
     `Strict score: ${report.strictScore.toFixed(4)}`,
     `Normalized evidence score: ${report.normalizedEvidenceScore.toFixed(4)} (${report.normalizedEvidencePassedCount}/${report.caseCount})`,
     `Official score: ${report.officialScore === null ? "not_run" : report.officialScore.toFixed(4)}${report.officialPassedCount === null ? "" : ` (${report.officialPassedCount}/${report.caseCount})`}`,
+    `Lexical ceiling: ${ceilingMetricLine(report.ceilingMetrics)}`,
+    `Reachable score: ${reachableScoreLine(report.ceilingMetrics)}`,
+    report.ceilingMetrics
+      ? "Interpretation: raw score includes every case; reachable score excludes deterministic answer_not_in_input cases."
+      : "Interpretation: ceiling metrics apply only to deterministic_local reports.",
     "",
     "## Run Manifest",
     "",
@@ -277,6 +315,9 @@ export function renderExternalMemoryBenchmarkMarkdown(
     `Failure sample limit: ${report.runManifest.options.failureSampleLimit}`,
     `Score semantics: ${scoreSemanticsLine(report.runManifest.scoreSemantics)}`,
     `Runtime intelligence: enabled=${runtimeIntelligence.enabled} ingestMode=${runtimeIntelligence.ingestMode} model=${runtimeIntelligence.model ?? "none"} embedModel=${runtimeIntelligence.embedModel ?? "none"} host=${runtimeIntelligence.baseUrlHost ?? "none"} maintainPhases=${runtimeIntelligence.maintainPhases.join(",") || "none"} concurrency=${runtimeIntelligence.concurrency ?? "none"} timeoutMs=${runtimeIntelligence.timeoutMs ?? "none"} extractionFailures=${runtimeIntelligence.extractionFailureCount}`,
+    `Runtime answerer: enabled=${runtimeAnswerer.enabled} name=${runtimeAnswerer.name ?? "none"} model=${runtimeAnswerer.model ?? "none"} host=${runtimeAnswerer.baseUrlHost ?? "none"} apiKeyEnv=${runtimeAnswerer.apiKeyEnv ?? "none"} timeoutMs=${runtimeAnswerer.timeoutMs ?? "none"}`,
+    `Manifest lexical ceiling: ${ceilingMetricLine(report.runManifest.ceilingMetrics)}`,
+    `Manifest reachable score: ${reachableScoreLine(report.runManifest.ceilingMetrics)}`,
     `Deterministic only: ${report.runManifest.deterministicOnly ? "yes" : "no"}`,
     "",
     "## Summary",
@@ -284,6 +325,7 @@ export function renderExternalMemoryBenchmarkMarkdown(
     `Failure reasons: ${markdownCounters(report.summary.failureReasons)}`,
     `Failure stages: ${markdownCounters(report.summary.failureStages ?? [])}`,
     `Score attribution: ${markdownCounters(report.summary.scoreAttribution ?? [])}`,
+    `Ceiling metrics: lexicalCeiling=${ceilingMetricLine(report.summary.ceilingMetrics)} reachableScore=${reachableScoreLine(report.summary.ceilingMetrics)}`,
     `Slice scores: ${markdownSliceScores(report.summary.sliceScores)}`,
     `Warnings: ${markdownCounters(report.summary.warnings)}`,
     `Uncertainty: low=${report.summary.uncertaintyLevels.low}, medium=${report.summary.uncertaintyLevels.medium}, high=${report.summary.uncertaintyLevels.high}, unknown=${report.summary.uncertaintyLevels.unknown}`,
@@ -297,21 +339,21 @@ export function renderExternalMemoryBenchmarkMarkdown(
     ...(report.summary.failureSamples.length === 0
       ? ["None"]
       : [
-          "| Case | Temporal | Failure reasons | Failure stages | Warnings | Matched expectedAny | Matched expectedAll | Missing expectedAny | Missing expectedAll | Forbidden matches | Missing intent groups | Convergence | Uncertainty | Tokens | Paths | Duration ms | Scoring ms | Taxonomy ms | Wide ms |",
-          "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+          "| Case | Temporal | Failure reasons | Failure stages | Warnings | Generated answer | Matched expectedAny | Matched expectedAll | Missing expectedAny | Missing expectedAll | Forbidden matches | Missing intent groups | Convergence | Uncertainty | Tokens | Paths | Duration ms | Scoring ms | Taxonomy ms | Wide ms |",
+          "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
           ...report.summary.failureSamples.map(
             (entry) =>
-              `| ${markdownCell(entry.id)} | ${entry.temporalMode ?? "-"} | ${markdownListCell(entry.failureReasons)} | ${markdownTaxonomyCell(entry.failureTaxonomy ?? [])} | ${markdownListCell(entry.warnings)} | ${markdownListCell(entry.matched.expectedAny)} | ${markdownListCell(entry.matched.expectedAll)} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.matched.forbidden)} | ${markdownListCell(entry.missingRequiredIntentGroups)} | ${markdownNullableNumber(entry.evidenceConvergenceScore)}${entry.evidenceConvergenceReached === null ? "" : entry.evidenceConvergenceReached ? " reached" : " not reached"} | ${entry.uncertaintyLevel ?? "-"} | ${entry.promptTokenEstimate} | ${entry.reconstructedPathCount} | ${entry.durationMs} | ${entry.scoringRuntimeMs} | ${entry.taxonomyRuntimeMs} | ${entry.wideBudgetDiagnosticRuntimeMs} |`,
+              `| ${markdownCell(entry.id)} | ${entry.temporalMode ?? "-"} | ${markdownListCell(entry.failureReasons)} | ${markdownTaxonomyCell(entry.failureTaxonomy ?? [])} | ${markdownListCell(entry.warnings)} | ${markdownCell(entry.generatedAnswer ?? entry.answererError ?? entry.judgeError ?? "-")} | ${markdownListCell(entry.matched.expectedAny)} | ${markdownListCell(entry.matched.expectedAll)} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.matched.forbidden)} | ${markdownListCell(entry.missingRequiredIntentGroups)} | ${markdownNullableNumber(entry.evidenceConvergenceScore)}${entry.evidenceConvergenceReached === null ? "" : entry.evidenceConvergenceReached ? " reached" : " not reached"} | ${entry.uncertaintyLevel ?? "-"} | ${entry.promptTokenEstimate} | ${entry.reconstructedPathCount} | ${entry.durationMs} | ${entry.scoringRuntimeMs} | ${entry.taxonomyRuntimeMs} | ${entry.wideBudgetDiagnosticRuntimeMs} |`,
           ),
         ]),
     "",
     "## Cases",
     "",
-    "| Case | Status | Mode | Temporal | Failure reasons | Failure stages | Warnings | Matched expectedAny | Matched expectedAll | Missing expectedAny | Missing expectedAll | Forbidden matches | Missing intent groups | Convergence | Uncertainty | Tokens | Paths | Duration ms | Scoring ms | Taxonomy ms | Wide ms |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| Case | Status | Mode | Temporal | Failure reasons | Failure stages | Warnings | Generated answer | Lexically reachable | Matched expectedAny | Matched expectedAll | Missing expectedAny | Missing expectedAll | Forbidden matches | Missing intent groups | Convergence | Uncertainty | Tokens | Paths | Duration ms | Scoring ms | Taxonomy ms | Wide ms |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ...report.cases.map(
       (entry) =>
-        `| ${markdownCell(entry.id)} | ${entry.pass ? "PASS" : "FAIL"} | ${entry.mode}${entry.requireConvergence ? " + convergence" : ""} | ${entry.temporalMode ?? "-"} | ${markdownListCell(entry.failureReasons)} | ${markdownTaxonomyCell(entry.failureTaxonomy ?? [])} | ${markdownListCell(entry.warnings)} | ${markdownListCell(entry.matched.expectedAny)} | ${markdownListCell(entry.matched.expectedAll)} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.matched.forbidden)} | ${markdownListCell(entry.diagnostics.missingRequiredIntentGroups)} | ${markdownNullableNumber(entry.diagnostics.evidenceConvergenceScore)}${entry.diagnostics.evidenceConvergenceReached === null ? "" : entry.diagnostics.evidenceConvergenceReached ? " reached" : " not reached"} | ${entry.diagnostics.uncertaintyLevel ?? "-"} | ${entry.promptTokenEstimate} | ${entry.reconstructedPathCount} | ${entry.durationMs} | ${entry.scoringRuntimeMs} | ${entry.taxonomyRuntimeMs} | ${entry.wideBudgetDiagnosticRuntimeMs} |`,
+        `| ${markdownCell(entry.id)} | ${entry.pass ? "PASS" : "FAIL"} | ${entry.mode}${entry.requireConvergence ? " + convergence" : ""} | ${entry.temporalMode ?? "-"} | ${markdownListCell(entry.failureReasons)} | ${markdownTaxonomyCell(entry.failureTaxonomy ?? [])} | ${markdownListCell(entry.warnings)} | ${markdownCell(entry.generatedAnswer ?? entry.answererError ?? entry.judgeError ?? "-")} | ${entry.lexicallyReachable ? "yes" : "no"} | ${markdownListCell(entry.matched.expectedAny)} | ${markdownListCell(entry.matched.expectedAll)} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.matched.forbidden)} | ${markdownListCell(entry.diagnostics.missingRequiredIntentGroups)} | ${markdownNullableNumber(entry.diagnostics.evidenceConvergenceScore)}${entry.diagnostics.evidenceConvergenceReached === null ? "" : entry.diagnostics.evidenceConvergenceReached ? " reached" : " not reached"} | ${entry.diagnostics.uncertaintyLevel ?? "-"} | ${entry.promptTokenEstimate} | ${entry.reconstructedPathCount} | ${entry.durationMs} | ${entry.scoringRuntimeMs} | ${entry.taxonomyRuntimeMs} | ${entry.wideBudgetDiagnosticRuntimeMs} |`,
     ),
     "",
   ].join("\n");
@@ -330,12 +372,18 @@ export function renderExternalMemoryBenchmarkSuiteMarkdown(
     `Runs: ${report.passedRunCount}/${report.runCount}`,
     `Mean score: ${report.scoreMean.toFixed(4)}`,
     `Weighted score: ${report.scoreWeighted.toFixed(4)}`,
+    `Reachable weighted score: ${report.reachableScoreWeighted === null ? "not_applicable" : report.reachableScoreWeighted.toFixed(4)}`,
+    `Lexical ceiling weighted: ${report.lexicalCeilingWeighted === null ? "not_applicable" : report.lexicalCeilingWeighted.toFixed(4)}`,
     `Strict mean score: ${report.strictScoreMean.toFixed(4)}`,
     `Strict weighted score: ${report.strictScoreWeighted.toFixed(4)}`,
     `Normalized evidence mean score: ${report.normalizedEvidenceScoreMean.toFixed(4)}`,
     `Normalized evidence weighted score: ${report.normalizedEvidenceScoreWeighted.toFixed(4)}`,
     `Cases: ${report.totalPassedCount}/${report.totalCaseCount}`,
+    `Reachable cases: ${report.totalReachablePassedCount}/${report.totalReachableCount} passed; unreachable=${report.totalUnreachableCount}`,
     `Normalized evidence cases: ${report.totalNormalizedEvidencePassedCount}/${report.totalCaseCount}`,
+    report.runManifest.ceilingMetrics
+      ? "Interpretation: weighted score is raw deterministic score; reachable weighted score excludes answer_not_in_input cases."
+      : "Interpretation: ceiling metrics apply only when every run is deterministic_local.",
     `Warnings: ${report.totalWarningCount}`,
     `Failure reasons: ${markdownCounters(report.totalFailureReasons)}`,
     `Failure stages: ${markdownCounters(report.totalFailureStages)}`,
@@ -369,15 +417,17 @@ export function renderExternalMemoryBenchmarkSuiteMarkdown(
     `Fail on benchmark fail: ${report.runManifest.failOnBenchmarkFail ? "yes" : "no"}`,
     `Protocols: ${report.runManifest.protocols.join(", ") || "none"}`,
     `Score semantics: ${scoreSemanticsLine(report.runManifest.scoreSemantics)}`,
+    `Suite lexical ceiling: ${ceilingMetricLine(report.runManifest.ceilingMetrics)}`,
+    `Suite reachable score: ${reachableScoreLine(report.runManifest.ceilingMetrics)}`,
     `Deterministic only: ${report.runManifest.deterministicOnly ? "yes" : "no"}`,
     "",
     "## Runs",
     "",
-    "| Run | Status | Protocol | Judge | Dataset | Cases | Score | Official | Normalized evidence | Duration | Setup | Scoring | Taxonomy | Wide | Groups | Reused | Failure reasons | Failure stages | Score attribution | Slice scores | Hash | JSON | Markdown | Warnings |",
-    "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | --- |",
+    "| Run | Status | Protocol | Judge | Dataset | Cases | Score | Lexical ceiling | Reachable score | Official | Normalized evidence | Duration | Setup | Scoring | Taxonomy | Wide | Groups | Reused | Failure reasons | Failure stages | Score attribution | Slice scores | Hash | JSON | Markdown | Warnings |",
+    "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...report.runs.map(
       (run) =>
-        `| ${markdownCell(run.id)} | ${run.pass ? "PASS" : "FAIL"} | ${run.protocol} | ${markdownCell(run.judgeName ?? "-")} | ${run.datasetFormat} | ${run.passedCount}/${run.caseCount} | ${run.score.toFixed(4)} | ${run.officialScore === null ? "-" : run.officialScore.toFixed(4)} | ${run.normalizedEvidenceScore.toFixed(4)} | ${(run.durationMs / 1000).toFixed(1)}s | ${(run.runtime.setupRuntimeMs / 1000).toFixed(1)}s | ${(run.runtime.scoringRuntimeMs / 1000).toFixed(1)}s | ${(run.runtime.taxonomyRuntimeMs / 1000).toFixed(1)}s | ${(run.runtime.wideBudgetDiagnosticRuntimeMs / 1000).toFixed(1)}s | ${run.caseGroupCount} | ${run.reusedProfileCaseCount} | ${markdownCounters(run.failureReasons)} | ${markdownCounters(run.failureStages)} | ${markdownCounters(run.scoreAttribution ?? [])} | ${markdownSliceScores(run.sliceScores)} | ${markdownCell(run.datasetHash ?? "-")} | ${markdownCell(run.jsonFile ?? "-")} | ${markdownCell(run.markdownFile ?? "-")} | ${run.warningCount}${run.warnings.length ? `: ${markdownListCell(run.warnings)}` : ""} |`,
+        `| ${markdownCell(run.id)} | ${run.pass ? "PASS" : "FAIL"} | ${run.protocol} | ${markdownCell(run.judgeName ?? "-")} | ${run.datasetFormat} | ${run.passedCount}/${run.caseCount} | ${run.score.toFixed(4)} | ${run.ceilingMetrics ? run.ceilingMetrics.lexicalCeiling.toFixed(4) : "-"} | ${run.ceilingMetrics ? run.ceilingMetrics.reachableScore.toFixed(4) : "-"} | ${run.officialScore === null ? "-" : run.officialScore.toFixed(4)} | ${run.normalizedEvidenceScore.toFixed(4)} | ${(run.durationMs / 1000).toFixed(1)}s | ${(run.runtime.setupRuntimeMs / 1000).toFixed(1)}s | ${(run.runtime.scoringRuntimeMs / 1000).toFixed(1)}s | ${(run.runtime.taxonomyRuntimeMs / 1000).toFixed(1)}s | ${(run.runtime.wideBudgetDiagnosticRuntimeMs / 1000).toFixed(1)}s | ${run.caseGroupCount} | ${run.reusedProfileCaseCount} | ${markdownCounters(run.failureReasons)} | ${markdownCounters(run.failureStages)} | ${markdownCounters(run.scoreAttribution ?? [])} | ${markdownSliceScores(run.sliceScores)} | ${markdownCell(run.datasetHash ?? "-")} | ${markdownCell(run.jsonFile ?? "-")} | ${markdownCell(run.markdownFile ?? "-")} | ${run.warningCount}${run.warnings.length ? `: ${markdownListCell(run.warnings)}` : ""} |`,
     ),
     "",
   ].join("\n");

@@ -31,6 +31,8 @@ import {
   runHostCompatibilityGym,
   hashExternalMemoryBenchmarkInput,
   buildStateBenchLearnings,
+  createOpenAICompatibleExternalBenchmarkAnswerer,
+  createOpenAICompatibleExternalBenchmarkJudge,
   prepareStateBenchAgentLearningRun,
   summarizeStateBenchResults,
   parseExternalMemoryBenchmarkDataset,
@@ -171,6 +173,7 @@ Usage:
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
   gmos gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --intelligence-base-url http://127.0.0.1:11434/v1 --intelligence-model llama3.1 --intelligence-embed-model nomic-embed-text --intelligence-api-key-env GMOS_BENCH_API_KEY
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --protocol official-protocol --answerer-base-url http://127.0.0.1:11434/v1 --answerer-model llama3.1
   gmos gym external gains --input-file ./long-memory-cleaned.json --dataset-format longmemeval --reproduction-bundle ./release-evidence/bench-run
   gmos gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format markdown
   gmos gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
@@ -606,6 +609,79 @@ function externalIntelligenceOption(): {
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(concurrency !== undefined ? { concurrency } : {}),
   };
+}
+
+interface CliOpenAICompatibleHookConfig {
+  baseUrl: string;
+  apiKeyEnv?: string | undefined;
+  apiKey?: string | undefined;
+  model: string;
+  timeoutMs?: number | undefined;
+}
+
+function apiKeyFromEnv(apiKeyEnv: string | undefined, label: string): string | undefined {
+  if (apiKeyEnv === undefined) return undefined;
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(apiKeyEnv)) {
+    throw new Error(`${label} must be an environment variable name`);
+  }
+  const apiKey = process.env[apiKeyEnv];
+  if (!apiKey) throw new Error(`${label} is not set: ${apiKeyEnv}`);
+  return apiKey;
+}
+
+function externalAnswererConfigOption(
+  intelligence: ReturnType<typeof externalIntelligenceOption>,
+): CliOpenAICompatibleHookConfig | undefined {
+  const hasAnswererFlag = process.argv.some((arg) => arg.startsWith("--answerer-"));
+  if (!hasAnswererFlag) return undefined;
+  const model = value("--answerer-model");
+  if (!model) {
+    throw new Error("gmos gym external answerer flags require --answerer-model");
+  }
+  const answererBaseUrl = value("--answerer-base-url");
+  const baseUrl = answererBaseUrl ?? intelligence?.baseUrl;
+  if (!baseUrl) {
+    throw new Error("gmos gym external answerer flags require --answerer-base-url or --intelligence-base-url");
+  }
+  const answererApiKeyEnv = value("--answerer-api-key-env");
+  if (answererApiKeyEnv !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(answererApiKeyEnv)) {
+    throw new Error("--answerer-api-key-env must be an environment variable name");
+  }
+  const apiKeyEnv = answererApiKeyEnv ?? (answererBaseUrl === undefined ? intelligence?.apiKeyEnv : undefined);
+  return {
+    baseUrl,
+    model,
+    ...(apiKeyEnv ? { apiKeyEnv, apiKey: apiKeyFromEnv(apiKeyEnv, "External benchmark answerer API key environment variable") } : {}),
+    ...(intelligence?.timeoutMs !== undefined ? { timeoutMs: intelligence.timeoutMs } : {}),
+  };
+}
+
+function externalOfficialJudgeOption(
+  protocol: "deterministic_local" | "official_protocol",
+  intelligence: ReturnType<typeof externalIntelligenceOption>,
+  answererConfig: CliOpenAICompatibleHookConfig | undefined,
+) {
+  if (protocol !== "official_protocol") return undefined;
+  const config = intelligence
+    ? {
+        baseUrl: intelligence.baseUrl,
+        model: intelligence.model,
+        ...(intelligence.apiKeyEnv
+          ? {
+              apiKeyEnv: intelligence.apiKeyEnv,
+              apiKey: apiKeyFromEnv(
+                intelligence.apiKeyEnv,
+                "External benchmark official judge API key environment variable",
+              ),
+            }
+          : {}),
+        ...(intelligence.timeoutMs !== undefined ? { timeoutMs: intelligence.timeoutMs } : {}),
+      }
+    : answererConfig;
+  if (!config) {
+    throw new Error("gmos gym external --protocol official-protocol requires an OpenAI-compatible judge endpoint via --intelligence-base-url/--intelligence-model or --answerer-base-url/--answerer-model");
+  }
+  return createOpenAICompatibleExternalBenchmarkJudge(config);
 }
 
 function listStatusOption(): LowLevelListMemoriesInput["status"] {
@@ -1802,9 +1878,14 @@ async function main(): Promise<void> {
       throw new Error("--require-convergence requires reconstruct mode for every external benchmark case");
     }
     const protocol = externalProtocolOption();
-    if (protocol === "official_protocol") {
-      throw new Error("gmos gym external --protocol official-protocol requires a host-provided SDK judge callback; the CLI runner cannot provide one");
+    const answererConfig = externalAnswererConfigOption(intelligence);
+    if (answererConfig && protocol !== "official_protocol") {
+      throw new Error("gmos gym external --answerer-* flags require --protocol official-protocol");
     }
+    const answerer = answererConfig
+      ? createOpenAICompatibleExternalBenchmarkAnswerer(answererConfig)
+      : undefined;
+    const judge = externalOfficialJudgeOption(protocol, intelligence, answererConfig);
     const report = await runExternalMemoryBenchmark({
       cases: requireConvergence
         ? cases.map((benchmarkCase) => ({ ...benchmarkCase, requireConvergence: true }))
@@ -1826,6 +1907,8 @@ async function main(): Promise<void> {
       failureSampleLimit: nonNegativeIntegerOption("--failure-sample-limit", 20),
       diagnosticsLevel: diagnosticsLevelOption(),
       protocol,
+      ...(judge ? { judge } : {}),
+      ...(answerer ? { answerer } : {}),
       ingestMode,
       ...(intelligence ? { intelligence } : {}),
       ...(maintainPhases ? { maintainPhases } : {}),
@@ -1847,7 +1930,10 @@ async function main(): Promise<void> {
         outputDir: reproductionBundle,
         report,
         command: ["gmos", ...process.argv.slice(2)],
-        envVarNames: values("--intelligence-api-key-env"),
+        envVarNames: [
+          ...values("--intelligence-api-key-env"),
+          ...values("--answerer-api-key-env"),
+        ],
       });
     }
     printReport(report, renderExternalMemoryBenchmarkMarkdown(report));
