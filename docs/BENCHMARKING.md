@@ -216,6 +216,40 @@ gmos gym external \
   --progress
 ```
 
+Paid smoke workflow:
+
+```bash
+gmos gym external \
+  --input-file ./long-memory-cleaned.json \
+  --dataset-format longmemeval \
+  --protocol official-protocol \
+  --ingest-mode message \
+  --max-cases 5 \
+  --results-jsonl ./paid-smoke.results.jsonl \
+  --json-file ./paid-smoke.json \
+  --markdown-file ./paid-smoke.md \
+  --progress
+```
+
+Start with a slice. `--max-cases <n>` runs the first `n` parsed cases,
+`--case-offset <n>` skips the first `n` parsed cases, and
+`--case-ids <id,id>` selects exact case ids. Reports and manifests record the
+slice as `slice.sliceSpec`, `totalDatasetCases`, and `executedCases`; markdown
+headers show `SLICE n/m`. A sliced or interrupted run is partial and must not be
+published as a full benchmark result.
+
+Use `--results-jsonl <file>` on paid runs. The CLI appends one JSON line as
+each case completes, including the generated answer, judge result/rationale,
+timing, retrieved-memory count, extraction stats, and official failure
+attribution. If the process is interrupted after case 16, the first 16 case
+artifacts are still on disk.
+
+SIGINT/SIGTERM on `gmos gym external` stops dispatching new work, lets the
+current in-flight case finish through the normal timeout path, then writes the
+same JSON, markdown, and reproduction-bundle artifacts with `partial: true`.
+The suite runner accepts partial reports, but marks the suite
+`benchmarkPass=false` so partial output cannot be mistaken for a full run.
+
 ## Running With The Intelligence Layer
 
 `gmos gym external` can attach the opt-in `@ghast/memory/intelligence` hook
@@ -327,6 +361,18 @@ Claim boundary: intelligence-backed `deterministic_local` runs are still local
 adapter scores. Judge-only official runs are still not leaderboard-comparable.
 Only reader+judge runs may be described as official-protocol comparable, and
 only when the manifest says `officialProtocol=host_reader_and_judge`.
+
+Before scaling a paid reader+judge run, read the markdown attribution table.
+Official failures are bucketed deterministically:
+
+- `answerer_or_judge_stage`: gold terms were present in sanitized context, but
+  the reader/judge result was wrong.
+- `retrieval_stage`: gold terms were in raw input and stored memory, but absent
+  from the sanitized context.
+- `extraction_stage`: message-mode only; gold terms were in raw input but absent
+  from all stored memories for the case group.
+- `input_stage`: gold terms were absent from raw input, so the reader would have
+  to synthesize rather than recall.
 
 ## Adapter Baseline Archives
 

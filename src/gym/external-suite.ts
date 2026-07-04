@@ -43,6 +43,9 @@ export interface ExternalMemoryBenchmarkSuiteRunConfig {
   failureSampleLimit?: number | undefined;
   diagnosticsLevel?: ExternalMemoryBenchmarkDiagnosticsLevel | undefined;
   protocol?: ExternalMemoryBenchmarkProtocol | undefined;
+  maxCases?: number | undefined;
+  caseOffset?: number | undefined;
+  caseIds?: string[] | undefined;
 }
 
 export interface ExternalMemoryBenchmarkSuiteDocument {
@@ -62,7 +65,11 @@ export interface ExternalMemoryBenchmarkSuiteRunSummary {
   startedAt: string;
   finishedAt: string;
   durationMs: number;
+  partial: boolean;
   caseCount: number;
+  totalDatasetCases: number;
+  selectedCases: number;
+  executedCases: number;
   passedCount: number;
   failedCount: number;
   score: number;
@@ -83,6 +90,7 @@ export interface ExternalMemoryBenchmarkSuiteRunSummary {
   failureReasons: ExternalMemoryBenchmarkCounter[];
   failureStages: ExternalMemoryBenchmarkCounter[];
   scoreAttribution: ExternalMemoryBenchmarkCounter[];
+  officialFailureAttribution: ExternalMemoryBenchmarkCounter[];
   sliceScores?: ExternalMemoryBenchmarkSliceScore[] | undefined;
   jsonFile?: string | undefined;
   markdownFile?: string | undefined;
@@ -92,6 +100,7 @@ export interface ExternalMemoryBenchmarkSuiteResult {
   schema: "gmos.external_benchmark_suite.v1";
   pass: boolean;
   benchmarkPass: boolean;
+  partial: boolean;
   runCount: number;
   passedRunCount: number;
   failedRunCount: number;
@@ -104,6 +113,8 @@ export interface ExternalMemoryBenchmarkSuiteResult {
   reachableScoreWeighted: number | null;
   lexicalCeilingWeighted: number | null;
   totalCaseCount: number;
+  totalDatasetCases: number;
+  totalExecutedCases: number;
   totalPassedCount: number;
   totalNormalizedEvidencePassedCount: number;
   totalReachableCount: number;
@@ -114,6 +125,7 @@ export interface ExternalMemoryBenchmarkSuiteResult {
   totalFailureReasons: ExternalMemoryBenchmarkCounter[];
   totalFailureStages: ExternalMemoryBenchmarkCounter[];
   totalScoreAttribution: ExternalMemoryBenchmarkCounter[];
+  totalOfficialFailureAttribution: ExternalMemoryBenchmarkCounter[];
   runManifest: {
     startedAt: string;
     finishedAt: string;
@@ -130,6 +142,7 @@ export interface ExternalMemoryBenchmarkSuiteResult {
     ceilingMetrics: ExternalMemoryBenchmarkCeilingMetrics | null;
     protocols: ExternalMemoryBenchmarkProtocol[];
     deterministicOnly: boolean;
+    partial: boolean;
   };
   runs: ExternalMemoryBenchmarkSuiteRunSummary[];
 }
@@ -180,6 +193,14 @@ function optionalBoolean(value: unknown, label: string): boolean | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "boolean") throw new Error(`${label} must be a boolean`);
   return value;
+}
+
+function optionalStringArray(value: unknown, label: string): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || !entry.trim())) {
+    throw new Error(`${label} must be a non-empty string array`);
+  }
+  return value.map((entry) => entry.trim());
 }
 
 function datasetAdapter(value: unknown, label: string): ExternalMemoryBenchmarkDatasetAdapter | undefined {
@@ -243,6 +264,9 @@ function parseRunConfig(value: unknown, label: string): ExternalMemoryBenchmarkS
     failureSampleLimit: optionalNonNegativeInteger(record.failureSampleLimit, `${label}.failureSampleLimit`),
     diagnosticsLevel: diagnosticsLevelValue(record.diagnosticsLevel, `${label}.diagnosticsLevel`),
     protocol: protocolValue(record.protocol, `${label}.protocol`),
+    maxCases: optionalPositiveInteger(record.maxCases, `${label}.maxCases`),
+    caseOffset: optionalNonNegativeInteger(record.caseOffset, `${label}.caseOffset`),
+    caseIds: optionalStringArray(record.caseIds, `${label}.caseIds`),
   };
 }
 
@@ -280,6 +304,9 @@ function parseDefaults(value: unknown): ExternalMemoryBenchmarkSuiteDocument["de
       record.protocol,
       "External benchmark suite defaults.protocol",
     ),
+    maxCases: optionalPositiveInteger(record.maxCases, "External benchmark suite defaults.maxCases"),
+    caseOffset: optionalNonNegativeInteger(record.caseOffset, "External benchmark suite defaults.caseOffset"),
+    caseIds: optionalStringArray(record.caseIds, "External benchmark suite defaults.caseIds"),
   };
 }
 
@@ -342,6 +369,9 @@ function effectiveRun(
     failureSampleLimit: run.failureSampleLimit ?? defaults?.failureSampleLimit,
     diagnosticsLevel: run.diagnosticsLevel ?? defaults?.diagnosticsLevel,
     protocol: run.protocol ?? defaults?.protocol ?? "deterministic_local",
+    maxCases: run.maxCases ?? defaults?.maxCases,
+    caseOffset: run.caseOffset ?? defaults?.caseOffset,
+    caseIds: run.caseIds ?? defaults?.caseIds,
   };
 }
 
@@ -396,6 +426,9 @@ function reportOptions(input: {
     ...(input.run.failureSampleLimit !== undefined ? { failureSampleLimit: input.run.failureSampleLimit } : {}),
     ...(input.run.diagnosticsLevel !== undefined ? { diagnosticsLevel: input.run.diagnosticsLevel } : {}),
     ...(input.run.protocol !== undefined ? { protocol: input.run.protocol } : {}),
+    ...(input.run.maxCases !== undefined ? { maxCases: input.run.maxCases } : {}),
+    ...(input.run.caseOffset !== undefined ? { caseOffset: input.run.caseOffset } : {}),
+    ...(input.run.caseIds !== undefined ? { caseIds: input.run.caseIds } : {}),
     ...(input.judge !== undefined ? { judge: input.judge } : {}),
     ...(requireConvergence ? { requireConvergence: true } : {}),
   };
@@ -454,7 +487,11 @@ export async function runExternalMemoryBenchmarkSuite(
       startedAt: report.runManifest.startedAt,
       finishedAt: report.runManifest.finishedAt,
       durationMs: durationMs(report.runManifest.startedAt, report.runManifest.finishedAt),
+      partial: report.partial,
       caseCount: report.caseCount,
+      totalDatasetCases: report.runManifest.slice.totalDatasetCases,
+      selectedCases: report.runManifest.slice.selectedCases,
+      executedCases: report.runManifest.slice.executedCases,
       passedCount: report.passedCount,
       failedCount: report.failedCount,
       score: report.score,
@@ -475,12 +512,14 @@ export async function runExternalMemoryBenchmarkSuite(
       failureReasons: report.summary.failureReasons,
       failureStages: report.summary.failureStages ?? [],
       scoreAttribution: report.summary.scoreAttribution,
+      officialFailureAttribution: report.summary.officialFailureAttribution,
       sliceScores: report.summary.sliceScores,
     };
     runs.push(summary);
     options.onRunResult?.(summary);
   }
-  const benchmarkPass = runs.every((run) => run.pass);
+  const partial = runs.some((run) => run.partial);
+  const benchmarkPass = runs.every((run) => run.pass) && !partial;
   const scoreMean = runs.length ? runs.reduce((sum, run) => sum + run.score, 0) / runs.length : 0;
   const strictScoreMean = runs.length
     ? runs.reduce((sum, run) => sum + run.strictScore, 0) / runs.length
@@ -489,6 +528,8 @@ export async function runExternalMemoryBenchmarkSuite(
     ? runs.reduce((sum, run) => sum + run.normalizedEvidenceScore, 0) / runs.length
     : 0;
   const totalCaseCount = runs.reduce((sum, run) => sum + run.caseCount, 0);
+  const totalDatasetCases = runs.reduce((sum, run) => sum + run.totalDatasetCases, 0);
+  const totalExecutedCases = runs.reduce((sum, run) => sum + run.executedCases, 0);
   const totalPassedCount = runs.reduce((sum, run) => sum + run.passedCount, 0);
   const totalNormalizedEvidencePassedCount = runs.reduce(
     (sum, run) => sum + run.normalizedEvidencePassedCount,
@@ -511,6 +552,9 @@ export async function runExternalMemoryBenchmarkSuite(
   const totalFailureReasons = aggregateCounters(runs.map((run) => run.failureReasons));
   const totalFailureStages = aggregateCounters(runs.map((run) => run.failureStages));
   const totalScoreAttribution = aggregateCounters(runs.map((run) => run.scoreAttribution));
+  const totalOfficialFailureAttribution = aggregateCounters(
+    runs.map((run) => run.officialFailureAttribution),
+  );
   const firstRunManifest = Object.values(reports)[0]?.runManifest;
   const protocols = [...new Set(runs.map((run) => run.protocol))].sort();
   const deterministicOnly = protocols.every((protocol) => protocol === "deterministic_local");
@@ -531,6 +575,7 @@ export async function runExternalMemoryBenchmarkSuite(
       schema: "gmos.external_benchmark_suite.v1",
       pass: !failOnBenchmarkFail || benchmarkPass,
       benchmarkPass,
+      partial,
       runCount: runs.length,
       passedRunCount: runs.filter((run) => run.pass).length,
       failedRunCount: runs.filter((run) => !run.pass).length,
@@ -545,6 +590,8 @@ export async function runExternalMemoryBenchmarkSuite(
       reachableScoreWeighted: ceilingMetrics?.reachableScore ?? null,
       lexicalCeilingWeighted: ceilingMetrics?.lexicalCeiling ?? null,
       totalCaseCount,
+      totalDatasetCases,
+      totalExecutedCases,
       totalPassedCount,
       totalNormalizedEvidencePassedCount,
       totalReachableCount,
@@ -555,6 +602,7 @@ export async function runExternalMemoryBenchmarkSuite(
       totalFailureReasons,
       totalFailureStages,
       totalScoreAttribution,
+      totalOfficialFailureAttribution,
       runManifest: {
         startedAt,
         finishedAt,
@@ -571,6 +619,7 @@ export async function runExternalMemoryBenchmarkSuite(
         ceilingMetrics,
         protocols,
         deterministicOnly,
+        partial,
       },
       runs,
     },

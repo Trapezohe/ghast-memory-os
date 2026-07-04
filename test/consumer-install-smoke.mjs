@@ -1252,6 +1252,10 @@ try {
           totalFailureReasons: [],
           totalFailureStages: [],
           totalScoreAttribution: [],
+          partial: false,
+          totalDatasetCases: 0,
+          totalExecutedCases: 0,
+          totalOfficialFailureAttribution: [],
           runManifest: {
             startedAt: "",
             finishedAt: "",
@@ -1287,6 +1291,7 @@ try {
             ceilingMetrics: null,
             protocols: ["deterministic_local"],
             deterministicOnly: true,
+            partial: false,
           },
           runs: [],
         },

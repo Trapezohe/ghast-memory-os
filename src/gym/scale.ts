@@ -269,7 +269,9 @@ export async function runMemoryScaleBenchmark(
   }
   const failedOperations = results.flatMap((row) => {
     const failures: MemoryScaleFailedOperation[] = [];
-    if (row.ingest.latency.p95Ms > ingestP95Ms) {
+    // Ingest gates need >= 100 samples: below that a single GC/scheduler pause
+    // dominates the p95 and the quintile ratio; smaller sizes report without gating.
+    if (row.size >= 100 && row.ingest.latency.p95Ms > ingestP95Ms) {
       failures.push(scaleFailure({
         size: row.size,
         operation: "ingest",
@@ -278,8 +280,6 @@ export async function runMemoryScaleBenchmark(
         threshold: ingestP95Ms,
       }));
     }
-    // Quintiles need >= 20 samples for the ratio to measure growth instead of
-    // GC/scheduler noise; smaller sizes still report the ratio without gating.
     if (row.size >= 100 && row.ingest.lastToFirstRatio > ingestLastToFirstFactor) {
       failures.push(scaleFailure({
         size: row.size,

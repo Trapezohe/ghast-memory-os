@@ -20720,8 +20720,93 @@ assert.equal((externalBenchmark.cases[0]?.scoringRuntimeMs ?? -1) >= 0, true);
 assert.equal((externalBenchmark.cases[0]?.taxonomyRuntimeMs ?? -1) >= 0, true);
 assert.equal((externalBenchmark.cases[0]?.wideBudgetDiagnosticRuntimeMs ?? -1) >= 0, true);
 assert.equal(typeof externalBenchmark.cases[0]?.diagnostics.evidenceConvergenceScore, "number");
+assert.equal(externalBenchmark.partial, false);
+assert.equal(externalBenchmark.runManifest.dataset.totalDatasetCases, 9);
+assert.equal(externalBenchmark.runManifest.dataset.executedCases, 9);
+assert.equal(externalBenchmark.runManifest.execution.executedCases, 9);
+assert.equal(externalBenchmark.runManifest.execution.partial, false);
+assert.equal(externalBenchmark.runManifest.execution.interrupted, false);
+assert.equal(externalBenchmark.runManifest.slice.partial, false);
+assert.deepEqual(externalBenchmark.runManifest.slice.sliceSpec, {
+  maxCases: null,
+  caseOffset: 0,
+  caseIds: [],
+});
+assert.equal(externalBenchmark.cases[0]?.officialFailureAttribution, null);
+assert.equal((externalBenchmark.cases[0]?.extractedMemoryCount ?? -1) >= 0, true);
+assert.equal((externalBenchmark.cases[0]?.extractionWindowCount ?? -1) >= 0, true);
+assert.equal((externalBenchmark.cases[0]?.extractionCallCount ?? -1) >= 0, true);
+assert.equal((externalBenchmark.cases[0]?.extractionFailureCount ?? -1) >= 0, true);
+assert.deepEqual(externalBenchmark.summary.officialFailureAttribution, []);
 const externalHash = hashExternalMemoryBenchmarkInput(externalBenchmarkJsonl);
 assert.match(externalHash, /^sha256:[a-f0-9]{64}$/);
+const externalSlicedBenchmark = await runExternalMemoryBenchmark({
+  cases: externalCases,
+  maxCases: 2,
+  caseOffset: 1,
+});
+assert.equal(externalSlicedBenchmark.partial, true);
+assert.equal(externalSlicedBenchmark.caseCount, 2);
+assert.equal(externalSlicedBenchmark.runManifest.dataset.totalDatasetCases, 9);
+assert.equal(externalSlicedBenchmark.runManifest.dataset.executedCases, 2);
+assert.equal(externalSlicedBenchmark.runManifest.slice.selectedCases, 2);
+assert.equal(externalSlicedBenchmark.runManifest.slice.executedCases, 2);
+assert.deepEqual(externalSlicedBenchmark.runManifest.slice.sliceSpec, {
+  maxCases: 2,
+  caseOffset: 1,
+  caseIds: [],
+});
+assert.deepEqual(
+  externalSlicedBenchmark.cases.map((entry) => entry.id),
+  externalCases.slice(1, 3).map((entry) => entry.id),
+);
+assert.match(renderExternalMemoryBenchmarkMarkdown(externalSlicedBenchmark), /SLICE 2\/9/);
+const externalCaseIdsBenchmark = await runExternalMemoryBenchmark({
+  cases: externalCases,
+  caseIds: [externalCases[2]!.id!, externalCases[0]!.id!],
+});
+assert.deepEqual(
+  externalCaseIdsBenchmark.cases.map((entry) => entry.id),
+  [externalCases[2]!.id, externalCases[0]!.id],
+);
+assert.deepEqual(externalCaseIdsBenchmark.runManifest.slice.sliceSpec.caseIds, [
+  externalCases[2]!.id,
+  externalCases[0]!.id,
+]);
+await assert.rejects(
+  () => runExternalMemoryBenchmark({ cases: externalCases, caseIds: ["missing-case-id"] }),
+  /case id was not found/,
+);
+const interruptedAbort = new AbortController();
+const interruptedBenchmark = await runExternalMemoryBenchmark({
+  cases: externalCases.slice(0, 3),
+  concurrency: 1,
+  abortSignal: interruptedAbort.signal,
+  onCaseResult: () => interruptedAbort.abort(),
+});
+assert.equal(interruptedBenchmark.partial, true);
+assert.equal(interruptedBenchmark.caseCount, 1);
+assert.equal(interruptedBenchmark.runManifest.dataset.totalDatasetCases, 3);
+assert.equal(interruptedBenchmark.runManifest.execution.interrupted, true);
+assert.equal(interruptedBenchmark.runManifest.execution.partial, true);
+assert.match(renderExternalMemoryBenchmarkMarkdown(interruptedBenchmark), /SLICE 1\/3/);
+const interruptedBundleDir = path.join(tmp, "interrupted-external-reproduction-bundle");
+const interruptedBundle = writeExternalMemoryBenchmarkReproductionBundle({
+  outputDir: interruptedBundleDir,
+  report: interruptedBenchmark,
+  command: ["gmos", "gym", "external", "--max-cases", "3"],
+});
+for (const file of [
+  interruptedBundle.manifestFile,
+  interruptedBundle.resultsJsonFile,
+  interruptedBundle.resultsMarkdownFile,
+  interruptedBundle.failureSamplesFile,
+  interruptedBundle.reproduceFile,
+]) {
+  assert.equal(existsSync(file), true);
+}
+assert.equal(JSON.parse(readFileSync(interruptedBundle.resultsJsonFile, "utf8")).partial, true);
+assert.match(readFileSync(interruptedBundle.reproduceFile, "utf8"), /Slice: partial executed=1\/3/);
 const externalSecretLikeSkipBenchmark = await runExternalMemoryBenchmark({
   cases: [{
     id: "external-secret-like-memory-skip",
@@ -20957,6 +21042,90 @@ assert.deepEqual(officialAnswererFailureBenchmark.cases[0]?.failureReasons, [
   "official_answerer_failed",
 ]);
 assert.match(officialAnswererFailureBenchmark.cases[0]?.answererError ?? "", /planned answerer failure/);
+const officialAttributionBenchmark = await runExternalMemoryBenchmark({
+  protocol: "official_protocol",
+  ingestMode: "message",
+  intelligence: {
+    extractor: {
+      name: "empty-test-extractor",
+      extract() {
+        return [];
+      },
+    },
+  },
+  answerer: {
+    name: "wrong-attribution-reader",
+    answer() {
+      return "wrong";
+    },
+  },
+  judge: {
+    name: "false-attribution-judge",
+    judge() {
+      return { correct: false, rationale: "planned wrong answer" };
+    },
+  },
+  cases: [
+    {
+      id: "official-answerer-stage",
+      events: [{ type: "memory", kind: "fact", content: "Official attribution marker is AnswerStage." }],
+      question: "What is the official attribution marker?",
+      expectedAll: ["AnswerStage"],
+    },
+    {
+      id: "official-retrieval-stage",
+      events: [{
+        type: "memory",
+        kind: "fact",
+        sensitivity: "sensitive",
+        content: "Official attribution sensitive marker is RetrievalStage.",
+      }],
+      question: "What is the official attribution sensitive marker?",
+      expectedAll: ["RetrievalStage"],
+    },
+    {
+      id: "official-extraction-stage",
+      events: [{ type: "message", content: "Official attribution message marker is ExtractionStage." }],
+      question: "What is the official attribution message marker?",
+      expectedAll: ["ExtractionStage"],
+    },
+    {
+      id: "official-input-stage",
+      events: [{ type: "memory", kind: "fact", content: "The marker has color blue and codename comet." }],
+      question: "What is the official synthesized marker?",
+      expectedAny: ["Blue Comet"],
+    },
+  ],
+});
+assert.equal(officialAttributionBenchmark.pass, false);
+assert.deepEqual(
+  officialAttributionBenchmark.cases.map((entry) => entry.officialFailureAttribution?.stage),
+  [
+    "answerer_or_judge_stage",
+    "retrieval_stage",
+    "extraction_stage",
+    "input_stage",
+  ],
+);
+assert.deepEqual(officialAttributionBenchmark.summary.officialFailureAttribution, [
+  { name: "answerer_or_judge_stage", count: 1 },
+  { name: "extraction_stage", count: 1 },
+  { name: "input_stage", count: 1 },
+  { name: "retrieval_stage", count: 1 },
+]);
+assert.equal(
+  officialAttributionBenchmark.cases.find((entry) => entry.id === "official-extraction-stage")
+    ?.extractedMemoryCount,
+  0,
+);
+assert.match(
+  renderExternalMemoryBenchmarkMarkdown(officialAttributionBenchmark),
+  /Official failure attribution:/,
+);
+assert.match(
+  renderExternalMemoryBenchmarkMarkdown(officialAttributionBenchmark),
+  /\| extraction_stage \| 1 \|/,
+);
 const externalCeilingMixedBenchmark = await runExternalMemoryBenchmark({
   diagnosticsLevel: "basic",
   cases: [
@@ -21858,6 +22027,32 @@ const externalSuiteGateExecution = await runExternalMemoryBenchmarkSuite({
   failOnBenchmarkFail: true,
 });
 assert.equal(externalSuiteGateExecution.result.pass, false);
+const externalPartialSuiteFile = path.join(tmp, "external-partial-suite.json");
+writeFileSync(
+  externalPartialSuiteFile,
+  JSON.stringify({
+    schema: "gmos.external_benchmark_suite.v1",
+    runs: [{
+      id: "partial",
+      inputFile: path.basename(externalBenchmarkFile),
+      maxCases: 1,
+    }],
+  }),
+);
+const externalPartialSuiteExecution = await runExternalMemoryBenchmarkSuite({
+  suite: parseExternalMemoryBenchmarkSuite(readFileSync(externalPartialSuiteFile, "utf8")),
+  suiteFile: externalPartialSuiteFile,
+});
+assert.equal(externalPartialSuiteExecution.result.pass, true);
+assert.equal(externalPartialSuiteExecution.result.benchmarkPass, false);
+assert.equal(externalPartialSuiteExecution.result.partial, true);
+assert.equal(externalPartialSuiteExecution.result.totalDatasetCases, 9);
+assert.equal(externalPartialSuiteExecution.result.totalExecutedCases, 1);
+assert.equal(externalPartialSuiteExecution.result.runManifest.partial, true);
+assert.equal(externalPartialSuiteExecution.result.runs[0]?.partial, true);
+assert.equal(externalPartialSuiteExecution.result.runs[0]?.totalDatasetCases, 9);
+assert.equal(externalPartialSuiteExecution.result.runs[0]?.executedCases, 1);
+assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(externalPartialSuiteExecution.result), /PARTIAL/);
 assert.throws(
   () =>
     parseExternalMemoryBenchmarkSuite(
@@ -23755,6 +23950,64 @@ assert.equal(JSON.parse(readFileSync(path.join(cliExternalReproductionBundleDir,
 assert.deepEqual(JSON.parse(readFileSync(path.join(cliExternalReproductionBundleDir, "failure-samples.json"), "utf8")), []);
 assert.match(readFileSync(path.join(cliExternalReproductionBundleDir, "results.md"), "utf8"), /Failure sample limit: 3/);
 assert.match(readFileSync(path.join(cliExternalReproductionBundleDir, "REPRODUCE.md"), "utf8"), /gmos gym external/);
+const cliExternalResultsJsonlFile = path.join(tmp, "cli-external-results.jsonl");
+const cliExternalSliced = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--format",
+    "json",
+    "--protocol",
+    "deterministic-local",
+    "--max-cases",
+    "2",
+    "--case-offset",
+    "1",
+    "--results-jsonl",
+    cliExternalResultsJsonlFile,
+    "--concurrency",
+    "1",
+    "--diagnostics-level",
+    "basic",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliExternalSliced.status, 0, cliExternalSliced.stderr);
+const cliExternalSlicedJson = JSON.parse(cliExternalSliced.stdout) as {
+  partial?: boolean;
+  caseCount?: number;
+  runManifest?: {
+    dataset?: { totalDatasetCases?: number; executedCases?: number };
+    slice?: { sliceSpec?: { maxCases?: number | null; caseOffset?: number; caseIds?: string[] } };
+  };
+  cases?: Array<{ id?: string; officialFailureAttribution?: unknown; generatedAnswer?: string }>;
+};
+const cliExternalJsonlLines = readFileSync(cliExternalResultsJsonlFile, "utf8")
+  .trim()
+  .split(/\r?\n/u)
+  .map((line) => JSON.parse(line) as { id?: string; durationMs?: number; officialFailureAttribution?: unknown });
+assert.equal(cliExternalSlicedJson.partial, true);
+assert.equal(cliExternalSlicedJson.caseCount, 2);
+assert.equal(cliExternalSlicedJson.runManifest?.dataset?.totalDatasetCases, 9);
+assert.equal(cliExternalSlicedJson.runManifest?.dataset?.executedCases, 2);
+assert.deepEqual(cliExternalSlicedJson.runManifest?.slice?.sliceSpec, {
+  maxCases: 2,
+  caseOffset: 1,
+  caseIds: [],
+});
+assert.deepEqual(
+  cliExternalJsonlLines.map((entry) => entry.id),
+  cliExternalSlicedJson.cases?.map((entry) => entry.id),
+);
+assert.equal(cliExternalJsonlLines.length, 2);
+assert.equal(typeof cliExternalJsonlLines[0]?.durationMs, "number");
+assert.equal(cliExternalJsonlLines[0]?.officialFailureAttribution, null);
 const cliExternalOfficialProtocol = spawnSync(
   process.execPath,
   [

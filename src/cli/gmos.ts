@@ -1,6 +1,15 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import path from "node:path";
 
 import { createMemoryOS } from "../runtime/create-memory-os.js";
@@ -172,6 +181,7 @@ Usage:
   gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --protocol deterministic-local --require-convergence --include-sensitive --temporal-metadata
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
   gmos gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --max-cases 5 --results-jsonl ./paid-smoke.results.jsonl
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --extraction-window 12 --intelligence-base-url http://127.0.0.1:11434/v1 --intelligence-model llama3.1 --intelligence-embed-model nomic-embed-text --intelligence-embed-dimensions 768 --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-disable-thinking
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --protocol official-protocol --answerer-base-url http://127.0.0.1:11434/v1 --answerer-model llama3.1 --answerer-timeout-ms 90000 --answerer-disable-thinking
   gmos gym external gains --input-file ./long-memory-cleaned.json --dataset-format longmemeval --reproduction-bundle ./release-evidence/bench-run
@@ -200,6 +210,18 @@ function writeOutputFileIfRequested(optionName: string, content: string): void {
   const resolved = path.resolve(process.cwd(), outputFile);
   mkdirSync(path.dirname(resolved), { recursive: true });
   writeFileSync(resolved, content);
+}
+
+function appendJsonLine(filePath: string, value: unknown): void {
+  const resolved = path.resolve(process.cwd(), filePath);
+  mkdirSync(path.dirname(resolved), { recursive: true });
+  const fd = openSync(resolved, "a");
+  try {
+    writeSync(fd, `${JSON.stringify(value)}\n`);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function printReport(json: unknown, markdown: string): void {
@@ -574,6 +596,26 @@ function positiveIntegerOptionValue(name: string): number | undefined {
     throw new Error(`${name} must be a positive integer`);
   }
   return parsed;
+}
+
+function nonNegativeIntegerOptionValue(name: string): number | undefined {
+  const raw = value(name);
+  if (raw === undefined) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`${name} must be a non-negative integer`);
+  }
+  return parsed;
+}
+
+function commaSeparatedStringOption(name: string): string[] | undefined {
+  const raw = value(name);
+  if (raw === undefined) return undefined;
+  const entries = raw.split(",").map((entry) => entry.trim());
+  if (entries.length === 0 || entries.some((entry) => entry.length === 0)) {
+    throw new Error(`${name} must be a comma-separated list`);
+  }
+  return entries;
 }
 
 function externalIntelligenceOption(): {
@@ -1899,6 +1941,21 @@ async function main(): Promise<void> {
       ? createOpenAICompatibleExternalBenchmarkAnswerer(answererConfig)
       : undefined;
     const judge = externalOfficialJudgeOption(protocol, intelligence, answererConfig);
+    const resultsJsonl = strictOptionValue("--results-jsonl");
+    const maxCases = positiveIntegerOptionValue("--max-cases");
+    const caseOffset = nonNegativeIntegerOptionValue("--case-offset");
+    const caseIds = commaSeparatedStringOption("--case-ids");
+    const abortController = new AbortController();
+    let interrupted = false;
+    const handleInterrupt = (signal: NodeJS.Signals): void => {
+      interrupted = true;
+      if (!abortController.signal.aborted) {
+        console.error(`[gmos external] ${signal} received; finishing in-flight case work and writing partial artifacts`);
+        abortController.abort();
+      }
+    };
+    process.once("SIGINT", handleInterrupt);
+    process.once("SIGTERM", handleInterrupt);
     const report = await runExternalMemoryBenchmark({
       cases: requireConvergence
         ? cases.map((benchmarkCase) => ({ ...benchmarkCase, requireConvergence: true }))
@@ -1921,19 +1978,27 @@ async function main(): Promise<void> {
       failureSampleLimit: nonNegativeIntegerOption("--failure-sample-limit", 20),
       diagnosticsLevel: diagnosticsLevelOption(),
       protocol,
+      ...(maxCases !== undefined ? { maxCases } : {}),
+      ...(caseOffset !== undefined ? { caseOffset } : {}),
+      ...(caseIds !== undefined ? { caseIds } : {}),
+      abortSignal: abortController.signal,
       ...(judge ? { judge } : {}),
       ...(answerer ? { answerer } : {}),
       ingestMode,
       ...(intelligence ? { intelligence } : {}),
       ...(maintainPhases ? { maintainPhases } : {}),
-      ...(has("--progress")
+      ...(has("--progress") || resultsJsonl
         ? {
             onCaseGroupSetup: (progress) => {
-              console.error(
-                `[gmos external] setup group=${progress.groupKey} events=${progress.eventCount} windows=${progress.extractionWindowCount} extractionCalls=${progress.extractionCallCount} ingestMs=${progress.ingestDurationMs}`,
-              );
+              if (has("--progress")) {
+                console.error(
+                  `[gmos external] setup group=${progress.groupKey} events=${progress.eventCount} memories=${progress.extractedMemoryCount} windows=${progress.extractionWindowCount} extractionCalls=${progress.extractionCallCount} extractionFailures=${progress.extractionFailureCount} ingestMs=${progress.ingestDurationMs}`,
+                );
+              }
             },
             onCaseResult: (progress) => {
+              if (resultsJsonl) appendJsonLine(resultsJsonl, progress.result);
+              if (!has("--progress")) return;
               const status = progress.pass ? "pass" : "fail";
               console.error(
                 `[gmos external] ${progress.completedCount}/${progress.totalCount} ${status} case=${progress.caseId} durationMs=${progress.durationMs} passed=${progress.passedCount} failed=${progress.failedCount}`,
@@ -1942,6 +2007,9 @@ async function main(): Promise<void> {
           }
         : {}),
       ...(requireConvergence ? { requireConvergence: true } : {}),
+    }).finally(() => {
+      process.removeListener("SIGINT", handleInterrupt);
+      process.removeListener("SIGTERM", handleInterrupt);
     });
     const reproductionBundle = strictOptionValue("--reproduction-bundle");
     if (reproductionBundle) {
@@ -1956,7 +2024,11 @@ async function main(): Promise<void> {
       });
     }
     printReport(report, renderExternalMemoryBenchmarkMarkdown(report));
-    if (!report.pass) process.exitCode = 1;
+    if (interrupted || report.runManifest.execution.interrupted) {
+      process.exitCode = 130;
+    } else if (!report.pass) {
+      process.exitCode = 1;
+    }
     return;
   }
 

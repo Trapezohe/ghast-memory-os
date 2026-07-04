@@ -999,6 +999,8 @@ Important report and option types include `MemoryGymResult`,
 `ExternalMemoryBenchmarkJudgeResult`,
 `ExternalMemoryBenchmarkJudgeProvenance`,
 `ExternalMemoryBenchmarkAnswererProvenance`,
+`ExternalMemoryBenchmarkSliceSpec`,
+`ExternalMemoryBenchmarkOfficialFailureAttribution`,
 `ExternalMemoryBenchmarkSuiteResult`, and
 `ExternalMemoryBenchmarkSuiteExecution`.
 
@@ -1010,6 +1012,9 @@ import { runExternalMemoryBenchmark } from "@ghast/memory/gym";
 const localReport = await runExternalMemoryBenchmark({
   cases,
   protocol: "deterministic_local",
+  maxCases: 5,
+  caseOffset: 0,
+  caseIds: ["case-a", "case-b"],
 });
 
 const officialReport = await runExternalMemoryBenchmark({
@@ -1053,6 +1058,24 @@ With an answerer, the answerer callback receives only `question` and sanitized
 profile ids, store handles, or reconstruction diagnostics. The judge then scores
 the generated answer. This is `officialProtocol=host_reader_and_judge`, and
 generated answers are recorded per case with a bounded length.
+
+External benchmark slicing options:
+
+- `maxCases`: positive integer. Runs the first `n` cases after adapter parsing
+  and optional case-id selection.
+- `caseOffset`: non-negative integer. Skips that many parsed cases before
+  applying `maxCases`.
+- `caseIds`: exact case ids to run. Missing ids throw.
+- `abortSignal`: stops dispatching new case work. The returned report is
+  marked partial when fewer cases executed than the source dataset contains.
+
+Reports expose `partial`, `runManifest.slice.sliceSpec`,
+`runManifest.slice.totalDatasetCases`, `runManifest.slice.selectedCases`, and
+`runManifest.slice.executedCases`. Scores and ceiling metrics are computed over
+executed cases only. Official-protocol case results may include
+`officialFailureAttribution` with `answerer_or_judge_stage`, `retrieval_stage`,
+`extraction_stage`, or `input_stage`; summary counts are in
+`summary.officialFailureAttribution`.
 
 For OpenAI-compatible hosts, `@ghast/memory/gym` also exports
 `createOpenAICompatibleExternalBenchmarkAnswerer()` and
