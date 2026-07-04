@@ -172,7 +172,7 @@ Usage:
   gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --protocol deterministic-local --require-convergence --include-sensitive --temporal-metadata
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
   gmos gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
-  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --intelligence-base-url http://127.0.0.1:11434/v1 --intelligence-model llama3.1 --intelligence-embed-model nomic-embed-text --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-disable-thinking
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --intelligence-base-url http://127.0.0.1:11434/v1 --intelligence-model llama3.1 --intelligence-embed-model nomic-embed-text --intelligence-embed-dimensions 768 --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-disable-thinking
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --protocol official-protocol --answerer-base-url http://127.0.0.1:11434/v1 --answerer-model llama3.1 --answerer-timeout-ms 90000 --answerer-disable-thinking
   gmos gym external gains --input-file ./long-memory-cleaned.json --dataset-format longmemeval --reproduction-bundle ./release-evidence/bench-run
   gmos gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format markdown
@@ -581,6 +581,7 @@ function externalIntelligenceOption(): {
   apiKeyEnv?: string | undefined;
   model: string;
   embedModel?: string | undefined;
+  dimensions?: number | undefined;
   timeoutMs?: number | undefined;
   concurrency?: number | undefined;
   disableThinking?: boolean | undefined;
@@ -600,6 +601,7 @@ function externalIntelligenceOption(): {
     throw new Error("--intelligence-api-key-env must be an environment variable name");
   }
   const embedModel = value("--intelligence-embed-model");
+  const dimensions = positiveIntegerOptionValue("--intelligence-embed-dimensions");
   const timeoutMs = positiveIntegerOptionValue("--intelligence-timeout-ms");
   const concurrency = positiveIntegerOptionValue("--intelligence-concurrency");
   const disableThinking = has("--intelligence-disable-thinking");
@@ -610,6 +612,7 @@ function externalIntelligenceOption(): {
     ...(apiKeyEnv ? { apiKeyEnv } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(concurrency !== undefined ? { concurrency } : {}),
+    ...(dimensions !== undefined ? { dimensions } : {}),
     ...(disableThinking ? { disableThinking: true } : {}),
   };
 }
