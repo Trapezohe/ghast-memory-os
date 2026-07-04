@@ -37,6 +37,7 @@ export interface OpenAICompatibleBaseOptions {
   temperature?: number | undefined;
   maxTokens?: number | undefined;
   headers?: Record<string, string> | undefined;
+  disableThinking?: boolean | undefined;
 }
 
 export interface OpenAICompatibleExtractorOptions
@@ -212,6 +213,7 @@ async function callChatJson(
         model: options.model,
         temperature: boundedNumber(options.temperature, 0, 0, 2),
         max_tokens: boundedInteger(options.maxTokens, DEFAULT_MAX_TOKENS, 64, 8192),
+        ...(options.disableThinking ? { enable_thinking: false } : {}),
         response_format: { type: "json_object" },
         messages,
       }),

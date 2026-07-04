@@ -26,6 +26,7 @@ export interface OpenAICompatibleExtractorOptions {
   responseFormat?: boolean | undefined;
   headers?: Record<string, string> | undefined;
   includeEventMetadata?: boolean | undefined;
+  disableThinking?: boolean | undefined;
 }
 
 const MEMORY_KINDS = new Set<MemoryKind>([
@@ -230,6 +231,7 @@ export function createOpenAICompatibleExtractor(
                 model: options.model,
                 temperature: boundedNumber(options.temperature, 0, 0, 2),
                 max_tokens: maxTokens,
+                ...(options.disableThinking ? { enable_thinking: false } : {}),
                 ...(options.responseFormat === false
                   ? {}
                   : { response_format: { type: "json_object" } }),

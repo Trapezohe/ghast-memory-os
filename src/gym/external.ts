@@ -1579,6 +1579,7 @@ export interface ExternalMemoryBenchmarkOpenAICompatibleHookOptions {
   timeoutMs?: number | undefined;
   maxRetries?: number | undefined;
   fetchImpl?: OpenAICompatibleFetch | undefined;
+  disableThinking?: boolean | undefined;
 }
 
 const DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_MS = 20_000;
@@ -1628,6 +1629,7 @@ async function fetchOpenAICompatibleJson(
           model: options.model,
           temperature: 0,
           max_tokens: 512,
+          ...(options.disableThinking ? { enable_thinking: false } : {}),
           response_format: { type: "json_object" },
           messages,
         }),

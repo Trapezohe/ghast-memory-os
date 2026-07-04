@@ -172,8 +172,8 @@ Usage:
   gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --protocol deterministic-local --require-convergence --include-sensitive --temporal-metadata
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
   gmos gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
-  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --intelligence-base-url http://127.0.0.1:11434/v1 --intelligence-model llama3.1 --intelligence-embed-model nomic-embed-text --intelligence-api-key-env GMOS_BENCH_API_KEY
-  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --protocol official-protocol --answerer-base-url http://127.0.0.1:11434/v1 --answerer-model llama3.1
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --intelligence-base-url http://127.0.0.1:11434/v1 --intelligence-model llama3.1 --intelligence-embed-model nomic-embed-text --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-disable-thinking
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --protocol official-protocol --answerer-base-url http://127.0.0.1:11434/v1 --answerer-model llama3.1 --answerer-timeout-ms 90000 --answerer-disable-thinking
   gmos gym external gains --input-file ./long-memory-cleaned.json --dataset-format longmemeval --reproduction-bundle ./release-evidence/bench-run
   gmos gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format markdown
   gmos gym statebench build-learnings --domain travel --input-dir ./STATE-Bench/datasets/train_task_trajectories/travel --output-file ./outputs/gmos-learnings/travel.json
@@ -583,6 +583,7 @@ function externalIntelligenceOption(): {
   embedModel?: string | undefined;
   timeoutMs?: number | undefined;
   concurrency?: number | undefined;
+  disableThinking?: boolean | undefined;
 } | undefined {
   const hasIntelligenceFlag = process.argv.some((arg) => arg.startsWith("--intelligence-"));
   if (!hasIntelligenceFlag) return undefined;
@@ -601,6 +602,7 @@ function externalIntelligenceOption(): {
   const embedModel = value("--intelligence-embed-model");
   const timeoutMs = positiveIntegerOptionValue("--intelligence-timeout-ms");
   const concurrency = positiveIntegerOptionValue("--intelligence-concurrency");
+  const disableThinking = has("--intelligence-disable-thinking");
   return {
     baseUrl,
     model,
@@ -608,6 +610,7 @@ function externalIntelligenceOption(): {
     ...(apiKeyEnv ? { apiKeyEnv } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(concurrency !== undefined ? { concurrency } : {}),
+    ...(disableThinking ? { disableThinking: true } : {}),
   };
 }
 
@@ -617,6 +620,7 @@ interface CliOpenAICompatibleHookConfig {
   apiKey?: string | undefined;
   model: string;
   timeoutMs?: number | undefined;
+  disableThinking?: boolean | undefined;
 }
 
 function apiKeyFromEnv(apiKeyEnv: string | undefined, label: string): string | undefined {
@@ -647,12 +651,17 @@ function externalAnswererConfigOption(
   if (answererApiKeyEnv !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(answererApiKeyEnv)) {
     throw new Error("--answerer-api-key-env must be an environment variable name");
   }
+  const answererTimeoutMs = positiveIntegerOptionValue("--answerer-timeout-ms");
+  const answererDisableThinking = has("--answerer-disable-thinking");
   const apiKeyEnv = answererApiKeyEnv ?? (answererBaseUrl === undefined ? intelligence?.apiKeyEnv : undefined);
   return {
     baseUrl,
     model,
     ...(apiKeyEnv ? { apiKeyEnv, apiKey: apiKeyFromEnv(apiKeyEnv, "External benchmark answerer API key environment variable") } : {}),
-    ...(intelligence?.timeoutMs !== undefined ? { timeoutMs: intelligence.timeoutMs } : {}),
+    ...(answererTimeoutMs !== undefined || intelligence?.timeoutMs !== undefined
+      ? { timeoutMs: answererTimeoutMs ?? intelligence?.timeoutMs }
+      : {}),
+    ...(answererDisableThinking || intelligence?.disableThinking ? { disableThinking: true } : {}),
   };
 }
 
@@ -676,6 +685,7 @@ function externalOfficialJudgeOption(
             }
           : {}),
         ...(intelligence.timeoutMs !== undefined ? { timeoutMs: intelligence.timeoutMs } : {}),
+        ...(intelligence.disableThinking ? { disableThinking: true } : {}),
       }
     : answererConfig;
   if (!config) {
