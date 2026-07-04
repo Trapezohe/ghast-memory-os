@@ -1833,6 +1833,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const observedAt = nowIso();
     const extractFromRoles = resolvedExtractFromRoles(input.extraction);
     const maxMessages = boundedPositiveInteger(input.window?.maxMessages, 12, 1, 1000);
+    const maxChars = boundedPositiveInteger(input.window?.maxChars, 7000, 256, 200000);
+    const overlapMessages = boundedPositiveInteger(
+      input.window?.overlapMessages,
+      Math.min(3, Math.max(0, maxMessages - 1)),
+      0,
+      Math.max(0, maxMessages - 1),
+    );
     const results: ObserveResult[] = [];
     const extractionReports: MemoryExtractionReport[] = [];
     const dedupeKeys = new Set<string>();
@@ -1845,12 +1852,23 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
 
     let pendingWindow: WindowMember[] = [];
     let pendingSessionKey: string | null = null;
+    let pendingWindowChars = 0;
 
-    async function flushWindow(): Promise<void> {
+    function windowChars(members: WindowMember[]): number {
+      return members.reduce((sum, member) => sum + member.event.content.length, 0);
+    }
+
+    async function flushWindow(flushOptions: { preserveOverlap?: boolean | undefined } = {}): Promise<void> {
       if (pendingWindow.length === 0) return;
       const members = pendingWindow;
-      pendingWindow = [];
-      pendingSessionKey = null;
+      const preserved =
+        flushOptions.preserveOverlap === true && overlapMessages > 0
+          ? members.slice(-overlapMessages)
+          : [];
+      pendingWindow = preserved;
+      pendingSessionKey =
+        preserved.length > 0 ? windowSessionKey(preserved[preserved.length - 1]!.event) : null;
+      pendingWindowChars = windowChars(preserved);
       const last = members[members.length - 1]!;
       const windowEvidenceIds = members.map((member) => member.evidence.id);
       const extraction = await extractMemoryCandidatePlan({
@@ -1953,15 +1971,28 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         continue;
       }
       const sessionKey = windowSessionKey(event);
+      const eventChars = event.content.length;
+      const sessionChanged = sessionKey !== null && pendingSessionKey !== sessionKey;
+      const maxMessagesReached = pendingWindow.length >= maxMessages;
+      const charLimitReached = pendingWindowChars + eventChars > maxChars;
       if (
         pendingWindow.length > 0 &&
-        (pendingWindow.length >= maxMessages ||
-          (sessionKey !== null && pendingSessionKey !== sessionKey))
+        (maxMessagesReached || sessionChanged || charLimitReached)
       ) {
-        await flushWindow();
+        const preserveOverlap =
+          charLimitReached &&
+          !maxMessagesReached &&
+          !sessionChanged &&
+          overlapMessages > 0 &&
+          windowChars(pendingWindow.slice(-overlapMessages)) + eventChars <= maxChars;
+        await flushWindow({ preserveOverlap });
+        if (pendingWindow.length > 0 && pendingWindowChars + eventChars > maxChars) {
+          await flushWindow();
+        }
       }
       pendingSessionKey = sessionKey;
       pendingWindow.push({ ...recorded.write, result: recorded.result });
+      pendingWindowChars += eventChars;
     }
     await flushWindow();
 

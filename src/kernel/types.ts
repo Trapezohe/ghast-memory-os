@@ -476,6 +476,16 @@ export interface IngestConversationInput {
   }>;
   window?: {
     maxMessages?: number | undefined;
+    /**
+     * Maximum source transcript characters sent to one extractor window.
+     * Character-budget splits can preserve recent messages via overlapMessages.
+     */
+    maxChars?: number | undefined;
+    /**
+     * Recent messages to repeat only when maxChars forces a split.
+     * Session-boundary and maxMessages splits do not preserve overlap.
+     */
+    overlapMessages?: number | undefined;
   } | undefined;
   extraction?: {
     extractFromRoles?: MemoryRole[] | undefined;

@@ -2155,6 +2155,149 @@ assert.equal(
   24,
 );
 await windowedMemory.close();
+const sessionBoundaryWindows: Array<Array<string | null>> = [];
+const sessionBoundaryStore = createSqliteMemoryStore({
+  path: path.join(tmp, "window-session-boundary.db"),
+});
+const sessionBoundaryMemory = createMemoryOS({
+  profileId: "window-session-boundary",
+  store: sessionBoundaryStore,
+  extractor: (input) => {
+    sessionBoundaryWindows.push(
+      (input.window?.messages ?? []).map((message) => {
+        const sessionId = message.metadata?.sessionId;
+        return typeof sessionId === "string" ? sessionId : null;
+      }),
+    );
+    return [];
+  },
+});
+await sessionBoundaryMemory.ingestConversation({
+  profileId: "window-session-boundary",
+  messages: [
+    { role: "user", content: "No session setup." },
+    { role: "user", content: "Session A fact.", metadata: { sessionId: "session-a" } },
+    { role: "user", content: "Session B fact.", metadata: { sessionId: "session-b" } },
+  ],
+  window: { maxMessages: 12, maxChars: 2000 },
+});
+assert.deepEqual(sessionBoundaryWindows, [[null], ["session-a"], ["session-b"]]);
+await sessionBoundaryMemory.close();
+const charBudgetExtractionWindows: number[] = [];
+const charBudgetStore = createSqliteMemoryStore({
+  path: path.join(tmp, "window-char-budget.db"),
+});
+const charBudgetMemory = createMemoryOS({
+  profileId: "window-char-budget",
+  store: charBudgetStore,
+  extractor: (input) => {
+    charBudgetExtractionWindows.push(input.window?.messages.length ?? 0);
+    return [];
+  },
+});
+await charBudgetMemory.ingestConversation({
+  profileId: "window-char-budget",
+  messages: [
+    {
+      role: "user",
+      content: "Short durable setup.",
+      metadata: { sessionId: "long-session" },
+    },
+    {
+      role: "assistant",
+      content: "A".repeat(480),
+      metadata: { sessionId: "long-session" },
+    },
+    {
+      role: "user",
+      content: "Another user-world fact after a long assistant reply.",
+      metadata: { sessionId: "long-session" },
+    },
+  ],
+  window: { maxMessages: 12, maxChars: 500 },
+  extraction: { extractFromRoles: ["user", "assistant"] },
+});
+assert.deepEqual(charBudgetExtractionWindows, [2, 1]);
+await charBudgetMemory.close();
+const overlapSourceWindows: string[][] = [];
+const overlapSourceStore = createSqliteMemoryStore({
+  path: path.join(tmp, "window-overlap-source.db"),
+});
+const overlapSourceMemory = createMemoryOS({
+  profileId: "window-overlap-source",
+  store: overlapSourceStore,
+  extractor: (input) => {
+    const messages = input.window?.messages ?? [];
+    overlapSourceWindows.push(messages.map((message) => message.content));
+    const sourceIndex = messages.findIndex((message) =>
+      message.content.includes("Business Administration"),
+    );
+    if (sourceIndex < 0) return [];
+    return [{
+      kind: "fact",
+      content: "User graduated with a degree in Business Administration.",
+      confidence: 0.9,
+      sourceIndex,
+    }];
+  },
+});
+const overlapIntro = `Intro ${"x".repeat(74)}`;
+const overlapAnchor = `Overlap anchor ${"y".repeat(165)}`;
+const overlapTarget = "Target after long assistant reply: Business Administration.";
+const overlapIngest = await overlapSourceMemory.ingestConversation({
+  profileId: "window-overlap-source",
+  messages: [
+    { role: "user", content: overlapIntro, metadata: { sessionId: "overlap-session" } },
+    { role: "assistant", content: overlapAnchor, metadata: { sessionId: "overlap-session" } },
+    { role: "user", content: overlapTarget, metadata: { sessionId: "overlap-session" } },
+  ],
+  window: { maxMessages: 12, maxChars: 300, overlapMessages: 1 },
+  extraction: { extractFromRoles: ["user", "assistant"] },
+});
+assert.deepEqual(overlapSourceWindows, [
+  [overlapIntro, overlapAnchor],
+  [overlapAnchor, overlapTarget],
+]);
+assert.equal(overlapIngest.memoryIds.length, 1);
+const overlapStored = await overlapSourceMemory.get({
+  profileId: "window-overlap-source",
+  id: overlapIngest.memoryIds[0]!,
+});
+const overlapEvidenceIds = Array.isArray(overlapStored?.metadata.windowEvidenceIds)
+  ? overlapStored.metadata.windowEvidenceIds.filter((entry): entry is string => typeof entry === "string")
+  : [];
+assert.equal(overlapStored?.metadata.sourceIndex, 1);
+assert.equal(overlapStored?.metadata.sourceEvidenceId, overlapEvidenceIds[1]);
+await overlapSourceMemory.close();
+const noOverlapOnMaxMessagesWindows: string[][] = [];
+const noOverlapOnMaxMessagesStore = createSqliteMemoryStore({
+  path: path.join(tmp, "window-no-overlap-max-messages.db"),
+});
+const noOverlapOnMaxMessagesMemory = createMemoryOS({
+  profileId: "window-no-overlap-max-messages",
+  store: noOverlapOnMaxMessagesStore,
+  extractor: (input) => {
+    noOverlapOnMaxMessagesWindows.push(
+      (input.window?.messages ?? []).map((message) => message.content),
+    );
+    return [];
+  },
+});
+await noOverlapOnMaxMessagesMemory.ingestConversation({
+  profileId: "window-no-overlap-max-messages",
+  messages: [
+    { role: "user", content: "first", metadata: { sessionId: "max-message-session" } },
+    { role: "user", content: "second", metadata: { sessionId: "max-message-session" } },
+    { role: "user", content: "third is long enough to also trip the char budget", metadata: { sessionId: "max-message-session" } },
+  ],
+  window: { maxMessages: 2, maxChars: 40, overlapMessages: 1 },
+  extraction: { extractFromRoles: ["user"] },
+});
+assert.deepEqual(noOverlapOnMaxMessagesWindows, [
+  ["first", "second"],
+  ["third is long enough to also trip the char budget"],
+]);
+await noOverlapOnMaxMessagesMemory.close();
 const speakerBeliefStore = createSqliteMemoryStore({
   path: path.join(tmp, "speaker-belief-extractor.db"),
 });
