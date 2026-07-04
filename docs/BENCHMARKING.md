@@ -226,7 +226,20 @@ run. The kernel still never discovers or calls a network service on its own.
 Use `--ingest-mode memory` for the legacy deterministic direct-import path. Use
 `--ingest-mode message` when running LongMemEval or LoCoMo through the
 extractor path; adapter turns become conversation observations, timestamps are
-preserved, and speaker metadata is carried where the dataset provides it.
+preserved, and speaker metadata is carried where the dataset provides it. In
+message mode gmOS uses `ingestConversation()` with windowed extraction:
+extractor calls are `ceil(eligible_messages / --extraction-window)` per session
+boundary, not one call per message. The default window is `12` messages.
+
+Message-mode extraction defaults to `["user", "assistant"]` so answer-bearing
+assistant turns in LongMemEval are extractable. LoCoMo still maps both speakers
+to user-role messages with speaker metadata.
+
+For LongMemEval cleaned S, roughly 150k eligible messages means about 12.5k
+extractor calls at window 12 instead of 150k calls. At
+`--intelligence-concurrency 16`, setup is bounded by model latency over windows,
+not by per-turn serial extraction. Use lower concurrency for small local models
+or providers with strict rate limits.
 
 Local Ollama-style OpenAI-compatible endpoint:
 
@@ -235,6 +248,7 @@ gmos gym external \
   --input-file ./long-memory-cleaned.json \
   --dataset-format longmemeval \
   --ingest-mode message \
+  --extraction-window 12 \
   --intelligence-base-url http://127.0.0.1:11434/v1 \
   --intelligence-model llama3.1 \
   --intelligence-embed-model nomic-embed-text \
@@ -251,6 +265,7 @@ gmos gym external \
   --input-file ./multi-session-memory.json \
   --dataset-format locomo \
   --ingest-mode message \
+  --extraction-window 12 \
   --intelligence-base-url https://provider.example/v1 \
   --intelligence-model provider-chat-model \
   --intelligence-embed-model provider-embedding-model \

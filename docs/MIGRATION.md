@@ -107,8 +107,9 @@ gmos import --from conversation --db ./gmos.db --profile local \
 ```
 
 Supported formats are `jsonl`, `claude-code`, `openai-thread`, and auto-detect
-when `--input-format` is omitted. The import path calls `observe()`; it does not
-run linguistic synthesis inside gmOS.
+when `--input-format` is omitted. The import path records per-message evidence
+through `ingestConversation()` windows; it does not run linguistic synthesis
+inside gmOS.
 
 ## Encryption At Rest
 

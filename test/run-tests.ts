@@ -2040,6 +2040,121 @@ try {
 } finally {
   customExtractorDb.close();
 }
+const windowedExtractionCalls: MemoryExtractionInput[] = [];
+const windowedStore = createSqliteMemoryStore({
+  path: path.join(tmp, "windowed-extraction.db"),
+});
+const windowedMemory = createMemoryOS({
+  profileId: "windowed-extraction",
+  store: windowedStore,
+  extractor: {
+    name: "windowed-recording-extractor",
+    extract(input) {
+      assert.notEqual(input.window, undefined);
+      assert.equal(input.window?.messages.length, 12);
+      assert.equal(input.window?.messages.some((message) => message.content.includes("sk-windowsecret")), false);
+      windowedExtractionCalls.push(input);
+      return [
+        {
+          kind: "fact",
+          content: "Windowed shared fact is grounded once.",
+          confidence: 0.9,
+          sourceIndex: 0,
+          predicate: "project.note",
+          subject: "project:windowed",
+          object: "grounded once",
+          cardinality: "single",
+        },
+        {
+          kind: "fact",
+          content: "PERSON: Windowed person-routed candidate should be skipped.",
+          confidence: 0.9,
+          sourceIndex: 0,
+        },
+      ];
+    },
+  },
+});
+const windowedMessages = [
+  {
+    conversationId: "windowed-conversation",
+    messageId: "windowed-message-0",
+    role: "assistant" as const,
+    content: "Windowed eligible assistant turn 0.",
+    createdAt: "2026-07-01T00:00:00.000Z",
+  },
+  {
+    conversationId: "windowed-conversation",
+    messageId: "windowed-secret",
+    role: "user" as const,
+    content: "Do not store sk-windowsecret1234567890abcdef.",
+    createdAt: "2026-07-01T00:00:01.000Z",
+  },
+  ...Array.from({ length: 23 }, (_entry, index) => ({
+    conversationId: "windowed-conversation",
+    messageId: `windowed-message-${index + 1}`,
+    role: "user" as const,
+    content: `Windowed eligible user turn ${index + 1}.`,
+    createdAt: new Date(Date.UTC(2026, 6, 1, 0, 0, index + 2)).toISOString(),
+  })),
+];
+const windowedIngest = await windowedMemory.ingestConversation({
+  profileId: "windowed-extraction",
+  messages: windowedMessages,
+  window: { maxMessages: 12 },
+  extraction: { extractFromRoles: ["user", "assistant"] },
+});
+assert.equal(windowedIngest.extractionWindowCount, 2);
+assert.equal(windowedIngest.extractionCallCount, 2);
+assert.equal(windowedExtractionCalls.length, 2);
+assert.equal(windowedIngest.results.filter((result) => result.evidenceId).length, 24);
+assert.equal(windowedIngest.memoryIds.length, 1);
+const windowedEvidence = await windowedStore.listEvidence({
+  profileId: "windowed-extraction",
+  includeSensitive: true,
+  limit: 30,
+});
+assert.equal(windowedEvidence.length, 24);
+assert.equal(windowedEvidence.some((event) => event.content.includes("sk-windowsecret")), false);
+assert.equal(
+  windowedEvidence.some((event) => event.eventKey.includes("windowed-message-0")),
+  true,
+);
+const windowedStored = await windowedMemory.get({
+  profileId: "windowed-extraction",
+  id: windowedIngest.memoryIds[0]!,
+});
+const windowEvidenceIds = Array.isArray(windowedStored?.metadata.windowEvidenceIds)
+  ? windowedStored.metadata.windowEvidenceIds.filter((entry): entry is string => typeof entry === "string")
+  : [];
+assert.equal(windowedStored?.confidence, 0.65);
+assert.equal(windowedStored?.sourceEventId, windowEvidenceIds[11]);
+assert.equal(windowedStored?.metadata.sourceIndex, 0);
+assert.equal(windowedStored?.metadata.sourceEvidenceId, windowEvidenceIds[0]);
+assert.equal(windowEvidenceIds.length, 12);
+const windowedExplain = await windowedMemory.explain(
+  windowedIngest.memoryIds[0]!,
+  "windowed-extraction",
+);
+assert.equal(windowedExplain?.evidence.length, 12);
+const windowedReingest = await windowedMemory.ingestConversation({
+  profileId: "windowed-extraction",
+  messages: windowedMessages,
+  window: { maxMessages: 12 },
+  extraction: { extractFromRoles: ["user", "assistant"] },
+});
+assert.equal(windowedReingest.extractionWindowCount, 0);
+assert.equal(windowedReingest.results.filter((result) => result.skippedReason === "deduplicated_event").length, 24);
+assert.equal(windowedExtractionCalls.length, 2);
+assert.equal(
+  (await windowedStore.listEvidence({
+    profileId: "windowed-extraction",
+    includeSensitive: true,
+    limit: 30,
+  })).length,
+  24,
+);
+await windowedMemory.close();
 const speakerBeliefStore = createSqliteMemoryStore({
   path: path.join(tmp, "speaker-belief-extractor.db"),
 });
@@ -21798,6 +21913,56 @@ assert.equal(longMemEvalMessageCases[0]?.events[0]?.type, "message");
 assert.equal(longMemEvalMessageCases[0]?.events[0]?.role, "user");
 assert.equal(longMemEvalMessageCases[0]?.events[0]?.createdAt, "2026-06-20");
 assert.equal(JSON.stringify(longMemEvalMessageCases[0]?.events).includes("has_answer"), false);
+let externalMessageExtractorCalls = 0;
+const externalMessageModeBenchmark = await runExternalMemoryBenchmark({
+  ingestMode: "message",
+  extractionWindow: 12,
+  intelligence: {
+    extractor: {
+      name: "external-message-window-extractor",
+      extract(input) {
+        externalMessageExtractorCalls += 1;
+        assert.notEqual(input.window, undefined);
+        return (input.window?.messages ?? []).flatMap((message, sourceIndex) =>
+          message.content.includes("AssistantTurnAnswerSignal")
+            ? [{
+                kind: "fact" as const,
+                content: "AssistantTurnAnswerSignal answer is cobalt.",
+                confidence: 0.9,
+                sourceIndex,
+              }]
+            : []
+        );
+      },
+    },
+  },
+  cases: [
+    {
+      id: "external-message-assistant-fact",
+      profileId: "external_message_assistant_fact",
+      events: [
+        {
+          type: "message",
+          role: "user",
+          content: "The user asks the assistant to keep track of the answer.",
+        },
+        {
+          type: "message",
+          role: "assistant",
+          content: "AssistantTurnAnswerSignal answer is cobalt.",
+        },
+      ],
+      question: "What color is the AssistantTurnAnswerSignal answer?",
+      expectedAny: ["cobalt"],
+    },
+  ],
+});
+assert.equal(externalMessageModeBenchmark.pass, true);
+assert.equal(externalMessageExtractorCalls, 1);
+assert.equal(externalMessageModeBenchmark.runManifest.runtimeIntelligence.ingestMode, "message");
+assert.equal(externalMessageModeBenchmark.runManifest.runtimeIntelligence.extractionWindowCount, 1);
+assert.equal(externalMessageModeBenchmark.runManifest.runtimeIntelligence.extractionCallCount, 1);
+assert.equal(externalMessageModeBenchmark.runManifest.options.extractionWindow, 12);
 const longMemEvalJsonlCases = parseLongMemEvalBenchmarkDataset(
   longMemEvalFixture.slice(1, -1),
 );
@@ -22224,6 +22389,8 @@ const externalIntelligenceFixture = JSON.stringify([
           role: "user",
           content: "External intelligence source says the recall drink is orbit tea.",
         },
+      ],
+      [
         {
           role: "user",
           content: "External intelligence planned extraction failure should still land as evidence.",
@@ -22338,7 +22505,7 @@ try {
   assert.equal(externalIntelligenceJson.includes("bench-intelligence.invalid/v1"), false);
   assert.match(
     renderExternalMemoryBenchmarkMarkdown(externalIntelligenceRun),
-    /Runtime intelligence: enabled=true ingestMode=message model=bench-chat embedModel=bench-embed host=bench-intelligence\.invalid maintainPhases=decay concurrency=1 timeoutMs=5000 extractionFailures=1/,
+    /Runtime intelligence: enabled=true ingestMode=message model=bench-chat embedModel=bench-embed host=bench-intelligence\.invalid maintainPhases=decay concurrency=1 timeoutMs=5000 extractionWindows=2 extractionCalls=2 extractionFailures=1/,
   );
 } finally {
   if (previousExternalBenchKey === undefined) {

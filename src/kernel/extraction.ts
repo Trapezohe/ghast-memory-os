@@ -131,6 +131,9 @@ function snapshotCandidate(candidate: unknown): MemoryExtractionCandidateSnapsho
     ...(typeof record.kind === "string" ? { kind: publicString(record.kind) } : {}),
     content: publicString(content),
     ...(Number.isFinite(confidence) ? { confidence } : {}),
+    ...(Number.isInteger(record.sourceIndex) && Number(record.sourceIndex) >= 0
+      ? { sourceIndex: Number(record.sourceIndex) }
+      : {}),
     ...(typeof record.predicate === "string" ? { predicate: publicString(record.predicate) } : {}),
     ...(typeof record.subject === "string" ? { subject: publicString(record.subject) } : {}),
     ...(subjectAliases ? { subjectAliases } : {}),

@@ -170,6 +170,7 @@ export interface MemoryExtractionCandidate {
   kind: MemoryKind;
   content: string;
   confidence: number;
+  sourceIndex?: number | undefined;
   predicate?: string | undefined;
   subject?: string | undefined;
   subjectAliases?: readonly string[] | undefined;
@@ -188,6 +189,15 @@ export interface MemoryExtractionInput {
   profileId: string;
   event: ConversationMessageEvent;
   evidence: EvidenceEvent;
+  window?: {
+    messages: Array<{
+      role: MemoryRole;
+      content: string;
+      createdAt?: string | undefined;
+      metadata?: ConversationSourceMetadata | undefined;
+    }>;
+    evidenceIds: string[];
+  } | undefined;
 }
 
 export type MemoryExtractionResult =
@@ -274,6 +284,7 @@ export interface MemoryExtractionCandidateSnapshot {
   kind?: string | undefined;
   content: string;
   confidence?: number | undefined;
+  sourceIndex?: number | undefined;
   predicate?: string | undefined;
   subject?: string | undefined;
   subjectAliases?: readonly string[] | undefined;
@@ -455,6 +466,32 @@ export interface ObserveResult {
   memoryIds: string[];
   worldBeliefIds: string[];
   extraction?: MemoryExtractionReport | undefined;
+}
+
+export interface IngestConversationInput {
+  profileId?: string | undefined;
+  messages: Array<Omit<ConversationMessageEvent, "type" | "profileId"> & {
+    type?: "conversation.message" | undefined;
+    profileId?: string | undefined;
+  }>;
+  window?: {
+    maxMessages?: number | undefined;
+  } | undefined;
+  extraction?: {
+    extractFromRoles?: MemoryRole[] | undefined;
+  } | undefined;
+}
+
+export interface IngestConversationResult {
+  profileId: string;
+  observedAt: string;
+  results: ObserveResult[];
+  evidenceIds: string[];
+  memoryIds: string[];
+  worldBeliefIds: string[];
+  extractionWindowCount: number;
+  extractionCallCount: number;
+  extractionReports: MemoryExtractionReport[];
 }
 
 export interface MemoryRecord {
@@ -1989,6 +2026,7 @@ export interface MemoryOS {
   get(input: LowLevelGetMemoryInput): Promise<MemoryRecord | null>;
   observe(event: HostEvent): Promise<void>;
   observeWithReport(event: HostEvent): Promise<ObserveResult>;
+  ingestConversation(input: IngestConversationInput): Promise<IngestConversationResult>;
   listEvidence(
     input?: Omit<EvidenceListInput, "profileId"> & { profileId?: string | undefined },
   ): Promise<EvidenceEvent[]>;

@@ -411,7 +411,7 @@ function evidenceRowsForBackup(
       .filter((event) => evidenceAllowedBySensitivity(event, options));
   }
   const sourceEventIds = [
-    ...new Set(memories.map((memory) => memory.sourceEventId).filter((id): id is string => !!id)),
+    ...new Set(memories.flatMap(memoryEvidenceIds).filter((id): id is string => !!id)),
   ];
   return rowsByIds(db, "gmos_evidence_events", sourceEventIds)
     .map(normalizeEvidence)
@@ -624,11 +624,55 @@ function withExportedEvidenceClosure(
   evidenceEvents: EvidenceEvent[],
 ): MemoryRecord[] {
   const evidenceIds = new Set(evidenceEvents.map((event) => event.id));
-  return memories.map((memory) =>
-    memory.sourceEventId && !evidenceIds.has(memory.sourceEventId)
-      ? { ...memory, sourceEventId: null }
-      : memory,
-  );
+  return memories.map((memory) => ({
+    ...memory,
+    sourceEventId:
+      memory.sourceEventId && evidenceIds.has(memory.sourceEventId) ? memory.sourceEventId : null,
+    metadata: evidenceMetadataWithClosure(memory.metadata, evidenceIds),
+  }));
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : [];
+}
+
+function memoryEvidenceIds(memory: Pick<MemoryRecord, "sourceEventId" | "metadata">): string[] {
+  return [
+    memory.sourceEventId,
+    ...stringArray(memory.metadata.windowEvidenceIds),
+    typeof memory.metadata.sourceEvidenceId === "string" ? memory.metadata.sourceEvidenceId : null,
+  ].filter((id): id is string => typeof id === "string" && id.length > 0);
+}
+
+function evidenceMetadataWithClosure(
+  metadata: Record<string, unknown>,
+  evidenceIds: ReadonlySet<string>,
+): Record<string, unknown> {
+  const next = { ...metadata };
+  const windowEvidenceIds = stringArray(next.windowEvidenceIds).filter((id) => evidenceIds.has(id));
+  if (windowEvidenceIds.length > 0) next.windowEvidenceIds = windowEvidenceIds;
+  else delete next.windowEvidenceIds;
+  if (typeof next.sourceEvidenceId === "string" && !evidenceIds.has(next.sourceEvidenceId)) {
+    delete next.sourceEvidenceId;
+    delete next.sourceIndex;
+  }
+  return next;
+}
+
+function remapEvidenceMetadata(
+  metadata: Record<string, unknown>,
+  evidenceIdMap: ReadonlyMap<string, string>,
+): Record<string, unknown> {
+  const next = { ...metadata };
+  const windowEvidenceIds = stringArray(next.windowEvidenceIds)
+    .map((id) => evidenceIdMap.get(id) ?? id);
+  if (windowEvidenceIds.length > 0) next.windowEvidenceIds = windowEvidenceIds;
+  if (typeof next.sourceEvidenceId === "string") {
+    next.sourceEvidenceId = evidenceIdMap.get(next.sourceEvidenceId) ?? next.sourceEvidenceId;
+  }
+  return next;
 }
 
 export function exportSqliteProfileBackup(
@@ -949,14 +993,13 @@ function assertBackupRows(backup: SqliteProfileBackupDocument): void {
 
   const evidenceIds = new Set(backup.evidenceEvents.map((event) => event.id));
   if (backup.options.includeEvidence) {
-    const referencedEvidenceIds = new Set(
-      backup.memories.map((memory) => memory.sourceEventId).filter((id): id is string => !!id),
-    );
+    const referencedEvidenceIds = new Set(backup.memories.flatMap(memoryEvidenceIds));
     for (const [index, memory] of backup.memories.entries()) {
-      if (memory.sourceEventId && !evidenceIds.has(memory.sourceEventId)) {
+      for (const evidenceId of memoryEvidenceIds(memory)) {
+        if (evidenceIds.has(evidenceId)) continue;
         throw backupError(
           `memories[${index}].sourceEventId`,
-          `references missing evidence event ${memory.sourceEventId}`,
+          `references missing evidence event ${evidenceId}`,
         );
       }
     }
@@ -1492,6 +1535,7 @@ export function restoreSqliteProfileBackup(
     id: memoryIdMap.get(memory.id) ?? memory.id,
     profileId: targetProfileId,
     sourceEventId: memory.sourceEventId ? (evidenceIdMap.get(memory.sourceEventId) ?? null) : null,
+    metadata: remapEvidenceMetadata(memory.metadata ?? {}, evidenceIdMap),
   }));
   const worldBeliefs = backup.worldBeliefs.map((belief) => ({
     ...belief,

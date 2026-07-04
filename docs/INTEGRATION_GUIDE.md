@@ -131,13 +131,21 @@ the host-owned export/session directory. gmOS reads supported `.jsonl` and
 `.json` files, records only the source content hash, and never moves or deletes
 files. Re-running the same file is idempotent by event key.
 
+Transcript import records one evidence event per message, then uses
+`ingestConversation()` to extract over windows instead of calling the extractor
+once per message. The default window is 12 eligible messages; session metadata
+can split windows without changing evidence granularity. Memories created from
+a window keep `windowEvidenceIds` in metadata so `explain()` and reconstruction
+can trace back to the contributing messages.
+
 ## Turn Lifecycle
 
 For full agent memory, hosts should wire these phases instead of only calling
 search:
 
-1. Observe user, assistant, tool, note, or summary events with `observe()` or
-   `memory.observe`.
+1. Observe single live events with `observe()` or `memory.observe`; ingest long
+   transcripts with `ingestConversation()` or `gmos ingest` so extraction is
+   windowed.
 2. Prepare context before model calls with `prepareTurn()`,
    `memory.prepare_context`, or `POST /prepare`.
 3. Call `explainTurn()`, `memory.explain_turn`, or `POST /explain-turn` only

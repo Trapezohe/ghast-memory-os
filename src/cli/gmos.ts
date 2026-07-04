@@ -172,7 +172,7 @@ Usage:
   gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --protocol deterministic-local --require-convergence --include-sensitive --temporal-metadata
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
   gmos gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
-  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --intelligence-base-url http://127.0.0.1:11434/v1 --intelligence-model llama3.1 --intelligence-embed-model nomic-embed-text --intelligence-embed-dimensions 768 --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-disable-thinking
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --extraction-window 12 --intelligence-base-url http://127.0.0.1:11434/v1 --intelligence-model llama3.1 --intelligence-embed-model nomic-embed-text --intelligence-embed-dimensions 768 --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-disable-thinking
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --protocol official-protocol --answerer-base-url http://127.0.0.1:11434/v1 --answerer-model llama3.1 --answerer-timeout-ms 90000 --answerer-disable-thinking
   gmos gym external gains --input-file ./long-memory-cleaned.json --dataset-format longmemeval --reproduction-bundle ./release-evidence/bench-run
   gmos gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format markdown
@@ -1916,6 +1916,7 @@ async function main(): Promise<void> {
       ...(has("--temporal-metadata") ? { includeTemporalMetadata: true } : {}),
       ...(has("--include-sensitive") ? { includeSensitive: true } : {}),
       concurrency: positiveIntegerOption("--concurrency", 4),
+      extractionWindow: positiveIntegerOption("--extraction-window", 12),
       reuseProfiles: !has("--no-reuse-profiles"),
       failureSampleLimit: nonNegativeIntegerOption("--failure-sample-limit", 20),
       diagnosticsLevel: diagnosticsLevelOption(),
@@ -1927,6 +1928,11 @@ async function main(): Promise<void> {
       ...(maintainPhases ? { maintainPhases } : {}),
       ...(has("--progress")
         ? {
+            onCaseGroupSetup: (progress) => {
+              console.error(
+                `[gmos external] setup group=${progress.groupKey} events=${progress.eventCount} windows=${progress.extractionWindowCount} extractionCalls=${progress.extractionCallCount} ingestMs=${progress.ingestDurationMs}`,
+              );
+            },
             onCaseResult: (progress) => {
               const status = progress.pass ? "pass" : "fail";
               console.error(

@@ -5984,14 +5984,24 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     initialize();
     if (!tableExists("gmos_memories") || !tableExists("gmos_evidence_events")) return [];
     const row = db
-      .prepare("SELECT source_event_id FROM gmos_memories WHERE id = ?")
-      .get(memoryId) as { source_event_id?: string | null } | undefined;
+      .prepare("SELECT source_event_id, metadata_json FROM gmos_memories WHERE id = ?")
+      .get(memoryId) as { source_event_id?: string | null; metadata_json?: string | null } | undefined;
     if (!row?.source_event_id) return [];
-    return (
-      db
-        .prepare("SELECT * FROM gmos_evidence_events WHERE id = ?")
-        .all(row.source_event_id) as Record<string, unknown>[]
-    )
+    const metadata = parseJsonObject(row.metadata_json);
+    const windowEvidenceIds = Array.isArray(metadata.windowEvidenceIds)
+      ? metadata.windowEvidenceIds.filter((entry): entry is string => typeof entry === "string")
+      : [];
+    const ids = [...new Set([row.source_event_id, ...windowEvidenceIds])];
+    const placeholders = ids.map(() => "?").join(", ");
+    const rows = db
+      .prepare(`SELECT * FROM gmos_evidence_events WHERE id IN (${placeholders})`)
+      .all(...ids) as Record<string, unknown>[];
+    const byId = new Map(rows.map((evidenceRow) => [String(evidenceRow.id), evidenceRow]));
+    return ids
+      .flatMap((id) => {
+        const evidenceRow = byId.get(id);
+        return evidenceRow ? [evidenceRow] : [];
+      })
       .map(normalizeEvidence)
       .filter((event) => effectiveEvidenceSensitivity(event) !== "secret_like");
   }

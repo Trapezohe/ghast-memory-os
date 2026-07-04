@@ -4,7 +4,6 @@ import path from "node:path";
 
 import { createMemoryOS } from "./runtime/create-memory-os.js";
 import type {
-  HostEvent,
   MaintenancePhase,
   MaintenanceReport,
   MemoryOS,
@@ -394,23 +393,24 @@ export async function ingestTranscript(input: TranscriptIngestInput): Promise<Tr
     report.byRole[record.role] = (report.byRole[record.role] ?? 0) + 1;
   });
   if (input.dryRun === true) return report;
-  for (let index = 0; index < parsed.records.length; index += 1) {
-    const record = parsed.records[index]!;
-    const event: HostEvent = {
-      type: "conversation.message",
-      profileId,
+  const ingested = await input.memory.ingestConversation({
+    profileId,
+    messages: parsed.records.map((record, index) => ({
       conversationId: `ingest:${sourceFileHash}`,
       messageId: `ingest:${sourceFileHash}:${index}`,
       role: record.role,
       content: record.content,
-      createdAt: record.createdAt ?? input.now,
+      ...(record.createdAt !== undefined || input.now !== undefined
+        ? { createdAt: record.createdAt ?? input.now }
+        : {}),
       metadata: {
         ...record.metadata,
         sourceFileHash,
         recordIndex: index,
       },
-    };
-    const observed = await input.memory.observeWithReport(event);
+    })),
+  });
+  for (const observed of ingested.results) {
     if (observed.skippedReason === "deduplicated_event") report.deduplicated += 1;
     else if (observed.evidenceId) report.observed += 1;
     else report.skipped += 1;

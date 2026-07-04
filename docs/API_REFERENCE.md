@@ -44,6 +44,25 @@ const store = createSqliteMemoryStore({ path: "./gmos.db" });
 const memory = createMemoryOS({ profileId: "local-user", store });
 ```
 
+Key write methods:
+
+- `observe(event)`: records one host event. For `conversation.message`, the
+  extractor is called once for that message when its role is extractable.
+- `observeWithReport(event)`: same write path, with a sanitized report.
+- `ingestConversation({ profileId?, messages, window?, extraction? })`: records
+  each message as its own evidence event, then calls the extractor once per
+  eligible message window. `window.maxMessages` defaults to `12`; metadata
+  `sessionId`, `sessionKey`, or generic `windowId` starts a new window when it
+  changes. `extraction.extractFromRoles` overrides the runtime default for that
+  ingest call.
+
+Windowed extraction keeps evidence granularity. Accepted memories store
+`metadata.windowEvidenceIds` with every contributing evidence id and keep
+`sourceEventId` on the window's last evidence event. Extractors may return a
+candidate `sourceIndex`; when valid, gmOS stores `metadata.sourceIndex` and
+`metadata.sourceEvidenceId` for the grounding message while preserving the
+window provenance.
+
 ### SQLite Store Encryption
 
 `createSqliteMemoryStore()` is plaintext by default. Hosts can opt in to
@@ -297,8 +316,8 @@ completed task trajectories are eligible; failed trajectories never count.
 
 ### Transcript Ingestion
 
-`ingestTranscript()` maps structured transcript exports into ordinary
-`observeWithReport()` calls:
+`ingestTranscript()` maps structured transcript exports into
+`ingestConversation()`:
 
 ```ts
 import { ingestTranscript } from "@ghast/memory";
@@ -321,10 +340,10 @@ Formats:
   `role`, `content`, and `created_at`.
 
 The source file content hash and record index become stable message ids, so
-re-running the same file deduplicates at `observe()` event-key level. Ingestion
-metadata stores the file hash, not the absolute path. No linguistic extraction
-is done by ingestion itself; any durable memory extraction comes from the
-runtime extractor already configured by the host.
+re-running the same file deduplicates at event-key level. Ingestion metadata
+stores the file hash, not the absolute path. No linguistic extraction is done by
+ingestion itself; any durable memory extraction comes from the runtime extractor
+already configured by the host, now amortized by windows instead of per message.
 
 ### Autopilot
 

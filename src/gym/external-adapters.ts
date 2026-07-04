@@ -340,6 +340,9 @@ function longMemEvalEvents(
           role: record.role,
           content,
           createdAt: dates[sessionIndex],
+          metadata: {
+            windowId: sessionIndex + 1,
+          },
         }),
       );
     }
@@ -433,6 +436,7 @@ function locomoEvents(
           memoryContent: speaker ? `${speaker}: ${content}` : content,
           createdAt,
           metadata: {
+            windowId: Number(sessionKey.slice("session_".length)),
             ...(speaker ? { speaker } : {}),
             ...(speaker ? { speakerKind: "person" } : {}),
             ...(participants.length > 0 ? { participants } : {}),

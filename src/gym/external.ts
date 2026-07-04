@@ -247,11 +247,14 @@ export interface ExternalMemoryBenchmarkGroupTiming {
   caseIds: string[];
   durationMs: number;
   setupDurationMs: number;
+  ingestDurationMs: number;
   scoringDurationMs: number;
   setupRuntimeMs: number;
   scoringRuntimeMs: number;
   taxonomyRuntimeMs: number;
   wideBudgetDiagnosticRuntimeMs: number;
+  extractionWindowCount: number;
+  extractionCallCount: number;
   passedCount: number;
   failedCount: number;
 }
@@ -365,6 +368,15 @@ export interface ExternalMemoryBenchmarkRuntimeAnswererManifest {
   timeoutMs: number | null;
 }
 
+export interface ExternalMemoryBenchmarkRuntimeIngestGroupManifest {
+  groupKey: string;
+  caseCount: number;
+  eventCount: number;
+  extractionWindowCount: number;
+  extractionCallCount: number;
+  ingestDurationMs: number;
+}
+
 export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   enabled: boolean;
   baseUrlHost: string | null;
@@ -384,7 +396,19 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
     reranker: string | null;
   };
   extractionFailureCount: number;
+  extractionWindowCount: number;
+  extractionCallCount: number;
+  ingestCaseGroups: ExternalMemoryBenchmarkRuntimeIngestGroupManifest[];
   answerer: ExternalMemoryBenchmarkRuntimeAnswererManifest;
+}
+
+export interface ExternalMemoryBenchmarkCaseGroupProgress {
+  groupKey: string;
+  caseCount: number;
+  eventCount: number;
+  extractionWindowCount: number;
+  extractionCallCount: number;
+  ingestDurationMs: number;
 }
 
 export const EXTERNAL_MEMORY_BENCHMARK_SCORE_SEMANTICS: ExternalMemoryBenchmarkScoreSemantics = {
@@ -441,6 +465,7 @@ export interface ExternalMemoryBenchmarkRunManifest {
     includeTemporalMetadata: boolean;
     requireConvergence: boolean;
     concurrency: number;
+    extractionWindow: number;
     reuseProfiles: boolean;
     failureSampleLimit: number;
     diagnosticsLevel: ExternalMemoryBenchmarkDiagnosticsLevel;
@@ -494,9 +519,11 @@ export interface RunExternalMemoryBenchmarkOptions {
   judge?: ExternalMemoryBenchmarkJudge | undefined;
   answerer?: ExternalMemoryBenchmarkAnswerer | undefined;
   ingestMode?: ExternalMemoryBenchmarkIngestMode | undefined;
+  extractionWindow?: number | undefined;
   intelligence?: ExternalMemoryBenchmarkIntelligence | undefined;
   maintainPhases?: MaintenancePhase[] | undefined;
   onCaseResult?: ((progress: ExternalMemoryBenchmarkProgress) => void) | undefined;
+  onCaseGroupSetup?: ((progress: ExternalMemoryBenchmarkCaseGroupProgress) => void) | undefined;
 }
 
 export interface ExternalMemoryBenchmarkReproductionBundleOptions {
@@ -774,6 +801,7 @@ const EXTERNAL_RUNTIME_STRING_METADATA_KEYS = new Set([
 ]);
 
 const EXTERNAL_RUNTIME_STRING_ARRAY_METADATA_KEYS = new Set(["participants", "speakerAliases"]);
+const EXTERNAL_RUNTIME_NUMBER_METADATA_KEYS = new Set(["windowId"]);
 
 function stringMetadataValue(value: unknown, field: string, key: string): string {
   const sanitized = sanitizePublicPayload(value);
@@ -794,6 +822,13 @@ function stringArrayMetadataValue(value: unknown, field: string, key: string): s
   return entries;
 }
 
+function numberMetadataValue(value: unknown, field: string, key: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`External benchmark ${field} metadata key ${key} must be a positive integer`);
+  }
+  return value;
+}
+
 function optionalMetadata(value: unknown, field: string): Record<string, unknown> | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -805,6 +840,8 @@ function optionalMetadata(value: unknown, field: string): Record<string, unknown
       output[key] = stringMetadataValue(child, field, key);
     } else if (EXTERNAL_RUNTIME_STRING_ARRAY_METADATA_KEYS.has(key)) {
       output[key] = stringArrayMetadataValue(child, field, key);
+    } else if (EXTERNAL_RUNTIME_NUMBER_METADATA_KEYS.has(key)) {
+      output[key] = numberMetadataValue(child, field, key);
     } else {
       throw new Error(`External benchmark ${field} metadata key ${key} is not runtime metadata`);
     }
@@ -1969,6 +2006,7 @@ function createRunManifest(input: {
       includeTemporalMetadata: input.options.includeTemporalMetadata ?? false,
       requireConvergence: input.options.requireConvergence ?? false,
       concurrency: normalizedConcurrency(input.options.concurrency),
+      extractionWindow: normalizedExtractionWindow(input.options.extractionWindow),
       reuseProfiles: input.options.reuseProfiles ?? true,
       failureSampleLimit: normalizedFailureSampleLimit(input.options.failureSampleLimit),
       diagnosticsLevel: normalizedDiagnosticsLevel(input.options.diagnosticsLevel),
@@ -1983,6 +2021,11 @@ function createRunManifest(input: {
     runtimeIntelligence: {
       ...input.runtimeIntelligence.manifest,
       extractionFailureCount: input.runtimeIntelligence.extractionFailureCount,
+      extractionWindowCount: input.runtimeIntelligence.extractionWindowCount,
+      extractionCallCount: input.runtimeIntelligence.extractionCallCount,
+      ingestCaseGroups: [...input.runtimeIntelligence.ingestCaseGroups].sort((left, right) =>
+        left.groupKey.localeCompare(right.groupKey)
+      ),
       answerer: runtimeAnswererForManifest(answerer),
     },
     ceilingMetrics: input.ceilingMetrics,
@@ -2022,6 +2065,14 @@ function normalizedIngestMode(
   throw new Error("External benchmark ingest mode must be memory or message");
 }
 
+function normalizedExtractionWindow(value: number | undefined): number {
+  const input = value ?? 12;
+  if (!Number.isInteger(input) || input <= 0) {
+    throw new Error("External benchmark extraction window must be a positive integer");
+  }
+  return Math.min(input, 1000);
+}
+
 const MAINTENANCE_PHASES = new Set<MaintenancePhase>([
   "decay",
   "consolidate",
@@ -2052,6 +2103,18 @@ function normalizedPositiveInteger(
     throw new Error(`${label} must be a positive integer`);
   }
   return input;
+}
+
+function normalizedIntelligenceConcurrency(value: number | undefined): number {
+  const concurrency = normalizedPositiveInteger(
+    value,
+    2,
+    "External benchmark intelligence concurrency",
+  );
+  if (concurrency > 16) {
+    throw new Error("External benchmark intelligence concurrency must be at most 16");
+  }
+  return concurrency;
 }
 
 function hookName(value: unknown): string | null {
@@ -2236,6 +2299,9 @@ interface RuntimeIntelligenceState {
   hooks?: DefaultIntelligence | undefined;
   manifest: ExternalMemoryBenchmarkRuntimeIntelligenceManifest;
   extractionFailureCount: number;
+  extractionWindowCount: number;
+  extractionCallCount: number;
+  ingestCaseGroups: ExternalMemoryBenchmarkRuntimeIngestGroupManifest[];
 }
 
 function disabledRuntimeIntelligence(
@@ -2262,9 +2328,15 @@ function disabledRuntimeIntelligence(
         reranker: null,
       },
       extractionFailureCount: 0,
+      extractionWindowCount: 0,
+      extractionCallCount: 0,
+      ingestCaseGroups: [],
       answerer: disabledRuntimeAnswerer(),
     },
     extractionFailureCount: 0,
+    extractionWindowCount: 0,
+    extractionCallCount: 0,
+    ingestCaseGroups: [],
   };
 }
 
@@ -2277,7 +2349,7 @@ function resolveRuntimeIntelligence(input: {
     return disabledRuntimeIntelligence(input.ingestMode, input.maintainPhases);
   }
   const config = isIntelligenceConfig(input.intelligence) ? input.intelligence : null;
-  const concurrency = normalizedPositiveInteger(config?.concurrency, 2, "External benchmark intelligence concurrency");
+  const concurrency = normalizedIntelligenceConcurrency(config?.concurrency);
   const timeoutMs = normalizedPositiveInteger(config?.timeoutMs, 20_000, "External benchmark intelligence timeoutMs");
   const apiKeyEnv = apiKeyEnvName(config?.apiKeyEnv);
   const apiKey = apiKeyEnv ? process.env[apiKeyEnv] : undefined;
@@ -2329,9 +2401,15 @@ function resolveRuntimeIntelligence(input: {
       timeoutMs,
       hookNames: hookNamesFor(hooks),
       extractionFailureCount: 0,
+      extractionWindowCount: 0,
+      extractionCallCount: 0,
+      ingestCaseGroups: [],
       answerer: disabledRuntimeAnswerer(),
     },
     extractionFailureCount: 0,
+    extractionWindowCount: 0,
+    extractionCallCount: 0,
+    ingestCaseGroups: [],
   };
 }
 
@@ -2614,6 +2692,19 @@ interface AppliedBenchmarkEvent {
   extractionFailureCount?: number | undefined;
 }
 
+interface AppliedBenchmarkEvents {
+  warnings: string[];
+  extractionFailureCount: number;
+  extractionWindowCount: number;
+  extractionCallCount: number;
+}
+
+function isBenchmarkMessageEvent(
+  event: ExternalMemoryBenchmarkEvent,
+): event is ExternalMemoryBenchmarkMessageEvent {
+  return event.type === undefined || event.type === "message";
+}
+
 async function applyBenchmarkEvent(
   memory: MemoryOS,
   profileId: string,
@@ -2670,6 +2761,62 @@ async function applyBenchmarkEvent(
         : 0,
     };
   }
+}
+
+async function applyBenchmarkEvents(input: {
+  memory: MemoryOS;
+  profileId: string;
+  events: ExternalMemoryBenchmarkEvent[];
+  ingestMode: ExternalMemoryBenchmarkIngestMode;
+  extractionWindow: number | undefined;
+  countExtractionFailures?: boolean | undefined;
+}): Promise<AppliedBenchmarkEvents> {
+  const output: AppliedBenchmarkEvents = {
+    warnings: [],
+    extractionFailureCount: 0,
+    extractionWindowCount: 0,
+    extractionCallCount: 0,
+  };
+  const pendingMessages: ExternalMemoryBenchmarkMessageEvent[] = [];
+
+  async function flushMessages(): Promise<void> {
+    if (pendingMessages.length === 0) return;
+    const messages = pendingMessages.splice(0);
+    const ingested = await input.memory.ingestConversation({
+      profileId: input.profileId,
+      messages: messages.map((event) => ({
+        role: event.role ?? "user",
+        content: event.content,
+        ...(event.createdAt !== undefined ? { createdAt: event.createdAt } : {}),
+        ...(event.privacyMode !== undefined ? { privacyMode: event.privacyMode } : {}),
+        ...(event.metadata !== undefined ? { metadata: event.metadata } : {}),
+      })),
+      window: { maxMessages: input.extractionWindow ?? 12 },
+      extraction: { extractFromRoles: ["user", "assistant"] },
+    });
+    output.extractionWindowCount += ingested.extractionWindowCount;
+    output.extractionCallCount += ingested.extractionCallCount;
+    if (input.countExtractionFailures === true) {
+      output.extractionFailureCount += ingested.extractionReports.filter(
+        (report) => report.extractorFailed === true || report.extractionSource === "none",
+      ).length;
+    }
+  }
+
+  for (const event of input.events) {
+    if (input.ingestMode === "message" && isBenchmarkMessageEvent(event)) {
+      pendingMessages.push(event);
+      continue;
+    }
+    await flushMessages();
+    const applied = await applyBenchmarkEvent(input.memory, input.profileId, event, {
+      countExtractionFailures: input.countExtractionFailures,
+    });
+    if (applied.warning !== undefined) output.warnings.push(applied.warning);
+    output.extractionFailureCount += applied.extractionFailureCount ?? 0;
+  }
+  await flushMessages();
+  return output;
 }
 
 async function scoreCase(input: {
@@ -2896,19 +3043,44 @@ async function runCaseGroup(input: {
     ...(hooks?.dossierSynthesizer ? { dossierSynthesizer: hooks.dossierSynthesizer } : {}),
     ...(hooks?.embeddingProvider ? { embeddingProvider: hooks.embeddingProvider } : {}),
     ...(retrieval ? { retrieval } : {}),
+    ...(input.options.ingestMode === "message"
+      ? { extraction: { extractFromRoles: ["user", "assistant"] } }
+      : {}),
   });
   const results: ExternalMemoryBenchmarkCaseResult[] = [];
   const setupWarnings: string[] = [];
   let setupDurationMs = 0;
+  let ingestDurationMs = 0;
+  let extractionWindowCount = 0;
+  let extractionCallCount = 0;
   try {
     await store.initialize();
-    for (const event of input.group.events) {
-      const applied = await applyBenchmarkEvent(memory, input.group.profileId, event, {
-        countExtractionFailures: input.runtimeIntelligence.hooks?.extractor !== undefined,
-      });
-      if (applied.warning !== undefined) setupWarnings.push(applied.warning);
-      input.runtimeIntelligence.extractionFailureCount += applied.extractionFailureCount ?? 0;
-    }
+    const ingestStartedMs = Date.now();
+    const applied = await applyBenchmarkEvents({
+      memory,
+      profileId: input.group.profileId,
+      events: input.group.events,
+      ingestMode: input.options.ingestMode ?? "memory",
+      extractionWindow: input.options.extractionWindow,
+      countExtractionFailures: input.runtimeIntelligence.hooks?.extractor !== undefined,
+    });
+    ingestDurationMs = Math.max(0, Date.now() - ingestStartedMs);
+    setupWarnings.push(...applied.warnings);
+    input.runtimeIntelligence.extractionFailureCount += applied.extractionFailureCount;
+    extractionWindowCount = applied.extractionWindowCount;
+    extractionCallCount = applied.extractionCallCount;
+    input.runtimeIntelligence.extractionWindowCount += extractionWindowCount;
+    input.runtimeIntelligence.extractionCallCount += extractionCallCount;
+    const ingestCaseGroup = {
+      groupKey: input.group.key,
+      caseCount: input.group.items.length,
+      eventCount: input.group.events.length,
+      extractionWindowCount,
+      extractionCallCount,
+      ingestDurationMs,
+    };
+    input.runtimeIntelligence.ingestCaseGroups.push(ingestCaseGroup);
+    input.options.onCaseGroupSetup?.(ingestCaseGroup);
     if (input.options.maintainPhases && input.options.maintainPhases.length > 0) {
       await memory.maintain({
         profileId: input.group.profileId,
@@ -2945,11 +3117,14 @@ async function runCaseGroup(input: {
         .map((item) => item.benchmarkCase.id ?? `case-${item.index + 1}`),
       durationMs,
       setupDurationMs,
+      ingestDurationMs,
       scoringDurationMs: Math.max(0, durationMs - setupDurationMs),
       setupRuntimeMs: setupDurationMs,
       scoringRuntimeMs,
       taxonomyRuntimeMs,
       wideBudgetDiagnosticRuntimeMs,
+      extractionWindowCount,
+      extractionCallCount,
       passedCount: results.filter((result) => result.pass).length,
       failedCount: results.filter((result) => !result.pass).length,
     };
@@ -2998,6 +3173,7 @@ export async function runExternalMemoryBenchmark(
   const failureSampleLimit = normalizedFailureSampleLimit(options.failureSampleLimit);
   const diagnosticsLevel = normalizedDiagnosticsLevel(options.diagnosticsLevel);
   const ingestMode = normalizedIngestMode(options.ingestMode);
+  const extractionWindow = normalizedExtractionWindow(options.extractionWindow);
   const maintainPhases = normalizedMaintainPhases(options.maintainPhases);
   const runtimeIntelligence = resolveRuntimeIntelligence({
     intelligence: options.intelligence,
@@ -3009,6 +3185,7 @@ export async function runExternalMemoryBenchmark(
     cases: normalizedCases,
     ...(defaultMode ? { mode: defaultMode } : {}),
     concurrency,
+    extractionWindow,
     reuseProfiles: options.reuseProfiles ?? true,
     failureSampleLimit,
     diagnosticsLevel,

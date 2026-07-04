@@ -107,6 +107,31 @@ const memory = createMemoryOS({
 });
 ```
 
+For ordinary `observe()` calls, `MemoryExtractionInput` contains one
+`event`/`evidence` pair. `ingestConversation()` may pass a windowed input:
+
+```ts
+{
+  profileId: "local-user",
+  event,      // the window's last eligible message
+  evidence,   // that message's evidence event
+  window: {
+    messages: [
+      { role: "user", content: "...", createdAt: "...", metadata: { speaker: "Alex" } },
+      { role: "assistant", content: "...", createdAt: "..." }
+    ],
+    evidenceIds: ["evidence_...", "evidence_..."]
+  }
+}
+```
+
+Return the same candidate JSON shape for single-message and windowed input. A
+windowed candidate may include `sourceIndex` to identify the grounding message
+within `window.messages`. gmOS validates that index, writes
+`metadata.sourceEvidenceId` when it maps to an eligible message, and always
+stores `metadata.windowEvidenceIds` so explanation and reconstruction can reach
+the full contributing window.
+
 For consolidation, the hook receives sanitized source snapshots:
 
 ```ts

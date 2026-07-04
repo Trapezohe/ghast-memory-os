@@ -71,6 +71,8 @@ import type {
   ForgetInput,
   ForgetResult,
   HostEvent,
+  IngestConversationInput,
+  IngestConversationResult,
   LowLevelAddMemoryInput,
   LowLevelArchiveMemoryInput,
   LowLevelClearMemoriesInput,
@@ -87,6 +89,7 @@ import type {
   MemoryConsolidationCluster,
   MemoryConsolidationResult,
   MemoryExtractionCandidate,
+  MemoryExtractionReport,
   MemoryKind,
   MemoryReadRetrievalOptions,
   MemorySearchInput,
@@ -98,6 +101,7 @@ import type {
   MemoryDossierCandidate,
   MemoryDossierEntitySnapshot,
   MemoryDossierResult,
+  MemoryRole,
   MemoryGapSuppressionReason,
   MemoryRecord,
   MemoryRollbackInput,
@@ -741,6 +745,22 @@ function eventKey(event: HostEvent): string {
     ].join(":");
   }
   return [event.type, event.profileId ?? "default", event.createdAt ?? nowIso(), randomUUID()].join(":");
+}
+
+function candidateDedupeKey(candidate: MemoryExtractionCandidate): string {
+  return [
+    candidate.kind,
+    candidate.predicate ?? "",
+    candidate.subject ?? "",
+    candidate.speaker ?? "",
+    candidate.content.toLowerCase(),
+  ].join("\n");
+}
+
+function windowSessionKey(event: Extract<HostEvent, { type: "conversation.message" }>): string | null {
+  const value = event.metadata?.sessionId ?? event.metadata?.sessionKey ?? event.metadata?.windowId;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
 function prepareTurnDisplayQuery(input: PrepareTurnInput): string {
@@ -1462,6 +1482,252 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     return memory ? publicMemoryRecord(memory, classifyRuntimeSensitivity) : memory;
   }
 
+  type ConversationEvent = Extract<HostEvent, { type: "conversation.message" }>;
+  interface ConversationEvidenceWrite {
+    event: ConversationEvent;
+    evidence: EvidenceEvent;
+    eventMetadata: Record<string, unknown>;
+    sensitivity: Sensitivity;
+    sourceTrust: SourceTrust;
+    allowLowerTrustPolicyWrites: boolean;
+  }
+
+  function observeResultFor(profileId: string, event: HostEvent): ObserveResult {
+    return {
+      profileId,
+      eventType: event.type,
+      observedAt: event.createdAt ?? nowIso(),
+      memoryIds: [],
+      worldBeliefIds: [],
+    };
+  }
+
+  function resolvedExtractFromRoles(
+    extraction: IngestConversationInput["extraction"] | undefined,
+  ): MemoryRole[] {
+    return extraction?.extractFromRoles ?? options.extraction?.extractFromRoles ?? ["user"];
+  }
+
+  async function recordConversationEvidence(
+    event: ConversationEvent,
+    result: ObserveResult,
+  ): Promise<{ result: ObserveResult; write?: ConversationEvidenceWrite | undefined }> {
+    const sensitivity = classifyRuntimeSensitivity(event.content, "content");
+    const eligible = event.privacyMode !== "incognito" && sensitivity !== "secret_like";
+    result.eligibleForLongTermMemory = eligible;
+
+    if (!eligible) {
+      return {
+        result: { ...result, skippedReason: "not_eligible_for_long_term_memory" },
+      };
+    }
+
+    const sourceTrust = sourceTrustForEvent(event);
+    const allowLowerTrustPolicyWrites =
+      event.allowLowerTrustPolicyWrites === true || trust.allowLowerTrustPolicyWrites;
+    const eventMetadata = sourceMetadataForEvent(event, classifyRuntimeSensitivity);
+    const dedupeEventKey = eventKey(event);
+    const existingEvidence = store.getEvidenceByEventKey
+      ? await store.getEvidenceByEventKey(dedupeEventKey)
+      : null;
+    if (existingEvidence) {
+      return {
+        result: {
+          ...result,
+          evidenceId: existingEvidence.id,
+          eligibleForLongTermMemory: existingEvidence.eligibleForLongTermMemory,
+          skippedReason: "deduplicated_event",
+        },
+      };
+    }
+    const evidence = await store.recordEvidence({
+      profileId: result.profileId,
+      eventKey: dedupeEventKey,
+      sourceType: event.type,
+      sourceUri: event.conversationId ? `conversation:${event.conversationId}` : null,
+      content: event.content,
+      sensitivity,
+      eligibleForLongTermMemory: eligible,
+      payload: {
+        role: event.role,
+        messageId: event.messageId,
+        privacyMode: event.privacyMode ?? "normal",
+        sourceTrust,
+        ...(allowLowerTrustPolicyWrites && sourceTrust !== "user"
+          ? { trustOverride: { allowPolicyWrites: true } }
+          : {}),
+        metadata: eventMetadata,
+      },
+      createdAt: event.createdAt,
+    });
+    result.evidenceId = evidence.id;
+    return {
+      result,
+      write: {
+        event,
+        evidence,
+        eventMetadata,
+        sensitivity,
+        sourceTrust,
+        allowLowerTrustPolicyWrites,
+      },
+    };
+  }
+
+  async function applyExtractionCandidates(input: {
+    result: ObserveResult;
+    profileId: string;
+    candidates: MemoryExtractionCandidate[];
+    event: ConversationEvent;
+    evidence: EvidenceEvent;
+    eventMetadata: Record<string, unknown>;
+    sensitivity: Sensitivity;
+    sourceTrust: SourceTrust;
+    allowLowerTrustPolicyWrites: boolean;
+    sourceEventId: string;
+    metadata?: Record<string, unknown> | undefined;
+    dedupeKeys?: Set<string> | undefined;
+  }): Promise<void> {
+    for (const candidate of input.candidates) {
+      const dedupeKey = candidateDedupeKey(candidate);
+      if (input.dedupeKeys?.has(dedupeKey)) continue;
+      const candidateSourceMetadata = sourceMetadataForCandidate(
+        input.eventMetadata,
+        candidate,
+        classifyRuntimeSensitivity,
+      );
+      const subject = worldBeliefSubjectForCandidate({
+        candidate,
+        eventMetadata: candidateSourceMetadata,
+        classifyRuntimeSensitivity,
+      });
+      const writeCandidate = memoryWriteCandidateForSubject({
+        candidate,
+        subject: subject ?? "user",
+        entityResolver: options.entityResolver,
+      });
+      if (
+        input.sourceTrust !== "user" &&
+        lowerTrustPolicyWrite(writeCandidate) &&
+        !input.allowLowerTrustPolicyWrites
+      ) {
+        continue;
+      }
+      const candidateSensitivity = classifyRuntimeSensitivity(writeCandidate.content, "content");
+      const candidateStructuredSensitivity = structuredCandidateSensitivity(
+        writeCandidate,
+        classifyRuntimeSensitivity,
+      );
+      const candidateMetadataSensitivity = runtimeValueSensitivity(
+        writeCandidate.metadata,
+        classifyRuntimeSensitivity,
+      );
+      const structuredMetadata = structuredCandidateMetadata(writeCandidate);
+      if (
+        writeCandidate.kind === "person" ||
+        candidateSensitivity === "secret_like" ||
+        candidateMetadataSensitivity === "secret_like" ||
+        candidateStructuredSensitivity === "secret_like" ||
+        isPersonRoutedMemory(writeCandidate.content)
+      ) {
+        continue;
+      }
+      const memoryEntityMentions = buildEntityMentions({
+        subject: writeCandidate.subject ?? (subject && subject !== "user" ? subject : undefined),
+        predicate: writeCandidate.predicate,
+        subjectAliases: writeCandidate.subjectAliases,
+        sourceMetadata: candidateSourceMetadata,
+          entityResolver: options.entityResolver,
+        });
+      input.dedupeKeys?.add(dedupeKey);
+      const memorySensitivity = memorySensitivityForCandidate({
+        eventSensitivity: input.sensitivity,
+        candidateContentSensitivity: candidateSensitivity,
+        candidateMetadataSensitivity,
+        candidateStructuredSensitivity,
+      });
+      const confidenceCap = sourceTrustConfidenceCap(input.sourceTrust, trust);
+      const confidence = confidenceCap === undefined
+        ? writeCandidate.confidence
+        : Math.min(writeCandidate.confidence, confidenceCap);
+      const annealingMetadata = lowerTrustAnnealingMetadata({
+        sourceTrust: input.sourceTrust,
+        confidence,
+        startedAt: input.event.createdAt ?? input.evidence.createdAt,
+        lifecycle,
+      });
+      const embedding = await embeddingForRuntimeWrite({
+        kind: writeCandidate.kind,
+        sensitivity: memorySensitivity,
+        content: writeCandidate.content,
+      });
+      const memory = await store.addMemory({
+        profileId: input.profileId,
+        kind: writeCandidate.kind,
+        content: writeCandidate.content,
+        confidence,
+        sensitivity: memorySensitivity,
+        sourceEventId: input.sourceEventId,
+        metadata: {
+          ...sanitizeRuntimeExternalMemoryMetadata(
+            candidate.metadata,
+            classifyRuntimeSensitivity,
+          ),
+          ...structuredMetadata,
+          ...(input.metadata ?? {}),
+          sourceTrust: input.sourceTrust,
+          ...annealingMetadata,
+          sourceRole: input.event.role,
+          ...(Object.keys(candidateSourceMetadata).length > 0 ? { sourceMetadata: candidateSourceMetadata } : {}),
+          ...(memoryEntityMentions.length > 0 ? { entityMentions: memoryEntityMentions } : {}),
+        },
+        createdAt: input.event.createdAt,
+        ...(embedding ? { embedding } : {}),
+      });
+      input.result.memoryIds.push(memory.id);
+      if (writeCandidate.predicate && subject) {
+        const subjectAliases = worldBeliefSubjectAliasesForCandidate({
+          candidate: writeCandidate,
+          subject,
+          eventMetadata: candidateSourceMetadata,
+          classifyRuntimeSensitivity,
+        });
+        const beliefEntityMentions = buildEntityMentions({
+          subject,
+          predicate: writeCandidate.predicate,
+          subjectAliases,
+          sourceMetadata: candidateSourceMetadata,
+          entityResolver: options.entityResolver,
+        });
+        const belief = await store.addWorldBelief({
+          profileId: input.profileId,
+          subject,
+          subjectAliases,
+          predicate: writeCandidate.predicate,
+          object: writeCandidate.object ?? writeCandidate.content,
+          confidence,
+          sourceMemoryId: memory.id,
+          cardinality: writeCandidate.cardinality,
+          createdAt: input.event.createdAt ?? memory.createdAt,
+          metadata: {
+            ...sanitizeRuntimeExternalMemoryMetadata(
+              writeCandidate.metadata,
+              classifyRuntimeSensitivity,
+            ),
+            ...structuredMetadata,
+            ...(input.metadata ?? {}),
+            sourceTrust: input.sourceTrust,
+            ...annealingMetadata,
+            sourceRole: input.event.role,
+            ...(Object.keys(candidateSourceMetadata).length > 0 ? { sourceMetadata: candidateSourceMetadata } : {}),
+            ...(beliefEntityMentions.length > 0 ? { entityMentions: beliefEntityMentions } : {}),
+          },
+        });
+        input.result.worldBeliefIds.push(belief.id);
+      }
+    }
+  }
+
   async function observe(event: HostEvent): Promise<void> {
     await observeWithReport(event);
   }
@@ -1469,13 +1735,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   async function observeWithReport(event: HostEvent): Promise<ObserveResult> {
     await initialize();
     const profileId = profileIdFor(defaultProfileId, event.profileId);
-    const result: ObserveResult = {
-      profileId,
-      eventType: event.type,
-      observedAt: event.createdAt ?? nowIso(),
-      memoryIds: [],
-      worldBeliefIds: [],
-    };
+    const result = observeResultFor(profileId, event);
 
     if (event.type === "user.forget_request") {
       await store.forget({
@@ -1526,55 +1786,15 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
 
     if (event.type !== "conversation.message") return { ...result, skippedReason: "unsupported_event" };
 
-    const sensitivity = classifyRuntimeSensitivity(event.content, "content");
-    const eligible = event.privacyMode !== "incognito" && sensitivity !== "secret_like";
-    result.eligibleForLongTermMemory = eligible;
-
-    if (!eligible) return { ...result, skippedReason: "not_eligible_for_long_term_memory" };
-
-    const sourceTrust = sourceTrustForEvent(event);
-    const allowLowerTrustPolicyWrites =
-      event.allowLowerTrustPolicyWrites === true || trust.allowLowerTrustPolicyWrites;
-    const eventMetadata = sourceMetadataForEvent(event, classifyRuntimeSensitivity);
-    const dedupeEventKey = eventKey(event);
-    const existingEvidence = store.getEvidenceByEventKey
-      ? await store.getEvidenceByEventKey(dedupeEventKey)
-      : null;
-    if (existingEvidence) {
-      return {
-        ...result,
-        evidenceId: existingEvidence.id,
-        eligibleForLongTermMemory: existingEvidence.eligibleForLongTermMemory,
-        skippedReason: "deduplicated_event",
-      };
-    }
-    const evidence = await store.recordEvidence({
-      profileId,
-      eventKey: dedupeEventKey,
-      sourceType: event.type,
-      sourceUri: event.conversationId ? `conversation:${event.conversationId}` : null,
-      content: event.content,
-      sensitivity,
-      eligibleForLongTermMemory: eligible,
-      payload: {
-        role: event.role,
-        messageId: event.messageId,
-        privacyMode: event.privacyMode ?? "normal",
-        sourceTrust,
-        ...(allowLowerTrustPolicyWrites && sourceTrust !== "user"
-          ? { trustOverride: { allowPolicyWrites: true } }
-          : {}),
-        metadata: eventMetadata,
-      },
-      createdAt: event.createdAt,
-    });
-    result.evidenceId = evidence.id;
-
-    const extractFromRoles = options.extraction?.extractFromRoles ?? ["user"];
+    const recorded = await recordConversationEvidence(event, result);
+    if (!recorded.write) return recorded.result;
+    const { evidence, eventMetadata, sensitivity, sourceTrust, allowLowerTrustPolicyWrites } =
+      recorded.write;
+    const extractFromRoles = resolvedExtractFromRoles(undefined);
     if (!extractFromRoles.includes(event.role)) {
-      return { ...result, skippedReason: "non_user_message" };
+      return { ...recorded.result, skippedReason: "non_user_message" };
     }
-    if (isPersonRoutedMemory(event.content)) return { ...result, skippedReason: "person_routed" };
+    if (isPersonRoutedMemory(event.content)) return { ...recorded.result, skippedReason: "person_routed" };
     const extraction = await extractMemoryCandidatePlan({
       extractor: options.extractor,
       temporalParser: options.temporal?.parser,
@@ -1586,144 +1806,176 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       },
       minConfidence: options.extraction?.minConfidence,
     });
-    result.extraction = sanitizeRuntimeExtractionReport(
+    recorded.result.extraction = sanitizeRuntimeExtractionReport(
       extraction.report,
       classifyRuntimeSensitivity,
     );
-    for (const candidate of extraction.candidates) {
-      const candidateSourceMetadata = sourceMetadataForCandidate(
-        eventMetadata,
-        candidate,
-        classifyRuntimeSensitivity,
-      );
-      const subject = worldBeliefSubjectForCandidate({
-        candidate,
-        eventMetadata: candidateSourceMetadata,
-        classifyRuntimeSensitivity,
-      });
-      const writeCandidate = memoryWriteCandidateForSubject({
-        candidate,
-        subject: subject ?? "user",
-        entityResolver: options.entityResolver,
-      });
-      if (
-        sourceTrust !== "user" &&
-        lowerTrustPolicyWrite(writeCandidate) &&
-        !allowLowerTrustPolicyWrites
-      ) {
-        continue;
-      }
-      const candidateSensitivity = classifyRuntimeSensitivity(writeCandidate.content, "content");
-      const candidateStructuredSensitivity = structuredCandidateSensitivity(
-        writeCandidate,
-        classifyRuntimeSensitivity,
-      );
-      const candidateMetadataSensitivity = runtimeValueSensitivity(
-        writeCandidate.metadata,
-        classifyRuntimeSensitivity,
-      );
-      const structuredMetadata = structuredCandidateMetadata(writeCandidate);
-      if (
-        writeCandidate.kind === "person" ||
-        candidateSensitivity === "secret_like" ||
-        candidateMetadataSensitivity === "secret_like" ||
-        candidateStructuredSensitivity === "secret_like" ||
-        isPersonRoutedMemory(writeCandidate.content)
-      ) {
-        continue;
-      }
-      const memoryEntityMentions = buildEntityMentions({
-        subject: writeCandidate.subject ?? (subject && subject !== "user" ? subject : undefined),
-        predicate: writeCandidate.predicate,
-        subjectAliases: writeCandidate.subjectAliases,
-        sourceMetadata: candidateSourceMetadata,
-        entityResolver: options.entityResolver,
-      });
-      const memorySensitivity = memorySensitivityForCandidate({
-        eventSensitivity: sensitivity,
-        candidateContentSensitivity: candidateSensitivity,
-        candidateMetadataSensitivity,
-        candidateStructuredSensitivity,
-      });
-      const confidenceCap = sourceTrustConfidenceCap(sourceTrust, trust);
-      const confidence = confidenceCap === undefined
-        ? writeCandidate.confidence
-        : Math.min(writeCandidate.confidence, confidenceCap);
-      const annealingMetadata = lowerTrustAnnealingMetadata({
-        sourceTrust,
-        confidence,
-        startedAt: event.createdAt ?? evidence.createdAt,
-        lifecycle,
-      });
-      const embedding = await embeddingForRuntimeWrite({
-        kind: writeCandidate.kind,
-        sensitivity: memorySensitivity,
-        content: writeCandidate.content,
-      });
-      const memory = await store.addMemory({
-        profileId,
-        kind: writeCandidate.kind,
-        content: writeCandidate.content,
-        confidence,
-        sensitivity: memorySensitivity,
-        sourceEventId: evidence.id,
-        metadata: {
-          ...sanitizeRuntimeExternalMemoryMetadata(
-            candidate.metadata,
-            classifyRuntimeSensitivity,
-          ),
-          ...structuredMetadata,
-          sourceTrust,
-          ...annealingMetadata,
-          sourceRole: event.role,
-          ...(Object.keys(candidateSourceMetadata).length > 0 ? { sourceMetadata: candidateSourceMetadata } : {}),
-          ...(memoryEntityMentions.length > 0 ? { entityMentions: memoryEntityMentions } : {}),
-        },
-        createdAt: event.createdAt,
-        ...(embedding ? { embedding } : {}),
-      });
-      result.memoryIds.push(memory.id);
-      if (writeCandidate.predicate && subject) {
-        const subjectAliases = worldBeliefSubjectAliasesForCandidate({
-          candidate: writeCandidate,
-          subject,
-          eventMetadata: candidateSourceMetadata,
-          classifyRuntimeSensitivity,
-        });
-        const beliefEntityMentions = buildEntityMentions({
-          subject,
-          predicate: writeCandidate.predicate,
-          subjectAliases,
-          sourceMetadata: candidateSourceMetadata,
-          entityResolver: options.entityResolver,
-        });
-        const belief = await store.addWorldBelief({
+    await applyExtractionCandidates({
+      result: recorded.result,
+      profileId,
+      candidates: extraction.candidates,
+      event,
+      evidence,
+      eventMetadata,
+      sensitivity,
+      sourceTrust,
+      allowLowerTrustPolicyWrites,
+      sourceEventId: evidence.id,
+    });
+    return recorded.result;
+  }
+
+  async function ingestConversation(
+    input: IngestConversationInput,
+  ): Promise<IngestConversationResult> {
+    await initialize();
+    const profileId = profileIdFor(defaultProfileId, input.profileId);
+    const observedAt = nowIso();
+    const extractFromRoles = resolvedExtractFromRoles(input.extraction);
+    const maxMessages = boundedPositiveInteger(input.window?.maxMessages, 12, 1, 1000);
+    const results: ObserveResult[] = [];
+    const extractionReports: MemoryExtractionReport[] = [];
+    const dedupeKeys = new Set<string>();
+    let extractionWindowCount = 0;
+    let extractionCallCount = 0;
+
+    interface WindowMember extends ConversationEvidenceWrite {
+      result: ObserveResult;
+    }
+
+    let pendingWindow: WindowMember[] = [];
+    let pendingSessionKey: string | null = null;
+
+    async function flushWindow(): Promise<void> {
+      if (pendingWindow.length === 0) return;
+      const members = pendingWindow;
+      pendingWindow = [];
+      pendingSessionKey = null;
+      const last = members[members.length - 1]!;
+      const windowEvidenceIds = members.map((member) => member.evidence.id);
+      const extraction = await extractMemoryCandidatePlan({
+        extractor: options.extractor,
+        temporalParser: options.temporal?.parser,
+        inferTemporalFromText: options.temporal?.inferFromText,
+        extractionInput: {
           profileId,
-          subject,
-          subjectAliases,
-          predicate: writeCandidate.predicate,
-          object: writeCandidate.object ?? writeCandidate.content,
-          confidence,
-          sourceMemoryId: memory.id,
-          cardinality: writeCandidate.cardinality,
-          createdAt: event.createdAt ?? memory.createdAt,
-          metadata: {
-            ...sanitizeRuntimeExternalMemoryMetadata(
-              writeCandidate.metadata,
-              classifyRuntimeSensitivity,
-            ),
-            ...structuredMetadata,
-            sourceTrust,
-            ...annealingMetadata,
-            sourceRole: event.role,
-            ...(Object.keys(candidateSourceMetadata).length > 0 ? { sourceMetadata: candidateSourceMetadata } : {}),
-            ...(beliefEntityMentions.length > 0 ? { entityMentions: beliefEntityMentions } : {}),
+          event: { ...last.event, metadata: last.eventMetadata },
+          evidence: last.evidence,
+          window: {
+            messages: members.map((member) => ({
+              role: member.event.role,
+              content: member.event.content,
+              ...(member.event.createdAt ? { createdAt: member.event.createdAt } : {}),
+              ...(Object.keys(member.eventMetadata).length > 0
+                ? { metadata: member.eventMetadata }
+                : {}),
+            })),
+            evidenceIds: windowEvidenceIds,
           },
+        },
+        minConfidence: options.extraction?.minConfidence,
+      });
+      extractionWindowCount += 1;
+      if (options.extractor) extractionCallCount += 1;
+      const safeReport = sanitizeRuntimeExtractionReport(
+        extraction.report,
+        classifyRuntimeSensitivity,
+      );
+      last.result.extraction = safeReport;
+      extractionReports.push(safeReport);
+      const windowSensitivity = members.reduce<Sensitivity>(
+        (sensitivity, member) => maxSensitivity(sensitivity, member.sensitivity),
+        "normal",
+      );
+      const windowSourceTrust = members.reduce<SourceTrust>(
+        (sourceTrust, member) => lowerTrust(sourceTrust, member.sourceTrust),
+        "user",
+      );
+      for (const candidate of extraction.candidates) {
+        const sourceIndex = Number.isInteger(candidate.sourceIndex)
+          ? candidate.sourceIndex
+          : undefined;
+        const sourceMember = sourceIndex !== undefined ? members[sourceIndex] : undefined;
+        const source = sourceMember ?? last;
+        const validSourceIndex = sourceMember !== undefined ? sourceIndex : undefined;
+        await applyExtractionCandidates({
+          result: last.result,
+          profileId,
+          candidates: [candidate],
+          event: source.event,
+          evidence: last.evidence,
+          eventMetadata: source.eventMetadata,
+          sensitivity: sourceMember ? source.sensitivity : windowSensitivity,
+          sourceTrust: sourceMember ? source.sourceTrust : windowSourceTrust,
+          allowLowerTrustPolicyWrites: source.allowLowerTrustPolicyWrites,
+          sourceEventId: last.evidence.id,
+          metadata: {
+            windowEvidenceIds,
+            ...(validSourceIndex !== undefined
+              ? {
+                  sourceIndex: validSourceIndex,
+                  sourceEvidenceId: source.evidence.id,
+                }
+              : {}),
+          },
+          dedupeKeys,
         });
-        result.worldBeliefIds.push(belief.id);
       }
     }
-    return result;
+
+    for (const [index, message] of input.messages.entries()) {
+      const eventProfileId = profileIdFor(profileId, message.profileId);
+      const event: ConversationEvent = {
+        type: "conversation.message",
+        profileId: eventProfileId,
+        role: message.role,
+        content: message.content,
+        ...(message.conversationId !== undefined ? { conversationId: message.conversationId } : {}),
+        ...(message.messageId !== undefined ? { messageId: message.messageId } : {}),
+        ...(message.sourceTrust !== undefined ? { sourceTrust: message.sourceTrust } : {}),
+        ...(message.allowLowerTrustPolicyWrites !== undefined
+          ? { allowLowerTrustPolicyWrites: message.allowLowerTrustPolicyWrites }
+          : {}),
+        ...(message.privacyMode !== undefined ? { privacyMode: message.privacyMode } : {}),
+        ...(message.createdAt !== undefined ? { createdAt: message.createdAt } : {}),
+        ...(message.metadata !== undefined ? { metadata: message.metadata } : {}),
+      };
+      const result = observeResultFor(eventProfileId, event);
+      const recorded = await recordConversationEvidence(event, result);
+      results.push(recorded.result);
+      if (!recorded.write) continue;
+      if (!extractFromRoles.includes(event.role)) {
+        recorded.result.skippedReason = "non_user_message";
+        continue;
+      }
+      if (isPersonRoutedMemory(event.content)) {
+        recorded.result.skippedReason = "person_routed";
+        continue;
+      }
+      const sessionKey = windowSessionKey(event);
+      if (
+        pendingWindow.length > 0 &&
+        (pendingWindow.length >= maxMessages ||
+          (sessionKey !== null && pendingSessionKey !== sessionKey))
+      ) {
+        await flushWindow();
+      }
+      pendingSessionKey = sessionKey;
+      pendingWindow.push({ ...recorded.write, result: recorded.result });
+    }
+    await flushWindow();
+
+    return {
+      profileId,
+      observedAt,
+      results,
+      evidenceIds: results.flatMap((result) => result.evidenceId ? [result.evidenceId] : []),
+      memoryIds: results.flatMap((result) => result.memoryIds),
+      worldBeliefIds: results.flatMap((result) => result.worldBeliefIds),
+      extractionWindowCount,
+      extractionCallCount,
+      extractionReports,
+    };
   }
 
   async function listEvidence(
@@ -3222,6 +3474,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     get,
     observe,
     observeWithReport,
+    ingestConversation,
     listEvidence,
     prepareTurn,
     explainTurn,
