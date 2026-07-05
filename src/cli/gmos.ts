@@ -713,13 +713,46 @@ function externalAnswererConfigOption(
   };
 }
 
+function externalJudgeConfigOption(
+  intelligence: ReturnType<typeof externalIntelligenceOption>,
+): CliOpenAICompatibleHookConfig | undefined {
+  const hasJudgeFlag = process.argv.some((arg) => arg.startsWith("--judge-"));
+  if (!hasJudgeFlag) return undefined;
+  const model = value("--judge-model");
+  if (!model) {
+    throw new Error("gmos gym external judge flags require --judge-model");
+  }
+  const judgeBaseUrl = value("--judge-base-url");
+  const baseUrl = judgeBaseUrl ?? intelligence?.baseUrl;
+  if (!baseUrl) {
+    throw new Error("gmos gym external judge flags require --judge-base-url or --intelligence-base-url");
+  }
+  const judgeApiKeyEnv = value("--judge-api-key-env");
+  if (judgeApiKeyEnv !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(judgeApiKeyEnv)) {
+    throw new Error("--judge-api-key-env must be an environment variable name");
+  }
+  const judgeTimeoutMs = positiveIntegerOptionValue("--judge-timeout-ms");
+  const judgeDisableThinking = has("--judge-disable-thinking");
+  const apiKeyEnv = judgeApiKeyEnv ?? (judgeBaseUrl === undefined ? intelligence?.apiKeyEnv : undefined);
+  return {
+    baseUrl,
+    model,
+    ...(apiKeyEnv ? { apiKeyEnv, apiKey: apiKeyFromEnv(apiKeyEnv, "External benchmark judge API key environment variable") } : {}),
+    ...(judgeTimeoutMs !== undefined || intelligence?.timeoutMs !== undefined
+      ? { timeoutMs: judgeTimeoutMs ?? intelligence?.timeoutMs }
+      : {}),
+    ...(judgeDisableThinking || intelligence?.disableThinking ? { disableThinking: true } : {}),
+  };
+}
+
 function externalOfficialJudgeOption(
   protocol: "deterministic_local" | "official_protocol",
   intelligence: ReturnType<typeof externalIntelligenceOption>,
   answererConfig: CliOpenAICompatibleHookConfig | undefined,
+  judgeConfig: CliOpenAICompatibleHookConfig | undefined,
 ) {
   if (protocol !== "official_protocol") return undefined;
-  const config = intelligence
+  const config = judgeConfig ?? (intelligence
     ? {
         baseUrl: intelligence.baseUrl,
         model: intelligence.model,
@@ -735,7 +768,7 @@ function externalOfficialJudgeOption(
         ...(intelligence.timeoutMs !== undefined ? { timeoutMs: intelligence.timeoutMs } : {}),
         ...(intelligence.disableThinking ? { disableThinking: true } : {}),
       }
-    : answererConfig;
+    : answererConfig);
   if (!config) {
     throw new Error("gmos gym external --protocol official-protocol requires an OpenAI-compatible judge endpoint via --intelligence-base-url/--intelligence-model or --answerer-base-url/--answerer-model");
   }
@@ -1940,10 +1973,14 @@ async function main(): Promise<void> {
     if (answererConfig && protocol !== "official_protocol") {
       throw new Error("gmos gym external --answerer-* flags require --protocol official-protocol");
     }
+    const judgeConfig = externalJudgeConfigOption(intelligence);
+    if (judgeConfig && protocol !== "official_protocol") {
+      throw new Error("gmos gym external --judge-* flags require --protocol official-protocol");
+    }
     const answerer = answererConfig
       ? createOpenAICompatibleExternalBenchmarkAnswerer(answererConfig)
       : undefined;
-    const judge = externalOfficialJudgeOption(protocol, intelligence, answererConfig);
+    const judge = externalOfficialJudgeOption(protocol, intelligence, answererConfig, judgeConfig);
     const resultsJsonl = strictOptionValue("--results-jsonl");
     const maxCases = positiveIntegerOptionValue("--max-cases");
     const caseOffset = nonNegativeIntegerOptionValue("--case-offset");

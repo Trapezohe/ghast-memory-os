@@ -112,11 +112,21 @@ function containsInstructionArtifact(value: string): boolean {
   return /ignore previous instructions|system prompt|developer message|contract JSON/iu.test(value);
 }
 
+function contentFromStructuredFields(record: Record<string, unknown>): string | undefined {
+  const content = optionalString(record.content);
+  if (content) return content;
+  const subject = optionalString(record.subject);
+  const predicate = optionalString(record.predicate);
+  const object = optionalString(record.object);
+  if (!subject || !predicate || !object) return undefined;
+  return `${subject} ${predicate} ${object}`;
+}
+
 function normalizeCandidate(value: unknown): MemoryExtractionCandidate | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   const kind = record.kind;
-  const content = optionalString(record.content);
+  const content = contentFromStructuredFields(record);
   if (!MEMORY_KINDS.has(kind as MemoryKind) || !content) return null;
   if (containsInstructionArtifact(content)) return null;
   const confidence = boundedNumber(Number(record.confidence), 0, 0, 1);

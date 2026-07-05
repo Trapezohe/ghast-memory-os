@@ -5578,6 +5578,46 @@ const chatPartsCandidates = await runExtractorForTest(
 );
 assert.equal(chatPartsCandidates[0]?.content, "Chat content parts are parsed as extractor JSON.");
 assert.equal(chatPartsCandidates[0]?.metadata?.llmExtractorModel, "fixture-chat-parts-model");
+const structuredFieldsExtractor = createOpenAICompatibleExtractor({
+  model: "fixture-structured-fields-model",
+  fetch: async () => ({
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    text: async () =>
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                memories: [
+                  {
+                    kind: "fact",
+                    subject: "user",
+                    predicate: "car_service_experience",
+                    object: "great",
+                    confidence: 0.9,
+                  },
+                ],
+              }),
+            },
+          },
+        ],
+      }),
+  }),
+});
+const structuredFieldsCandidates = await runExtractorForTest(
+  structuredFieldsExtractor,
+  openAICompatibleExtractorInput,
+);
+assert.equal(structuredFieldsCandidates[0]?.content, "user car_service_experience great");
+assert.equal(structuredFieldsCandidates[0]?.subject, "user");
+assert.equal(structuredFieldsCandidates[0]?.predicate, "car_service_experience");
+assert.equal(structuredFieldsCandidates[0]?.object, "great");
+assert.equal(
+  structuredFieldsCandidates[0]?.metadata?.llmExtractorModel,
+  "fixture-structured-fields-model",
+);
 const responsesOutputTextExtractor = createOpenAICompatibleExtractor({
   model: "fixture-responses-output-text-model",
   fetch: async () => ({
@@ -24520,6 +24560,8 @@ const cliExternalReader = spawnSync(
     "5000",
     "--answerer-model",
     "cli-reader",
+    "--judge-model",
+    "cli-judge-override",
     "--format",
     "json",
   ],
@@ -24544,6 +24586,7 @@ const cliExternalReaderJson = JSON.parse(cliExternalReader.stdout) as {
       officialProtocol?: string;
       comparableToOfficialScore?: boolean;
       answererProvenance?: { kind?: string; name?: string | null };
+      judgeProvenance?: { kind?: string; name?: string | null };
     };
     runtimeIntelligence?: {
       answerer?: {
@@ -24566,6 +24609,10 @@ assert.deepEqual(cliExternalReaderJson.runManifest?.scoreSemantics?.answererProv
   kind: "host_provided",
   name: "openai-compatible-answerer:cli-reader",
 });
+assert.deepEqual(cliExternalReaderJson.runManifest?.scoreSemantics?.judgeProvenance, {
+  kind: "host_provided",
+  name: "openai-compatible-judge:cli-judge-override",
+});
 assert.equal(cliExternalReaderJson.runManifest?.runtimeIntelligence?.answerer?.enabled, true);
 assert.equal(cliExternalReaderJson.runManifest?.runtimeIntelligence?.answerer?.baseUrlHost, "cli-reader.invalid");
 assert.equal(cliExternalReaderJson.runManifest?.runtimeIntelligence?.answerer?.apiKeyEnv, "GMOS_CLI_READER_SECRET");
@@ -24573,7 +24620,7 @@ assert.equal(cliExternalReaderJson.runManifest?.runtimeIntelligence?.answerer?.m
 assert.equal(cliExternalReaderJson.runManifest?.runtimeIntelligence?.answerer?.timeoutMs, 5000);
 const cliExternalReaderFetchLog = readFileSync(cliExternalReaderFetchLogFile, "utf8");
 assert.match(cliExternalReaderFetchLog, /"model":"cli-reader"/);
-assert.match(cliExternalReaderFetchLog, /"model":"cli-judge"/);
+assert.match(cliExternalReaderFetchLog, /"model":"cli-judge-override"/);
 assert.match(cliExternalReaderFetchLog, new RegExp(`Bearer ${cliExternalReaderSecret}`));
 assert.equal(cliExternalReader.stdout.includes(cliExternalReaderSecret), false);
 const cliExternalReaderBadEnv = spawnSync(
