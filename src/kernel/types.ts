@@ -135,6 +135,7 @@ export interface PrepareTurnInput {
   } | undefined;
   includeEvidence?: boolean | undefined;
   includeSensitive?: boolean | undefined;
+  includeTemporalContext?: boolean | undefined;
   contextBudgetTokens?: number | undefined;
   curiosityBudget?: number | undefined;
   suppressGapIds?: string[] | undefined;
@@ -146,6 +147,7 @@ export interface PrepareTurnInput {
     stopWhenEvidenceEnough?: boolean | undefined;
     evidenceConvergenceThreshold?: number | undefined;
     includeTemporalMetadata?: boolean | undefined;
+    includeTemporalContext?: boolean | undefined;
     temporalMode?: "auto" | "current" | "history" | undefined;
     recallPurpose?: ReconstructionRecallPurpose | undefined;
     reconstructionIntent?: ReconstructionIntentHint | undefined;
@@ -734,6 +736,7 @@ export interface TurnExplanationIncludedMemory {
   kind: MemoryKind;
   status: MemoryStatus;
   content: string;
+  temporalLabel?: string | undefined;
   retention: TurnExplanationMemoryRetention;
   cues: string[];
   associations: string[];
@@ -860,6 +863,7 @@ export interface ReconstructContextInput {
   dispositionPreset?: string | undefined;
   includeEvidence?: boolean | undefined;
   includeSensitive?: boolean | undefined;
+  includeTemporalContext?: boolean | undefined;
   contextBudgetTokens?: number | undefined;
   maxSteps?: number | undefined;
   maxBranch?: number | undefined;

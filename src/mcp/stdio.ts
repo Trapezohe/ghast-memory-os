@@ -86,6 +86,7 @@ const prepareReconstructionSchema = z.object({
   stopWhenEvidenceEnough: z.boolean().optional(),
   evidenceConvergenceThreshold: z.number().positive().optional(),
   includeTemporalMetadata: z.boolean().optional(),
+  includeTemporalContext: z.boolean().optional(),
   temporalMode: z.enum(["auto", "current", "history"]).optional(),
   reconstructionIntent: reconstructionIntentSchema.optional(),
 }).strict();
@@ -96,6 +97,7 @@ const prepareContextSchema = z.object({
   messages: z.array(messageSchema).optional(),
   dispositionPreset: z.enum(["focused", "balanced", "expansive"]).optional(),
   includeEvidence: z.boolean().optional(),
+  includeTemporalContext: z.boolean().optional(),
   contextBudgetTokens: z.number().positive().optional(),
   curiosityBudget: z.number().int().nonnegative().optional(),
   suppressGapIds: z.array(z.string()).optional(),
@@ -108,6 +110,7 @@ const explainTurnSchema = z.object({
   messages: z.array(messageSchema).optional(),
   dispositionPreset: z.enum(["focused", "balanced", "expansive"]).optional(),
   includeEvidence: z.boolean().optional(),
+  includeTemporalContext: z.boolean().optional(),
   contextBudgetTokens: z.number().positive().optional(),
   curiosityBudget: z.number().int().nonnegative().optional(),
   suppressGapIds: z.array(z.string()).optional(),
@@ -128,6 +131,7 @@ const reconstructContextSchema = z.object({
   stopWhenEvidenceEnough: z.boolean().optional(),
   evidenceConvergenceThreshold: z.number().positive().optional(),
   includeTemporalMetadata: z.boolean().optional(),
+  includeTemporalContext: z.boolean().optional(),
   temporalMode: z.enum(["auto", "current", "history"]).optional(),
   reconstructionIntent: reconstructionIntentSchema.optional(),
 }).strict();
@@ -145,6 +149,7 @@ const explainEvidencePathSchema = z.object({
   stopWhenEvidenceEnough: z.boolean().optional(),
   evidenceConvergenceThreshold: z.number().positive().optional(),
   includeTemporalMetadata: z.boolean().optional(),
+  includeTemporalContext: z.boolean().optional(),
   temporalMode: z.enum(["auto", "current", "history"]).optional(),
   reconstructionIntent: reconstructionIntentSchema.optional(),
 }).strict();

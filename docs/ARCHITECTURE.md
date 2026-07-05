@@ -191,6 +191,9 @@ query cues
 The planner remains bounded by step, branch, and token budgets. Context output
 should carry uncertainty, conflict, current/history, and evidence markers rather
 than blindly stuffing every neighbor into the prompt.
+Memory and reconstruction content lines also carry compact temporal labels from
+existing metadata, so reader models can reason about dates without schema
+changes or extra retrieval passes.
 
 Direct memory retrieval uses one shared hybrid search path. FTS rank, vector
 cosine similarity, and association/tag overlap are fused with fixed default

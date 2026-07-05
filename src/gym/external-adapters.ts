@@ -368,6 +368,7 @@ function parseLongMemEvalCaseSet(
     }
     const question = stringValue(row.question);
     if (!question) throw new Error(`LongMemEval case ${caseId} requires question`);
+    const answerAt = normalizeExternalDate(row.question_date);
     const expectedAny = uniqueStrings(stringsFromAnswer(row.answer));
     if (expectedAny.length === 0) throw new Error(`LongMemEval case ${caseId} requires answer`);
     cases.push({
@@ -377,6 +378,7 @@ function parseLongMemEvalCaseSet(
       slices: longMemEvalSlices(row),
       events: longMemEvalEvents(row, caseId, mode),
       question,
+      ...(answerAt ? { answerAt } : {}),
       expectedAny,
     });
   }

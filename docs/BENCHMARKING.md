@@ -209,12 +209,20 @@ Larger local run:
 gmos gym external \
   --input-file ./long-memory-cleaned.json \
   --dataset-format longmemeval \
+  --reader-profile expansive \
   --format json \
   --json-file ./longmemeval.json \
   --markdown-file ./longmemeval.md \
   --diagnostics-level full \
   --progress
 ```
+
+Use `--reader-profile expansive` for official reader-style runs where the
+reader needs enough dated context to answer temporal ordering or duration
+questions. The flag keeps CLI defaults unchanged for ordinary runs, but when
+selected it sets `maxMemories=24` and `contextBudgetTokens=4000` unless
+`--max-memories` or `--context-budget-tokens` is explicitly provided. Reports
+and manifests record `readerProfile` plus the effective budget values.
 
 Paid smoke workflow:
 

@@ -468,12 +468,20 @@ Primary methods:
   has relevant candidates, gmOS may emit deterministic `kind: "curiosity"`
   action policies up to `curiosityBudget` (default max `1`; `0` disables). A
   call can pass `suppressGapIds` to hide specific candidates without writing.
+  Memory context lines include a compact temporal segment by default, preferring
+  `metadata.eventTime`/`eventDate`, then `validFrom..validTo`, then
+  `observed <createdAt-date>`. Pass `includeTemporalContext: false` to suppress
+  these date segments.
 - `explainTurn(input)`: run the same retrieval and context-budget pipeline as
   `prepareTurn()` in explanation mode. It returns included and excluded memory
   decision traces, emitted curiosity prompts, and notable suppressed curiosity
   candidates, but no context block for prompt injection.
 - `reconstructContext(input)`: run bounded cue/tag/content reconstruction with
-  evidence convergence and planner trace metadata.
+  evidence convergence and planner trace metadata. Reconstructed memory and
+  evidence-path content lines use the same compact temporal context segments as
+  `prepareTurn()`. `includeTemporalMetadata` still controls verbose temporal
+  metadata/object exposure; `includeTemporalContext: false` disables the compact
+  prompt-visible date segments.
 - `explainEvidencePath(input)`: explain why evidence was selected for a query.
 - `commitOutcome(input)`: record task outcome signals. Failed outcomes may pass
   `failureKind`; omitted values default to `task_failure`. Hosts should pass
@@ -562,6 +570,7 @@ The report schema is `gmos.turn_explanation.v1`:
     kind,
     status,
     content,
+    temporalLabel?,
     retention: { recallCount?, reinforcement?, confidence },
     cues,
     associations,
@@ -595,8 +604,9 @@ The report schema is `gmos.turn_explanation.v1`:
 `stats` has parity with `PreparedTurn.stats`; `included` matches
 `PreparedTurn.memories` for the same input and store state. The report never
 includes `contextBlock`. Included memory content follows the same visibility
-rules as the context itself. Excluded candidates expose only content-safe
-decision fields and do not include memory text.
+rules as the context itself. `included[].temporalLabel` is the same resolved
+compact label the reader saw in context, when one exists. Excluded candidates
+expose only content-safe decision fields and do not include memory text.
 
 `reason` is a closed enum:
 
@@ -1022,6 +1032,14 @@ Important report and option types include `MemoryGymResult`,
 `ExternalMemoryBenchmarkOfficialFailureAttribution`,
 `ExternalMemoryBenchmarkSuiteResult`, and
 `ExternalMemoryBenchmarkSuiteExecution`.
+
+External benchmark cases may carry `answerAt`, an ISO timestamp used only for
+host reader prompting. When present, gmOS prepends `Question date: YYYY-MM-DD`
+to the question sent to the answerer. Judge callbacks still receive the original
+question. `readerProfile: "expansive"` sets effective reader budgets to
+`maxMemories=24` and `contextBudgetTokens=4000` unless those options are
+explicitly supplied; reports record the effective values in
+`runManifest.options`.
 
 External benchmark protocol handling is explicit:
 

@@ -49,6 +49,7 @@ import {
 } from "../kernel/embeddings.js";
 import { isReservedSpeakerIdentity } from "../kernel/person-identity.js";
 import { reconstructMemoryContext } from "../kernel/reconstruction.js";
+import { temporalContextLabel } from "../kernel/temporal-format.js";
 import {
   isPersonRoutedMemory,
   redactForReport,
@@ -970,11 +971,13 @@ function includedTurnExplanationMemory(input: {
   evidenceEventIds: string[];
 }): TurnExplanationIncludedMemory {
   const decision = publicSearchDecision(input);
+  const temporalLabel = temporalContextLabel(input.memory.createdAt, input.memory.metadata);
   return {
     id: input.memory.id,
     kind: explanationMemoryKind(input.memory),
     status: input.memory.status,
     content: input.memory.content,
+    ...(temporalLabel ? { temporalLabel } : {}),
     retention: memoryRetention(input.memory),
     cues: publicTraceValues(decision.cues, "inline"),
     associations: publicTraceValues(decision.associations, "label"),
@@ -2283,6 +2286,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         : allActionPolicies,
       evidence,
       includeEvidence: input.includeEvidence,
+      includeTemporalContext: input.includeTemporalContext,
       contextBudgetTokens: input.contextBudgetTokens,
     });
     const reconstruction =
@@ -2307,6 +2311,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
               stopWhenEvidenceEnough: input.reconstruction.stopWhenEvidenceEnough,
               evidenceConvergenceThreshold: input.reconstruction.evidenceConvergenceThreshold,
               includeTemporalMetadata: input.reconstruction.includeTemporalMetadata,
+              includeTemporalContext:
+                input.reconstruction.includeTemporalContext ?? input.includeTemporalContext,
               temporalMode: input.reconstruction.temporalMode,
               recallPurpose: input.reconstruction.recallPurpose,
               reconstructionIntent: sanitizedReconstructionIntent(

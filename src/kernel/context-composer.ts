@@ -1,5 +1,6 @@
 import type { ActionPolicy, EvidenceEvent, MemoryRecord, PreparedTurn } from "./types.js";
 import { safePublicLabel, sanitizeEvidenceForPublicOutput } from "./safety.js";
+import { temporalContextSegment } from "./temporal-format.js";
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
@@ -11,6 +12,7 @@ export function composeTurnContext(input: {
   actionPolicies: ActionPolicy[];
   evidence: EvidenceEvent[];
   includeEvidence?: boolean | undefined;
+  includeTemporalContext?: boolean | undefined;
   contextBudgetTokens?: number | undefined;
 }): PreparedTurn {
   const memories = input.memories.map((memory) => ({
@@ -27,14 +29,14 @@ export function composeTurnContext(input: {
   const directives = actionPolicies
     .filter((policy) => policy.kind === "do_not_push")
     .map((policy) => `Respect user boundary: ${policy.text}`);
+  const includeTemporalContext = input.includeTemporalContext !== false;
+  const memoryLine = (memory: MemoryRecord): string =>
+    `- [${memory.kind}${includeTemporalContext ? temporalContextSegment(memory.createdAt, memory.metadata) : ""}; confidence=${memory.confidence.toFixed(2)}] ${memory.content}`;
 
   const lines = [
     "<gmos-context>",
     "User-world memory:",
-    ...memories.map(
-      (memory) =>
-        `- [${memory.kind}; confidence=${memory.confidence.toFixed(2)}] ${memory.content}`,
-    ),
+    ...memories.map(memoryLine),
     "Action policies:",
     ...actionPolicies.map(
       (policy) => `- [${policy.kind}; priority=${policy.priority}] ${policy.text}`,
@@ -59,10 +61,7 @@ export function composeTurnContext(input: {
     contextBlock = [
       "<gmos-context>",
       "User-world memory:",
-      ...memories.map(
-        (memory) =>
-          `- [${memory.kind}; confidence=${memory.confidence.toFixed(2)}] ${memory.content}`,
-      ),
+      ...memories.map(memoryLine),
       "Action policies:",
       ...actionPolicies.map(
         (policy) => `- [${policy.kind}; priority=${policy.priority}] ${policy.text}`,

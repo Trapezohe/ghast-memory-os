@@ -154,6 +154,7 @@ import {
   eventDateMetadataFromTrustedOffset,
   eventTimeSegment,
   observedAtMetadata,
+  temporalContextLabel,
   temporalMetadataSegment,
 } from "../src/kernel/temporal-format.js";
 import {
@@ -1532,10 +1533,86 @@ const unsafeKindContext = composeTurnContext({
   ],
   evidence: [],
 });
-assert.match(unsafeKindContext.contextBlock, /\[other; confidence=0\.90\]/);
+assert.match(unsafeKindContext.contextBlock, /\[other; observed 2026-06-25; confidence=0\.90\]/);
 assert.match(unsafeKindContext.contextBlock, /\[other; priority=1\]/);
 assert.doesNotMatch(unsafeKindContext.contextBlock, /kind-injected/);
 assert.equal(JSON.stringify(unsafeKindContext).includes("kind-injected"), false);
+const datedComposerMemories = [
+  {
+    id: "memory_composer_event_time",
+    profileId: "dated_composer",
+    kind: "fact" as const,
+    scope: "global",
+    content: "Event time composer memory.",
+    sensitivity: "normal" as const,
+    status: "active" as const,
+    confidence: 0.86,
+    sourceEventId: null,
+    metadata: { eventTime: "2023-05-07T00:00:00.000Z" },
+    createdAt: "2026-06-25T00:00:00.000Z",
+    updatedAt: "2026-06-25T00:00:00.000Z",
+  },
+  {
+    id: "memory_composer_validity",
+    profileId: "dated_composer",
+    kind: "fact" as const,
+    scope: "global",
+    content: "Validity composer memory.",
+    sensitivity: "normal" as const,
+    status: "active" as const,
+    confidence: 0.8,
+    sourceEventId: null,
+    metadata: {
+      validFrom: "2023-05-10T00:00:00.000Z",
+      validTo: "2023-06-01T00:00:00.000Z",
+    },
+    createdAt: "2026-06-25T00:00:00.000Z",
+    updatedAt: "2026-06-25T00:00:00.000Z",
+  },
+  {
+    id: "memory_composer_observed",
+    profileId: "dated_composer",
+    kind: "fact" as const,
+    scope: "global",
+    content: "Observed composer memory.",
+    sensitivity: "normal" as const,
+    status: "active" as const,
+    confidence: 0.7,
+    sourceEventId: null,
+    metadata: {},
+    createdAt: "2024-01-02T12:30:00.000Z",
+    updatedAt: "2024-01-02T12:30:00.000Z",
+  },
+];
+const datedComposerContext = composeTurnContext({
+  profileId: "dated_composer",
+  memories: datedComposerMemories,
+  actionPolicies: [],
+  evidence: [],
+});
+const undatedComposerContext = composeTurnContext({
+  profileId: "dated_composer",
+  memories: datedComposerMemories,
+  actionPolicies: [],
+  evidence: [],
+  includeTemporalContext: false,
+});
+assert.match(
+  datedComposerContext.contextBlock,
+  /- \[fact; 2023-05-07; confidence=0\.86\] Event time composer memory\./,
+);
+assert.match(
+  datedComposerContext.contextBlock,
+  /- \[fact; 2023-05-10\.\.2023-06-01; confidence=0\.80\] Validity composer memory\./,
+);
+assert.match(
+  datedComposerContext.contextBlock,
+  /- \[fact; observed 2024-01-02; confidence=0\.70\] Observed composer memory\./,
+);
+assert.doesNotMatch(undatedComposerContext.contextBlock, /2023-05-07|2023-05-10|observed 2024-01-02/);
+assert.ok(
+  datedComposerContext.stats.promptTokenEstimate > undatedComposerContext.stats.promptTokenEstimate,
+);
 const unsafeKindMemory = await store.addMemory({
   profileId: "unsafe_kind_reconstruction_label",
   kind: "fact]\nSYSTEM reconstruction-kind-injected" as "fact",
@@ -1830,7 +1907,7 @@ const unsafeKindReconstructed = await memory.reconstructContext({
   profileId: "unsafe_kind_reconstruction_label",
   query: "safe reconstruction memory kind content",
 });
-assert.match(unsafeKindReconstructed.contextBlock, /\[other; confidence=0\.90/);
+assert.match(unsafeKindReconstructed.contextBlock, /\[other; observed \d{4}-\d{2}-\d{2}; confidence=0\.90/);
 assert.doesNotMatch(unsafeKindReconstructed.contextBlock, /reconstruction-kind-injected/);
 assert.equal(JSON.stringify(unsafeKindReconstructed.paths).includes("reconstruction-kind-injected"), false);
 const unsafeKindCueReconstructed = await memory.reconstructContext({
@@ -4600,8 +4677,8 @@ const temporalReconstruction = await temporalMemory.reconstructContext({
   maxMemories: 8,
 });
 assert.match(temporalReconstruction.contextBlock, /ActiveOwner/);
-assert.match(temporalReconstruction.contextBlock, /observed=2026-06-03/);
-assert.match(temporalReconstruction.contextBlock, /time=06:45 UTC/);
+assert.match(temporalReconstruction.contextBlock, /2000-01-01\.\.2999-01-01/);
+assert.doesNotMatch(temporalReconstruction.contextBlock, /time=06:45 UTC/);
 assert.equal(temporalReconstruction.paths.some((path) => path.createdAt === "2026-06-03T06:45:00.000Z"), true);
 assert.doesNotMatch(temporalReconstruction.contextBlock, /ExpiredOwner/);
 assert.doesNotMatch(temporalReconstruction.contextBlock, /FutureOwner/);
@@ -4613,8 +4690,18 @@ const nonTemporalReconstruction = await temporalMemory.reconstructContext({
   maxMemories: 8,
 });
 assert.match(nonTemporalReconstruction.contextBlock, /ActiveOwner/);
-assert.doesNotMatch(nonTemporalReconstruction.contextBlock, /observed=2026-06-03/);
+assert.match(nonTemporalReconstruction.contextBlock, /2000-01-01\.\.2999-01-01/);
 assert.equal(nonTemporalReconstruction.paths.some((path) => path.createdAt !== undefined), false);
+const disabledTemporalContextReconstruction = await temporalMemory.reconstructContext({
+  profileId: "temporal",
+  query: "When was the Temporal window Atlas owner observed?",
+  includeTemporalContext: false,
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.match(disabledTemporalContextReconstruction.contextBlock, /ActiveOwner/);
+assert.doesNotMatch(disabledTemporalContextReconstruction.contextBlock, /2000-01-01\.\.2999-01-01/);
 const invalidObservedReconstruction = await temporalMemory.reconstructContext({
   profileId: "temporal",
   query: "Invalid observed marker",
@@ -4625,6 +4712,7 @@ const invalidObservedReconstruction = await temporalMemory.reconstructContext({
 });
 assert.match(invalidObservedReconstruction.contextBlock, /Invalid observed marker/);
 assert.doesNotMatch(invalidObservedReconstruction.contextBlock, /observed=/);
+assert.doesNotMatch(invalidObservedReconstruction.contextBlock, /observed \d{4}-\d{2}-\d{2}/);
 const relativeTemporalMemory = createMemoryOS({
   profileId: "relative-temporal",
   store: createSqliteMemoryStore({ path: path.join(tmp, "relative-temporal.db") }),
@@ -4743,7 +4831,7 @@ const hostRelativeParserReconstruction = await hostRelativeParserMemory.reconstr
   maxMemories: 8,
 });
 assert.match(hostRelativeParserReconstruction.contextBlock, /Host relative workshop/);
-assert.match(hostRelativeParserReconstruction.contextBlock, /event_date=2023-05-07/);
+assert.match(hostRelativeParserReconstruction.contextBlock, /2023-05-07/);
 await hostRelativeParserMemory.close();
 const unsafeEventDateParserMemory = createMemoryOS({
   profileId: "unsafe-event-date-parser",
@@ -4885,8 +4973,9 @@ const naturalDateTemporalReconstruction = await naturalDateTemporalMemory.recons
   maxMemories: 8,
 });
 assert.match(naturalDateTemporalReconstruction.contextBlock, /design workshop/);
-assert.match(naturalDateTemporalReconstruction.contextBlock, /event_time=2023-05-07/);
-assert.match(naturalDateTemporalReconstruction.contextBlock, /event_time_text=7 May 2023/);
+assert.match(naturalDateTemporalReconstruction.contextBlock, /2023-05-07/);
+assert.doesNotMatch(naturalDateTemporalReconstruction.contextBlock, /event_time=/);
+assert.doesNotMatch(naturalDateTemporalReconstruction.contextBlock, /event_time_text=/);
 const naturalDateDefaultReconstruction = await naturalDateTemporalMemory.reconstructContext({
   profileId: "natural-date-temporal",
   query: "When did I attend the design workshop?",
@@ -4895,7 +4984,28 @@ const naturalDateDefaultReconstruction = await naturalDateTemporalMemory.reconst
   maxMemories: 8,
 });
 assert.match(naturalDateDefaultReconstruction.contextBlock, /design workshop/);
+assert.match(naturalDateDefaultReconstruction.contextBlock, /2023-05-07/);
 assert.doesNotMatch(naturalDateDefaultReconstruction.contextBlock, /event_time=/);
+const naturalDateTurnExplanation = await naturalDateTemporalMemory.explainTurn({
+  profileId: "natural-date-temporal",
+  messages: [{ role: "user", content: "design workshop" }],
+});
+assert.equal(
+  naturalDateTurnExplanation.included.find((memory) =>
+    memory.content.includes("design workshop")
+  )?.temporalLabel,
+  "2023-05-07",
+);
+const naturalDateDisabledTemporalContextReconstruction = await naturalDateTemporalMemory.reconstructContext({
+  profileId: "natural-date-temporal",
+  query: "When did I attend the design workshop?",
+  includeTemporalContext: false,
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.match(naturalDateDisabledTemporalContextReconstruction.contextBlock, /design workshop/);
+assert.doesNotMatch(naturalDateDisabledTemporalContextReconstruction.contextBlock, /2023-05-07/);
 await naturalDateTemporalMemory.add({
   profileId: "natural-date-temporal",
   kind: "fact",
@@ -4911,7 +5021,7 @@ const naturalDateQueryOnlyReconstruction = await naturalDateTemporalMemory.recon
   maxMemories: 8,
 });
 assert.match(naturalDateQueryOnlyReconstruction.contextBlock, /blue notebook decision/);
-assert.match(naturalDateQueryOnlyReconstruction.contextBlock, /event_time=2023-05-07/);
+assert.match(naturalDateQueryOnlyReconstruction.contextBlock, /2023-05-07/);
 assert.equal(
   naturalDateQueryOnlyReconstruction.plannerTrace?.steps.some((step) =>
     step.selectedCue === "2023-05-07T00:00:00.000Z" || step.selectedCue === "2023-05-07",
@@ -4961,7 +5071,7 @@ const naturalDateEventDateReconstruction = await naturalDateTemporalMemory.recon
   maxMemories: 8,
 });
 assert.match(naturalDateEventDateReconstruction.contextBlock, /green compass milestone/);
-assert.match(naturalDateEventDateReconstruction.contextBlock, /event_date=2023-05-08/);
+assert.match(naturalDateEventDateReconstruction.contextBlock, /2023-05-08/);
 await naturalDateTemporalMemory.add({
   profileId: "natural-date-temporal",
   kind: "fact",
@@ -5005,8 +5115,7 @@ const naturalDateValidityReconstruction = await naturalDateTemporalMemory.recons
   maxMemories: 8,
 });
 assert.match(naturalDateValidityReconstruction.contextBlock, /reviewer access/);
-assert.match(naturalDateValidityReconstruction.contextBlock, /valid_from=2023-05-10/);
-assert.match(naturalDateValidityReconstruction.contextBlock, /valid_to=2999-01-01/);
+assert.match(naturalDateValidityReconstruction.contextBlock, /2023-05-10\.\.2999-01-01/);
 const malformedValidityObservation = await naturalDateTemporalMemory.observeWithReport({
   type: "conversation.message",
   profileId: "natural-date-temporal",
@@ -15330,6 +15439,26 @@ assert.equal(
   "; event_time=2023-05-07; event_time_text=7 May 2023",
 );
 assert.equal(
+  temporalContextLabel("2026-06-25T00:00:00.000Z", {
+    eventTime: "2023-05-07T00:00:00.000Z",
+  }),
+  "2023-05-07",
+);
+assert.equal(
+  temporalContextLabel("2026-06-25T00:00:00.000Z", {
+    eventDate: "2023-05-08",
+  }),
+  "2023-05-08",
+);
+assert.equal(
+  temporalContextLabel("2026-06-25T00:00:00.000Z", {
+    validFrom: "2023-05-07T00:00:00.000Z",
+    validTo: "2023-06-01T12:30:00.000Z",
+  }),
+  "2023-05-07..2023-06-01 12:30 UTC",
+);
+assert.equal(temporalContextLabel("2026-06-25T00:00:00.000Z", {}), "observed 2026-06-25");
+assert.equal(
   temporalMetadataSegment(undefined, {
     validFrom: "2023-05-07T00:00:00.000Z",
     validTo: "2023-06-01T12:30:00.000Z",
@@ -19893,7 +20022,7 @@ const preparedWithShadow = await reconstructionMemory.prepareTurn({
   },
 });
 assert.match(preparedWithShadow.reconstruction?.contextBlock ?? "", /Helio 项目推进时先写复现报告/);
-assert.match(preparedWithShadow.reconstruction?.contextBlock ?? "", /observed=/);
+assert.match(preparedWithShadow.reconstruction?.contextBlock ?? "", /observed /);
 assert.equal(
   JSON.stringify(reconstructedRowsBefore),
   JSON.stringify(await reconstructionStore.rowCounts()),
@@ -20092,7 +20221,7 @@ assert.equal(mcpReconstruct.isError, undefined);
 assert.match(JSON.stringify(mcpReconstruct.structuredContent), /Helio 项目推进时先写复现报告/);
 assert.match(JSON.stringify(mcpReconstruct.structuredContent), /stopWhenEvidenceEnough/);
 assert.match(JSON.stringify(mcpReconstruct.structuredContent), /false/);
-assert.match(JSON.stringify(mcpReconstruct.structuredContent), /observed=/);
+assert.match(JSON.stringify(mcpReconstruct.structuredContent), /observed /);
 assert.doesNotMatch(JSON.stringify(mcpReconstruct.structuredContent), /sk-structuredtagsecret/);
 assert.doesNotMatch(JSON.stringify(mcpReconstruct.structuredContent), /sk-structuredgroupsecret/);
 const privateRouteIntent = {
@@ -20123,7 +20252,7 @@ const mcpDefaultReconstruct = await createMemoryMcpServer(reconstructionMemory).
   },
 );
 assert.equal(mcpDefaultReconstruct.isError, undefined);
-assert.equal(JSON.stringify(mcpDefaultReconstruct.structuredContent).includes("observed="), false);
+assert.equal(JSON.stringify(mcpDefaultReconstruct.structuredContent).includes("observed "), true);
 const mcpDefaultReconstructed = (
   mcpDefaultReconstruct.structuredContent as { reconstructed?: { paths?: unknown[] } }
 ).reconstructed;
@@ -21876,6 +22005,92 @@ assert.match(officialReaderAnswererCalls[0]?.context ?? "", /blue/iu);
 assert.equal(JSON.stringify(officialReaderAnswererCalls[0]).includes("memory_"), false);
 assert.equal(JSON.stringify(officialReaderAnswererCalls[0]).includes("Evidence coverage"), false);
 assert.equal(officialReaderJudgeCalls[0]?.actualAnswer, "Blue Comet");
+const questionDateFixture = JSON.stringify([
+  {
+    question_id: "question-date-threading",
+    question: "What is the dated answer?",
+    question_date: "2023-06-01",
+    answer: "dated answer",
+    haystack_dates: ["2023-05-31T00:00:00.000Z"],
+    haystack_sessions: [[{ role: "user", content: "The dated answer is dated answer." }]],
+  },
+]);
+const parsedQuestionDateFixture = parseExternalMemoryBenchmarkDataset(questionDateFixture, {
+  adapter: "longmemeval",
+});
+assert.equal(parsedQuestionDateFixture.cases[0]?.answerAt, "2023-06-01T00:00:00.000Z");
+const answererQuestionThreadingCalls: string[] = [];
+const questionDateThreadingBenchmark = await runExternalMemoryBenchmark({
+  cases: [
+    parsedQuestionDateFixture.cases[0]!,
+    {
+      id: "question-date-absent",
+      events: [{ type: "memory", kind: "fact", content: "Undated answer is undated answer." }],
+      question: "What is the undated answer?",
+      expectedAny: ["undated answer"],
+    },
+  ],
+  protocol: "official_protocol",
+  answerer: {
+    name: "question-date-recording-reader",
+    answer(question) {
+      answererQuestionThreadingCalls.push(question);
+      return question.includes("Question date:") ? "dated answer" : "undated answer";
+    },
+  },
+  judge: {
+    name: "question-date-recording-judge",
+    judge(question, expectedAnswer, actualAnswer) {
+      assert.doesNotMatch(question, /Question date:/);
+      return { correct: actualAnswer === expectedAnswer };
+    },
+  },
+});
+assert.equal(questionDateThreadingBenchmark.pass, true);
+assert.equal(answererQuestionThreadingCalls.length, 2);
+assert.equal(
+  answererQuestionThreadingCalls[0]!.match(/Question date: 2023-06-01/gu)?.length,
+  1,
+);
+assert.doesNotMatch(answererQuestionThreadingCalls[1]!, /Question date:/);
+const temporalArithmeticReaderBenchmark = await runExternalMemoryBenchmark({
+  cases: [{
+    id: "temporal-arithmetic-reader",
+    answerAt: "2023-06-01T00:00:00.000Z",
+    events: [
+      {
+        type: "memory",
+        kind: "fact",
+        content: "The Alpha checkpoint happened.",
+        metadata: { eventTime: "2023-05-01T00:00:00.000Z" },
+      },
+      {
+        type: "memory",
+        kind: "fact",
+        content: "The Beta checkpoint happened.",
+        metadata: { eventTime: "2023-05-05T00:00:00.000Z" },
+      },
+    ],
+    question: "How many days passed between Alpha checkpoint and Beta checkpoint?",
+    expectedAny: ["4 days"],
+  }],
+  protocol: "official_protocol",
+  answerer: {
+    name: "temporal-arithmetic-reader",
+    answer(_question, context) {
+      assert.match(context, /2023-05-01/);
+      assert.match(context, /2023-05-05/);
+      return "4 days";
+    },
+  },
+  judge: {
+    name: "temporal-arithmetic-judge",
+    judge(_question, expectedAnswer, actualAnswer) {
+      return { correct: actualAnswer === expectedAnswer };
+    },
+  },
+});
+assert.equal(temporalArithmeticReaderBenchmark.pass, true);
 const officialAnswererFailureBenchmark = await runExternalMemoryBenchmark({
   cases: [{
     id: "official-answerer-fails-case",
@@ -22076,6 +22291,21 @@ const externalBenchmarkWithManifest = await runExternalMemoryBenchmark({
 });
 assert.equal(externalBenchmarkWithManifest.runManifest.dataset.hash, externalHash);
 assert.equal(externalBenchmarkWithManifest.runManifest.dataset.id, "unit-fixture");
+const externalReaderProfileBenchmark = await runExternalMemoryBenchmark({
+  cases: externalCases.slice(0, 1),
+  readerProfile: "expansive",
+});
+assert.equal(externalReaderProfileBenchmark.runManifest.options.readerProfile, "expansive");
+assert.equal(externalReaderProfileBenchmark.runManifest.options.maxMemories, 24);
+assert.equal(externalReaderProfileBenchmark.runManifest.options.contextBudgetTokens, 4000);
+const externalReaderProfileExplicitBenchmark = await runExternalMemoryBenchmark({
+  cases: externalCases.slice(0, 1),
+  readerProfile: "expansive",
+  maxMemories: 7,
+  contextBudgetTokens: 900,
+});
+assert.equal(externalReaderProfileExplicitBenchmark.runManifest.options.maxMemories, 7);
+assert.equal(externalReaderProfileExplicitBenchmark.runManifest.options.contextBudgetTokens, 900);
 const externalObservedDateBenchmark = await runExternalMemoryBenchmark({
   includeTemporalMetadata: true,
   cases: [
@@ -22088,7 +22318,7 @@ const externalObservedDateBenchmark = await runExternalMemoryBenchmark({
         createdAt: "2023-05-07T00:00:00.000Z",
       }],
       question: "When did I go to the project workshop?",
-      expectedAll: ["observed=2023-05-07"],
+      expectedAll: ["observed 2023-05-07"],
     },
   ],
 });
@@ -22097,6 +22327,7 @@ assert.equal(externalObservedDateBenchmark.runManifest.options.includeSensitive,
 assert.equal(externalObservedDateBenchmark.runManifest.options.includeTemporalMetadata, true);
 const externalObservedDateWithoutTemporal = await runExternalMemoryBenchmark({
   includeTemporalMetadata: false,
+  includeTemporalContext: false,
   cases: [{
     id: "observed-date-no-temporal",
     events: [{
@@ -22106,7 +22337,7 @@ const externalObservedDateWithoutTemporal = await runExternalMemoryBenchmark({
       createdAt: "2023-05-07T00:00:00.000Z",
     }],
     question: "When did I go to the project workshop?",
-    expectedAll: ["observed=2023-05-07"],
+    expectedAll: ["observed 2023-05-07"],
   }],
 });
 assert.equal(externalObservedDateWithoutTemporal.pass, false);
@@ -24713,6 +24944,8 @@ const cliExternal = spawnSync(
     "3",
     "--diagnostics-level",
     "basic",
+    "--reader-profile",
+    "expansive",
     "--reproduction-bundle",
     cliExternalReproductionBundleDir,
   ],
@@ -24732,6 +24965,9 @@ const cliExternalJson = JSON.parse(cliExternal.stdout) as {
       includeSensitive?: boolean;
       includeTemporalMetadata?: boolean;
       temporalMode?: string | null;
+      readerProfile?: string;
+      maxMemories?: number | null;
+      contextBudgetTokens?: number | null;
       failureSampleLimit?: number;
       diagnosticsLevel?: string;
     };
@@ -24756,6 +24992,9 @@ assert.equal(cliExternalJson.runManifest?.options?.requireConvergence, false);
 assert.equal(cliExternalJson.runManifest?.options?.includeSensitive, false);
 assert.equal(cliExternalJson.runManifest?.options?.includeTemporalMetadata, false);
 assert.equal(cliExternalJson.runManifest?.options?.temporalMode, "history");
+assert.equal(cliExternalJson.runManifest?.options?.readerProfile, "expansive");
+assert.equal(cliExternalJson.runManifest?.options?.maxMemories, 24);
+assert.equal(cliExternalJson.runManifest?.options?.contextBudgetTokens, 4000);
 assert.equal(cliExternalJson.runManifest?.options?.failureSampleLimit, 3);
 assert.equal(cliExternalJson.runManifest?.options?.diagnosticsLevel, "basic");
 assert.equal(cliExternalJson.runManifest?.protocol, "deterministic_local");
@@ -24783,6 +25022,7 @@ assert.equal(existsSync(cliExternalMarkdownFile), true);
 assert.equal(JSON.parse(readFileSync(cliExternalJsonFile, "utf8")).schema, "gmos.external_long_memory_qa.v1");
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /gmOS External Long-Memory QA Benchmark/);
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /Failure sample limit: 3/);
+assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /readerProfile=expansive/);
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /temporalMode=history includeSensitive=false includeTemporalMetadata=false/);
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /diagnosticsLevel=basic/);
 assert.match(readFileSync(cliExternalMarkdownFile, "utf8"), /Score attribution: none/);
@@ -25043,6 +25283,7 @@ assert.equal(cliExternalReaderJson.runManifest?.runtimeIntelligence?.answerer?.t
 const cliExternalReaderFetchLog = readFileSync(cliExternalReaderFetchLogFile, "utf8");
 assert.match(cliExternalReaderFetchLog, /"model":"cli-reader"/);
 assert.match(cliExternalReaderFetchLog, /"model":"cli-judge-override"/);
+assert.match(cliExternalReaderFetchLog, /Use dates in the context to reason about time/);
 assert.match(cliExternalReaderFetchLog, new RegExp(`Bearer ${cliExternalReaderSecret}`));
 assert.equal(cliExternalReader.stdout.includes(cliExternalReaderSecret), false);
 const cliExternalReaderBadEnv = spawnSync(

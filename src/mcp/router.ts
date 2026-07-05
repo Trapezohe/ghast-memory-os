@@ -226,6 +226,7 @@ function optionalPrepareReconstruction(
       "stopWhenEvidenceEnough",
       "evidenceConvergenceThreshold",
       "includeTemporalMetadata",
+      "includeTemporalContext",
       "temporalMode",
       "reconstructionIntent",
     ]),
@@ -245,6 +246,7 @@ function optionalPrepareReconstruction(
     "evidenceConvergenceThreshold",
   );
   const includeTemporalMetadata = optionalBoolean(record, "includeTemporalMetadata");
+  const includeTemporalContext = optionalBoolean(record, "includeTemporalContext");
   const temporalMode = optionalTemporalMode(record, "temporalMode");
   const reconstructionIntent = optionalReconstructionIntent(record, "reconstructionIntent");
   if (maxSteps !== undefined) reconstruction.maxSteps = maxSteps;
@@ -258,6 +260,9 @@ function optionalPrepareReconstruction(
   }
   if (includeTemporalMetadata !== undefined) {
     reconstruction.includeTemporalMetadata = includeTemporalMetadata;
+  }
+  if (includeTemporalContext !== undefined) {
+    reconstruction.includeTemporalContext = includeTemporalContext;
   }
   if (temporalMode !== undefined) reconstruction.temporalMode = temporalMode;
   if (reconstructionIntent !== undefined) reconstruction.reconstructionIntent = reconstructionIntent;
@@ -480,6 +485,7 @@ function prepareInput(args: Record<string, unknown>): PrepareTurnInput {
       "dispositionPreset",
       "includeEvidence",
       "includeSensitive",
+      "includeTemporalContext",
       "contextBudgetTokens",
       "curiosityBudget",
       "suppressGapIds",
@@ -496,6 +502,7 @@ function prepareInput(args: Record<string, unknown>): PrepareTurnInput {
   const profileId = optionalString(args, "profileId");
   const dispositionPreset = optionalString(args, "dispositionPreset");
   const includeEvidence = optionalBoolean(args, "includeEvidence");
+  const includeTemporalContext = optionalBoolean(args, "includeTemporalContext");
   const contextBudgetTokens = optionalPositiveNumber(args, "contextBudgetTokens");
   const curiosityBudget = optionalNonNegativeInteger(args, "curiosityBudget");
   const suppressGapIds = optionalStringArrayValue(args.suppressGapIds, "suppressGapIds");
@@ -503,6 +510,7 @@ function prepareInput(args: Record<string, unknown>): PrepareTurnInput {
   if (profileId !== undefined) input.profileId = profileId;
   if (dispositionPreset !== undefined) input.dispositionPreset = dispositionPreset;
   if (includeEvidence !== undefined) input.includeEvidence = includeEvidence;
+  if (includeTemporalContext !== undefined) input.includeTemporalContext = includeTemporalContext;
   if (contextBudgetTokens !== undefined) input.contextBudgetTokens = contextBudgetTokens;
   if (curiosityBudget !== undefined) input.curiosityBudget = curiosityBudget;
   if (suppressGapIds !== undefined) input.suppressGapIds = suppressGapIds;
@@ -520,6 +528,7 @@ function explainTurnInput(args: Record<string, unknown>): ExplainTurnInput {
       "dispositionPreset",
       "includeEvidence",
       "includeSensitive",
+      "includeTemporalContext",
       "contextBudgetTokens",
       "curiosityBudget",
       "suppressGapIds",
@@ -537,6 +546,7 @@ function explainTurnInput(args: Record<string, unknown>): ExplainTurnInput {
   const profileId = optionalString(args, "profileId");
   const dispositionPreset = optionalString(args, "dispositionPreset");
   const includeEvidence = optionalBoolean(args, "includeEvidence");
+  const includeTemporalContext = optionalBoolean(args, "includeTemporalContext");
   const contextBudgetTokens = optionalPositiveNumber(args, "contextBudgetTokens");
   const curiosityBudget = optionalNonNegativeInteger(args, "curiosityBudget");
   const suppressGapIds = optionalStringArrayValue(args.suppressGapIds, "suppressGapIds");
@@ -545,6 +555,7 @@ function explainTurnInput(args: Record<string, unknown>): ExplainTurnInput {
   if (profileId !== undefined) input.profileId = profileId;
   if (dispositionPreset !== undefined) input.dispositionPreset = dispositionPreset;
   if (includeEvidence !== undefined) input.includeEvidence = includeEvidence;
+  if (includeTemporalContext !== undefined) input.includeTemporalContext = includeTemporalContext;
   if (contextBudgetTokens !== undefined) input.contextBudgetTokens = contextBudgetTokens;
   if (curiosityBudget !== undefined) input.curiosityBudget = curiosityBudget;
   if (suppressGapIds !== undefined) input.suppressGapIds = suppressGapIds;
@@ -570,6 +581,7 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
       "stopWhenEvidenceEnough",
       "evidenceConvergenceThreshold",
       "includeTemporalMetadata",
+      "includeTemporalContext",
       "temporalMode",
       "reconstructionIntent",
     ]),
@@ -590,6 +602,7 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
   const maxMemories = optionalPositiveInteger(args, "maxMemories");
   const stopWhenEvidenceEnough = optionalBoolean(args, "stopWhenEvidenceEnough");
   const includeTemporalMetadata = optionalBoolean(args, "includeTemporalMetadata");
+  const includeTemporalContext = optionalBoolean(args, "includeTemporalContext");
   const temporalMode = optionalTemporalMode(args, "temporalMode");
   const reconstructionIntent = optionalReconstructionIntent(args, "reconstructionIntent");
   const evidenceConvergenceThreshold = optionalPositiveNumber(
@@ -611,6 +624,9 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
   }
   if (includeTemporalMetadata !== undefined) {
     input.includeTemporalMetadata = includeTemporalMetadata;
+  }
+  if (includeTemporalContext !== undefined) {
+    input.includeTemporalContext = includeTemporalContext;
   }
   if (temporalMode !== undefined) input.temporalMode = temporalMode;
   if (reconstructionIntent !== undefined) input.reconstructionIntent = reconstructionIntent;
@@ -635,6 +651,7 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
       "stopWhenEvidenceEnough",
       "evidenceConvergenceThreshold",
       "includeTemporalMetadata",
+      "includeTemporalContext",
       "temporalMode",
       "reconstructionIntent",
     ]),
@@ -656,6 +673,7 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
   const maxMemories = optionalPositiveInteger(args, "maxMemories");
   const stopWhenEvidenceEnough = optionalBoolean(args, "stopWhenEvidenceEnough");
   const includeTemporalMetadata = optionalBoolean(args, "includeTemporalMetadata");
+  const includeTemporalContext = optionalBoolean(args, "includeTemporalContext");
   const temporalMode = optionalTemporalMode(args, "temporalMode");
   const reconstructionIntent = optionalReconstructionIntent(args, "reconstructionIntent");
   const evidenceConvergenceThreshold = optionalPositiveNumber(
@@ -678,6 +696,9 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
   }
   if (includeTemporalMetadata !== undefined) {
     input.includeTemporalMetadata = includeTemporalMetadata;
+  }
+  if (includeTemporalContext !== undefined) {
+    input.includeTemporalContext = includeTemporalContext;
   }
   if (temporalMode !== undefined) input.temporalMode = temporalMode;
   if (reconstructionIntent !== undefined) input.reconstructionIntent = reconstructionIntent;

@@ -179,7 +179,7 @@ Usage:
   gmos gym run --db :memory: --generated-seeds 3 --format markdown --report-file ./memory-gym.md
   gmos gym scale --sizes 100,1000 --threshold-p95-ms 250 --ingest-threshold-p95-ms 25 --ingest-last-to-first-factor 3
   gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --protocol deterministic-local --require-convergence --include-sensitive --temporal-metadata
-  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --reader-profile expansive --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
   gmos gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --max-cases 5 --results-jsonl ./paid-smoke.results.jsonl
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --extraction-window 12 --intelligence-base-url http://127.0.0.1:11434/v1 --intelligence-model llama3.1 --intelligence-embed-model nomic-embed-text --intelligence-embed-dimensions 768 --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-disable-thinking
@@ -569,6 +569,12 @@ function diagnosticsLevelOption(): "off" | "basic" | "full" | undefined {
     throw new Error("--diagnostics-level must be one of: off, basic, full");
   }
   return raw;
+}
+
+function readerProfileOption(): "default" | "expansive" {
+  const raw = value("--reader-profile", "default");
+  if (raw === "default" || raw === "expansive") return raw;
+  throw new Error("--reader-profile must be default or expansive");
 }
 
 function externalProtocolOption(): "deterministic_local" | "official_protocol" {
@@ -1991,6 +1997,11 @@ async function main(): Promise<void> {
     const maxCases = positiveIntegerOptionValue("--max-cases");
     const caseOffset = nonNegativeIntegerOptionValue("--case-offset");
     const caseIds = commaSeparatedStringOption("--case-ids");
+    const readerProfile = readerProfileOption();
+    const maxMemories = positiveIntegerOptionValue("--max-memories") ??
+      (readerProfile === "expansive" ? 24 : 6);
+    const contextBudgetTokens = positiveIntegerOptionValue("--context-budget-tokens") ??
+      (readerProfile === "expansive" ? 4000 : 1600);
     const abortController = new AbortController();
     let interrupted = false;
     const handleInterrupt = (signal: NodeJS.Signals): void => {
@@ -2013,8 +2024,9 @@ async function main(): Promise<void> {
       ...(mode !== undefined ? { mode } : {}),
       maxSteps: positiveIntegerOption("--max-steps", 4),
       maxBranch: positiveIntegerOption("--max-branch", 6),
-      maxMemories: positiveIntegerOption("--max-memories", 6),
-      contextBudgetTokens: positiveIntegerOption("--context-budget-tokens", 1600),
+      maxMemories,
+      contextBudgetTokens,
+      readerProfile,
       temporalMode: temporalModeOption(),
       ...(has("--temporal-metadata") ? { includeTemporalMetadata: true } : {}),
       ...(has("--include-sensitive") ? { includeSensitive: true } : {}),

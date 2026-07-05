@@ -12,7 +12,7 @@ import {
   safePublicLabel,
   sanitizeEvidenceForPublicOutput,
 } from "./safety.js";
-import { observedAtSegment, temporalMetadataSegment } from "./temporal-format.js";
+import { observedAtSegment, temporalContextLabel, temporalContextSegment } from "./temporal-format.js";
 import { temporalCueValuesFromText } from "./temporal-validity.js";
 import type {
   EvidenceEvent,
@@ -78,13 +78,13 @@ function pathFromAssociation(
   };
 }
 
-function formatPathLine(path: ReconstructedEvidencePath, includeTemporalMetadata: boolean): string {
+function formatPathLine(path: ReconstructedEvidencePath, temporalLabel: string): string {
   const routeScore = path.routeScore !== undefined ? `; routeScore=${path.routeScore.toFixed(2)}` : "";
   const routeReason = path.routeReason ? `; reason=${path.routeReason}` : "";
   const informationGain =
     path.informationGain !== undefined ? `; gain=${path.informationGain.toFixed(2)}` : "";
-  const temporalMetadata = includeTemporalMetadata ? observedAtSegment(path.createdAt) : "";
-  return `- [step=${path.step}; cue=${path.cue}; tag=${path.tag}; kind=${path.targetKind ?? path.targetType}; confidence=${path.confidence.toFixed(2)}${routeScore}${informationGain}${temporalMetadata}${routeReason}] ${path.targetSummary}`;
+  const temporal = temporalLabel ? `; ${temporalLabel}` : "";
+  return `- [step=${path.step}; cue=${path.cue}; tag=${path.tag}; kind=${path.targetKind ?? path.targetType}${temporal}; confidence=${path.confidence.toFixed(2)}${routeScore}${informationGain}${routeReason}] ${path.targetSummary}`;
 }
 
 function publicPath(
@@ -1619,6 +1619,7 @@ function composeReconstructedContext(input: {
   targetMemoryCount: number;
   stopReason: ReconstructedContext["stats"]["stopReason"];
   includeTemporalMetadata: boolean;
+  includeTemporalContext?: boolean | undefined;
   displayQuery?: string | undefined;
   plannerTrace?: ReconstructedPlannerTrace | undefined;
   cueExtractor?: MemoryCueExtractor | undefined;
@@ -1628,6 +1629,7 @@ function composeReconstructedContext(input: {
 }): ReconstructedContext {
   let memories = [...input.memories];
   let paths = [...input.paths];
+  const includeTemporalContext = input.includeTemporalContext !== false;
   const publicQuery = input.displayQuery ?? input.query;
   const privateSignalKeys = privateRouteSignalKeys(
     input.intent,
@@ -1759,6 +1761,13 @@ function composeReconstructedContext(input: {
       evidenceConvergence,
     });
     const output = outputState();
+    const memoryById = new Map(memories.map((memory) => [memory.id, memory]));
+    const temporalLabelForPath = (path: ReconstructedEvidencePath): string => {
+      const memory = memoryById.get(path.targetId) ?? memoryById.get(path.sourceMemoryId ?? "");
+      return memory
+        ? temporalContextLabel(memory.createdAt, memory.metadata)
+        : temporalContextLabel(path.createdAt, {});
+    };
     const lines = [
       "<gmos-reconstructed-context>",
       `Query: ${publicQuery}`,
@@ -1766,13 +1775,15 @@ function composeReconstructedContext(input: {
       `Evidence convergence: score=${output.evidenceConvergence.score.toFixed(2)}; reached=${output.evidenceConvergence.reached}; threshold=${output.evidenceConvergence.threshold.toFixed(2)}; pruned=${output.evidenceConvergence.prunedBranchCount}; frontier=${output.evidenceConvergence.frontierRemaining}; stopWhenEvidenceEnough=${output.evidenceConvergence.stopWhenEvidenceEnough}`,
       `Reconstruction uncertainty: ${output.uncertainty.level}${output.uncertainty.reasons.length ? ` (${output.uncertainty.reasons.join(", ")})` : ""}`,
       "Reconstructed evidence paths:",
-      ...output.paths.map((path) => formatPathLine(path, input.includeTemporalMetadata)),
+      ...output.paths.map((path) =>
+        formatPathLine(path, includeTemporalContext ? temporalLabelForPath(path) : "")
+      ),
       "Memory content:",
       ...memories.map((memory) =>
         publicMemory(memory, hideInternalRouteSignals, privateOutputSignalKeySet)
       ).map(
         (memory) =>
-          `- [${safePublicLabel(memory.kind)}; confidence=${memory.confidence.toFixed(2)}${input.includeTemporalMetadata ? temporalMetadataSegment(memory.createdAt, memory.metadata) : ""}] ${memory.content}`,
+          `- [${safePublicLabel(memory.kind)}${includeTemporalContext ? temporalContextSegment(memory.createdAt, memory.metadata) : ""}; confidence=${memory.confidence.toFixed(2)}] ${memory.content}`,
       ),
     ];
     if (input.includeEvidence) {
@@ -1854,6 +1865,7 @@ async function fallbackReconstruction(input: {
   evidenceConvergenceThreshold: number;
   targetMemoryCount: number;
   includeTemporalMetadata?: boolean | undefined;
+  includeTemporalContext?: boolean | undefined;
   cueExtractor?: MemoryCueExtractor | undefined;
   inferTemporalCuesFromText?: boolean | undefined;
   privateRouteSignals?: string[] | undefined;
@@ -1958,6 +1970,7 @@ async function fallbackReconstruction(input: {
     targetMemoryCount,
     stopReason,
     includeTemporalMetadata: input.includeTemporalMetadata === true,
+    includeTemporalContext: input.includeTemporalContext,
     plannerTrace,
     cueExtractor: input.cueExtractor,
     inferTemporalCuesFromText: input.inferTemporalCuesFromText,
@@ -1985,6 +1998,7 @@ export async function reconstructMemoryContext(input: {
   const maxMemories = boundedInteger(input.request.maxMemories, 8, 1, 24);
   const stopWhenEvidenceEnough = input.request.stopWhenEvidenceEnough !== false;
   const includeTemporalMetadata = input.request.includeTemporalMetadata === true;
+  const includeTemporalContext = input.request.includeTemporalContext !== false;
   const evidenceConvergenceThreshold = boundedNumber(
     input.request.evidenceConvergenceThreshold,
     0.72,
@@ -2020,6 +2034,7 @@ export async function reconstructMemoryContext(input: {
       evidenceConvergenceThreshold,
       targetMemoryCount,
       includeTemporalMetadata,
+      includeTemporalContext,
       cueExtractor: input.cueExtractor,
       inferTemporalCuesFromText,
       privateRouteSignals: input.request.privateRouteSignals,
@@ -2330,6 +2345,7 @@ export async function reconstructMemoryContext(input: {
     targetMemoryCount,
     stopReason,
     includeTemporalMetadata,
+    includeTemporalContext,
     cueExtractor: input.cueExtractor,
     inferTemporalCuesFromText,
     privateRouteSignals: input.request.privateRouteSignals,

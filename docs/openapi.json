@@ -4755,6 +4755,9 @@
                   "includeEvidence": {
                     "type": "boolean"
                   },
+                  "includeTemporalContext": {
+                    "type": "boolean"
+                  },
                   "contextBudgetTokens": {
                     "type": "number",
                     "exclusiveMinimum": 0
@@ -4802,6 +4805,9 @@
                         "exclusiveMinimum": 0
                       },
                       "includeTemporalMetadata": {
+                        "type": "boolean"
+                      },
+                      "includeTemporalContext": {
                         "type": "boolean"
                       },
                       "temporalMode": {
@@ -5252,6 +5258,9 @@
                   "includeEvidence": {
                     "type": "boolean"
                   },
+                  "includeTemporalContext": {
+                    "type": "boolean"
+                  },
                   "contextBudgetTokens": {
                     "type": "number",
                     "exclusiveMinimum": 0
@@ -5299,6 +5308,9 @@
                         "exclusiveMinimum": 0
                       },
                       "includeTemporalMetadata": {
+                        "type": "boolean"
+                      },
+                      "includeTemporalContext": {
                         "type": "boolean"
                       },
                       "temporalMode": {
@@ -5779,6 +5791,9 @@
                   "includeTemporalMetadata": {
                     "type": "boolean"
                   },
+                  "includeTemporalContext": {
+                    "type": "boolean"
+                  },
                   "temporalMode": {
                     "type": "string",
                     "enum": [
@@ -6252,6 +6267,9 @@
                     "exclusiveMinimum": 0
                   },
                   "includeTemporalMetadata": {
+                    "type": "boolean"
+                  },
+                  "includeTemporalContext": {
                     "type": "boolean"
                   },
                   "temporalMode": {

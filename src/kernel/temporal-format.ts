@@ -46,6 +46,24 @@ function dateFromCreatedAt(createdAt: string | undefined): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function normalizedInstantDateLabel(value: unknown): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) return "";
+  const normalized = normalizeExplicitTemporalInstant(raw);
+  if (!normalized) return "";
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return "";
+  const date = calendarDate(parsed);
+  const hours = parsed.getUTCHours();
+  const minutes = parsed.getUTCMinutes();
+  const seconds = parsed.getUTCSeconds();
+  return hours === 0 && minutes === 0 && seconds === 0
+    ? date
+    : `${date} ${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}${
+        seconds === 0 ? "" : `:${String(seconds).padStart(2, "0")}`
+      } UTC`;
+}
+
 export function observedAtMetadata(createdAt: string | undefined): string {
   const parsed = dateFromCreatedAt(createdAt);
   if (!parsed) return "";
@@ -63,6 +81,11 @@ export function observedAtMetadata(createdAt: string | undefined): string {
 export function observedAtSegment(createdAt: string | undefined): string {
   const metadata = observedAtMetadata(createdAt);
   return metadata ? `; ${metadata}` : "";
+}
+
+export function observedAtLabel(createdAt: string | undefined): string {
+  const parsed = dateFromCreatedAt(createdAt);
+  return parsed ? `observed ${calendarDate(parsed)}` : "";
 }
 
 function shiftedUtcDate(createdAt: string | undefined, dayOffset: number): Date | null {
@@ -140,6 +163,28 @@ export function validityWindowSegment(metadata: Record<string, unknown>): string
     metadata.validTo ?? metadata.valid_to ?? metadata.expiresAt,
   );
   return `${validFrom}${validTo}`;
+}
+
+export function temporalContextLabel(
+  createdAt: string | undefined,
+  metadata: Record<string, unknown> = {},
+): string {
+  const eventTime = normalizedInstantDateLabel(metadata.eventTime);
+  if (eventTime) return eventTime;
+  const eventDate = typeof metadata.eventDate === "string" ? metadata.eventDate.trim() : "";
+  if (eventDate && dateFromCalendarValue(eventDate)) return eventDate;
+  const validFrom = normalizedInstantDateLabel(metadata.validFrom ?? metadata.valid_from);
+  const validTo = normalizedInstantDateLabel(metadata.validTo ?? metadata.valid_to ?? metadata.expiresAt);
+  if (validFrom || validTo) return `${validFrom || ".."}..${validTo || ".."}`;
+  return observedAtLabel(createdAt);
+}
+
+export function temporalContextSegment(
+  createdAt: string | undefined,
+  metadata: Record<string, unknown> = {},
+): string {
+  const label = temporalContextLabel(createdAt, metadata);
+  return label ? `; ${label}` : "";
 }
 
 export function temporalMetadataSegment(
