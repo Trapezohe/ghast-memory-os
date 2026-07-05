@@ -132,6 +132,15 @@ within `window.messages`. gmOS validates that index, writes
 stores `metadata.windowEvidenceIds` so explanation and reconstruction can reach
 the full contributing window.
 
+The OpenAI-compatible windowed prompt is intentionally generic. It keeps the
+data-not-instructions boundary, requires JSON only, and asks for exhaustive
+coverage of distinct durable facts: names, dates, places, numbers, decisions,
+preferences, plans, life events, project facts, and task outcomes. Emit one
+candidate per distinct fact and prefer concrete specifics over broad summaries;
+do not skip a durable fact only because it seems minor. The single-message
+default candidate cap remains `6`; windowed extraction defaults to `12`, with
+`maxCandidates` or `windowMaxCandidates` available for host tuning.
+
 For consolidation, the hook receives sanitized source snapshots:
 
 ```ts

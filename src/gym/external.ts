@@ -51,6 +51,8 @@ export interface ExternalMemoryBenchmarkIntelligenceConfig {
   embedModel?: string | undefined;
   dimensions?: number | undefined;
   timeoutMs?: number | undefined;
+  retries?: number | undefined;
+  backoffMs?: number | undefined;
   concurrency?: number | undefined;
   disableThinking?: boolean | undefined;
   debugDir?: string | undefined;
@@ -226,10 +228,15 @@ export interface ExternalMemoryBenchmarkCaseResult {
   extractedMemoryCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
+  extractionRetryCount: number;
   extractionEmptyCount: number;
   extractionParseFailureCount: number;
   extractionTransportFailureCount: number;
   extractionFailureCount: number;
+  extractionOkWithCandidatesCharCount: number;
+  extractionEmptyCharCount: number;
+  extractionParseFailureCharCount: number;
+  extractionTransportFailureCharCount: number;
   mode: ExternalMemoryBenchmarkMode;
   temporalMode: ExternalMemoryBenchmarkTemporalMode | null;
   slices?: string[] | undefined;
@@ -285,10 +292,15 @@ export interface ExternalMemoryBenchmarkGroupTiming {
   extractedMemoryCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
+  extractionRetryCount: number;
   extractionEmptyCount: number;
   extractionParseFailureCount: number;
   extractionTransportFailureCount: number;
   extractionFailureCount: number;
+  extractionOkWithCandidatesCharCount: number;
+  extractionEmptyCharCount: number;
+  extractionParseFailureCharCount: number;
+  extractionTransportFailureCharCount: number;
   passedCount: number;
   failedCount: number;
 }
@@ -332,10 +344,15 @@ export interface ExternalMemoryBenchmarkFailureSample {
   extractedMemoryCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
+  extractionRetryCount: number;
   extractionEmptyCount: number;
   extractionParseFailureCount: number;
   extractionTransportFailureCount: number;
   extractionFailureCount: number;
+  extractionOkWithCandidatesCharCount: number;
+  extractionEmptyCharCount: number;
+  extractionParseFailureCharCount: number;
+  extractionTransportFailureCharCount: number;
   durationMs: number;
   scoringRuntimeMs: number;
   taxonomyRuntimeMs: number;
@@ -418,10 +435,15 @@ export interface ExternalMemoryBenchmarkRuntimeIngestGroupManifest {
   extractedMemoryCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
+  extractionRetryCount: number;
   extractionEmptyCount: number;
   extractionParseFailureCount: number;
   extractionTransportFailureCount: number;
   extractionFailureCount: number;
+  extractionOkWithCandidatesCharCount: number;
+  extractionEmptyCharCount: number;
+  extractionParseFailureCharCount: number;
+  extractionTransportFailureCharCount: number;
   ingestDurationMs: number;
 }
 
@@ -435,6 +457,8 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   maintainPhases: MaintenancePhase[];
   concurrency: number | null;
   timeoutMs: number | null;
+  retries: number | null;
+  backoffMs: number | null;
   hookNames: {
     extractor: string | null;
     consolidator: string | null;
@@ -446,9 +470,14 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   extractionFailureCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
+  extractionRetryCount: number;
   extractionEmptyCount: number;
   extractionParseFailureCount: number;
   extractionTransportFailureCount: number;
+  extractionOkWithCandidatesCharCount: number;
+  extractionEmptyCharCount: number;
+  extractionParseFailureCharCount: number;
+  extractionTransportFailureCharCount: number;
   ingestCaseGroups: ExternalMemoryBenchmarkRuntimeIngestGroupManifest[];
   answerer: ExternalMemoryBenchmarkRuntimeAnswererManifest;
 }
@@ -460,10 +489,15 @@ export interface ExternalMemoryBenchmarkCaseGroupProgress {
   extractedMemoryCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
+  extractionRetryCount: number;
   extractionEmptyCount: number;
   extractionParseFailureCount: number;
   extractionTransportFailureCount: number;
   extractionFailureCount: number;
+  extractionOkWithCandidatesCharCount: number;
+  extractionEmptyCharCount: number;
+  extractionParseFailureCharCount: number;
+  extractionTransportFailureCharCount: number;
   ingestDurationMs: number;
 }
 
@@ -2186,6 +2220,11 @@ function createRunManifest(input: {
       extractionFailureCount: input.runtimeIntelligence.extractionFailureCount,
       extractionWindowCount: input.runtimeIntelligence.extractionWindowCount,
       extractionCallCount: input.runtimeIntelligence.extractionCallCount,
+      extractionRetryCount: input.runtimeIntelligence.extractionRetryCount,
+      extractionOkWithCandidatesCharCount: input.runtimeIntelligence.extractionOkWithCandidatesCharCount,
+      extractionEmptyCharCount: input.runtimeIntelligence.extractionEmptyCharCount,
+      extractionParseFailureCharCount: input.runtimeIntelligence.extractionParseFailureCharCount,
+      extractionTransportFailureCharCount: input.runtimeIntelligence.extractionTransportFailureCharCount,
       ingestCaseGroups: [...input.runtimeIntelligence.ingestCaseGroups].sort((left, right) =>
         left.groupKey.localeCompare(right.groupKey)
       ),
@@ -2330,6 +2369,18 @@ function normalizedPositiveInteger(
   const input = value ?? fallback;
   if (!Number.isInteger(input) || input <= 0) {
     throw new Error(`${label} must be a positive integer`);
+  }
+  return input;
+}
+
+function normalizedNonNegativeInteger(
+  value: number | undefined,
+  fallback: number,
+  label: string,
+): number {
+  const input = value ?? fallback;
+  if (!Number.isInteger(input) || input < 0) {
+    throw new Error(`${label} must be a non-negative integer`);
   }
   return input;
 }
@@ -2533,6 +2584,11 @@ interface RuntimeIntelligenceState {
   extractionFailureCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
+  extractionRetryCount: number;
+  extractionOkWithCandidatesCharCount: number;
+  extractionEmptyCharCount: number;
+  extractionParseFailureCharCount: number;
+  extractionTransportFailureCharCount: number;
   ingestCaseGroups: ExternalMemoryBenchmarkRuntimeIngestGroupManifest[];
 }
 
@@ -2551,6 +2607,8 @@ function disabledRuntimeIntelligence(
       maintainPhases,
       concurrency: null,
       timeoutMs: null,
+      retries: null,
+      backoffMs: null,
       hookNames: {
         extractor: null,
         consolidator: null,
@@ -2565,6 +2623,11 @@ function disabledRuntimeIntelligence(
       extractionFailureCount: 0,
       extractionWindowCount: 0,
       extractionCallCount: 0,
+      extractionRetryCount: 0,
+      extractionOkWithCandidatesCharCount: 0,
+      extractionEmptyCharCount: 0,
+      extractionParseFailureCharCount: 0,
+      extractionTransportFailureCharCount: 0,
       ingestCaseGroups: [],
       answerer: disabledRuntimeAnswerer(),
     },
@@ -2574,6 +2637,11 @@ function disabledRuntimeIntelligence(
     extractionFailureCount: 0,
     extractionWindowCount: 0,
     extractionCallCount: 0,
+    extractionRetryCount: 0,
+    extractionOkWithCandidatesCharCount: 0,
+    extractionEmptyCharCount: 0,
+    extractionParseFailureCharCount: 0,
+    extractionTransportFailureCharCount: 0,
     ingestCaseGroups: [],
   };
 }
@@ -2589,6 +2657,9 @@ function resolveRuntimeIntelligence(input: {
   const config = isIntelligenceConfig(input.intelligence) ? input.intelligence : null;
   const concurrency = normalizedIntelligenceConcurrency(config?.concurrency);
   const timeoutMs = normalizedPositiveInteger(config?.timeoutMs, 20_000, "External benchmark intelligence timeoutMs");
+  const retries = normalizedNonNegativeInteger(config?.retries, 2, "External benchmark intelligence retries");
+  if (retries > 5) throw new Error("External benchmark intelligence retries must be at most 5");
+  const backoffMs = normalizedNonNegativeInteger(config?.backoffMs, 250, "External benchmark intelligence backoffMs");
   const apiKeyEnv = apiKeyEnvName(config?.apiKeyEnv);
   const apiKey = apiKeyEnv ? process.env[apiKeyEnv] : undefined;
   if (apiKeyEnv && !apiKey) {
@@ -2601,6 +2672,8 @@ function resolveRuntimeIntelligence(input: {
         ...(config.embedModel ? { embedModel: config.embedModel } : {}),
         ...(config.dimensions !== undefined ? { dimensions: config.dimensions } : {}),
         ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+        retries,
+        backoffMs,
         ...(config.disableThinking ? { disableThinking: true } : {}),
         ...(config.debugDir ? { debugDir: config.debugDir } : {}),
         ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
@@ -2639,6 +2712,8 @@ function resolveRuntimeIntelligence(input: {
       maintainPhases: input.maintainPhases,
       concurrency,
       timeoutMs,
+      retries,
+      backoffMs,
       hookNames: hookNamesFor(hooks),
       extractionEmptyCount: 0,
       extractionParseFailureCount: 0,
@@ -2646,6 +2721,11 @@ function resolveRuntimeIntelligence(input: {
       extractionFailureCount: 0,
       extractionWindowCount: 0,
       extractionCallCount: 0,
+      extractionRetryCount: 0,
+      extractionOkWithCandidatesCharCount: 0,
+      extractionEmptyCharCount: 0,
+      extractionParseFailureCharCount: 0,
+      extractionTransportFailureCharCount: 0,
       ingestCaseGroups: [],
       answerer: disabledRuntimeAnswerer(),
     },
@@ -2655,6 +2735,11 @@ function resolveRuntimeIntelligence(input: {
     extractionFailureCount: 0,
     extractionWindowCount: 0,
     extractionCallCount: 0,
+    extractionRetryCount: 0,
+    extractionOkWithCandidatesCharCount: 0,
+    extractionEmptyCharCount: 0,
+    extractionParseFailureCharCount: 0,
+    extractionTransportFailureCharCount: 0,
     ingestCaseGroups: [],
   };
 }
@@ -2736,10 +2821,15 @@ function failureSampleForCase(
     extractedMemoryCount: entry.extractedMemoryCount,
     extractionWindowCount: entry.extractionWindowCount,
     extractionCallCount: entry.extractionCallCount,
+    extractionRetryCount: entry.extractionRetryCount,
     extractionEmptyCount: entry.extractionEmptyCount,
     extractionParseFailureCount: entry.extractionParseFailureCount,
     extractionTransportFailureCount: entry.extractionTransportFailureCount,
     extractionFailureCount: entry.extractionFailureCount,
+    extractionOkWithCandidatesCharCount: entry.extractionOkWithCandidatesCharCount,
+    extractionEmptyCharCount: entry.extractionEmptyCharCount,
+    extractionParseFailureCharCount: entry.extractionParseFailureCharCount,
+    extractionTransportFailureCharCount: entry.extractionTransportFailureCharCount,
     durationMs: entry.durationMs,
     scoringRuntimeMs: entry.scoringRuntimeMs,
     taxonomyRuntimeMs: entry.taxonomyRuntimeMs,
@@ -2948,20 +3038,30 @@ function groupCases(
 
 interface AppliedBenchmarkEvent {
   warning?: string | undefined;
+  extractionRetryCount?: number | undefined;
   extractionEmptyCount?: number | undefined;
   extractionParseFailureCount?: number | undefined;
   extractionTransportFailureCount?: number | undefined;
   extractionFailureCount?: number | undefined;
+  extractionOkWithCandidatesCharCount?: number | undefined;
+  extractionEmptyCharCount?: number | undefined;
+  extractionParseFailureCharCount?: number | undefined;
+  extractionTransportFailureCharCount?: number | undefined;
 }
 
 interface AppliedBenchmarkEvents {
   warnings: string[];
+  extractionRetryCount: number;
   extractionEmptyCount: number;
   extractionParseFailureCount: number;
   extractionTransportFailureCount: number;
   extractionFailureCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
+  extractionOkWithCandidatesCharCount: number;
+  extractionEmptyCharCount: number;
+  extractionParseFailureCharCount: number;
+  extractionTransportFailureCharCount: number;
 }
 
 function isBenchmarkMessageEvent(
@@ -3020,7 +3120,9 @@ async function applyBenchmarkEvent(
     });
     const outcome = report.extraction?.outcome;
     const countOutcome = options.countExtractionFailures === true;
+    const transcriptCharCount = countOutcome ? event.content.length : 0;
     return {
+      extractionRetryCount: countOutcome ? report.extraction?.retryCount ?? 0 : 0,
       extractionEmptyCount: countOutcome && outcome === "ok_empty" ? 1 : 0,
       extractionParseFailureCount: countOutcome && outcome === "parse_failure" ? 1 : 0,
       extractionTransportFailureCount: countOutcome && outcome === "transport_failure" ? 1 : 0,
@@ -3028,6 +3130,13 @@ async function applyBenchmarkEvent(
         (outcome === "parse_failure" || outcome === "transport_failure")
           ? 1
           : 0,
+      extractionOkWithCandidatesCharCount:
+        countOutcome && outcome === "ok_with_candidates" ? transcriptCharCount : 0,
+      extractionEmptyCharCount: countOutcome && outcome === "ok_empty" ? transcriptCharCount : 0,
+      extractionParseFailureCharCount:
+        countOutcome && outcome === "parse_failure" ? transcriptCharCount : 0,
+      extractionTransportFailureCharCount:
+        countOutcome && outcome === "transport_failure" ? transcriptCharCount : 0,
     };
   }
 }
@@ -3044,12 +3153,17 @@ async function applyBenchmarkEvents(input: {
 }): Promise<AppliedBenchmarkEvents> {
   const output: AppliedBenchmarkEvents = {
     warnings: [],
+    extractionRetryCount: 0,
     extractionEmptyCount: 0,
     extractionParseFailureCount: 0,
     extractionTransportFailureCount: 0,
     extractionFailureCount: 0,
     extractionWindowCount: 0,
     extractionCallCount: 0,
+    extractionOkWithCandidatesCharCount: 0,
+    extractionEmptyCharCount: 0,
+    extractionParseFailureCharCount: 0,
+    extractionTransportFailureCharCount: 0,
   };
   const pendingMessages: ExternalMemoryBenchmarkMessageEvent[] = [];
 
@@ -3077,10 +3191,15 @@ async function applyBenchmarkEvents(input: {
     output.extractionWindowCount += ingested.extractionWindowCount;
     output.extractionCallCount += ingested.extractionCallCount;
     if (input.countExtractionFailures === true) {
+      output.extractionRetryCount += ingested.extractionRetryCount;
       output.extractionEmptyCount += ingested.extractionEmptyCount;
       output.extractionParseFailureCount += ingested.extractionParseFailureCount;
       output.extractionTransportFailureCount += ingested.extractionTransportFailureCount;
       output.extractionFailureCount += ingested.extractionFailureCount;
+      output.extractionOkWithCandidatesCharCount += ingested.extractionOkWithCandidatesCharCount;
+      output.extractionEmptyCharCount += ingested.extractionEmptyCharCount;
+      output.extractionParseFailureCharCount += ingested.extractionParseFailureCharCount;
+      output.extractionTransportFailureCharCount += ingested.extractionTransportFailureCharCount;
     }
   }
 
@@ -3094,10 +3213,15 @@ async function applyBenchmarkEvents(input: {
       countExtractionFailures: input.countExtractionFailures,
     });
     if (applied.warning !== undefined) output.warnings.push(applied.warning);
+    output.extractionRetryCount += applied.extractionRetryCount ?? 0;
     output.extractionEmptyCount += applied.extractionEmptyCount ?? 0;
     output.extractionParseFailureCount += applied.extractionParseFailureCount ?? 0;
     output.extractionTransportFailureCount += applied.extractionTransportFailureCount ?? 0;
     output.extractionFailureCount += applied.extractionFailureCount ?? 0;
+    output.extractionOkWithCandidatesCharCount += applied.extractionOkWithCandidatesCharCount ?? 0;
+    output.extractionEmptyCharCount += applied.extractionEmptyCharCount ?? 0;
+    output.extractionParseFailureCharCount += applied.extractionParseFailureCharCount ?? 0;
+    output.extractionTransportFailureCharCount += applied.extractionTransportFailureCharCount ?? 0;
   }
   await flushMessages();
   return output;
@@ -3111,10 +3235,15 @@ async function scoreCase(input: {
   extractedMemoryCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
+  extractionRetryCount: number;
   extractionEmptyCount: number;
   extractionParseFailureCount: number;
   extractionTransportFailureCount: number;
   extractionFailureCount: number;
+  extractionOkWithCandidatesCharCount: number;
+  extractionEmptyCharCount: number;
+  extractionParseFailureCharCount: number;
+  extractionTransportFailureCharCount: number;
   benchmarkCase: ExternalMemoryBenchmarkCase;
   index: number;
   options: RunExternalMemoryBenchmarkOptions;
@@ -3282,10 +3411,15 @@ async function scoreCase(input: {
     extractedMemoryCount: input.extractedMemoryCount,
     extractionWindowCount: input.extractionWindowCount,
     extractionCallCount: input.extractionCallCount,
+    extractionRetryCount: input.extractionRetryCount,
     extractionEmptyCount: input.extractionEmptyCount,
     extractionParseFailureCount: input.extractionParseFailureCount,
     extractionTransportFailureCount: input.extractionTransportFailureCount,
     extractionFailureCount: input.extractionFailureCount,
+    extractionOkWithCandidatesCharCount: input.extractionOkWithCandidatesCharCount,
+    extractionEmptyCharCount: input.extractionEmptyCharCount,
+    extractionParseFailureCharCount: input.extractionParseFailureCharCount,
+    extractionTransportFailureCharCount: input.extractionTransportFailureCharCount,
     mode,
     temporalMode,
     slices: input.benchmarkCase.slices ?? [],
@@ -3365,10 +3499,15 @@ async function runCaseGroup(input: {
   let extractedMemoryCount = 0;
   let extractionWindowCount = 0;
   let extractionCallCount = 0;
+  let extractionRetryCount = 0;
   let extractionEmptyCount = 0;
   let extractionParseFailureCount = 0;
   let extractionTransportFailureCount = 0;
   let extractionFailureCount = 0;
+  let extractionOkWithCandidatesCharCount = 0;
+  let extractionEmptyCharCount = 0;
+  let extractionParseFailureCharCount = 0;
+  let extractionTransportFailureCharCount = 0;
   let caseGroupMemories: MemoryRecord[] = [];
   try {
     await store.initialize();
@@ -3393,16 +3532,26 @@ async function runCaseGroup(input: {
     });
     ingestDurationMs = Math.max(0, Date.now() - ingestStartedMs);
     setupWarnings.push(...applied.warnings);
+    input.runtimeIntelligence.extractionRetryCount += applied.extractionRetryCount;
     input.runtimeIntelligence.extractionEmptyCount += applied.extractionEmptyCount;
     input.runtimeIntelligence.extractionParseFailureCount += applied.extractionParseFailureCount;
     input.runtimeIntelligence.extractionTransportFailureCount += applied.extractionTransportFailureCount;
     input.runtimeIntelligence.extractionFailureCount += applied.extractionFailureCount;
+    input.runtimeIntelligence.extractionOkWithCandidatesCharCount += applied.extractionOkWithCandidatesCharCount;
+    input.runtimeIntelligence.extractionEmptyCharCount += applied.extractionEmptyCharCount;
+    input.runtimeIntelligence.extractionParseFailureCharCount += applied.extractionParseFailureCharCount;
+    input.runtimeIntelligence.extractionTransportFailureCharCount += applied.extractionTransportFailureCharCount;
     extractionWindowCount = applied.extractionWindowCount;
     extractionCallCount = applied.extractionCallCount;
+    extractionRetryCount = applied.extractionRetryCount;
     extractionEmptyCount = applied.extractionEmptyCount;
     extractionParseFailureCount = applied.extractionParseFailureCount;
     extractionTransportFailureCount = applied.extractionTransportFailureCount;
     extractionFailureCount = applied.extractionFailureCount;
+    extractionOkWithCandidatesCharCount = applied.extractionOkWithCandidatesCharCount;
+    extractionEmptyCharCount = applied.extractionEmptyCharCount;
+    extractionParseFailureCharCount = applied.extractionParseFailureCharCount;
+    extractionTransportFailureCharCount = applied.extractionTransportFailureCharCount;
     input.runtimeIntelligence.extractionWindowCount += extractionWindowCount;
     input.runtimeIntelligence.extractionCallCount += extractionCallCount;
     caseGroupMemories = await memory.list({
@@ -3419,10 +3568,15 @@ async function runCaseGroup(input: {
       extractedMemoryCount,
       extractionWindowCount,
       extractionCallCount,
+      extractionRetryCount,
       extractionEmptyCount,
       extractionParseFailureCount,
       extractionTransportFailureCount,
       extractionFailureCount,
+      extractionOkWithCandidatesCharCount,
+      extractionEmptyCharCount,
+      extractionParseFailureCharCount,
+      extractionTransportFailureCharCount,
       ingestDurationMs,
     };
     input.runtimeIntelligence.ingestCaseGroups.push(ingestCaseGroup);
@@ -3445,10 +3599,15 @@ async function runCaseGroup(input: {
         extractedMemoryCount,
         extractionWindowCount,
         extractionCallCount,
+        extractionRetryCount,
         extractionEmptyCount,
         extractionParseFailureCount,
         extractionTransportFailureCount,
         extractionFailureCount,
+        extractionOkWithCandidatesCharCount,
+        extractionEmptyCharCount,
+        extractionParseFailureCharCount,
+        extractionTransportFailureCharCount,
         benchmarkCase: item.benchmarkCase,
         index: item.index,
         options: input.options,
@@ -3480,10 +3639,15 @@ async function runCaseGroup(input: {
       extractedMemoryCount,
       extractionWindowCount,
       extractionCallCount,
+      extractionRetryCount,
       extractionEmptyCount,
       extractionParseFailureCount,
       extractionTransportFailureCount,
       extractionFailureCount,
+      extractionOkWithCandidatesCharCount,
+      extractionEmptyCharCount,
+      extractionParseFailureCharCount,
+      extractionTransportFailureCharCount,
       passedCount: results.filter((result) => result.pass).length,
       failedCount: results.filter((result) => !result.pass).length,
     };

@@ -324,6 +324,10 @@ export type MemoryExtractionOutcome =
 
 export interface MemoryExtractionReport {
   extractorName?: string | undefined;
+  windowIndex?: number | undefined;
+  transcriptCharCount?: number | undefined;
+  minConfidence: number;
+  retryCount: number;
   extractionSource: "custom" | "none";
   extractorFailed: boolean;
   outcome: MemoryExtractionOutcome;
@@ -515,11 +519,16 @@ export interface IngestConversationProgress {
   windowsTotal: number;
   extractionWindowCount: number;
   extractionCallCount: number;
+  extractionRetryCount: number;
   extractionOkWithCandidatesCount: number;
   extractionEmptyCount: number;
   extractionParseFailureCount: number;
   extractionTransportFailureCount: number;
   extractionFailureCount: number;
+  extractionOkWithCandidatesCharCount: number;
+  extractionEmptyCharCount: number;
+  extractionParseFailureCharCount: number;
+  extractionTransportFailureCharCount: number;
   extractedMemoryCount: number;
   elapsedMs: number;
   etaMs: number | null;
@@ -534,11 +543,18 @@ export interface IngestConversationResult {
   worldBeliefIds: string[];
   extractionWindowCount: number;
   extractionCallCount: number;
+  extractionRetryCount: number;
   extractionOkWithCandidatesCount: number;
   extractionEmptyCount: number;
   extractionParseFailureCount: number;
   extractionTransportFailureCount: number;
   extractionFailureCount: number;
+  extractionOkWithCandidatesCharCount: number;
+  extractionEmptyCharCount: number;
+  extractionParseFailureCharCount: number;
+  extractionTransportFailureCharCount: number;
+  extractionFailedWindowIndexes: number[];
+  extractionMinConfidence: number;
   extractionReports: MemoryExtractionReport[];
 }
 

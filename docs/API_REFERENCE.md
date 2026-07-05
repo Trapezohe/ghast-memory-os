@@ -64,9 +64,11 @@ Windowed extraction keeps evidence granularity. Accepted memories store
 candidate `sourceIndex`; when valid, gmOS stores `metadata.sourceIndex` and
 `metadata.sourceEvidenceId` for the grounding message while preserving the
 window provenance. Ingest reports include `extractionOkWithCandidatesCount`,
-`extractionEmptyCount`, `extractionParseFailureCount`,
-`extractionTransportFailureCount`, and the legacy aggregate
-`extractionFailureCount`.
+`extractionRetryCount`, `extractionEmptyCount`,
+`extractionParseFailureCount`, `extractionTransportFailureCount`, the legacy
+aggregate `extractionFailureCount`, `extractionFailedWindowIndexes`,
+`extractionMinConfidence`, and per-outcome character totals such as
+`extractionOkWithCandidatesCharCount` and `extractionEmptyCharCount`.
 
 ### SQLite Store Encryption
 
@@ -454,8 +456,13 @@ Primary methods:
   `createOpenAICompatibleReranker`, and `createDefaultIntelligence`. Every
   factory accepts an injectable `fetchImpl`, uses OpenAI-compatible HTTP shapes,
   accepts the same response parsing tolerance, and is loaded only when the host
-  imports the subpath. `createDefaultIntelligence({ debugDir })` passes debug
-  capture to the extractor.
+  imports the subpath. `timeoutMs` is the total call budget; `retries` defaults
+  to `2` for transport failures (`429`, `5xx`, timeout, network), and
+  `backoffMs` defaults to `250`. `createDefaultIntelligence({ debugDir })`
+  passes debug capture to the extractor, including bounded `ok_empty` samples.
+  The OpenAI-compatible extractor keeps the single-message default cap at
+  `maxCandidates=6`; windowed extraction defaults to `12` candidates unless
+  `maxCandidates` or `windowMaxCandidates` overrides it.
 - `prepareTurn(input)`: retrieve ordinary context and action policy for the next
   agent turn. This is a read path and must not write. When the exploration index
   has relevant candidates, gmOS may emit deterministic `kind: "curiosity"`

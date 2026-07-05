@@ -12,7 +12,10 @@ import type {
   MemoryTemporalMetadata,
   MemoryTemporalParser,
 } from "./types.js";
-import { openAICompatibleOutcomeForError } from "./openai-compatible-response.js";
+import {
+  openAICompatibleOutcomeForError,
+  openAICompatibleRetryCount,
+} from "./openai-compatible-response.js";
 import { isReservedSpeakerIdentity, stableNamedPersonSubject } from "./person-identity.js";
 import {
   classifySensitivity,
@@ -420,6 +423,7 @@ export async function extractMemoryCandidatePlan(input: {
   const inferTemporalFromText = input.inferTemporalFromText ?? false;
   let selected: MemoryExtractionCandidate[] | null = null;
   let extractorFailed = false;
+  let retryCount = 0;
   let outcome: MemoryExtractionOutcome = input.extractor ? "ok_empty" : "not_configured";
 
   if (input.extractor) {
@@ -428,10 +432,12 @@ export async function extractMemoryCandidatePlan(input: {
         typeof input.extractor === "function"
           ? await input.extractor(input.extractionInput)
           : await input.extractor.extract(input.extractionInput);
+      retryCount = openAICompatibleRetryCount(raw);
       selected = asCandidateArray(raw) ?? [];
       outcome = selected.length > 0 ? "ok_with_candidates" : "ok_empty";
     } catch (error) {
       extractorFailed = true;
+      retryCount = openAICompatibleRetryCount(error);
       selected = null;
       outcome = openAICompatibleOutcomeForError(error);
     }
@@ -518,6 +524,8 @@ export async function extractMemoryCandidatePlan(input: {
     candidates,
     report: {
       ...(extractor ? { extractorName: extractor } : {}),
+      minConfidence,
+      retryCount,
       extractionSource,
       extractorFailed,
       outcome,

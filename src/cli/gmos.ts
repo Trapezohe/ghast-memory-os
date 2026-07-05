@@ -625,6 +625,8 @@ function externalIntelligenceOption(): {
   embedModel?: string | undefined;
   dimensions?: number | undefined;
   timeoutMs?: number | undefined;
+  retries?: number | undefined;
+  backoffMs?: number | undefined;
   concurrency?: number | undefined;
   disableThinking?: boolean | undefined;
   debugDir?: string | undefined;
@@ -646,6 +648,8 @@ function externalIntelligenceOption(): {
   const embedModel = value("--intelligence-embed-model");
   const dimensions = positiveIntegerOptionValue("--intelligence-embed-dimensions");
   const timeoutMs = positiveIntegerOptionValue("--intelligence-timeout-ms");
+  const retries = nonNegativeIntegerOptionValue("--intelligence-retries");
+  const backoffMs = nonNegativeIntegerOptionValue("--intelligence-backoff-ms");
   const concurrency = positiveIntegerOptionValue("--intelligence-concurrency");
   const debugDir = value("--intelligence-debug-dir");
   const disableThinking = has("--intelligence-disable-thinking");
@@ -655,6 +659,8 @@ function externalIntelligenceOption(): {
     ...(embedModel ? { embedModel } : {}),
     ...(apiKeyEnv ? { apiKeyEnv } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    ...(retries !== undefined ? { retries } : {}),
+    ...(backoffMs !== undefined ? { backoffMs } : {}),
     ...(concurrency !== undefined ? { concurrency } : {}),
     ...(dimensions !== undefined ? { dimensions } : {}),
     ...(debugDir ? { debugDir: path.resolve(process.cwd(), debugDir) } : {}),
@@ -2032,14 +2038,14 @@ async function main(): Promise<void> {
             onCaseGroupSetup: (progress) => {
               if (has("--progress")) {
                 console.error(
-                  `[gmos external] setup group=${progress.groupKey} events=${progress.eventCount} memories=${progress.extractedMemoryCount} windows=${progress.extractionWindowCount} extractionCalls=${progress.extractionCallCount} extractionEmpty=${progress.extractionEmptyCount} extractionParseFailures=${progress.extractionParseFailureCount} extractionTransportFailures=${progress.extractionTransportFailureCount} extractionFailures=${progress.extractionFailureCount} ingestMs=${progress.ingestDurationMs}`,
+                  `[gmos external] setup group=${progress.groupKey} events=${progress.eventCount} memories=${progress.extractedMemoryCount} windows=${progress.extractionWindowCount} extractionCalls=${progress.extractionCallCount} extractionRetries=${progress.extractionRetryCount} extractionEmpty=${progress.extractionEmptyCount} okChars=${progress.extractionOkWithCandidatesCharCount} emptyChars=${progress.extractionEmptyCharCount} parseFailureChars=${progress.extractionParseFailureCharCount} transportFailureChars=${progress.extractionTransportFailureCharCount} extractionParseFailures=${progress.extractionParseFailureCount} extractionTransportFailures=${progress.extractionTransportFailureCount} extractionFailures=${progress.extractionFailureCount} ingestMs=${progress.ingestDurationMs}`,
                 );
               }
             },
             onCaseGroupIngestProgress: (progress) => {
               if (!has("--progress")) return;
               console.error(
-                `[gmos external] ingest group=${progress.groupKey} windows=${progress.windowsDone}/${progress.windowsTotal} extractionCalls=${progress.extractionCallCount} extractionEmpty=${progress.extractionEmptyCount} extractionParseFailures=${progress.extractionParseFailureCount} extractionTransportFailures=${progress.extractionTransportFailureCount} extractionFailures=${progress.extractionFailureCount} memories=${progress.extractedMemoryCount} elapsedMs=${progress.elapsedMs} etaMs=${progress.etaMs ?? "unknown"}`,
+                `[gmos external] ingest group=${progress.groupKey} windows=${progress.windowsDone}/${progress.windowsTotal} extractionCalls=${progress.extractionCallCount} extractionRetries=${progress.extractionRetryCount} extractionEmpty=${progress.extractionEmptyCount} okChars=${progress.extractionOkWithCandidatesCharCount} emptyChars=${progress.extractionEmptyCharCount} parseFailureChars=${progress.extractionParseFailureCharCount} transportFailureChars=${progress.extractionTransportFailureCharCount} extractionParseFailures=${progress.extractionParseFailureCount} extractionTransportFailures=${progress.extractionTransportFailureCount} extractionFailures=${progress.extractionFailureCount} memories=${progress.extractedMemoryCount} elapsedMs=${progress.elapsedMs} etaMs=${progress.etaMs ?? "unknown"}`,
               );
             },
             onCaseResult: (progress) => {

@@ -1846,19 +1846,28 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const results: ObserveResult[] = [];
     const extractionReports: MemoryExtractionReport[] = [];
     const dedupeKeys = new Set<string>();
+    const extractionMinConfidence = options.extraction?.minConfidence ?? 0.01;
     let extractionWindowCount = 0;
     let extractionCallCount = 0;
+    let extractionRetryCount = 0;
     let extractionOkWithCandidatesCount = 0;
     let extractionEmptyCount = 0;
     let extractionParseFailureCount = 0;
     let extractionTransportFailureCount = 0;
+    let extractionOkWithCandidatesCharCount = 0;
+    let extractionEmptyCharCount = 0;
+    let extractionParseFailureCharCount = 0;
+    let extractionTransportFailureCharCount = 0;
     let extractedMemoryCountForProgress = 0;
+    const extractionFailedWindowIndexes: number[] = [];
 
     interface WindowMember extends ConversationEvidenceWrite {
       result: ObserveResult;
     }
 
     interface ExtractionWindowTask {
+      windowIndex: number;
+      transcriptCharCount: number;
       members: WindowMember[];
       last: WindowMember;
       windowEvidenceIds: string[];
@@ -1892,16 +1901,39 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       pendingWindowChars = windowChars(preserved);
       const last = members[members.length - 1]!;
       const windowEvidenceIds = members.map((member) => member.evidence.id);
-      extractionTasks.push({ members, last, windowEvidenceIds });
+      extractionTasks.push({
+        windowIndex: extractionTasks.length,
+        transcriptCharCount: windowChars(members),
+        members,
+        last,
+        windowEvidenceIds,
+      });
       extractionWindowCount += 1;
       if (options.extractor) extractionCallCount += 1;
     }
 
     function recordExtractionOutcome(report: MemoryExtractionReport): void {
+      const transcriptCharCount = report.transcriptCharCount ?? 0;
+      extractionRetryCount += report.retryCount;
       if (report.outcome === "ok_with_candidates") extractionOkWithCandidatesCount += 1;
       else if (report.outcome === "ok_empty") extractionEmptyCount += 1;
       else if (report.outcome === "parse_failure") extractionParseFailureCount += 1;
       else if (report.outcome === "transport_failure") extractionTransportFailureCount += 1;
+      if (report.outcome === "ok_with_candidates") {
+        extractionOkWithCandidatesCharCount += transcriptCharCount;
+      } else if (report.outcome === "ok_empty") {
+        extractionEmptyCharCount += transcriptCharCount;
+      } else if (report.outcome === "parse_failure") {
+        extractionParseFailureCharCount += transcriptCharCount;
+      } else if (report.outcome === "transport_failure") {
+        extractionTransportFailureCharCount += transcriptCharCount;
+      }
+      if (
+        (report.outcome === "parse_failure" || report.outcome === "transport_failure") &&
+        report.windowIndex !== undefined
+      ) {
+        extractionFailedWindowIndexes.push(report.windowIndex);
+      }
       extractedMemoryCountForProgress += report.acceptedCandidateCount;
     }
 
@@ -1919,11 +1951,16 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         windowsTotal: total,
         extractionWindowCount,
         extractionCallCount,
+        extractionRetryCount,
         extractionOkWithCandidatesCount,
         extractionEmptyCount,
         extractionParseFailureCount,
         extractionTransportFailureCount,
         extractionFailureCount: extractionParseFailureCount + extractionTransportFailureCount,
+        extractionOkWithCandidatesCharCount,
+        extractionEmptyCharCount,
+        extractionParseFailureCharCount,
+        extractionTransportFailureCharCount,
         extractedMemoryCount: extractedMemoryCountForProgress,
         elapsedMs,
         etaMs,
@@ -1955,7 +1992,11 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         minConfidence: options.extraction?.minConfidence,
       });
       const safeReport = sanitizeRuntimeExtractionReport(
-        extraction.report,
+        {
+          ...extraction.report,
+          windowIndex: task.windowIndex,
+          transcriptCharCount: task.transcriptCharCount,
+        },
         classifyRuntimeSensitivity,
       );
       return { task, extraction, safeReport };
@@ -2096,11 +2137,18 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       worldBeliefIds: results.flatMap((result) => result.worldBeliefIds),
       extractionWindowCount,
       extractionCallCount,
+      extractionRetryCount,
       extractionOkWithCandidatesCount,
       extractionEmptyCount,
       extractionParseFailureCount,
       extractionTransportFailureCount,
       extractionFailureCount: extractionParseFailureCount + extractionTransportFailureCount,
+      extractionOkWithCandidatesCharCount,
+      extractionEmptyCharCount,
+      extractionParseFailureCharCount,
+      extractionTransportFailureCharCount,
+      extractionFailedWindowIndexes,
+      extractionMinConfidence,
       extractionReports,
     };
   }

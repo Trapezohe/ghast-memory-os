@@ -2,7 +2,12 @@ import {
   createOpenAICompatibleExtractor as createKernelOpenAICompatibleExtractor,
   type OpenAICompatibleExtractorOptions as KernelOpenAICompatibleExtractorOptions,
 } from "../kernel/openai-compatible-extractor.js";
-import { parseOpenAICompatibleCompletionJson } from "../kernel/openai-compatible-response.js";
+import {
+  OpenAICompatibleResponseError,
+  openAICompatibleRetryAfterMs,
+  parseOpenAICompatibleCompletionJson,
+  runOpenAICompatibleRetry,
+} from "../kernel/openai-compatible-response.js";
 import { classifySensitivity, isPersonRoutedMemory } from "../kernel/safety.js";
 import type {
   EmbeddingProvider,
@@ -25,7 +30,9 @@ import type {
 export type OpenAICompatibleFetch = (
   input: string | URL | Request,
   init?: RequestInit,
-) => Promise<Pick<Response, "ok" | "status" | "statusText" | "text">>;
+) => Promise<Pick<Response, "ok" | "status" | "statusText" | "text"> & {
+  headers?: Pick<Headers, "get"> | undefined;
+}>;
 
 export interface OpenAICompatibleBaseOptions {
   name?: string | undefined;
@@ -34,7 +41,9 @@ export interface OpenAICompatibleBaseOptions {
   model: string;
   fetchImpl?: OpenAICompatibleFetch | undefined;
   timeoutMs?: number | undefined;
+  retries?: number | undefined;
   maxRetries?: number | undefined;
+  backoffMs?: number | undefined;
   temperature?: number | undefined;
   maxTokens?: number | undefined;
   headers?: Record<string, string> | undefined;
@@ -114,25 +123,41 @@ function fetchFor(options: { fetchImpl?: OpenAICompatibleFetch | undefined }): O
 async function fetchJsonWithRetry(
   url: string,
   init: RequestInit,
-  options: { fetchImpl: OpenAICompatibleFetch; timeoutMs?: number | undefined; maxRetries?: number | undefined },
+  options: {
+    fetchImpl: OpenAICompatibleFetch;
+    timeoutMs?: number | undefined;
+    retries?: number | undefined;
+    maxRetries?: number | undefined;
+    backoffMs?: number | undefined;
+  },
 ): Promise<unknown | null> {
   const timeoutMs = boundedInteger(options.timeoutMs, DEFAULT_TIMEOUT_MS, 1000, 120_000);
-  const maxRetries = boundedInteger(options.maxRetries, 0, 0, 3);
-  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await options.fetchImpl(url, { ...init, signal: controller.signal });
+  try {
+    const result = await runOpenAICompatibleRetry(async (signal) => {
+      const response = await options.fetchImpl(url, { ...init, signal });
       const text = await response.text();
-      if (!response.ok) throw new Error(`request failed: ${response.status} ${response.statusText}`);
+      if (!response.ok) {
+        throw new OpenAICompatibleResponseError(
+          `request failed: ${response.status} ${response.statusText}`,
+          "transport_failure",
+          {
+            status: response.status,
+            retryable: response.status === 429 || response.status >= 500,
+            retryAfterMs: openAICompatibleRetryAfterMs(response.headers?.get("retry-after")),
+          },
+        );
+      }
       return JSON.parse(text) as unknown;
-    } catch {
-      if (attempt >= maxRetries) return null;
-    } finally {
-      clearTimeout(timer);
-    }
+    }, {
+      timeoutMs,
+      retries: options.retries,
+      maxRetries: options.maxRetries,
+      backoffMs: options.backoffMs,
+    });
+    return result.value;
+  } catch {
+    return null;
   }
-  return null;
 }
 
 function arrayFromPayload(payload: unknown, keys: string[]): unknown[] | null {
@@ -187,7 +212,9 @@ async function callChatJson(
     {
       fetchImpl: fetchFor(options),
       timeoutMs: options.timeoutMs,
+      retries: options.retries,
       maxRetries: options.maxRetries,
+      backoffMs: options.backoffMs,
     },
   );
   if (payload === null) return null;
@@ -392,7 +419,9 @@ export function createOpenAICompatibleEmbeddingProvider(
           {
             fetchImpl,
             timeoutMs: options.timeoutMs,
+            retries: options.retries,
             maxRetries: options.maxRetries,
+            backoffMs: options.backoffMs,
           },
         );
         const batchVectors = embeddingVectors(payload);

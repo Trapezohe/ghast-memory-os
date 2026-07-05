@@ -5,13 +5,29 @@ import { redactForReport } from "./safety.js";
 
 export type OpenAICompatibleResponseFailureKind = "parse_failure" | "transport_failure";
 
+const RETRY_COUNT = Symbol.for("@ghast/memory.openaiCompatibleRetryCount");
+
 export class OpenAICompatibleResponseError extends Error {
   readonly failureKind: OpenAICompatibleResponseFailureKind;
+  readonly retryable: boolean;
+  readonly retryAfterMs?: number | undefined;
+  readonly status?: number | undefined;
 
-  constructor(message: string, failureKind: OpenAICompatibleResponseFailureKind) {
+  constructor(
+    message: string,
+    failureKind: OpenAICompatibleResponseFailureKind,
+    details: {
+      retryable?: boolean | undefined;
+      retryAfterMs?: number | undefined;
+      status?: number | undefined;
+    } = {},
+  ) {
     super(message);
     this.name = "OpenAICompatibleResponseError";
     this.failureKind = failureKind;
+    this.retryable = details.retryable ?? failureKind === "transport_failure";
+    this.retryAfterMs = details.retryAfterMs;
+    this.status = details.status;
   }
 }
 
@@ -23,6 +39,110 @@ export function openAICompatibleFailureKind(error: unknown): OpenAICompatibleRes
 
 export function openAICompatibleOutcomeForError(error: unknown): "parse_failure" | "transport_failure" {
   return openAICompatibleFailureKind(error);
+}
+
+export interface OpenAICompatibleRetryOptions {
+  timeoutMs?: number | undefined;
+  retries?: number | undefined;
+  maxRetries?: number | undefined;
+  backoffMs?: number | undefined;
+}
+
+export interface OpenAICompatibleRetryResult<T> {
+  value: T;
+  retryCount: number;
+}
+
+function boundedInteger(input: number | undefined, fallback: number, min: number, max: number): number {
+  if (input === undefined || !Number.isFinite(input)) return fallback;
+  return Math.max(min, Math.min(Math.trunc(input), max));
+}
+
+export function openAICompatibleRetryCount(value: unknown): number {
+  if (!value || (typeof value !== "object" && typeof value !== "function")) return 0;
+  const retryCount = (value as { [RETRY_COUNT]?: unknown })[RETRY_COUNT];
+  return typeof retryCount === "number" && Number.isInteger(retryCount) && retryCount > 0
+    ? retryCount
+    : 0;
+}
+
+export function attachOpenAICompatibleRetryCount<T extends object>(
+  value: T,
+  retryCount: number,
+): T {
+  Object.defineProperty(value, RETRY_COUNT, {
+    value: Math.max(0, Math.trunc(retryCount)),
+    enumerable: false,
+    configurable: true,
+  });
+  return value;
+}
+
+export function openAICompatibleRetryAfterMs(value: string | null | undefined): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.trunc(seconds * 1000);
+  const dateMs = Date.parse(value);
+  if (!Number.isFinite(dateMs)) return undefined;
+  return Math.max(0, dateMs - Date.now());
+}
+
+function retryableTransportError(error: unknown): boolean {
+  if (error instanceof OpenAICompatibleResponseError) {
+    return error.failureKind === "transport_failure" && error.retryable;
+  }
+  return true;
+}
+
+function retryDelayMs(error: unknown, attempt: number, backoffMs: number): number {
+  if (
+    error instanceof OpenAICompatibleResponseError &&
+    error.retryAfterMs !== undefined
+  ) {
+    return error.retryAfterMs;
+  }
+  const base = Math.min(backoffMs * 2 ** attempt, 5000);
+  return Math.trunc(base + Math.random() * Math.max(1, Math.ceil(base * 0.25)));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function runOpenAICompatibleRetry<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  options: OpenAICompatibleRetryOptions | undefined,
+): Promise<OpenAICompatibleRetryResult<T>> {
+  const timeoutMs = boundedInteger(options?.timeoutMs, 20_000, 1000, 120_000);
+  const retries = boundedInteger(options?.retries ?? options?.maxRetries, 2, 0, 5);
+  const backoffMs = boundedInteger(options?.backoffMs, 250, 0, 30_000);
+  const startedMs = Date.now();
+  let retryCount = 0;
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const remainingMs = timeoutMs - (Date.now() - startedMs);
+    if (remainingMs <= 0) break;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), remainingMs);
+    try {
+      return { value: await operation(controller.signal), retryCount };
+    } catch (error) {
+      lastError = error;
+      if (!retryableTransportError(error) || attempt >= retries) break;
+      const delayMs = retryDelayMs(error, attempt, backoffMs);
+      const afterDelayRemainingMs = timeoutMs - (Date.now() - startedMs) - delayMs;
+      if (afterDelayRemainingMs <= 0) break;
+      retryCount += 1;
+      await sleep(delayMs);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  const error = lastError instanceof Error
+    ? lastError
+    : new OpenAICompatibleResponseError("OpenAI-compatible request timed out", "transport_failure");
+  attachOpenAICompatibleRetryCount(error, retryCount);
+  throw error;
 }
 
 export function textFromOpenAICompatibleContent(value: unknown): string {
@@ -206,6 +326,7 @@ export function parseOpenAICompatibleCompletionJson(payload: unknown, label: str
 export interface OpenAICompatibleDebugOptions {
   dir?: string | undefined;
   firstCalls?: number | undefined;
+  emptyCalls?: number | undefined;
   maxFiles?: number | undefined;
   maxChars?: number | undefined;
 }
@@ -216,15 +337,11 @@ export interface OpenAICompatibleDebugSample {
   rawResponseText: string;
   completionText?: string | undefined;
   outcome: string;
+  retryCount?: number | undefined;
   error?: string | undefined;
 }
 
 let debugSessionCounter = 0;
-
-function boundedInteger(input: number | undefined, fallback: number, min: number, max: number): number {
-  if (input === undefined || !Number.isFinite(input)) return fallback;
-  return Math.max(min, Math.min(Math.trunc(input), max));
-}
 
 function boundedDebugText(value: string, maxChars: number): string {
   const redacted = redactForReport(value);
@@ -241,15 +358,20 @@ export function createOpenAICompatibleDebugCapture(
   if (!options?.dir) return undefined;
   const dir = options.dir;
   const firstCalls = boundedInteger(options.firstCalls, 5, 0, 100);
+  const emptyCalls = boundedInteger(options.emptyCalls, 5, 0, 100);
   const maxFiles = boundedInteger(options.maxFiles, 50, 1, 1000);
   const maxChars = boundedInteger(options.maxChars, 8000, 256, 200000);
   const sessionId = `${process.pid}-${Date.now()}-${++debugSessionCounter}`;
   let callCount = 0;
+  let emptyWritten = 0;
   let written = 0;
   return (sample) => {
     callCount += 1;
     const failure = sample.outcome === "parse_failure" || sample.outcome === "transport_failure";
-    if ((!failure && callCount > firstCalls) || written >= maxFiles) return;
+    const emptySample = sample.outcome === "ok_empty";
+    if (emptySample) emptyWritten += 1;
+    const keepEmpty = emptySample && emptyWritten <= emptyCalls;
+    if ((!failure && !keepEmpty && callCount > firstCalls) || written >= maxFiles) return;
     mkdirSync(dir, { recursive: true });
     written += 1;
     const fileName = [
@@ -269,6 +391,7 @@ export function createOpenAICompatibleDebugCapture(
         ...(sample.completionText !== undefined
           ? { completionText: boundedDebugText(sample.completionText, maxChars) }
           : {}),
+        ...(sample.retryCount !== undefined ? { retryCount: sample.retryCount } : {}),
         ...(sample.error ? { error: boundedDebugText(sample.error, maxChars) } : {}),
       }, null, 2)}\n`,
     );

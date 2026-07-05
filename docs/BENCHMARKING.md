@@ -275,12 +275,21 @@ extractor calls at window 12 instead of 150k calls. At
 not by per-turn serial extraction. Use lower concurrency for small local models
 or providers with strict rate limits.
 
+Intelligence calls retry transport failures by default: HTTP `429`, HTTP `5xx`,
+timeouts, and network errors get `--intelligence-retries 2` with exponential
+backoff and jitter. `Retry-After` is honored when the provider sends it.
+`--intelligence-backoff-ms` changes the initial backoff. The call-level
+`--intelligence-timeout-ms` remains the total budget for one hook call, so
+retries do not multiply a stuck window's wall time.
+
 Recommended provider setup flow:
 
 1. Run one case first with `--max-cases 1 --progress --intelligence-debug-dir ./gmos-debug`.
 2. Inspect the bounded JSON samples in that directory: request prompt, raw
-   response text, selected completion text, and parse outcome. Files never
-   include Authorization headers or API keys.
+   response text, selected completion text, parse outcome, and retry count.
+   Files never include Authorization headers or API keys. Empty windows are
+   sampled too: the first five `ok_empty` windows are written so you can tell
+   "truly no durable facts" from prompt/cap starvation.
 3. Fix provider flags before scaling. Thinking models may return useful JSON in
    `reasoning_content`, but if they return reasoning without JSON the run will
    count `extractionParseFailureCount` instead of silently producing zero
@@ -291,9 +300,12 @@ Recommended provider setup flow:
 
 With `--progress`, message-mode setup prints content-free window progress every
 10 windows and at completion: windows done/total, outcome counts, extracted
-candidate count so far, elapsed time, and rough ETA. Runtime manifests include
-`extractionEmptyCount`, `extractionParseFailureCount`, and
-`extractionTransportFailureCount` alongside `extractionFailureCount`.
+candidate count so far, retry count, outcome character totals, elapsed time,
+and rough ETA. Runtime manifests include `extractionRetryCount`,
+`extractionEmptyCount`, `extractionParseFailureCount`,
+`extractionTransportFailureCount`, outcome character totals such as
+`extractionOkWithCandidatesCharCount` and `extractionEmptyCharCount`, alongside
+`extractionFailureCount`.
 
 Local Ollama-style OpenAI-compatible endpoint:
 
@@ -308,6 +320,8 @@ gmos gym external \
   --intelligence-embed-model nomic-embed-text \
   --intelligence-concurrency 2 \
   --intelligence-timeout-ms 20000 \
+  --intelligence-retries 2 \
+  --intelligence-backoff-ms 250 \
   --intelligence-debug-dir ./gmos-debug \
   --progress \
   --format json
