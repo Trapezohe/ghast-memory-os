@@ -163,6 +163,13 @@ context preparation, and active reconstruction.
 hosts can verify provider-shaped JSON parsing and write-path validation without
 network access or API keys.
 
+OpenAI-compatible extractor responses may be a JSON object with `memories`,
+`candidates`, or `memoryCandidates`, or a bare candidate array. gmOS accepts
+plain content strings, text parts arrays, fenced JSON, and prose-wrapped JSON.
+When `message.content` is empty, it tries `reasoning_content`/`reasoning` as a
+fallback; reasoning without JSON is reported as a parse failure. A parsed empty
+candidate array is counted separately as `ok_empty`.
+
 See [MCP and HTTP Integration Guide](./INTEGRATION_GUIDE.md#batteries-included-intelligence)
 for Ollama and OpenAI-compatible cloud setup snippets.
 

@@ -53,15 +53,20 @@ Key write methods:
   each message as its own evidence event, then calls the extractor once per
   eligible message window. `window.maxMessages` defaults to `12`; metadata
   `sessionId`, `sessionKey`, or generic `windowId` starts a new window when it
-  changes. `extraction.extractFromRoles` overrides the runtime default for that
-  ingest call.
+  changes. `window.concurrency` runs bounded extractor windows in parallel
+  while applying results in window order; the default is `1` unless a caller
+  wires a higher concurrency. `extraction.extractFromRoles` overrides the
+  runtime default for that ingest call.
 
 Windowed extraction keeps evidence granularity. Accepted memories store
 `metadata.windowEvidenceIds` with every contributing evidence id and keep
 `sourceEventId` on the window's last evidence event. Extractors may return a
 candidate `sourceIndex`; when valid, gmOS stores `metadata.sourceIndex` and
 `metadata.sourceEvidenceId` for the grounding message while preserving the
-window provenance.
+window provenance. Ingest reports include `extractionOkWithCandidatesCount`,
+`extractionEmptyCount`, `extractionParseFailureCount`,
+`extractionTransportFailureCount`, and the legacy aggregate
+`extractionFailureCount`.
 
 ### SQLite Store Encryption
 
@@ -434,8 +439,13 @@ Primary methods:
   factory for `/chat/completions` compatible providers. The request body stays
   Chat Completions-shaped; response parsing accepts JSON memory payloads from
   message content strings, content parts, top-level `output_text`, or
-  `output[].content[].text` returned by compatible proxies. Provider output
-  still goes through the normal gmOS candidate validation and safety gates.
+  `output[].content[].text` returned by compatible proxies. It also unwraps
+  fenced JSON and prose-wrapped JSON, accepts bare arrays or `{ candidates }`,
+  and falls back to `reasoning_content`/`reasoning` only when message content is
+  empty. Empty or non-JSON completions are parse failures, not silent empty
+  extractions. `debugDir` writes bounded sanitized request/response samples for
+  provider integration probes. Provider output still goes through the normal
+  gmOS candidate validation and safety gates.
 - `@ghast/memory/intelligence`: opt-in subpath exporting
   `createOpenAICompatibleExtractor`, `createOpenAICompatibleConsolidator`,
   `createOpenAICompatibleProcedureDistiller`,
@@ -443,7 +453,9 @@ Primary methods:
   `createOpenAICompatibleEmbeddingProvider`,
   `createOpenAICompatibleReranker`, and `createDefaultIntelligence`. Every
   factory accepts an injectable `fetchImpl`, uses OpenAI-compatible HTTP shapes,
-  and is loaded only when the host imports the subpath.
+  accepts the same response parsing tolerance, and is loaded only when the host
+  imports the subpath. `createDefaultIntelligence({ debugDir })` passes debug
+  capture to the extractor.
 - `prepareTurn(input)`: retrieve ordinary context and action policy for the next
   agent turn. This is a read path and must not write. When the exploration index
   has relevant candidates, gmOS may emit deterministic `kind: "curiosity"`

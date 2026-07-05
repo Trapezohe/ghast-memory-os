@@ -33,6 +33,7 @@ import {
   runAutopilot,
   type EntityResolver,
   type MemoryCueExtractor,
+  type MemoryExtractionOutcome,
   type MemoryExtractionInput,
   type MemoryExtractor,
   type MemoryStore,
@@ -2155,6 +2156,109 @@ assert.equal(
   24,
 );
 await windowedMemory.close();
+async function runWindowConcurrencyFixture(concurrency: number) {
+  const store = createSqliteMemoryStore({
+    path: path.join(tmp, `window-concurrency-${concurrency}.db`),
+  });
+  let active = 0;
+  let maxActive = 0;
+  const memory = createMemoryOS({
+    profileId: "window-concurrency",
+    store,
+    extractor: {
+      name: "jittered-window-extractor",
+      async extract(input) {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        const content = input.window?.messages[0]?.content ?? "";
+        const match = /window (\d+)/u.exec(content);
+        const index = match ? Number(match[1]) : 0;
+        await new Promise((resolve) => setTimeout(resolve, (6 - index) * 5));
+        active -= 1;
+        if (index === 3) throw new Error("planned transport failure");
+        return [{
+          kind: "fact" as const,
+          content: `Parallel window ${index} durable memory.`,
+          confidence: 0.9,
+          sourceIndex: 0,
+          predicate: "project.note",
+          subject: "project:parallel-window",
+          object: `window-${index}`,
+        }];
+      },
+    },
+  });
+  const progress: string[] = [];
+  const ingested = await memory.ingestConversation({
+    profileId: "window-concurrency",
+    messages: Array.from({ length: 5 }, (_entry, index) => ({
+      conversationId: "window-concurrency",
+      messageId: `window-concurrency-${index + 1}`,
+      role: "user" as const,
+      content: `Parallel window ${index + 1} source message.`,
+    })),
+    window: { maxMessages: 1, concurrency },
+    progress: {
+      everyWindows: 2,
+      onWindow: (entry) => {
+        progress.push(
+          `${entry.windowsDone}/${entry.windowsTotal}:empty=${entry.extractionEmptyCount}:parse=${entry.extractionParseFailureCount}:transport=${entry.extractionTransportFailureCount}`,
+        );
+      },
+    },
+  });
+  const memories = (await memory.list({
+    profileId: "window-concurrency",
+    status: "any",
+    limit: 20,
+  }))
+    .map((memoryRecord) => ({
+      kind: memoryRecord.kind,
+      content: memoryRecord.content,
+      confidence: memoryRecord.confidence,
+      status: memoryRecord.status,
+      object: memoryRecord.metadata.object,
+      sourceIndex: memoryRecord.metadata.sourceIndex,
+    }))
+    .sort((left, right) => left.content.localeCompare(right.content));
+  await memory.close();
+  return {
+    maxActive,
+    progress,
+    counts: {
+      extractionWindowCount: ingested.extractionWindowCount,
+      extractionCallCount: ingested.extractionCallCount,
+      extractionEmptyCount: ingested.extractionEmptyCount,
+      extractionParseFailureCount: ingested.extractionParseFailureCount,
+      extractionTransportFailureCount: ingested.extractionTransportFailureCount,
+      extractionFailureCount: ingested.extractionFailureCount,
+      memoryCount: ingested.memoryIds.length,
+    },
+    reports: ingested.extractionReports.map((report) => ({
+      outcome: report.outcome,
+      rawCandidateCount: report.rawCandidateCount,
+      acceptedCandidateCount: report.acceptedCandidateCount,
+      extractorFailed: report.extractorFailed,
+    })),
+    memories,
+  };
+}
+const serialWindowConcurrency = await runWindowConcurrencyFixture(1);
+const parallelWindowConcurrency = await runWindowConcurrencyFixture(4);
+assert.deepEqual(parallelWindowConcurrency.memories, serialWindowConcurrency.memories);
+assert.deepEqual(parallelWindowConcurrency.reports, serialWindowConcurrency.reports);
+assert.deepEqual(parallelWindowConcurrency.counts, {
+  extractionWindowCount: 5,
+  extractionCallCount: 5,
+  extractionEmptyCount: 0,
+  extractionParseFailureCount: 0,
+  extractionTransportFailureCount: 1,
+  extractionFailureCount: 1,
+  memoryCount: 4,
+});
+assert.equal(serialWindowConcurrency.maxActive, 1);
+assert.equal(parallelWindowConcurrency.maxActive > 1, true);
+assert.equal(parallelWindowConcurrency.progress.at(-1)?.startsWith("5/5:"), true);
 const sessionBoundaryWindows: Array<Array<string | null>> = [];
 const sessionBoundaryStore = createSqliteMemoryStore({
   path: path.join(tmp, "window-session-boundary.db"),
@@ -5547,6 +5651,165 @@ assert.equal(
 assert.equal(
   responsesOutputContentCandidates[0]?.metadata?.llmExtractorModel,
   "fixture-responses-output-content-model",
+);
+let openAIParserCaseIndex = 0;
+async function observeOpenAIParserCase(input: {
+  name: string;
+  completion: unknown;
+  outcome: MemoryExtractionOutcome;
+  content?: string | undefined;
+}) {
+  openAIParserCaseIndex += 1;
+  const profileId = `llm_parser_matrix_${openAIParserCaseIndex}`;
+  const store = createSqliteMemoryStore({
+    path: path.join(tmp, `${profileId}.db`),
+  });
+  const memory = createMemoryOS({
+    profileId,
+    store,
+    extractor: createOpenAICompatibleExtractor({
+      model: `fixture-parser-${input.name}`,
+      fetch: async () => ({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () => JSON.stringify(input.completion),
+      }),
+    }),
+  });
+  try {
+    const report = await memory.observeWithReport({
+      type: "conversation.message",
+      profileId,
+      role: "user",
+      content: `Parser matrix ${input.name}.`,
+    });
+    assert.equal(report.extraction?.outcome, input.outcome);
+    assert.equal(report.extraction?.extractorFailed, input.outcome.endsWith("_failure"));
+    if (input.content) {
+      assert.equal(report.memoryIds.length, 1);
+      const stored = await memory.get({ profileId, id: report.memoryIds[0]! });
+      assert.equal(stored?.content, input.content);
+    } else {
+      assert.equal(report.memoryIds.length, 0);
+    }
+    return report;
+  } finally {
+    await memory.close();
+  }
+}
+const parserCandidate = (content: string) => ({
+  kind: "fact",
+  content,
+  confidence: 0.8,
+});
+const reasoningWithoutJsonCompletion = {
+  choices: [{ message: { content: "", reasoning_content: "The model reasoned but emitted no JSON." } }],
+};
+for (const parserCase of [
+  {
+    name: "fenced-json",
+    outcome: "ok_with_candidates" as const,
+    content: "Fenced JSON is parsed as extractor JSON.",
+    completion: {
+      choices: [{
+        message: {
+          content: "```json\n{\"memories\":[{\"kind\":\"fact\",\"content\":\"Fenced JSON is parsed as extractor JSON.\",\"confidence\":0.8}]}\n```",
+        },
+      }],
+    },
+  },
+  {
+    name: "prose-wrapped-json",
+    outcome: "ok_with_candidates" as const,
+    content: "Prose wrapped JSON is parsed as extractor JSON.",
+    completion: {
+      choices: [{
+        message: {
+          content: `Here is the contract:\n${JSON.stringify({ memories: [parserCandidate("Prose wrapped JSON is parsed as extractor JSON.")] })}\nDone.`,
+        },
+      }],
+    },
+  },
+  {
+    name: "parts-array",
+    outcome: "ok_with_candidates" as const,
+    content: "Parts array parser matrix candidate.",
+    completion: {
+      choices: [{
+        message: {
+          content: [{ type: "text", text: JSON.stringify({ memories: [parserCandidate("Parts array parser matrix candidate.")] }) }],
+        },
+      }],
+    },
+  },
+  {
+    name: "reasoning-json",
+    outcome: "ok_with_candidates" as const,
+    content: "Reasoning fallback JSON is parsed as extractor JSON.",
+    completion: {
+      choices: [{
+        message: {
+          content: "",
+          reasoning_content: `Reasoning trace.\n${JSON.stringify({ memories: [parserCandidate("Reasoning fallback JSON is parsed as extractor JSON.")] })}`,
+        },
+      }],
+    },
+  },
+  {
+    name: "reasoning-no-json",
+    outcome: "parse_failure" as const,
+    completion: reasoningWithoutJsonCompletion,
+  },
+  {
+    name: "empty-everything",
+    outcome: "parse_failure" as const,
+    completion: { choices: [{ message: { content: "" } }] },
+  },
+  {
+    name: "bare-array",
+    outcome: "ok_with_candidates" as const,
+    content: "Bare array response is parsed as extractor JSON.",
+    completion: {
+      choices: [{
+        message: {
+          content: JSON.stringify([parserCandidate("Bare array response is parsed as extractor JSON.")]),
+        },
+      }],
+    },
+  },
+  {
+    name: "candidates-variant",
+    outcome: "ok_with_candidates" as const,
+    content: "Candidates variant response is parsed as extractor JSON.",
+    completion: {
+      choices: [{
+        message: {
+          content: JSON.stringify({ candidates: [parserCandidate("Candidates variant response is parsed as extractor JSON.")] }),
+        },
+      }],
+    },
+  },
+  {
+    name: "empty-candidates",
+    outcome: "ok_empty" as const,
+    completion: { choices: [{ message: { content: JSON.stringify({ memories: [] }) } }] },
+  },
+]) {
+  await observeOpenAIParserCase(parserCase);
+}
+const directReasoningWithoutJsonExtractor = createOpenAICompatibleExtractor({
+  model: "fixture-parser-direct-reasoning-no-json",
+  fetch: async () => ({
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    text: async () => JSON.stringify(reasoningWithoutJsonCompletion),
+  }),
+});
+await assert.rejects(
+  () => runExtractorForTest(directReasoningWithoutJsonExtractor, openAICompatibleExtractorInput),
+  /reasoning-only completion without JSON/u,
 );
 assert.equal(JSON.stringify(llmExtractorRequest.body).includes("sk-metadatashouldnotleave"), false);
 assert.equal(JSON.stringify(llmExtractorRequest.body).includes("Mira User"), true);
@@ -22831,6 +23094,9 @@ try {
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.concurrency, 1);
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.timeoutMs, 5000);
   assert.deepEqual(externalIntelligenceRun.runManifest.runtimeIntelligence.maintainPhases, ["decay"]);
+  assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.extractionEmptyCount, 0);
+  assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.extractionParseFailureCount, 0);
+  assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.extractionTransportFailureCount, 1);
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.extractionFailureCount, 1);
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.hookNames.extractor, "openai-compatible:bench-chat");
   assert.equal(
@@ -22843,7 +23109,7 @@ try {
   assert.equal(externalIntelligenceJson.includes("bench-intelligence.invalid/v1"), false);
   assert.match(
     renderExternalMemoryBenchmarkMarkdown(externalIntelligenceRun),
-    /Runtime intelligence: enabled=true ingestMode=message model=bench-chat embedModel=bench-embed host=bench-intelligence\.invalid maintainPhases=decay concurrency=1 timeoutMs=5000 extractionWindows=2 extractionCalls=2 extractionFailures=1/,
+    /Runtime intelligence: enabled=true ingestMode=message model=bench-chat embedModel=bench-embed host=bench-intelligence\.invalid maintainPhases=decay concurrency=1 timeoutMs=5000 extractionWindows=2 extractionCalls=2 extractionEmpty=0 extractionParseFailures=0 extractionTransportFailures=1 extractionFailures=1/,
   );
 } finally {
   if (previousExternalBenchKey === undefined) {
@@ -24378,6 +24644,7 @@ writeFileSync(
       appendFileSync(process.env.GMOS_CLI_INTELLIGENCE_FETCH_LOG, JSON.stringify({
         authorization: headers.authorization,
         model: body.model,
+        enableThinking: body.enable_thinking,
       }) + "\\n");
       if (String(url).endsWith("/embeddings")) {
         return {
@@ -24418,6 +24685,7 @@ writeFileSync(
 );
 const cliExternalIntelligenceJsonFile = path.join(tmp, "cli-external-intelligence-report.json");
 const cliExternalIntelligenceMarkdownFile = path.join(tmp, "cli-external-intelligence-report.md");
+const cliExternalIntelligenceDebugDir = path.join(tmp, "cli-external-intelligence-debug");
 const cliExternalIntelligenceSecret = "cli-bench-secret-1234567890";
 const cliExternalIntelligence = spawnSync(
   process.execPath,
@@ -24447,10 +24715,14 @@ const cliExternalIntelligence = spawnSync(
     "1",
     "--intelligence-timeout-ms",
     "5000",
+    "--intelligence-disable-thinking",
+    "--intelligence-debug-dir",
+    cliExternalIntelligenceDebugDir,
     "--json-file",
     cliExternalIntelligenceJsonFile,
     "--markdown-file",
     cliExternalIntelligenceMarkdownFile,
+    "--progress",
     "--format",
     "json",
   ],
@@ -24477,6 +24749,9 @@ const cliExternalIntelligenceJson = JSON.parse(cliExternalIntelligence.stdout) a
       embedModel?: string | null;
       concurrency?: number | null;
       timeoutMs?: number | null;
+      extractionEmptyCount?: number;
+      extractionParseFailureCount?: number;
+      extractionTransportFailureCount?: number;
       extractionFailureCount?: number;
     };
   };
@@ -24490,9 +24765,22 @@ assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.model
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.embedModel, "cli-embed");
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.concurrency, 1);
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.timeoutMs, 5000);
+assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.extractionEmptyCount, 0);
+assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.extractionParseFailureCount, 0);
+assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.extractionTransportFailureCount, 0);
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.extractionFailureCount, 0);
 const cliExternalIntelligenceFetchLog = readFileSync(cliExternalIntelligenceFetchLogFile, "utf8");
 assert.match(cliExternalIntelligenceFetchLog, new RegExp(`Bearer ${cliExternalIntelligenceSecret}`));
+assert.match(cliExternalIntelligenceFetchLog, /"enableThinking":false/u);
+assert.match(cliExternalIntelligence.stderr, /\[gmos external\] ingest .*windows=1\/1 .*extractionParseFailures=0/u);
+const cliExternalIntelligenceDebugFiles = readdirSync(cliExternalIntelligenceDebugDir);
+assert.equal(cliExternalIntelligenceDebugFiles.length > 0, true);
+const cliExternalIntelligenceDebugText = cliExternalIntelligenceDebugFiles
+  .map((fileName) => readFileSync(path.join(cliExternalIntelligenceDebugDir, fileName), "utf8"))
+  .join("\n");
+assert.equal(cliExternalIntelligenceDebugText.includes(cliExternalIntelligenceSecret), false);
+assert.equal(cliExternalIntelligenceDebugText.includes("Bearer"), false);
+assert.equal(cliExternalIntelligenceDebugText.includes("user:pass"), false);
 assert.equal(cliExternalIntelligence.stdout.includes(cliExternalIntelligenceSecret), false);
 assert.equal(readFileSync(cliExternalIntelligenceJsonFile, "utf8").includes(cliExternalIntelligenceSecret), false);
 assert.equal(readFileSync(cliExternalIntelligenceMarkdownFile, "utf8").includes(cliExternalIntelligenceSecret), false);

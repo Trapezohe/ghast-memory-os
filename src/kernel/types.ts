@@ -315,10 +315,18 @@ export type MemoryExtractionDecision =
   | AcceptedMemoryExtractionDecision
   | RejectedMemoryExtractionDecision;
 
+export type MemoryExtractionOutcome =
+  | "not_configured"
+  | "ok_with_candidates"
+  | "ok_empty"
+  | "parse_failure"
+  | "transport_failure";
+
 export interface MemoryExtractionReport {
   extractorName?: string | undefined;
   extractionSource: "custom" | "none";
   extractorFailed: boolean;
+  outcome: MemoryExtractionOutcome;
   rawCandidateCount: number;
   acceptedCandidateCount: number;
   rejectedCandidateCount: number;
@@ -486,10 +494,35 @@ export interface IngestConversationInput {
      * Session-boundary and maxMessages splits do not preserve overlap.
      */
     overlapMessages?: number | undefined;
+    /**
+     * Number of extractor windows to run concurrently.
+     * Results are always persisted in source-window order.
+     */
+    concurrency?: number | undefined;
   } | undefined;
   extraction?: {
     extractFromRoles?: MemoryRole[] | undefined;
   } | undefined;
+  progress?: {
+    everyWindows?: number | undefined;
+    onWindow?: ((progress: IngestConversationProgress) => void) | undefined;
+  } | undefined;
+}
+
+export interface IngestConversationProgress {
+  profileId: string;
+  windowsDone: number;
+  windowsTotal: number;
+  extractionWindowCount: number;
+  extractionCallCount: number;
+  extractionOkWithCandidatesCount: number;
+  extractionEmptyCount: number;
+  extractionParseFailureCount: number;
+  extractionTransportFailureCount: number;
+  extractionFailureCount: number;
+  extractedMemoryCount: number;
+  elapsedMs: number;
+  etaMs: number | null;
 }
 
 export interface IngestConversationResult {
@@ -501,6 +534,11 @@ export interface IngestConversationResult {
   worldBeliefIds: string[];
   extractionWindowCount: number;
   extractionCallCount: number;
+  extractionOkWithCandidatesCount: number;
+  extractionEmptyCount: number;
+  extractionParseFailureCount: number;
+  extractionTransportFailureCount: number;
+  extractionFailureCount: number;
   extractionReports: MemoryExtractionReport[];
 }
 

@@ -150,7 +150,7 @@ function markdownSlowExternalGroups(
     ? values
         .map(
           (entry) =>
-            `${markdownCell(entry.groupKey)}=${entry.durationMs}ms setup=${entry.setupRuntimeMs}ms scoring=${entry.scoringRuntimeMs}ms taxonomy=${entry.taxonomyRuntimeMs}ms wide=${entry.wideBudgetDiagnosticRuntimeMs}ms cases=${entry.passedCount}/${entry.caseCount} events=${entry.eventCount} memories=${entry.extractedMemoryCount} windows=${entry.extractionWindowCount} calls=${entry.extractionCallCount} extractionFailures=${entry.extractionFailureCount}`,
+            `${markdownCell(entry.groupKey)}=${entry.durationMs}ms setup=${entry.setupRuntimeMs}ms scoring=${entry.scoringRuntimeMs}ms taxonomy=${entry.taxonomyRuntimeMs}ms wide=${entry.wideBudgetDiagnosticRuntimeMs}ms cases=${entry.passedCount}/${entry.caseCount} events=${entry.eventCount} memories=${entry.extractedMemoryCount} windows=${entry.extractionWindowCount} calls=${entry.extractionCallCount} extractionEmpty=${entry.extractionEmptyCount} extractionParseFailures=${entry.extractionParseFailureCount} extractionTransportFailures=${entry.extractionTransportFailureCount} extractionFailures=${entry.extractionFailureCount}`,
         )
         .join(", ")
     : "none";
@@ -276,12 +276,24 @@ export function renderExternalMemoryBenchmarkMarkdown(
   const runtimeIntelligence = report.runManifest.runtimeIntelligence ?? {
     enabled: false,
     baseUrlHost: null,
+    apiKeyEnv: null,
     model: null,
     embedModel: null,
     ingestMode: "memory",
     maintainPhases: [],
     concurrency: null,
     timeoutMs: null,
+    hookNames: {
+      extractor: null,
+      consolidator: null,
+      procedureDistiller: null,
+      dossierSynthesizer: null,
+      embeddingProvider: null,
+      reranker: null,
+    },
+    extractionEmptyCount: 0,
+    extractionParseFailureCount: 0,
+    extractionTransportFailureCount: 0,
     extractionFailureCount: 0,
     extractionWindowCount: 0,
     extractionCallCount: 0,
@@ -347,7 +359,7 @@ export function renderExternalMemoryBenchmarkMarkdown(
     `Options: mode=${report.runManifest.options.mode ?? "case/default"} protocol=${report.runManifest.options.protocol} maxSteps=${report.runManifest.options.maxSteps ?? "default"} maxBranch=${report.runManifest.options.maxBranch ?? "default"} maxMemories=${report.runManifest.options.maxMemories ?? "default"} contextBudgetTokens=${report.runManifest.options.contextBudgetTokens ?? "default"} temporalMode=${report.runManifest.options.temporalMode ?? "case/default"} includeSensitive=${report.runManifest.options.includeSensitive} includeTemporalMetadata=${report.runManifest.options.includeTemporalMetadata} requireConvergence=${report.runManifest.options.requireConvergence} concurrency=${report.runManifest.options.concurrency} extractionWindow=${report.runManifest.options.extractionWindow ?? "default"} reuseProfiles=${report.runManifest.options.reuseProfiles} diagnosticsLevel=${report.runManifest.options.diagnosticsLevel}`,
     `Failure sample limit: ${report.runManifest.options.failureSampleLimit}`,
     `Score semantics: ${scoreSemanticsLine(report.runManifest.scoreSemantics)}`,
-    `Runtime intelligence: enabled=${runtimeIntelligence.enabled} ingestMode=${runtimeIntelligence.ingestMode} model=${runtimeIntelligence.model ?? "none"} embedModel=${runtimeIntelligence.embedModel ?? "none"} host=${runtimeIntelligence.baseUrlHost ?? "none"} maintainPhases=${runtimeIntelligence.maintainPhases.join(",") || "none"} concurrency=${runtimeIntelligence.concurrency ?? "none"} timeoutMs=${runtimeIntelligence.timeoutMs ?? "none"} extractionWindows=${runtimeIntelligence.extractionWindowCount ?? 0} extractionCalls=${runtimeIntelligence.extractionCallCount ?? 0} extractionFailures=${runtimeIntelligence.extractionFailureCount}`,
+    `Runtime intelligence: enabled=${runtimeIntelligence.enabled} ingestMode=${runtimeIntelligence.ingestMode} model=${runtimeIntelligence.model ?? "none"} embedModel=${runtimeIntelligence.embedModel ?? "none"} host=${runtimeIntelligence.baseUrlHost ?? "none"} maintainPhases=${runtimeIntelligence.maintainPhases.join(",") || "none"} concurrency=${runtimeIntelligence.concurrency ?? "none"} timeoutMs=${runtimeIntelligence.timeoutMs ?? "none"} extractionWindows=${runtimeIntelligence.extractionWindowCount ?? 0} extractionCalls=${runtimeIntelligence.extractionCallCount ?? 0} extractionEmpty=${runtimeIntelligence.extractionEmptyCount ?? 0} extractionParseFailures=${runtimeIntelligence.extractionParseFailureCount ?? 0} extractionTransportFailures=${runtimeIntelligence.extractionTransportFailureCount ?? 0} extractionFailures=${runtimeIntelligence.extractionFailureCount}`,
     `Runtime answerer: enabled=${runtimeAnswerer.enabled} name=${runtimeAnswerer.name ?? "none"} model=${runtimeAnswerer.model ?? "none"} host=${runtimeAnswerer.baseUrlHost ?? "none"} apiKeyEnv=${runtimeAnswerer.apiKeyEnv ?? "none"} timeoutMs=${runtimeAnswerer.timeoutMs ?? "none"}`,
     `Manifest lexical ceiling: ${ceilingMetricLine(report.runManifest.ceilingMetrics)}`,
     `Manifest reachable score: ${reachableScoreLine(report.runManifest.ceilingMetrics)}`,
@@ -376,21 +388,21 @@ export function renderExternalMemoryBenchmarkMarkdown(
     ...(report.summary.failureSamples.length === 0
       ? ["None"]
       : [
-          "| Case | Temporal | Failure reasons | Failure stages | Official attribution | Warnings | Generated answer | Matched expectedAny | Matched expectedAll | Missing expectedAny | Missing expectedAll | Forbidden matches | Missing intent groups | Convergence | Uncertainty | Tokens | Retrieved | Extracted | Windows | Calls | Extraction failures | Paths | Duration ms | Scoring ms | Taxonomy ms | Wide ms |",
-          "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+          "| Case | Temporal | Failure reasons | Failure stages | Official attribution | Warnings | Generated answer | Matched expectedAny | Matched expectedAll | Missing expectedAny | Missing expectedAll | Forbidden matches | Missing intent groups | Convergence | Uncertainty | Tokens | Retrieved | Extracted | Windows | Calls | Empty | Parse failures | Transport failures | Extraction failures | Paths | Duration ms | Scoring ms | Taxonomy ms | Wide ms |",
+          "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
           ...report.summary.failureSamples.map(
             (entry) =>
-              `| ${markdownCell(entry.id)} | ${entry.temporalMode ?? "-"} | ${markdownListCell(entry.failureReasons)} | ${markdownTaxonomyCell(entry.failureTaxonomy ?? [])} | ${markdownOfficialAttributionCell(entry.officialFailureAttribution)} | ${markdownListCell(entry.warnings)} | ${markdownCell(entry.generatedAnswer ?? entry.answererError ?? entry.judgeError ?? "-")} | ${markdownListCell(entry.matched.expectedAny)} | ${markdownListCell(entry.matched.expectedAll)} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.matched.forbidden)} | ${markdownListCell(entry.missingRequiredIntentGroups)} | ${markdownNullableNumber(entry.evidenceConvergenceScore)}${entry.evidenceConvergenceReached === null ? "" : entry.evidenceConvergenceReached ? " reached" : " not reached"} | ${entry.uncertaintyLevel ?? "-"} | ${entry.promptTokenEstimate} | ${entry.retrievedMemoryCount} | ${entry.extractedMemoryCount} | ${entry.extractionWindowCount} | ${entry.extractionCallCount} | ${entry.extractionFailureCount} | ${entry.reconstructedPathCount} | ${entry.durationMs} | ${entry.scoringRuntimeMs} | ${entry.taxonomyRuntimeMs} | ${entry.wideBudgetDiagnosticRuntimeMs} |`,
+              `| ${markdownCell(entry.id)} | ${entry.temporalMode ?? "-"} | ${markdownListCell(entry.failureReasons)} | ${markdownTaxonomyCell(entry.failureTaxonomy ?? [])} | ${markdownOfficialAttributionCell(entry.officialFailureAttribution)} | ${markdownListCell(entry.warnings)} | ${markdownCell(entry.generatedAnswer ?? entry.answererError ?? entry.judgeError ?? "-")} | ${markdownListCell(entry.matched.expectedAny)} | ${markdownListCell(entry.matched.expectedAll)} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.matched.forbidden)} | ${markdownListCell(entry.missingRequiredIntentGroups)} | ${markdownNullableNumber(entry.evidenceConvergenceScore)}${entry.evidenceConvergenceReached === null ? "" : entry.evidenceConvergenceReached ? " reached" : " not reached"} | ${entry.uncertaintyLevel ?? "-"} | ${entry.promptTokenEstimate} | ${entry.retrievedMemoryCount} | ${entry.extractedMemoryCount} | ${entry.extractionWindowCount} | ${entry.extractionCallCount} | ${entry.extractionEmptyCount} | ${entry.extractionParseFailureCount} | ${entry.extractionTransportFailureCount} | ${entry.extractionFailureCount} | ${entry.reconstructedPathCount} | ${entry.durationMs} | ${entry.scoringRuntimeMs} | ${entry.taxonomyRuntimeMs} | ${entry.wideBudgetDiagnosticRuntimeMs} |`,
           ),
         ]),
     "",
     "## Cases",
     "",
-    "| Case | Status | Mode | Temporal | Failure reasons | Failure stages | Official attribution | Warnings | Generated answer | Lexically reachable | Matched expectedAny | Matched expectedAll | Missing expectedAny | Missing expectedAll | Forbidden matches | Missing intent groups | Convergence | Uncertainty | Tokens | Retrieved | Extracted | Windows | Calls | Extraction failures | Paths | Duration ms | Scoring ms | Taxonomy ms | Wide ms |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| Case | Status | Mode | Temporal | Failure reasons | Failure stages | Official attribution | Warnings | Generated answer | Lexically reachable | Matched expectedAny | Matched expectedAll | Missing expectedAny | Missing expectedAll | Forbidden matches | Missing intent groups | Convergence | Uncertainty | Tokens | Retrieved | Extracted | Windows | Calls | Empty | Parse failures | Transport failures | Extraction failures | Paths | Duration ms | Scoring ms | Taxonomy ms | Wide ms |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ...report.cases.map(
       (entry) =>
-        `| ${markdownCell(entry.id)} | ${entry.pass ? "PASS" : "FAIL"} | ${entry.mode}${entry.requireConvergence ? " + convergence" : ""} | ${entry.temporalMode ?? "-"} | ${markdownListCell(entry.failureReasons)} | ${markdownTaxonomyCell(entry.failureTaxonomy ?? [])} | ${markdownOfficialAttributionCell(entry.officialFailureAttribution)} | ${markdownListCell(entry.warnings)} | ${markdownCell(entry.generatedAnswer ?? entry.answererError ?? entry.judgeError ?? "-")} | ${entry.lexicallyReachable ? "yes" : "no"} | ${markdownListCell(entry.matched.expectedAny)} | ${markdownListCell(entry.matched.expectedAll)} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.matched.forbidden)} | ${markdownListCell(entry.diagnostics.missingRequiredIntentGroups)} | ${markdownNullableNumber(entry.diagnostics.evidenceConvergenceScore)}${entry.diagnostics.evidenceConvergenceReached === null ? "" : entry.diagnostics.evidenceConvergenceReached ? " reached" : " not reached"} | ${entry.diagnostics.uncertaintyLevel ?? "-"} | ${entry.promptTokenEstimate} | ${entry.retrievedMemoryCount} | ${entry.extractedMemoryCount} | ${entry.extractionWindowCount} | ${entry.extractionCallCount} | ${entry.extractionFailureCount} | ${entry.reconstructedPathCount} | ${entry.durationMs} | ${entry.scoringRuntimeMs} | ${entry.taxonomyRuntimeMs} | ${entry.wideBudgetDiagnosticRuntimeMs} |`,
+        `| ${markdownCell(entry.id)} | ${entry.pass ? "PASS" : "FAIL"} | ${entry.mode}${entry.requireConvergence ? " + convergence" : ""} | ${entry.temporalMode ?? "-"} | ${markdownListCell(entry.failureReasons)} | ${markdownTaxonomyCell(entry.failureTaxonomy ?? [])} | ${markdownOfficialAttributionCell(entry.officialFailureAttribution)} | ${markdownListCell(entry.warnings)} | ${markdownCell(entry.generatedAnswer ?? entry.answererError ?? entry.judgeError ?? "-")} | ${entry.lexicallyReachable ? "yes" : "no"} | ${markdownListCell(entry.matched.expectedAny)} | ${markdownListCell(entry.matched.expectedAll)} | ${markdownListCell(entry.expectedAnyMissing)} | ${markdownListCell(entry.expectedAllMissing)} | ${markdownListCell(entry.matched.forbidden)} | ${markdownListCell(entry.diagnostics.missingRequiredIntentGroups)} | ${markdownNullableNumber(entry.diagnostics.evidenceConvergenceScore)}${entry.diagnostics.evidenceConvergenceReached === null ? "" : entry.diagnostics.evidenceConvergenceReached ? " reached" : " not reached"} | ${entry.diagnostics.uncertaintyLevel ?? "-"} | ${entry.promptTokenEstimate} | ${entry.retrievedMemoryCount} | ${entry.extractedMemoryCount} | ${entry.extractionWindowCount} | ${entry.extractionCallCount} | ${entry.extractionEmptyCount} | ${entry.extractionParseFailureCount} | ${entry.extractionTransportFailureCount} | ${entry.extractionFailureCount} | ${entry.reconstructedPathCount} | ${entry.durationMs} | ${entry.scoringRuntimeMs} | ${entry.taxonomyRuntimeMs} | ${entry.wideBudgetDiagnosticRuntimeMs} |`,
     ),
     "",
   ].join("\n");

@@ -4,6 +4,12 @@ import type {
   MemoryExtractor,
   MemoryKind,
 } from "./types.js";
+import {
+  OpenAICompatibleResponseError,
+  createOpenAICompatibleDebugCapture,
+  openAICompatibleOutcomeForError,
+  parseOpenAICompatibleCompletionJson,
+} from "./openai-compatible-response.js";
 import { sanitizePublicPayloadRecord, sanitizePublicSourceMetadata } from "./safety.js";
 
 type FetchLike = (
@@ -27,6 +33,10 @@ export interface OpenAICompatibleExtractorOptions {
   headers?: Record<string, string> | undefined;
   includeEventMetadata?: boolean | undefined;
   disableThinking?: boolean | undefined;
+  debugDir?: string | undefined;
+  debugFirstCalls?: number | undefined;
+  debugMaxFiles?: number | undefined;
+  debugMaxChars?: number | undefined;
 }
 
 const MEMORY_KINDS = new Set<MemoryKind>([
@@ -51,43 +61,6 @@ function boundedInteger(input: number | undefined, fallback: number, min: number
 function boundedNumber(input: number | undefined, fallback: number, min: number, max: number): number {
   if (input === undefined || !Number.isFinite(input)) return fallback;
   return Math.max(min, Math.min(input, max));
-}
-
-function textFromContent(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) {
-    return value.map(textFromContent).filter(Boolean).join("\n");
-  }
-  if (!value || typeof value !== "object") return "";
-  const record = value as Record<string, unknown>;
-  if (typeof record.text === "string") return record.text;
-  if (typeof record.output_text === "string") return record.output_text;
-  if (record.content !== undefined) return textFromContent(record.content);
-  return "";
-}
-
-function contentFromCompletion(payload: unknown): string {
-  if (!payload || typeof payload !== "object") return "";
-  const record = payload as Record<string, unknown>;
-  if (typeof record.output_text === "string") return record.output_text;
-  if (Array.isArray(record.output)) {
-    const text = textFromContent(record.output);
-    if (text) return text;
-  }
-  const choices = record.choices;
-  if (!Array.isArray(choices)) return "";
-  const first = choices[0] as { message?: { content?: unknown }; text?: unknown } | undefined;
-  const content = first?.message?.content ?? first?.text;
-  return textFromContent(content);
-}
-
-function parseJsonObject(text: string): unknown {
-  const trimmed = text.trim();
-  if (!trimmed) return null;
-  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
-    throw new Error("OpenAI-compatible extractor returned non-JSON content");
-  }
-  return JSON.parse(trimmed) as unknown;
 }
 
 function candidateArray(payload: unknown): unknown[] {
@@ -234,6 +207,7 @@ function userPrompt(input: MemoryExtractionInput, options: OpenAICompatibleExtra
 export function createOpenAICompatibleExtractor(
   options: OpenAICompatibleExtractorOptions,
 ): MemoryExtractor {
+  const name = options.name ?? `openai-compatible:${options.model}`;
   const maxCandidates = boundedInteger(options.maxCandidates, 6, 1, 16);
   const timeoutMs = boundedInteger(options.timeoutMs, 20_000, 1000, 120_000);
   const maxRetries = boundedInteger(options.maxRetries, 0, 0, 3);
@@ -242,15 +216,38 @@ export function createOpenAICompatibleExtractor(
   if (!fetchImpl) {
     throw new Error("createOpenAICompatibleExtractor requires fetch in this runtime");
   }
+  const debugCapture = createOpenAICompatibleDebugCapture({
+    ...(options.debugDir ? { dir: options.debugDir } : {}),
+    ...(options.debugFirstCalls !== undefined ? { firstCalls: options.debugFirstCalls } : {}),
+    ...(options.debugMaxFiles !== undefined ? { maxFiles: options.debugMaxFiles } : {}),
+    ...(options.debugMaxChars !== undefined ? { maxChars: options.debugMaxChars } : {}),
+  });
   return {
-    name: options.name ?? `openai-compatible:${options.model}`,
+    name,
     async extract(input) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
         let lastError: unknown;
+        const messages = [
+          { role: "system" as const, content: systemPrompt(maxCandidates) },
+          { role: "user" as const, content: userPrompt(input, options) },
+        ];
+        const requestPrompt = messages.map((message) => `${message.role}: ${message.content}`).join("\n\n");
         for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+          let responseText = "";
+          let completionText: string | undefined;
           try {
+            const body = JSON.stringify({
+              model: options.model,
+              temperature: boundedNumber(options.temperature, 0, 0, 2),
+              max_tokens: maxTokens,
+              ...(options.disableThinking ? { enable_thinking: false } : {}),
+              ...(options.responseFormat === false
+                ? {}
+                : { response_format: { type: "json_object" } }),
+              messages,
+            });
             const response = await fetchImpl(endpoint(options.baseUrl), {
               method: "POST",
               headers: {
@@ -259,31 +256,31 @@ export function createOpenAICompatibleExtractor(
                 ...(options.headers ?? {}),
               },
               signal: controller.signal,
-              body: JSON.stringify({
-                model: options.model,
-                temperature: boundedNumber(options.temperature, 0, 0, 2),
-                max_tokens: maxTokens,
-                ...(options.disableThinking ? { enable_thinking: false } : {}),
-                ...(options.responseFormat === false
-                  ? {}
-                  : { response_format: { type: "json_object" } }),
-                messages: [
-                  { role: "system", content: systemPrompt(maxCandidates) },
-                  { role: "user", content: userPrompt(input, options) },
-                ],
-              }),
+              body,
             });
-            const responseText = await response.text();
+            responseText = await response.text();
             if (!response.ok) {
-              throw new Error(
+              throw new OpenAICompatibleResponseError(
                 `OpenAI-compatible extractor request failed: ${response.status} ${response.statusText}`,
+                "transport_failure",
               );
             }
-            const completion = JSON.parse(responseText) as unknown;
-            const content = contentFromCompletion(completion);
-            const parsed = parseJsonObject(content);
-            return candidateArray(parsed)
-              .slice(0, maxCandidates)
+            let completion: unknown;
+            try {
+              completion = JSON.parse(responseText) as unknown;
+            } catch {
+              throw new OpenAICompatibleResponseError(
+                "OpenAI-compatible extractor returned malformed completion JSON",
+                "parse_failure",
+              );
+            }
+            const completionJson = parseOpenAICompatibleCompletionJson(
+              completion,
+              "OpenAI-compatible extractor",
+            );
+            completionText = completionJson.text;
+            const rawCandidates = candidateArray(completionJson.parsed).slice(0, maxCandidates);
+            const candidates = rawCandidates
               .map(normalizeCandidate)
               .filter((candidate): candidate is MemoryExtractionCandidate => candidate !== null)
               .map((candidate) => ({
@@ -294,8 +291,26 @@ export function createOpenAICompatibleExtractor(
                   llmExtractorProvider: "openai-compatible",
                 },
               }));
+            debugCapture?.({
+              hook: name,
+              requestPrompt,
+              rawResponseText: responseText,
+              completionText,
+              outcome: rawCandidates.length > 0 ? "ok_with_candidates" : "ok_empty",
+            });
+            return candidates;
           } catch (error) {
             lastError = error;
+            if (attempt >= maxRetries) {
+              debugCapture?.({
+                hook: name,
+                requestPrompt,
+                rawResponseText: responseText,
+                ...(completionText !== undefined ? { completionText } : {}),
+                outcome: openAICompatibleOutcomeForError(error),
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
             if (attempt >= maxRetries) break;
           }
         }

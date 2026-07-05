@@ -1834,6 +1834,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const extractFromRoles = resolvedExtractFromRoles(input.extraction);
     const maxMessages = boundedPositiveInteger(input.window?.maxMessages, 12, 1, 1000);
     const maxChars = boundedPositiveInteger(input.window?.maxChars, 7000, 256, 200000);
+    const windowConcurrency = boundedPositiveInteger(input.window?.concurrency, 1, 1, 32);
+    const progressEveryWindows = boundedPositiveInteger(input.progress?.everyWindows, 10, 1, 100000);
+    const extractionStartedMs = Date.now();
     const overlapMessages = boundedPositiveInteger(
       input.window?.overlapMessages,
       Math.min(3, Math.max(0, maxMessages - 1)),
@@ -1845,20 +1848,38 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const dedupeKeys = new Set<string>();
     let extractionWindowCount = 0;
     let extractionCallCount = 0;
+    let extractionOkWithCandidatesCount = 0;
+    let extractionEmptyCount = 0;
+    let extractionParseFailureCount = 0;
+    let extractionTransportFailureCount = 0;
+    let extractedMemoryCountForProgress = 0;
 
     interface WindowMember extends ConversationEvidenceWrite {
       result: ObserveResult;
     }
 
+    interface ExtractionWindowTask {
+      members: WindowMember[];
+      last: WindowMember;
+      windowEvidenceIds: string[];
+    }
+
+    interface ExtractionWindowResult {
+      task: ExtractionWindowTask;
+      extraction: Awaited<ReturnType<typeof extractMemoryCandidatePlan>>;
+      safeReport: MemoryExtractionReport;
+    }
+
     let pendingWindow: WindowMember[] = [];
     let pendingSessionKey: string | null = null;
     let pendingWindowChars = 0;
+    const extractionTasks: ExtractionWindowTask[] = [];
 
     function windowChars(members: WindowMember[]): number {
       return members.reduce((sum, member) => sum + member.event.content.length, 0);
     }
 
-    async function flushWindow(flushOptions: { preserveOverlap?: boolean | undefined } = {}): Promise<void> {
+    function flushWindow(flushOptions: { preserveOverlap?: boolean | undefined } = {}): void {
       if (pendingWindow.length === 0) return;
       const members = pendingWindow;
       const preserved =
@@ -1871,6 +1892,46 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       pendingWindowChars = windowChars(preserved);
       const last = members[members.length - 1]!;
       const windowEvidenceIds = members.map((member) => member.evidence.id);
+      extractionTasks.push({ members, last, windowEvidenceIds });
+      extractionWindowCount += 1;
+      if (options.extractor) extractionCallCount += 1;
+    }
+
+    function recordExtractionOutcome(report: MemoryExtractionReport): void {
+      if (report.outcome === "ok_with_candidates") extractionOkWithCandidatesCount += 1;
+      else if (report.outcome === "ok_empty") extractionEmptyCount += 1;
+      else if (report.outcome === "parse_failure") extractionParseFailureCount += 1;
+      else if (report.outcome === "transport_failure") extractionTransportFailureCount += 1;
+      extractedMemoryCountForProgress += report.acceptedCandidateCount;
+    }
+
+    function emitExtractionProgress(done: number, total: number): void {
+      if (!input.progress?.onWindow) return;
+      if (done < total && done % progressEveryWindows !== 0) return;
+      const elapsedMs = Math.max(0, Date.now() - extractionStartedMs);
+      const etaMs =
+        done > 0 && done < total
+          ? Math.max(0, Math.round((elapsedMs / done) * (total - done)))
+          : null;
+      input.progress.onWindow({
+        profileId,
+        windowsDone: done,
+        windowsTotal: total,
+        extractionWindowCount,
+        extractionCallCount,
+        extractionOkWithCandidatesCount,
+        extractionEmptyCount,
+        extractionParseFailureCount,
+        extractionTransportFailureCount,
+        extractionFailureCount: extractionParseFailureCount + extractionTransportFailureCount,
+        extractedMemoryCount: extractedMemoryCountForProgress,
+        elapsedMs,
+        etaMs,
+      });
+    }
+
+    async function extractWindow(task: ExtractionWindowTask): Promise<ExtractionWindowResult> {
+      const { members, last, windowEvidenceIds } = task;
       const extraction = await extractMemoryCandidatePlan({
         extractor: options.extractor,
         temporalParser: options.temporal?.parser,
@@ -1893,12 +1954,38 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         },
         minConfidence: options.extraction?.minConfidence,
       });
-      extractionWindowCount += 1;
-      if (options.extractor) extractionCallCount += 1;
       const safeReport = sanitizeRuntimeExtractionReport(
         extraction.report,
         classifyRuntimeSensitivity,
       );
+      return { task, extraction, safeReport };
+    }
+
+    async function extractQueuedWindows(): Promise<ExtractionWindowResult[]> {
+      const outputs: Array<ExtractionWindowResult | undefined> = new Array(extractionTasks.length);
+      let next = 0;
+      let done = 0;
+      const workerCount = Math.min(windowConcurrency, extractionTasks.length);
+      await Promise.all(
+        Array.from({ length: workerCount }, async () => {
+          while (next < extractionTasks.length) {
+            const index = next;
+            next += 1;
+            const task = extractionTasks[index]!;
+            const output = await extractWindow(task);
+            outputs[index] = output;
+            recordExtractionOutcome(output.safeReport);
+            done += 1;
+            emitExtractionProgress(done, extractionTasks.length);
+          }
+        }),
+      );
+      return outputs.filter((output): output is ExtractionWindowResult => output !== undefined);
+    }
+
+    async function applyWindowExtraction(output: ExtractionWindowResult): Promise<void> {
+      const { members, last, windowEvidenceIds } = output.task;
+      const { extraction, safeReport } = output;
       last.result.extraction = safeReport;
       extractionReports.push(safeReport);
       const windowSensitivity = members.reduce<Sensitivity>(
@@ -1985,16 +2072,20 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           !sessionChanged &&
           overlapMessages > 0 &&
           windowChars(pendingWindow.slice(-overlapMessages)) + eventChars <= maxChars;
-        await flushWindow({ preserveOverlap });
+        flushWindow({ preserveOverlap });
         if (pendingWindow.length > 0 && pendingWindowChars + eventChars > maxChars) {
-          await flushWindow();
+          flushWindow();
         }
       }
       pendingSessionKey = sessionKey;
       pendingWindow.push({ ...recorded.write, result: recorded.result });
       pendingWindowChars += eventChars;
     }
-    await flushWindow();
+    flushWindow();
+    const windowExtractions = await extractQueuedWindows();
+    for (const output of windowExtractions) {
+      await applyWindowExtraction(output);
+    }
 
     return {
       profileId,
@@ -2005,6 +2096,11 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       worldBeliefIds: results.flatMap((result) => result.worldBeliefIds),
       extractionWindowCount,
       extractionCallCount,
+      extractionOkWithCandidatesCount,
+      extractionEmptyCount,
+      extractionParseFailureCount,
+      extractionTransportFailureCount,
+      extractionFailureCount: extractionParseFailureCount + extractionTransportFailureCount,
       extractionReports,
     };
   }

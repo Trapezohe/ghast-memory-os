@@ -627,6 +627,7 @@ function externalIntelligenceOption(): {
   timeoutMs?: number | undefined;
   concurrency?: number | undefined;
   disableThinking?: boolean | undefined;
+  debugDir?: string | undefined;
 } | undefined {
   const hasIntelligenceFlag = process.argv.some((arg) => arg.startsWith("--intelligence-"));
   if (!hasIntelligenceFlag) return undefined;
@@ -646,6 +647,7 @@ function externalIntelligenceOption(): {
   const dimensions = positiveIntegerOptionValue("--intelligence-embed-dimensions");
   const timeoutMs = positiveIntegerOptionValue("--intelligence-timeout-ms");
   const concurrency = positiveIntegerOptionValue("--intelligence-concurrency");
+  const debugDir = value("--intelligence-debug-dir");
   const disableThinking = has("--intelligence-disable-thinking");
   return {
     baseUrl,
@@ -655,6 +657,7 @@ function externalIntelligenceOption(): {
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(concurrency !== undefined ? { concurrency } : {}),
     ...(dimensions !== undefined ? { dimensions } : {}),
+    ...(debugDir ? { debugDir: path.resolve(process.cwd(), debugDir) } : {}),
     ...(disableThinking ? { disableThinking: true } : {}),
   };
 }
@@ -1992,9 +1995,15 @@ async function main(): Promise<void> {
             onCaseGroupSetup: (progress) => {
               if (has("--progress")) {
                 console.error(
-                  `[gmos external] setup group=${progress.groupKey} events=${progress.eventCount} memories=${progress.extractedMemoryCount} windows=${progress.extractionWindowCount} extractionCalls=${progress.extractionCallCount} extractionFailures=${progress.extractionFailureCount} ingestMs=${progress.ingestDurationMs}`,
+                  `[gmos external] setup group=${progress.groupKey} events=${progress.eventCount} memories=${progress.extractedMemoryCount} windows=${progress.extractionWindowCount} extractionCalls=${progress.extractionCallCount} extractionEmpty=${progress.extractionEmptyCount} extractionParseFailures=${progress.extractionParseFailureCount} extractionTransportFailures=${progress.extractionTransportFailureCount} extractionFailures=${progress.extractionFailureCount} ingestMs=${progress.ingestDurationMs}`,
                 );
               }
+            },
+            onCaseGroupIngestProgress: (progress) => {
+              if (!has("--progress")) return;
+              console.error(
+                `[gmos external] ingest group=${progress.groupKey} windows=${progress.windowsDone}/${progress.windowsTotal} extractionCalls=${progress.extractionCallCount} extractionEmpty=${progress.extractionEmptyCount} extractionParseFailures=${progress.extractionParseFailureCount} extractionTransportFailures=${progress.extractionTransportFailureCount} extractionFailures=${progress.extractionFailureCount} memories=${progress.extractedMemoryCount} elapsedMs=${progress.elapsedMs} etaMs=${progress.etaMs ?? "unknown"}`,
+              );
             },
             onCaseResult: (progress) => {
               if (resultsJsonl) appendJsonLine(resultsJsonl, progress.result);

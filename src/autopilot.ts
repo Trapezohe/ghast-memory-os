@@ -42,6 +42,12 @@ export interface TranscriptIngestReport {
   observed: number;
   deduplicated: number;
   skipped: number;
+  extractionWindowCount: number;
+  extractionCallCount: number;
+  extractionEmptyCount: number;
+  extractionParseFailureCount: number;
+  extractionTransportFailureCount: number;
+  extractionFailureCount: number;
   byRole: Partial<Record<MemoryRole, number>>;
   skippedRecords: TranscriptIngestSkippedRecord[];
 }
@@ -54,6 +60,12 @@ export interface AutopilotIngestDirectoryReport {
   observed: number;
   deduplicated: number;
   skipped: number;
+  extractionWindowCount: number;
+  extractionCallCount: number;
+  extractionEmptyCount: number;
+  extractionParseFailureCount: number;
+  extractionTransportFailureCount: number;
+  extractionFailureCount: number;
   files: Array<{
     fileName: string;
     sourceFileHash: string;
@@ -62,6 +74,12 @@ export interface AutopilotIngestDirectoryReport {
     observed: number;
     deduplicated: number;
     skipped: number;
+    extractionWindowCount: number;
+    extractionCallCount: number;
+    extractionEmptyCount: number;
+    extractionParseFailureCount: number;
+    extractionTransportFailureCount: number;
+    extractionFailureCount: number;
     fullyKnown: boolean;
   }>;
   errors: Array<{ fileName: string; message: string }>;
@@ -386,6 +404,12 @@ export async function ingestTranscript(input: TranscriptIngestInput): Promise<Tr
     observed: 0,
     deduplicated: 0,
     skipped: parsed.skipped.length,
+    extractionWindowCount: 0,
+    extractionCallCount: 0,
+    extractionEmptyCount: 0,
+    extractionParseFailureCount: 0,
+    extractionTransportFailureCount: 0,
+    extractionFailureCount: 0,
     byRole: {},
     skippedRecords: parsed.skipped,
   };
@@ -415,6 +439,12 @@ export async function ingestTranscript(input: TranscriptIngestInput): Promise<Tr
     else if (observed.evidenceId) report.observed += 1;
     else report.skipped += 1;
   }
+  report.extractionWindowCount = ingested.extractionWindowCount;
+  report.extractionCallCount = ingested.extractionCallCount;
+  report.extractionEmptyCount = ingested.extractionEmptyCount;
+  report.extractionParseFailureCount = ingested.extractionParseFailureCount;
+  report.extractionTransportFailureCount = ingested.extractionTransportFailureCount;
+  report.extractionFailureCount = ingested.extractionFailureCount;
   return report;
 }
 
@@ -440,6 +470,12 @@ async function ingestDirectory(input: {
       observed: 0,
       deduplicated: 0,
       skipped: 0,
+      extractionWindowCount: 0,
+      extractionCallCount: 0,
+      extractionEmptyCount: 0,
+      extractionParseFailureCount: 0,
+      extractionTransportFailureCount: 0,
+      extractionFailureCount: 0,
       files: [],
       errors: [],
     };
@@ -453,6 +489,12 @@ async function ingestDirectory(input: {
     observed: 0,
     deduplicated: 0,
     skipped: 0,
+    extractionWindowCount: 0,
+    extractionCallCount: 0,
+    extractionEmptyCount: 0,
+    extractionParseFailureCount: 0,
+    extractionTransportFailureCount: 0,
+    extractionFailureCount: 0,
     files: [],
     errors: [],
   };
@@ -473,6 +515,12 @@ async function ingestDirectory(input: {
       report.observed += child.observed;
       report.deduplicated += child.deduplicated;
       report.skipped += child.skipped;
+      report.extractionWindowCount += child.extractionWindowCount;
+      report.extractionCallCount += child.extractionCallCount;
+      report.extractionEmptyCount += child.extractionEmptyCount;
+      report.extractionParseFailureCount += child.extractionParseFailureCount;
+      report.extractionTransportFailureCount += child.extractionTransportFailureCount;
+      report.extractionFailureCount += child.extractionFailureCount;
       report.files.push({
         fileName: path.basename(name),
         sourceFileHash: child.sourceFileHash,
@@ -481,6 +529,12 @@ async function ingestDirectory(input: {
         observed: child.observed,
         deduplicated: child.deduplicated,
         skipped: child.skipped,
+        extractionWindowCount: child.extractionWindowCount,
+        extractionCallCount: child.extractionCallCount,
+        extractionEmptyCount: child.extractionEmptyCount,
+        extractionParseFailureCount: child.extractionParseFailureCount,
+        extractionTransportFailureCount: child.extractionTransportFailureCount,
+        extractionFailureCount: child.extractionFailureCount,
         fullyKnown: child.parsed > 0 && child.observed === 0 && child.deduplicated === child.parsed,
       });
     } catch (error) {
@@ -629,6 +683,12 @@ export async function runAutopilot(input: RunAutopilotInput): Promise<AutopilotR
         observed: 0,
         deduplicated: 0,
         skipped: 0,
+        extractionWindowCount: 0,
+        extractionCallCount: 0,
+        extractionEmptyCount: 0,
+        extractionParseFailureCount: 0,
+        extractionTransportFailureCount: 0,
+        extractionFailureCount: 0,
         files: [],
         errors: [{ fileName: "directory", message: safeError(error) }],
       };

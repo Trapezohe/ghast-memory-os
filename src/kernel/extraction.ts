@@ -3,6 +3,7 @@ import type {
   MemoryExtractionCandidateSnapshot,
   MemoryExtractionDecision,
   MemoryExtractionInput,
+  MemoryExtractionOutcome,
   MemoryExtractionReport,
   MemoryExtractionRejectClass,
   MemoryExtractionRejectReason,
@@ -11,6 +12,7 @@ import type {
   MemoryTemporalMetadata,
   MemoryTemporalParser,
 } from "./types.js";
+import { openAICompatibleOutcomeForError } from "./openai-compatible-response.js";
 import { isReservedSpeakerIdentity, stableNamedPersonSubject } from "./person-identity.js";
 import {
   classifySensitivity,
@@ -418,6 +420,7 @@ export async function extractMemoryCandidatePlan(input: {
   const inferTemporalFromText = input.inferTemporalFromText ?? false;
   let selected: MemoryExtractionCandidate[] | null = null;
   let extractorFailed = false;
+  let outcome: MemoryExtractionOutcome = input.extractor ? "ok_empty" : "not_configured";
 
   if (input.extractor) {
     try {
@@ -425,10 +428,12 @@ export async function extractMemoryCandidatePlan(input: {
         typeof input.extractor === "function"
           ? await input.extractor(input.extractionInput)
           : await input.extractor.extract(input.extractionInput);
-      selected = asCandidateArray(raw);
-    } catch {
+      selected = asCandidateArray(raw) ?? [];
+      outcome = selected.length > 0 ? "ok_with_candidates" : "ok_empty";
+    } catch (error) {
       extractorFailed = true;
       selected = null;
+      outcome = openAICompatibleOutcomeForError(error);
     }
   }
 
@@ -515,6 +520,7 @@ export async function extractMemoryCandidatePlan(input: {
       ...(extractor ? { extractorName: extractor } : {}),
       extractionSource,
       extractorFailed,
+      outcome,
       rawCandidateCount,
       acceptedCandidateCount: candidates.length,
       rejectedCandidateCount: decisions.filter((decision) => decision.decision === "rejected").length,

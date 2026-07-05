@@ -275,6 +275,26 @@ extractor calls at window 12 instead of 150k calls. At
 not by per-turn serial extraction. Use lower concurrency for small local models
 or providers with strict rate limits.
 
+Recommended provider setup flow:
+
+1. Run one case first with `--max-cases 1 --progress --intelligence-debug-dir ./gmos-debug`.
+2. Inspect the bounded JSON samples in that directory: request prompt, raw
+   response text, selected completion text, and parse outcome. Files never
+   include Authorization headers or API keys.
+3. Fix provider flags before scaling. Thinking models may return useful JSON in
+   `reasoning_content`, but if they return reasoning without JSON the run will
+   count `extractionParseFailureCount` instead of silently producing zero
+   candidates. Prefer `--intelligence-disable-thinking` for providers that
+   support it. Markdown fences and prose around JSON are tolerated.
+4. Scale only after the one-case probe shows nonzero candidates or an expected
+   `extractionEmptyCount`.
+
+With `--progress`, message-mode setup prints content-free window progress every
+10 windows and at completion: windows done/total, outcome counts, extracted
+candidate count so far, elapsed time, and rough ETA. Runtime manifests include
+`extractionEmptyCount`, `extractionParseFailureCount`, and
+`extractionTransportFailureCount` alongside `extractionFailureCount`.
+
 Local Ollama-style OpenAI-compatible endpoint:
 
 ```bash
@@ -288,6 +308,8 @@ gmos gym external \
   --intelligence-embed-model nomic-embed-text \
   --intelligence-concurrency 2 \
   --intelligence-timeout-ms 20000 \
+  --intelligence-debug-dir ./gmos-debug \
+  --progress \
   --format json
 ```
 

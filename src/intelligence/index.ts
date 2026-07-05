@@ -2,6 +2,7 @@ import {
   createOpenAICompatibleExtractor as createKernelOpenAICompatibleExtractor,
   type OpenAICompatibleExtractorOptions as KernelOpenAICompatibleExtractorOptions,
 } from "../kernel/openai-compatible-extractor.js";
+import { parseOpenAICompatibleCompletionJson } from "../kernel/openai-compatible-response.js";
 import { classifySensitivity, isPersonRoutedMemory } from "../kernel/safety.js";
 import type {
   EmbeddingProvider,
@@ -38,6 +39,10 @@ export interface OpenAICompatibleBaseOptions {
   maxTokens?: number | undefined;
   headers?: Record<string, string> | undefined;
   disableThinking?: boolean | undefined;
+  debugDir?: string | undefined;
+  debugFirstCalls?: number | undefined;
+  debugMaxFiles?: number | undefined;
+  debugMaxChars?: number | undefined;
 }
 
 export interface OpenAICompatibleExtractorOptions
@@ -77,7 +82,6 @@ const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_TOKENS = 1200;
 const DEFAULT_DIMENSIONS = 1536;
-const MAX_JSON_BYTES = 48_000;
 const MEMORY_KINDS = new Set<MemoryKind>([
   "fact",
   "preference",
@@ -129,44 +133,6 @@ async function fetchJsonWithRetry(
     }
   }
   return null;
-}
-
-function textFromContent(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map(textFromContent).filter(Boolean).join("\n");
-  if (!value || typeof value !== "object") return "";
-  const record = value as Record<string, unknown>;
-  if (typeof record.text === "string") return record.text;
-  if (typeof record.output_text === "string") return record.output_text;
-  if (record.content !== undefined) return textFromContent(record.content);
-  return "";
-}
-
-function contentFromCompletion(payload: unknown): string {
-  if (!payload || typeof payload !== "object") return "";
-  const record = payload as Record<string, unknown>;
-  if (typeof record.output_text === "string") return record.output_text;
-  if (Array.isArray(record.output)) {
-    const text = textFromContent(record.output);
-    if (text) return text;
-  }
-  const choices = record.choices;
-  if (!Array.isArray(choices)) return "";
-  const first = choices[0] as { message?: { content?: unknown }; text?: unknown } | undefined;
-  return textFromContent(first?.message?.content ?? first?.text);
-}
-
-function parseJsonOnly(text: string): unknown | null {
-  const trimmed = text.trim();
-  if (!trimmed || trimmed.length > MAX_JSON_BYTES) return null;
-  const isObject = trimmed.startsWith("{") && trimmed.endsWith("}");
-  const isArray = trimmed.startsWith("[") && trimmed.endsWith("]");
-  if (!isObject && !isArray) return null;
-  try {
-    return JSON.parse(trimmed) as unknown;
-  } catch {
-    return null;
-  }
 }
 
 function arrayFromPayload(payload: unknown, keys: string[]): unknown[] | null {
@@ -225,7 +191,11 @@ async function callChatJson(
     },
   );
   if (payload === null) return null;
-  return parseJsonOnly(contentFromCompletion(payload));
+  try {
+    return parseOpenAICompatibleCompletionJson(payload, "@ghast/memory/intelligence").parsed;
+  } catch {
+    return null;
+  }
 }
 
 function commonSystemPrompt(task: string, shape: string): string {
