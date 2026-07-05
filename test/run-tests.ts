@@ -2041,6 +2041,107 @@ try {
 } finally {
   customExtractorDb.close();
 }
+const openAIStructuredFallbackStore = createSqliteMemoryStore({
+  path: path.join(tmp, "openai-structured-fallback.db"),
+});
+let openAIStructuredFallbackCalls = 0;
+const openAIStructuredFallbackMemory = createMemoryOS({
+  profileId: "openai-structured-fallback",
+  store: openAIStructuredFallbackStore,
+  extractor: createOpenAICompatibleExtractor({
+    model: "structured-no-kind-model",
+    baseUrl: "https://structured-no-kind.invalid/v1",
+    fetch: async () => {
+      openAIStructuredFallbackCalls += 1;
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () => JSON.stringify({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                memories: [{
+                  subject: "user",
+                  predicate: "recall drink",
+                  object: "orbit tea",
+                  confidence: 0.91,
+                }],
+              }),
+            },
+          }],
+        }),
+      };
+    },
+  }),
+});
+const openAIStructuredFallbackReport = await openAIStructuredFallbackMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "openai-structured-fallback",
+  role: "user",
+  content: "The recall drink is orbit tea.",
+});
+assert.equal(openAIStructuredFallbackCalls, 1);
+assert.equal(openAIStructuredFallbackReport.extraction?.acceptedCandidateCount, 1);
+assert.equal(openAIStructuredFallbackReport.memoryIds.length, 1);
+const openAIStructuredFallbackSearch = await openAIStructuredFallbackMemory.search({
+  profileId: "openai-structured-fallback",
+  query: "orbit tea",
+});
+assert.equal(
+  openAIStructuredFallbackSearch.some(
+    (entry) => entry.kind === "fact" && entry.content === "user recall drink orbit tea",
+  ),
+  true,
+);
+await openAIStructuredFallbackMemory.close();
+const openAITimeoutRetryStore = createSqliteMemoryStore({
+  path: path.join(tmp, "openai-timeout-retry.db"),
+});
+let openAITimeoutRetryCalls = 0;
+const openAITimeoutRetryMemory = createMemoryOS({
+  profileId: "openai-timeout-retry",
+  store: openAITimeoutRetryStore,
+  extractor: createOpenAICompatibleExtractor({
+    model: "timeout-retry-model",
+    baseUrl: "https://timeout-retry.invalid/v1",
+    timeoutMs: 1000,
+    retries: 1,
+    backoffMs: 0,
+    fetch: async (_url, init) => {
+      openAITimeoutRetryCalls += 1;
+      await new Promise<void>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal?.aborted) {
+          reject(new Error("This operation was aborted"));
+          return;
+        }
+        signal?.addEventListener(
+          "abort",
+          () => reject(new Error("This operation was aborted")),
+          { once: true },
+        );
+      });
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () => "{}",
+      };
+    },
+  }),
+});
+const openAITimeoutRetryReport = await openAITimeoutRetryMemory.observeWithReport({
+  type: "conversation.message",
+  profileId: "openai-timeout-retry",
+  role: "user",
+  content: "Timeout retry source content.",
+});
+assert.equal(openAITimeoutRetryCalls, 2);
+assert.equal(openAITimeoutRetryReport.extraction?.retryCount, 1);
+assert.equal(openAITimeoutRetryReport.extraction?.outcome, "transport_failure");
+assert.equal(openAITimeoutRetryReport.memoryIds.length, 0);
+await openAITimeoutRetryMemory.close();
 const windowedExtractionCalls: MemoryExtractionInput[] = [];
 const windowedStore = createSqliteMemoryStore({
   path: path.join(tmp, "windowed-extraction.db"),

@@ -116,22 +116,17 @@ export async function runOpenAICompatibleRetry<T>(
   const timeoutMs = boundedInteger(options?.timeoutMs, 20_000, 1000, 120_000);
   const retries = boundedInteger(options?.retries ?? options?.maxRetries, 2, 0, 5);
   const backoffMs = boundedInteger(options?.backoffMs, 250, 0, 30_000);
-  const startedMs = Date.now();
   let retryCount = 0;
   let lastError: unknown;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
-    const remainingMs = timeoutMs - (Date.now() - startedMs);
-    if (remainingMs <= 0) break;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), remainingMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       return { value: await operation(controller.signal), retryCount };
     } catch (error) {
       lastError = error;
       if (!retryableTransportError(error) || attempt >= retries) break;
       const delayMs = retryDelayMs(error, attempt, backoffMs);
-      const afterDelayRemainingMs = timeoutMs - (Date.now() - startedMs) - delayMs;
-      if (afterDelayRemainingMs <= 0) break;
       retryCount += 1;
       await sleep(delayMs);
     } finally {

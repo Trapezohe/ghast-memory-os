@@ -123,8 +123,6 @@ function containsInstructionArtifact(value: string): boolean {
 }
 
 function contentFromStructuredFields(record: Record<string, unknown>): string | undefined {
-  const content = optionalString(record.content);
-  if (content) return content;
   const subject = optionalString(record.subject);
   const predicate = optionalString(record.predicate);
   const object = optionalString(record.object);
@@ -135,15 +133,21 @@ function contentFromStructuredFields(record: Record<string, unknown>): string | 
 function normalizeCandidate(value: unknown): MemoryExtractionCandidate | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  const kind = record.kind;
-  const content = contentFromStructuredFields(record);
-  if (!MEMORY_KINDS.has(kind as MemoryKind) || !content) return null;
+  if (record.kind !== undefined && !MEMORY_KINDS.has(record.kind as MemoryKind)) return null;
+  const structuredContent = contentFromStructuredFields(record);
+  const content = optionalString(record.content) ?? structuredContent;
+  const kind = MEMORY_KINDS.has(record.kind as MemoryKind)
+    ? record.kind as MemoryKind
+    : structuredContent
+      ? "fact"
+      : undefined;
+  if (!kind || !content) return null;
   if (containsInstructionArtifact(content)) return null;
   const confidence = boundedNumber(Number(record.confidence), 0, 0, 1);
   const subjectAliases = optionalStringArray(record.subjectAliases);
   const sourceIndex = optionalSourceIndex(record.sourceIndex);
   return {
-    kind: kind as MemoryKind,
+    kind,
     content,
     confidence,
     ...(sourceIndex !== undefined ? { sourceIndex } : {}),
