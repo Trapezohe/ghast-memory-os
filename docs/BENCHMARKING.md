@@ -220,9 +220,11 @@ gmos gym external \
 Use `--reader-profile expansive` for official reader-style runs where the
 reader needs enough dated context to answer temporal ordering or duration
 questions. The flag keeps CLI defaults unchanged for ordinary runs, but when
-selected it sets `maxMemories=24` and `contextBudgetTokens=4000` unless
-`--max-memories` or `--context-budget-tokens` is explicitly provided. Reports
-and manifests record `readerProfile` plus the effective budget values.
+selected it sets `maxSteps=8`, `maxBranch=10`, `maxMemories=24`, and
+`contextBudgetTokens=4000` unless the matching `--max-*` or
+`--context-budget-tokens` flag is explicitly provided. This trades latency for
+anchor coverage in reader runs. Reports and manifests record `readerProfile`
+plus the effective budget values.
 
 Paid smoke workflow:
 
@@ -249,7 +251,9 @@ published as a full benchmark result.
 Use `--results-jsonl <file>` on paid runs. The CLI appends one JSON line as
 each case completes, including the generated answer, judge result/rationale,
 timing, retrieved-memory count, extraction stats, and official failure
-attribution. If the process is interrupted after case 16, the first 16 case
+attribution. Each line also includes `readerContext`, the sanitized context sent
+to the answerer, capped by `--reader-context-char-limit` (default `4000`; `0`
+disables). If the process is interrupted after case 16, the first 16 case
 artifacts are still on disk.
 
 SIGINT/SIGTERM on `gmos gym external` stops dispatching new work, lets the
@@ -305,6 +309,12 @@ Recommended provider setup flow:
    support it. Markdown fences and prose around JSON are tolerated.
 4. Scale only after the one-case probe shows nonzero candidates or an expected
    `extractionEmptyCount`.
+
+For retrieval-vs-extraction probes, add `--debug-dump-memories <n>` with
+`--intelligence-debug-dir`. gmOS writes the first `n` extracted memories per
+case group with id, kind, redacted content, and temporal label. Official reader
+failures also write bounded `reader-context-*` files into the same directory;
+`--debug-context-failure-limit` caps their count.
 
 With `--progress`, message-mode setup prints content-free window progress every
 10 windows and at completion: windows done/total, outcome counts, extracted

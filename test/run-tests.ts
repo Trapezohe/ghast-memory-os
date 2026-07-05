@@ -36,6 +36,8 @@ import {
   type MemoryExtractionOutcome,
   type MemoryExtractionInput,
   type MemoryExtractor,
+  type MemoryAssociationRecord,
+  type MemoryRecord,
   type MemoryStore,
 } from "../src/index.js";
 import {
@@ -48,6 +50,7 @@ import {
   associationTagsForTaskTrajectory,
   extractAssociationCues,
 } from "../src/kernel/associations.js";
+import { reconstructMemoryContext } from "../src/kernel/reconstruction.js";
 import { resolveWorldEntitySubject } from "../src/kernel/entities.js";
 import {
   extractRuleMemoryCandidates as extractLegacyRuleMemoryCandidates,
@@ -19216,6 +19219,149 @@ const evidencePathWithoutEvidence = await reconstructionMemory.explainEvidencePa
   maxMemories: 6,
 });
 assert.equal(evidencePathWithoutEvidence.evidence.length, 0);
+const anchorNow = "2026-07-05T00:00:00.000Z";
+const anchorMemory = (id: string, content: string): MemoryRecord => ({
+  id,
+  profileId: "anchor",
+  kind: "fact",
+  scope: "global",
+  content,
+  sensitivity: "normal",
+  status: "active",
+  confidence: 0.9,
+  metadata: {},
+  createdAt: anchorNow,
+  updatedAt: anchorNow,
+});
+const anchorMemories = new Map([
+  ["memory_anchor_alpha_1", anchorMemory("memory_anchor_alpha_1", "Alpha checkpoint opened the trail.")],
+  ["memory_anchor_alpha_2", anchorMemory("memory_anchor_alpha_2", "Alpha trail follow-up stayed dominant.")],
+  ["memory_anchor_beta_1", anchorMemory("memory_anchor_beta_1", "Beta checkpoint held the needed second date.")],
+]);
+const anchorAssociation = (
+  id: string,
+  cue: string,
+  memoryId: string,
+  summary: string,
+  confidence: number,
+): MemoryAssociationRecord => ({
+  id,
+  profileId: "anchor",
+  cue,
+  cueKind: "entity",
+  tag: "fact",
+  targetType: "memory",
+  targetId: memoryId,
+  targetKind: "fact",
+  targetSummary: summary,
+  sensitivity: "normal",
+  status: "active",
+  confidence,
+  sourceMemoryId: memoryId,
+  createdAt: anchorNow,
+  updatedAt: anchorNow,
+});
+const anchorAssociations = new Map<string, MemoryAssociationRecord[]>([
+  ["Alpha", [
+    anchorAssociation(
+      "assoc_anchor_alpha_1",
+      "Alpha",
+      "memory_anchor_alpha_1",
+      "Alpha checkpoint opened AlphaTrailOne.",
+      0.99,
+    ),
+  ]],
+  ["AlphaTrailOne", [
+    anchorAssociation(
+      "assoc_anchor_alpha_2",
+      "AlphaTrailOne",
+      "memory_anchor_alpha_2",
+      "Alpha trail follow-up stayed dominant.",
+      0.98,
+    ),
+  ]],
+  ["Beta", [
+    anchorAssociation(
+      "assoc_anchor_beta_1",
+      "Beta",
+      "memory_anchor_beta_1",
+      "Beta checkpoint held the needed second date.",
+      0.7,
+    ),
+  ]],
+]);
+const anchorStore = {
+  searchAssociations(input: { query: string }) {
+    return anchorAssociations.get(input.query) ?? [];
+  },
+  getMemoryById(_profileId: string, id: string) {
+    return anchorMemories.get(id) ?? null;
+  },
+  searchMemories() {
+    return [];
+  },
+  listEvidenceForMemory() {
+    return [];
+  },
+} as unknown as MemoryStore;
+const anchorCueExtractor: MemoryCueExtractor = (input) =>
+  input.phase === "query"
+    ? [{ cue: "Alpha", cueKind: "entity" }, { cue: "Beta", cueKind: "entity" }]
+    : extractAssociationCues(input.text, input.maxCues);
+const anchorCoverageOn = await reconstructMemoryContext({
+  store: anchorStore,
+  defaultProfileId: "anchor",
+  cueExtractor: anchorCueExtractor,
+  request: {
+    profileId: "anchor",
+    query: "Alpha checkpoint and Beta checkpoint",
+    maxSteps: 2,
+    maxBranch: 1,
+    maxMemories: 2,
+    stopWhenEvidenceEnough: false,
+  },
+});
+const anchorCoverageOnAgain = await reconstructMemoryContext({
+  store: anchorStore,
+  defaultProfileId: "anchor",
+  cueExtractor: anchorCueExtractor,
+  request: {
+    profileId: "anchor",
+    query: "Alpha checkpoint and Beta checkpoint",
+    maxSteps: 2,
+    maxBranch: 1,
+    maxMemories: 2,
+    stopWhenEvidenceEnough: false,
+  },
+});
+const anchorCoverageOff = await reconstructMemoryContext({
+  store: anchorStore,
+  defaultProfileId: "anchor",
+  cueExtractor: anchorCueExtractor,
+  request: {
+    profileId: "anchor",
+    query: "Alpha checkpoint and Beta checkpoint",
+    maxSteps: 2,
+    maxBranch: 1,
+    maxMemories: 2,
+    anchorCoverage: false,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.match(anchorCoverageOn.contextBlock, /Beta checkpoint held/);
+assert.doesNotMatch(anchorCoverageOff.contextBlock, /Beta checkpoint held/);
+assert.deepEqual(anchorCoverageOn, anchorCoverageOnAgain);
+const anchorCoverageStats = anchorCoverageOn.stats.anchorCoverage;
+assert.ok(anchorCoverageStats);
+assert.equal(anchorCoverageStats.anchorCount >= 2, true);
+assert.equal(anchorCoverageStats.anchorCount, anchorCoverageStats.anchors.length);
+const alphaAnchor = anchorCoverageStats.anchors.find((anchor) => /alpha/iu.test(anchor.anchorCue));
+const betaAnchor = anchorCoverageStats.anchors.find((anchor) => /beta/iu.test(anchor.anchorCue));
+assert.ok(alphaAnchor);
+assert.ok(betaAnchor);
+assert.equal(alphaAnchor.includedCount >= 1, true);
+assert.equal(betaAnchor.includedCount >= 1, true);
+assert.equal(anchorCoverageOff.stats.anchorCoverage, undefined);
 
 async function assertReadAuditRejectsSameRowMutation(
   operation: "prepareTurn" | "reconstructContext" | "explainEvidencePath",
@@ -19940,7 +20086,7 @@ try {
     path.targetSummary.includes("Daisy-chain rollback"),
   );
   assert.ok(cueHybridPath);
-  assert.match(cueHybridPath.routeReason ?? "", /cue_search/);
+  assert.match(cueHybridPath.routeReason ?? "", /cue_search|hybrid_direct_memory_rrf/);
   assert.ok(cueHybridPath.routeSources?.includes("hybrid_direct_memory"));
 } finally {
   reconstructionStore.searchAssociations =
@@ -19966,7 +20112,10 @@ try {
   });
   assert.match(privateCueHybridReconstruction.contextBlock, /Aster Plain/);
   assert.doesNotMatch(JSON.stringify(privateCueHybridReconstruction), privateHybridLeakPattern);
-  assert.match(JSON.stringify(privateCueHybridReconstruction), /cue_search/);
+  assert.match(
+    JSON.stringify(privateCueHybridReconstruction),
+    /cue_search|anchor_fallback_memory_search|hybrid_direct_memory_rrf/,
+  );
 } finally {
   reconstructionStore.searchAssociations =
     originalReconstructionSearchAssociations as typeof reconstructionStore.searchAssociations;
@@ -22048,26 +22197,45 @@ const questionDateThreadingBenchmark = await runExternalMemoryBenchmark({
 });
 assert.equal(questionDateThreadingBenchmark.pass, true);
 assert.equal(answererQuestionThreadingCalls.length, 2);
-assert.equal(
-  answererQuestionThreadingCalls[0]!.match(/Question date: 2023-06-01/gu)?.length,
-  1,
+const datedThreadingCall = answererQuestionThreadingCalls.find((call) =>
+  call.includes("What is the dated answer?"),
 );
-assert.doesNotMatch(answererQuestionThreadingCalls[1]!, /Question date:/);
+const undatedThreadingCall = answererQuestionThreadingCalls.find((call) =>
+  call.includes("What is the undated answer?"),
+);
+assert.ok(datedThreadingCall);
+assert.ok(undatedThreadingCall);
+assert.equal(datedThreadingCall.match(/Question date: 2023-06-01/gu)?.length, 1);
+assert.doesNotMatch(undatedThreadingCall, /Question date:/);
 const temporalArithmeticReaderBenchmark = await runExternalMemoryBenchmark({
   cases: [{
     id: "temporal-arithmetic-reader",
     answerAt: "2023-06-01T00:00:00.000Z",
     events: [
+      ...Array.from({ length: 22 }, (_entry, index) => ({
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: `Alpha checkpoint distractor ${index} happened during planning.`,
+        confidence: 0.4,
+      })),
       {
         type: "memory",
         kind: "fact",
         content: "The Alpha checkpoint happened.",
+        confidence: 0.95,
         metadata: { eventTime: "2023-05-01T00:00:00.000Z" },
       },
+      ...Array.from({ length: 22 }, (_entry, index) => ({
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: `Beta checkpoint distractor ${index} happened during planning.`,
+        confidence: 0.4,
+      })),
       {
         type: "memory",
         kind: "fact",
         content: "The Beta checkpoint happened.",
+        confidence: 0.95,
         metadata: { eventTime: "2023-05-05T00:00:00.000Z" },
       },
     ],
@@ -22296,16 +22464,27 @@ const externalReaderProfileBenchmark = await runExternalMemoryBenchmark({
   readerProfile: "expansive",
 });
 assert.equal(externalReaderProfileBenchmark.runManifest.options.readerProfile, "expansive");
+assert.equal(externalReaderProfileBenchmark.runManifest.options.maxSteps, 8);
+assert.equal(externalReaderProfileBenchmark.runManifest.options.maxBranch, 10);
 assert.equal(externalReaderProfileBenchmark.runManifest.options.maxMemories, 24);
 assert.equal(externalReaderProfileBenchmark.runManifest.options.contextBudgetTokens, 4000);
 const externalReaderProfileExplicitBenchmark = await runExternalMemoryBenchmark({
   cases: externalCases.slice(0, 1),
   readerProfile: "expansive",
+  maxSteps: 5,
+  maxBranch: 7,
   maxMemories: 7,
   contextBudgetTokens: 900,
 });
+assert.equal(externalReaderProfileExplicitBenchmark.runManifest.options.maxSteps, 5);
+assert.equal(externalReaderProfileExplicitBenchmark.runManifest.options.maxBranch, 7);
 assert.equal(externalReaderProfileExplicitBenchmark.runManifest.options.maxMemories, 7);
 assert.equal(externalReaderProfileExplicitBenchmark.runManifest.options.contextBudgetTokens, 900);
+const externalReaderContextDisabledBenchmark = await runExternalMemoryBenchmark({
+  cases: externalCases.slice(0, 1),
+  readerContextCharLimit: 0,
+});
+assert.equal(externalReaderContextDisabledBenchmark.cases[0]?.readerContext, undefined);
 const externalObservedDateBenchmark = await runExternalMemoryBenchmark({
   includeTemporalMetadata: true,
   cases: [
@@ -24966,6 +25145,8 @@ const cliExternalJson = JSON.parse(cliExternal.stdout) as {
       includeTemporalMetadata?: boolean;
       temporalMode?: string | null;
       readerProfile?: string;
+      maxSteps?: number | null;
+      maxBranch?: number | null;
       maxMemories?: number | null;
       contextBudgetTokens?: number | null;
       failureSampleLimit?: number;
@@ -24993,6 +25174,8 @@ assert.equal(cliExternalJson.runManifest?.options?.includeSensitive, false);
 assert.equal(cliExternalJson.runManifest?.options?.includeTemporalMetadata, false);
 assert.equal(cliExternalJson.runManifest?.options?.temporalMode, "history");
 assert.equal(cliExternalJson.runManifest?.options?.readerProfile, "expansive");
+assert.equal(cliExternalJson.runManifest?.options?.maxSteps, 8);
+assert.equal(cliExternalJson.runManifest?.options?.maxBranch, 10);
 assert.equal(cliExternalJson.runManifest?.options?.maxMemories, 24);
 assert.equal(cliExternalJson.runManifest?.options?.contextBudgetTokens, 4000);
 assert.equal(cliExternalJson.runManifest?.options?.failureSampleLimit, 3);
@@ -25102,7 +25285,12 @@ const cliExternalSlicedJson = JSON.parse(cliExternalSliced.stdout) as {
 const cliExternalJsonlLines = readFileSync(cliExternalResultsJsonlFile, "utf8")
   .trim()
   .split(/\r?\n/u)
-  .map((line) => JSON.parse(line) as { id?: string; durationMs?: number; officialFailureAttribution?: unknown });
+  .map((line) => JSON.parse(line) as {
+    id?: string;
+    durationMs?: number;
+    officialFailureAttribution?: unknown;
+    readerContext?: string;
+  });
 assert.equal(cliExternalSlicedJson.partial, true);
 assert.equal(cliExternalSlicedJson.caseCount, 2);
 assert.equal(cliExternalSlicedJson.runManifest?.dataset?.totalDatasetCases, 9);
@@ -25119,6 +25307,9 @@ assert.deepEqual(
 assert.equal(cliExternalJsonlLines.length, 2);
 assert.equal(typeof cliExternalJsonlLines[0]?.durationMs, "number");
 assert.equal(cliExternalJsonlLines[0]?.officialFailureAttribution, null);
+assert.equal(typeof cliExternalJsonlLines[0]?.readerContext, "string");
+assert.equal((cliExternalJsonlLines[0]?.readerContext?.length ?? 0) <= 4000, true);
+assert.equal(cliExternalJsonlLines[0]?.readerContext?.includes("memory_"), false);
 const cliExternalOfficialProtocol = spawnSync(
   process.execPath,
   [
@@ -25286,6 +25477,92 @@ assert.match(cliExternalReaderFetchLog, /"model":"cli-judge-override"/);
 assert.match(cliExternalReaderFetchLog, /Use dates in the context to reason about time/);
 assert.match(cliExternalReaderFetchLog, new RegExp(`Bearer ${cliExternalReaderSecret}`));
 assert.equal(cliExternalReader.stdout.includes(cliExternalReaderSecret), false);
+const cliExternalReaderDebugFixtureFile = path.join(tmp, "cli-external-reader-debug.jsonl");
+writeFileSync(
+  cliExternalReaderDebugFixtureFile,
+  [
+    {
+      id: "cli-reader-debug-pass",
+      events: [{ type: "memory", kind: "fact", content: "CLI reader marker has color blue and codename comet." }],
+      question: "What is the CLI reader marker?",
+      expectedAny: ["Blue Comet"],
+    },
+    {
+      id: "cli-reader-debug-fail",
+      events: [{ type: "memory", kind: "fact", content: "CLI reader marker has color blue and codename comet." }],
+      question: "What is the CLI reader marker?",
+      expectedAny: ["Green Comet"],
+    },
+  ].map((entry) => JSON.stringify(entry)).join("\n"),
+);
+const cliExternalReaderDebugDir = path.join(tmp, "cli-external-reader-debug");
+const cliExternalReaderDebug = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "--import",
+    cliExternalReaderMockFetchFile,
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    cliExternalReaderDebugFixtureFile,
+    "--protocol",
+    "official-protocol",
+    "--intelligence-base-url",
+    "https://cli-reader.invalid/v1",
+    "--intelligence-model",
+    "cli-judge",
+    "--intelligence-api-key-env",
+    "GMOS_CLI_READER_SECRET",
+    "--answerer-model",
+    "cli-reader",
+    "--judge-model",
+    "cli-judge-override",
+    "--intelligence-debug-dir",
+    cliExternalReaderDebugDir,
+    "--reader-context-char-limit",
+    "80",
+    "--debug-context-failure-limit",
+    "1",
+    "--debug-dump-memories",
+    "2",
+    "--format",
+    "json",
+  ],
+  {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GMOS_CLI_READER_SECRET: cliExternalReaderSecret,
+      GMOS_CLI_READER_FETCH_LOG: cliExternalReaderFetchLogFile,
+    },
+  },
+);
+assert.equal(cliExternalReaderDebug.status, 1, cliExternalReaderDebug.stderr);
+const cliExternalReaderDebugJson = JSON.parse(cliExternalReaderDebug.stdout) as {
+  cases?: Array<{ id?: string; readerContext?: string; pass?: boolean }>;
+};
+assert.equal(cliExternalReaderDebugJson.cases?.length, 2);
+assert.equal(cliExternalReaderDebugJson.cases?.every((entry) => (entry.readerContext?.length ?? 0) <= 80), true);
+assert.equal(cliExternalReaderDebugJson.cases?.some((entry) => entry.readerContext === undefined), false);
+const cliExternalReaderDebugFiles = readdirSync(cliExternalReaderDebugDir);
+const cliExternalReaderContextFiles = cliExternalReaderDebugFiles.filter((file) =>
+  file.startsWith("reader-context-")
+);
+assert.equal(cliExternalReaderContextFiles.length, 1);
+assert.match(cliExternalReaderContextFiles[0] ?? "", /cli-reader-debug-fail/u);
+assert.equal(
+  cliExternalReaderDebugFiles.some((file) => file.startsWith("extracted-memories-")),
+  true,
+);
+const cliExternalReaderDebugText = cliExternalReaderDebugFiles
+  .map((file) => readFileSync(path.join(cliExternalReaderDebugDir, file), "utf8"))
+  .join("\n");
+assert.equal(cliExternalReaderDebugText.includes(cliExternalReaderSecret), false);
+assert.equal(cliExternalReaderDebugText.includes("Bearer"), false);
 const cliExternalReaderBadEnv = spawnSync(
   process.execPath,
   [

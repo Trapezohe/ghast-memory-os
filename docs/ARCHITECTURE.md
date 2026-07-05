@@ -195,6 +195,15 @@ Memory and reconstruction content lines also carry compact temporal labels from
 existing metadata, so reader models can reason about dates without schema
 changes or extra retrieval passes.
 
+Within those fixed budgets, reconstruction uses anchor-diversified allocation.
+Initial anchors come from the same lexical/host cue extraction and structured
+query cues that already seed the frontier. The planner groups frontier
+candidates by originating anchor, gives each anchor its quota of attempts in
+round-robin order, then spends any remainder by global route score. If memory
+budget remains, uncovered anchors get a bounded direct-memory top-up before the
+ordinary hybrid path runs. Diagnostics report candidate and included counts per
+anchor plus `uncoveredAnchors`.
+
 Direct memory retrieval uses one shared hybrid search path. FTS rank, vector
 cosine similarity, and association/tag overlap are fused with fixed default
 weights (`fts=1`, `vector=1.2`, `association=0.8`) and deterministic tie-breaks

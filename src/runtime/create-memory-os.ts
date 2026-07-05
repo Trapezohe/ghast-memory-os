@@ -2308,6 +2308,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
               maxSteps: input.reconstruction.maxSteps,
               maxBranch: input.reconstruction.maxBranch,
               maxMemories: input.reconstruction.maxMemories,
+              ...(input.reconstruction.anchorCoverage !== undefined
+                ? { anchorCoverage: input.reconstruction.anchorCoverage }
+                : {}),
               stopWhenEvidenceEnough: input.reconstruction.stopWhenEvidenceEnough,
               evidenceConvergenceThreshold: input.reconstruction.evidenceConvergenceThreshold,
               includeTemporalMetadata: input.reconstruction.includeTemporalMetadata,
@@ -2400,6 +2403,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           maxBranch: execution.plannerBudget?.maxBranch ?? 4,
           maxMemories: execution.plannerBudget?.maxMemories ?? 8,
           stopReason: prepared.reconstruction.stats.stopReason,
+          ...(prepared.reconstruction.stats.anchorCoverage
+            ? { anchorCoverage: prepared.reconstruction.stats.anchorCoverage }
+            : {}),
         }
       : undefined;
     const report: TurnExplanationReport = {

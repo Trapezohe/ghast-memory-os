@@ -4797,6 +4797,9 @@
                         "type": "integer",
                         "minimum": 1
                       },
+                      "anchorCoverage": {
+                        "type": "boolean"
+                      },
                       "stopWhenEvidenceEnough": {
                         "type": "boolean"
                       },
@@ -5300,6 +5303,9 @@
                         "type": "integer",
                         "minimum": 1
                       },
+                      "anchorCoverage": {
+                        "type": "boolean"
+                      },
                       "stopWhenEvidenceEnough": {
                         "type": "boolean"
                       },
@@ -5781,6 +5787,9 @@
                     "type": "integer",
                     "minimum": 1
                   },
+                  "anchorCoverage": {
+                    "type": "boolean"
+                  },
                   "stopWhenEvidenceEnough": {
                     "type": "boolean"
                   },
@@ -6258,6 +6267,9 @@
                   "maxMemories": {
                     "type": "integer",
                     "minimum": 1
+                  },
+                  "anchorCoverage": {
+                    "type": "boolean"
                   },
                   "stopWhenEvidenceEnough": {
                     "type": "boolean"

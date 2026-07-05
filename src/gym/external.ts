@@ -30,6 +30,7 @@ import {
 } from "../intelligence/index.js";
 import { readGmosPackageInfo, readGmosPackageRoot } from "../kernel/package-info.js";
 import { eligibleForLongTermMemory, redactForReport, sanitizePublicPayload } from "../kernel/safety.js";
+import { temporalContextLabel } from "../kernel/temporal-format.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 import { renderExternalMemoryBenchmarkMarkdown } from "./report.js";
@@ -223,6 +224,7 @@ export interface ExternalMemoryBenchmarkCaseResult {
   answererName: string | null;
   answererError?: string | undefined;
   generatedAnswer?: string | undefined;
+  readerContext?: string | undefined;
   officialFailureAttribution: ExternalMemoryBenchmarkOfficialFailureAttribution | null;
   lexicallyReachable: boolean;
   unreachableExpectedTerms: string[];
@@ -619,6 +621,7 @@ export interface RunExternalMemoryBenchmarkOptions {
   maxSteps?: number | undefined;
   maxBranch?: number | undefined;
   maxMemories?: number | undefined;
+  anchorCoverage?: boolean | undefined;
   contextBudgetTokens?: number | undefined;
   temporalMode?: ExternalMemoryBenchmarkTemporalMode | undefined;
   includeSensitive?: boolean | undefined;
@@ -637,6 +640,10 @@ export interface RunExternalMemoryBenchmarkOptions {
   extractionWindow?: number | undefined;
   intelligence?: ExternalMemoryBenchmarkIntelligence | undefined;
   maintainPhases?: MaintenancePhase[] | undefined;
+  debugDir?: string | undefined;
+  debugDumpMemories?: number | undefined;
+  debugContextFailureLimit?: number | undefined;
+  readerContextCharLimit?: number | undefined;
   maxCases?: number | undefined;
   caseOffset?: number | undefined;
   caseIds?: string[] | undefined;
@@ -1554,6 +1561,7 @@ async function wideBudgetRunContainsTerm(input: {
     maxBranch: input.options.maxBranch,
     maxMemories: input.options.maxMemories,
     contextBudgetTokens,
+    ...(input.options.anchorCoverage !== undefined ? { anchorCoverage: input.options.anchorCoverage } : {}),
     ...(temporalMode !== null ? { temporalMode } : {}),
     includeTemporalMetadata: input.options.includeTemporalMetadata ?? false,
     includeTemporalContext: input.options.includeTemporalContext,
@@ -2039,6 +2047,41 @@ function boundedReportString(value: string, maxChars: number): string {
   return `${redacted.slice(0, maxChars)} [truncated]`;
 }
 
+function safeDebugFilePart(value: string): string {
+  return value.replace(/[^a-z0-9_-]+/giu, "_").slice(0, 80) || "case";
+}
+
+function readerContextForReport(context: string, maxChars: number | undefined): string | undefined {
+  const limit = normalizedReaderContextCharLimit(maxChars);
+  if (limit === 0) return undefined;
+  const redacted = redactForReport(judgeSafeAnswer(context)).trim();
+  if (redacted.length <= limit) return redacted;
+  const suffix = " [truncated]";
+  if (limit <= suffix.length) return redacted.slice(0, limit);
+  return `${redacted.slice(0, limit - suffix.length)}${suffix}`;
+}
+
+function writeDebugMemoryDump(input: {
+  debugDir: string | undefined;
+  groupKey: string;
+  memories: MemoryRecord[];
+  limit: number | undefined;
+}): void {
+  const limit = normalizedDebugDumpMemories(input.limit);
+  if (!input.debugDir || limit === 0) return;
+  mkdirSync(input.debugDir, { recursive: true });
+  const memories = input.memories.slice(0, limit).map((memory) => ({
+    id: redactForReport(memory.id),
+    kind: memory.kind,
+    content: redactForReport(memory.content),
+    temporalLabel: temporalContextLabel(memory.createdAt, memory.metadata),
+  }));
+  writeFileSync(
+    path.join(input.debugDir, `extracted-memories-${safeDebugFilePart(input.groupKey)}.json`),
+    `${JSON.stringify({ groupKey: input.groupKey, memories }, null, 2)}\n`,
+  );
+}
+
 function errorForReport(error: unknown): string {
   return boundedReportString(error instanceof Error ? error.message : String(error), MAX_RECORDED_ERROR_CHARS);
 }
@@ -2300,7 +2343,23 @@ function readerProfileMaxMemories(
   value: number | undefined,
 ): number | undefined {
   if (value !== undefined) return value;
-  return profile === "expansive" ? 24 : undefined;
+  return profile === "expansive" ? 24 : 6;
+}
+
+function readerProfileMaxSteps(
+  profile: ExternalMemoryBenchmarkReaderProfile,
+  value: number | undefined,
+): number | undefined {
+  if (value !== undefined) return value;
+  return profile === "expansive" ? 8 : 4;
+}
+
+function readerProfileMaxBranch(
+  profile: ExternalMemoryBenchmarkReaderProfile,
+  value: number | undefined,
+): number | undefined {
+  if (value !== undefined) return value;
+  return profile === "expansive" ? 10 : 6;
 }
 
 function readerProfileContextBudgetTokens(
@@ -2308,7 +2367,31 @@ function readerProfileContextBudgetTokens(
   value: number | undefined,
 ): number | undefined {
   if (value !== undefined) return value;
-  return profile === "expansive" ? 4000 : undefined;
+  return profile === "expansive" ? 4000 : 1600;
+}
+
+function normalizedReaderContextCharLimit(value: number | undefined): number {
+  if (value === undefined) return 4000;
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error("External benchmark readerContextCharLimit must be a non-negative integer");
+  }
+  return value;
+}
+
+function normalizedDebugContextFailureLimit(value: number | undefined): number {
+  if (value === undefined) return 20;
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error("External benchmark debugContextFailureLimit must be a non-negative integer");
+  }
+  return value;
+}
+
+function normalizedDebugDumpMemories(value: number | undefined): number {
+  if (value === undefined) return 0;
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error("External benchmark debugDumpMemories must be a non-negative integer");
+  }
+  return value;
 }
 
 function normalizedFailureSampleLimit(value: number | undefined): number {
@@ -3316,6 +3399,7 @@ async function scoreCase(input: {
   index: number;
   options: RunExternalMemoryBenchmarkOptions;
   setupWarnings?: string[] | undefined;
+  writeDebugReaderContext?: ((caseId: string, context: string) => void) | undefined;
 }): Promise<ExternalMemoryBenchmarkCaseResult> {
   const startedMs = Date.now();
   const coreScoringStartedMs = Date.now();
@@ -3353,6 +3437,7 @@ async function scoreCase(input: {
           maxBranch: input.options.maxBranch,
           maxMemories: input.options.maxMemories,
           contextBudgetTokens: input.options.contextBudgetTokens,
+          ...(input.options.anchorCoverage !== undefined ? { anchorCoverage: input.options.anchorCoverage } : {}),
           ...(temporalMode !== null ? { temporalMode } : {}),
           includeTemporalMetadata: input.options.includeTemporalMetadata ?? false,
           includeTemporalContext: input.options.includeTemporalContext,
@@ -3360,6 +3445,7 @@ async function scoreCase(input: {
         })
       : null;
   const context = prepared?.contextBlock ?? reconstructed?.contextBlock ?? "";
+  const readerContext = readerContextForReport(context, input.options.readerContextCharLimit);
   const expectedAny = input.benchmarkCase.expectedAny ?? [];
   const expectedAll = input.benchmarkCase.expectedAll ?? [];
   const forbiddenAny = input.benchmarkCase.forbiddenAny ?? [];
@@ -3461,6 +3547,9 @@ async function scoreCase(input: {
     : failureReasons;
   const primaryFailureTaxonomy =
     protocol === "official_protocol" && officialPass === true ? [] : taxonomyResult.entries;
+  if (protocol === "official_protocol" && officialPass === false && readerContext !== undefined) {
+    input.writeDebugReaderContext?.(id, readerContext);
+  }
   return {
     id,
     pass: officialPass ?? strictPass,
@@ -3474,6 +3563,7 @@ async function scoreCase(input: {
     answererName: answerer?.name ?? null,
     ...(officialResult.answererError ? { answererError: officialResult.answererError } : {}),
     ...(officialResult.generatedAnswer ? { generatedAnswer: officialResult.generatedAnswer } : {}),
+    ...(readerContext !== undefined ? { readerContext } : {}),
     officialFailureAttribution,
     lexicallyReachable: unreachableExpectedTerms.length === 0,
     unreachableExpectedTerms,
@@ -3538,6 +3628,7 @@ async function runCaseGroup(input: {
   runtimeIntelligence: RuntimeIntelligenceState;
   recordResult: (index: number, result: ExternalMemoryBenchmarkCaseResult) => void;
   shouldStop: () => boolean;
+  writeDebugReaderContext?: ((caseId: string, context: string) => void) | undefined;
 }): Promise<ExternalMemoryBenchmarkGroupTiming> {
   const groupStartedMs = Date.now();
   const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-external-benchmark-"));
@@ -3630,6 +3721,12 @@ async function runCaseGroup(input: {
       limit: 10_000,
       includeSensitive: true,
     });
+    writeDebugMemoryDump({
+      debugDir: input.options.debugDir,
+      groupKey: input.group.key,
+      memories: caseGroupMemories,
+      limit: input.options.debugDumpMemories,
+    });
     extractedMemoryCount = caseGroupMemories.length;
     const ingestCaseGroup = {
       groupKey: input.group.key,
@@ -3682,6 +3779,7 @@ async function runCaseGroup(input: {
         index: item.index,
         options: input.options,
         setupWarnings,
+        writeDebugReaderContext: input.writeDebugReaderContext,
       });
       results.push(result);
       input.recordResult(item.index, result);
@@ -3773,6 +3871,13 @@ export async function runExternalMemoryBenchmark(
   const readerProfile = normalizedReaderProfile(options.readerProfile);
   const ingestMode = normalizedIngestMode(options.ingestMode);
   const extractionWindow = normalizedExtractionWindow(options.extractionWindow);
+  const debugDumpMemories = normalizedDebugDumpMemories(options.debugDumpMemories);
+  const debugContextFailureLimit = normalizedDebugContextFailureLimit(options.debugContextFailureLimit);
+  const readerContextCharLimit = normalizedReaderContextCharLimit(options.readerContextCharLimit);
+  const debugDir = options.debugDir ??
+    (options.intelligence && isIntelligenceConfig(options.intelligence)
+      ? options.intelligence.debugDir
+      : undefined);
   const maintainPhases = normalizedMaintainPhases(options.maintainPhases);
   const runtimeIntelligence = resolveRuntimeIntelligence({
     intelligence: options.intelligence,
@@ -3785,11 +3890,17 @@ export async function runExternalMemoryBenchmark(
     ...(defaultMode ? { mode: defaultMode } : {}),
     concurrency,
     readerProfile,
+    maxSteps: readerProfileMaxSteps(readerProfile, options.maxSteps),
+    maxBranch: readerProfileMaxBranch(readerProfile, options.maxBranch),
     maxMemories: readerProfileMaxMemories(readerProfile, options.maxMemories),
     contextBudgetTokens: readerProfileContextBudgetTokens(
       readerProfile,
       options.contextBudgetTokens,
     ),
+    debugDumpMemories,
+    debugContextFailureLimit,
+    readerContextCharLimit,
+    ...(debugDir ? { debugDir } : {}),
     extractionWindow,
     reuseProfiles: options.reuseProfiles ?? true,
     failureSampleLimit,
@@ -3806,7 +3917,26 @@ export async function runExternalMemoryBenchmark(
   );
   let completedCount = 0;
   let passedCount = 0;
+  let debugContextFilesWritten = 0;
   const shouldStop = (): boolean => normalizedOptions.abortSignal?.aborted === true;
+  const writeDebugReaderContext = (caseId: string, context: string): void => {
+    if (
+      !normalizedOptions.debugDir ||
+      (normalizedOptions.readerContextCharLimit ?? 0) === 0 ||
+      debugContextFilesWritten >= (normalizedOptions.debugContextFailureLimit ?? 0)
+    ) {
+      return;
+    }
+    mkdirSync(normalizedOptions.debugDir, { recursive: true });
+    debugContextFilesWritten += 1;
+    writeFileSync(
+      path.join(
+        normalizedOptions.debugDir,
+        `reader-context-${String(debugContextFilesWritten).padStart(3, "0")}-${safeDebugFilePart(caseId)}.txt`,
+      ),
+      `${context}\n`,
+    );
+  };
   const recordResult = (index: number, result: ExternalMemoryBenchmarkCaseResult): void => {
     cases[index] = result;
     completedCount += 1;
@@ -3830,6 +3960,7 @@ export async function runExternalMemoryBenchmark(
       runtimeIntelligence,
       recordResult,
       shouldStop,
+      writeDebugReaderContext,
     }),
     shouldStop,
   );

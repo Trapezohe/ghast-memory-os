@@ -594,7 +594,7 @@ The report schema is `gmos.turn_explanation.v1`:
     contextBudgetTokens,
     promptTokenEstimate,
     actionPolicyCount,
-    planner?: { maxSteps, maxBranch, maxMemories, stopReason },
+    planner?: { maxSteps, maxBranch, maxMemories, stopReason, anchorCoverage? },
     stoppedAt,
   },
   stats,
@@ -981,6 +981,15 @@ explain-path output. Sensitive or secret-like cue hints and intent tags are stil
 ignored, and cue hints are capped before they can enter the reconstruction
 frontier.
 
+Reconstruction anchor coverage is enabled by default. gmOS derives anchor cues
+from the same bounded query-cue extraction and `reconstructionIntent.queryCues`,
+then allocates frontier attempts across anchors before returning to global score
+order. Set `anchorCoverage: false` on `reconstructContext()`,
+`explainEvidencePath()`, or shadow `prepareTurn({ reconstruction })` when a host
+needs the legacy global best-first planner. Reconstruction stats and planner traces include
+`anchorCoverage` with `anchorCue`, `candidateCount`, `includedCount`, and
+`uncoveredAnchors` so missed anchors are visible.
+
 Hosts with their own entity, calendar, or route parser can configure
 `createMemoryOS({ reconstruction: { cueExtractor } })`. The extractor returns
 bounded `{ cue, cueKind }` values for query and intermediate evidence text; gmOS
@@ -1037,8 +1046,9 @@ External benchmark cases may carry `answerAt`, an ISO timestamp used only for
 host reader prompting. When present, gmOS prepends `Question date: YYYY-MM-DD`
 to the question sent to the answerer. Judge callbacks still receive the original
 question. `readerProfile: "expansive"` sets effective reader budgets to
-`maxMemories=24` and `contextBudgetTokens=4000` unless those options are
-explicitly supplied; reports record the effective values in
+`maxSteps=8`, `maxBranch=10`, `maxMemories=24`, and
+`contextBudgetTokens=4000` unless those options are explicitly supplied;
+reports record the effective values in
 `runManifest.options`.
 
 External benchmark protocol handling is explicit:
@@ -1095,6 +1105,11 @@ With an answerer, the answerer callback receives only `question` and sanitized
 profile ids, store handles, or reconstruction diagnostics. The judge then scores
 the generated answer. This is `officialProtocol=host_reader_and_judge`, and
 generated answers are recorded per case with a bounded length.
+
+Case results include a bounded `readerContext` field by default: the sanitized
+context sent to the answerer, capped by `readerContextCharLimit` (default
+`4000`; `0` disables). The CLI exposes this as
+`--reader-context-char-limit`.
 
 External benchmark slicing options:
 

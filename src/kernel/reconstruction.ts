@@ -21,6 +21,7 @@ import type {
   MemoryRecord,
   MemoryStore,
   ReconstructedContext,
+  ReconstructionAnchorCoverageReport,
   ReconstructedEvidencePath,
   ReconstructedPlannerBranch,
   ReconstructedPlannerStep,
@@ -59,6 +60,7 @@ function pathFromAssociation(
   step: number,
   routeScore?: number | undefined,
   routeReason?: string | undefined,
+  anchorCue?: string | undefined,
 ): ReconstructedEvidencePath {
   return {
     id: association.id,
@@ -75,6 +77,7 @@ function pathFromAssociation(
     sourceMemoryId: association.sourceMemoryId,
     sourceEvidenceId: association.sourceEvidenceId,
     createdAt: association.createdAt,
+    ...(anchorCue ? { anchorCue } : {}),
   };
 }
 
@@ -103,6 +106,9 @@ function publicPath(
         targetKind: path.targetKind === undefined ? path.targetKind : safePublicLabel(path.targetKind),
         targetId: redactPrivateRouteSignals(path.targetId, privateOutputSignalKeys),
         targetSummary: redactPrivateRouteSignals(path.targetSummary, privateOutputSignalKeys),
+        anchorCue: path.anchorCue
+          ? publicRouteSignal(path.anchorCue, privateSignalKeys)
+          : path.anchorCue,
         sourceEvidenceId: path.sourceEvidenceId
           ? redactPrivateRouteSignals(path.sourceEvidenceId, privateOutputSignalKeys)
           : path.sourceEvidenceId,
@@ -111,6 +117,7 @@ function publicPath(
     : {
         ...path,
         cue: safePublicInlineField(path.cue),
+        anchorCue: path.anchorCue === undefined ? path.anchorCue : safePublicInlineField(path.anchorCue),
         tag: safePublicLabel(path.tag),
         targetKind: path.targetKind === undefined ? path.targetKind : safePublicLabel(path.targetKind),
       };
@@ -242,9 +249,11 @@ function publicPlannerTrace(
     seenSteps.add(key);
     steps.push({ ...step, step: steps.length + 1 });
   }
+  const anchorCoverage = publicAnchorCoverage(trace.anchorCoverage, privateSignalKeys);
   return {
     ...trace,
     initialCues: publicRouteSignals(trace.initialCues, privateSignalKeys),
+    ...(anchorCoverage ? { anchorCoverage } : {}),
     steps,
     stopReason,
   };
@@ -265,6 +274,8 @@ interface FrontierCue {
   cue: string;
   priority: number;
   reason: string;
+  anchorCue?: string | undefined;
+  discovered?: boolean | undefined;
 }
 
 interface RankedAssociation {
@@ -278,6 +289,22 @@ interface RankedMemoryCandidate {
   matchedQuery?: string | undefined;
   routeScore: number;
   routeReason: string;
+}
+
+interface AnchorCoverageDraft {
+  anchorCue: string;
+  key: string;
+  candidateCount: number;
+  attemptCount: number;
+  includedCount: number;
+  exhausted: boolean;
+}
+
+interface AnchorCoveragePlan {
+  anchors: AnchorCoverageDraft[];
+  nextIndex: number;
+  quota: number;
+  laneCount: number;
 }
 
 type EvidenceOutputSanitizer = (event: EvidenceEvent) => EvidenceEvent;
@@ -650,6 +677,328 @@ function uniqueStrings(values: string[]): string[] {
   return result;
 }
 
+function timestampMs(value: string | undefined): number {
+  const parsed = Date.parse(value ?? "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function compareRankedAssociations(left: RankedAssociation, right: RankedAssociation): number {
+  const score = right.routeScore - left.routeScore;
+  if (score !== 0) return score;
+  const recency = timestampMs(right.association.updatedAt) - timestampMs(left.association.updatedAt);
+  if (recency !== 0) return recency;
+  return left.association.id.localeCompare(right.association.id);
+}
+
+function compareRankedMemoryCandidates(
+  left: RankedMemoryCandidate,
+  right: RankedMemoryCandidate,
+): number {
+  const score = right.routeScore - left.routeScore;
+  if (score !== 0) return score;
+  const recency = timestampMs(right.memory.updatedAt) - timestampMs(left.memory.updatedAt);
+  if (recency !== 0) return recency;
+  return left.memory.id.localeCompare(right.memory.id);
+}
+
+function compareFrontierCue(left: FrontierCue, right: FrontierCue): number {
+  const priority = right.priority - left.priority;
+  if (priority !== 0) return priority;
+  return left.cue.localeCompare(right.cue);
+}
+
+function anchorCuesForQuery(
+  query: string,
+  intent: ReconstructionIntent,
+  cueExtractor?: MemoryCueExtractor | undefined,
+  inferTemporalCuesFromText = false,
+): string[] {
+  // Host-declared intent cues outrank derived lexical cues so tiny budgets
+  // never starve an anchor the host explicitly asked for.
+  const anchors = [
+    ...intent.explicitQueryCues,
+    ...queryAssociationCues(query, 12, cueExtractor, inferTemporalCuesFromText).map((cue) => cue.cue),
+  ];
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const anchor of anchors) {
+    const key = associationCueKey(anchor);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    output.push(anchor);
+  }
+  return output.length > 0 ? output : [query];
+}
+
+function createAnchorCoveragePlan(input: {
+  query: string;
+  intent: ReconstructionIntent;
+  maxSteps: number;
+  cueExtractor?: MemoryCueExtractor | undefined;
+  inferTemporalCuesFromText?: boolean | undefined;
+}): AnchorCoveragePlan {
+  const anchors = anchorCuesForQuery(
+    input.query,
+    input.intent,
+    input.cueExtractor,
+    input.inferTemporalCuesFromText,
+  ).map((anchorCue) => ({
+    anchorCue,
+    key: associationCueKey(anchorCue),
+    candidateCount: 0,
+    attemptCount: 0,
+    includedCount: 0,
+    exhausted: false,
+  }));
+  // Reserve roughly a quarter of the step budget for evidence-driven chain
+  // expansion; the remaining steps become seed lanes. Lanes beyond the cap
+  // still report coverage but do not reserve exploration turns.
+  const laneCount = Math.min(
+    anchors.length,
+    Math.max(2, input.maxSteps - Math.max(1, Math.ceil(input.maxSteps / 4))),
+  );
+  return {
+    anchors,
+    nextIndex: 0,
+    quota: Math.max(1, Math.floor(input.maxSteps / Math.max(1, laneCount))),
+    laneCount,
+  };
+}
+
+function assignFrontierAnchors(frontier: FrontierCue[], plan: AnchorCoveragePlan | null): void {
+  if (!plan || plan.anchors.length === 0) return;
+  const primaryAnchor = plan.anchors[0]?.anchorCue;
+  const anchorByKey = new Map(plan.anchors.map((anchor) => [anchor.key, anchor.anchorCue]));
+  for (const cue of frontier) {
+    const key = associationCueKey(cue.cue);
+    cue.anchorCue = anchorByKey.get(key) ?? primaryAnchor ?? cue.cue;
+  }
+}
+
+function anchorForCue(plan: AnchorCoveragePlan | null, cue: FrontierCue): AnchorCoverageDraft | null {
+  if (!plan) return null;
+  const key = associationCueKey(cue.anchorCue ?? cue.cue);
+  return plan.anchors.find((anchor) => anchor.key === key) ?? null;
+}
+
+function frontierIndexForAnchor(
+  frontier: FrontierCue[],
+  explored: Set<string>,
+  anchorKey?: string | undefined,
+  options: { includeDiscovered?: boolean | undefined } = {},
+): number {
+  return frontier.findIndex((cue) => {
+    if (explored.has(cue.cue)) return false;
+    if (options.includeDiscovered === false && cue.discovered) return false;
+    if (!anchorKey) return true;
+    return associationCueKey(cue.anchorCue ?? cue.cue) === anchorKey;
+  });
+}
+
+function seedLaneCount(plan: AnchorCoveragePlan): number {
+  return Math.min(plan.laneCount, plan.anchors.length);
+}
+
+function seedAnchorIndex(plan: AnchorCoveragePlan, anchor: AnchorCoverageDraft): number {
+  return plan.anchors.findIndex((entry) => entry.key === anchor.key);
+}
+
+function isSeedAnchor(plan: AnchorCoveragePlan, anchor: AnchorCoverageDraft): boolean {
+  const index = seedAnchorIndex(plan, anchor);
+  return index >= 0 && index < seedLaneCount(plan);
+}
+
+function reservableUncoveredSeedLaneCount(
+  plan: AnchorCoveragePlan | null,
+  frontier: FrontierCue[],
+  explored: Set<string>,
+  excludeAnchorKey?: string | undefined,
+): number {
+  if (!plan) return 0;
+  let count = 0;
+  for (const anchor of plan.anchors.slice(0, seedLaneCount(plan))) {
+    if (anchor.key === excludeAnchorKey) continue;
+    if (anchor.includedCount > 0 || anchor.exhausted || anchor.attemptCount >= plan.quota) continue;
+    if (frontierIndexForAnchor(frontier, explored, anchor.key, { includeDiscovered: false }) < 0) {
+      continue;
+    }
+    count += 1;
+  }
+  return count;
+}
+
+function canIncludeMemoryForAnchor(input: {
+  plan: AnchorCoveragePlan | null;
+  cue: FrontierCue;
+  frontier: FrontierCue[];
+  explored: Set<string>;
+  memoryCount: number;
+  maxMemories: number;
+}): boolean {
+  if (input.memoryCount >= input.maxMemories) return false;
+  const anchor = anchorForCue(input.plan, input.cue);
+  if (!input.plan || !anchor) return true;
+  if (isSeedAnchor(input.plan, anchor) && anchor.includedCount === 0 && !anchor.exhausted) {
+    return true;
+  }
+  // Covered lanes can keep expanding, but not by spending the last slot that
+  // an uncovered seed lane could still use for its first included memory.
+  const reserved = reservableUncoveredSeedLaneCount(
+    input.plan,
+    input.frontier,
+    input.explored,
+  );
+  return input.memoryCount + 1 <= input.maxMemories - reserved;
+}
+
+function noteAnchorIncludedMemory(
+  plan: AnchorCoveragePlan | null,
+  anchorCue: string | undefined,
+): void {
+  if (!plan) return;
+  const key = associationCueKey(anchorCue ?? "");
+  const anchor = plan.anchors.find((entry) => entry.key === key);
+  if (anchor) anchor.includedCount += 1;
+}
+
+function noteAnchorExhausted(
+  plan: AnchorCoveragePlan | null,
+  anchorCue: string | undefined,
+): void {
+  if (!plan) return;
+  const key = associationCueKey(anchorCue ?? "");
+  const anchor = plan.anchors.find((entry) => entry.key === key);
+  if (anchor && anchor.includedCount === 0) anchor.exhausted = true;
+}
+
+function selectFrontierCue(
+  frontier: FrontierCue[],
+  explored: Set<string>,
+  plan: AnchorCoveragePlan | null,
+): FrontierCue | undefined {
+  frontier.sort(compareFrontierCue);
+  const laneCount = plan ? seedLaneCount(plan) : 0;
+  if (plan && laneCount > 0) {
+    for (let offset = 0; offset < laneCount; offset += 1) {
+      const index = (plan.nextIndex + offset) % laneCount;
+      const anchor = plan.anchors[index];
+      if (
+        !anchor ||
+        anchor.includedCount > 0 ||
+        anchor.exhausted ||
+        anchor.attemptCount >= plan.quota
+      ) {
+        continue;
+      }
+      const frontierIndex = frontierIndexForAnchor(
+        frontier,
+        explored,
+        anchor.key,
+        { includeDiscovered: false },
+      );
+      if (frontierIndex < 0) continue;
+      plan.nextIndex = (index + 1) % laneCount;
+      anchor.attemptCount += 1;
+      return frontier.splice(frontierIndex, 1)[0];
+    }
+  }
+  const frontierIndex = frontierIndexForAnchor(frontier, explored);
+  if (frontierIndex < 0) return undefined;
+  const cue = frontier.splice(frontierIndex, 1)[0];
+  const anchor = cue ? anchorForCue(plan, cue) : null;
+  if (anchor) anchor.attemptCount += 1;
+  return cue;
+}
+
+function addAnchorCandidateCount(
+  plan: AnchorCoveragePlan | null,
+  anchorCue: string | undefined,
+  count: number,
+): void {
+  if (!plan || count <= 0) return;
+  const key = associationCueKey(anchorCue ?? "");
+  const anchor = plan.anchors.find((entry) => entry.key === key);
+  if (anchor) anchor.candidateCount += count;
+}
+
+function anchorCoverageReport(
+  plan: AnchorCoveragePlan | null,
+  paths: ReconstructedEvidencePath[],
+): ReconstructionAnchorCoverageReport | undefined {
+  if (!plan) return undefined;
+  const anchors = plan.anchors.map((anchor) => {
+    const includedCount = paths.filter((path) =>
+      path.targetType === "memory" && associationCueKey(path.anchorCue ?? "") === anchor.key
+    ).length;
+    return {
+      anchorCue: anchor.anchorCue,
+      candidateCount: anchor.candidateCount,
+      includedCount,
+      uncovered: includedCount === 0,
+    };
+  });
+  return {
+    anchorCount: anchors.length,
+    coveredAnchorCount: anchors.filter((anchor) => !anchor.uncovered).length,
+    uncoveredAnchors: anchors.filter((anchor) => anchor.uncovered).map((anchor) => anchor.anchorCue),
+    anchors,
+  };
+}
+
+function publicAnchorCoverage(
+  report: ReconstructionAnchorCoverageReport | undefined,
+  privateSignalKeys: Set<string>,
+): ReconstructionAnchorCoverageReport | undefined {
+  if (!report) return undefined;
+  const merged = new Map<string, ReconstructionAnchorCoverageReport["anchors"][number]>();
+  for (const anchor of report.anchors) {
+    const anchorCue = publicRouteSignal(anchor.anchorCue, privateSignalKeys);
+    const key = normalizedText(anchorCue);
+    const existing = merged.get(key);
+    if (existing) {
+      existing.candidateCount += anchor.candidateCount;
+      existing.includedCount += anchor.includedCount;
+      existing.uncovered = existing.includedCount === 0;
+    } else {
+      merged.set(key, { ...anchor, anchorCue });
+    }
+  }
+  const anchors = [...merged.values()].map((anchor) => ({
+    ...anchor,
+    uncovered: anchor.includedCount === 0,
+  }));
+  return {
+    anchorCount: anchors.length,
+    coveredAnchorCount: anchors.filter((anchor) => !anchor.uncovered).length,
+    uncoveredAnchors: anchors.filter((anchor) => anchor.uncovered).map((anchor) => anchor.anchorCue),
+    anchors,
+  };
+}
+
+function anchorCoverageWithIncludedCounts(
+  report: ReconstructionAnchorCoverageReport | undefined,
+  paths: ReconstructedEvidencePath[],
+): ReconstructionAnchorCoverageReport | undefined {
+  if (!report) return undefined;
+  const anchors = report.anchors.map((anchor) => {
+    const key = associationCueKey(anchor.anchorCue);
+    const includedCount = paths.filter((path) =>
+      path.targetType === "memory" && associationCueKey(path.anchorCue ?? "") === key
+    ).length;
+    return {
+      ...anchor,
+      includedCount,
+      uncovered: includedCount === 0,
+    };
+  });
+  return {
+    anchorCount: anchors.length,
+    coveredAnchorCount: anchors.filter((anchor) => !anchor.uncovered).length,
+    uncoveredAnchors: anchors.filter((anchor) => anchor.uncovered).map((anchor) => anchor.anchorCue),
+    anchors,
+  };
+}
+
 function traceBranchFromPath(
   path: ReconstructedEvidencePath,
   decision: ReconstructedPlannerBranch["decision"],
@@ -856,6 +1205,24 @@ function evidenceConvergenceForPaths(input: {
     selectedPathCount: input.paths.length,
     selectedTags: uniqueStrings(input.paths.map((path) => path.tag)).slice(0, 12),
   };
+}
+
+function shouldRunHybridDirectMemorySearch(input: {
+  recallPurpose: ReconstructionRecallPurpose;
+  memories: MemoryRecord[];
+  paths: ReconstructedEvidencePath[];
+  maxMemories: number;
+  targetMemoryCount: number;
+  intent: ReconstructionIntent;
+  coverage: ReconstructionEvidenceCoverage;
+}): boolean {
+  return (
+    (input.recallPurpose === "history" && input.memories.length < input.targetMemoryCount) ||
+    input.paths.length === 0 ||
+    input.memories.length < Math.min(2, input.maxMemories) ||
+    !hasIntentEvidence(input.paths, input.intent) ||
+    !coverageIsSufficient(input.coverage)
+  );
 }
 
 function publicEvidenceConvergence(input: {
@@ -1362,17 +1729,19 @@ async function searchDirectMemoryCandidates(input: {
   recallPurpose: ReconstructionRecallPurpose;
   includeSensitive?: boolean | undefined;
   maxMemories: number;
+  searchQueries?: string[] | undefined;
   cueExtractor?: MemoryCueExtractor | undefined;
   inferTemporalCuesFromText?: boolean | undefined;
 }): Promise<DirectMemoryCandidate[]> {
   const candidates = new Map<string, DirectMemoryCandidate>();
   const limit = Math.min(input.maxMemories * 4, 48);
-  for (const [queryIndex, searchQuery] of directMemorySearchQueries(
+  const searchQueries = input.searchQueries ?? directMemorySearchQueries(
     input.query,
     input.intent,
     input.cueExtractor,
     input.inferTemporalCuesFromText,
-  ).entries()) {
+  );
+  for (const [queryIndex, searchQuery] of searchQueries.entries()) {
     const memories = await input.store.searchMemories({
       profileId: input.profileId,
       query: searchQuery,
@@ -1428,6 +1797,7 @@ function pathFromDirectMemory(
   query: string,
   cueExtractor?: MemoryCueExtractor | undefined,
   inferTemporalCuesFromText = false,
+  anchorCue?: string | undefined,
 ): ReconstructedEvidencePath {
   return {
     id: `hybrid:${candidate.memory.id}`,
@@ -1446,6 +1816,7 @@ function pathFromDirectMemory(
     sourceMemoryId: candidate.memory.id,
     sourceEvidenceId: candidate.memory.sourceEventId,
     createdAt: candidate.memory.createdAt,
+    ...(anchorCue ? { anchorCue } : {}),
   };
 }
 
@@ -1539,6 +1910,10 @@ async function fuseDirectMemorySearch(input: {
   selectedSourceCues: Set<string>;
   cueExtractor?: MemoryCueExtractor | undefined;
   inferTemporalCuesFromText?: boolean | undefined;
+  searchQueries?: string[] | undefined;
+  anchorCue?: string | undefined;
+  maxNewPaths?: number | undefined;
+  reinforceExisting?: boolean | undefined;
 }): Promise<{
   candidateCount: number;
   reinforcedPaths: ReconstructedEvidencePath[];
@@ -1552,23 +1927,26 @@ async function fuseDirectMemorySearch(input: {
     recallPurpose: input.recallPurpose,
     includeSensitive: input.includeSensitive,
     maxMemories: input.maxMemories,
+    ...(input.searchQueries ? { searchQueries: input.searchQueries } : {}),
     cueExtractor: input.cueExtractor,
     inferTemporalCuesFromText: input.inferTemporalCuesFromText,
   });
   const rankedCandidates = directMemoryCandidates
     .map((memory, index) => rankDirectMemory(memory, index + 1, input.intent))
-    .sort((a, b) => b.routeScore - a.routeScore);
+    .sort(compareRankedMemoryCandidates);
   const temporalConstraints = [...input.intent.queryCues].filter(exactTemporalCue);
   const reinforcedPaths: ReconstructedEvidencePath[] = [];
   const selectedNewPaths: ReconstructedEvidencePath[] = [];
-  for (const candidate of rankedCandidates) {
-    const existingPath = input.paths.find(
-      (path) => path.targetType === "memory" && path.targetId === candidate.memory.id,
-    );
-    if (!existingPath) continue;
-    if (!existingPath.routeSources?.includes("hybrid_direct_memory")) {
-      addRouteSignal(existingPath, candidate.routeScore, candidate.routeReason);
-      reinforcedPaths.push({ ...existingPath });
+  if (input.reinforceExisting !== false) {
+    for (const candidate of rankedCandidates) {
+      const existingPath = input.paths.find(
+        (path) => path.targetType === "memory" && path.targetId === candidate.memory.id,
+      );
+      if (!existingPath) continue;
+      if (!existingPath.routeSources?.includes("hybrid_direct_memory")) {
+        addRouteSignal(existingPath, candidate.routeScore, candidate.routeReason);
+        reinforcedPaths.push({ ...existingPath });
+      }
     }
   }
   const directStep = Math.max(
@@ -1577,6 +1955,7 @@ async function fuseDirectMemorySearch(input: {
   );
   for (const candidate of rankedCandidates) {
     if (input.memories.length >= input.maxMemories) break;
+    if (input.maxNewPaths !== undefined && selectedNewPaths.length >= input.maxNewPaths) break;
     if (input.seenMemoryIds.has(candidate.memory.id)) continue;
     if (!memoryMatchesTemporalConstraint(candidate.memory, temporalConstraints)) continue;
     const sourceRejectReason = sourceScopeRejectReason(
@@ -1593,11 +1972,76 @@ async function fuseDirectMemorySearch(input: {
       input.query,
       input.cueExtractor,
       input.inferTemporalCuesFromText,
+      input.anchorCue,
     );
     input.paths.push(path);
     selectedNewPaths.push({ ...path });
   }
   return { candidateCount: rankedCandidates.length, reinforcedPaths, selectedNewPaths };
+}
+
+async function topUpUncoveredAnchors(input: {
+  store: MemoryStore;
+  profileId: string;
+  plan: AnchorCoveragePlan | null;
+  intent: ReconstructionIntent;
+  recallPurpose: ReconstructionRecallPurpose;
+  includeSensitive?: boolean | undefined;
+  maxMemories: number;
+  memories: MemoryRecord[];
+  paths: ReconstructedEvidencePath[];
+  seenMemoryIds: Set<string>;
+  selectedSourceCues: Set<string>;
+  cueExtractor?: MemoryCueExtractor | undefined;
+  inferTemporalCuesFromText?: boolean | undefined;
+}): Promise<ReconstructedPlannerStep[]> {
+  const report = anchorCoverageReport(input.plan, input.paths);
+  if (!input.plan || !report || input.memories.length >= input.maxMemories) return [];
+  const steps: ReconstructedPlannerStep[] = [];
+  for (const anchor of report.anchors.filter((entry) => entry.uncovered)) {
+    if (input.memories.length >= input.maxMemories) break;
+    const trace = await fuseDirectMemorySearch({
+      store: input.store,
+      profileId: input.profileId,
+      query: anchor.anchorCue,
+      intent: input.intent,
+      recallPurpose: input.recallPurpose,
+      includeSensitive: input.includeSensitive,
+      maxMemories: input.maxMemories,
+      memories: input.memories,
+      paths: input.paths,
+      seenMemoryIds: input.seenMemoryIds,
+      selectedSourceCues: input.selectedSourceCues,
+      searchQueries: [anchor.anchorCue],
+      anchorCue: anchor.anchorCue,
+      maxNewPaths: 1,
+      reinforceExisting: false,
+      cueExtractor: input.cueExtractor,
+      inferTemporalCuesFromText: input.inferTemporalCuesFromText,
+    });
+    addAnchorCandidateCount(input.plan, anchor.anchorCue, trace.candidateCount);
+    if (trace.candidateCount === 0) continue;
+    const paths = [...trace.reinforcedPaths, ...trace.selectedNewPaths];
+    steps.push({
+      step: paths.length > 0 ? Math.max(...paths.map((path) => path.step)) : stepCountForTrace(input.paths),
+      selectedCue: anchor.anchorCue,
+      cueReason: "anchor_fallback_memory_search",
+      exploredAssociationCount: 0,
+      hybridCandidateCount: trace.candidateCount,
+      selectedBranchCount: paths.length,
+      prunedBranchCount: 0,
+      generatedCues: [],
+      branches: [
+        ...trace.reinforcedPaths.map((path) =>
+          traceBranchFromPath(path, "reinforced", path.routeReason ?? "anchor_fallback_memory_search")
+        ),
+        ...trace.selectedNewPaths.map((path) =>
+          traceBranchFromPath(path, "selected_new_path", path.routeReason ?? "anchor_fallback_memory_search")
+        ),
+      ],
+    });
+  }
+  return steps;
 }
 
 function composeReconstructedContext(input: {
@@ -1622,6 +2066,7 @@ function composeReconstructedContext(input: {
   includeTemporalContext?: boolean | undefined;
   displayQuery?: string | undefined;
   plannerTrace?: ReconstructedPlannerTrace | undefined;
+  anchorCoverage?: ReconstructionAnchorCoverageReport | undefined;
   cueExtractor?: MemoryCueExtractor | undefined;
   inferTemporalCuesFromText?: boolean | undefined;
   privateRouteSignals?: string[] | undefined;
@@ -1685,6 +2130,7 @@ function composeReconstructedContext(input: {
     coverage: ReconstructionEvidenceCoverage;
     evidenceConvergence: ReconstructionEvidenceConvergence;
     uncertainty: ReconstructionUncertainty;
+    anchorCoverage?: ReconstructionAnchorCoverageReport | undefined;
     plannerTrace?: ReconstructedPlannerTrace | undefined;
     stepCount: number;
     exploredCueCount: number;
@@ -1706,6 +2152,10 @@ function composeReconstructedContext(input: {
       paths: outputPaths,
       privateSignalKeys,
     });
+    const outputAnchorCoverage = publicAnchorCoverage(
+      anchorCoverageWithIncludedCounts(input.anchorCoverage, paths),
+      privateSignalKeys,
+    );
     const outputUncertainty = uncertaintyForReconstruction({
       coverage: outputCoverage,
       memories,
@@ -1725,7 +2175,8 @@ function composeReconstructedContext(input: {
       coverage: outputCoverage,
       evidenceConvergence: outputEvidenceConvergence,
       uncertainty: outputUncertainty,
-      plannerTrace: outputPlannerTrace,
+      ...(outputAnchorCoverage ? { anchorCoverage: outputAnchorCoverage } : {}),
+      ...(outputPlannerTrace ? { plannerTrace: outputPlannerTrace } : {}),
       stepCount: hideInternalRouteSignals
         ? outputPlannerTrace?.steps.length ?? (outputPaths.length > 0 ? 1 : 0)
         : input.stepCount,
@@ -1772,6 +2223,11 @@ function composeReconstructedContext(input: {
       "<gmos-reconstructed-context>",
       `Query: ${publicQuery}`,
       `Evidence coverage: ${output.coverage.coveredCueCount}/${output.coverage.queryCueCount} cues (${output.coverage.coverageRate.toFixed(2)}); uncovered=${output.coverage.uncoveredCues.join(", ") || "none"}`,
+      ...(output.anchorCoverage
+        ? [
+            `Anchor coverage: ${output.anchorCoverage.coveredAnchorCount}/${output.anchorCoverage.anchorCount} anchors; uncovered=${output.anchorCoverage.uncoveredAnchors.join(", ") || "none"}`,
+          ]
+        : []),
       `Evidence convergence: score=${output.evidenceConvergence.score.toFixed(2)}; reached=${output.evidenceConvergence.reached}; threshold=${output.evidenceConvergence.threshold.toFixed(2)}; pruned=${output.evidenceConvergence.prunedBranchCount}; frontier=${output.evidenceConvergence.frontierRemaining}; stopWhenEvidenceEnough=${output.evidenceConvergence.stopWhenEvidenceEnough}`,
       `Reconstruction uncertainty: ${output.uncertainty.level}${output.uncertainty.reasons.length ? ` (${output.uncertainty.reasons.join(", ")})` : ""}`,
       "Reconstructed evidence paths:",
@@ -1830,6 +2286,7 @@ function composeReconstructedContext(input: {
       evidenceCoverage: output.coverage,
       uncertainty: output.uncertainty,
       evidenceConvergence: output.evidenceConvergence,
+      ...(output.anchorCoverage ? { anchorCoverage: output.anchorCoverage } : {}),
     },
   };
 }
@@ -1866,18 +2323,54 @@ async function fallbackReconstruction(input: {
   targetMemoryCount: number;
   includeTemporalMetadata?: boolean | undefined;
   includeTemporalContext?: boolean | undefined;
+  anchorCoverage?: boolean | undefined;
   cueExtractor?: MemoryCueExtractor | undefined;
   inferTemporalCuesFromText?: boolean | undefined;
   privateRouteSignals?: string[] | undefined;
   sanitizeEvidenceForOutput?: EvidenceOutputSanitizer | undefined;
 }): Promise<ReconstructedContext> {
-  const memories = sourceScopedFallbackMemories(await input.store.searchMemories({
-    profileId: input.profileId,
-    query: input.query,
-    purpose: input.recallPurpose,
-    includeSensitive: input.includeSensitive,
-    limit: input.maxMemories,
-  }), input.intent);
+  const anchorPlan = input.anchorCoverage !== false
+    ? createAnchorCoveragePlan({
+        query: input.query,
+        intent: input.intent,
+        maxSteps: 1,
+        cueExtractor: input.cueExtractor,
+        inferTemporalCuesFromText: input.inferTemporalCuesFromText,
+      })
+    : null;
+  const memoryAnchors = new Map<string, string>();
+  const memoryById = new Map<string, MemoryRecord>();
+  const addMemories = (items: MemoryRecord[], anchorCue?: string | undefined): void => {
+    for (const memory of sourceScopedFallbackMemories(items, input.intent)) {
+      if (memoryById.has(memory.id) || memoryById.size >= input.maxMemories) continue;
+      memoryById.set(memory.id, memory);
+      if (anchorCue) memoryAnchors.set(memory.id, anchorCue);
+    }
+  };
+  if (anchorPlan && anchorPlan.anchors.length > 1) {
+    for (const anchor of anchorPlan.anchors) {
+      if (memoryById.size >= input.maxMemories) break;
+      const found = await input.store.searchMemories({
+        profileId: input.profileId,
+        query: anchor.anchorCue,
+        purpose: input.recallPurpose,
+        includeSensitive: input.includeSensitive,
+        limit: Math.max(1, Math.ceil(input.maxMemories / anchorPlan.anchors.length)),
+      });
+      anchor.candidateCount += found.length;
+      addMemories(found, anchor.anchorCue);
+    }
+  }
+  if (memoryById.size < input.maxMemories) {
+    addMemories(await input.store.searchMemories({
+      profileId: input.profileId,
+      query: input.query,
+      purpose: input.recallPurpose,
+      includeSensitive: input.includeSensitive,
+      limit: input.maxMemories,
+    }));
+  }
+  const memories = [...memoryById.values()];
   const targetMemoryCount = Math.min(input.targetMemoryCount, Math.max(1, memories.length));
   const paths = memories.map((memory, index) => ({
     id: `fallback:${memory.id}`,
@@ -1898,6 +2391,7 @@ async function fallbackReconstruction(input: {
     sourceMemoryId: memory.id,
     sourceEvidenceId: memory.sourceEventId,
     createdAt: memory.createdAt,
+    ...(memoryAnchors.get(memory.id) ? { anchorCue: memoryAnchors.get(memory.id) } : {}),
   }));
   const fallbackCoverage = evidenceCoverageForPaths(
     input.query,
@@ -1931,6 +2425,7 @@ async function fallbackReconstruction(input: {
     maxSteps: 1,
     maxBranch: input.maxMemories,
     maxMemories: input.maxMemories,
+    ...(anchorPlan ? { anchorCoverage: anchorCoverageReport(anchorPlan, safePaths) } : {}),
     steps:
       paths.length === 0
         ? []
@@ -1947,9 +2442,10 @@ async function fallbackReconstruction(input: {
                 traceBranchFromPath(path, "selected", "fallback_memory_search"),
               ),
             },
-          ],
+    ],
     stopReason,
   };
+  const fallbackAnchorCoverage = anchorCoverageReport(anchorPlan, safePaths);
   return composeReconstructedContext({
     profileId: input.profileId,
     query: input.query,
@@ -1972,6 +2468,7 @@ async function fallbackReconstruction(input: {
     includeTemporalMetadata: input.includeTemporalMetadata === true,
     includeTemporalContext: input.includeTemporalContext,
     plannerTrace,
+    ...(fallbackAnchorCoverage ? { anchorCoverage: fallbackAnchorCoverage } : {}),
     cueExtractor: input.cueExtractor,
     inferTemporalCuesFromText: input.inferTemporalCuesFromText,
     privateRouteSignals: input.privateRouteSignals,
@@ -1996,6 +2493,7 @@ export async function reconstructMemoryContext(input: {
   const maxSteps = boundedInteger(input.request.maxSteps, 3, 1, 8);
   const maxBranch = boundedInteger(input.request.maxBranch, 4, 1, 12);
   const maxMemories = boundedInteger(input.request.maxMemories, 8, 1, 24);
+  const anchorCoverageEnabled = input.request.anchorCoverage !== false;
   const stopWhenEvidenceEnough = input.request.stopWhenEvidenceEnough !== false;
   const includeTemporalMetadata = input.request.includeTemporalMetadata === true;
   const includeTemporalContext = input.request.includeTemporalContext !== false;
@@ -2035,6 +2533,7 @@ export async function reconstructMemoryContext(input: {
       targetMemoryCount,
       includeTemporalMetadata,
       includeTemporalContext,
+      ...(input.request.anchorCoverage !== undefined ? { anchorCoverage: input.request.anchorCoverage } : {}),
       cueExtractor: input.cueExtractor,
       inferTemporalCuesFromText,
       privateRouteSignals: input.request.privateRouteSignals,
@@ -2043,6 +2542,16 @@ export async function reconstructMemoryContext(input: {
   }
 
   const frontier = seedFrontier(query, intent, input.cueExtractor, inferTemporalCuesFromText);
+  const anchorPlan = anchorCoverageEnabled
+    ? createAnchorCoveragePlan({
+        query,
+        intent,
+        maxSteps,
+        cueExtractor: input.cueExtractor,
+        inferTemporalCuesFromText,
+      })
+    : null;
+  assignFrontierAnchors(frontier, anchorPlan);
   const initialCues = frontier.map((cue) => cue.cue);
   const explored = new Set<string>();
   const seenAssociationIds = new Set<string>();
@@ -2057,8 +2566,7 @@ export async function reconstructMemoryContext(input: {
   let stopReason: ReconstructedContext["stats"]["stopReason"] = "no_frontier";
 
   for (let step = 1; step <= maxSteps; step += 1) {
-    frontier.sort((a, b) => b.priority - a.priority);
-    const cue = frontier.shift();
+    const cue = selectFrontierCue(frontier, explored, anchorPlan);
     if (!cue) break;
     if (explored.has(cue.cue)) {
       step -= 1;
@@ -2073,6 +2581,8 @@ export async function reconstructMemoryContext(input: {
       limit: Math.min(maxBranch * 4, 48),
     });
     associationCount += associations.length;
+    addAnchorCandidateCount(anchorPlan, cue.anchorCue, associations.length);
+    if (associations.length === 0) noteAnchorExhausted(anchorPlan, cue.anchorCue);
     const stepGeneratedCues = new Set<string>();
     const stepTrace: ReconstructedPlannerStep = {
       step,
@@ -2087,7 +2597,7 @@ export async function reconstructMemoryContext(input: {
     const rankedAssociations = associations
       .filter((association) => !seenAssociationIds.has(association.id))
       .map((association) => rankAssociation(association, cue, intent))
-      .sort((a, b) => b.routeScore - a.routeScore)
+      .sort(compareRankedAssociations)
       .slice(0, maxBranch);
     async function sourceMemoryForAssociation(
       association: MemoryAssociationRecord,
@@ -2119,7 +2629,13 @@ export async function reconstructMemoryContext(input: {
       const { association } = ranked;
       if (seenAssociationIds.has(association.id)) continue;
       seenAssociationIds.add(association.id);
-      const path = pathFromAssociation(association, step, ranked.routeScore, ranked.routeReason);
+      const path = pathFromAssociation(
+        association,
+        step,
+        ranked.routeScore,
+        ranked.routeReason,
+        cue.anchorCue,
+      );
       const sourceMemory = await sourceMemoryForAssociation(association);
       const associationRejectReason = associationSourceRejectReason(
         association.cue,
@@ -2179,6 +2695,8 @@ export async function reconstructMemoryContext(input: {
             cue: nextCue.cue,
             priority: ranked.routeScore * 0.9 + structuralCueBoost,
             reason: `from:${associationTagForGeneratedCues}`,
+            anchorCue: cue.anchorCue,
+            discovered: true,
           });
           stepGeneratedCues.add(nextCue.cue);
           generatedCues.push(nextCue.cue);
@@ -2203,6 +2721,21 @@ export async function reconstructMemoryContext(input: {
         stepTrace.branches.push(traceBranchFromPath(path, "pruned", sourceRejectReason));
         continue;
       }
+      if (
+        !canIncludeMemoryForAnchor({
+          plan: anchorPlan,
+          cue,
+          frontier,
+          explored,
+          memoryCount: memories.length,
+          maxMemories,
+        })
+      ) {
+        prunedBranchCount += 1;
+        stepTrace.prunedBranchCount += 1;
+        stepTrace.branches.push(traceBranchFromPath(path, "pruned", "anchor_lane_reserved_memory_slot"));
+        continue;
+      }
       enqueueGeneratedCues();
       paths.push(path);
       stepTrace.selectedBranchCount += 1;
@@ -2211,11 +2744,13 @@ export async function reconstructMemoryContext(input: {
       );
       seenMemoryIds.add(memory.id);
       memories.push(memory);
+      noteAnchorIncludedMemory(anchorPlan, cue.anchorCue);
       if (memories.length >= maxMemories) {
         stopReason = "evidence_sufficient";
         break;
       }
     }
+    if (stepTrace.selectedBranchCount === 0) noteAnchorExhausted(anchorPlan, cue.anchorCue);
     stepTrace.generatedCues = [...stepGeneratedCues];
     plannerSteps.push(stepTrace);
     if (stopReason === "evidence_sufficient") break;
@@ -2230,7 +2765,11 @@ export async function reconstructMemoryContext(input: {
       prunedBranchCount,
       frontierRemaining: frontier.length,
     });
-    if (stopWhenEvidenceEnough && convergence.reached) {
+    if (
+      stopWhenEvidenceEnough &&
+      convergence.reached &&
+      reservableUncoveredSeedLaneCount(anchorPlan, frontier, explored) === 0
+    ) {
       stopReason = "evidence_sufficient";
       break;
     }
@@ -2241,19 +2780,74 @@ export async function reconstructMemoryContext(input: {
     stopReason = "budget_exhausted";
   }
 
+  const coverageBeforeAnchorTopUp = evidenceCoverageForPaths(
+    query,
+    paths,
+    input.cueExtractor,
+    inferTemporalCuesFromText,
+  );
+  const hybridNeededBeforeAnchorTopUp = shouldRunHybridDirectMemorySearch({
+    recallPurpose,
+    memories,
+    paths,
+    maxMemories,
+    targetMemoryCount,
+    intent,
+    coverage: coverageBeforeAnchorTopUp,
+  });
+
+  if (anchorPlan && memories.length < maxMemories) {
+    const anchorTopUpSteps = await topUpUncoveredAnchors({
+      store: input.store,
+      profileId,
+      plan: anchorPlan,
+      intent,
+      recallPurpose,
+      includeSensitive: input.request.includeSensitive,
+      maxMemories,
+      memories,
+      paths,
+      seenMemoryIds,
+      selectedSourceCues,
+      cueExtractor: input.cueExtractor,
+      inferTemporalCuesFromText,
+    });
+    plannerSteps.push(...anchorTopUpSteps);
+    const convergence = evidenceConvergenceForPaths({
+      coverage: evidenceCoverageForPaths(query, paths, input.cueExtractor, inferTemporalCuesFromText),
+      memories,
+      paths,
+      intent,
+      threshold: evidenceConvergenceThreshold,
+      targetMemoryCount,
+      stopWhenEvidenceEnough,
+      prunedBranchCount,
+      frontierRemaining: frontier.length,
+    });
+    if (memories.length >= maxMemories || (stopWhenEvidenceEnough && convergence.reached)) {
+      stopReason = "evidence_sufficient";
+    }
+  }
+
   const finalCoverageBeforeHybrid = evidenceCoverageForPaths(
     query,
     paths,
     input.cueExtractor,
     inferTemporalCuesFromText,
   );
+  const hybridNeededAfterAnchorTopUp = shouldRunHybridDirectMemorySearch({
+    recallPurpose,
+    memories,
+    paths,
+    maxMemories,
+    targetMemoryCount,
+    intent,
+    coverage: finalCoverageBeforeHybrid,
+  });
+  const allowReinforcementOnlyHybrid = anchorPlan !== null && hybridNeededBeforeAnchorTopUp;
   if (
-    memories.length < maxMemories &&
-    ((recallPurpose === "history" && memories.length < targetMemoryCount) ||
-      paths.length === 0 ||
-      memories.length < Math.min(2, maxMemories) ||
-      !hasIntentEvidence(paths, intent) ||
-      !coverageIsSufficient(finalCoverageBeforeHybrid))
+    (memories.length < maxMemories || allowReinforcementOnlyHybrid) &&
+    (hybridNeededBeforeAnchorTopUp || hybridNeededAfterAnchorTopUp)
   ) {
     const hybridTrace = await fuseDirectMemorySearch({
       store: input.store,
@@ -2325,6 +2919,7 @@ export async function reconstructMemoryContext(input: {
     }
   }
 
+  const finalAnchorCoverage = anchorCoverageReport(anchorPlan, paths);
   return composeReconstructedContext({
     profileId,
     query,
@@ -2357,8 +2952,10 @@ export async function reconstructMemoryContext(input: {
       maxSteps,
       maxBranch,
       maxMemories,
+      ...(finalAnchorCoverage ? { anchorCoverage: finalAnchorCoverage } : {}),
       steps: plannerSteps,
       stopReason,
     },
+    ...(finalAnchorCoverage ? { anchorCoverage: finalAnchorCoverage } : {}),
   });
 }

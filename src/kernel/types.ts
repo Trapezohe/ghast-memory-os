@@ -144,6 +144,7 @@ export interface PrepareTurnInput {
     maxSteps?: number | undefined;
     maxBranch?: number | undefined;
     maxMemories?: number | undefined;
+    anchorCoverage?: boolean | undefined;
     stopWhenEvidenceEnough?: boolean | undefined;
     evidenceConvergenceThreshold?: number | undefined;
     includeTemporalMetadata?: boolean | undefined;
@@ -768,6 +769,7 @@ export interface TurnExplanationBudgetReport {
     maxBranch: number;
     maxMemories: number;
     stopReason: ReconstructedContext["stats"]["stopReason"];
+    anchorCoverage?: ReconstructionAnchorCoverageReport | undefined;
   } | undefined;
   stoppedAt: "memory_search" | "token_budget" | "planner" | "complete";
 }
@@ -868,6 +870,7 @@ export interface ReconstructContextInput {
   maxSteps?: number | undefined;
   maxBranch?: number | undefined;
   maxMemories?: number | undefined;
+  anchorCoverage?: boolean | undefined;
   stopWhenEvidenceEnough?: boolean | undefined;
   evidenceConvergenceThreshold?: number | undefined;
   includeTemporalMetadata?: boolean | undefined;
@@ -898,6 +901,21 @@ export interface ReconstructedEvidencePath {
   sourceMemoryId?: string | null | undefined;
   sourceEvidenceId?: string | null | undefined;
   createdAt?: string | undefined;
+  anchorCue?: string | undefined;
+}
+
+export interface ReconstructionAnchorCoverageEntry {
+  anchorCue: string;
+  candidateCount: number;
+  includedCount: number;
+  uncovered: boolean;
+}
+
+export interface ReconstructionAnchorCoverageReport {
+  anchorCount: number;
+  coveredAnchorCount: number;
+  uncoveredAnchors: string[];
+  anchors: ReconstructionAnchorCoverageEntry[];
 }
 
 export interface ReconstructedPlannerBranch {
@@ -932,6 +950,7 @@ export interface ReconstructedPlannerTrace {
   maxSteps: number;
   maxBranch: number;
   maxMemories: number;
+  anchorCoverage?: ReconstructionAnchorCoverageReport | undefined;
   steps: ReconstructedPlannerStep[];
   stopReason: ReconstructedContext["stats"]["stopReason"];
 }
@@ -976,6 +995,7 @@ export interface ReconstructedContext {
       selectedPathCount: number;
       selectedTags: string[];
     } | undefined;
+    anchorCoverage?: ReconstructionAnchorCoverageReport | undefined;
   };
 }
 

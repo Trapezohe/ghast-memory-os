@@ -223,6 +223,7 @@ function optionalPrepareReconstruction(
       "maxSteps",
       "maxBranch",
       "maxMemories",
+      "anchorCoverage",
       "stopWhenEvidenceEnough",
       "evidenceConvergenceThreshold",
       "includeTemporalMetadata",
@@ -240,6 +241,7 @@ function optionalPrepareReconstruction(
   const maxSteps = optionalPositiveInteger(record, "maxSteps");
   const maxBranch = optionalPositiveInteger(record, "maxBranch");
   const maxMemories = optionalPositiveInteger(record, "maxMemories");
+  const anchorCoverage = optionalBoolean(record, "anchorCoverage");
   const stopWhenEvidenceEnough = optionalBoolean(record, "stopWhenEvidenceEnough");
   const evidenceConvergenceThreshold = optionalPositiveNumber(
     record,
@@ -252,6 +254,7 @@ function optionalPrepareReconstruction(
   if (maxSteps !== undefined) reconstruction.maxSteps = maxSteps;
   if (maxBranch !== undefined) reconstruction.maxBranch = maxBranch;
   if (maxMemories !== undefined) reconstruction.maxMemories = maxMemories;
+  if (anchorCoverage !== undefined) reconstruction.anchorCoverage = anchorCoverage;
   if (stopWhenEvidenceEnough !== undefined) {
     reconstruction.stopWhenEvidenceEnough = stopWhenEvidenceEnough;
   }
@@ -578,6 +581,7 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
       "maxSteps",
       "maxBranch",
       "maxMemories",
+      "anchorCoverage",
       "stopWhenEvidenceEnough",
       "evidenceConvergenceThreshold",
       "includeTemporalMetadata",
@@ -600,6 +604,7 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
   const maxSteps = optionalPositiveInteger(args, "maxSteps");
   const maxBranch = optionalPositiveInteger(args, "maxBranch");
   const maxMemories = optionalPositiveInteger(args, "maxMemories");
+  const anchorCoverage = optionalBoolean(args, "anchorCoverage");
   const stopWhenEvidenceEnough = optionalBoolean(args, "stopWhenEvidenceEnough");
   const includeTemporalMetadata = optionalBoolean(args, "includeTemporalMetadata");
   const includeTemporalContext = optionalBoolean(args, "includeTemporalContext");
@@ -616,6 +621,7 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
   if (maxSteps !== undefined) input.maxSteps = maxSteps;
   if (maxBranch !== undefined) input.maxBranch = maxBranch;
   if (maxMemories !== undefined) input.maxMemories = maxMemories;
+  if (anchorCoverage !== undefined) input.anchorCoverage = anchorCoverage;
   if (stopWhenEvidenceEnough !== undefined) {
     input.stopWhenEvidenceEnough = stopWhenEvidenceEnough;
   }
@@ -648,6 +654,7 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
       "maxSteps",
       "maxBranch",
       "maxMemories",
+      "anchorCoverage",
       "stopWhenEvidenceEnough",
       "evidenceConvergenceThreshold",
       "includeTemporalMetadata",
@@ -671,6 +678,7 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
   const maxSteps = optionalPositiveInteger(args, "maxSteps");
   const maxBranch = optionalPositiveInteger(args, "maxBranch");
   const maxMemories = optionalPositiveInteger(args, "maxMemories");
+  const anchorCoverage = optionalBoolean(args, "anchorCoverage");
   const stopWhenEvidenceEnough = optionalBoolean(args, "stopWhenEvidenceEnough");
   const includeTemporalMetadata = optionalBoolean(args, "includeTemporalMetadata");
   const includeTemporalContext = optionalBoolean(args, "includeTemporalContext");
@@ -688,6 +696,7 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
   if (maxSteps !== undefined) input.maxSteps = maxSteps;
   if (maxBranch !== undefined) input.maxBranch = maxBranch;
   if (maxMemories !== undefined) input.maxMemories = maxMemories;
+  if (anchorCoverage !== undefined) input.anchorCoverage = anchorCoverage;
   if (stopWhenEvidenceEnough !== undefined) {
     input.stopWhenEvidenceEnough = stopWhenEvidenceEnough;
   }

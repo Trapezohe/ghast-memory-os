@@ -624,7 +624,7 @@ function commaSeparatedStringOption(name: string): string[] | undefined {
   return entries;
 }
 
-function externalIntelligenceOption(): {
+function externalIntelligenceOption(debugDir: string | undefined): {
   baseUrl: string;
   apiKeyEnv?: string | undefined;
   model: string;
@@ -637,7 +637,9 @@ function externalIntelligenceOption(): {
   disableThinking?: boolean | undefined;
   debugDir?: string | undefined;
 } | undefined {
-  const hasIntelligenceFlag = process.argv.some((arg) => arg.startsWith("--intelligence-"));
+  const hasIntelligenceFlag = process.argv.some((arg) =>
+    arg.startsWith("--intelligence-") && arg !== "--intelligence-debug-dir"
+  );
   if (!hasIntelligenceFlag) return undefined;
   const baseUrl = value("--intelligence-base-url");
   if (!baseUrl) {
@@ -657,7 +659,6 @@ function externalIntelligenceOption(): {
   const retries = nonNegativeIntegerOptionValue("--intelligence-retries");
   const backoffMs = nonNegativeIntegerOptionValue("--intelligence-backoff-ms");
   const concurrency = positiveIntegerOptionValue("--intelligence-concurrency");
-  const debugDir = value("--intelligence-debug-dir");
   const disableThinking = has("--intelligence-disable-thinking");
   return {
     baseUrl,
@@ -669,7 +670,7 @@ function externalIntelligenceOption(): {
     ...(backoffMs !== undefined ? { backoffMs } : {}),
     ...(concurrency !== undefined ? { concurrency } : {}),
     ...(dimensions !== undefined ? { dimensions } : {}),
-    ...(debugDir ? { debugDir: path.resolve(process.cwd(), debugDir) } : {}),
+    ...(debugDir ? { debugDir } : {}),
     ...(disableThinking ? { disableThinking: true } : {}),
   };
 }
@@ -1958,7 +1959,9 @@ async function main(): Promise<void> {
       throw new Error("--dataset-format must be gmos, longmemeval, or locomo");
     }
     const ingestMode = externalIngestModeOption();
-    const intelligence = externalIntelligenceOption();
+    const debugDir = value("--intelligence-debug-dir");
+    const resolvedDebugDir = debugDir ? path.resolve(process.cwd(), debugDir) : undefined;
+    const intelligence = externalIntelligenceOption(resolvedDebugDir);
     const maintainPhases = externalMaintainPhasesOption();
     const parsedDataset =
       datasetFormat === "gmos"
@@ -1998,10 +2001,16 @@ async function main(): Promise<void> {
     const caseOffset = nonNegativeIntegerOptionValue("--case-offset");
     const caseIds = commaSeparatedStringOption("--case-ids");
     const readerProfile = readerProfileOption();
-    const maxMemories = positiveIntegerOptionValue("--max-memories") ??
-      (readerProfile === "expansive" ? 24 : 6);
-    const contextBudgetTokens = positiveIntegerOptionValue("--context-budget-tokens") ??
-      (readerProfile === "expansive" ? 4000 : 1600);
+    const maxSteps = positiveIntegerOptionValue("--max-steps");
+    const maxBranch = positiveIntegerOptionValue("--max-branch");
+    const maxMemories = positiveIntegerOptionValue("--max-memories");
+    const contextBudgetTokens = positiveIntegerOptionValue("--context-budget-tokens");
+    const readerContextCharLimit = nonNegativeIntegerOptionValue("--reader-context-char-limit");
+    const debugContextFailureLimit = nonNegativeIntegerOptionValue("--debug-context-failure-limit");
+    const debugDumpMemories = nonNegativeIntegerOptionValue("--debug-dump-memories");
+    if (debugDumpMemories !== undefined && debugDumpMemories > 0 && !resolvedDebugDir) {
+      throw new Error("--debug-dump-memories requires --intelligence-debug-dir");
+    }
     const abortController = new AbortController();
     let interrupted = false;
     const handleInterrupt = (signal: NodeJS.Signals): void => {
@@ -2022,11 +2031,16 @@ async function main(): Promise<void> {
       datasetFormat: parsedDataset.datasetFormat,
       datasetWarnings: "warnings" in parsedDataset ? parsedDataset.warnings : [],
       ...(mode !== undefined ? { mode } : {}),
-      maxSteps: positiveIntegerOption("--max-steps", 4),
-      maxBranch: positiveIntegerOption("--max-branch", 6),
-      maxMemories,
-      contextBudgetTokens,
+      ...(maxSteps !== undefined ? { maxSteps } : {}),
+      ...(maxBranch !== undefined ? { maxBranch } : {}),
+      ...(maxMemories !== undefined ? { maxMemories } : {}),
+      ...(contextBudgetTokens !== undefined ? { contextBudgetTokens } : {}),
+      ...(has("--no-anchor-coverage") ? { anchorCoverage: false } : {}),
       readerProfile,
+      ...(resolvedDebugDir ? { debugDir: resolvedDebugDir } : {}),
+      ...(readerContextCharLimit !== undefined ? { readerContextCharLimit } : {}),
+      ...(debugContextFailureLimit !== undefined ? { debugContextFailureLimit } : {}),
+      ...(debugDumpMemories !== undefined ? { debugDumpMemories } : {}),
       temporalMode: temporalModeOption(),
       ...(has("--temporal-metadata") ? { includeTemporalMetadata: true } : {}),
       ...(has("--include-sensitive") ? { includeSensitive: true } : {}),
@@ -2570,6 +2584,7 @@ async function main(): Promise<void> {
                 maxSteps: positiveIntegerOption("--max-steps", 3),
                 maxBranch: positiveIntegerOption("--max-branch", 4),
                 maxMemories: positiveIntegerOption("--max-memories", 8),
+                ...(has("--no-anchor-coverage") ? { anchorCoverage: false } : {}),
                 includeTemporalMetadata: has("--temporal-metadata"),
                 temporalMode: temporalModeOption(),
                 reconstructionIntent: reconstructionIntentOption(),
@@ -2593,6 +2608,7 @@ async function main(): Promise<void> {
         maxSteps: positiveIntegerOption("--max-steps", 3),
         maxBranch: positiveIntegerOption("--max-branch", 4),
         maxMemories: positiveIntegerOption("--max-memories", 8),
+        ...(has("--no-anchor-coverage") ? { anchorCoverage: false } : {}),
         includeTemporalMetadata: has("--temporal-metadata"),
         temporalMode: temporalModeOption(),
         reconstructionIntent: reconstructionIntentOption(),
@@ -2614,6 +2630,7 @@ async function main(): Promise<void> {
         maxSteps: positiveIntegerOption("--max-steps", 3),
         maxBranch: positiveIntegerOption("--max-branch", 4),
         maxMemories: positiveIntegerOption("--max-memories", 8),
+        ...(has("--no-anchor-coverage") ? { anchorCoverage: false } : {}),
         includeTemporalMetadata: has("--temporal-metadata"),
         temporalMode: temporalModeOption(),
         reconstructionIntent: reconstructionIntentOption(),
