@@ -25561,6 +25561,100 @@ assert.equal(
   externalSessionDistillationRun.runManifest.runtimeIntelligence.ingestCaseGroups[0]?.distilledMemoryCount,
   1,
 );
+const externalSlowRawHookRun = await runExternalMemoryBenchmark({
+  cases: [{
+    id: "external-raw-hook-timeout-success",
+    events: [{
+      content: "Raw hook timeout source message.",
+      createdAt: "2026-07-06T09:00:00.000Z",
+    }],
+    question: "Which raw hook timeout marker should be recalled?",
+    expectedAny: ["jade marker"],
+  }],
+  ingestMode: "message",
+  sessionDistillation: true,
+  intelligenceTimeoutMs: 1000,
+  intelligenceConcurrency: 3,
+  intelligence: {
+    sessionDistiller: {
+      name: "slow-raw-session-distiller",
+      async distill() {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return [{ content: "2026-07-06: The raw hook timeout marker is jade marker." }];
+      },
+    },
+  },
+});
+assert.equal(externalSlowRawHookRun.pass, true);
+assert.equal(externalSlowRawHookRun.runManifest.runtimeIntelligence.timeoutMs, 1000);
+assert.equal(externalSlowRawHookRun.runManifest.runtimeIntelligence.concurrency, 3);
+assert.equal(externalSlowRawHookRun.runManifest.runtimeIntelligence.sessionDistillation.distilledMemoryCount, 1);
+assert.equal(externalSlowRawHookRun.runManifest.runtimeIntelligence.sessionDistillation.transportFailureCount, 0);
+const externalTimedOutRawHookRun = await runExternalMemoryBenchmark({
+  cases: [{
+    id: "external-raw-hook-timeout-failure",
+    events: [{
+      content: "Raw hook timeout failure source message.",
+      createdAt: "2026-07-06T10:00:00.000Z",
+    }],
+    question: "Which raw hook timeout failure marker should be recalled?",
+    expectedAny: ["sapphire marker"],
+  }],
+  ingestMode: "message",
+  sessionDistillation: true,
+  intelligenceTimeoutMs: 10,
+  intelligence: {
+    sessionDistiller: {
+      name: "timed-out-raw-session-distiller",
+      async distill() {
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        return [{ content: "2026-07-06: The timeout failure marker is sapphire marker." }];
+      },
+    },
+  },
+});
+assert.equal(externalTimedOutRawHookRun.runManifest.runtimeIntelligence.timeoutMs, 10);
+assert.equal(externalTimedOutRawHookRun.runManifest.runtimeIntelligence.sessionDistillation.callCount, 1);
+assert.equal(externalTimedOutRawHookRun.runManifest.runtimeIntelligence.sessionDistillation.transportFailureCount, 1);
+assert.equal(externalTimedOutRawHookRun.runManifest.runtimeIntelligence.sessionDistillation.failureCount, 1);
+assert.equal(externalTimedOutRawHookRun.runManifest.runtimeIntelligence.sessionDistillation.distilledMemoryCount, 0);
+const externalIntelligencePrecedenceCases = [{
+  id: "external-intelligence-timeout-precedence",
+  events: [{
+    type: "memory" as const,
+    kind: "fact" as const,
+    content: "The precedence marker is opal.",
+  }],
+  question: "What is the precedence marker?",
+  expectedAny: ["opal"],
+}];
+const externalTopLevelTimeoutRun = await runExternalMemoryBenchmark({
+  cases: externalIntelligencePrecedenceCases,
+  intelligenceTimeoutMs: 1234,
+  intelligence: {
+    plannerBaseUrl: "https://precedence-planner.invalid/v1",
+    plannerModel: "precedence-planner",
+    timeoutMs: 5678,
+  },
+});
+assert.equal(externalTopLevelTimeoutRun.runManifest.runtimeIntelligence.timeoutMs, 1234);
+const externalConfigOnlyTimeoutRun = await runExternalMemoryBenchmark({
+  cases: externalIntelligencePrecedenceCases,
+  intelligence: {
+    plannerBaseUrl: "https://precedence-planner.invalid/v1",
+    plannerModel: "precedence-planner",
+    timeoutMs: 5678,
+  },
+});
+assert.equal(externalConfigOnlyTimeoutRun.runManifest.runtimeIntelligence.timeoutMs, 5678);
+const externalDefaultTimeoutRun = await runExternalMemoryBenchmark({
+  cases: externalIntelligencePrecedenceCases,
+  intelligence: {
+    plannerBaseUrl: "https://precedence-planner.invalid/v1",
+    plannerModel: "precedence-planner",
+  },
+});
+assert.equal(externalDefaultTimeoutRun.runManifest.runtimeIntelligence.timeoutMs, 20_000);
 await assert.rejects(
   () => runExternalMemoryBenchmark({
     cases: externalSessionDistillationRun.cases.map((result) => ({

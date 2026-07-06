@@ -742,6 +742,8 @@ export interface RunExternalMemoryBenchmarkOptions {
   sweepCues?: boolean | undefined;
   plannerMaxAnchors?: number | undefined;
   intelligence?: ExternalMemoryBenchmarkIntelligence | undefined;
+  intelligenceTimeoutMs?: number | undefined;
+  intelligenceConcurrency?: number | undefined;
   maintainPhases?: MaintenancePhase[] | undefined;
   debugDir?: string | undefined;
   debugDumpMemories?: number | undefined;
@@ -2789,6 +2791,18 @@ function normalizedIntelligenceConcurrency(value: number | undefined): number {
   return concurrency;
 }
 
+function normalizedIntelligenceTimeoutMs(value: number | undefined): number {
+  const timeoutMs = normalizedPositiveInteger(
+    value,
+    20_000,
+    "External benchmark intelligence timeoutMs",
+  );
+  if (timeoutMs > 300_000) {
+    throw new Error("External benchmark intelligence timeoutMs must be at most 300000");
+  }
+  return timeoutMs;
+}
+
 function hookName(value: unknown): string | null {
   if (!value) return null;
   if (typeof value === "function") return value.name || "anonymous";
@@ -3234,6 +3248,8 @@ function resolveRuntimeIntelligence(input: {
   turnRetention: boolean;
   sessionDistillation: boolean;
   maintainPhases: MaintenancePhase[];
+  intelligenceTimeoutMs?: number | undefined;
+  intelligenceConcurrency?: number | undefined;
 }): RuntimeIntelligenceState {
   if (!input.intelligence) {
     if (input.sessionDistillation) {
@@ -3246,8 +3262,12 @@ function resolveRuntimeIntelligence(input: {
     );
   }
   const config = isIntelligenceConfig(input.intelligence) ? input.intelligence : null;
-  const concurrency = normalizedIntelligenceConcurrency(config?.concurrency);
-  const timeoutMs = normalizedPositiveInteger(config?.timeoutMs, 20_000, "External benchmark intelligence timeoutMs");
+  const concurrency = normalizedIntelligenceConcurrency(
+    input.intelligenceConcurrency ?? config?.concurrency,
+  );
+  const timeoutMs = normalizedIntelligenceTimeoutMs(
+    input.intelligenceTimeoutMs ?? config?.timeoutMs,
+  );
   const retries = normalizedNonNegativeInteger(config?.retries, 2, "External benchmark intelligence retries");
   if (retries > 5) throw new Error("External benchmark intelligence retries must be at most 5");
   const backoffMs = normalizedNonNegativeInteger(config?.backoffMs, 250, "External benchmark intelligence backoffMs");
@@ -3284,7 +3304,7 @@ function resolveRuntimeIntelligence(input: {
                 : true,
           }
         : {}),
-      ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+      timeoutMs,
       retries,
       backoffMs,
       ...(config.disableThinking ? { disableThinking: true } : {}),
@@ -3309,7 +3329,7 @@ function resolveRuntimeIntelligence(input: {
             queryPlanner: createOpenAICompatibleQueryPlanner({
               baseUrl: plannerBaseUrl,
               model: plannerModel,
-              ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+              timeoutMs,
               retries,
               backoffMs,
               ...(config.disableThinking ? { disableThinking: true } : {}),
@@ -3324,7 +3344,7 @@ function resolveRuntimeIntelligence(input: {
             sessionDistiller: createOpenAICompatibleSessionDistiller({
               baseUrl: distillerBaseUrl,
               model: distillerModel,
-              ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+              timeoutMs,
               retries,
               backoffMs,
               ...(config.disableThinking ? { disableThinking: true } : {}),
@@ -4588,6 +4608,8 @@ export async function runExternalMemoryBenchmark(
     turnRetention,
     sessionDistillation,
     maintainPhases,
+    intelligenceTimeoutMs: options.intelligenceTimeoutMs,
+    intelligenceConcurrency: options.intelligenceConcurrency,
   });
   const embedQuery = options.embedQuery ?? runtimeIntelligence.hooks?.embeddingProvider !== undefined;
   runtimeIntelligence.manifest.embedQuery = embedQuery;

@@ -360,6 +360,13 @@ configured, these flags override only the session distiller endpoint/model. If
 there is no base intelligence, the paired distiller flags build only the
 session distiller hook for `--session-distill on`.
 
+SDK raw-hook runs can set top-level `intelligenceTimeoutMs` and
+`intelligenceConcurrency` on `runExternalMemoryBenchmark`. These control the
+shared wrapper around extraction, distillation, embedding, reranking, and
+planner hooks; explicit top-level values win over matching intelligence config
+fields, and manifests record the effective `runtimeIntelligence.timeoutMs` and
+`runtimeIntelligence.concurrency`.
+
 Aggregation sweeps are separately opt-in with `--sweep-cues on`. This switch
 also calls the query planner, but consumes only `sweepCues` and leaves
 planner-derived `requiredAnchors` ignored unless `--query-planner on` is set.
