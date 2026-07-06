@@ -23222,6 +23222,117 @@ assert.equal(sweepRunnerOn.runManifest.runtimeIntelligence.queryPlanner.enabled,
 assert.equal(sweepRunnerOn.runManifest.runtimeIntelligence.sweepCues.enabled, true);
 assert.equal(sweepRunnerOn.runManifest.runtimeIntelligence.sweepCues.name, "sweep-cue-test-planner");
 assert.equal(renderExternalMemoryBenchmarkMarkdown(sweepRunnerOn).includes("Runtime sweep cues: enabled=true"), true);
+const previousPlannerOnlyKey = process.env.GMOS_PLANNER_ONLY_TEST_KEY;
+process.env.GMOS_PLANNER_ONLY_TEST_KEY = "planner-only-secret-1234567890";
+const plannerOnlyFetchCalls: Array<{
+  url: string;
+  authorization?: string | undefined;
+  model?: string | undefined;
+  enableThinking?: unknown;
+  system?: string | undefined;
+}> = [];
+try {
+  const plannerOnlySweepRun = await runExternalMemoryBenchmark({
+    cases: [sweepRunnerCase],
+    maxMemories: 1,
+    protocol: "official_protocol",
+    queryPlanner: true,
+    sweepCues: true,
+    intelligence: {
+      plannerBaseUrl: "https://planner-only.invalid/v1",
+      plannerModel: "planner-only-chat",
+      apiKeyEnv: "GMOS_PLANNER_ONLY_TEST_KEY",
+      timeoutMs: 5000,
+      retries: 0,
+      backoffMs: 0,
+      concurrency: 1,
+      disableThinking: true,
+      fetchImpl: async (url, init) => {
+        const headers = init?.headers as Record<string, string> | undefined;
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          model?: string;
+          enable_thinking?: unknown;
+          messages?: Array<{ role?: string; content?: string }>;
+        };
+        const system = body.messages?.[0]?.content ?? "";
+        plannerOnlyFetchCalls.push({
+          url: String(url),
+          authorization: headers?.authorization,
+          model: body.model,
+          enableThinking: body.enable_thinking,
+          system,
+        });
+        if (String(url).endsWith("/embeddings") || !system.includes("a query planner")) {
+          throw new Error("planner-only config should only call the query planner");
+        }
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          text: async () => JSON.stringify({
+            choices: [{
+              message: {
+                content: JSON.stringify({ requiredAnchors: [], sweepCues: ["market sale"] }),
+              },
+            }],
+          }),
+        };
+      },
+    },
+    answerer: {
+      name: "market-total-reader",
+      answer: marketTotalAnswer,
+    },
+    judge: {
+      name: "market-total-judge",
+      judge(_question, expectedAnswer, actualAnswer) {
+        return { correct: actualAnswer === expectedAnswer };
+      },
+    },
+  });
+  assert.equal(plannerOnlySweepRun.pass, true);
+  assert.equal(plannerOnlyFetchCalls.length, 1);
+  assert.equal(plannerOnlyFetchCalls[0]?.url, "https://planner-only.invalid/v1/chat/completions");
+  assert.equal(plannerOnlyFetchCalls[0]?.authorization, "Bearer planner-only-secret-1234567890");
+  assert.equal(plannerOnlyFetchCalls[0]?.model, "planner-only-chat");
+  assert.equal(plannerOnlyFetchCalls[0]?.enableThinking, false);
+  assert.deepEqual(plannerOnlySweepRun.cases[0]?.sweepCues, ["market sale"]);
+  assert.equal(plannerOnlySweepRun.cases[0]?.sweepIncludedCount, 5);
+  assert.equal(plannerOnlySweepRun.runManifest.runtimeIntelligence.enabled, true);
+  assert.equal(plannerOnlySweepRun.runManifest.runtimeIntelligence.baseUrlHost, null);
+  assert.equal(plannerOnlySweepRun.runManifest.runtimeIntelligence.model, null);
+  assert.equal(plannerOnlySweepRun.runManifest.runtimeIntelligence.embedModel, null);
+  assert.equal(plannerOnlySweepRun.runManifest.runtimeIntelligence.hookNames.extractor, null);
+  assert.equal(plannerOnlySweepRun.runManifest.runtimeIntelligence.hookNames.embeddingProvider, null);
+  assert.equal(plannerOnlySweepRun.runManifest.runtimeIntelligence.hookNames.reranker, null);
+  assert.equal(
+    plannerOnlySweepRun.runManifest.runtimeIntelligence.hookNames.queryPlanner,
+    "openai-compatible-query-planner:planner-only-chat",
+  );
+  assert.equal(plannerOnlySweepRun.runManifest.runtimeIntelligence.queryPlanner.enabled, true);
+  assert.equal(plannerOnlySweepRun.runManifest.runtimeIntelligence.queryPlanner.baseUrlHost, "planner-only.invalid");
+  assert.equal(plannerOnlySweepRun.runManifest.runtimeIntelligence.queryPlanner.apiKeyEnv, "GMOS_PLANNER_ONLY_TEST_KEY");
+  assert.equal(plannerOnlySweepRun.runManifest.runtimeIntelligence.queryPlanner.model, "planner-only-chat");
+  assert.equal(plannerOnlySweepRun.runManifest.runtimeIntelligence.sweepCues.enabled, true);
+  assert.equal(plannerOnlySweepRun.runManifest.runtimeIntelligence.sweepCues.baseUrlHost, "planner-only.invalid");
+  assert.equal(plannerOnlySweepRun.runManifest.runtimeIntelligence.sweepCues.model, "planner-only-chat");
+} finally {
+  if (previousPlannerOnlyKey === undefined) {
+    delete process.env.GMOS_PLANNER_ONLY_TEST_KEY;
+  } else {
+    process.env.GMOS_PLANNER_ONLY_TEST_KEY = previousPlannerOnlyKey;
+  }
+}
+await assert.rejects(
+  () =>
+    runExternalMemoryBenchmark({
+      cases: [sweepRunnerCase],
+      intelligence: {
+        plannerBaseUrl: "https://planner-only.invalid/v1",
+      },
+    }),
+  /planner-only intelligence requires both --planner-base-url and --planner-model/,
+);
 let failingPlannerCalls = 0;
 const failingPlannerRun = await runExternalMemoryBenchmark({
   cases: [{
@@ -26652,6 +26763,76 @@ assert.match(cliExternalReaderFetchLog, /"model":"cli-judge-override"/);
 assert.match(cliExternalReaderFetchLog, /Use dates in the context to reason about time/);
 assert.match(cliExternalReaderFetchLog, new RegExp(`Bearer ${cliExternalReaderSecret}`));
 assert.equal(cliExternalReader.stdout.includes(cliExternalReaderSecret), false);
+const cliExternalPlannerWithAnswerer = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "--import",
+    cliExternalReaderMockFetchFile,
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    cliExternalReaderFixtureFile,
+    "--protocol",
+    "official-protocol",
+    "--planner-base-url",
+    "https://cli-planner.invalid/v1",
+    "--planner-model",
+    "cli-planner",
+    "--answerer-base-url",
+    "https://cli-reader.invalid/v1",
+    "--answerer-model",
+    "cli-reader",
+    "--format",
+    "json",
+  ],
+  {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GMOS_CLI_READER_FETCH_LOG: cliExternalReaderFetchLogFile,
+    },
+  },
+);
+assert.equal(cliExternalPlannerWithAnswerer.status, 0, cliExternalPlannerWithAnswerer.stderr);
+const cliExternalPlannerWithAnswererJson = JSON.parse(cliExternalPlannerWithAnswerer.stdout) as {
+  pass?: boolean;
+  officialScore?: number | null;
+  runManifest?: {
+    scoreSemantics?: {
+      officialProtocol?: string;
+      answererProvenance?: { kind?: string; name?: string | null };
+      judgeProvenance?: { kind?: string; name?: string | null };
+    };
+    runtimeIntelligence?: {
+      baseUrlHost?: string | null;
+      model?: string | null;
+      queryPlanner?: { enabled?: boolean; baseUrlHost?: string | null; model?: string | null };
+    };
+  };
+};
+assert.equal(cliExternalPlannerWithAnswererJson.pass, true);
+assert.equal(cliExternalPlannerWithAnswererJson.officialScore, 1);
+assert.equal(cliExternalPlannerWithAnswererJson.runManifest?.scoreSemantics?.officialProtocol, "host_reader_and_judge");
+assert.deepEqual(cliExternalPlannerWithAnswererJson.runManifest?.scoreSemantics?.answererProvenance, {
+  kind: "host_provided",
+  name: "openai-compatible-answerer:cli-reader",
+});
+assert.deepEqual(cliExternalPlannerWithAnswererJson.runManifest?.scoreSemantics?.judgeProvenance, {
+  kind: "host_provided",
+  name: "openai-compatible-judge:cli-reader",
+});
+assert.equal(cliExternalPlannerWithAnswererJson.runManifest?.runtimeIntelligence?.baseUrlHost, null);
+assert.equal(cliExternalPlannerWithAnswererJson.runManifest?.runtimeIntelligence?.model, null);
+assert.equal(cliExternalPlannerWithAnswererJson.runManifest?.runtimeIntelligence?.queryPlanner?.enabled, false);
+assert.equal(
+  cliExternalPlannerWithAnswererJson.runManifest?.runtimeIntelligence?.queryPlanner?.baseUrlHost,
+  "cli-planner.invalid",
+);
+assert.equal(cliExternalPlannerWithAnswererJson.runManifest?.runtimeIntelligence?.queryPlanner?.model, "cli-planner");
 const cliExternalReaderDebugFixtureFile = path.join(tmp, "cli-external-reader-debug.jsonl");
 writeFileSync(
   cliExternalReaderDebugFixtureFile,
@@ -26782,6 +26963,97 @@ const cliExternalIntelligenceMissingBaseUrl = spawnSync(
 );
 assert.notEqual(cliExternalIntelligenceMissingBaseUrl.status, 0);
 assert.match(cliExternalIntelligenceMissingBaseUrl.stderr, /require --intelligence-base-url/);
+const cliExternalPlannerOnly = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--planner-base-url",
+    "https://cli-planner.invalid/v1",
+    "--planner-model",
+    "cli-planner",
+    "--max-cases",
+    "1",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliExternalPlannerOnly.status, 0, cliExternalPlannerOnly.stderr);
+const cliExternalPlannerOnlyJson = JSON.parse(cliExternalPlannerOnly.stdout) as {
+  pass?: boolean;
+  runManifest?: {
+    runtimeIntelligence?: {
+      enabled?: boolean;
+      baseUrlHost?: string | null;
+      model?: string | null;
+      embedModel?: string | null;
+      queryPlanner?: {
+        enabled?: boolean;
+        baseUrlHost?: string | null;
+        model?: string | null;
+      };
+    };
+  };
+};
+assert.equal(cliExternalPlannerOnlyJson.pass, true);
+assert.equal(cliExternalPlannerOnlyJson.runManifest?.runtimeIntelligence?.enabled, true);
+assert.equal(cliExternalPlannerOnlyJson.runManifest?.runtimeIntelligence?.baseUrlHost, null);
+assert.equal(cliExternalPlannerOnlyJson.runManifest?.runtimeIntelligence?.model, null);
+assert.equal(cliExternalPlannerOnlyJson.runManifest?.runtimeIntelligence?.embedModel, null);
+assert.equal(cliExternalPlannerOnlyJson.runManifest?.runtimeIntelligence?.queryPlanner?.enabled, false);
+assert.equal(cliExternalPlannerOnlyJson.runManifest?.runtimeIntelligence?.queryPlanner?.baseUrlHost, "cli-planner.invalid");
+assert.equal(cliExternalPlannerOnlyJson.runManifest?.runtimeIntelligence?.queryPlanner?.model, "cli-planner");
+const cliExternalPlannerOnlyMissingModel = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--planner-base-url",
+    "https://cli-planner.invalid/v1",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalPlannerOnlyMissingModel.status, 0);
+assert.match(
+  cliExternalPlannerOnlyMissingModel.stderr,
+  /planner-only intelligence requires both --planner-base-url and --planner-model/,
+);
+const cliExternalPlannerOnlyOfficialProtocol = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--protocol",
+    "official-protocol",
+    "--planner-base-url",
+    "https://cli-planner.invalid/v1",
+    "--planner-model",
+    "cli-planner",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalPlannerOnlyOfficialProtocol.status, 0);
+assert.match(cliExternalPlannerOnlyOfficialProtocol.stderr, /requires an OpenAI-compatible judge endpoint/);
 const cliExternalIntelligenceFixtureFile = path.join(tmp, "cli-external-intelligence-longmemeval.json");
 writeFileSync(
   cliExternalIntelligenceFixtureFile,

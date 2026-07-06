@@ -490,6 +490,13 @@ Primary methods:
   `createOpenAICompatibleQueryPlanner({ maxAnchors })` returns
   `{ requiredAnchors: [{ cue, hint? }] }` for host-side read planning; empty
   output means ordinary retrieval.
+- `ExternalMemoryBenchmarkIntelligenceConfig`: full OpenAI-compatible benchmark
+  intelligence uses `{ baseUrl, model, embedModel? }` and builds extractor,
+  embedding, reranker, and planner hooks. Planner-only runs may pass
+  `{ plannerBaseUrl, plannerModel, apiKeyEnv?, timeoutMs?, retries?,
+  backoffMs?, concurrency?, disableThinking?, debugDir?, fetchImpl? }` without
+  `baseUrl` or `model`; this builds only the query planner hook for
+  `queryPlanner`/`sweepCues`.
 - `prepareTurn(input)`: retrieve ordinary context and action policy for the next
   agent turn. This is a read path and must not write. When the exploration index
   has relevant candidates, gmOS may emit deterministic `kind: "curiosity"`

@@ -183,6 +183,7 @@ Usage:
   gmos gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --max-cases 5 --results-jsonl ./paid-smoke.results.jsonl
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --turn-retention on --extraction-window 12 --ingest-replay-attempts 1 --embed-query on --intelligence-base-url http://127.0.0.1:11434/v1 --intelligence-model llama3.1 --intelligence-embed-model nomic-embed-text --intelligence-embed-dimensions 768 --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-disable-thinking
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode memory --query-planner on --sweep-cues on --planner-base-url http://127.0.0.1:11434/v1 --planner-model llama3.1 --intelligence-api-key-env GMOS_BENCH_API_KEY
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --protocol official-protocol --answerer-base-url http://127.0.0.1:11434/v1 --answerer-model llama3.1 --answerer-timeout-ms 90000 --answerer-disable-thinking
   gmos gym external gains --input-file ./long-memory-cleaned.json --dataset-format longmemeval --reproduction-bundle ./release-evidence/bench-run
   gmos gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format markdown
@@ -657,9 +658,9 @@ function commaSeparatedStringOption(name: string): string[] | undefined {
 }
 
 function externalIntelligenceOption(debugDir: string | undefined): {
-  baseUrl: string;
+  baseUrl?: string | undefined;
   apiKeyEnv?: string | undefined;
-  model: string;
+  model?: string | undefined;
   embedModel?: string | undefined;
   plannerBaseUrl?: string | undefined;
   plannerModel?: string | undefined;
@@ -678,10 +679,45 @@ function externalIntelligenceOption(debugDir: string | undefined): {
   );
   if (!hasIntelligenceFlag) return undefined;
   const baseUrl = value("--intelligence-base-url");
+  const model = value("--intelligence-model");
+  const embedModel = value("--intelligence-embed-model");
+  const plannerBaseUrl = value("--planner-base-url");
+  const plannerModel = value("--planner-model");
   if (!baseUrl) {
+    if (plannerBaseUrl !== undefined || plannerModel !== undefined) {
+      if (!plannerBaseUrl || !plannerModel) {
+        throw new Error("planner-only intelligence requires both --planner-base-url and --planner-model");
+      }
+      if (
+        model !== undefined ||
+        embedModel !== undefined ||
+        value("--intelligence-embed-dimensions") !== undefined
+      ) {
+        throw new Error("gmos gym external intelligence flags require --intelligence-base-url");
+      }
+      const apiKeyEnv = value("--intelligence-api-key-env");
+      if (apiKeyEnv !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(apiKeyEnv)) {
+        throw new Error("--intelligence-api-key-env must be an environment variable name");
+      }
+      const timeoutMs = positiveIntegerOptionValue("--intelligence-timeout-ms");
+      const retries = nonNegativeIntegerOptionValue("--intelligence-retries");
+      const backoffMs = nonNegativeIntegerOptionValue("--intelligence-backoff-ms");
+      const concurrency = positiveIntegerOptionValue("--intelligence-concurrency");
+      const disableThinking = has("--intelligence-disable-thinking");
+      return {
+        plannerBaseUrl,
+        plannerModel,
+        ...(apiKeyEnv ? { apiKeyEnv } : {}),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        ...(retries !== undefined ? { retries } : {}),
+        ...(backoffMs !== undefined ? { backoffMs } : {}),
+        ...(concurrency !== undefined ? { concurrency } : {}),
+        ...(debugDir ? { debugDir } : {}),
+        ...(disableThinking ? { disableThinking: true } : {}),
+      };
+    }
     throw new Error("gmos gym external intelligence flags require --intelligence-base-url");
   }
-  const model = value("--intelligence-model");
   if (!model) {
     throw new Error("gmos gym external --intelligence-base-url requires --intelligence-model");
   }
@@ -689,9 +725,6 @@ function externalIntelligenceOption(debugDir: string | undefined): {
   if (apiKeyEnv !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(apiKeyEnv)) {
     throw new Error("--intelligence-api-key-env must be an environment variable name");
   }
-  const embedModel = value("--intelligence-embed-model");
-  const plannerBaseUrl = value("--planner-base-url");
-  const plannerModel = value("--planner-model");
   const dimensions = positiveIntegerOptionValue("--intelligence-embed-dimensions");
   const timeoutMs = positiveIntegerOptionValue("--intelligence-timeout-ms");
   const retries = nonNegativeIntegerOptionValue("--intelligence-retries");
@@ -805,7 +838,7 @@ function externalOfficialJudgeOption(
   judgeConfig: CliOpenAICompatibleHookConfig | undefined,
 ) {
   if (protocol !== "official_protocol") return undefined;
-  const config = judgeConfig ?? (intelligence
+  const config = judgeConfig ?? (intelligence?.baseUrl && intelligence.model
     ? {
         baseUrl: intelligence.baseUrl,
         model: intelligence.model,

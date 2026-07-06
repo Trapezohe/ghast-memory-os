@@ -28,6 +28,7 @@ import type {
 } from "../kernel/types.js";
 import {
   createDefaultIntelligence,
+  createOpenAICompatibleQueryPlanner,
   type DefaultIntelligence,
   type OpenAICompatibleFetch,
 } from "../intelligence/index.js";
@@ -55,9 +56,9 @@ export type ExternalMemoryBenchmarkDatasetFormat =
   | "locomo.json";
 
 export interface ExternalMemoryBenchmarkIntelligenceConfig {
-  baseUrl: string;
+  baseUrl?: string | undefined;
   apiKeyEnv?: string | undefined;
-  model: string;
+  model?: string | undefined;
   embedModel?: string | undefined;
   plannerBaseUrl?: string | undefined;
   plannerModel?: string | undefined;
@@ -2859,7 +2860,17 @@ function apiKeyEnvName(value: string | undefined): string | undefined {
 function isIntelligenceConfig(
   value: ExternalMemoryBenchmarkIntelligence,
 ): value is ExternalMemoryBenchmarkIntelligenceConfig {
-  return "baseUrl" in value && "model" in value;
+  const hasBaseUrl = "baseUrl" in value && value.baseUrl !== undefined;
+  const hasModel = "model" in value && value.model !== undefined;
+  const hasPlannerBaseUrl = "plannerBaseUrl" in value && value.plannerBaseUrl !== undefined;
+  const hasPlannerModel = "plannerModel" in value && value.plannerModel !== undefined;
+  if (hasBaseUrl && !hasModel) {
+    throw new Error("External benchmark intelligence baseUrl requires model");
+  }
+  if (!hasBaseUrl && hasPlannerBaseUrl !== hasPlannerModel) {
+    throw new Error("planner-only intelligence requires both --planner-base-url and --planner-model");
+  }
+  return (hasBaseUrl && hasModel) || (!hasBaseUrl && hasPlannerBaseUrl && hasPlannerModel);
 }
 
 function createLimit(concurrency: number): <T>(task: () => Promise<T>) => Promise<T> {
@@ -3139,20 +3150,41 @@ function resolveRuntimeIntelligence(input: {
   if (apiKeyEnv && !apiKey) {
     throw new Error(`External benchmark intelligence API key environment variable is not set: ${apiKeyEnv}`);
   }
-  const rawHooks: DefaultIntelligence = config
-    ? createDefaultIntelligence({
-        baseUrl: config.baseUrl,
-        model: config.model,
-        ...(config.embedModel ? { embedModel: config.embedModel } : {}),
-        ...(config.dimensions !== undefined ? { dimensions: config.dimensions } : {}),
-        ...(config.plannerBaseUrl || config.plannerModel
-          ? {
-              queryPlanner: {
-                ...(config.plannerBaseUrl ? { baseUrl: config.plannerBaseUrl } : {}),
-                ...(config.plannerModel ? { model: config.plannerModel } : {}),
-              },
-            }
-          : {}),
+  let rawHooks: DefaultIntelligence;
+  if (config?.baseUrl) {
+    const model = config.model;
+    if (!model) throw new Error("External benchmark intelligence baseUrl requires model");
+    rawHooks = createDefaultIntelligence({
+      baseUrl: config.baseUrl,
+      model,
+      ...(config.embedModel ? { embedModel: config.embedModel } : {}),
+      ...(config.dimensions !== undefined ? { dimensions: config.dimensions } : {}),
+      ...(config.plannerBaseUrl || config.plannerModel
+        ? {
+            queryPlanner: {
+              ...(config.plannerBaseUrl ? { baseUrl: config.plannerBaseUrl } : {}),
+              ...(config.plannerModel ? { model: config.plannerModel } : {}),
+            },
+          }
+        : {}),
+      ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+      retries,
+      backoffMs,
+      ...(config.disableThinking ? { disableThinking: true } : {}),
+      ...(config.debugDir ? { debugDir: config.debugDir } : {}),
+      ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
+      ...(apiKey ? { apiKey } : {}),
+    });
+  } else if (config) {
+    const plannerBaseUrl = config.plannerBaseUrl;
+    const plannerModel = config.plannerModel;
+    if (!plannerBaseUrl || !plannerModel) {
+      throw new Error("planner-only intelligence requires both --planner-base-url and --planner-model");
+    }
+    rawHooks = {
+      queryPlanner: createOpenAICompatibleQueryPlanner({
+        baseUrl: plannerBaseUrl,
+        model: plannerModel,
         ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
         retries,
         backoffMs,
@@ -3160,8 +3192,11 @@ function resolveRuntimeIntelligence(input: {
         ...(config.debugDir ? { debugDir: config.debugDir } : {}),
         ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
         ...(apiKey ? { apiKey } : {}),
-      })
-    : input.intelligence as DefaultIntelligence;
+      }),
+    };
+  } else {
+    rawHooks = input.intelligence as DefaultIntelligence;
+  }
   const limit = createLimit(concurrency);
   const run = <T>(label: string, task: () => Promise<T>): Promise<T> =>
     limit(() => withTimeout(Promise.resolve().then(task), timeoutMs, label));
@@ -3184,14 +3219,16 @@ function resolveRuntimeIntelligence(input: {
       ? { retrieval: { ...(rawHooks.retrieval ?? {}), ...(wrappedReranker ? { reranker: wrappedReranker } : {}) } }
       : {}),
   };
+  const baseIntelligenceUrl = config?.baseUrl;
+  const plannerIntelligenceUrl = config?.plannerBaseUrl ?? config?.baseUrl;
   return {
     hooks,
     manifest: {
       enabled: true,
-      baseUrlHost: config ? baseUrlHost(config.baseUrl) : null,
+      baseUrlHost: baseIntelligenceUrl ? baseUrlHost(baseIntelligenceUrl) : null,
       apiKeyEnv: apiKeyEnv ?? null,
-      model: config?.model ?? null,
-      embedModel: config?.embedModel ?? null,
+      model: baseIntelligenceUrl ? config?.model ?? null : null,
+      embedModel: baseIntelligenceUrl ? config?.embedModel ?? null : null,
       ingestMode: input.ingestMode,
       turnRetention: input.turnRetention,
       maintainPhases: input.maintainPhases,
@@ -3220,7 +3257,7 @@ function resolveRuntimeIntelligence(input: {
       queryPlanner: {
         ...disabledRuntimeQueryPlanner(),
         name: hookName(hooks.queryPlanner),
-        baseUrlHost: config ? baseUrlHost(config.plannerBaseUrl ?? config.baseUrl) : null,
+        baseUrlHost: plannerIntelligenceUrl ? baseUrlHost(plannerIntelligenceUrl) : null,
         apiKeyEnv: apiKeyEnv ?? null,
         model: config?.plannerModel ?? config?.model ?? null,
         maxAnchors: 4,
@@ -3228,7 +3265,7 @@ function resolveRuntimeIntelligence(input: {
       sweepCues: {
         ...disabledRuntimeSweepCues(),
         name: hookName(hooks.queryPlanner),
-        baseUrlHost: config ? baseUrlHost(config.plannerBaseUrl ?? config.baseUrl) : null,
+        baseUrlHost: plannerIntelligenceUrl ? baseUrlHost(plannerIntelligenceUrl) : null,
         apiKeyEnv: apiKeyEnv ?? null,
         model: config?.plannerModel ?? config?.model ?? null,
       },

@@ -354,6 +354,21 @@ budget slice, so ordinary retrieval and culling remain unchanged. Manifests
 record `runtimeIntelligence.sweepCues`; case results record the cues used and
 the number of sweep lines included.
 
+Reader-baseline runs can use a planner-only endpoint without enabling
+extraction, embeddings, or reranking:
+
+```bash
+gmos gym external \
+  --input-file ./long-memory-cleaned.json \
+  --dataset-format longmemeval \
+  --ingest-mode memory \
+  --query-planner on \
+  --sweep-cues on \
+  --planner-base-url https://provider.example/v1 \
+  --planner-model planner-model \
+  --intelligence-api-key-env GMOS_BENCH_API_KEY
+```
+
 With `--progress`, message-mode setup prints content-free window progress every
 10 windows and at completion: windows done/total, outcome counts, extracted
 candidate count so far, turn-memory count, retry count, outcome character
