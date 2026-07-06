@@ -22779,6 +22779,7 @@ const requiredPlannerWith = await runExternalMemoryBenchmark({
   cases: [requiredPlannerCase],
   maxMemories: 2,
   protocol: "official_protocol",
+  queryPlanner: true,
   intelligence: {
     queryPlanner: {
       name: "required-anchor-test-planner",
@@ -22828,6 +22829,7 @@ const failingPlannerRun = await runExternalMemoryBenchmark({
     question: "What is the fallback answer?",
     expectedAny: ["Copper Harbor"],
   }],
+  queryPlanner: true,
   intelligence: {
     queryPlanner: {
       name: "failing-query-planner",

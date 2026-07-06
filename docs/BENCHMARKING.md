@@ -323,11 +323,15 @@ retrieval, or `--embed-query on` to make the opt-in explicit. Manifests record
 the effective `runtimeIntelligence.embedQuery` and
 `queryEmbeddingFailureCount`; failures fall back to lexical retrieval.
 
-When intelligence is configured, query planning defaults on. The planner is a
-host-side hook that sees the question as data and may return
+Query planning defaults OFF: a measured 30-case comparison showed
+model-derived required anchors regressing the reader score (0.30 -> 0.17)
+because anchor-matched memories displaced whole-question-relevant ones and
+per-anchor embeddings amplified transport failures. The planner is a host-side
+hook that sees the question as data and may return
 `requiredAnchors: [{ cue, hint? }]`; gmOS then asks the kernel to satisfy those
-anchors during reconstruction. Use `--query-planner off` to skip the planner, or
-`--query-planner on` to make the default explicit. `--planner-model` and
+anchors during reconstruction. Use `--query-planner on` to opt in (kernel-side
+requiredAnchors declared directly by a host remain fully supported and are the
+recommended form when the host knows the endpoints). `--planner-model` and
 `--planner-base-url` override only the planner model/endpoint and still use the
 env-only key from `--intelligence-api-key-env`. Manifests disclose
 `runtimeIntelligence.queryPlanner` and `failureCount`, and per-case results

@@ -4212,7 +4212,11 @@ export async function runExternalMemoryBenchmark(
   });
   const embedQuery = options.embedQuery ?? runtimeIntelligence.hooks?.embeddingProvider !== undefined;
   runtimeIntelligence.manifest.embedQuery = embedQuery;
-  const queryPlanner = options.queryPlanner ?? runtimeIntelligence.hooks?.queryPlanner !== undefined;
+  // Measured regression on the 30-case reader benchmark (0.30 -> 0.17):
+  // model-derived required anchors displaced whole-question-relevant memories
+  // and tripled query-embedding traffic. Planner stays opt-in until anchor
+  // satisfaction tracks answerability rather than cue proximity.
+  const queryPlanner = options.queryPlanner ?? false;
   runtimeIntelligence.manifest.queryPlanner = {
     ...runtimeIntelligence.manifest.queryPlanner,
     enabled: queryPlanner && runtimeIntelligence.hooks?.queryPlanner !== undefined,
