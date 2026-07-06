@@ -49,7 +49,7 @@ Key write methods:
 - `observe(event)`: records one host event. For `conversation.message`, the
   extractor is called once for that message when its role is extractable.
 - `observeWithReport(event)`: same write path, with a sanitized report.
-- `ingestConversation({ profileId?, messages, window?, extraction?, turnRetention? })`:
+- `ingestConversation({ profileId?, messages, window?, extraction?, turnRetention?, sessionDistillation? })`:
   records each message as its own evidence event, then calls the extractor once
   per eligible message window. `window.maxMessages` defaults to `12`; metadata
   `sessionId`, `sessionKey`, or generic `windowId` starts a new window when it
@@ -62,7 +62,11 @@ Key write methods:
   ordinary retrievable memory with `kind: "fact"` unless `kind` is supplied,
   confidence `0.35` unless `confidence` is supplied, `metadata.turnMemory =
   true`, `metadata.sourceEvidenceId`, and the same evidence id as
-  `sourceEventId`.
+  `sourceEventId`. `sessionDistillation` defaults to disabled. When `true` and
+  the runtime has a `sessionDistiller` hook, gmOS calls that hook once for the
+  full ingest session after extraction and turn retention. Returned candidates
+  are stored as ordinary evidence-linked memories with default `kind: "fact"`,
+  default confidence `0.6`, and `metadata.sessionDistillation = true`.
 
 Windowed extraction keeps evidence granularity. Accepted memories store
 `metadata.windowEvidenceIds` with every contributing evidence id and keep
@@ -76,9 +80,16 @@ aggregate `extractionFailureCount`, `extractionFailedWindowIndexes`,
 `replayedWindowCount`, `replayRecoveredCount`, `extractionMinConfidence`, and
 per-outcome character totals such as
 `extractionOkWithCandidatesCharCount` and `extractionEmptyCharCount`.
+Session distillation adds `distilledMemoryCount`, `distillationCallCount`,
+`distillationOkWithCandidatesCount`, `distillationEmptyCount`,
+`distillationParseFailureCount`, `distillationTransportFailureCount`, and
+`distillationFailureCount`.
 Turn-retention writes use the same secret-like, incognito, person-routing,
 trust-cap, and lower-trust policy gates as extracted memories. Re-running the
 same event-keyed ingest writes no new turn memories.
+Session distillation writes use the same gates and dedupe by deterministic
+session event key plus candidate content, so replaying the same session does not
+duplicate session summary memories or evidence.
 
 ### SQLite Store Encryption
 
@@ -474,6 +485,7 @@ Primary methods:
 - `@ghast/memory/intelligence`: opt-in subpath exporting
   `createOpenAICompatibleExtractor`, `createOpenAICompatibleConsolidator`,
   `createOpenAICompatibleProcedureDistiller`,
+  `createOpenAICompatibleSessionDistiller`,
   `createOpenAICompatibleDossierSynthesizer`,
   `createOpenAICompatibleEmbeddingProvider`,
   `createOpenAICompatibleReranker`, `createOpenAICompatibleQueryPlanner`, and
@@ -487,6 +499,12 @@ Primary methods:
   The OpenAI-compatible extractor keeps the single-message default cap at
   `maxCandidates=6`; windowed extraction defaults to `12` candidates unless
   `maxCandidates` or `windowMaxCandidates` overrides it.
+  `createOpenAICompatibleSessionDistiller()` returns the optional write-side
+  session hook. Its prompt is dataset-agnostic and asks the host model for
+  compact, dated, user-centric factual notes, one fact per line, excluding
+  assistant questions, suggestions, and advice. `createDefaultIntelligence()`
+  does not include this hook unless the host passes `sessionDistillation: true`
+  or a distiller option object.
   `createOpenAICompatibleQueryPlanner({ maxAnchors })` returns
   `{ requiredAnchors: [{ cue, hint? }] }` for host-side read planning; empty
   output means ordinary retrieval.
@@ -496,7 +514,9 @@ Primary methods:
   `{ plannerBaseUrl, plannerModel, apiKeyEnv?, timeoutMs?, retries?,
   backoffMs?, concurrency?, disableThinking?, debugDir?, fetchImpl? }` without
   `baseUrl` or `model`; this builds only the query planner hook for
-  `queryPlanner`/`sweepCues`.
+  `queryPlanner`/`sweepCues`. Session distillation in message mode may reuse the
+  base intelligence endpoint; callers may override only the distiller with
+  paired `distillerBaseUrl` and `distillerModel`.
 - `prepareTurn(input)`: retrieve ordinary context and action policy for the next
   agent turn. This is a read path and must not write. When the exploration index
   has relevant candidates, gmOS may emit deterministic `kind: "curiosity"`
@@ -1193,6 +1213,15 @@ when `queryPlanner: false`, but only `sweepCues` are used; planner-derived
 `requiredAnchors` remain ignored unless `queryPlanner` is also enabled. Per-case
 results record `sweepCues` and `sweepIncludedCount`; manifests record
 `runtimeIntelligence.sweepCues` provenance and failure count.
+
+External benchmark runners can enable write-side session distillation with
+`sessionDistillation: true` or CLI `--session-distill on`. It is valid only with
+message ingest and requires either hooks with `sessionDistiller` or an
+intelligence config that can build one. Per-case results record
+`distilledMemoryCount`; manifests record
+`runtimeIntelligence.sessionDistillation` with hook provenance, model/host when
+available, call counts, candidate outcome counts, and total
+`distilledMemoryCount`.
 
 For OpenAI-compatible hosts, `@ghast/memory/gym` also exports
 `createOpenAICompatibleExternalBenchmarkAnswerer()` and

@@ -20,6 +20,9 @@ import {
   extractMemoryCandidatePlan,
 } from "../kernel/extraction.js";
 import {
+  openAICompatibleOutcomeForError,
+} from "../kernel/openai-compatible-response.js";
+import {
   normalizeConsolidationCandidate,
   resolveMemoryConsolidationConfig,
   selectSemanticConsolidationClusters,
@@ -111,6 +114,8 @@ import type {
   MemoryRetrievalConfig,
   MemoryOS,
   MemoryOSOptions,
+  MemorySessionDistillationCandidate,
+  MemorySessionDistillationResult,
   ObserveResult,
   PrepareTurnInput,
   PreparedTurn,
@@ -443,6 +448,13 @@ function asProcedureDistillationCandidateArray(
   return Array.isArray(result) ? result : [result];
 }
 
+function asSessionDistillationCandidateArray(
+  result: MemorySessionDistillationResult,
+): MemorySessionDistillationCandidate[] | null {
+  if (result === null || result === undefined) return null;
+  return Array.isArray(result) ? result : [result];
+}
+
 function asDossierCandidateArray(
   result: MemoryDossierResult,
 ): MemoryDossierCandidate[] | null {
@@ -747,6 +759,43 @@ function eventKey(event: HostEvent): string {
     ].join(":");
   }
   return [event.type, event.profileId ?? "default", event.createdAt ?? nowIso(), randomUUID()].join(":");
+}
+
+function stableSessionDistillationHash(
+  events: readonly Extract<HostEvent, { type: "conversation.message" }>[],
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify(
+        events.map((event) => ({
+          role: event.role,
+          content: event.content,
+          conversationId: event.conversationId ?? null,
+          messageId: event.messageId ?? null,
+          createdAt: event.createdAt ?? null,
+          sessionId: event.metadata?.sessionId ?? event.metadata?.sessionKey ?? null,
+        })),
+      ),
+      "utf8",
+    )
+    .digest("hex")
+    .slice(0, 24);
+}
+
+function sessionDistillationEventKey(input: {
+  profileId: string;
+  events: readonly Extract<HostEvent, { type: "conversation.message" }>[];
+}): string {
+  const first = input.events[0];
+  const sessionKey = first
+    ? windowSessionKey(first) ?? first.conversationId ?? "conversation"
+    : "conversation";
+  return [
+    "conversation.session_distillation",
+    input.profileId,
+    sessionKey,
+    stableSessionDistillationHash(input.events),
+  ].join(":");
 }
 
 function candidateDedupeKey(candidate: MemoryExtractionCandidate): string {
@@ -1573,6 +1622,12 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     };
   }
 
+  function resolvedSessionDistillation(
+    sessionDistillation: IngestConversationInput["sessionDistillation"] | undefined,
+  ): boolean {
+    return sessionDistillation === true && options.sessionDistiller !== undefined;
+  }
+
   function turnMemoryContent(
     event: ConversationEvent,
     eventMetadata: Record<string, unknown>,
@@ -2004,6 +2059,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const observedAt = nowIso();
     const extractFromRoles = resolvedExtractFromRoles(input.extraction);
     const turnRetention = resolvedTurnRetention(input.turnRetention);
+    const sessionDistillation = resolvedSessionDistillation(input.sessionDistillation);
     const maxMessages = boundedPositiveInteger(input.window?.maxMessages, 12, 1, 1000);
     const maxChars = boundedPositiveInteger(input.window?.maxChars, 7000, 256, 200000);
     const windowConcurrency = boundedPositiveInteger(input.window?.concurrency, 1, 1, 32);
@@ -2033,6 +2089,12 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     let extractionTransportFailureCharCount = 0;
     let extractedMemoryCountForProgress = 0;
     let turnMemoryCount = 0;
+    let distilledMemoryCount = 0;
+    let distillationCallCount = 0;
+    let distillationOkWithCandidatesCount = 0;
+    let distillationEmptyCount = 0;
+    let distillationParseFailureCount = 0;
+    let distillationTransportFailureCount = 0;
     let replayedWindowCount = 0;
     let replayRecoveredCount = 0;
     const extractionFailedWindowIndexes = new Set<number>();
@@ -2055,10 +2117,184 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       safeReport: MemoryExtractionReport;
     }
 
+    function sessionEventTime(members: WindowMember[]): string {
+      let latestMs = Number.NEGATIVE_INFINITY;
+      let latestIso: string | null = null;
+      for (const member of members) {
+        const value = member.event.createdAt ?? member.evidence.createdAt;
+        const parsed = Date.parse(value);
+        if (Number.isFinite(parsed) && parsed >= latestMs) {
+          latestMs = parsed;
+          latestIso = value;
+        }
+      }
+      return latestIso ?? members[members.length - 1]?.evidence.createdAt ?? observedAt;
+    }
+
+    function commonSessionString(
+      members: WindowMember[],
+      value: (member: WindowMember) => string | undefined,
+    ): string | undefined {
+      const values = [...new Set(members.flatMap((member) => {
+        const item = value(member);
+        return item && item.trim().length > 0 ? [item.trim()] : [];
+      }))];
+      return values.length === 1 ? values[0] : undefined;
+    }
+
+    function sessionDistillationEvidenceContent(members: WindowMember[]): string {
+      return members
+        .map((member) => {
+          const createdAt = member.event.createdAt ?? member.evidence.createdAt;
+          return `[${createdAt}] ${turnMemoryContent(member.event, member.eventMetadata)}`;
+        })
+        .join("\n");
+    }
+
+    function normalizeSessionDistillationCandidate(
+      candidate: MemorySessionDistillationCandidate,
+    ): MemoryExtractionCandidate | null {
+      const content = typeof candidate.content === "string" ? candidate.content.trim() : "";
+      if (!content) return null;
+      const kind = isLowLevelMemoryKind(candidate.kind) ? candidate.kind : "fact";
+      return {
+        kind,
+        content,
+        confidence: clamp01(candidate.confidence ?? 0.6, 0.6),
+        metadata: {},
+      };
+    }
+
+    async function applySessionDistillation(members: WindowMember[]): Promise<void> {
+      const distiller = options.sessionDistiller;
+      if (!sessionDistillation || !distiller || members.length === 0) return;
+      if (input.messages.some((message) => message.privacyMode === "incognito")) return;
+      const events = members.map((member) => member.event);
+      const distillationEventKey = sessionDistillationEventKey({ profileId, events });
+      const eventTime = sessionEventTime(members);
+      const conversationId = commonSessionString(members, (member) => member.event.conversationId);
+      const sessionId = commonSessionString(members, (member) => windowSessionKey(member.event) ?? undefined);
+      const sourceUri = commonSessionString(members, (member) =>
+        member.event.conversationId ? `conversation:${member.event.conversationId}` : undefined
+      ) ?? null;
+      const sessionEvidenceIds = members.map((member) => member.evidence.id);
+      const distillerInput = {
+        profileId,
+        eventTime,
+        context: {
+          eventKey: distillationEventKey,
+          ...(conversationId ? { conversationId } : {}),
+          ...(sessionId ? { sessionId } : {}),
+          ...(sourceUri ? { sourceUri } : {}),
+          evidenceIds: sessionEvidenceIds,
+        },
+        messages: members.map((member) => ({
+          role: member.event.role,
+          content: member.event.content,
+          ...(member.event.createdAt ? { createdAt: member.event.createdAt } : {}),
+          evidenceId: member.evidence.id,
+          ...(Object.keys(member.eventMetadata).length > 0
+            ? { metadata: member.eventMetadata }
+            : {}),
+        })),
+      };
+      distillationCallCount += 1;
+      let rawCandidates: MemorySessionDistillationCandidate[] | null;
+      try {
+        const result = typeof distiller === "function"
+          ? await distiller(distillerInput)
+          : await distiller.distill(distillerInput);
+        rawCandidates = asSessionDistillationCandidateArray(result);
+      } catch (error) {
+        const outcome = openAICompatibleOutcomeForError(error);
+        if (outcome === "parse_failure") distillationParseFailureCount += 1;
+        else distillationTransportFailureCount += 1;
+        return;
+      }
+      const candidates = (rawCandidates ?? [])
+        .map(normalizeSessionDistillationCandidate)
+        .filter((candidate): candidate is MemoryExtractionCandidate => candidate !== null);
+      if (candidates.length === 0) {
+        distillationEmptyCount += 1;
+        return;
+      }
+      distillationOkWithCandidatesCount += 1;
+      const sessionSourceTrust = members.reduce<SourceTrust>(
+        (sourceTrust, member) => lowerTrust(sourceTrust, member.sourceTrust),
+        "user",
+      );
+      const sessionSensitivity = members.reduce<Sensitivity>(
+        (sensitivity, member) => maxSensitivity(sensitivity, member.sensitivity),
+        "normal",
+      );
+      const sessionAllowLowerTrustPolicyWrites = members.some(
+        (member) => member.allowLowerTrustPolicyWrites,
+      );
+      const sessionEvidence = await store.recordEvidence({
+        profileId,
+        eventKey: distillationEventKey,
+        sourceType: "conversation.session_distillation",
+        sourceUri,
+        content: sessionDistillationEvidenceContent(members),
+        sensitivity: sessionSensitivity,
+        eligibleForLongTermMemory: true,
+        payload: {
+          purpose: "session_distillation",
+          eventTime,
+          evidenceIds: sessionEvidenceIds,
+          conversationId,
+          sessionId,
+        },
+        createdAt: eventTime,
+      });
+      const sessionResult = members[members.length - 1]!.result;
+      const sessionEvent: ConversationEvent = {
+        type: "conversation.message",
+        profileId,
+        role: "user",
+        content: sessionEvidence.content,
+        createdAt: eventTime,
+      };
+      for (const candidate of candidates) {
+        const key = `${sessionEvidence.id}:${candidateDedupeKey(candidate)}`;
+        const existing = store.findActiveMemoryByMetadata
+          ? await store.findActiveMemoryByMetadata(profileId, "sessionDistillationKey", key)
+          : null;
+        if (existing) {
+          sessionResult.memoryIds.push(existing.id);
+          continue;
+        }
+        const before = sessionResult.memoryIds.length;
+        await applyExtractionCandidates({
+          result: sessionResult,
+          profileId,
+          candidates: [candidate],
+          event: sessionEvent,
+          evidence: sessionEvidence,
+          eventMetadata: {},
+          sensitivity: sessionSensitivity,
+          sourceTrust: sessionSourceTrust,
+          allowLowerTrustPolicyWrites: sessionAllowLowerTrustPolicyWrites,
+          sourceEventId: sessionEvidence.id,
+          metadata: {
+            sessionDistillation: true,
+            sessionDistillationKey: key,
+            sessionDistillationEvidenceId: sessionEvidence.id,
+            sourceEvidenceId: sessionEvidence.id,
+            sessionEvidenceIds,
+            eventTime,
+          },
+          dedupeKeys,
+        });
+        distilledMemoryCount += Math.max(0, sessionResult.memoryIds.length - before);
+      }
+    }
+
     let pendingWindow: WindowMember[] = [];
     let pendingSessionKey: string | null = null;
     let pendingWindowChars = 0;
     const extractionTasks: ExtractionWindowTask[] = [];
+    const sessionMembers: WindowMember[] = [];
 
     function windowChars(members: WindowMember[]): number {
       return members.reduce((sum, member) => sum + member.event.content.length, 0);
@@ -2141,6 +2377,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         replayRecoveredCount,
         extractedMemoryCount: extractedMemoryCountForProgress,
         turnMemoryCount,
+        distilledMemoryCount,
         elapsedMs,
         etaMs,
       });
@@ -2296,6 +2533,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       const recorded = await recordConversationEvidence(event, result);
       results.push(recorded.result);
       if (!recorded.write) continue;
+      const member: WindowMember = { ...recorded.write, result: recorded.result };
+      sessionMembers.push(member);
       if (turnRetention && !isPersonRoutedMemory(event.content)) {
         const turnMemory = await applyTurnMemory({
           result: recorded.result,
@@ -2340,7 +2579,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         }
       }
       pendingSessionKey = sessionKey;
-      pendingWindow.push({ ...recorded.write, result: recorded.result });
+      pendingWindow.push(member);
       pendingWindowChars += eventChars;
     }
     flushWindow();
@@ -2349,6 +2588,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       await applyWindowExtraction(output);
     }
     await replayFailedWindows();
+    await applySessionDistillation(sessionMembers);
 
     return {
       profileId,
@@ -2373,6 +2613,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       replayedWindowCount,
       replayRecoveredCount,
       turnMemoryCount,
+      distilledMemoryCount,
+      distillationCallCount,
+      distillationOkWithCandidatesCount,
+      distillationEmptyCount,
+      distillationParseFailureCount,
+      distillationTransportFailureCount,
+      distillationFailureCount: distillationParseFailureCount + distillationTransportFailureCount,
       extractionMinConfidence,
       extractionReports,
     };

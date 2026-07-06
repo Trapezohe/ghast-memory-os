@@ -38,6 +38,7 @@ import {
   type MemoryExtractor,
   type MemoryAssociationRecord,
   type MemoryRecord,
+  type MemorySessionDistiller,
   type MemoryStore,
 } from "../src/index.js";
 import {
@@ -68,6 +69,7 @@ import {
   createOpenAICompatibleConsolidator,
   createOpenAICompatibleEmbeddingProvider,
   createOpenAICompatibleQueryPlanner,
+  createOpenAICompatibleSessionDistiller,
   type DefaultIntelligence,
 } from "../src/intelligence/index.js";
 import {
@@ -2485,6 +2487,315 @@ assert.equal(turnRetentionReingest.turnMemoryCount, 0);
 assert.equal(turnRetentionCountsAfterSecond.gmos_evidence_events, turnRetentionCountsAfterFirst.gmos_evidence_events);
 assert.equal(turnRetentionCountsAfterSecond.gmos_memories, turnRetentionCountsAfterFirst.gmos_memories);
 await turnRetentionMemory.close();
+
+const sessionDistillationStore = createSqliteMemoryStore({
+  path: path.join(tmp, "session-distillation.db"),
+});
+let sessionDistillerCalls = 0;
+const sessionDistillerInputs: Array<{ eventTime: string; messageCount: number }> = [];
+const sessionDistillationMemory = createMemoryOS({
+  profileId: "session-distillation",
+  store: sessionDistillationStore,
+  extractor: () => [],
+  sessionDistiller: {
+    name: "fixture-session-distiller",
+    distill(input) {
+      sessionDistillerCalls += 1;
+      sessionDistillerInputs.push({
+        eventTime: input.eventTime,
+        messageCount: input.messages.length,
+      });
+      return [
+        {
+          content: "2026-07-04: The user spent 2 hours testing quartz.",
+        },
+        {
+          content: "api key sk-sessiondistillsecret1234567890",
+          confidence: 0.99,
+        },
+      ];
+    },
+  },
+});
+const sessionDistillationMessages = [
+  {
+    conversationId: "session-distillation",
+    messageId: "session-distillation-user",
+    role: "user" as const,
+    content: "On 2026-07-04 I spent 2 hours testing quartz.",
+    createdAt: "2026-07-04T10:00:00.000Z",
+  },
+  {
+    conversationId: "session-distillation",
+    messageId: "session-distillation-assistant",
+    role: "assistant" as const,
+    content: "You could write notes about that testing.",
+    createdAt: "2026-07-04T10:01:00.000Z",
+  },
+];
+const sessionDistillationIngest = await sessionDistillationMemory.ingestConversation({
+  profileId: "session-distillation",
+  messages: sessionDistillationMessages,
+  extraction: { extractFromRoles: ["user", "assistant"] },
+  turnRetention: { enabled: true },
+  sessionDistillation: true,
+});
+assert.equal(sessionDistillerCalls, 1);
+assert.deepEqual(sessionDistillerInputs[0], {
+  eventTime: "2026-07-04T10:01:00.000Z",
+  messageCount: 2,
+});
+assert.equal(sessionDistillationIngest.distilledMemoryCount, 1);
+assert.equal(sessionDistillationIngest.distillationCallCount, 1);
+assert.equal(sessionDistillationIngest.distillationOkWithCandidatesCount, 1);
+assert.equal(sessionDistillationIngest.distillationFailureCount, 0);
+const sessionDistillationRows = await sessionDistillationMemory.list({
+  profileId: "session-distillation",
+  status: "any",
+  includeSensitive: true,
+  limit: 20,
+});
+const sessionSummaryRows = sessionDistillationRows.filter(
+  (memoryRecord) => memoryRecord.metadata.sessionDistillation === true,
+);
+assert.equal(sessionSummaryRows.length, 1);
+assert.equal(sessionSummaryRows[0]?.kind, "fact");
+assert.equal(sessionSummaryRows[0]?.confidence, 0.6);
+assert.equal(sessionSummaryRows[0]?.createdAt, "2026-07-04T10:01:00.000Z");
+assert.match(sessionSummaryRows[0]?.content ?? "", /2 hours testing quartz/u);
+assert.equal(JSON.stringify(sessionDistillationRows).includes("sk-sessiondistillsecret"), false);
+assert.equal(
+  sessionSummaryRows[0]?.sourceEventId,
+  sessionSummaryRows[0]?.metadata.sessionDistillationEvidenceId,
+);
+const sessionSummaryEvidence = await sessionDistillationMemory.listEvidence({
+  profileId: "session-distillation",
+  limit: 20,
+});
+assert.equal(
+  sessionSummaryEvidence.some(
+    (event) =>
+      event.id === sessionSummaryRows[0]?.sourceEventId &&
+      event.sourceType === "conversation.session_distillation",
+  ),
+  true,
+);
+const sessionDistillationCountsAfterFirst = await sessionDistillationStore.rowCounts();
+const sessionDistillationReingest = await sessionDistillationMemory.ingestConversation({
+  profileId: "session-distillation",
+  messages: sessionDistillationMessages,
+  extraction: { extractFromRoles: ["user", "assistant"] },
+  turnRetention: { enabled: true },
+  sessionDistillation: true,
+});
+const sessionDistillationCountsAfterSecond = await sessionDistillationStore.rowCounts();
+assert.equal(sessionDistillationReingest.distilledMemoryCount, 0);
+assert.equal(
+  sessionDistillationCountsAfterSecond.gmos_evidence_events,
+  sessionDistillationCountsAfterFirst.gmos_evidence_events,
+);
+assert.equal(
+  sessionDistillationCountsAfterSecond.gmos_memories,
+  sessionDistillationCountsAfterFirst.gmos_memories,
+);
+const sessionDistillationOffCountsBefore = await sessionDistillationStore.rowCounts();
+const sessionDistillationOff = await sessionDistillationMemory.ingestConversation({
+  profileId: "session-distillation",
+  messages: [{
+    conversationId: "session-distillation-off",
+    messageId: "session-distillation-off-user",
+    role: "user",
+    content: "SessionDistillationOffSignal should not become a summary.",
+    createdAt: "2026-07-04T11:00:00.000Z",
+  }],
+  sessionDistillation: false,
+});
+const sessionDistillationOffCountsAfter = await sessionDistillationStore.rowCounts();
+assert.equal(sessionDistillationOff.distilledMemoryCount, 0);
+assert.equal(
+  sessionDistillationOffCountsAfter.gmos_memories,
+  sessionDistillationOffCountsBefore.gmos_memories,
+);
+const sessionDistillationIncognito = await sessionDistillationMemory.ingestConversation({
+  profileId: "session-distillation",
+  messages: [{
+    conversationId: "session-distillation-incognito",
+    messageId: "session-distillation-incognito-user",
+    role: "user",
+    content: "SessionDistillationIncognitoSignal should not call distiller.",
+    privacyMode: "incognito",
+    createdAt: "2026-07-04T12:00:00.000Z",
+  }],
+  sessionDistillation: true,
+});
+assert.equal(sessionDistillationIncognito.distillationCallCount, 0);
+assert.equal(sessionDistillationIncognito.distilledMemoryCount, 0);
+await sessionDistillationMemory.close();
+
+const absentSessionDistillerStore = createSqliteMemoryStore({
+  path: path.join(tmp, "session-distillation-absent.db"),
+});
+const absentSessionDistillerMemory = createMemoryOS({
+  profileId: "session-distillation-absent",
+  store: absentSessionDistillerStore,
+  extractor: () => [],
+});
+const absentSessionDistiller = await absentSessionDistillerMemory.ingestConversation({
+  profileId: "session-distillation-absent",
+  messages: [{
+    conversationId: "session-distillation-absent",
+    messageId: "session-distillation-absent-user",
+    role: "user",
+    content: "Absent session distiller should leave no summary.",
+    createdAt: "2026-07-04T13:00:00.000Z",
+  }],
+  sessionDistillation: true,
+});
+assert.equal(absentSessionDistiller.distillationCallCount, 0);
+assert.equal(absentSessionDistiller.distilledMemoryCount, 0);
+assert.equal((await absentSessionDistillerStore.rowCounts()).gmos_memories, 0);
+await absentSessionDistillerMemory.close();
+
+const emptySessionDistillerStore = createSqliteMemoryStore({
+  path: path.join(tmp, "session-distillation-empty.db"),
+});
+const emptySessionDistillerMemory = createMemoryOS({
+  profileId: "session-distillation-empty",
+  store: emptySessionDistillerStore,
+  extractor: () => [],
+  sessionDistiller: {
+    name: "empty-session-distiller",
+    distill() {
+      return [];
+    },
+  },
+});
+const emptySessionDistiller = await emptySessionDistillerMemory.ingestConversation({
+  profileId: "session-distillation-empty",
+  messages: [{
+    conversationId: "session-distillation-empty",
+    messageId: "session-distillation-empty-user",
+    role: "user",
+    content: "Empty session distiller should count an empty result.",
+    createdAt: "2026-07-04T13:30:00.000Z",
+  }],
+  sessionDistillation: true,
+});
+assert.equal(emptySessionDistiller.distillationCallCount, 1);
+assert.equal(emptySessionDistiller.distillationEmptyCount, 1);
+assert.equal(emptySessionDistiller.distilledMemoryCount, 0);
+assert.equal((await emptySessionDistillerStore.rowCounts()).gmos_memories, 0);
+assert.equal((await emptySessionDistillerStore.rowCounts()).gmos_evidence_events, 1);
+await emptySessionDistillerMemory.close();
+
+const throwingSessionDistillerStore = createSqliteMemoryStore({
+  path: path.join(tmp, "session-distillation-throwing.db"),
+});
+const throwingSessionDistillerMemory = createMemoryOS({
+  profileId: "session-distillation-throwing",
+  store: throwingSessionDistillerStore,
+  extractor: () => [],
+  sessionDistiller: {
+    name: "throwing-session-distiller",
+    distill() {
+      throw new Error("planned session distiller failure");
+    },
+  },
+});
+const throwingSessionDistiller = await throwingSessionDistillerMemory.ingestConversation({
+  profileId: "session-distillation-throwing",
+  messages: [{
+    conversationId: "session-distillation-throwing",
+    messageId: "session-distillation-throwing-user",
+    role: "user",
+    content: "Throwing session distiller should not fail ingest.",
+    createdAt: "2026-07-04T14:00:00.000Z",
+  }],
+  sessionDistillation: true,
+});
+assert.equal(throwingSessionDistiller.distillationCallCount, 1);
+assert.equal(throwingSessionDistiller.distillationTransportFailureCount, 1);
+assert.equal(throwingSessionDistiller.distillationFailureCount, 1);
+assert.equal(throwingSessionDistiller.distilledMemoryCount, 0);
+await throwingSessionDistillerMemory.close();
+
+const aggregationWithoutDistillStore = createSqliteMemoryStore({
+  path: path.join(tmp, "session-distillation-aggregation-off.db"),
+});
+const aggregationWithoutDistillMemory = createMemoryOS({
+  profileId: "session-distillation-aggregation-off",
+  store: aggregationWithoutDistillStore,
+  extractor: () => [],
+});
+const aggregationWithDistillStore = createSqliteMemoryStore({
+  path: path.join(tmp, "session-distillation-aggregation-on.db"),
+});
+const aggregationWithDistillMemory = createMemoryOS({
+  profileId: "session-distillation-aggregation-on",
+  store: aggregationWithDistillStore,
+  extractor: () => [],
+  sessionDistiller: {
+    name: "aggregation-session-distiller",
+    distill(input) {
+      const user = input.messages.find((message) => message.role === "user")?.content ?? "";
+      const match = /2026-07-(\d{2}).*?(\d+) hours/u.exec(user);
+      if (!match) return [];
+      return [{
+        content: `2026-07-${match[1]}: The user hiked for ${match[2]} hours.`,
+      }];
+    },
+  },
+});
+for (let index = 1; index <= 6; index += 1) {
+  const day = String(index).padStart(2, "0");
+  const messages = [
+    {
+      conversationId: `aggregation-session-${index}`,
+      messageId: `aggregation-session-${index}-user`,
+      role: "user" as const,
+      content: `On 2026-07-${day} I logged ${index} hours on the ridge path.`,
+      createdAt: `2026-07-${day}T08:00:00.000Z`,
+    },
+    {
+      conversationId: `aggregation-session-${index}`,
+      messageId: `aggregation-session-${index}-assistant`,
+      role: "assistant" as const,
+      content: `General planning distractor ${index} with no activity class.`,
+      createdAt: `2026-07-${day}T08:01:00.000Z`,
+    },
+  ];
+  await aggregationWithoutDistillMemory.ingestConversation({
+    profileId: "session-distillation-aggregation-off",
+    messages,
+    turnRetention: { enabled: true },
+  });
+  await aggregationWithDistillMemory.ingestConversation({
+    profileId: "session-distillation-aggregation-on",
+    messages,
+    sessionDistillation: true,
+  });
+}
+const aggregationWithoutDistillContext = await aggregationWithoutDistillMemory.reconstructContext({
+  profileId: "session-distillation-aggregation-off",
+  query: "total hike hours",
+  maxMemories: 2,
+  contextBudgetTokens: 120,
+});
+const aggregationWithoutDistillMatches =
+  aggregationWithoutDistillContext.contextBlock.match(/ridge path/gu)?.length ?? 0;
+assert.equal(aggregationWithoutDistillMatches <= 2, true);
+const aggregationWithDistillContext = await aggregationWithDistillMemory.reconstructContext({
+  profileId: "session-distillation-aggregation-on",
+  query: "total hike hours",
+  maxMemories: 6,
+  maxBranch: 6,
+  contextBudgetTokens: 600,
+});
+for (let index = 1; index <= 6; index += 1) {
+  assert.match(aggregationWithDistillContext.contextBlock, new RegExp(`hiked for ${index} hours`, "u"));
+}
+await aggregationWithoutDistillMemory.close();
+await aggregationWithDistillMemory.close();
 
 async function runWindowConcurrencyFixture(concurrency: number) {
   const store = createSqliteMemoryStore({
@@ -6847,6 +7158,13 @@ const intelligenceFetch = async (url: string | URL | Request, init?: RequestInit
         confidence: 0.84,
       }],
     });
+  } else if (system.includes("session distillation hook")) {
+    content = JSON.stringify({
+      candidates: [{
+        content: "2026-07-04: Atlas session distillation captured 3 review hours.",
+        confidence: 0.61,
+      }],
+    });
   } else if (system.includes("retrieval reranker")) {
     content = JSON.stringify({ ids: ["candidate-b", "candidate-a", "outside-id"] });
   } else if (system.includes("query planner")) {
@@ -6884,6 +7202,33 @@ if (
 ) {
   throw new Error("default intelligence did not create all enabled hooks");
 }
+assert.equal(defaultIntelligence.sessionDistiller, undefined);
+const defaultSessionDistillationIntelligence = createDefaultIntelligence({
+  baseUrl: "https://intelligence.invalid/v1",
+  model: "fixture-chat-model",
+  fetchImpl: intelligenceFetch,
+  sessionDistillation: true,
+});
+assert.equal(defaultSessionDistillationIntelligence.sessionDistiller?.name, "openai-compatible-session-distiller:fixture-chat-model");
+const defaultSessionDistillationCandidates =
+  typeof defaultSessionDistillationIntelligence.sessionDistiller === "function"
+    ? await defaultSessionDistillationIntelligence.sessionDistiller({
+        profileId: "default_intelligence",
+        eventTime: "2026-07-04T10:00:00.000Z",
+        context: { eventKey: "default-intelligence-session", evidenceIds: [] },
+        messages: [{ role: "user", content: "I spent 3 hours reviewing Atlas.", createdAt: "2026-07-04T10:00:00.000Z" }],
+      })
+    : await defaultSessionDistillationIntelligence.sessionDistiller?.distill({
+        profileId: "default_intelligence",
+        eventTime: "2026-07-04T10:00:00.000Z",
+        context: { eventKey: "default-intelligence-session", evidenceIds: [] },
+        messages: [{ role: "user", content: "I spent 3 hours reviewing Atlas.", createdAt: "2026-07-04T10:00:00.000Z" }],
+      });
+assert.deepEqual(defaultSessionDistillationCandidates, [{
+  content: "2026-07-04: Atlas session distillation captured 3 review hours.",
+  confidence: 0.61,
+}]);
+assert.equal(typeof createOpenAICompatibleSessionDistiller, "function");
 const defaultIntelligenceEmbed = typeof defaultIntelligence.embeddingProvider === "function"
   ? defaultIntelligence.embeddingProvider
   : defaultIntelligence.embeddingProvider.embed.bind(defaultIntelligence.embeddingProvider);
@@ -25177,6 +25522,128 @@ try {
     process.env.GMOS_BENCH_TEST_KEY = previousExternalBenchKey;
   }
 }
+let externalSessionDistillerCalls = 0;
+const externalSessionDistillationRun = await runExternalMemoryBenchmark({
+  cases: [{
+    id: "external-session-distillation",
+    events: [{
+      content: "On 2026-07-05 I wrote down the distilled amber marker.",
+      createdAt: "2026-07-05T09:00:00.000Z",
+    }],
+    question: "Which marker should session distillation recall?",
+    expectedAny: ["distilled amber marker"],
+  }],
+  ingestMode: "message",
+  sessionDistillation: true,
+  intelligence: {
+    sessionDistiller: {
+      name: "external-session-distiller",
+      distill(input) {
+        externalSessionDistillerCalls += 1;
+        assert.equal(input.messages.length, 1);
+        return [{
+          content: "2026-07-05: The marker is distilled amber marker.",
+        }];
+      },
+    },
+  },
+});
+assert.equal(externalSessionDistillerCalls, 1);
+assert.equal(externalSessionDistillationRun.pass, true);
+assert.equal(externalSessionDistillationRun.cases[0]?.distilledMemoryCount, 1);
+assert.equal(externalSessionDistillationRun.runManifest.options.sessionDistillation, true);
+assert.equal(externalSessionDistillationRun.runManifest.runtimeIntelligence.hookNames.sessionDistiller, "external-session-distiller");
+assert.equal(externalSessionDistillationRun.runManifest.runtimeIntelligence.sessionDistillation.enabled, true);
+assert.equal(externalSessionDistillationRun.runManifest.runtimeIntelligence.sessionDistillation.callCount, 1);
+assert.equal(externalSessionDistillationRun.runManifest.runtimeIntelligence.sessionDistillation.distilledMemoryCount, 1);
+assert.equal(externalSessionDistillationRun.runManifest.runtimeIntelligence.sessionDistillation.okWithCandidatesCount, 1);
+assert.equal(
+  externalSessionDistillationRun.runManifest.runtimeIntelligence.ingestCaseGroups[0]?.distilledMemoryCount,
+  1,
+);
+await assert.rejects(
+  () => runExternalMemoryBenchmark({
+    cases: externalSessionDistillationRun.cases.map((result) => ({
+      id: result.id,
+      events: [{ type: "memory" as const, kind: "fact" as const, content: "distilled amber marker" }],
+      question: "Which marker should session distillation recall?",
+      expectedAny: ["distilled amber marker"],
+    })),
+    ingestMode: "memory",
+    sessionDistillation: true,
+    intelligence: {
+      sessionDistiller: {
+        distill: () => [],
+      },
+    },
+  }),
+  /sessionDistillation requires --ingest-mode message/,
+);
+await assert.rejects(
+  () => runExternalMemoryBenchmark({
+    cases: [{
+      events: [{ content: "No distiller source." }],
+      question: "What source?",
+      expectedAny: ["source"],
+    }],
+    ingestMode: "message",
+    sessionDistillation: true,
+  }),
+  /requires an intelligence config or hooks with sessionDistiller/,
+);
+const externalDistillerOverrideRequests: Array<{ url: string; model?: unknown }> = [];
+const externalDistillerOverrideRun = await runExternalMemoryBenchmark({
+  cases: [{
+    id: "external-distiller-override",
+    events: [{ content: "Override distiller answer is violet.", createdAt: "2026-07-06T09:00:00.000Z" }],
+    question: "What is the override distiller answer?",
+    expectedAny: ["violet"],
+  }],
+  ingestMode: "message",
+  sessionDistillation: true,
+  intelligence: {
+    distillerBaseUrl: "https://distiller-only.invalid/v1",
+    distillerModel: "distill-chat",
+    fetchImpl: async (url, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { model?: unknown };
+      externalDistillerOverrideRequests.push({ url: String(url), model: body.model });
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () => JSON.stringify({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                candidates: [{ content: "2026-07-06: Override distiller answer is violet." }],
+              }),
+            },
+          }],
+        }),
+      };
+    },
+  },
+});
+assert.equal(externalDistillerOverrideRun.pass, true);
+assert.equal(externalDistillerOverrideRequests[0]?.url, "https://distiller-only.invalid/v1/chat/completions");
+assert.equal(externalDistillerOverrideRequests[0]?.model, "distill-chat");
+assert.equal(externalDistillerOverrideRun.runManifest.runtimeIntelligence.sessionDistillation.baseUrlHost, "distiller-only.invalid");
+assert.equal(externalDistillerOverrideRun.runManifest.runtimeIntelligence.sessionDistillation.model, "distill-chat");
+await assert.rejects(
+  () => runExternalMemoryBenchmark({
+    cases: [{
+      events: [{ content: "bad distiller pairing" }],
+      question: "bad?",
+      expectedAny: ["bad"],
+    }],
+    ingestMode: "message",
+    sessionDistillation: true,
+    intelligence: {
+      distillerBaseUrl: "https://distiller-only.invalid/v1",
+    },
+  }),
+  /distiller-only intelligence requires both --distiller-base-url and --distiller-model/,
+);
 const externalQueryEmbeddingCalls: string[] = [];
 const externalQueryEmbeddingIntelligence: DefaultIntelligence = {
   embeddingProvider: {
@@ -27105,6 +27572,12 @@ writeFileSync(
               object: "Cedar",
             }],
           })
+        : system.includes("session distillation hook")
+          ? JSON.stringify({
+              candidates: [{
+                content: "2026-07-02: CLI session distillation anchor is Cedar.",
+              }],
+            })
         : system.includes("retrieval reranker")
           ? JSON.stringify({ ids: [] })
           : JSON.stringify({ summaries: [], procedures: [], dossiers: [] });
@@ -27137,6 +27610,8 @@ const cliExternalIntelligence = spawnSync(
     "longmemeval",
     "--ingest-mode",
     "message",
+    "--session-distill",
+    "on",
     "--intelligence-base-url",
     "https://user:pass@cli-intelligence.invalid/v1",
     "--intelligence-model",
@@ -27184,6 +27659,11 @@ const cliExternalIntelligenceJson = JSON.parse(cliExternalIntelligence.stdout) a
       apiKeyEnv?: string | null;
       ingestMode?: string;
       turnRetention?: boolean;
+      sessionDistillation?: {
+        enabled?: boolean;
+        distilledMemoryCount?: number;
+        okWithCandidatesCount?: number;
+      };
       model?: string | null;
       embedModel?: string | null;
       concurrency?: number | null;
@@ -27197,7 +27677,7 @@ const cliExternalIntelligenceJson = JSON.parse(cliExternalIntelligence.stdout) a
       extractionFailureCount?: number;
       extractionOkWithCandidatesCharCount?: number;
       extractionEmptyCharCount?: number;
-      ingestCaseGroups?: Array<{ turnMemoryCount?: number }>;
+      ingestCaseGroups?: Array<{ turnMemoryCount?: number; distilledMemoryCount?: number }>;
     };
   };
 };
@@ -27208,6 +27688,10 @@ assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.apiKe
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.ingestMode, "message");
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.turnRetention, true);
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.ingestCaseGroups?.[0]?.turnMemoryCount, 1);
+assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.sessionDistillation?.enabled, true);
+assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.sessionDistillation?.distilledMemoryCount, 1);
+assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.sessionDistillation?.okWithCandidatesCount, 1);
+assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.ingestCaseGroups?.[0]?.distilledMemoryCount, 1);
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.model, "cli-chat");
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.embedModel, "cli-embed");
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.concurrency, 1);
@@ -27226,6 +27710,7 @@ assert.match(cliExternalIntelligenceFetchLog, new RegExp(`Bearer ${cliExternalIn
 assert.match(cliExternalIntelligenceFetchLog, /"enableThinking":false/u);
 assert.match(cliExternalIntelligence.stderr, /\[gmos external\] ingest .*windows=1\/1 .*extractionParseFailures=0/u);
 assert.match(cliExternalIntelligence.stderr, /turnMemories=1/u);
+assert.match(cliExternalIntelligence.stderr, /distilledMemories=1/u);
 const cliExternalIntelligenceDebugFiles = readdirSync(cliExternalIntelligenceDebugDir);
 assert.equal(cliExternalIntelligenceDebugFiles.length > 0, true);
 const cliExternalIntelligenceDebugText = cliExternalIntelligenceDebugFiles
@@ -27783,6 +28268,56 @@ assert.notEqual(cliExternalInvalidDatasetFormat.status, 0);
 assert.match(
   cliExternalInvalidDatasetFormat.stderr,
   /--dataset-format must be gmos, longmemeval, or locomo/,
+);
+const cliExternalSessionDistillNoSource = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--ingest-mode",
+    "message",
+    "--session-distill",
+    "on",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalSessionDistillNoSource.status, 0);
+assert.match(
+  cliExternalSessionDistillNoSource.stderr,
+  /sessionDistillation requires an intelligence config or hooks with sessionDistiller/,
+);
+const cliExternalDistillerPairing = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--ingest-mode",
+    "message",
+    "--session-distill",
+    "on",
+    "--distiller-base-url",
+    "https://distiller.invalid/v1",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalDistillerPairing.status, 0);
+assert.match(
+  cliExternalDistillerPairing.stderr,
+  /distiller-only intelligence requires both --distiller-base-url and --distiller-model/,
 );
 const convergedExternalBenchmarkFile = path.join(
   tmp,

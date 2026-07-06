@@ -220,6 +220,48 @@ export type MemoryExtractor =
       ): Promise<MemoryExtractionResult> | MemoryExtractionResult;
     };
 
+export interface MemorySessionDistillationCandidate {
+  content: string;
+  kind?: MemoryKind | undefined;
+  confidence?: number | undefined;
+}
+
+export interface MemorySessionDistillationInput {
+  profileId: string;
+  eventTime: string;
+  context: {
+    eventKey: string;
+    conversationId?: string | undefined;
+    sessionId?: string | undefined;
+    sourceUri?: string | undefined;
+    evidenceIds: string[];
+  };
+  messages: Array<{
+    role: MemoryRole;
+    content: string;
+    createdAt?: string | undefined;
+    evidenceId?: string | undefined;
+    metadata?: ConversationSourceMetadata | undefined;
+  }>;
+}
+
+export type MemorySessionDistillationResult =
+  | MemorySessionDistillationCandidate
+  | MemorySessionDistillationCandidate[]
+  | null
+  | undefined;
+
+export type MemorySessionDistiller =
+  | ((
+      input: MemorySessionDistillationInput,
+    ) => Promise<MemorySessionDistillationResult> | MemorySessionDistillationResult)
+  | {
+      name?: string | undefined;
+      distill(
+        input: MemorySessionDistillationInput,
+      ): Promise<MemorySessionDistillationResult> | MemorySessionDistillationResult;
+    };
+
 export interface MemoryTemporalMetadata {
   eventDate?: string | undefined;
   eventTime?: string | undefined;
@@ -516,6 +558,7 @@ export interface IngestConversationInput {
     kind?: MemoryKind | undefined;
     confidence?: number | undefined;
   } | undefined;
+  sessionDistillation?: boolean | undefined;
   progress?: {
     everyWindows?: number | undefined;
     onWindow?: ((progress: IngestConversationProgress) => void) | undefined;
@@ -542,6 +585,7 @@ export interface IngestConversationProgress {
   replayRecoveredCount: number;
   extractedMemoryCount: number;
   turnMemoryCount: number;
+  distilledMemoryCount: number;
   elapsedMs: number;
   etaMs: number | null;
 }
@@ -569,6 +613,13 @@ export interface IngestConversationResult {
   replayedWindowCount: number;
   replayRecoveredCount: number;
   turnMemoryCount: number;
+  distilledMemoryCount: number;
+  distillationCallCount: number;
+  distillationOkWithCandidatesCount: number;
+  distillationEmptyCount: number;
+  distillationParseFailureCount: number;
+  distillationTransportFailureCount: number;
+  distillationFailureCount: number;
   extractionMinConfidence: number;
   extractionReports: MemoryExtractionReport[];
 }
@@ -2138,6 +2189,7 @@ export interface MemoryOSOptions {
   store: MemoryStore;
   disposition?: string | undefined;
   extractor?: MemoryExtractor | undefined;
+  sessionDistiller?: MemorySessionDistiller | undefined;
   consolidator?: MemoryConsolidator | undefined;
   procedureDistiller?: MemoryProcedureDistiller | undefined;
   dossierSynthesizer?: MemoryDossierSynthesizer | undefined;

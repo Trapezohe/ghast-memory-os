@@ -157,6 +157,26 @@ to roughly double in message-mode ingest. The recommended long-running pattern
 is: retain raw turns, consolidate repeated clusters into semantic summaries,
 then let `maintain()` demote the lower-confidence turn memories.
 
+Hosts that need reliable aggregation across sessions can add write-side session
+distillation:
+
+```ts
+await memory.ingestConversation({
+  profileId,
+  messages,
+  sessionDistillation: true,
+});
+```
+
+This does nothing unless `createMemoryOS()` was given a `sessionDistiller` hook.
+The hook owns the prose and returns compact dated facts; gmOS stores accepted
+candidates as ordinary memories at default confidence `0.6`, linked to the
+session evidence row and subject to the same secret-like, incognito,
+person-routing, source-trust, and lower-trust gates. Use it for totals, counts,
+durations, purchases, and other questions where retrieving every per-session
+instance matters. It costs one hook call per ingested session, so keep it off
+for cheap transcript import or when raw turns plus extractor atoms are enough.
+
 ## Turn Lifecycle
 
 For full agent memory, hosts should wire these phases instead of only calling
@@ -258,7 +278,7 @@ would use.
 Hosts that want first-run value without writing hook implementations can opt in
 to `@ghast/memory/intelligence`. The subpath ships OpenAI-compatible
 implementations for the existing host hooks: extractor, consolidator, procedure
-distiller, dossier synthesizer, embedding provider, reranker, and the
+distiller, session distiller, dossier synthesizer, embedding provider, reranker, and the
 `createDefaultIntelligence()` preset.
 
 Five-minute local Ollama setup:
@@ -273,6 +293,7 @@ const intelligence = createDefaultIntelligence({
   model: "llama3.1",
   embedModel: "nomic-embed-text",
   dimensions: 768,
+  sessionDistillation: true,
 });
 
 const store = createSqliteMemoryStore({ path: "./gmos.db" });
@@ -282,6 +303,12 @@ const memory = createMemoryOS({
   ...intelligence,
 });
 ```
+
+`sessionDistillation: true` is optional. It adds the OpenAI-compatible
+session-distiller hook to the returned bundle; `ingestConversation()` still
+requires `sessionDistillation: true` per call before the hook is used. Pass
+`sessionDistillation: { model, baseUrl }` to use a cheaper or faster model for
+the session-summary call while keeping the base extractor model unchanged.
 
 Five-minute OpenAI-compatible cloud setup:
 

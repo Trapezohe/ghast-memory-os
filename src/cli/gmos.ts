@@ -182,7 +182,8 @@ Usage:
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --reader-profile expansive --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
   gmos gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --max-cases 5 --results-jsonl ./paid-smoke.results.jsonl
-  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --turn-retention on --extraction-window 12 --ingest-replay-attempts 1 --embed-query on --intelligence-base-url http://127.0.0.1:11434/v1 --intelligence-model llama3.1 --intelligence-embed-model nomic-embed-text --intelligence-embed-dimensions 768 --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-disable-thinking
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --turn-retention on --session-distill on --extraction-window 12 --ingest-replay-attempts 1 --embed-query on --intelligence-base-url http://127.0.0.1:11434/v1 --intelligence-model llama3.1 --intelligence-embed-model nomic-embed-text --intelligence-embed-dimensions 768 --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-disable-thinking
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --session-distill on --distiller-base-url http://127.0.0.1:11434/v1 --distiller-model llama3.1 --intelligence-api-key-env GMOS_BENCH_API_KEY
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode memory --query-planner on --sweep-cues on --planner-base-url http://127.0.0.1:11434/v1 --planner-model llama3.1 --intelligence-api-key-env GMOS_BENCH_API_KEY
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --protocol official-protocol --answerer-base-url http://127.0.0.1:11434/v1 --answerer-model llama3.1 --answerer-timeout-ms 90000 --answerer-disable-thinking
   gmos gym external gains --input-file ./long-memory-cleaned.json --dataset-format longmemeval --reproduction-bundle ./release-evidence/bench-run
@@ -343,6 +344,14 @@ function turnRetentionOption(): boolean | undefined {
   if (raw === "on") return true;
   if (raw === "off") return false;
   throw new Error("--turn-retention must be on or off");
+}
+
+function sessionDistillOption(): boolean | undefined {
+  const raw = value("--session-distill");
+  if (raw === undefined) return undefined;
+  if (raw === "on") return true;
+  if (raw === "off") return false;
+  throw new Error("--session-distill must be on or off");
 }
 
 function hostPreset(): HostPreset | undefined {
@@ -664,6 +673,8 @@ function externalIntelligenceOption(debugDir: string | undefined): {
   embedModel?: string | undefined;
   plannerBaseUrl?: string | undefined;
   plannerModel?: string | undefined;
+  distillerBaseUrl?: string | undefined;
+  distillerModel?: string | undefined;
   dimensions?: number | undefined;
   timeoutMs?: number | undefined;
   retries?: number | undefined;
@@ -675,7 +686,9 @@ function externalIntelligenceOption(debugDir: string | undefined): {
   const hasIntelligenceFlag = process.argv.some((arg) =>
     (arg.startsWith("--intelligence-") && arg !== "--intelligence-debug-dir") ||
     arg === "--planner-base-url" ||
-    arg === "--planner-model"
+    arg === "--planner-model" ||
+    arg === "--distiller-base-url" ||
+    arg === "--distiller-model"
   );
   if (!hasIntelligenceFlag) return undefined;
   const baseUrl = value("--intelligence-base-url");
@@ -683,10 +696,24 @@ function externalIntelligenceOption(debugDir: string | undefined): {
   const embedModel = value("--intelligence-embed-model");
   const plannerBaseUrl = value("--planner-base-url");
   const plannerModel = value("--planner-model");
+  const distillerBaseUrl = value("--distiller-base-url");
+  const distillerModel = value("--distiller-model");
   if (!baseUrl) {
-    if (plannerBaseUrl !== undefined || plannerModel !== undefined) {
+    if (
+      plannerBaseUrl !== undefined ||
+      plannerModel !== undefined ||
+      distillerBaseUrl !== undefined ||
+      distillerModel !== undefined
+    ) {
       if (!plannerBaseUrl || !plannerModel) {
-        throw new Error("planner-only intelligence requires both --planner-base-url and --planner-model");
+        if (plannerBaseUrl !== undefined || plannerModel !== undefined) {
+          throw new Error("planner-only intelligence requires both --planner-base-url and --planner-model");
+        }
+      }
+      if (!distillerBaseUrl || !distillerModel) {
+        if (distillerBaseUrl !== undefined || distillerModel !== undefined) {
+          throw new Error("distiller-only intelligence requires both --distiller-base-url and --distiller-model");
+        }
       }
       if (
         model !== undefined ||
@@ -705,8 +732,8 @@ function externalIntelligenceOption(debugDir: string | undefined): {
       const concurrency = positiveIntegerOptionValue("--intelligence-concurrency");
       const disableThinking = has("--intelligence-disable-thinking");
       return {
-        plannerBaseUrl,
-        plannerModel,
+        ...(plannerBaseUrl && plannerModel ? { plannerBaseUrl, plannerModel } : {}),
+        ...(distillerBaseUrl && distillerModel ? { distillerBaseUrl, distillerModel } : {}),
         ...(apiKeyEnv ? { apiKeyEnv } : {}),
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),
         ...(retries !== undefined ? { retries } : {}),
@@ -737,6 +764,8 @@ function externalIntelligenceOption(debugDir: string | undefined): {
     ...(embedModel ? { embedModel } : {}),
     ...(plannerBaseUrl ? { plannerBaseUrl } : {}),
     ...(plannerModel ? { plannerModel } : {}),
+    ...(distillerBaseUrl ? { distillerBaseUrl } : {}),
+    ...(distillerModel ? { distillerModel } : {}),
     ...(apiKeyEnv ? { apiKeyEnv } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(retries !== undefined ? { retries } : {}),
@@ -2087,6 +2116,7 @@ async function main(): Promise<void> {
     const queryPlanner = queryPlannerOption();
     const sweepCues = sweepCuesOption();
     const turnRetention = turnRetentionOption();
+    const sessionDistillation = sessionDistillOption();
     if (debugDumpMemories !== undefined && debugDumpMemories > 0 && !resolvedDebugDir) {
       throw new Error("--debug-dump-memories requires --intelligence-debug-dir");
     }
@@ -2138,6 +2168,7 @@ async function main(): Promise<void> {
       ...(answerer ? { answerer } : {}),
       ingestMode,
       ...(turnRetention !== undefined ? { turnRetention } : {}),
+      ...(sessionDistillation !== undefined ? { sessionDistillation } : {}),
       ...(embedQuery !== undefined ? { embedQuery } : {}),
       ...(queryPlanner !== undefined ? { queryPlanner } : {}),
       ...(sweepCues !== undefined ? { sweepCues } : {}),
@@ -2148,14 +2179,14 @@ async function main(): Promise<void> {
             onCaseGroupSetup: (progress) => {
               if (has("--progress")) {
                 console.error(
-                  `[gmos external] setup group=${progress.groupKey} events=${progress.eventCount} memories=${progress.extractedMemoryCount} turnMemories=${progress.turnMemoryCount} windows=${progress.extractionWindowCount} extractionCalls=${progress.extractionCallCount} extractionRetries=${progress.extractionRetryCount} extractionEmpty=${progress.extractionEmptyCount} replayedWindows=${progress.replayedWindowCount} replayRecovered=${progress.replayRecoveredCount} okChars=${progress.extractionOkWithCandidatesCharCount} emptyChars=${progress.extractionEmptyCharCount} parseFailureChars=${progress.extractionParseFailureCharCount} transportFailureChars=${progress.extractionTransportFailureCharCount} extractionParseFailures=${progress.extractionParseFailureCount} extractionTransportFailures=${progress.extractionTransportFailureCount} extractionFailures=${progress.extractionFailureCount} ingestMs=${progress.ingestDurationMs}`,
+                  `[gmos external] setup group=${progress.groupKey} events=${progress.eventCount} memories=${progress.extractedMemoryCount} turnMemories=${progress.turnMemoryCount} distilledMemories=${progress.distilledMemoryCount} windows=${progress.extractionWindowCount} extractionCalls=${progress.extractionCallCount} extractionRetries=${progress.extractionRetryCount} extractionEmpty=${progress.extractionEmptyCount} replayedWindows=${progress.replayedWindowCount} replayRecovered=${progress.replayRecoveredCount} okChars=${progress.extractionOkWithCandidatesCharCount} emptyChars=${progress.extractionEmptyCharCount} parseFailureChars=${progress.extractionParseFailureCharCount} transportFailureChars=${progress.extractionTransportFailureCharCount} extractionParseFailures=${progress.extractionParseFailureCount} extractionTransportFailures=${progress.extractionTransportFailureCount} extractionFailures=${progress.extractionFailureCount} ingestMs=${progress.ingestDurationMs}`,
                 );
               }
             },
             onCaseGroupIngestProgress: (progress) => {
               if (!has("--progress")) return;
               console.error(
-                `[gmos external] ingest group=${progress.groupKey} windows=${progress.windowsDone}/${progress.windowsTotal} extractionCalls=${progress.extractionCallCount} extractionRetries=${progress.extractionRetryCount} extractionEmpty=${progress.extractionEmptyCount} replayedWindows=${progress.replayedWindowCount} replayRecovered=${progress.replayRecoveredCount} okChars=${progress.extractionOkWithCandidatesCharCount} emptyChars=${progress.extractionEmptyCharCount} parseFailureChars=${progress.extractionParseFailureCharCount} transportFailureChars=${progress.extractionTransportFailureCharCount} extractionParseFailures=${progress.extractionParseFailureCount} extractionTransportFailures=${progress.extractionTransportFailureCount} extractionFailures=${progress.extractionFailureCount} memories=${progress.extractedMemoryCount} turnMemories=${progress.turnMemoryCount} elapsedMs=${progress.elapsedMs} etaMs=${progress.etaMs ?? "unknown"}`,
+                `[gmos external] ingest group=${progress.groupKey} windows=${progress.windowsDone}/${progress.windowsTotal} extractionCalls=${progress.extractionCallCount} extractionRetries=${progress.extractionRetryCount} extractionEmpty=${progress.extractionEmptyCount} replayedWindows=${progress.replayedWindowCount} replayRecovered=${progress.replayRecoveredCount} okChars=${progress.extractionOkWithCandidatesCharCount} emptyChars=${progress.extractionEmptyCharCount} parseFailureChars=${progress.extractionParseFailureCharCount} transportFailureChars=${progress.extractionTransportFailureCharCount} extractionParseFailures=${progress.extractionParseFailureCount} extractionTransportFailures=${progress.extractionTransportFailureCount} extractionFailures=${progress.extractionFailureCount} memories=${progress.extractedMemoryCount} turnMemories=${progress.turnMemoryCount} distilledMemories=${progress.distilledMemoryCount} elapsedMs=${progress.elapsedMs} etaMs=${progress.etaMs ?? "unknown"}`,
               );
             },
             onCaseResult: (progress) => {
@@ -2378,6 +2409,7 @@ async function main(): Promise<void> {
         dryRun: has("--dry-run"),
         replayAttempts: nonNegativeIntegerOption("--ingest-replay-attempts", 1),
         turnRetention: turnRetentionOption(),
+        sessionDistillation: sessionDistillOption(),
       });
       printCustomReport(report, renderIngestMarkdown(report));
       return;
@@ -2398,6 +2430,7 @@ async function main(): Promise<void> {
                 dir: path.resolve(process.cwd(), value("--ingest-dir")!),
                 replayAttempts: nonNegativeIntegerOption("--ingest-replay-attempts", 1),
                 turnRetention: turnRetentionOption(),
+                sessionDistillation: sessionDistillOption(),
               },
             }
           : {}),

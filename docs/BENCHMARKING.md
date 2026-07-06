@@ -284,6 +284,16 @@ because extraction can miss facts that direct import would keep. Use
 to make the default explicit. SDK and host transcript ingestion default this
 option off so production hosts consciously trade storage for recall.
 
+Session distillation is a separate message-mode opt-in with
+`--session-distill on`. It requires either the intelligence config path or hooks
+that provide `sessionDistiller`; memory-mode runs reject it. The hook is called
+once per ingested session and writes compact dated `fact` memories at default
+confidence `0.6`, so aggregation questions can retrieve per-session
+enumerations instead of many scattered raw turns. The cost is one extra model
+call per session. Use it for multi-session totals, counts, purchases, durations,
+and other questions where every instance matters. Leave it off for cheap
+deterministic baselines.
+
 Message-mode extraction defaults to `["user", "assistant"]` so answer-bearing
 assistant turns in LongMemEval are extractable. LoCoMo still maps both speakers
 to user-role messages with speaker metadata.
@@ -344,6 +354,12 @@ env-only key from `--intelligence-api-key-env`. Manifests disclose
 `runtimeIntelligence.queryPlanner` and `failureCount`, and per-case results
 record derived anchors and unmet counts.
 
+Distiller overrides follow the planner override shape. `--distiller-base-url`
+and `--distiller-model` must be provided together. When base intelligence is
+configured, these flags override only the session distiller endpoint/model. If
+there is no base intelligence, the paired distiller flags build only the
+session distiller hook for `--session-distill on`.
+
 Aggregation sweeps are separately opt-in with `--sweep-cues on`. This switch
 also calls the query planner, but consumes only `sweepCues` and leaves
 planner-derived `requiredAnchors` ignored unless `--query-planner on` is set.
@@ -371,9 +387,11 @@ gmos gym external \
 
 With `--progress`, message-mode setup prints content-free window progress every
 10 windows and at completion: windows done/total, outcome counts, extracted
-candidate count so far, turn-memory count, retry count, outcome character
-totals, elapsed time, and rough ETA. Runtime manifests include
-`runtimeIntelligence.turnRetention`, per-group `turnMemoryCount`,
+candidate count so far, turn-memory count, distilled-memory count, retry count,
+outcome character totals, elapsed time, and rough ETA. Runtime manifests
+include `runtimeIntelligence.turnRetention`,
+`runtimeIntelligence.sessionDistillation`, per-group `turnMemoryCount`,
+per-group `distilledMemoryCount`,
 `extractionRetryCount`,
 `extractionEmptyCount`, `extractionParseFailureCount`,
 `extractionTransportFailureCount`, outcome character totals such as

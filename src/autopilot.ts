@@ -24,6 +24,7 @@ export interface TranscriptIngestInput {
   dryRun?: boolean | undefined;
   replayAttempts?: number | undefined;
   turnRetention?: boolean | undefined;
+  sessionDistillation?: boolean | undefined;
   now?: string | undefined;
   fileName?: string | undefined;
 }
@@ -179,6 +180,7 @@ export interface RunAutopilotInput {
     dir?: string | undefined;
     replayAttempts?: number | undefined;
     turnRetention?: boolean | undefined;
+    sessionDistillation?: boolean | undefined;
   } | undefined;
   dryRun?: boolean | undefined;
   now?: string | undefined;
@@ -453,6 +455,9 @@ export async function ingestTranscript(input: TranscriptIngestInput): Promise<Tr
     ...(input.turnRetention !== undefined
       ? { turnRetention: { enabled: input.turnRetention } }
       : {}),
+    ...(input.sessionDistillation !== undefined
+      ? { sessionDistillation: input.sessionDistillation }
+      : {}),
   });
   for (const observed of ingested.results) {
     if (observed.skippedReason === "deduplicated_event") report.deduplicated += 1;
@@ -484,6 +489,7 @@ async function ingestDirectory(input: {
   now: string;
   replayAttempts?: number | undefined;
   turnRetention?: boolean | undefined;
+  sessionDistillation?: boolean | undefined;
 }): Promise<AutopilotIngestDirectoryReport> {
   if (!input.dir) {
     return {
@@ -538,6 +544,7 @@ async function ingestDirectory(input: {
         dryRun: input.dryRun,
         replayAttempts: input.replayAttempts,
         turnRetention: input.turnRetention,
+        sessionDistillation: input.sessionDistillation,
         now: input.now,
         fileName: path.basename(name),
       });
@@ -709,6 +716,7 @@ export async function runAutopilot(input: RunAutopilotInput): Promise<AutopilotR
         now: startedAt,
         replayAttempts: input.ingest?.replayAttempts,
         turnRetention: input.ingest?.turnRetention,
+        sessionDistillation: input.ingest?.sessionDistillation,
       });
     } catch (error) {
       ingest = {

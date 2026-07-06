@@ -23,12 +23,14 @@ import type {
   ReconstructionRequiredAnchorHint,
   MemoryRetrievalConfig,
   MemoryRetrievalReranker,
+  MemorySessionDistiller,
   Sensitivity,
   TurnMessage,
 } from "../kernel/types.js";
 import {
   createDefaultIntelligence,
   createOpenAICompatibleQueryPlanner,
+  createOpenAICompatibleSessionDistiller,
   type DefaultIntelligence,
   type OpenAICompatibleFetch,
 } from "../intelligence/index.js";
@@ -62,6 +64,8 @@ export interface ExternalMemoryBenchmarkIntelligenceConfig {
   embedModel?: string | undefined;
   plannerBaseUrl?: string | undefined;
   plannerModel?: string | undefined;
+  distillerBaseUrl?: string | undefined;
+  distillerModel?: string | undefined;
   dimensions?: number | undefined;
   timeoutMs?: number | undefined;
   retries?: number | undefined;
@@ -242,6 +246,7 @@ export interface ExternalMemoryBenchmarkCaseResult {
   unreachableExpectedTerms: string[];
   caseGroupKey: string;
   extractedMemoryCount: number;
+  distilledMemoryCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
   extractionRetryCount: number;
@@ -312,6 +317,7 @@ export interface ExternalMemoryBenchmarkGroupTiming {
   taxonomyRuntimeMs: number;
   wideBudgetDiagnosticRuntimeMs: number;
   extractedMemoryCount: number;
+  distilledMemoryCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
   extractionRetryCount: number;
@@ -372,6 +378,7 @@ export interface ExternalMemoryBenchmarkFailureSample {
   retrievedMemoryCount: number;
   reconstructedPathCount: number;
   extractedMemoryCount: number;
+  distilledMemoryCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
   extractionRetryCount: number;
@@ -481,12 +488,28 @@ interface ExternalMemoryBenchmarkRuntimeSweepCuesManifest {
   failureCount: number;
 }
 
+export interface ExternalMemoryBenchmarkRuntimeSessionDistillationManifest {
+  enabled: boolean;
+  name: string | null;
+  baseUrlHost: string | null;
+  apiKeyEnv: string | null;
+  model: string | null;
+  callCount: number;
+  distilledMemoryCount: number;
+  okWithCandidatesCount: number;
+  emptyCount: number;
+  parseFailureCount: number;
+  transportFailureCount: number;
+  failureCount: number;
+}
+
 export interface ExternalMemoryBenchmarkRuntimeIngestGroupManifest {
   groupKey: string;
   caseCount: number;
   eventCount: number;
   extractedMemoryCount: number;
   turnMemoryCount: number;
+  distilledMemoryCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
   extractionRetryCount: number;
@@ -520,6 +543,7 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   queryEmbeddingFailureCount: number;
   hookNames: {
     extractor: string | null;
+    sessionDistiller: string | null;
     consolidator: string | null;
     procedureDistiller: string | null;
     dossierSynthesizer: string | null;
@@ -541,6 +565,7 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   replayedWindowCount: number;
   replayRecoveredCount: number;
   ingestCaseGroups: ExternalMemoryBenchmarkRuntimeIngestGroupManifest[];
+  sessionDistillation: ExternalMemoryBenchmarkRuntimeSessionDistillationManifest;
   answerer: ExternalMemoryBenchmarkRuntimeAnswererManifest;
   queryPlanner: ExternalMemoryBenchmarkRuntimeQueryPlannerManifest;
   sweepCues: ExternalMemoryBenchmarkRuntimeSweepCuesManifest;
@@ -552,6 +577,7 @@ export interface ExternalMemoryBenchmarkCaseGroupProgress {
   eventCount: number;
   extractedMemoryCount: number;
   turnMemoryCount: number;
+  distilledMemoryCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
   extractionRetryCount: number;
@@ -649,6 +675,7 @@ export interface ExternalMemoryBenchmarkRunManifest {
     protocol: ExternalMemoryBenchmarkProtocol;
     ingestReplayAttempts: number;
     turnRetention: boolean;
+    sessionDistillation: boolean;
     queryPlanner: boolean;
     sweepCues: boolean;
     plannerMaxAnchors: number;
@@ -707,6 +734,7 @@ export interface RunExternalMemoryBenchmarkOptions {
   answerer?: ExternalMemoryBenchmarkAnswerer | undefined;
   ingestMode?: ExternalMemoryBenchmarkIngestMode | undefined;
   turnRetention?: boolean | undefined;
+  sessionDistillation?: boolean | undefined;
   extractionWindow?: number | undefined;
   ingestReplayAttempts?: number | undefined;
   embedQuery?: boolean | undefined;
@@ -2344,6 +2372,23 @@ function disabledRuntimeSweepCues(): ExternalMemoryBenchmarkRuntimeSweepCuesMani
   };
 }
 
+function disabledRuntimeSessionDistillation(): ExternalMemoryBenchmarkRuntimeSessionDistillationManifest {
+  return {
+    enabled: false,
+    name: null,
+    baseUrlHost: null,
+    apiKeyEnv: null,
+    model: null,
+    callCount: 0,
+    distilledMemoryCount: 0,
+    okWithCandidatesCount: 0,
+    emptyCount: 0,
+    parseFailureCount: 0,
+    transportFailureCount: 0,
+    failureCount: 0,
+  };
+}
+
 function runtimeAnswererForManifest(
   answerer: ExternalMemoryBenchmarkAnswerer | undefined,
 ): ExternalMemoryBenchmarkRuntimeAnswererManifest {
@@ -2432,6 +2477,7 @@ function createRunManifest(input: {
       extractionWindow: normalizedExtractionWindow(input.options.extractionWindow),
       ingestReplayAttempts: normalizedIngestReplayAttempts(input.options.ingestReplayAttempts),
       turnRetention: input.runtimeIntelligence.manifest.turnRetention,
+      sessionDistillation: input.runtimeIntelligence.manifest.sessionDistillation.enabled,
       queryPlanner: input.runtimeIntelligence.manifest.queryPlanner.enabled,
       sweepCues: input.runtimeIntelligence.manifest.sweepCues.enabled,
       plannerMaxAnchors: input.runtimeIntelligence.manifest.queryPlanner.maxAnchors ?? 4,
@@ -2462,6 +2508,16 @@ function createRunManifest(input: {
       replayedWindowCount: input.runtimeIntelligence.replayedWindowCount,
       replayRecoveredCount: input.runtimeIntelligence.replayRecoveredCount,
       queryEmbeddingFailureCount: input.runtimeIntelligence.queryEmbeddingFailureCount,
+      sessionDistillation: {
+        ...input.runtimeIntelligence.manifest.sessionDistillation,
+        callCount: input.runtimeIntelligence.distillationCallCount,
+        distilledMemoryCount: input.runtimeIntelligence.distilledMemoryCount,
+        okWithCandidatesCount: input.runtimeIntelligence.distillationOkWithCandidatesCount,
+        emptyCount: input.runtimeIntelligence.distillationEmptyCount,
+        parseFailureCount: input.runtimeIntelligence.distillationParseFailureCount,
+        transportFailureCount: input.runtimeIntelligence.distillationTransportFailureCount,
+        failureCount: input.runtimeIntelligence.distillationFailureCount,
+      },
       queryPlanner: {
         ...input.runtimeIntelligence.manifest.queryPlanner,
         failureCount: input.runtimeIntelligence.plannerFailureCount,
@@ -2589,6 +2645,10 @@ function normalizedTurnRetention(
   ingestMode: ExternalMemoryBenchmarkIngestMode,
 ): boolean {
   return value ?? ingestMode === "message";
+}
+
+function normalizedSessionDistillation(value: boolean | undefined): boolean {
+  return value ?? false;
 }
 
 function normalizedExtractionWindow(value: number | undefined): number {
@@ -2864,13 +2924,20 @@ function isIntelligenceConfig(
   const hasModel = "model" in value && value.model !== undefined;
   const hasPlannerBaseUrl = "plannerBaseUrl" in value && value.plannerBaseUrl !== undefined;
   const hasPlannerModel = "plannerModel" in value && value.plannerModel !== undefined;
+  const hasDistillerBaseUrl = "distillerBaseUrl" in value && value.distillerBaseUrl !== undefined;
+  const hasDistillerModel = "distillerModel" in value && value.distillerModel !== undefined;
   if (hasBaseUrl && !hasModel) {
     throw new Error("External benchmark intelligence baseUrl requires model");
   }
   if (!hasBaseUrl && hasPlannerBaseUrl !== hasPlannerModel) {
     throw new Error("planner-only intelligence requires both --planner-base-url and --planner-model");
   }
-  return (hasBaseUrl && hasModel) || (!hasBaseUrl && hasPlannerBaseUrl && hasPlannerModel);
+  if (!hasBaseUrl && hasDistillerBaseUrl !== hasDistillerModel) {
+    throw new Error("distiller-only intelligence requires both --distiller-base-url and --distiller-model");
+  }
+  return (hasBaseUrl && hasModel) ||
+    (!hasBaseUrl && hasPlannerBaseUrl && hasPlannerModel) ||
+    (!hasBaseUrl && hasDistillerBaseUrl && hasDistillerModel);
 }
 
 function createLimit(concurrency: number): <T>(task: () => Promise<T>) => Promise<T> {
@@ -2920,6 +2987,24 @@ function wrapExtractor(
     extract(input) {
       return run("extractor", async () =>
         typeof extractor === "function" ? extractor(input) : extractor.extract(input)
+      );
+    },
+  };
+}
+
+function wrapSessionDistiller(
+  sessionDistiller: MemorySessionDistiller | undefined,
+  run: <T>(label: string, task: () => Promise<T>) => Promise<T>,
+): MemorySessionDistiller | undefined {
+  if (!sessionDistiller) return undefined;
+  const name = hookName(sessionDistiller) ?? "anonymous";
+  return {
+    name,
+    distill(input) {
+      return run("sessionDistiller", async () =>
+        typeof sessionDistiller === "function"
+          ? sessionDistiller(input)
+          : sessionDistiller.distill(input)
       );
     },
   };
@@ -3029,6 +3114,7 @@ function wrapQueryPlanner(
 function hookNamesFor(hooks: DefaultIntelligence): ExternalMemoryBenchmarkRuntimeIntelligenceManifest["hookNames"] {
   return {
     extractor: hookName(hooks.extractor),
+    sessionDistiller: hookName(hooks.sessionDistiller),
     consolidator: hookName(hooks.consolidator),
     procedureDistiller: hookName(hooks.procedureDistiller),
     dossierSynthesizer: hookName(hooks.dossierSynthesizer),
@@ -3054,6 +3140,13 @@ interface RuntimeIntelligenceState {
   extractionTransportFailureCharCount: number;
   replayedWindowCount: number;
   replayRecoveredCount: number;
+  distillationCallCount: number;
+  distilledMemoryCount: number;
+  distillationOkWithCandidatesCount: number;
+  distillationEmptyCount: number;
+  distillationParseFailureCount: number;
+  distillationTransportFailureCount: number;
+  distillationFailureCount: number;
   queryEmbeddingFailureCount: number;
   plannerFailureCount: number;
   ingestCaseGroups: ExternalMemoryBenchmarkRuntimeIngestGroupManifest[];
@@ -3082,6 +3175,7 @@ function disabledRuntimeIntelligence(
       queryEmbeddingFailureCount: 0,
       hookNames: {
         extractor: null,
+        sessionDistiller: null,
         consolidator: null,
         procedureDistiller: null,
         dossierSynthesizer: null,
@@ -3103,6 +3197,7 @@ function disabledRuntimeIntelligence(
       replayedWindowCount: 0,
       replayRecoveredCount: 0,
       ingestCaseGroups: [],
+      sessionDistillation: disabledRuntimeSessionDistillation(),
       answerer: disabledRuntimeAnswerer(),
       queryPlanner: disabledRuntimeQueryPlanner(),
       sweepCues: disabledRuntimeSweepCues(),
@@ -3120,6 +3215,13 @@ function disabledRuntimeIntelligence(
     extractionTransportFailureCharCount: 0,
     replayedWindowCount: 0,
     replayRecoveredCount: 0,
+    distillationCallCount: 0,
+    distilledMemoryCount: 0,
+    distillationOkWithCandidatesCount: 0,
+    distillationEmptyCount: 0,
+    distillationParseFailureCount: 0,
+    distillationTransportFailureCount: 0,
+    distillationFailureCount: 0,
     queryEmbeddingFailureCount: 0,
     plannerFailureCount: 0,
     ingestCaseGroups: [],
@@ -3130,9 +3232,13 @@ function resolveRuntimeIntelligence(input: {
   intelligence?: ExternalMemoryBenchmarkIntelligence | undefined;
   ingestMode: ExternalMemoryBenchmarkIngestMode;
   turnRetention: boolean;
+  sessionDistillation: boolean;
   maintainPhases: MaintenancePhase[];
 }): RuntimeIntelligenceState {
   if (!input.intelligence) {
+    if (input.sessionDistillation) {
+      throw new Error("External benchmark sessionDistillation requires an intelligence config or hooks with sessionDistiller");
+    }
     return disabledRuntimeIntelligence(
       input.ingestMode,
       input.maintainPhases,
@@ -3167,6 +3273,17 @@ function resolveRuntimeIntelligence(input: {
             },
           }
         : {}),
+      ...(input.sessionDistillation
+        ? {
+            sessionDistillation:
+              config.distillerBaseUrl || config.distillerModel
+                ? {
+                    ...(config.distillerBaseUrl ? { baseUrl: config.distillerBaseUrl } : {}),
+                    ...(config.distillerModel ? { model: config.distillerModel } : {}),
+                  }
+                : true,
+          }
+        : {}),
       ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
       retries,
       backoffMs,
@@ -3178,21 +3295,45 @@ function resolveRuntimeIntelligence(input: {
   } else if (config) {
     const plannerBaseUrl = config.plannerBaseUrl;
     const plannerModel = config.plannerModel;
-    if (!plannerBaseUrl || !plannerModel) {
+    const distillerBaseUrl = config.distillerBaseUrl;
+    const distillerModel = config.distillerModel;
+    if ((plannerBaseUrl || plannerModel) && (!plannerBaseUrl || !plannerModel)) {
       throw new Error("planner-only intelligence requires both --planner-base-url and --planner-model");
     }
+    if ((distillerBaseUrl || distillerModel) && (!distillerBaseUrl || !distillerModel)) {
+      throw new Error("distiller-only intelligence requires both --distiller-base-url and --distiller-model");
+    }
     rawHooks = {
-      queryPlanner: createOpenAICompatibleQueryPlanner({
-        baseUrl: plannerBaseUrl,
-        model: plannerModel,
-        ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
-        retries,
-        backoffMs,
-        ...(config.disableThinking ? { disableThinking: true } : {}),
-        ...(config.debugDir ? { debugDir: config.debugDir } : {}),
-        ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
-        ...(apiKey ? { apiKey } : {}),
-      }),
+      ...(plannerBaseUrl && plannerModel
+        ? {
+            queryPlanner: createOpenAICompatibleQueryPlanner({
+              baseUrl: plannerBaseUrl,
+              model: plannerModel,
+              ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+              retries,
+              backoffMs,
+              ...(config.disableThinking ? { disableThinking: true } : {}),
+              ...(config.debugDir ? { debugDir: config.debugDir } : {}),
+              ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
+              ...(apiKey ? { apiKey } : {}),
+            }),
+          }
+        : {}),
+      ...(input.sessionDistillation && distillerBaseUrl && distillerModel
+        ? {
+            sessionDistiller: createOpenAICompatibleSessionDistiller({
+              baseUrl: distillerBaseUrl,
+              model: distillerModel,
+              ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+              retries,
+              backoffMs,
+              ...(config.disableThinking ? { disableThinking: true } : {}),
+              ...(config.debugDir ? { debugDir: config.debugDir } : {}),
+              ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
+              ...(apiKey ? { apiKey } : {}),
+            }),
+          }
+        : {}),
     };
   } else {
     rawHooks = input.intelligence as DefaultIntelligence;
@@ -3201,6 +3342,10 @@ function resolveRuntimeIntelligence(input: {
   const run = <T>(label: string, task: () => Promise<T>): Promise<T> =>
     limit(() => withTimeout(Promise.resolve().then(task), timeoutMs, label));
   const extractor = wrapExtractor(rawHooks.extractor, run);
+  const sessionDistiller = wrapSessionDistiller(rawHooks.sessionDistiller, run);
+  if (input.sessionDistillation && !sessionDistiller) {
+    throw new Error("External benchmark sessionDistillation requires a sessionDistiller hook");
+  }
   const consolidator = wrapConsolidator(rawHooks.consolidator, run);
   const procedureDistiller = wrapProcedureDistiller(rawHooks.procedureDistiller, run);
   const dossierSynthesizer = wrapDossierSynthesizer(rawHooks.dossierSynthesizer, run);
@@ -3209,6 +3354,7 @@ function resolveRuntimeIntelligence(input: {
   const queryPlanner = wrapQueryPlanner(rawHooks.queryPlanner, run);
   const hooks: DefaultIntelligence = {
     ...(extractor ? { extractor } : {}),
+    ...(sessionDistiller ? { sessionDistiller } : {}),
     ...(consolidator ? { consolidator } : {}),
     ...(procedureDistiller ? { procedureDistiller } : {}),
     ...(dossierSynthesizer ? { dossierSynthesizer } : {}),
@@ -3221,6 +3367,15 @@ function resolveRuntimeIntelligence(input: {
   };
   const baseIntelligenceUrl = config?.baseUrl;
   const plannerIntelligenceUrl = config?.plannerBaseUrl ?? config?.baseUrl;
+  const distillerIntelligenceUrl = config?.distillerBaseUrl ?? config?.baseUrl;
+  const sessionDistillationManifest: ExternalMemoryBenchmarkRuntimeSessionDistillationManifest = {
+    ...disabledRuntimeSessionDistillation(),
+    enabled: input.sessionDistillation,
+    name: hookName(hooks.sessionDistiller),
+    baseUrlHost: distillerIntelligenceUrl ? baseUrlHost(distillerIntelligenceUrl) : null,
+    apiKeyEnv: apiKeyEnv ?? null,
+    model: config?.distillerModel ?? (distillerIntelligenceUrl ? config?.model ?? null : null),
+  };
   return {
     hooks,
     manifest: {
@@ -3253,6 +3408,7 @@ function resolveRuntimeIntelligence(input: {
       replayedWindowCount: 0,
       replayRecoveredCount: 0,
       ingestCaseGroups: [],
+      sessionDistillation: sessionDistillationManifest,
       answerer: disabledRuntimeAnswerer(),
       queryPlanner: {
         ...disabledRuntimeQueryPlanner(),
@@ -3283,6 +3439,13 @@ function resolveRuntimeIntelligence(input: {
     extractionTransportFailureCharCount: 0,
     replayedWindowCount: 0,
     replayRecoveredCount: 0,
+    distillationCallCount: 0,
+    distilledMemoryCount: 0,
+    distillationOkWithCandidatesCount: 0,
+    distillationEmptyCount: 0,
+    distillationParseFailureCount: 0,
+    distillationTransportFailureCount: 0,
+    distillationFailureCount: 0,
     queryEmbeddingFailureCount: 0,
     plannerFailureCount: 0,
     ingestCaseGroups: [],
@@ -3369,6 +3532,7 @@ function failureSampleForCase(
     retrievedMemoryCount: entry.retrievedMemoryCount,
     reconstructedPathCount: entry.reconstructedPathCount,
     extractedMemoryCount: entry.extractedMemoryCount,
+    distilledMemoryCount: entry.distilledMemoryCount,
     extractionWindowCount: entry.extractionWindowCount,
     extractionCallCount: entry.extractionCallCount,
     extractionRetryCount: entry.extractionRetryCount,
@@ -3621,6 +3785,13 @@ interface AppliedBenchmarkEvents {
   replayedWindowCount: number;
   replayRecoveredCount: number;
   turnMemoryCount: number;
+  distilledMemoryCount: number;
+  distillationCallCount: number;
+  distillationOkWithCandidatesCount: number;
+  distillationEmptyCount: number;
+  distillationParseFailureCount: number;
+  distillationTransportFailureCount: number;
+  distillationFailureCount: number;
 }
 
 function isBenchmarkMessageEvent(
@@ -3706,6 +3877,7 @@ async function applyBenchmarkEvents(input: {
   events: ExternalMemoryBenchmarkEvent[];
   ingestMode: ExternalMemoryBenchmarkIngestMode;
   turnRetention: boolean;
+  sessionDistillation: boolean;
   extractionWindow: number | undefined;
   ingestReplayAttempts: number | undefined;
   windowConcurrency?: number | undefined;
@@ -3728,6 +3900,13 @@ async function applyBenchmarkEvents(input: {
     replayedWindowCount: 0,
     replayRecoveredCount: 0,
     turnMemoryCount: 0,
+    distilledMemoryCount: 0,
+    distillationCallCount: 0,
+    distillationOkWithCandidatesCount: 0,
+    distillationEmptyCount: 0,
+    distillationParseFailureCount: 0,
+    distillationTransportFailureCount: 0,
+    distillationFailureCount: 0,
   };
   const pendingMessages: ExternalMemoryBenchmarkMessageEvent[] = [];
 
@@ -3752,6 +3931,7 @@ async function applyBenchmarkEvents(input: {
         ...(input.ingestReplayAttempts !== undefined ? { replayAttempts: input.ingestReplayAttempts } : {}),
       },
       turnRetention: { enabled: input.turnRetention },
+      sessionDistillation: input.sessionDistillation,
       ...(input.onWindowProgress
         ? { progress: { onWindow: input.onWindowProgress } }
         : {}),
@@ -3772,6 +3952,13 @@ async function applyBenchmarkEvents(input: {
     output.replayedWindowCount += ingested.replayedWindowCount;
     output.replayRecoveredCount += ingested.replayRecoveredCount;
     output.turnMemoryCount += ingested.turnMemoryCount;
+    output.distilledMemoryCount += ingested.distilledMemoryCount;
+    output.distillationCallCount += ingested.distillationCallCount;
+    output.distillationOkWithCandidatesCount += ingested.distillationOkWithCandidatesCount;
+    output.distillationEmptyCount += ingested.distillationEmptyCount;
+    output.distillationParseFailureCount += ingested.distillationParseFailureCount;
+    output.distillationTransportFailureCount += ingested.distillationTransportFailureCount;
+    output.distillationFailureCount += ingested.distillationFailureCount;
   }
 
   for (const event of input.events) {
@@ -3806,6 +3993,7 @@ async function scoreCase(input: {
   caseGroupKey: string;
   caseGroupMemories: MemoryRecord[];
   extractedMemoryCount: number;
+  distilledMemoryCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
   extractionRetryCount: number;
@@ -4019,6 +4207,7 @@ async function scoreCase(input: {
     unreachableExpectedTerms,
     caseGroupKey: input.caseGroupKey,
     extractedMemoryCount: input.extractedMemoryCount,
+    distilledMemoryCount: input.distilledMemoryCount,
     extractionWindowCount: input.extractionWindowCount,
     extractionCallCount: input.extractionCallCount,
     extractionRetryCount: input.extractionRetryCount,
@@ -4100,6 +4289,7 @@ async function runCaseGroup(input: {
     profileId: "external",
     store,
     ...(hooks?.extractor ? { extractor: hooks.extractor } : {}),
+    ...(hooks?.sessionDistiller ? { sessionDistiller: hooks.sessionDistiller } : {}),
     ...(hooks?.consolidator ? { consolidator: hooks.consolidator } : {}),
     ...(hooks?.procedureDistiller ? { procedureDistiller: hooks.procedureDistiller } : {}),
     ...(hooks?.dossierSynthesizer ? { dossierSynthesizer: hooks.dossierSynthesizer } : {}),
@@ -4128,6 +4318,7 @@ async function runCaseGroup(input: {
   let replayedWindowCount = 0;
   let replayRecoveredCount = 0;
   let turnMemoryCount = 0;
+  let distilledMemoryCount = 0;
   let caseGroupMemories: MemoryRecord[] = [];
   try {
     await store.initialize();
@@ -4138,6 +4329,7 @@ async function runCaseGroup(input: {
       events: input.group.events,
       ingestMode: input.options.ingestMode ?? "memory",
       turnRetention: input.runtimeIntelligence.manifest.turnRetention,
+      sessionDistillation: input.runtimeIntelligence.manifest.sessionDistillation.enabled,
       extractionWindow: input.options.extractionWindow,
       ingestReplayAttempts: input.options.ingestReplayAttempts,
       windowConcurrency: input.runtimeIntelligence.manifest.concurrency ?? undefined,
@@ -4165,6 +4357,13 @@ async function runCaseGroup(input: {
     input.runtimeIntelligence.extractionTransportFailureCharCount += applied.extractionTransportFailureCharCount;
     input.runtimeIntelligence.replayedWindowCount += applied.replayedWindowCount;
     input.runtimeIntelligence.replayRecoveredCount += applied.replayRecoveredCount;
+    input.runtimeIntelligence.distillationCallCount += applied.distillationCallCount;
+    input.runtimeIntelligence.distilledMemoryCount += applied.distilledMemoryCount;
+    input.runtimeIntelligence.distillationOkWithCandidatesCount += applied.distillationOkWithCandidatesCount;
+    input.runtimeIntelligence.distillationEmptyCount += applied.distillationEmptyCount;
+    input.runtimeIntelligence.distillationParseFailureCount += applied.distillationParseFailureCount;
+    input.runtimeIntelligence.distillationTransportFailureCount += applied.distillationTransportFailureCount;
+    input.runtimeIntelligence.distillationFailureCount += applied.distillationFailureCount;
     extractionWindowCount = applied.extractionWindowCount;
     extractionCallCount = applied.extractionCallCount;
     extractionRetryCount = applied.extractionRetryCount;
@@ -4179,6 +4378,7 @@ async function runCaseGroup(input: {
     replayedWindowCount = applied.replayedWindowCount;
     replayRecoveredCount = applied.replayRecoveredCount;
     turnMemoryCount = applied.turnMemoryCount;
+    distilledMemoryCount = applied.distilledMemoryCount;
     input.runtimeIntelligence.extractionWindowCount += extractionWindowCount;
     input.runtimeIntelligence.extractionCallCount += extractionCallCount;
     caseGroupMemories = await memory.list({
@@ -4200,6 +4400,7 @@ async function runCaseGroup(input: {
       eventCount: input.group.events.length,
       extractedMemoryCount,
       turnMemoryCount,
+      distilledMemoryCount,
       extractionWindowCount,
       extractionCallCount,
       extractionRetryCount,
@@ -4233,6 +4434,7 @@ async function runCaseGroup(input: {
         caseGroupKey: input.group.key,
         caseGroupMemories,
         extractedMemoryCount,
+        distilledMemoryCount,
         extractionWindowCount,
         extractionCallCount,
         extractionRetryCount,
@@ -4295,6 +4497,7 @@ async function runCaseGroup(input: {
       taxonomyRuntimeMs,
       wideBudgetDiagnosticRuntimeMs,
       extractedMemoryCount,
+      distilledMemoryCount,
       extractionWindowCount,
       extractionCallCount,
       extractionRetryCount,
@@ -4364,6 +4567,10 @@ export async function runExternalMemoryBenchmark(
   const readerProfile = normalizedReaderProfile(options.readerProfile);
   const ingestMode = normalizedIngestMode(options.ingestMode);
   const turnRetention = normalizedTurnRetention(options.turnRetention, ingestMode);
+  const sessionDistillation = normalizedSessionDistillation(options.sessionDistillation);
+  if (sessionDistillation && ingestMode !== "message") {
+    throw new Error("External benchmark sessionDistillation requires --ingest-mode message");
+  }
   const extractionWindow = normalizedExtractionWindow(options.extractionWindow);
   const ingestReplayAttempts = normalizedIngestReplayAttempts(options.ingestReplayAttempts);
   const debugDumpMemories = normalizedDebugDumpMemories(options.debugDumpMemories);
@@ -4379,6 +4586,7 @@ export async function runExternalMemoryBenchmark(
     intelligence: options.intelligence,
     ingestMode,
     turnRetention,
+    sessionDistillation,
     maintainPhases,
   });
   const embedQuery = options.embedQuery ?? runtimeIntelligence.hooks?.embeddingProvider !== undefined;
@@ -4428,6 +4636,7 @@ export async function runExternalMemoryBenchmark(
     protocol,
     ingestMode,
     turnRetention,
+    sessionDistillation,
     maintainPhases,
     ...(judge ? { judge } : {}),
     ...(answerer ? { answerer } : {}),

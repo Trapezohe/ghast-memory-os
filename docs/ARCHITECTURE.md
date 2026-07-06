@@ -16,6 +16,7 @@ host event
 -> evidence event
 -> memory / world belief / task trajectory
 -> optional turn-retention memory for eligible raw conversation turns
+-> optional host session distillation memory for compact dated session facts
 -> association projection
 -> prepareTurn(), explainTurn(), or reconstructContext()
 -> context, evidence, action policy
@@ -53,13 +54,16 @@ source-of-truth rows and must not become independent memory stores. The
 `local-hash-v1` 384-dimensional vector is the deterministic fallback; host
 embedding providers are optional write/repair-path upgrades.
 
-Windowed conversation ingest is layered when `turnRetention` is enabled:
-eligible raw turns are stored as low-confidence ordinary memories with
-`metadata.turnMemory = true`, while extracted atoms remain higher-confidence
-semantic memories and world beliefs. Both point back to evidence events. The raw
-turn keeps the recoverable episodic wording; the atom carries durable semantic
-structure. This uses the existing `fact` kind and does not add schema or a new
-memory kind.
+Windowed conversation ingest is layered. With `turnRetention`, eligible raw
+turns are stored as low-confidence ordinary memories with
+`metadata.turnMemory = true` and default confidence `0.35`. Extracted atoms
+remain the structured semantic layer: higher-confidence memories and world
+beliefs supplied by the host extractor. With `sessionDistillation`, a host hook
+can add compact dated session-summary memories with default confidence `0.6`.
+All three layers point back to evidence events and use existing memory kinds.
+Raw turns preserve episodic wording, atoms carry durable structure, and session
+summaries give aggregation questions a small set of per-session enumerations.
+This does not add schema or a new memory kind.
 
 ## Read And Write Boundaries
 
