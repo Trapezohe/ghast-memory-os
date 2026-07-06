@@ -1897,7 +1897,7 @@ const CONTEXT_LINE_DATE_SEGMENT_PATTERN =
   /^(?:observed\s+)?\d{4}-\d{2}-\d{2}(?:\.\.\d{4}-\d{2}-\d{2})?$/u;
 
 const CONTEXT_DIAGNOSTIC_LINE_PATTERN =
-  /^(?:Query|Evidence coverage|Evidence convergence|Reconstruction uncertainty|Reconstructed evidence paths):.*$/gmu;
+  /^(?:Query|Evidence coverage|Evidence convergence|Anchor coverage|Reconstruction uncertainty|Reconstructed evidence paths):.*$/gmu;
 
 // Sanitization strips kind/confidence/route diagnostics and internal ids from
 // context annotations, but preserves temporal anchors (dates and validity

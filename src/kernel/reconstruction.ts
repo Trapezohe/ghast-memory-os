@@ -2379,9 +2379,11 @@ function composeReconstructedContext(input: {
   };
   let contextBlock = render();
   const budget = input.contextBudgetTokens ?? 1800;
+  // Path lines carry truncated summaries of the same targets; full memory
+  // content is what downstream readers need, so cull paths before memories.
   while (estimateTokens(contextBlock) > budget && (memories.length > 0 || paths.length > 0)) {
-    if (memories.length > 0) memories = memories.slice(0, -1);
-    else paths = paths.slice(0, -1);
+    if (paths.length > 0) paths = paths.slice(0, -1);
+    else memories = memories.slice(0, -1);
     evidence = [];
     contextBlock = render();
   }
