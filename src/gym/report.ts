@@ -327,6 +327,15 @@ export function renderExternalMemoryBenchmarkMarkdown(
       maxAnchors: null,
       failureCount: 0,
     },
+    sweepCues: {
+      enabled: false,
+      name: null,
+      baseUrlHost: null,
+      apiKeyEnv: null,
+      model: null,
+      maxCues: 3,
+      failureCount: 0,
+    },
   };
   const runtimeAnswerer = runtimeIntelligence.answerer ?? {
     enabled: false,
@@ -343,6 +352,15 @@ export function renderExternalMemoryBenchmarkMarkdown(
     apiKeyEnv: null,
     model: null,
     maxAnchors: null,
+    failureCount: 0,
+  };
+  const runtimeSweepCues = runtimeIntelligence.sweepCues ?? {
+    enabled: false,
+    name: null,
+    baseUrlHost: null,
+    apiKeyEnv: null,
+    model: null,
+    maxCues: 3,
     failureCount: 0,
   };
   const totalDatasetCases = report.runManifest.dataset.totalDatasetCases ?? report.runManifest.dataset.caseCount;
@@ -386,12 +404,13 @@ export function renderExternalMemoryBenchmarkMarkdown(
     `Dataset warnings: ${report.runManifest.dataset.warnings.length ? report.runManifest.dataset.warnings.map(markdownCell).join("; ") : "none"}`,
     `Execution: caseGroups=${report.runManifest.execution.caseGroupCount} plannedCaseGroups=${report.runManifest.execution.plannedCaseGroupCount ?? report.runManifest.execution.caseGroupCount} reusedProfileCases=${report.runManifest.execution.reusedProfileCaseCount} executedCases=${report.runManifest.execution.executedCases ?? executedCases} partial=${report.runManifest.execution.partial ?? report.partial ?? false} interrupted=${report.runManifest.execution.interrupted ?? false}`,
     `Slice: ${slice.partial ? "partial" : "full"} selected=${slice.selectedCases}/${slice.totalDatasetCases} executed=${slice.executedCases} maxCases=${slice.sliceSpec.maxCases ?? "none"} caseOffset=${slice.sliceSpec.caseOffset} caseIds=${slice.sliceSpec.caseIds.join(",") || "none"}`,
-    `Options: mode=${report.runManifest.options.mode ?? "case/default"} protocol=${report.runManifest.options.protocol} readerProfile=${report.runManifest.options.readerProfile ?? "default"} maxSteps=${report.runManifest.options.maxSteps ?? "default"} maxBranch=${report.runManifest.options.maxBranch ?? "default"} maxMemories=${report.runManifest.options.maxMemories ?? "default"} contextBudgetTokens=${report.runManifest.options.contextBudgetTokens ?? "default"} temporalMode=${report.runManifest.options.temporalMode ?? "case/default"} includeSensitive=${report.runManifest.options.includeSensitive} includeTemporalMetadata=${report.runManifest.options.includeTemporalMetadata} includeTemporalContext=${report.runManifest.options.includeTemporalContext ?? true} requireConvergence=${report.runManifest.options.requireConvergence} concurrency=${report.runManifest.options.concurrency} extractionWindow=${report.runManifest.options.extractionWindow ?? "default"} ingestReplayAttempts=${report.runManifest.options.ingestReplayAttempts ?? "default"} reuseProfiles=${report.runManifest.options.reuseProfiles} diagnosticsLevel=${report.runManifest.options.diagnosticsLevel}`,
+    `Options: mode=${report.runManifest.options.mode ?? "case/default"} protocol=${report.runManifest.options.protocol} readerProfile=${report.runManifest.options.readerProfile ?? "default"} maxSteps=${report.runManifest.options.maxSteps ?? "default"} maxBranch=${report.runManifest.options.maxBranch ?? "default"} maxMemories=${report.runManifest.options.maxMemories ?? "default"} contextBudgetTokens=${report.runManifest.options.contextBudgetTokens ?? "default"} temporalMode=${report.runManifest.options.temporalMode ?? "case/default"} includeSensitive=${report.runManifest.options.includeSensitive} includeTemporalMetadata=${report.runManifest.options.includeTemporalMetadata} includeTemporalContext=${report.runManifest.options.includeTemporalContext ?? true} requireConvergence=${report.runManifest.options.requireConvergence} concurrency=${report.runManifest.options.concurrency} extractionWindow=${report.runManifest.options.extractionWindow ?? "default"} ingestReplayAttempts=${report.runManifest.options.ingestReplayAttempts ?? "default"} queryPlanner=${report.runManifest.options.queryPlanner} sweepCues=${report.runManifest.options.sweepCues} reuseProfiles=${report.runManifest.options.reuseProfiles} diagnosticsLevel=${report.runManifest.options.diagnosticsLevel}`,
     `Failure sample limit: ${report.runManifest.options.failureSampleLimit}`,
     `Score semantics: ${scoreSemanticsLine(report.runManifest.scoreSemantics)}`,
     `Runtime intelligence: enabled=${runtimeIntelligence.enabled} ingestMode=${runtimeIntelligence.ingestMode} model=${runtimeIntelligence.model ?? "none"} embedModel=${runtimeIntelligence.embedModel ?? "none"} embedQuery=${runtimeIntelligence.embedQuery ?? false} queryEmbeddingFailures=${runtimeIntelligence.queryEmbeddingFailureCount ?? 0} host=${runtimeIntelligence.baseUrlHost ?? "none"} maintainPhases=${runtimeIntelligence.maintainPhases.join(",") || "none"} concurrency=${runtimeIntelligence.concurrency ?? "none"} timeoutMs=${runtimeIntelligence.timeoutMs ?? "none"} retries=${runtimeIntelligence.retries ?? "none"} backoffMs=${runtimeIntelligence.backoffMs ?? "none"} extractionWindows=${runtimeIntelligence.extractionWindowCount ?? 0} extractionCalls=${runtimeIntelligence.extractionCallCount ?? 0} extractionRetries=${runtimeIntelligence.extractionRetryCount ?? 0} extractionEmpty=${runtimeIntelligence.extractionEmptyCount ?? 0} replayedWindows=${runtimeIntelligence.replayedWindowCount ?? 0} replayRecovered=${runtimeIntelligence.replayRecoveredCount ?? 0} okChars=${runtimeIntelligence.extractionOkWithCandidatesCharCount ?? 0} emptyChars=${runtimeIntelligence.extractionEmptyCharCount ?? 0} parseFailureChars=${runtimeIntelligence.extractionParseFailureCharCount ?? 0} transportFailureChars=${runtimeIntelligence.extractionTransportFailureCharCount ?? 0} extractionParseFailures=${runtimeIntelligence.extractionParseFailureCount ?? 0} extractionTransportFailures=${runtimeIntelligence.extractionTransportFailureCount ?? 0} extractionFailures=${runtimeIntelligence.extractionFailureCount}`,
     `Runtime answerer: enabled=${runtimeAnswerer.enabled} name=${runtimeAnswerer.name ?? "none"} model=${runtimeAnswerer.model ?? "none"} host=${runtimeAnswerer.baseUrlHost ?? "none"} apiKeyEnv=${runtimeAnswerer.apiKeyEnv ?? "none"} timeoutMs=${runtimeAnswerer.timeoutMs ?? "none"}`,
     `Runtime query planner: enabled=${runtimeQueryPlanner.enabled} name=${runtimeQueryPlanner.name ?? "none"} model=${runtimeQueryPlanner.model ?? "none"} host=${runtimeQueryPlanner.baseUrlHost ?? "none"} apiKeyEnv=${runtimeQueryPlanner.apiKeyEnv ?? "none"} maxAnchors=${runtimeQueryPlanner.maxAnchors ?? "none"} failures=${runtimeQueryPlanner.failureCount ?? 0}`,
+    `Runtime sweep cues: enabled=${runtimeSweepCues.enabled} name=${runtimeSweepCues.name ?? "none"} model=${runtimeSweepCues.model ?? "none"} host=${runtimeSweepCues.baseUrlHost ?? "none"} apiKeyEnv=${runtimeSweepCues.apiKeyEnv ?? "none"} maxCues=${runtimeSweepCues.maxCues} failures=${runtimeSweepCues.failureCount ?? 0}`,
     `Manifest lexical ceiling: ${ceilingMetricLine(report.runManifest.ceilingMetrics)}`,
     `Manifest reachable score: ${reachableScoreLine(report.runManifest.ceilingMetrics)}`,
     `Deterministic only: ${report.runManifest.deterministicOnly ? "yes" : "no"}`,

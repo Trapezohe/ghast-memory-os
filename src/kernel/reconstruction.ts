@@ -273,6 +273,7 @@ interface ReconstructionIntent {
   }>;
   queryCues: Set<string>;
   explicitQueryCues: Set<string>;
+  sweepCues: string[];
   reason: string;
 }
 
@@ -483,6 +484,10 @@ function normalizedCueHints(values: string[] | undefined, max: number): string[]
       .map((value) => value.slice(0, 80))
       .filter(Boolean),
   ).slice(0, max);
+}
+
+function normalizedSweepCues(values: string[] | undefined, max: number): string[] {
+  return normalizedCueHints(values, max);
 }
 
 function normalizedRequiredAnchors(
@@ -1379,6 +1384,7 @@ function explicitReconstructionIntent(
     );
   }
   const explicitQueryCues = normalizedCueHints(hint.queryCues, 32);
+  const sweepCues = normalizedSweepCues(hint.sweepCues, 8);
   const requiredAnchors = options.includeRequiredAnchors === false
     ? []
     : normalizedRequiredAnchors(hint.requiredAnchors, 12);
@@ -1386,7 +1392,8 @@ function explicitReconstructionIntent(
     expectedTags.size === 0 &&
     requiredTagGroups.length === 0 &&
     explicitQueryCues.length === 0 &&
-    requiredAnchors.length === 0
+    requiredAnchors.length === 0 &&
+    sweepCues.length === 0
   ) {
     return null;
   }
@@ -1400,6 +1407,7 @@ function explicitReconstructionIntent(
     ]),
     explicitQueryCues: new Set([...explicitQueryCues, ...requiredAnchors.map((anchor) => anchor.cue)]),
     requiredAnchors,
+    sweepCues,
     reason:
       requiredAnchors.length > 0
         ? "structured:required_anchors"
@@ -1407,7 +1415,9 @@ function explicitReconstructionIntent(
         ? `structured:${requiredTagGroups.map((group) => group.name).join("+")}`
         : expectedTags.size > 0
           ? "structured:expected_tags"
-          : "structured:query_cues",
+          : explicitQueryCues.length > 0
+            ? "structured:query_cues"
+            : "structured:sweep_cues",
   };
 }
 
@@ -1432,6 +1442,7 @@ function inferReconstructionIntent(
     requiredAnchors: [],
     queryCues: queryCueSet(query, cueExtractor, inferTemporalCuesFromText),
     explicitQueryCues: new Set<string>(),
+    sweepCues: [],
     reason: "associative",
   };
 }
@@ -1803,6 +1814,124 @@ interface DirectMemoryCandidate {
   memory: MemoryRecord;
   matchedQuery?: string | undefined;
   searchRank: number;
+}
+
+interface ReconstructionSweepCandidate {
+  cue: string;
+  memory: MemoryRecord;
+  relevance: number;
+}
+
+interface ReconstructionSweepCueDraftStats {
+  cue: string;
+  matched: number;
+}
+
+interface ReconstructionSweepDraft {
+  candidates: ReconstructionSweepCandidate[];
+  cueStats: ReconstructionSweepCueDraftStats[];
+}
+
+const DEFAULT_SWEEP_PER_CUE_CAP = 40;
+const DEFAULT_SWEEP_GLOBAL_CAP = 80;
+
+function internalFusionScore(memory: MemoryRecord): number {
+  const value = Number((memory as MemoryRecord & { __gmosFusionScore?: unknown }).__gmosFusionScore);
+  return Number.isFinite(value) ? value : memory.confidence;
+}
+
+function compareSweepChronological(
+  left: ReconstructionSweepCandidate,
+  right: ReconstructionSweepCandidate,
+): number {
+  return left.memory.createdAt.localeCompare(right.memory.createdAt) ||
+    left.memory.id.localeCompare(right.memory.id);
+}
+
+function compareSweepCullPriority(
+  left: ReconstructionSweepCandidate,
+  right: ReconstructionSweepCandidate,
+): number {
+  return left.relevance - right.relevance ||
+    right.memory.createdAt.localeCompare(left.memory.createdAt) ||
+    right.memory.id.localeCompare(left.memory.id);
+}
+
+function sweepStatsFor(
+  cueStats: ReconstructionSweepCueDraftStats[],
+  candidates: ReconstructionSweepCandidate[],
+): NonNullable<ReconstructedContext["stats"]["sweeps"]> {
+  const includedByCue = new Map<string, number>();
+  for (const candidate of candidates) {
+    includedByCue.set(candidate.cue, (includedByCue.get(candidate.cue) ?? 0) + 1);
+  }
+  const cues = cueStats.map((cue) => {
+    const included = includedByCue.get(cue.cue) ?? 0;
+    return {
+      cue: cue.cue,
+      matched: cue.matched,
+      included,
+      truncated: Math.max(0, cue.matched - included),
+    };
+  });
+  return {
+    matched: cues.reduce((sum, cue) => sum + cue.matched, 0),
+    included: cues.reduce((sum, cue) => sum + cue.included, 0),
+    truncated: cues.reduce((sum, cue) => sum + cue.truncated, 0),
+    cues,
+  };
+}
+
+async function runReconstructionSweeps(input: {
+  store: MemoryStore;
+  profileId: string;
+  sweepCues: string[];
+  recallPurpose: ReconstructionRecallPurpose;
+  includeSensitive?: boolean | undefined;
+  queryEmbedding?: QueryVectorEmbedding | undefined;
+  perCueCap?: number | undefined;
+  globalCap?: number | undefined;
+}): Promise<ReconstructionSweepDraft | undefined> {
+  if (input.sweepCues.length === 0) return undefined;
+  const perCueCap = boundedInteger(
+    input.perCueCap,
+    DEFAULT_SWEEP_PER_CUE_CAP,
+    1,
+    DEFAULT_SWEEP_PER_CUE_CAP,
+  );
+  const globalCap = boundedInteger(
+    input.globalCap,
+    DEFAULT_SWEEP_GLOBAL_CAP,
+    1,
+    DEFAULT_SWEEP_GLOBAL_CAP,
+  );
+  const seen = new Set<string>();
+  const candidates: ReconstructionSweepCandidate[] = [];
+  const cueStats: ReconstructionSweepCueDraftStats[] = [];
+  for (const cue of input.sweepCues) {
+    const found = await input.store.searchMemories({
+      profileId: input.profileId,
+      query: cue,
+      purpose: input.recallPurpose,
+      includeSensitive: input.includeSensitive,
+      limit: perCueCap + 1,
+      ...(input.queryEmbedding ? { freshQueryEmbedding: true } : {}),
+    });
+    cueStats.push({ cue, matched: found.length });
+    for (const memory of found.slice(0, perCueCap)) {
+      if (seen.has(memory.id) || candidates.length >= globalCap) continue;
+      seen.add(memory.id);
+      candidates.push({
+        cue,
+        memory,
+        relevance: internalFusionScore(memory),
+      });
+    }
+  }
+  return {
+    candidates: candidates.sort(compareSweepChronological),
+    cueStats,
+  };
 }
 
 function directMemorySearchQueries(
@@ -2190,6 +2319,7 @@ function composeReconstructedContext(input: {
   displayQuery?: string | undefined;
   plannerTrace?: ReconstructedPlannerTrace | undefined;
   anchorCoverage?: ReconstructionAnchorCoverageReport | undefined;
+  sweepDraft?: ReconstructionSweepDraft | undefined;
   cueExtractor?: MemoryCueExtractor | undefined;
   inferTemporalCuesFromText?: boolean | undefined;
   privateRouteSignals?: string[] | undefined;
@@ -2197,6 +2327,7 @@ function composeReconstructedContext(input: {
 }): ReconstructedContext {
   let memories = [...input.memories];
   let paths = [...input.paths];
+  let sweepCandidates = [...(input.sweepDraft?.candidates ?? [])];
   const includeTemporalContext = input.includeTemporalContext !== false;
   const publicQuery = input.displayQuery ?? input.query;
   const privateSignalKeys = privateRouteSignalKeys(
@@ -2309,7 +2440,36 @@ function composeReconstructedContext(input: {
       associationCount: hideInternalRouteSignals ? outputAssociationCount : input.associationCount,
     };
   };
-  const render = (): string => {
+  const publicSweepStats = (): ReconstructedContext["stats"]["sweeps"] | undefined => {
+    if (!input.sweepDraft) return undefined;
+    const rawStats = sweepStatsFor(input.sweepDraft.cueStats, sweepCandidates);
+    return {
+      ...rawStats,
+      cues: rawStats.cues.map((cue) => ({
+        ...cue,
+        cue: publicRouteSignal(cue.cue, privateSignalKeys),
+      })),
+    };
+  };
+  const renderSweepSection = (candidates: ReconstructionSweepCandidate[]): string => {
+    if (candidates.length === 0) return "";
+    const lines = [
+      "Additional dated mentions:",
+      ...candidates.sort(compareSweepChronological).map((candidate) => {
+        const memory = publicMemory(
+          candidate.memory,
+          hideInternalRouteSignals,
+          privateOutputSignalKeySet,
+        );
+        const temporal = includeTemporalContext
+          ? temporalContextLabel(memory.createdAt, memory.metadata)
+          : "";
+        return temporal ? `- [${temporal}] ${memory.content}` : `- ${memory.content}`;
+      }),
+    ];
+    return lines.join("\n");
+  };
+  const render = (includeSweeps: boolean): string => {
     coverage = evidenceCoverageForPaths(
       publicQuery,
       paths,
@@ -2374,10 +2534,13 @@ function composeReconstructedContext(input: {
         ),
       );
     }
+    if (includeSweeps && sweepCandidates.length > 0) {
+      lines.push(...renderSweepSection(sweepCandidates).split("\n"));
+    }
     lines.push("</gmos-reconstructed-context>");
     return lines.join("\n");
   };
-  let contextBlock = render();
+  let contextBlock = render(false);
   const budget = input.contextBudgetTokens ?? 1800;
   // Path lines carry truncated summaries of the same targets; full memory
   // content is what downstream readers need, so cull paths before memories.
@@ -2385,13 +2548,28 @@ function composeReconstructedContext(input: {
     if (paths.length > 0) paths = paths.slice(0, -1);
     else memories = memories.slice(0, -1);
     evidence = [];
-    contextBlock = render();
+    contextBlock = render(false);
+  }
+  if (input.sweepDraft) {
+    const ordinaryMemoryIds = new Set(memories.map((memory) => memory.id));
+    sweepCandidates = sweepCandidates.filter((candidate) => !ordinaryMemoryIds.has(candidate.memory.id));
+    const sweepBudget = Math.ceil(budget * 0.35);
+    while (
+      sweepCandidates.length > 0 &&
+      estimateTokens(renderSweepSection(sweepCandidates)) > sweepBudget
+    ) {
+      const drop = [...sweepCandidates].sort(compareSweepCullPriority)[0];
+      if (!drop) break;
+      sweepCandidates = sweepCandidates.filter((candidate) => candidate.memory.id !== drop.memory.id);
+    }
+    contextBlock = render(true);
   }
 
   const output = outputState();
   const outputMemories = memories.map((memory) =>
     publicMemory(memory, hideInternalRouteSignals, privateOutputSignalKeySet),
   );
+  const sweeps = publicSweepStats();
 
   return {
     profileId: input.profileId,
@@ -2415,6 +2593,7 @@ function composeReconstructedContext(input: {
       ...(output.anchorCoverage?.requiredAnchorUnmet.length
         ? { requiredAnchorUnmet: output.anchorCoverage.requiredAnchorUnmet }
         : {}),
+      ...(sweeps ? { sweeps } : {}),
     },
   };
 }
@@ -2584,6 +2763,14 @@ async function fallbackReconstruction(input: {
     stopReason,
   };
   const fallbackAnchorCoverage = anchorCoverageReport(anchorPlan, safePaths);
+  const sweepDraft = await runReconstructionSweeps({
+    store: input.store,
+    profileId: input.profileId,
+    sweepCues: input.intent.sweepCues,
+    recallPurpose: input.recallPurpose,
+    includeSensitive: input.includeSensitive,
+    queryEmbedding: input.queryEmbedding,
+  });
   return composeReconstructedContext({
     profileId: input.profileId,
     query: input.query,
@@ -2607,6 +2794,7 @@ async function fallbackReconstruction(input: {
     includeTemporalContext: input.includeTemporalContext,
     plannerTrace,
     ...(fallbackAnchorCoverage ? { anchorCoverage: fallbackAnchorCoverage } : {}),
+    ...(sweepDraft ? { sweepDraft } : {}),
     cueExtractor: input.cueExtractor,
     inferTemporalCuesFromText: input.inferTemporalCuesFromText,
     privateRouteSignals: input.privateRouteSignals,
@@ -3084,6 +3272,14 @@ export async function reconstructMemoryContext(input: {
   }
 
   const finalAnchorCoverage = anchorCoverageReport(anchorPlan, paths);
+  const sweepDraft = await runReconstructionSweeps({
+    store: input.store,
+    profileId,
+    sweepCues: intent.sweepCues,
+    recallPurpose,
+    includeSensitive: input.request.includeSensitive,
+    queryEmbedding: input.queryEmbedding,
+  });
   return composeReconstructedContext({
     profileId,
     query,
@@ -3121,5 +3317,6 @@ export async function reconstructMemoryContext(input: {
       stopReason,
     },
     ...(finalAnchorCoverage ? { anchorCoverage: finalAnchorCoverage } : {}),
+    ...(sweepDraft ? { sweepDraft } : {}),
   });
 }

@@ -337,6 +337,16 @@ env-only key from `--intelligence-api-key-env`. Manifests disclose
 `runtimeIntelligence.queryPlanner` and `failureCount`, and per-case results
 record derived anchors and unmet counts.
 
+Aggregation sweeps are separately opt-in with `--sweep-cues on`. This switch
+also calls the query planner, but consumes only `sweepCues` and leaves
+planner-derived `requiredAnchors` ignored unless `--query-planner on` is set.
+The design is additive because the prior planner regression came from
+displacement: anchors changed which ordinary memories fit. Sweep cues run after
+ordinary reconstruction, append a separate dated section, and use a sweep-only
+budget slice, so ordinary retrieval and culling remain unchanged. Manifests
+record `runtimeIntelligence.sweepCues`; case results record the cues used and
+the number of sweep lines included.
+
 With `--progress`, message-mode setup prints content-free window progress every
 10 windows and at completion: windows done/total, outcome counts, extracted
 candidate count so far, retry count, outcome character totals, elapsed time,

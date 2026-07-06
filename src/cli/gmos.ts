@@ -328,6 +328,14 @@ function queryPlannerOption(): boolean | undefined {
   throw new Error("--query-planner must be on or off");
 }
 
+function sweepCuesOption(): boolean | undefined {
+  const raw = value("--sweep-cues");
+  if (raw === undefined) return undefined;
+  if (raw === "on") return true;
+  if (raw === "off") return false;
+  throw new Error("--sweep-cues must be on or off");
+}
+
 function hostPreset(): HostPreset | undefined {
   const host = value("--host");
   if (!host) return undefined;
@@ -2036,6 +2044,7 @@ async function main(): Promise<void> {
     const ingestReplayAttempts = nonNegativeIntegerOption("--ingest-replay-attempts", 1);
     const embedQuery = embedQueryOption();
     const queryPlanner = queryPlannerOption();
+    const sweepCues = sweepCuesOption();
     if (debugDumpMemories !== undefined && debugDumpMemories > 0 && !resolvedDebugDir) {
       throw new Error("--debug-dump-memories requires --intelligence-debug-dir");
     }
@@ -2088,6 +2097,7 @@ async function main(): Promise<void> {
       ingestMode,
       ...(embedQuery !== undefined ? { embedQuery } : {}),
       ...(queryPlanner !== undefined ? { queryPlanner } : {}),
+      ...(sweepCues !== undefined ? { sweepCues } : {}),
       ...(intelligence ? { intelligence } : {}),
       ...(maintainPhases ? { maintainPhases } : {}),
       ...(has("--progress") || resultsJsonl

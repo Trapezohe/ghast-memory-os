@@ -856,6 +856,7 @@ function sanitizedReconstructionIntent(
   if (!intent) return undefined;
   const expectedTags = sanitizedRouteSignalList(intent.expectedTags, classifyRuntimeSensitivity);
   const queryCues = sanitizedRouteSignalList(intent.queryCues, classifyRuntimeSensitivity);
+  const sweepCues = sanitizedRouteSignalList(intent.sweepCues, classifyRuntimeSensitivity);
   const requiredAnchors: NonNullable<ReconstructionIntentHint["requiredAnchors"]> = [];
   for (const anchor of intent.requiredAnchors ?? []) {
     const cue = sanitizedRouteSignalList([anchor.cue], classifyRuntimeSensitivity)?.[0];
@@ -881,6 +882,7 @@ function sanitizedReconstructionIntent(
     ...(queryCues ? { queryCues } : {}),
     ...(requiredAnchors.length > 0 ? { requiredAnchors } : {}),
     ...(requiredTagGroups.length > 0 ? { requiredTagGroups } : {}),
+    ...(sweepCues ? { sweepCues } : {}),
   };
   return Object.keys(sanitized).length > 0 ? sanitized : undefined;
 }
@@ -2492,6 +2494,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           stopReason: prepared.reconstruction.stats.stopReason,
           ...(prepared.reconstruction.stats.anchorCoverage
             ? { anchorCoverage: prepared.reconstruction.stats.anchorCoverage }
+            : {}),
+          ...(prepared.reconstruction.stats.sweeps
+            ? { sweeps: prepared.reconstruction.stats.sweeps }
             : {}),
         }
       : undefined;

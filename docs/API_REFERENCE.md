@@ -1158,6 +1158,25 @@ it once per reconstruct case and pass derived anchors through
 Reports record `derivedRequiredAnchors`, `requiredAnchorUnmetCount`, and
 `runtimeIntelligence.queryPlanner` provenance/failure count.
 
+`reconstructionIntent.sweepCues?: string[]` declares repeated event classes that
+must be exhaustively swept after ordinary reconstruction, for aggregation
+questions such as totals or counts. The ordinary memory/path sections and their
+token culling are unchanged. Sweep output is appended as `Additional dated
+mentions:` with one compact dated line per visible memory, deduped against
+ordinary memories and sorted by event time, then id. The kernel uses the same
+visibility gates as ordinary reads. Defaults are a hard cap of 40 matches per
+cue, 80 matches globally, and a sweep-only token slice of 35% of
+`contextBudgetTokens`; the slice extends the effective prompt budget instead of
+stealing from ordinary content. Stats appear as `stats.sweeps` with per-cue
+`matched`, `included`, and `truncated` counts.
+
+External benchmark runners can enable planner-derived sweep cues with
+`sweepCues: true` or CLI `--sweep-cues on`. This calls the query planner even
+when `queryPlanner: false`, but only `sweepCues` are used; planner-derived
+`requiredAnchors` remain ignored unless `queryPlanner` is also enabled. Per-case
+results record `sweepCues` and `sweepIncludedCount`; manifests record
+`runtimeIntelligence.sweepCues` provenance and failure count.
+
 For OpenAI-compatible hosts, `@ghast/memory/gym` also exports
 `createOpenAICompatibleExternalBenchmarkAnswerer()` and
 `createOpenAICompatibleExternalBenchmarkJudge()`.

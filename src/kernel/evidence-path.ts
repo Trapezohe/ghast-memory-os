@@ -36,6 +36,7 @@ export function buildEvidencePathExplanation(input: {
       stepCount: reconstructed.stats.stepCount,
       exploredCueCount: reconstructed.stats.exploredCueCount,
       associationCount: reconstructed.stats.associationCount,
+      ...(reconstructed.stats.sweeps ? { sweeps: reconstructed.stats.sweeps } : {}),
     },
     ...(plannerTrace ? { plannerTrace } : {}),
   };

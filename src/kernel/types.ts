@@ -733,8 +733,10 @@ export type MemoryQueryPlanner =
       input: {
         question: string;
         maxAnchors?: number | undefined;
+        maxSweepCues?: number | undefined;
       },
-    ) => Promise<ReconstructionRequiredAnchorHint[] | null | undefined> |
+    ) => Promise<MemoryQueryPlan | ReconstructionRequiredAnchorHint[] | null | undefined> |
+      MemoryQueryPlan |
       ReconstructionRequiredAnchorHint[] |
       null |
       undefined)
@@ -744,12 +746,19 @@ export type MemoryQueryPlanner =
         input: {
           question: string;
           maxAnchors?: number | undefined;
+          maxSweepCues?: number | undefined;
         },
-      ): Promise<ReconstructionRequiredAnchorHint[] | null | undefined> |
+      ): Promise<MemoryQueryPlan | ReconstructionRequiredAnchorHint[] | null | undefined> |
+        MemoryQueryPlan |
         ReconstructionRequiredAnchorHint[] |
         null |
         undefined;
     };
+
+interface MemoryQueryPlan {
+  requiredAnchors?: ReconstructionRequiredAnchorHint[] | undefined;
+  sweepCues?: string[] | undefined;
+}
 
 export interface ExplainTurnInput extends PrepareTurnInput {
   maxExcluded?: number | undefined;
@@ -799,6 +808,7 @@ export interface TurnExplanationBudgetReport {
     maxMemories: number;
     stopReason: ReconstructedContext["stats"]["stopReason"];
     anchorCoverage?: ReconstructionAnchorCoverageReport | undefined;
+    sweeps?: ReconstructedContext["stats"]["sweeps"] | undefined;
   } | undefined;
   stoppedAt: "memory_search" | "token_budget" | "planner" | "complete";
 }
@@ -886,11 +896,26 @@ export interface ReconstructionRequiredAnchorHint {
   hint?: string | undefined;
 }
 
+interface ReconstructionSweepCueStats {
+  cue: string;
+  matched: number;
+  included: number;
+  truncated: number;
+}
+
+interface ReconstructionSweepStats {
+  matched: number;
+  included: number;
+  truncated: number;
+  cues: ReconstructionSweepCueStats[];
+}
+
 export interface ReconstructionIntentHint {
   expectedTags?: string[] | undefined;
   requiredTagGroups?: ReconstructionIntentTagGroupHint[] | undefined;
   queryCues?: string[] | undefined;
   requiredAnchors?: ReconstructionRequiredAnchorHint[] | undefined;
+  sweepCues?: string[] | undefined;
 }
 
 export interface ReconstructContextInput {
@@ -1037,6 +1062,7 @@ export interface ReconstructedContext {
     } | undefined;
     anchorCoverage?: ReconstructionAnchorCoverageReport | undefined;
     requiredAnchorUnmet?: string[] | undefined;
+    sweeps?: ReconstructionSweepStats | undefined;
   };
 }
 
@@ -1062,6 +1088,7 @@ export interface EvidencePathExplanation {
     stepCount: number;
     exploredCueCount: number;
     associationCount: number;
+    sweeps?: ReconstructedContext["stats"]["sweeps"] | undefined;
   };
   plannerTrace?: ReconstructedPlannerTrace | undefined;
 }

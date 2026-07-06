@@ -195,6 +195,14 @@ Memory and reconstruction content lines also carry compact temporal labels from
 existing metadata, so reader models can reason about dates without schema
 changes or extra retrieval passes.
 
+For aggregation queries, hosts can declare `reconstructionIntent.sweepCues`.
+Those cues do not seed or rerank ordinary retrieval. After the ordinary memory
+and path sections are complete, gmOS runs bounded per-cue searches through the
+same store gates and appends an `Additional dated mentions:` section. Sweep
+lines are deduped against ordinary memories, sorted chronologically, and culled
+inside a sweep-only budget extension so ordinary reconstruction never shrinks
+because a sweep exists.
+
 Within those fixed budgets, reconstruction uses anchor-diversified allocation.
 Initial anchors come from the same lexical/host cue extraction and structured
 query cues that already seed the frontier. The planner groups frontier

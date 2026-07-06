@@ -271,6 +271,8 @@ export interface ExternalMemoryBenchmarkCaseResult {
   warnings: string[];
   diagnostics: ExternalMemoryBenchmarkCaseDiagnostics;
   derivedRequiredAnchors: ReconstructionRequiredAnchorHint[];
+  sweepCues: string[];
+  sweepIncludedCount: number;
   requiredAnchorUnmetCount: number;
   promptTokenEstimate: number;
   retrievedMemoryCount: number;
@@ -358,6 +360,8 @@ export interface ExternalMemoryBenchmarkFailureSample {
   missingRequiredIntentGroups: string[];
   requiredAnchorUnmet: string[];
   derivedRequiredAnchors: ReconstructionRequiredAnchorHint[];
+  sweepCues: string[];
+  sweepIncludedCount: number;
   requiredAnchorUnmetCount: number;
   evidenceConvergenceScore: number | null;
   evidenceConvergenceReached: boolean | null;
@@ -465,6 +469,16 @@ export interface ExternalMemoryBenchmarkRuntimeQueryPlannerManifest {
   failureCount: number;
 }
 
+interface ExternalMemoryBenchmarkRuntimeSweepCuesManifest {
+  enabled: boolean;
+  name: string | null;
+  baseUrlHost: string | null;
+  apiKeyEnv: string | null;
+  model: string | null;
+  maxCues: number;
+  failureCount: number;
+}
+
 export interface ExternalMemoryBenchmarkRuntimeIngestGroupManifest {
   groupKey: string;
   caseCount: number;
@@ -525,6 +539,7 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   ingestCaseGroups: ExternalMemoryBenchmarkRuntimeIngestGroupManifest[];
   answerer: ExternalMemoryBenchmarkRuntimeAnswererManifest;
   queryPlanner: ExternalMemoryBenchmarkRuntimeQueryPlannerManifest;
+  sweepCues: ExternalMemoryBenchmarkRuntimeSweepCuesManifest;
 }
 
 export interface ExternalMemoryBenchmarkCaseGroupProgress {
@@ -629,6 +644,7 @@ export interface ExternalMemoryBenchmarkRunManifest {
     protocol: ExternalMemoryBenchmarkProtocol;
     ingestReplayAttempts: number;
     queryPlanner: boolean;
+    sweepCues: boolean;
     plannerMaxAnchors: number;
   };
   scoreSemantics: ExternalMemoryBenchmarkScoreSemantics;
@@ -688,6 +704,7 @@ export interface RunExternalMemoryBenchmarkOptions {
   ingestReplayAttempts?: number | undefined;
   embedQuery?: boolean | undefined;
   queryPlanner?: boolean | undefined;
+  sweepCues?: boolean | undefined;
   plannerMaxAnchors?: number | undefined;
   intelligence?: ExternalMemoryBenchmarkIntelligence | undefined;
   maintainPhases?: MaintenancePhase[] | undefined;
@@ -887,6 +904,11 @@ interface CaseGroup {
   profileId: string;
   events: ExternalMemoryBenchmarkEvent[];
   items: NormalizedCaseInput[];
+}
+
+interface PlannedRetrievalCues {
+  requiredAnchors?: ReconstructionRequiredAnchorHint[] | undefined;
+  sweepCues?: string[] | undefined;
 }
 
 export function hashExternalMemoryBenchmarkInput(input: string): string {
@@ -2303,6 +2325,18 @@ function disabledRuntimeQueryPlanner(): ExternalMemoryBenchmarkRuntimeQueryPlann
   };
 }
 
+function disabledRuntimeSweepCues(): ExternalMemoryBenchmarkRuntimeSweepCuesManifest {
+  return {
+    enabled: false,
+    name: null,
+    baseUrlHost: null,
+    apiKeyEnv: null,
+    model: null,
+    maxCues: 3,
+    failureCount: 0,
+  };
+}
+
 function runtimeAnswererForManifest(
   answerer: ExternalMemoryBenchmarkAnswerer | undefined,
 ): ExternalMemoryBenchmarkRuntimeAnswererManifest {
@@ -2391,6 +2425,7 @@ function createRunManifest(input: {
       extractionWindow: normalizedExtractionWindow(input.options.extractionWindow),
       ingestReplayAttempts: normalizedIngestReplayAttempts(input.options.ingestReplayAttempts),
       queryPlanner: input.runtimeIntelligence.manifest.queryPlanner.enabled,
+      sweepCues: input.runtimeIntelligence.manifest.sweepCues.enabled,
       plannerMaxAnchors: input.runtimeIntelligence.manifest.queryPlanner.maxAnchors ?? 4,
       reuseProfiles: input.options.reuseProfiles ?? true,
       failureSampleLimit: normalizedFailureSampleLimit(input.options.failureSampleLimit),
@@ -2421,6 +2456,10 @@ function createRunManifest(input: {
       queryEmbeddingFailureCount: input.runtimeIntelligence.queryEmbeddingFailureCount,
       queryPlanner: {
         ...input.runtimeIntelligence.manifest.queryPlanner,
+        failureCount: input.runtimeIntelligence.plannerFailureCount,
+      },
+      sweepCues: {
+        ...input.runtimeIntelligence.manifest.sweepCues,
         failureCount: input.runtimeIntelligence.plannerFailureCount,
       },
       ingestCaseGroups: [...input.runtimeIntelligence.ingestCaseGroups].sort((left, right) =>
@@ -2699,17 +2738,34 @@ async function planRequiredAnchors(input: {
   queryPlanner: MemoryQueryPlanner | undefined;
   question: string;
   maxAnchors: number;
+  maxSweepCues?: number | undefined;
   onFailure: () => void;
-}): Promise<ReconstructionRequiredAnchorHint[]> {
-  if (!input.queryPlanner || input.maxAnchors === 0) return [];
+}): Promise<PlannedRetrievalCues> {
+  const maxSweepCues = input.maxSweepCues ?? 0;
+  if (!input.queryPlanner || (input.maxAnchors === 0 && maxSweepCues === 0)) return {};
   try {
     const raw = typeof input.queryPlanner === "function"
-      ? await input.queryPlanner({ question: input.question, maxAnchors: input.maxAnchors })
-      : await input.queryPlanner.plan({ question: input.question, maxAnchors: input.maxAnchors });
-    if (!Array.isArray(raw)) return [];
+      ? await input.queryPlanner({
+          question: input.question,
+          maxAnchors: input.maxAnchors,
+          maxSweepCues,
+        })
+      : await input.queryPlanner.plan({
+          question: input.question,
+          maxAnchors: input.maxAnchors,
+          maxSweepCues,
+        });
+    const anchorItems = Array.isArray(raw)
+      ? raw
+      : raw && typeof raw === "object" && Array.isArray(raw.requiredAnchors)
+        ? raw.requiredAnchors
+        : [];
+    const sweepItems = raw && !Array.isArray(raw) && typeof raw === "object" && Array.isArray(raw.sweepCues)
+      ? raw.sweepCues
+      : [];
     const seen = new Set<string>();
     const anchors: ReconstructionRequiredAnchorHint[] = [];
-    for (const anchor of raw) {
+    for (const anchor of anchorItems) {
       if (!anchor || typeof anchor !== "object") continue;
       const cue = plannerAnchorText(anchor.cue, 160);
       if (!cue) continue;
@@ -2720,18 +2776,32 @@ async function planRequiredAnchors(input: {
       anchors.push(hint ? { cue, hint } : { cue });
       if (anchors.length >= input.maxAnchors) break;
     }
-    return anchors;
+    const seenSweepCues = new Set<string>();
+    const sweepCues: string[] = [];
+    for (const item of sweepItems) {
+      const cue = plannerAnchorText(item, 160);
+      const key = cue?.toLowerCase().replace(/\s+/gu, " ");
+      if (!cue || !key || seenSweepCues.has(key)) continue;
+      seenSweepCues.add(key);
+      sweepCues.push(cue);
+      if (sweepCues.length >= maxSweepCues) break;
+    }
+    return {
+      ...(anchors.length > 0 ? { requiredAnchors: anchors } : {}),
+      ...(sweepCues.length > 0 ? { sweepCues } : {}),
+    };
   } catch {
     input.onFailure();
-    return [];
+    return {};
   }
 }
 
 function reconstructionIntentWithRequiredAnchors(
   intent: ReconstructionIntentHint | undefined,
   anchors: ReconstructionRequiredAnchorHint[],
+  sweepCues: string[] = [],
 ): ReconstructionIntentHint | undefined {
-  if (anchors.length === 0) return intent;
+  if (anchors.length === 0 && sweepCues.length === 0) return intent;
   const seen = new Set<string>();
   const requiredAnchors: ReconstructionRequiredAnchorHint[] = [];
   for (const anchor of [...(intent?.requiredAnchors ?? []), ...anchors]) {
@@ -2740,9 +2810,18 @@ function reconstructionIntentWithRequiredAnchors(
     seen.add(key);
     requiredAnchors.push(anchor.hint ? { cue: anchor.cue, hint: anchor.hint } : { cue: anchor.cue });
   }
+  const seenSweepCues = new Set<string>();
+  const mergedSweepCues: string[] = [];
+  for (const cue of [...(intent?.sweepCues ?? []), ...sweepCues]) {
+    const key = cue.trim().toLowerCase().replace(/\s+/gu, " ");
+    if (!key || seenSweepCues.has(key)) continue;
+    seenSweepCues.add(key);
+    mergedSweepCues.push(cue);
+  }
   return {
     ...(intent ?? {}),
-    requiredAnchors,
+    ...(requiredAnchors.length > 0 ? { requiredAnchors } : {}),
+    ...(mergedSweepCues.length > 0 ? { sweepCues: mergedSweepCues } : {}),
   };
 }
 
@@ -2999,6 +3078,7 @@ function disabledRuntimeIntelligence(
       ingestCaseGroups: [],
       answerer: disabledRuntimeAnswerer(),
       queryPlanner: disabledRuntimeQueryPlanner(),
+      sweepCues: disabledRuntimeSweepCues(),
     },
     extractionEmptyCount: 0,
     extractionParseFailureCount: 0,
@@ -3123,6 +3203,13 @@ function resolveRuntimeIntelligence(input: {
         model: config?.plannerModel ?? config?.model ?? null,
         maxAnchors: 4,
       },
+      sweepCues: {
+        ...disabledRuntimeSweepCues(),
+        name: hookName(hooks.queryPlanner),
+        baseUrlHost: config ? baseUrlHost(config.plannerBaseUrl ?? config.baseUrl) : null,
+        apiKeyEnv: apiKeyEnv ?? null,
+        model: config?.plannerModel ?? config?.model ?? null,
+      },
     },
     extractionEmptyCount: 0,
     extractionParseFailureCount: 0,
@@ -3213,6 +3300,8 @@ function failureSampleForCase(
     missingRequiredIntentGroups: entry.diagnostics.missingRequiredIntentGroups,
     requiredAnchorUnmet: entry.diagnostics.requiredAnchorUnmet,
     derivedRequiredAnchors: entry.derivedRequiredAnchors,
+    sweepCues: entry.sweepCues,
+    sweepIncludedCount: entry.sweepIncludedCount,
     requiredAnchorUnmetCount: entry.requiredAnchorUnmetCount,
     evidenceConvergenceScore: entry.diagnostics.evidenceConvergenceScore,
     evidenceConvergenceReached: entry.diagnostics.evidenceConvergenceReached,
@@ -3672,6 +3761,7 @@ async function scoreCase(input: {
   setupWarnings?: string[] | undefined;
   readRetrieval?: MemoryReadRetrievalOptions | undefined;
   queryPlanner?: MemoryQueryPlanner | undefined;
+  sweepCues: boolean;
   plannerMaxAnchors: number;
   onPlannerFailure: () => void;
   writeDebugReaderContext?: ((caseId: string, context: string) => void) | undefined;
@@ -3692,17 +3782,23 @@ async function scoreCase(input: {
   });
   const requireConvergence =
     input.benchmarkCase.requireConvergence ?? input.options.requireConvergence ?? false;
-  const derivedRequiredAnchors = mode === "reconstruct"
+  const plannerPlan = mode === "reconstruct"
     ? await planRequiredAnchors({
         queryPlanner: input.queryPlanner,
         question: input.benchmarkCase.question,
-        maxAnchors: input.plannerMaxAnchors,
+        maxAnchors: input.options.queryPlanner === true ? input.plannerMaxAnchors : 0,
+        maxSweepCues: input.sweepCues ? 3 : 0,
         onFailure: input.onPlannerFailure,
       })
+    : {};
+  const derivedRequiredAnchors = input.options.queryPlanner === true
+    ? plannerPlan.requiredAnchors ?? []
     : [];
+  const derivedSweepCues = input.sweepCues ? plannerPlan.sweepCues ?? [] : [];
   const reconstructionIntent = reconstructionIntentWithRequiredAnchors(
     input.benchmarkCase.reconstructionIntent,
     derivedRequiredAnchors,
+    derivedSweepCues,
   );
   const prepared =
     mode === "prepare"
@@ -3889,6 +3985,8 @@ async function scoreCase(input: {
     warnings: allWarnings,
     diagnostics,
     derivedRequiredAnchors,
+    sweepCues: derivedSweepCues,
+    sweepIncludedCount: reconstructed?.stats.sweeps?.included ?? 0,
     requiredAnchorUnmetCount: diagnostics.requiredAnchorUnmet.length,
     promptTokenEstimate:
       prepared?.stats.promptTokenEstimate ?? reconstructed?.stats.promptTokenEstimate ?? 0,
@@ -4093,8 +4191,10 @@ async function runCaseGroup(input: {
             }
           : { embedQuery: false },
         queryPlanner: input.runtimeIntelligence.manifest.queryPlanner.enabled
+          || input.runtimeIntelligence.manifest.sweepCues.enabled
           ? input.runtimeIntelligence.hooks?.queryPlanner
           : undefined,
+        sweepCues: input.runtimeIntelligence.manifest.sweepCues.enabled,
         plannerMaxAnchors: input.runtimeIntelligence.manifest.queryPlanner.maxAnchors ?? 4,
         onPlannerFailure: () => {
           input.runtimeIntelligence.plannerFailureCount += 1;
@@ -4222,6 +4322,12 @@ export async function runExternalMemoryBenchmark(
     enabled: queryPlanner && runtimeIntelligence.hooks?.queryPlanner !== undefined,
     maxAnchors: plannerMaxAnchors,
   };
+  const sweepCues = options.sweepCues ?? false;
+  runtimeIntelligence.manifest.sweepCues = {
+    ...runtimeIntelligence.manifest.sweepCues,
+    enabled: sweepCues && runtimeIntelligence.hooks?.queryPlanner !== undefined,
+    maxCues: 3,
+  };
   const normalizedOptions: RunExternalMemoryBenchmarkOptions = {
     ...options,
     cases: selectedCases,
@@ -4240,6 +4346,7 @@ export async function runExternalMemoryBenchmark(
     readerContextCharLimit,
     plannerMaxAnchors,
     queryPlanner,
+    sweepCues,
     ...(debugDir ? { debugDir } : {}),
     extractionWindow,
     ingestReplayAttempts,
