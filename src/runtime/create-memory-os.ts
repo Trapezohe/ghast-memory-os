@@ -1563,6 +1563,122 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     return extraction?.extractFromRoles ?? options.extraction?.extractFromRoles ?? ["user"];
   }
 
+  function resolvedTurnRetention(
+    turnRetention: IngestConversationInput["turnRetention"] | undefined,
+  ): { kind: MemoryKind; confidence: number } | null {
+    if (turnRetention?.enabled !== true) return null;
+    return {
+      kind: isLowLevelMemoryKind(turnRetention.kind) ? turnRetention.kind : "fact",
+      confidence: clamp01(turnRetention.confidence ?? 0.35, 0.35),
+    };
+  }
+
+  function turnMemoryContent(
+    event: ConversationEvent,
+    eventMetadata: Record<string, unknown>,
+  ): string {
+    const speaker = publicSpeaker(eventMetadata.speaker, classifyRuntimeSensitivity);
+    const label = speaker ? `${speaker} (${event.role})` : event.role;
+    return `${label}: ${event.content}`;
+  }
+
+  async function applyTurnMemory(input: {
+    result: ObserveResult;
+    profileId: string;
+    event: ConversationEvent;
+    evidence: EvidenceEvent;
+    eventMetadata: Record<string, unknown>;
+    sensitivity: Sensitivity;
+    sourceTrust: SourceTrust;
+    allowLowerTrustPolicyWrites: boolean;
+    kind: MemoryKind;
+    confidence: number;
+  }): Promise<MemoryRecord | null> {
+    if (input.kind === "person" || isPersonRoutedMemory(input.event.content)) return null;
+    if (
+      input.sourceTrust !== "user" &&
+      lowerTrustPolicyWrite({
+        kind: input.kind,
+        content: input.event.content,
+        confidence: input.confidence,
+      }) &&
+      !input.allowLowerTrustPolicyWrites
+    ) {
+      return null;
+    }
+    const existing = store.findActiveMemoryByMetadata
+      ? await store.findActiveMemoryByMetadata(
+          input.profileId,
+          "turnEvidenceId",
+          input.evidence.id,
+        )
+      : null;
+    if (existing) {
+      input.result.memoryIds.push(existing.id);
+      return null;
+    }
+    const content = turnMemoryContent(input.event, input.eventMetadata);
+    const contentSensitivity = classifyRuntimeSensitivity(content, "content");
+    const metadataSensitivity = runtimeValueSensitivity(
+      input.eventMetadata,
+      classifyRuntimeSensitivity,
+    );
+    if (
+      contentSensitivity === "secret_like" ||
+      metadataSensitivity === "secret_like" ||
+      isPersonRoutedMemory(content)
+    ) {
+      return null;
+    }
+    const confidenceCap = sourceTrustConfidenceCap(input.sourceTrust, trust);
+    const confidence = confidenceCap === undefined
+      ? input.confidence
+      : Math.min(input.confidence, confidenceCap);
+    const eventTime = input.event.createdAt ?? input.evidence.createdAt;
+    const annealingMetadata = lowerTrustAnnealingMetadata({
+      sourceTrust: input.sourceTrust,
+      confidence,
+      startedAt: eventTime,
+      lifecycle,
+    });
+    const entityMentions = buildEntityMentions({
+      sourceMetadata: input.eventMetadata,
+      entityResolver: options.entityResolver,
+    });
+    const memorySensitivity = maxSensitivity(
+      maxSensitivity(input.sensitivity, contentSensitivity),
+      metadataSensitivity,
+    );
+    const embedding = await embeddingForRuntimeWrite({
+      kind: input.kind,
+      sensitivity: memorySensitivity,
+      content,
+    });
+    const memory = await store.addMemory({
+      profileId: input.profileId,
+      kind: input.kind,
+      content,
+      confidence,
+      sensitivity: memorySensitivity,
+      sourceEventId: input.evidence.id,
+      metadata: {
+        turnMemory: true,
+        turnEvidenceId: input.evidence.id,
+        sourceEvidenceId: input.evidence.id,
+        sourceTrust: input.sourceTrust,
+        ...annealingMetadata,
+        sourceRole: input.event.role,
+        eventTime,
+        ...(Object.keys(input.eventMetadata).length > 0 ? { sourceMetadata: input.eventMetadata } : {}),
+        ...(entityMentions.length > 0 ? { entityMentions } : {}),
+      },
+      createdAt: eventTime,
+      ...(embedding ? { embedding } : {}),
+    });
+    input.result.memoryIds.push(memory.id);
+    return memory;
+  }
+
   async function recordConversationEvidence(
     event: ConversationEvent,
     result: ObserveResult,
@@ -1887,6 +2003,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const profileId = profileIdFor(defaultProfileId, input.profileId);
     const observedAt = nowIso();
     const extractFromRoles = resolvedExtractFromRoles(input.extraction);
+    const turnRetention = resolvedTurnRetention(input.turnRetention);
     const maxMessages = boundedPositiveInteger(input.window?.maxMessages, 12, 1, 1000);
     const maxChars = boundedPositiveInteger(input.window?.maxChars, 7000, 256, 200000);
     const windowConcurrency = boundedPositiveInteger(input.window?.concurrency, 1, 1, 32);
@@ -1915,6 +2032,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     let extractionParseFailureCharCount = 0;
     let extractionTransportFailureCharCount = 0;
     let extractedMemoryCountForProgress = 0;
+    let turnMemoryCount = 0;
     let replayedWindowCount = 0;
     let replayRecoveredCount = 0;
     const extractionFailedWindowIndexes = new Set<number>();
@@ -2022,6 +2140,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         replayedWindowCount,
         replayRecoveredCount,
         extractedMemoryCount: extractedMemoryCountForProgress,
+        turnMemoryCount,
         elapsedMs,
         etaMs,
       });
@@ -2177,6 +2296,21 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       const recorded = await recordConversationEvidence(event, result);
       results.push(recorded.result);
       if (!recorded.write) continue;
+      if (turnRetention && !isPersonRoutedMemory(event.content)) {
+        const turnMemory = await applyTurnMemory({
+          result: recorded.result,
+          profileId: eventProfileId,
+          event,
+          evidence: recorded.write.evidence,
+          eventMetadata: recorded.write.eventMetadata,
+          sensitivity: recorded.write.sensitivity,
+          sourceTrust: recorded.write.sourceTrust,
+          allowLowerTrustPolicyWrites: recorded.write.allowLowerTrustPolicyWrites,
+          kind: turnRetention.kind,
+          confidence: turnRetention.confidence,
+        });
+        if (turnMemory) turnMemoryCount += 1;
+      }
       if (!extractFromRoles.includes(event.role)) {
         recorded.result.skippedReason = "non_user_message";
         continue;
@@ -2238,6 +2372,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       extractionFailedWindowIndexes: [...extractionFailedWindowIndexes].sort((left, right) => left - right),
       replayedWindowCount,
       replayRecoveredCount,
+      turnMemoryCount,
       extractionMinConfidence,
       extractionReports,
     };

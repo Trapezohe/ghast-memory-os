@@ -511,6 +511,11 @@ export interface IngestConversationInput {
     extractFromRoles?: MemoryRole[] | undefined;
     replayAttempts?: number | undefined;
   } | undefined;
+  turnRetention?: {
+    enabled: boolean;
+    kind?: MemoryKind | undefined;
+    confidence?: number | undefined;
+  } | undefined;
   progress?: {
     everyWindows?: number | undefined;
     onWindow?: ((progress: IngestConversationProgress) => void) | undefined;
@@ -536,6 +541,7 @@ export interface IngestConversationProgress {
   replayedWindowCount: number;
   replayRecoveredCount: number;
   extractedMemoryCount: number;
+  turnMemoryCount: number;
   elapsedMs: number;
   etaMs: number | null;
 }
@@ -562,6 +568,7 @@ export interface IngestConversationResult {
   extractionFailedWindowIndexes: number[];
   replayedWindowCount: number;
   replayRecoveredCount: number;
+  turnMemoryCount: number;
   extractionMinConfidence: number;
   extractionReports: MemoryExtractionReport[];
 }

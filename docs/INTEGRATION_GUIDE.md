@@ -138,6 +138,25 @@ can split windows without changing evidence granularity. Memories created from
 a window keep `windowEvidenceIds` in metadata so `explain()` and reconstruction
 can trace back to the contributing messages.
 
+Hosts that need raw-turn recall can opt in to hybrid storage:
+
+```ts
+await memory.ingestConversation({
+  profileId,
+  messages,
+  turnRetention: { enabled: true },
+});
+```
+
+This writes one retrievable low-confidence `fact` memory per eligible message
+with `metadata.turnMemory = true` and the same evidence id as the message.
+Leave it off when storage is tighter than answerability. Enable it for
+long-memory readers, support investigations, or products where the extractor is
+allowed to miss wording but recall still needs the raw turn. Expect memory rows
+to roughly double in message-mode ingest. The recommended long-running pattern
+is: retain raw turns, consolidate repeated clusters into semantic summaries,
+then let `maintain()` demote the lower-confidence turn memories.
+
 ## Turn Lifecycle
 
 For full agent memory, hosts should wire these phases instead of only calling

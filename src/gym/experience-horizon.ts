@@ -1788,6 +1788,74 @@ async function poisoningLifecycle(): Promise<MemoryGymExperienceHorizonScenario>
   }
 }
 
+async function hybridTurnRetentionLifecycle(): Promise<MemoryGymExperienceHorizonScenario> {
+  const profileId = "experience_hybrid_turn_retention";
+  const store = createSqliteMemoryStore({ path: ":memory:" });
+  const memory = createMemoryOS({
+    profileId,
+    store,
+    lifecycle: {
+      halfLivesDays: { fact: 10 },
+      dormantBelow: 0.2,
+    },
+    extractor: () => [{
+      kind: "fact",
+      content: "HybridTurnDurableAtomSignal is the durable semantic summary.",
+      confidence: 0.99,
+    }],
+  });
+  try {
+    const ingested = await memory.ingestConversation({
+      profileId,
+      messages: [{
+        conversationId: "experience-hybrid-turn-retention",
+        messageId: "experience-hybrid-turn-retention-1",
+        role: "user",
+        content:
+          "HybridTurnEpisodicSignal raw turn says the same period contained a durable summary.",
+        createdAt: weekIso(0),
+      }],
+      turnRetention: { enabled: true },
+    });
+    await memory.maintain({
+      profileId,
+      now: weekIso(8),
+      phases: ["decay"],
+    });
+    const memories = await memory.list({
+      profileId,
+      status: "any",
+      limit: 10,
+    });
+    const turn = memories.find((entry) => entry.metadata.turnMemory === true);
+    const atom = memories.find((entry) =>
+      entry.content.includes("HybridTurnDurableAtomSignal")
+    );
+
+    return scenarioResult({
+      name: "hybrid_turn_retention_lifecycle",
+      assertions: {
+        turn_memory_written_as_fact:
+          ingested.turnMemoryCount === 1 &&
+          turn?.kind === "fact" &&
+          turn.confidence === 0.35,
+        raw_turn_decays_to_dormant: turn?.status === "dormant",
+        extracted_atom_survives_active:
+          atom?.status === "active" &&
+          atom.kind === "fact" &&
+          atom.confidence === 0.99 &&
+          atom.metadata.turnMemory !== true,
+      },
+      counters: {
+        turnMemories: turn ? 1 : 0,
+        activeAtoms: atom?.status === "active" ? 1 : 0,
+      },
+    });
+  } finally {
+    await memory.close();
+  }
+}
+
 async function runExperienceHorizonOnce(): Promise<MemoryGymExperienceHorizonScenario[]> {
   return [
     await preferenceAdherenceOverTime(),
@@ -1797,6 +1865,7 @@ async function runExperienceHorizonOnce(): Promise<MemoryGymExperienceHorizonSce
     await forensicRollbackAndVersioning(),
     await trustTieredWriteProvenance(),
     await confidenceAnnealing(),
+    await hybridTurnRetentionLifecycle(),
     await provenanceWeightedExperienceCredit(),
     await proactiveExploration(),
     await principalHistoryAccessScope(),

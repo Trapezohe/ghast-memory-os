@@ -15,6 +15,7 @@ host event
 -> extraction and safety gates
 -> evidence event
 -> memory / world belief / task trajectory
+-> optional turn-retention memory for eligible raw conversation turns
 -> association projection
 -> prepareTurn(), explainTurn(), or reconstructContext()
 -> context, evidence, action policy
@@ -51,6 +52,14 @@ Associations, gap candidates, FTS rows, and vector rows are indexes. They can be
 source-of-truth rows and must not become independent memory stores. The
 `local-hash-v1` 384-dimensional vector is the deterministic fallback; host
 embedding providers are optional write/repair-path upgrades.
+
+Windowed conversation ingest is layered when `turnRetention` is enabled:
+eligible raw turns are stored as low-confidence ordinary memories with
+`metadata.turnMemory = true`, while extracted atoms remain higher-confidence
+semantic memories and world beliefs. Both point back to evidence events. The raw
+turn keeps the recoverable episodic wording; the atom carries durable semantic
+structure. This uses the existing `fact` kind and does not add schema or a new
+memory kind.
 
 ## Read And Write Boundaries
 
@@ -97,6 +106,12 @@ retention scoring falls below the configured threshold. Dormant memories are
 excluded from ordinary context and active association projection like archived
 memories, but remain visible to history-purpose recall and status-filtered
 management surfaces. Long-dormant memories can later become `archived`.
+
+Turn-retention memories participate in the same lifecycle math as any other
+memory. Hosts should treat them as fast-decaying episodic support: consolidation
+can summarize clusters into durable semantic atoms, then maintenance naturally
+demotes the lower-confidence raw turns. This is the episodic-to-semantic path;
+it avoids keeping every raw turn active forever.
 
 `commitOutcome({ usedMemoryIds })` is the usage-signal write path. It increments
 recall counters, sets `last_recalled_at`, reactivates dormant memories, and

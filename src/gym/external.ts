@@ -324,6 +324,7 @@ export interface ExternalMemoryBenchmarkGroupTiming {
   extractionTransportFailureCharCount: number;
   replayedWindowCount: number;
   replayRecoveredCount: number;
+  turnMemoryCount: number;
   passedCount: number;
   failedCount: number;
 }
@@ -484,6 +485,7 @@ export interface ExternalMemoryBenchmarkRuntimeIngestGroupManifest {
   caseCount: number;
   eventCount: number;
   extractedMemoryCount: number;
+  turnMemoryCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
   extractionRetryCount: number;
@@ -507,6 +509,7 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   model: string | null;
   embedModel: string | null;
   ingestMode: ExternalMemoryBenchmarkIngestMode;
+  turnRetention: boolean;
   maintainPhases: MaintenancePhase[];
   concurrency: number | null;
   timeoutMs: number | null;
@@ -547,6 +550,7 @@ export interface ExternalMemoryBenchmarkCaseGroupProgress {
   caseCount: number;
   eventCount: number;
   extractedMemoryCount: number;
+  turnMemoryCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
   extractionRetryCount: number;
@@ -643,6 +647,7 @@ export interface ExternalMemoryBenchmarkRunManifest {
     diagnosticsLevel: ExternalMemoryBenchmarkDiagnosticsLevel;
     protocol: ExternalMemoryBenchmarkProtocol;
     ingestReplayAttempts: number;
+    turnRetention: boolean;
     queryPlanner: boolean;
     sweepCues: boolean;
     plannerMaxAnchors: number;
@@ -700,6 +705,7 @@ export interface RunExternalMemoryBenchmarkOptions {
   judge?: ExternalMemoryBenchmarkJudge | undefined;
   answerer?: ExternalMemoryBenchmarkAnswerer | undefined;
   ingestMode?: ExternalMemoryBenchmarkIngestMode | undefined;
+  turnRetention?: boolean | undefined;
   extractionWindow?: number | undefined;
   ingestReplayAttempts?: number | undefined;
   embedQuery?: boolean | undefined;
@@ -2424,6 +2430,7 @@ function createRunManifest(input: {
       concurrency: normalizedConcurrency(input.options.concurrency),
       extractionWindow: normalizedExtractionWindow(input.options.extractionWindow),
       ingestReplayAttempts: normalizedIngestReplayAttempts(input.options.ingestReplayAttempts),
+      turnRetention: input.runtimeIntelligence.manifest.turnRetention,
       queryPlanner: input.runtimeIntelligence.manifest.queryPlanner.enabled,
       sweepCues: input.runtimeIntelligence.manifest.sweepCues.enabled,
       plannerMaxAnchors: input.runtimeIntelligence.manifest.queryPlanner.maxAnchors ?? 4,
@@ -2574,6 +2581,13 @@ function normalizedIngestMode(
   if (value === undefined) return "memory";
   if (value === "memory" || value === "message") return value;
   throw new Error("External benchmark ingest mode must be memory or message");
+}
+
+function normalizedTurnRetention(
+  value: boolean | undefined,
+  ingestMode: ExternalMemoryBenchmarkIngestMode,
+): boolean {
+  return value ?? ingestMode === "message";
 }
 
 function normalizedExtractionWindow(value: number | undefined): number {
@@ -3037,6 +3051,7 @@ interface RuntimeIntelligenceState {
 function disabledRuntimeIntelligence(
   ingestMode: ExternalMemoryBenchmarkIngestMode,
   maintainPhases: MaintenancePhase[],
+  turnRetention: boolean,
 ): RuntimeIntelligenceState {
   return {
     manifest: {
@@ -3046,6 +3061,7 @@ function disabledRuntimeIntelligence(
       model: null,
       embedModel: null,
       ingestMode,
+      turnRetention,
       maintainPhases,
       concurrency: null,
       timeoutMs: null,
@@ -3102,10 +3118,15 @@ function disabledRuntimeIntelligence(
 function resolveRuntimeIntelligence(input: {
   intelligence?: ExternalMemoryBenchmarkIntelligence | undefined;
   ingestMode: ExternalMemoryBenchmarkIngestMode;
+  turnRetention: boolean;
   maintainPhases: MaintenancePhase[];
 }): RuntimeIntelligenceState {
   if (!input.intelligence) {
-    return disabledRuntimeIntelligence(input.ingestMode, input.maintainPhases);
+    return disabledRuntimeIntelligence(
+      input.ingestMode,
+      input.maintainPhases,
+      input.turnRetention,
+    );
   }
   const config = isIntelligenceConfig(input.intelligence) ? input.intelligence : null;
   const concurrency = normalizedIntelligenceConcurrency(config?.concurrency);
@@ -3172,6 +3193,7 @@ function resolveRuntimeIntelligence(input: {
       model: config?.model ?? null,
       embedModel: config?.embedModel ?? null,
       ingestMode: input.ingestMode,
+      turnRetention: input.turnRetention,
       maintainPhases: input.maintainPhases,
       concurrency,
       timeoutMs,
@@ -3561,6 +3583,7 @@ interface AppliedBenchmarkEvents {
   extractionTransportFailureCharCount: number;
   replayedWindowCount: number;
   replayRecoveredCount: number;
+  turnMemoryCount: number;
 }
 
 function isBenchmarkMessageEvent(
@@ -3645,6 +3668,7 @@ async function applyBenchmarkEvents(input: {
   profileId: string;
   events: ExternalMemoryBenchmarkEvent[];
   ingestMode: ExternalMemoryBenchmarkIngestMode;
+  turnRetention: boolean;
   extractionWindow: number | undefined;
   ingestReplayAttempts: number | undefined;
   windowConcurrency?: number | undefined;
@@ -3666,6 +3690,7 @@ async function applyBenchmarkEvents(input: {
     extractionTransportFailureCharCount: 0,
     replayedWindowCount: 0,
     replayRecoveredCount: 0,
+    turnMemoryCount: 0,
   };
   const pendingMessages: ExternalMemoryBenchmarkMessageEvent[] = [];
 
@@ -3689,6 +3714,7 @@ async function applyBenchmarkEvents(input: {
         extractFromRoles: ["user", "assistant"],
         ...(input.ingestReplayAttempts !== undefined ? { replayAttempts: input.ingestReplayAttempts } : {}),
       },
+      turnRetention: { enabled: input.turnRetention },
       ...(input.onWindowProgress
         ? { progress: { onWindow: input.onWindowProgress } }
         : {}),
@@ -3708,6 +3734,7 @@ async function applyBenchmarkEvents(input: {
     }
     output.replayedWindowCount += ingested.replayedWindowCount;
     output.replayRecoveredCount += ingested.replayRecoveredCount;
+    output.turnMemoryCount += ingested.turnMemoryCount;
   }
 
   for (const event of input.events) {
@@ -4063,6 +4090,7 @@ async function runCaseGroup(input: {
   let extractionTransportFailureCharCount = 0;
   let replayedWindowCount = 0;
   let replayRecoveredCount = 0;
+  let turnMemoryCount = 0;
   let caseGroupMemories: MemoryRecord[] = [];
   try {
     await store.initialize();
@@ -4072,6 +4100,7 @@ async function runCaseGroup(input: {
       profileId: input.group.profileId,
       events: input.group.events,
       ingestMode: input.options.ingestMode ?? "memory",
+      turnRetention: input.runtimeIntelligence.manifest.turnRetention,
       extractionWindow: input.options.extractionWindow,
       ingestReplayAttempts: input.options.ingestReplayAttempts,
       windowConcurrency: input.runtimeIntelligence.manifest.concurrency ?? undefined,
@@ -4112,6 +4141,7 @@ async function runCaseGroup(input: {
     extractionTransportFailureCharCount = applied.extractionTransportFailureCharCount;
     replayedWindowCount = applied.replayedWindowCount;
     replayRecoveredCount = applied.replayRecoveredCount;
+    turnMemoryCount = applied.turnMemoryCount;
     input.runtimeIntelligence.extractionWindowCount += extractionWindowCount;
     input.runtimeIntelligence.extractionCallCount += extractionCallCount;
     caseGroupMemories = await memory.list({
@@ -4132,6 +4162,7 @@ async function runCaseGroup(input: {
       caseCount: input.group.items.length,
       eventCount: input.group.events.length,
       extractedMemoryCount,
+      turnMemoryCount,
       extractionWindowCount,
       extractionCallCount,
       extractionRetryCount,
@@ -4240,6 +4271,7 @@ async function runCaseGroup(input: {
       extractionTransportFailureCharCount,
       replayedWindowCount,
       replayRecoveredCount,
+      turnMemoryCount,
       passedCount: results.filter((result) => result.pass).length,
       failedCount: results.filter((result) => !result.pass).length,
     };
@@ -4294,6 +4326,7 @@ export async function runExternalMemoryBenchmark(
   const diagnosticsLevel = normalizedDiagnosticsLevel(options.diagnosticsLevel);
   const readerProfile = normalizedReaderProfile(options.readerProfile);
   const ingestMode = normalizedIngestMode(options.ingestMode);
+  const turnRetention = normalizedTurnRetention(options.turnRetention, ingestMode);
   const extractionWindow = normalizedExtractionWindow(options.extractionWindow);
   const ingestReplayAttempts = normalizedIngestReplayAttempts(options.ingestReplayAttempts);
   const debugDumpMemories = normalizedDebugDumpMemories(options.debugDumpMemories);
@@ -4308,6 +4341,7 @@ export async function runExternalMemoryBenchmark(
   const runtimeIntelligence = resolveRuntimeIntelligence({
     intelligence: options.intelligence,
     ingestMode,
+    turnRetention,
     maintainPhases,
   });
   const embedQuery = options.embedQuery ?? runtimeIntelligence.hooks?.embeddingProvider !== undefined;
@@ -4356,6 +4390,7 @@ export async function runExternalMemoryBenchmark(
     diagnosticsLevel,
     protocol,
     ingestMode,
+    turnRetention,
     maintainPhases,
     ...(judge ? { judge } : {}),
     ...(answerer ? { answerer } : {}),

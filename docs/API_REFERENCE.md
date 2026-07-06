@@ -49,15 +49,20 @@ Key write methods:
 - `observe(event)`: records one host event. For `conversation.message`, the
   extractor is called once for that message when its role is extractable.
 - `observeWithReport(event)`: same write path, with a sanitized report.
-- `ingestConversation({ profileId?, messages, window?, extraction? })`: records
-  each message as its own evidence event, then calls the extractor once per
-  eligible message window. `window.maxMessages` defaults to `12`; metadata
+- `ingestConversation({ profileId?, messages, window?, extraction?, turnRetention? })`:
+  records each message as its own evidence event, then calls the extractor once
+  per eligible message window. `window.maxMessages` defaults to `12`; metadata
   `sessionId`, `sessionKey`, or generic `windowId` starts a new window when it
   changes. `window.concurrency` runs bounded extractor windows in parallel
   while applying results in window order; the default is `1` unless a caller
   wires a higher concurrency. `extraction.extractFromRoles` overrides the
   runtime default for that ingest call. `extraction.replayAttempts` replays
-  failed windows once by default; `0` disables replay.
+  failed windows once by default; `0` disables replay. `turnRetention` defaults
+  to disabled; when `{ enabled: true }`, each eligible message also writes one
+  ordinary retrievable memory with `kind: "fact"` unless `kind` is supplied,
+  confidence `0.35` unless `confidence` is supplied, `metadata.turnMemory =
+  true`, `metadata.sourceEvidenceId`, and the same evidence id as
+  `sourceEventId`.
 
 Windowed extraction keeps evidence granularity. Accepted memories store
 `metadata.windowEvidenceIds` with every contributing evidence id and keep
@@ -71,6 +76,9 @@ aggregate `extractionFailureCount`, `extractionFailedWindowIndexes`,
 `replayedWindowCount`, `replayRecoveredCount`, `extractionMinConfidence`, and
 per-outcome character totals such as
 `extractionOkWithCandidatesCharCount` and `extractionEmptyCharCount`.
+Turn-retention writes use the same secret-like, incognito, person-routing,
+trust-cap, and lower-trust policy gates as extracted memories. Re-running the
+same event-keyed ingest writes no new turn memories.
 
 ### SQLite Store Encryption
 
@@ -347,6 +355,7 @@ await ingestTranscript({
   inputFile: "./thread.jsonl",
   format: "jsonl",
   replayAttempts: 1,
+  turnRetention: false,
   dryRun: true,
 });
 ```
@@ -363,6 +372,7 @@ The source file content hash and record index become stable message ids, so
 re-running the same file deduplicates at event-key level. Ingestion metadata
 stores the file hash, not the absolute path. No linguistic extraction is done by
 ingestion itself; any durable memory extraction comes from the runtime extractor
+or opt-in `turnRetention`.
 already configured by the host, now amortized by windows instead of per message.
 
 ### Autopilot

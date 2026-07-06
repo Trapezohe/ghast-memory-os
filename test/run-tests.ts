@@ -2339,6 +2339,153 @@ assert.equal(
   24,
 );
 await windowedMemory.close();
+const turnRetentionDisabledStore = createSqliteMemoryStore({
+  path: path.join(tmp, "turn-retention-disabled.db"),
+});
+const turnRetentionDisabledMemory = createMemoryOS({
+  profileId: "turn-retention-disabled",
+  store: turnRetentionDisabledStore,
+  extractor: () => [],
+});
+const turnRetentionDisabled = await turnRetentionDisabledMemory.ingestConversation({
+  profileId: "turn-retention-disabled",
+  messages: [{
+    conversationId: "turn-retention-disabled",
+    messageId: "turn-retention-disabled-1",
+    role: "user",
+    content: "TurnRetentionDisabledSignal should not persist without opt-in.",
+    createdAt: "2026-07-04T09:00:00.000Z",
+  }],
+});
+assert.equal(turnRetentionDisabled.memoryIds.length, 0);
+assert.equal(turnRetentionDisabled.turnMemoryCount, 0);
+await turnRetentionDisabledMemory.close();
+
+const turnRetentionStore = createSqliteMemoryStore({
+  path: path.join(tmp, "turn-retention.db"),
+});
+const turnRetentionMemory = createMemoryOS({
+  profileId: "turn-retention",
+  store: turnRetentionStore,
+  extractor: () => [],
+});
+const turnRetentionMessages = [
+  {
+    conversationId: "turn-retention",
+    messageId: "turn-retention-user",
+    role: "user" as const,
+    content: "TurnRetentionDroppedFactSignal answer is quartz.",
+    createdAt: "2026-07-04T09:30:00.000Z",
+    metadata: { speaker: "Alex", speakerKind: "person" as const },
+  },
+  {
+    conversationId: "turn-retention",
+    messageId: "turn-retention-assistant",
+    role: "assistant" as const,
+    content: "Assistant retained raw turn marker is citrine.",
+    createdAt: "2026-07-04T09:31:00.000Z",
+  },
+  {
+    conversationId: "turn-retention",
+    messageId: "turn-retention-incognito",
+    role: "user" as const,
+    content: "TurnRetentionIncognitoSignal must not persist.",
+    privacyMode: "incognito" as const,
+    createdAt: "2026-07-04T09:32:00.000Z",
+  },
+  {
+    conversationId: "turn-retention",
+    messageId: "turn-retention-secret",
+    role: "user" as const,
+    content: "TurnRetentionSecretSignal sk-turnretentionsecret1234567890",
+    createdAt: "2026-07-04T09:33:00.000Z",
+  },
+  {
+    conversationId: "turn-retention",
+    messageId: "turn-retention-person",
+    role: "user" as const,
+    content: "PERSON: Alice should not become a turn memory.",
+    createdAt: "2026-07-04T09:34:00.000Z",
+  },
+  {
+    conversationId: "turn-retention",
+    messageId: "turn-retention-external",
+    role: "user" as const,
+    sourceTrust: "external" as const,
+    content: "TurnRetentionExternalTrustSignal answer is zinc.",
+    createdAt: "2026-07-04T09:35:00.000Z",
+  },
+];
+const turnRetentionIngest = await turnRetentionMemory.ingestConversation({
+  profileId: "turn-retention",
+  messages: turnRetentionMessages,
+  extraction: { extractFromRoles: ["user", "assistant"] },
+  turnRetention: { enabled: true },
+});
+assert.equal(turnRetentionIngest.turnMemoryCount, 3);
+assert.equal(turnRetentionIngest.memoryIds.length, 3);
+const turnRetentionRows = await turnRetentionMemory.list({
+  profileId: "turn-retention",
+  status: "any",
+  includeSensitive: true,
+  limit: 20,
+});
+const turnRows = turnRetentionRows.filter((memoryRecord) => memoryRecord.metadata.turnMemory === true);
+assert.equal(turnRows.length, 3);
+assert.equal(turnRows.every((memoryRecord) => memoryRecord.kind === "fact"), true);
+assert.equal(turnRows.every((memoryRecord) => memoryRecord.confidence === 0.35), true);
+assert.equal(
+  turnRows.every(
+    (memoryRecord) =>
+      memoryRecord.sourceEventId === memoryRecord.metadata.sourceEvidenceId &&
+      memoryRecord.sourceEventId === memoryRecord.metadata.turnEvidenceId,
+  ),
+  true,
+);
+assert.equal(
+  turnRows.some((memoryRecord) =>
+    memoryRecord.content === "Alex (user): TurnRetentionDroppedFactSignal answer is quartz."
+  ),
+  true,
+);
+assert.equal(
+  turnRows.some((memoryRecord) => memoryRecord.content === "assistant: Assistant retained raw turn marker is citrine."),
+  true,
+);
+assert.equal(
+  turnRows.some((memoryRecord) => memoryRecord.metadata.sourceTrust === "external"),
+  true,
+);
+assert.equal(JSON.stringify(turnRows).includes("TurnRetentionIncognitoSignal"), false);
+assert.equal(JSON.stringify(turnRows).includes("TurnRetentionSecretSignal"), false);
+assert.equal(JSON.stringify(turnRows).includes("Alice should not become"), false);
+const turnRetentionSearch = await turnRetentionMemory.search({
+  profileId: "turn-retention",
+  query: "quartz",
+});
+assert.equal(
+  turnRetentionSearch.some((memoryRecord) => memoryRecord.metadata.turnMemory === true),
+  true,
+);
+const turnRetentionPrepared = await turnRetentionMemory.prepareTurn({
+  profileId: "turn-retention",
+  messages: [{ role: "user", content: "quartz" }],
+});
+assert.match(turnRetentionPrepared.contextBlock, /2026-07-04/);
+assert.match(turnRetentionPrepared.contextBlock, /quartz/);
+const turnRetentionCountsAfterFirst = await turnRetentionStore.rowCounts();
+const turnRetentionReingest = await turnRetentionMemory.ingestConversation({
+  profileId: "turn-retention",
+  messages: turnRetentionMessages,
+  extraction: { extractFromRoles: ["user", "assistant"] },
+  turnRetention: { enabled: true },
+});
+const turnRetentionCountsAfterSecond = await turnRetentionStore.rowCounts();
+assert.equal(turnRetentionReingest.turnMemoryCount, 0);
+assert.equal(turnRetentionCountsAfterSecond.gmos_evidence_events, turnRetentionCountsAfterFirst.gmos_evidence_events);
+assert.equal(turnRetentionCountsAfterSecond.gmos_memories, turnRetentionCountsAfterFirst.gmos_memories);
+await turnRetentionMemory.close();
+
 async function runWindowConcurrencyFixture(concurrency: number) {
   const store = createSqliteMemoryStore({
     path: path.join(tmp, `window-concurrency-${concurrency}.db`),
@@ -22256,6 +22403,7 @@ assert.deepEqual(
     "forensic_rollback_and_versioning",
     "trust_tiered_write_provenance",
     "confidence_annealing",
+    "hybrid_turn_retention_lifecycle",
     "provenance_weighted_experience_credit",
     "proactive_exploration",
     "principal_history_access_scope",
@@ -23155,6 +23303,9 @@ assert.match(officialAnswererFailureBenchmark.cases[0]?.answererError ?? "", /pl
 const officialAttributionBenchmark = await runExternalMemoryBenchmark({
   protocol: "official_protocol",
   ingestMode: "message",
+  // Turn retention would store the raw marker turn and shift the empty-extractor
+  // case to answerer_or_judge_stage; keep it off to exercise extraction_stage attribution.
+  turnRetention: false,
   intelligence: {
     extractor: {
       name: "empty-test-extractor",
@@ -24292,9 +24443,60 @@ const externalMessageModeBenchmark = await runExternalMemoryBenchmark({
 assert.equal(externalMessageModeBenchmark.pass, true);
 assert.equal(externalMessageExtractorCalls, 1);
 assert.equal(externalMessageModeBenchmark.runManifest.runtimeIntelligence.ingestMode, "message");
+assert.equal(externalMessageModeBenchmark.runManifest.runtimeIntelligence.turnRetention, true);
+assert.equal(externalMessageModeBenchmark.runManifest.options.turnRetention, true);
+assert.equal(externalMessageModeBenchmark.runManifest.runtimeIntelligence.ingestCaseGroups[0]?.turnMemoryCount, 2);
 assert.equal(externalMessageModeBenchmark.runManifest.runtimeIntelligence.extractionWindowCount, 1);
 assert.equal(externalMessageModeBenchmark.runManifest.runtimeIntelligence.extractionCallCount, 1);
 assert.equal(externalMessageModeBenchmark.runManifest.options.extractionWindow, 12);
+let externalMissedExtractorCalls = 0;
+const externalMissedAnswerCase = {
+  id: "external-message-turn-retention-missed-answer",
+  profileId: "external_message_turn_retention_missed_answer",
+  events: [{
+    type: "message" as const,
+    role: "user" as const,
+    content: "HybridMissedAnswerSignal value is marigold.",
+  }],
+  question: "What is the HybridMissedAnswerSignal value?",
+  expectedAny: ["marigold"],
+};
+const externalTurnRetentionOff = await runExternalMemoryBenchmark({
+  ingestMode: "message",
+  turnRetention: false,
+  intelligence: {
+    extractor: {
+      name: "external-missed-answer-extractor",
+      extract() {
+        externalMissedExtractorCalls += 1;
+        return [];
+      },
+    },
+  },
+  cases: [externalMissedAnswerCase],
+});
+const externalTurnRetentionOn = await runExternalMemoryBenchmark({
+  ingestMode: "message",
+  turnRetention: true,
+  intelligence: {
+    extractor: {
+      name: "external-missed-answer-extractor",
+      extract() {
+        externalMissedExtractorCalls += 1;
+        return [];
+      },
+    },
+  },
+  cases: [externalMissedAnswerCase],
+});
+assert.equal(externalTurnRetentionOff.pass, false);
+assert.equal(externalTurnRetentionOff.runManifest.options.turnRetention, false);
+assert.equal(externalTurnRetentionOff.runManifest.runtimeIntelligence.ingestCaseGroups[0]?.turnMemoryCount, 0);
+assert.equal(externalTurnRetentionOn.pass, true);
+assert.equal(externalTurnRetentionOn.runManifest.options.turnRetention, true);
+assert.equal(externalTurnRetentionOn.runManifest.runtimeIntelligence.ingestCaseGroups[0]?.turnMemoryCount, 1);
+assert.deepEqual(externalTurnRetentionOn.cases[0]?.expectedAnyMatched, ["marigold"]);
+assert.equal(externalMissedExtractorCalls, 2);
 const longMemEvalJsonlCases = parseLongMemEvalBenchmarkDataset(
   longMemEvalFixture.slice(1, -1),
 );
@@ -24742,6 +24944,7 @@ const externalIntelligenceDefaultRun = await runExternalMemoryBenchmark({
 assert.equal(externalIntelligenceDefaultRun.pass, true);
 assert.equal(externalIntelligenceDefaultRun.runManifest.runtimeIntelligence.enabled, false);
 assert.equal(externalIntelligenceDefaultRun.runManifest.runtimeIntelligence.ingestMode, "memory");
+assert.equal(externalIntelligenceDefaultRun.runManifest.runtimeIntelligence.turnRetention, false);
 const externalIntelligenceMessageCases = parseExternalMemoryBenchmarkDataset(
   externalIntelligenceFixture,
   { adapter: "longmemeval", ingestMode: "message" },
@@ -24821,6 +25024,11 @@ try {
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.enabled, true);
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.baseUrlHost, "bench-intelligence.invalid");
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.apiKeyEnv, "GMOS_BENCH_TEST_KEY");
+  assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.turnRetention, true);
+  assert.equal(
+    (externalIntelligenceRun.runManifest.runtimeIntelligence.ingestCaseGroups[0]?.turnMemoryCount ?? 0) > 0,
+    true,
+  );
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.model, "bench-chat");
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.embedModel, "bench-embed");
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.embedQuery, true);
@@ -24849,7 +25057,7 @@ try {
   assert.equal(externalIntelligenceJson.includes("bench-intelligence.invalid/v1"), false);
   assert.match(
     renderExternalMemoryBenchmarkMarkdown(externalIntelligenceRun),
-    /Runtime intelligence: enabled=true ingestMode=message model=bench-chat embedModel=bench-embed embedQuery=true queryEmbeddingFailures=0 host=bench-intelligence\.invalid maintainPhases=decay concurrency=1 timeoutMs=5000 retries=2 backoffMs=250 extractionWindows=2 extractionCalls=2 extractionRetries=2 extractionEmpty=0 replayedWindows=0 replayRecovered=0 okChars=\d+ emptyChars=0 parseFailureChars=0 transportFailureChars=\d+ extractionParseFailures=0 extractionTransportFailures=1 extractionFailures=1/,
+    /Runtime intelligence: enabled=true ingestMode=message turnRetention=true model=bench-chat embedModel=bench-embed embedQuery=true queryEmbeddingFailures=0 host=bench-intelligence\.invalid maintainPhases=decay concurrency=1 timeoutMs=5000 retries=2 backoffMs=250 extractionWindows=2 extractionCalls=2 extractionRetries=2 extractionEmpty=0 replayedWindows=0 replayRecovered=0 okChars=\d+ emptyChars=0 parseFailureChars=0 transportFailureChars=\d+ extractionParseFailures=0 extractionTransportFailures=1 extractionFailures=1/,
   );
 } finally {
   if (previousExternalBenchKey === undefined) {
@@ -26703,6 +26911,7 @@ const cliExternalIntelligenceJson = JSON.parse(cliExternalIntelligence.stdout) a
       baseUrlHost?: string | null;
       apiKeyEnv?: string | null;
       ingestMode?: string;
+      turnRetention?: boolean;
       model?: string | null;
       embedModel?: string | null;
       concurrency?: number | null;
@@ -26716,6 +26925,7 @@ const cliExternalIntelligenceJson = JSON.parse(cliExternalIntelligence.stdout) a
       extractionFailureCount?: number;
       extractionOkWithCandidatesCharCount?: number;
       extractionEmptyCharCount?: number;
+      ingestCaseGroups?: Array<{ turnMemoryCount?: number }>;
     };
   };
 };
@@ -26724,6 +26934,8 @@ assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.enabl
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.baseUrlHost, "cli-intelligence.invalid");
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.apiKeyEnv, "GMOS_CLI_BENCH_SECRET");
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.ingestMode, "message");
+assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.turnRetention, true);
+assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.ingestCaseGroups?.[0]?.turnMemoryCount, 1);
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.model, "cli-chat");
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.embedModel, "cli-embed");
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.concurrency, 1);
@@ -26741,6 +26953,7 @@ const cliExternalIntelligenceFetchLog = readFileSync(cliExternalIntelligenceFetc
 assert.match(cliExternalIntelligenceFetchLog, new RegExp(`Bearer ${cliExternalIntelligenceSecret}`));
 assert.match(cliExternalIntelligenceFetchLog, /"enableThinking":false/u);
 assert.match(cliExternalIntelligence.stderr, /\[gmos external\] ingest .*windows=1\/1 .*extractionParseFailures=0/u);
+assert.match(cliExternalIntelligence.stderr, /turnMemories=1/u);
 const cliExternalIntelligenceDebugFiles = readdirSync(cliExternalIntelligenceDebugDir);
 assert.equal(cliExternalIntelligenceDebugFiles.length > 0, true);
 const cliExternalIntelligenceDebugText = cliExternalIntelligenceDebugFiles

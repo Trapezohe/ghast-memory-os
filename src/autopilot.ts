@@ -23,6 +23,7 @@ export interface TranscriptIngestInput {
   format: TranscriptIngestFormat;
   dryRun?: boolean | undefined;
   replayAttempts?: number | undefined;
+  turnRetention?: boolean | undefined;
   now?: string | undefined;
   fileName?: string | undefined;
 }
@@ -174,7 +175,11 @@ export interface RunAutopilotInput {
   profileId?: string | undefined;
   phases?: MaintenancePhase[] | undefined;
   embedBackfill?: boolean | { batchSize?: number | undefined } | undefined;
-  ingest?: { dir?: string | undefined; replayAttempts?: number | undefined } | undefined;
+  ingest?: {
+    dir?: string | undefined;
+    replayAttempts?: number | undefined;
+    turnRetention?: boolean | undefined;
+  } | undefined;
   dryRun?: boolean | undefined;
   now?: string | undefined;
   historyRetention?: number | undefined;
@@ -445,6 +450,9 @@ export async function ingestTranscript(input: TranscriptIngestInput): Promise<Tr
     extraction: {
       ...(input.replayAttempts !== undefined ? { replayAttempts: input.replayAttempts } : {}),
     },
+    ...(input.turnRetention !== undefined
+      ? { turnRetention: { enabled: input.turnRetention } }
+      : {}),
   });
   for (const observed of ingested.results) {
     if (observed.skippedReason === "deduplicated_event") report.deduplicated += 1;
@@ -475,6 +483,7 @@ async function ingestDirectory(input: {
   dryRun: boolean;
   now: string;
   replayAttempts?: number | undefined;
+  turnRetention?: boolean | undefined;
 }): Promise<AutopilotIngestDirectoryReport> {
   if (!input.dir) {
     return {
@@ -528,6 +537,7 @@ async function ingestDirectory(input: {
         format: "auto",
         dryRun: input.dryRun,
         replayAttempts: input.replayAttempts,
+        turnRetention: input.turnRetention,
         now: input.now,
         fileName: path.basename(name),
       });
@@ -698,6 +708,7 @@ export async function runAutopilot(input: RunAutopilotInput): Promise<AutopilotR
         dryRun,
         now: startedAt,
         replayAttempts: input.ingest?.replayAttempts,
+        turnRetention: input.ingest?.turnRetention,
       });
     } catch (error) {
       ingest = {

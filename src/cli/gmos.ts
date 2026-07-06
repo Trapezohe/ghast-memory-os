@@ -135,8 +135,8 @@ Usage:
   gmos repair --db ./gmos.db --associations
   gmos status --db ./gmos.db --profile local --host ghast --format markdown
   gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate,distill,dossier,explore --now 2026-07-02T00:00:00.000Z --format markdown
-  gmos ingest --db ./gmos.db --profile local --input-file ./thread.jsonl --input-format jsonl --ingest-replay-attempts 1 --dry-run --format markdown
-  gmos autopilot run --db ./gmos.db --profile local --phases decay,consolidate --embed-backfill-batch 32 --ingest-dir ./transcripts --ingest-replay-attempts 1 --dry-run --format json
+  gmos ingest --db ./gmos.db --profile local --input-file ./thread.jsonl --input-format jsonl --ingest-replay-attempts 1 --turn-retention off --dry-run --format markdown
+  gmos autopilot run --db ./gmos.db --profile local --phases decay,consolidate --embed-backfill-batch 32 --ingest-dir ./transcripts --ingest-replay-attempts 1 --turn-retention off --dry-run --format json
   gmos autopilot history --db ./gmos.db --profile local --limit 20
   gmos add --db ./gmos.db --profile local --kind preference --text "回答风格：简洁，先给结论"
   gmos update --db ./gmos.db --profile local --id memory_xxx --text "回答风格：先给结论，再列方案"
@@ -182,7 +182,7 @@ Usage:
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --reader-profile expansive --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
   gmos gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --max-cases 5 --results-jsonl ./paid-smoke.results.jsonl
-  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --extraction-window 12 --ingest-replay-attempts 1 --embed-query on --intelligence-base-url http://127.0.0.1:11434/v1 --intelligence-model llama3.1 --intelligence-embed-model nomic-embed-text --intelligence-embed-dimensions 768 --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-disable-thinking
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --turn-retention on --extraction-window 12 --ingest-replay-attempts 1 --embed-query on --intelligence-base-url http://127.0.0.1:11434/v1 --intelligence-model llama3.1 --intelligence-embed-model nomic-embed-text --intelligence-embed-dimensions 768 --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-disable-thinking
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --protocol official-protocol --answerer-base-url http://127.0.0.1:11434/v1 --answerer-model llama3.1 --answerer-timeout-ms 90000 --answerer-disable-thinking
   gmos gym external gains --input-file ./long-memory-cleaned.json --dataset-format longmemeval --reproduction-bundle ./release-evidence/bench-run
   gmos gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format markdown
@@ -334,6 +334,14 @@ function sweepCuesOption(): boolean | undefined {
   if (raw === "on") return true;
   if (raw === "off") return false;
   throw new Error("--sweep-cues must be on or off");
+}
+
+function turnRetentionOption(): boolean | undefined {
+  const raw = value("--turn-retention");
+  if (raw === undefined) return undefined;
+  if (raw === "on") return true;
+  if (raw === "off") return false;
+  throw new Error("--turn-retention must be on or off");
 }
 
 function hostPreset(): HostPreset | undefined {
@@ -2045,6 +2053,7 @@ async function main(): Promise<void> {
     const embedQuery = embedQueryOption();
     const queryPlanner = queryPlannerOption();
     const sweepCues = sweepCuesOption();
+    const turnRetention = turnRetentionOption();
     if (debugDumpMemories !== undefined && debugDumpMemories > 0 && !resolvedDebugDir) {
       throw new Error("--debug-dump-memories requires --intelligence-debug-dir");
     }
@@ -2095,6 +2104,7 @@ async function main(): Promise<void> {
       ...(judge ? { judge } : {}),
       ...(answerer ? { answerer } : {}),
       ingestMode,
+      ...(turnRetention !== undefined ? { turnRetention } : {}),
       ...(embedQuery !== undefined ? { embedQuery } : {}),
       ...(queryPlanner !== undefined ? { queryPlanner } : {}),
       ...(sweepCues !== undefined ? { sweepCues } : {}),
@@ -2105,14 +2115,14 @@ async function main(): Promise<void> {
             onCaseGroupSetup: (progress) => {
               if (has("--progress")) {
                 console.error(
-                  `[gmos external] setup group=${progress.groupKey} events=${progress.eventCount} memories=${progress.extractedMemoryCount} windows=${progress.extractionWindowCount} extractionCalls=${progress.extractionCallCount} extractionRetries=${progress.extractionRetryCount} extractionEmpty=${progress.extractionEmptyCount} replayedWindows=${progress.replayedWindowCount} replayRecovered=${progress.replayRecoveredCount} okChars=${progress.extractionOkWithCandidatesCharCount} emptyChars=${progress.extractionEmptyCharCount} parseFailureChars=${progress.extractionParseFailureCharCount} transportFailureChars=${progress.extractionTransportFailureCharCount} extractionParseFailures=${progress.extractionParseFailureCount} extractionTransportFailures=${progress.extractionTransportFailureCount} extractionFailures=${progress.extractionFailureCount} ingestMs=${progress.ingestDurationMs}`,
+                  `[gmos external] setup group=${progress.groupKey} events=${progress.eventCount} memories=${progress.extractedMemoryCount} turnMemories=${progress.turnMemoryCount} windows=${progress.extractionWindowCount} extractionCalls=${progress.extractionCallCount} extractionRetries=${progress.extractionRetryCount} extractionEmpty=${progress.extractionEmptyCount} replayedWindows=${progress.replayedWindowCount} replayRecovered=${progress.replayRecoveredCount} okChars=${progress.extractionOkWithCandidatesCharCount} emptyChars=${progress.extractionEmptyCharCount} parseFailureChars=${progress.extractionParseFailureCharCount} transportFailureChars=${progress.extractionTransportFailureCharCount} extractionParseFailures=${progress.extractionParseFailureCount} extractionTransportFailures=${progress.extractionTransportFailureCount} extractionFailures=${progress.extractionFailureCount} ingestMs=${progress.ingestDurationMs}`,
                 );
               }
             },
             onCaseGroupIngestProgress: (progress) => {
               if (!has("--progress")) return;
               console.error(
-                `[gmos external] ingest group=${progress.groupKey} windows=${progress.windowsDone}/${progress.windowsTotal} extractionCalls=${progress.extractionCallCount} extractionRetries=${progress.extractionRetryCount} extractionEmpty=${progress.extractionEmptyCount} replayedWindows=${progress.replayedWindowCount} replayRecovered=${progress.replayRecoveredCount} okChars=${progress.extractionOkWithCandidatesCharCount} emptyChars=${progress.extractionEmptyCharCount} parseFailureChars=${progress.extractionParseFailureCharCount} transportFailureChars=${progress.extractionTransportFailureCharCount} extractionParseFailures=${progress.extractionParseFailureCount} extractionTransportFailures=${progress.extractionTransportFailureCount} extractionFailures=${progress.extractionFailureCount} memories=${progress.extractedMemoryCount} elapsedMs=${progress.elapsedMs} etaMs=${progress.etaMs ?? "unknown"}`,
+                `[gmos external] ingest group=${progress.groupKey} windows=${progress.windowsDone}/${progress.windowsTotal} extractionCalls=${progress.extractionCallCount} extractionRetries=${progress.extractionRetryCount} extractionEmpty=${progress.extractionEmptyCount} replayedWindows=${progress.replayedWindowCount} replayRecovered=${progress.replayRecoveredCount} okChars=${progress.extractionOkWithCandidatesCharCount} emptyChars=${progress.extractionEmptyCharCount} parseFailureChars=${progress.extractionParseFailureCharCount} transportFailureChars=${progress.extractionTransportFailureCharCount} extractionParseFailures=${progress.extractionParseFailureCount} extractionTransportFailures=${progress.extractionTransportFailureCount} extractionFailures=${progress.extractionFailureCount} memories=${progress.extractedMemoryCount} turnMemories=${progress.turnMemoryCount} elapsedMs=${progress.elapsedMs} etaMs=${progress.etaMs ?? "unknown"}`,
               );
             },
             onCaseResult: (progress) => {
@@ -2334,6 +2344,7 @@ async function main(): Promise<void> {
         format: transcriptIngestFormatOption(),
         dryRun: has("--dry-run"),
         replayAttempts: nonNegativeIntegerOption("--ingest-replay-attempts", 1),
+        turnRetention: turnRetentionOption(),
       });
       printCustomReport(report, renderIngestMarkdown(report));
       return;
@@ -2353,6 +2364,7 @@ async function main(): Promise<void> {
               ingest: {
                 dir: path.resolve(process.cwd(), value("--ingest-dir")!),
                 replayAttempts: nonNegativeIntegerOption("--ingest-replay-attempts", 1),
+                turnRetention: turnRetentionOption(),
               },
             }
           : {}),
@@ -2531,6 +2543,7 @@ async function main(): Promise<void> {
           inputFile: path.resolve(process.cwd(), inputFile),
           format: transcriptImportFormatOption(),
           dryRun: has("--dry-run"),
+          turnRetention: turnRetentionOption(),
         });
         printCustomReport(report, renderIngestMarkdown(report));
         return;

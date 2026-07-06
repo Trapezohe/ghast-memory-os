@@ -276,6 +276,13 @@ preserved, and speaker metadata is carried where the dataset provides it. In
 message mode gmOS uses `ingestConversation()` with windowed extraction:
 extractor calls are `ceil(eligible_messages / --extraction-window)` per session
 boundary, not one call per message. The default window is `12` messages.
+Message-mode benchmark ingest also enables turn retention by default: each
+eligible raw turn is retrievable as a low-confidence `fact` memory alongside
+the extracted atoms. This measures the layered storage bound for answerability,
+because extraction can miss facts that direct import would keep. Use
+`--turn-retention off` to measure atoms-only behavior, or `--turn-retention on`
+to make the default explicit. SDK and host transcript ingestion default this
+option off so production hosts consciously trade storage for recall.
 
 Message-mode extraction defaults to `["user", "assistant"]` so answer-bearing
 assistant turns in LongMemEval are extractable. LoCoMo still maps both speakers
@@ -349,8 +356,10 @@ the number of sweep lines included.
 
 With `--progress`, message-mode setup prints content-free window progress every
 10 windows and at completion: windows done/total, outcome counts, extracted
-candidate count so far, retry count, outcome character totals, elapsed time,
-and rough ETA. Runtime manifests include `extractionRetryCount`,
+candidate count so far, turn-memory count, retry count, outcome character
+totals, elapsed time, and rough ETA. Runtime manifests include
+`runtimeIntelligence.turnRetention`, per-group `turnMemoryCount`,
+`extractionRetryCount`,
 `extractionEmptyCount`, `extractionParseFailureCount`,
 `extractionTransportFailureCount`, outcome character totals such as
 `extractionOkWithCandidatesCharCount` and `extractionEmptyCharCount`, alongside
