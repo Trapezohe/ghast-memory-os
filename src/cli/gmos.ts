@@ -320,6 +320,14 @@ function embedQueryOption(): boolean | undefined {
   throw new Error("--embed-query must be on or off");
 }
 
+function queryPlannerOption(): boolean | undefined {
+  const raw = value("--query-planner");
+  if (raw === undefined) return undefined;
+  if (raw === "on") return true;
+  if (raw === "off") return false;
+  throw new Error("--query-planner must be on or off");
+}
+
 function hostPreset(): HostPreset | undefined {
   const host = value("--host");
   if (!host) return undefined;
@@ -637,6 +645,8 @@ function externalIntelligenceOption(debugDir: string | undefined): {
   apiKeyEnv?: string | undefined;
   model: string;
   embedModel?: string | undefined;
+  plannerBaseUrl?: string | undefined;
+  plannerModel?: string | undefined;
   dimensions?: number | undefined;
   timeoutMs?: number | undefined;
   retries?: number | undefined;
@@ -646,7 +656,9 @@ function externalIntelligenceOption(debugDir: string | undefined): {
   debugDir?: string | undefined;
 } | undefined {
   const hasIntelligenceFlag = process.argv.some((arg) =>
-    arg.startsWith("--intelligence-") && arg !== "--intelligence-debug-dir"
+    (arg.startsWith("--intelligence-") && arg !== "--intelligence-debug-dir") ||
+    arg === "--planner-base-url" ||
+    arg === "--planner-model"
   );
   if (!hasIntelligenceFlag) return undefined;
   const baseUrl = value("--intelligence-base-url");
@@ -662,6 +674,8 @@ function externalIntelligenceOption(debugDir: string | undefined): {
     throw new Error("--intelligence-api-key-env must be an environment variable name");
   }
   const embedModel = value("--intelligence-embed-model");
+  const plannerBaseUrl = value("--planner-base-url");
+  const plannerModel = value("--planner-model");
   const dimensions = positiveIntegerOptionValue("--intelligence-embed-dimensions");
   const timeoutMs = positiveIntegerOptionValue("--intelligence-timeout-ms");
   const retries = nonNegativeIntegerOptionValue("--intelligence-retries");
@@ -672,6 +686,8 @@ function externalIntelligenceOption(debugDir: string | undefined): {
     baseUrl,
     model,
     ...(embedModel ? { embedModel } : {}),
+    ...(plannerBaseUrl ? { plannerBaseUrl } : {}),
+    ...(plannerModel ? { plannerModel } : {}),
     ...(apiKeyEnv ? { apiKeyEnv } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(retries !== undefined ? { retries } : {}),
@@ -2019,6 +2035,7 @@ async function main(): Promise<void> {
     const debugDumpMemories = nonNegativeIntegerOptionValue("--debug-dump-memories");
     const ingestReplayAttempts = nonNegativeIntegerOption("--ingest-replay-attempts", 1);
     const embedQuery = embedQueryOption();
+    const queryPlanner = queryPlannerOption();
     if (debugDumpMemories !== undefined && debugDumpMemories > 0 && !resolvedDebugDir) {
       throw new Error("--debug-dump-memories requires --intelligence-debug-dir");
     }
@@ -2070,6 +2087,7 @@ async function main(): Promise<void> {
       ...(answerer ? { answerer } : {}),
       ingestMode,
       ...(embedQuery !== undefined ? { embedQuery } : {}),
+      ...(queryPlanner !== undefined ? { queryPlanner } : {}),
       ...(intelligence ? { intelligence } : {}),
       ...(maintainPhases ? { maintainPhases } : {}),
       ...(has("--progress") || resultsJsonl
@@ -2092,7 +2110,7 @@ async function main(): Promise<void> {
               if (!has("--progress")) return;
               const status = progress.pass ? "pass" : "fail";
               console.error(
-                `[gmos external] ${progress.completedCount}/${progress.totalCount} ${status} case=${progress.caseId} durationMs=${progress.durationMs} retrieved=${progress.result.retrievedMemoryCount} queryEmbeddingFailures=${progress.queryEmbeddingFailureCount} passed=${progress.passedCount} failed=${progress.failedCount}`,
+                `[gmos external] ${progress.completedCount}/${progress.totalCount} ${status} case=${progress.caseId} durationMs=${progress.durationMs} retrieved=${progress.result.retrievedMemoryCount} queryEmbeddingFailures=${progress.queryEmbeddingFailureCount} plannerFailures=${progress.plannerFailureCount} passed=${progress.passedCount} failed=${progress.failedCount}`,
               );
             },
           }

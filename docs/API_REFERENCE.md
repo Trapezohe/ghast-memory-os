@@ -466,7 +466,8 @@ Primary methods:
   `createOpenAICompatibleProcedureDistiller`,
   `createOpenAICompatibleDossierSynthesizer`,
   `createOpenAICompatibleEmbeddingProvider`,
-  `createOpenAICompatibleReranker`, and `createDefaultIntelligence`. Every
+  `createOpenAICompatibleReranker`, `createOpenAICompatibleQueryPlanner`, and
+  `createDefaultIntelligence`. Every
   factory accepts an injectable `fetchImpl`, uses OpenAI-compatible HTTP shapes,
   accepts the same response parsing tolerance, and is loaded only when the host
   imports the subpath. `timeoutMs` is the total call budget; `retries` defaults
@@ -476,6 +477,9 @@ Primary methods:
   The OpenAI-compatible extractor keeps the single-message default cap at
   `maxCandidates=6`; windowed extraction defaults to `12` candidates unless
   `maxCandidates` or `windowMaxCandidates` overrides it.
+  `createOpenAICompatibleQueryPlanner({ maxAnchors })` returns
+  `{ requiredAnchors: [{ cue, hint? }] }` for host-side read planning; empty
+  output means ordinary retrieval.
 - `prepareTurn(input)`: retrieve ordinary context and action policy for the next
   agent turn. This is a read path and must not write. When the exploration index
   has relevant candidates, gmOS may emit deterministic `kind: "curiosity"`
@@ -983,16 +987,21 @@ gmOS methods: `observe`, `prepareTurn`, `reconstructContext`, `commitOutcome`,
 Advanced hosts can pass `reconstructionIntent` to `reconstructContext()` or
 shadow `prepareTurn()` reconstruction when the host/controller already knows the
 turn needs procedure, boundary, preference, or current-state evidence. These
-structured `queryCues`, `expectedTags`, and required tag groups are the semantic
-route contract; gmOS does not infer these route groups from language keyword
-lists. Use `recallPurpose: "history"` or `"context"` when the host already knows
-whether the turn asks for historical or current state. `queryCues`, expected
-tags, and required tag groups may include host-owned route signals. When such a
-signal does not appear in the public query, gmOS keeps it as an internal routing
-hint and renders `retrieval_hint` in public context, planner traces, and
-explain-path output. Sensitive or secret-like cue hints and intent tags are still
-ignored, and cue hints are capped before they can enter the reconstruction
-frontier.
+structured `queryCues`, `expectedTags`, required tag groups, and
+`requiredAnchors: [{ cue, hint? }]` are the semantic route contract; gmOS does
+not infer these route groups from language keyword lists. Use
+`recallPurpose: "history"` or `"context"` when the host already knows whether the
+turn asks for historical or current state. Required anchors are endpoint
+descriptions that must each contribute one memory before ordinary anchor spending
+continues; each required anchor gets a direct memory search using the anchor
+`cue` text. When query embedding is enabled, required-anchor searches request one
+fresh anchor-text embedding per anchor, still under the same secret-like and
+failure fallback gates. `queryCues`, expected tags, required anchors, and required
+tag groups may include host-owned route signals. When such a signal does not
+appear in the public query, gmOS keeps it as an internal routing hint and renders
+`retrieval_hint` in public context, planner traces, and explain-path output.
+Sensitive or secret-like cue hints, anchors, and intent tags are ignored before
+they can enter the reconstruction frontier.
 
 Reconstruction anchor coverage is enabled by default. gmOS derives anchor cues
 from the same bounded query-cue extraction and `reconstructionIntent.queryCues`,
@@ -1001,7 +1010,8 @@ order. Set `anchorCoverage: false` on `reconstructContext()`,
 `explainEvidencePath()`, or shadow `prepareTurn({ reconstruction })` when a host
 needs the legacy global best-first planner. Reconstruction stats and planner traces include
 `anchorCoverage` with `anchorCue`, `candidateCount`, `includedCount`, and
-`uncoveredAnchors` so missed anchors are visible.
+`uncoveredAnchors`; required-anchor misses are additionally exposed as
+`requiredAnchorUnmet` in reconstruction stats and `anchorCoverage`.
 
 Hosts with their own entity, calendar, or route parser can configure
 `createMemoryOS({ reconstruction: { cueExtractor } })`. The extractor returns
@@ -1141,6 +1151,12 @@ executed cases only. Official-protocol case results may include
 `officialFailureAttribution` with `answerer_or_judge_stage`, `retrieval_stage`,
 `extraction_stage`, or `input_stage`; summary counts are in
 `summary.officialFailureAttribution`.
+
+When runtime intelligence includes a query planner, external scoring reads call
+it once per reconstruct case and pass derived anchors through
+`reconstructionIntent.requiredAnchors`. `queryPlanner: false` disables the call.
+Reports record `derivedRequiredAnchors`, `requiredAnchorUnmetCount`, and
+`runtimeIntelligence.queryPlanner` provenance/failure count.
 
 For OpenAI-compatible hosts, `@ghast/memory/gym` also exports
 `createOpenAICompatibleExternalBenchmarkAnswerer()` and

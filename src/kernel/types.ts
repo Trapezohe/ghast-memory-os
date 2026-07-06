@@ -728,6 +728,29 @@ export type MemoryRetrievalReranker =
       ): Promise<string[]> | string[];
     };
 
+export type MemoryQueryPlanner =
+  | ((
+      input: {
+        question: string;
+        maxAnchors?: number | undefined;
+      },
+    ) => Promise<ReconstructionRequiredAnchorHint[] | null | undefined> |
+      ReconstructionRequiredAnchorHint[] |
+      null |
+      undefined)
+  | {
+      name?: string | undefined;
+      plan(
+        input: {
+          question: string;
+          maxAnchors?: number | undefined;
+        },
+      ): Promise<ReconstructionRequiredAnchorHint[] | null | undefined> |
+        ReconstructionRequiredAnchorHint[] |
+        null |
+        undefined;
+    };
+
 export interface ExplainTurnInput extends PrepareTurnInput {
   maxExcluded?: number | undefined;
 }
@@ -858,10 +881,16 @@ export interface ReconstructionIntentTagGroupHint {
   tags: string[];
 }
 
+export interface ReconstructionRequiredAnchorHint {
+  cue: string;
+  hint?: string | undefined;
+}
+
 export interface ReconstructionIntentHint {
   expectedTags?: string[] | undefined;
   requiredTagGroups?: ReconstructionIntentTagGroupHint[] | undefined;
   queryCues?: string[] | undefined;
+  requiredAnchors?: ReconstructionRequiredAnchorHint[] | undefined;
 }
 
 export interface ReconstructContextInput {
@@ -912,6 +941,8 @@ export interface ReconstructedEvidencePath {
 
 export interface ReconstructionAnchorCoverageEntry {
   anchorCue: string;
+  required?: boolean | undefined;
+  hint?: string | undefined;
   candidateCount: number;
   includedCount: number;
   uncovered: boolean;
@@ -921,6 +952,9 @@ export interface ReconstructionAnchorCoverageReport {
   anchorCount: number;
   coveredAnchorCount: number;
   uncoveredAnchors: string[];
+  requiredAnchorCount: number;
+  coveredRequiredAnchorCount: number;
+  requiredAnchorUnmet: string[];
   anchors: ReconstructionAnchorCoverageEntry[];
 }
 
@@ -1002,6 +1036,7 @@ export interface ReconstructedContext {
       selectedTags: string[];
     } | undefined;
     anchorCoverage?: ReconstructionAnchorCoverageReport | undefined;
+    requiredAnchorUnmet?: string[] | undefined;
   };
 }
 
@@ -1271,6 +1306,7 @@ export interface MemorySearchInput {
   trace?: MemorySearchTraceCollector | undefined;
   retrieval?: MemoryRetrievalConfig | undefined;
   queryEmbedding?: QueryVectorEmbedding | undefined;
+  freshQueryEmbedding?: boolean | undefined;
 }
 
 export type MemoryAssociationTargetType = "memory" | "world_belief" | "task_trajectory";

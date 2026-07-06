@@ -856,6 +856,16 @@ function sanitizedReconstructionIntent(
   if (!intent) return undefined;
   const expectedTags = sanitizedRouteSignalList(intent.expectedTags, classifyRuntimeSensitivity);
   const queryCues = sanitizedRouteSignalList(intent.queryCues, classifyRuntimeSensitivity);
+  const requiredAnchors: NonNullable<ReconstructionIntentHint["requiredAnchors"]> = [];
+  for (const anchor of intent.requiredAnchors ?? []) {
+    const cue = sanitizedRouteSignalList([anchor.cue], classifyRuntimeSensitivity)?.[0];
+    if (!cue) continue;
+    const hint = sanitizedRouteSignalList(
+      typeof anchor.hint === "string" ? [anchor.hint] : undefined,
+      classifyRuntimeSensitivity,
+    )?.[0];
+    requiredAnchors.push(hint ? { cue, hint } : { cue });
+  }
   const requiredTagGroups: NonNullable<ReconstructionIntentHint["requiredTagGroups"]> = [];
   for (const group of intent.requiredTagGroups ?? []) {
     const tags = sanitizedRouteSignalList(group.tags, classifyRuntimeSensitivity);
@@ -869,6 +879,7 @@ function sanitizedReconstructionIntent(
   const sanitized: ReconstructionIntentHint = {
     ...(expectedTags ? { expectedTags } : {}),
     ...(queryCues ? { queryCues } : {}),
+    ...(requiredAnchors.length > 0 ? { requiredAnchors } : {}),
     ...(requiredTagGroups.length > 0 ? { requiredTagGroups } : {}),
   };
   return Object.keys(sanitized).length > 0 ? sanitized : undefined;
@@ -1268,7 +1279,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   ): Promise<MemoryRecord[]> {
     const resolvedQueryEmbedding =
       input.queryEmbedding ??
-      (queryEmbedding === undefined
+      (input.freshQueryEmbedding
+        ? await queryEmbeddingForSearch(input.query, readRetrieval)
+        : queryEmbedding === undefined
         ? await queryEmbeddingForSearch(input.query, readRetrieval)
         : queryEmbedding ?? undefined);
     const memories = await store.searchMemories({

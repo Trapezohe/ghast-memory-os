@@ -204,6 +204,14 @@ budget remains, uncovered anchors get a bounded direct-memory top-up before the
 ordinary hybrid path runs. Diagnostics report candidate and included counts per
 anchor plus `uncoveredAnchors`.
 
+Hosts may also declare `reconstructionIntent.requiredAnchors`. These are not
+inferred by the kernel and are not dataset rules; they are host-owned endpoint
+descriptions. Required anchors reserve memory slots ahead of ordinary anchors and
+each receives one direct store search using the anchor text. If query embedding
+is active, that required-anchor pass gets its own anchor-text embedding under the
+same secret-like and failure fallback gates. Unmet required anchors stay visible
+as `requiredAnchorUnmet` in reconstruction stats and anchor coverage.
+
 Direct memory retrieval uses one shared hybrid search path. FTS rank, vector
 cosine similarity, and association/tag overlap are fused with fixed default
 weights (`fts=1`, `vector=1.2`, `association=0.8`) and deterministic tie-breaks

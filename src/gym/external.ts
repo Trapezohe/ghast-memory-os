@@ -12,6 +12,7 @@ import type {
   MemoryDossierSynthesizer,
   MemoryExtractor,
   MemoryKind,
+  MemoryQueryPlanner,
   MemoryRecord,
   MemoryOS,
   MemoryReadRetrievalOptions,
@@ -19,6 +20,7 @@ import type {
   PrivacyMode,
   ReconstructedContext,
   ReconstructionIntentHint,
+  ReconstructionRequiredAnchorHint,
   MemoryRetrievalConfig,
   MemoryRetrievalReranker,
   Sensitivity,
@@ -30,7 +32,12 @@ import {
   type OpenAICompatibleFetch,
 } from "../intelligence/index.js";
 import { readGmosPackageInfo, readGmosPackageRoot } from "../kernel/package-info.js";
-import { eligibleForLongTermMemory, redactForReport, sanitizePublicPayload } from "../kernel/safety.js";
+import {
+  classifySensitivity,
+  eligibleForLongTermMemory,
+  redactForReport,
+  sanitizePublicPayload,
+} from "../kernel/safety.js";
 import { temporalContextLabel } from "../kernel/temporal-format.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
@@ -52,6 +59,8 @@ export interface ExternalMemoryBenchmarkIntelligenceConfig {
   apiKeyEnv?: string | undefined;
   model: string;
   embedModel?: string | undefined;
+  plannerBaseUrl?: string | undefined;
+  plannerModel?: string | undefined;
   dimensions?: number | undefined;
   timeoutMs?: number | undefined;
   retries?: number | undefined;
@@ -128,6 +137,7 @@ export interface ExternalMemoryBenchmarkCaseDiagnostics {
   evidenceConvergenceScore: number | null;
   evidenceConvergenceReached: boolean | null;
   missingRequiredIntentGroups: string[];
+  requiredAnchorUnmet: string[];
   uncertaintyLevel: "low" | "medium" | "high" | null;
   uncertaintyReasons: string[];
 }
@@ -260,6 +270,8 @@ export interface ExternalMemoryBenchmarkCaseResult {
   failureTaxonomy?: ExternalMemoryBenchmarkFailureTaxonomyEntry[] | undefined;
   warnings: string[];
   diagnostics: ExternalMemoryBenchmarkCaseDiagnostics;
+  derivedRequiredAnchors: ReconstructionRequiredAnchorHint[];
+  requiredAnchorUnmetCount: number;
   promptTokenEstimate: number;
   retrievedMemoryCount: number;
   reconstructedPathCount: number;
@@ -344,6 +356,9 @@ export interface ExternalMemoryBenchmarkFailureSample {
   forbiddenMatches: string[];
   matched: ExternalMemoryBenchmarkCaseMatched;
   missingRequiredIntentGroups: string[];
+  requiredAnchorUnmet: string[];
+  derivedRequiredAnchors: ReconstructionRequiredAnchorHint[];
+  requiredAnchorUnmetCount: number;
   evidenceConvergenceScore: number | null;
   evidenceConvergenceReached: boolean | null;
   uncertaintyLevel: "low" | "medium" | "high" | null;
@@ -440,6 +455,16 @@ export interface ExternalMemoryBenchmarkRuntimeAnswererManifest {
   timeoutMs: number | null;
 }
 
+export interface ExternalMemoryBenchmarkRuntimeQueryPlannerManifest {
+  enabled: boolean;
+  name: string | null;
+  baseUrlHost: string | null;
+  apiKeyEnv: string | null;
+  model: string | null;
+  maxAnchors: number | null;
+  failureCount: number;
+}
+
 export interface ExternalMemoryBenchmarkRuntimeIngestGroupManifest {
   groupKey: string;
   caseCount: number;
@@ -482,6 +507,7 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
     dossierSynthesizer: string | null;
     embeddingProvider: string | null;
     reranker: string | null;
+    queryPlanner: string | null;
   };
   extractionFailureCount: number;
   extractionWindowCount: number;
@@ -498,6 +524,7 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   replayRecoveredCount: number;
   ingestCaseGroups: ExternalMemoryBenchmarkRuntimeIngestGroupManifest[];
   answerer: ExternalMemoryBenchmarkRuntimeAnswererManifest;
+  queryPlanner: ExternalMemoryBenchmarkRuntimeQueryPlannerManifest;
 }
 
 export interface ExternalMemoryBenchmarkCaseGroupProgress {
@@ -601,6 +628,8 @@ export interface ExternalMemoryBenchmarkRunManifest {
     diagnosticsLevel: ExternalMemoryBenchmarkDiagnosticsLevel;
     protocol: ExternalMemoryBenchmarkProtocol;
     ingestReplayAttempts: number;
+    queryPlanner: boolean;
+    plannerMaxAnchors: number;
   };
   scoreSemantics: ExternalMemoryBenchmarkScoreSemantics;
   runtimeIntelligence: ExternalMemoryBenchmarkRuntimeIntelligenceManifest;
@@ -658,6 +687,8 @@ export interface RunExternalMemoryBenchmarkOptions {
   extractionWindow?: number | undefined;
   ingestReplayAttempts?: number | undefined;
   embedQuery?: boolean | undefined;
+  queryPlanner?: boolean | undefined;
+  plannerMaxAnchors?: number | undefined;
   intelligence?: ExternalMemoryBenchmarkIntelligence | undefined;
   maintainPhases?: MaintenancePhase[] | undefined;
   debugDir?: string | undefined;
@@ -836,6 +867,7 @@ export interface ExternalMemoryBenchmarkProgress {
   pass: boolean;
   durationMs: number;
   queryEmbeddingFailureCount: number;
+  plannerFailureCount: number;
   result: ExternalMemoryBenchmarkCaseResult;
 }
 
@@ -1008,6 +1040,30 @@ function optionalReconstructionIntent(value: unknown, field: string): Reconstruc
   const record = value as Record<string, unknown>;
   const expectedTags = stringArray(record.expectedTags, `${field}.expectedTags`);
   const queryCues = stringArray(record.queryCues, `${field}.queryCues`);
+  let requiredAnchors: ReconstructionIntentHint["requiredAnchors"] | undefined;
+  if (record.requiredAnchors !== undefined) {
+    if (!Array.isArray(record.requiredAnchors)) {
+      throw new Error(`External benchmark ${field}.requiredAnchors must be an array`);
+    }
+    requiredAnchors = record.requiredAnchors.map((anchor, index) => {
+      if (typeof anchor !== "object" || anchor === null || Array.isArray(anchor)) {
+        throw new Error(`External benchmark ${field}.requiredAnchors[${index}] must be an object`);
+      }
+      const anchorRecord = anchor as Record<string, unknown>;
+      if (typeof anchorRecord.cue !== "string" || anchorRecord.cue.trim().length === 0) {
+        throw new Error(`External benchmark ${field}.requiredAnchors[${index}].cue is required`);
+      }
+      if (anchorRecord.hint !== undefined && typeof anchorRecord.hint !== "string") {
+        throw new Error(`External benchmark ${field}.requiredAnchors[${index}].hint must be a string`);
+      }
+      return {
+        cue: anchorRecord.cue.trim(),
+        ...(typeof anchorRecord.hint === "string" && anchorRecord.hint.trim()
+          ? { hint: anchorRecord.hint.trim() }
+          : {}),
+      };
+    });
+  }
   let requiredTagGroups: ReconstructionIntentHint["requiredTagGroups"] | undefined;
   if (record.requiredTagGroups !== undefined) {
     if (!Array.isArray(record.requiredTagGroups)) {
@@ -1032,10 +1088,11 @@ function optionalReconstructionIntent(value: unknown, field: string): Reconstruc
       };
     });
   }
-  if (!expectedTags && !queryCues && !requiredTagGroups) return undefined;
+  if (!expectedTags && !queryCues && !requiredTagGroups && !requiredAnchors) return undefined;
   return {
     ...(expectedTags ? { expectedTags } : {}),
     ...(queryCues ? { queryCues } : {}),
+    ...(requiredAnchors ? { requiredAnchors } : {}),
     ...(requiredTagGroups ? { requiredTagGroups } : {}),
   };
 }
@@ -1603,6 +1660,7 @@ function reconstructionDiagnostics(
     evidenceConvergenceReached: reconstructed?.stats.evidenceConvergence?.reached ?? null,
     missingRequiredIntentGroups:
       reconstructed?.stats.evidenceConvergence?.missingRequiredIntentGroups ?? [],
+    requiredAnchorUnmet: reconstructed?.stats.requiredAnchorUnmet ?? [],
     uncertaintyLevel: reconstructed?.stats.uncertainty?.level ?? null,
     uncertaintyReasons: reconstructed?.stats.uncertainty?.reasons ?? [],
   };
@@ -1752,6 +1810,9 @@ function warningsForCase(input: {
   }
   if (input.diagnostics.missingRequiredIntentGroups.length > 0) {
     warnings.push("missing_intent_groups");
+  }
+  if (input.diagnostics.requiredAnchorUnmet.length > 0) {
+    warnings.push("required_anchor_unmet");
   }
   return warnings;
 }
@@ -2230,6 +2291,18 @@ function disabledRuntimeAnswerer(): ExternalMemoryBenchmarkRuntimeAnswererManife
   };
 }
 
+function disabledRuntimeQueryPlanner(): ExternalMemoryBenchmarkRuntimeQueryPlannerManifest {
+  return {
+    enabled: false,
+    name: null,
+    baseUrlHost: null,
+    apiKeyEnv: null,
+    model: null,
+    maxAnchors: null,
+    failureCount: 0,
+  };
+}
+
 function runtimeAnswererForManifest(
   answerer: ExternalMemoryBenchmarkAnswerer | undefined,
 ): ExternalMemoryBenchmarkRuntimeAnswererManifest {
@@ -2317,6 +2390,8 @@ function createRunManifest(input: {
       concurrency: normalizedConcurrency(input.options.concurrency),
       extractionWindow: normalizedExtractionWindow(input.options.extractionWindow),
       ingestReplayAttempts: normalizedIngestReplayAttempts(input.options.ingestReplayAttempts),
+      queryPlanner: input.runtimeIntelligence.manifest.queryPlanner.enabled,
+      plannerMaxAnchors: input.runtimeIntelligence.manifest.queryPlanner.maxAnchors ?? 4,
       reuseProfiles: input.options.reuseProfiles ?? true,
       failureSampleLimit: normalizedFailureSampleLimit(input.options.failureSampleLimit),
       diagnosticsLevel: normalizedDiagnosticsLevel(input.options.diagnosticsLevel),
@@ -2344,6 +2419,10 @@ function createRunManifest(input: {
       replayedWindowCount: input.runtimeIntelligence.replayedWindowCount,
       replayRecoveredCount: input.runtimeIntelligence.replayRecoveredCount,
       queryEmbeddingFailureCount: input.runtimeIntelligence.queryEmbeddingFailureCount,
+      queryPlanner: {
+        ...input.runtimeIntelligence.manifest.queryPlanner,
+        failureCount: input.runtimeIntelligence.plannerFailureCount,
+      },
       ingestCaseGroups: [...input.runtimeIntelligence.ingestCaseGroups].sort((left, right) =>
         left.groupKey.localeCompare(right.groupKey)
       ),
@@ -2406,6 +2485,14 @@ function normalizedReaderContextCharLimit(value: number | undefined): number {
   if (value === undefined) return 4000;
   if (!Number.isInteger(value) || value < 0) {
     throw new Error("External benchmark readerContextCharLimit must be a non-negative integer");
+  }
+  return value;
+}
+
+function normalizedPlannerMaxAnchors(value: number | undefined): number {
+  if (value === undefined) return 4;
+  if (!Number.isInteger(value) || value < 0 || value > 12) {
+    throw new Error("External benchmark plannerMaxAnchors must be an integer from 0 to 12");
   }
   return value;
 }
@@ -2595,6 +2682,70 @@ function hookName(value: unknown): string | null {
   return typeof name === "string" && name.trim() ? name.trim() : "anonymous";
 }
 
+function containsPlannerInstructionArtifact(value: string): boolean {
+  return /ignore previous instructions|system prompt|developer message|contract JSON/iu.test(value);
+}
+
+function plannerAnchorText(value: unknown, maxLength: number): string | null {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text || text.length > maxLength) return null;
+  if (containsPlannerInstructionArtifact(text)) return null;
+  if (classifySensitivity(text) === "secret_like") return null;
+  return text;
+}
+
+async function planRequiredAnchors(input: {
+  queryPlanner: MemoryQueryPlanner | undefined;
+  question: string;
+  maxAnchors: number;
+  onFailure: () => void;
+}): Promise<ReconstructionRequiredAnchorHint[]> {
+  if (!input.queryPlanner || input.maxAnchors === 0) return [];
+  try {
+    const raw = typeof input.queryPlanner === "function"
+      ? await input.queryPlanner({ question: input.question, maxAnchors: input.maxAnchors })
+      : await input.queryPlanner.plan({ question: input.question, maxAnchors: input.maxAnchors });
+    if (!Array.isArray(raw)) return [];
+    const seen = new Set<string>();
+    const anchors: ReconstructionRequiredAnchorHint[] = [];
+    for (const anchor of raw) {
+      if (!anchor || typeof anchor !== "object") continue;
+      const cue = plannerAnchorText(anchor.cue, 160);
+      if (!cue) continue;
+      const key = cue.toLowerCase().replace(/\s+/gu, " ");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const hint = plannerAnchorText(anchor.hint, 240) ?? undefined;
+      anchors.push(hint ? { cue, hint } : { cue });
+      if (anchors.length >= input.maxAnchors) break;
+    }
+    return anchors;
+  } catch {
+    input.onFailure();
+    return [];
+  }
+}
+
+function reconstructionIntentWithRequiredAnchors(
+  intent: ReconstructionIntentHint | undefined,
+  anchors: ReconstructionRequiredAnchorHint[],
+): ReconstructionIntentHint | undefined {
+  if (anchors.length === 0) return intent;
+  const seen = new Set<string>();
+  const requiredAnchors: ReconstructionRequiredAnchorHint[] = [];
+  for (const anchor of [...(intent?.requiredAnchors ?? []), ...anchors]) {
+    const key = anchor.cue.trim().toLowerCase().replace(/\s+/gu, " ");
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    requiredAnchors.push(anchor.hint ? { cue: anchor.cue, hint: anchor.hint } : { cue: anchor.cue });
+  }
+  return {
+    ...(intent ?? {}),
+    requiredAnchors,
+  };
+}
+
 function baseUrlHost(baseUrl: string): string {
   try {
     const parsed = new URL(baseUrl);
@@ -2755,6 +2906,22 @@ function wrapReranker(
   };
 }
 
+function wrapQueryPlanner(
+  queryPlanner: MemoryQueryPlanner | undefined,
+  run: <T>(label: string, task: () => Promise<T>) => Promise<T>,
+): MemoryQueryPlanner | undefined {
+  if (!queryPlanner) return undefined;
+  const name = hookName(queryPlanner) ?? "anonymous";
+  return {
+    name,
+    plan(input) {
+      return run("queryPlanner", async () =>
+        typeof queryPlanner === "function" ? queryPlanner(input) : queryPlanner.plan(input)
+      );
+    },
+  };
+}
+
 function hookNamesFor(hooks: DefaultIntelligence): ExternalMemoryBenchmarkRuntimeIntelligenceManifest["hookNames"] {
   return {
     extractor: hookName(hooks.extractor),
@@ -2763,6 +2930,7 @@ function hookNamesFor(hooks: DefaultIntelligence): ExternalMemoryBenchmarkRuntim
     dossierSynthesizer: hookName(hooks.dossierSynthesizer),
     embeddingProvider: hookName(hooks.embeddingProvider),
     reranker: hookName(hooks.reranker ?? hooks.retrieval?.reranker),
+    queryPlanner: hookName(hooks.queryPlanner),
   };
 }
 
@@ -2783,6 +2951,7 @@ interface RuntimeIntelligenceState {
   replayedWindowCount: number;
   replayRecoveredCount: number;
   queryEmbeddingFailureCount: number;
+  plannerFailureCount: number;
   ingestCaseGroups: ExternalMemoryBenchmarkRuntimeIngestGroupManifest[];
 }
 
@@ -2812,6 +2981,7 @@ function disabledRuntimeIntelligence(
         dossierSynthesizer: null,
         embeddingProvider: null,
         reranker: null,
+        queryPlanner: null,
       },
       extractionEmptyCount: 0,
       extractionParseFailureCount: 0,
@@ -2828,6 +2998,7 @@ function disabledRuntimeIntelligence(
       replayRecoveredCount: 0,
       ingestCaseGroups: [],
       answerer: disabledRuntimeAnswerer(),
+      queryPlanner: disabledRuntimeQueryPlanner(),
     },
     extractionEmptyCount: 0,
     extractionParseFailureCount: 0,
@@ -2843,6 +3014,7 @@ function disabledRuntimeIntelligence(
     replayedWindowCount: 0,
     replayRecoveredCount: 0,
     queryEmbeddingFailureCount: 0,
+    plannerFailureCount: 0,
     ingestCaseGroups: [],
   };
 }
@@ -2872,6 +3044,14 @@ function resolveRuntimeIntelligence(input: {
         model: config.model,
         ...(config.embedModel ? { embedModel: config.embedModel } : {}),
         ...(config.dimensions !== undefined ? { dimensions: config.dimensions } : {}),
+        ...(config.plannerBaseUrl || config.plannerModel
+          ? {
+              queryPlanner: {
+                ...(config.plannerBaseUrl ? { baseUrl: config.plannerBaseUrl } : {}),
+                ...(config.plannerModel ? { model: config.plannerModel } : {}),
+              },
+            }
+          : {}),
         ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
         retries,
         backoffMs,
@@ -2890,6 +3070,7 @@ function resolveRuntimeIntelligence(input: {
   const dossierSynthesizer = wrapDossierSynthesizer(rawHooks.dossierSynthesizer, run);
   const embeddingProvider = wrapEmbeddingProvider(rawHooks.embeddingProvider, run);
   const wrappedReranker = wrapReranker(rawHooks.reranker ?? rawHooks.retrieval?.reranker, run);
+  const queryPlanner = wrapQueryPlanner(rawHooks.queryPlanner, run);
   const hooks: DefaultIntelligence = {
     ...(extractor ? { extractor } : {}),
     ...(consolidator ? { consolidator } : {}),
@@ -2897,6 +3078,7 @@ function resolveRuntimeIntelligence(input: {
     ...(dossierSynthesizer ? { dossierSynthesizer } : {}),
     ...(embeddingProvider ? { embeddingProvider } : {}),
     ...(wrappedReranker ? { reranker: wrappedReranker } : {}),
+    ...(queryPlanner ? { queryPlanner } : {}),
     ...(rawHooks.retrieval || wrappedReranker
       ? { retrieval: { ...(rawHooks.retrieval ?? {}), ...(wrappedReranker ? { reranker: wrappedReranker } : {}) } }
       : {}),
@@ -2933,6 +3115,14 @@ function resolveRuntimeIntelligence(input: {
       replayRecoveredCount: 0,
       ingestCaseGroups: [],
       answerer: disabledRuntimeAnswerer(),
+      queryPlanner: {
+        ...disabledRuntimeQueryPlanner(),
+        name: hookName(hooks.queryPlanner),
+        baseUrlHost: config ? baseUrlHost(config.plannerBaseUrl ?? config.baseUrl) : null,
+        apiKeyEnv: apiKeyEnv ?? null,
+        model: config?.plannerModel ?? config?.model ?? null,
+        maxAnchors: 4,
+      },
     },
     extractionEmptyCount: 0,
     extractionParseFailureCount: 0,
@@ -2948,6 +3138,7 @@ function resolveRuntimeIntelligence(input: {
     replayedWindowCount: 0,
     replayRecoveredCount: 0,
     queryEmbeddingFailureCount: 0,
+    plannerFailureCount: 0,
     ingestCaseGroups: [],
   };
 }
@@ -3020,6 +3211,9 @@ function failureSampleForCase(
     forbiddenMatches: entry.forbiddenMatches,
     matched: entry.matched,
     missingRequiredIntentGroups: entry.diagnostics.missingRequiredIntentGroups,
+    requiredAnchorUnmet: entry.diagnostics.requiredAnchorUnmet,
+    derivedRequiredAnchors: entry.derivedRequiredAnchors,
+    requiredAnchorUnmetCount: entry.requiredAnchorUnmetCount,
     evidenceConvergenceScore: entry.diagnostics.evidenceConvergenceScore,
     evidenceConvergenceReached: entry.diagnostics.evidenceConvergenceReached,
     uncertaintyLevel: entry.diagnostics.uncertaintyLevel,
@@ -3477,6 +3671,9 @@ async function scoreCase(input: {
   options: RunExternalMemoryBenchmarkOptions;
   setupWarnings?: string[] | undefined;
   readRetrieval?: MemoryReadRetrievalOptions | undefined;
+  queryPlanner?: MemoryQueryPlanner | undefined;
+  plannerMaxAnchors: number;
+  onPlannerFailure: () => void;
   writeDebugReaderContext?: ((caseId: string, context: string) => void) | undefined;
 }): Promise<ExternalMemoryBenchmarkCaseResult> {
   const startedMs = Date.now();
@@ -3495,6 +3692,18 @@ async function scoreCase(input: {
   });
   const requireConvergence =
     input.benchmarkCase.requireConvergence ?? input.options.requireConvergence ?? false;
+  const derivedRequiredAnchors = mode === "reconstruct"
+    ? await planRequiredAnchors({
+        queryPlanner: input.queryPlanner,
+        question: input.benchmarkCase.question,
+        maxAnchors: input.plannerMaxAnchors,
+        onFailure: input.onPlannerFailure,
+      })
+    : [];
+  const reconstructionIntent = reconstructionIntentWithRequiredAnchors(
+    input.benchmarkCase.reconstructionIntent,
+    derivedRequiredAnchors,
+  );
   const prepared =
     mode === "prepare"
       ? await input.memory.prepareTurn({
@@ -3511,7 +3720,7 @@ async function scoreCase(input: {
       ? await input.memory.reconstructContext({
           profileId,
           query: input.benchmarkCase.question,
-          reconstructionIntent: input.benchmarkCase.reconstructionIntent,
+          reconstructionIntent,
           maxSteps: input.options.maxSteps,
           maxBranch: input.options.maxBranch,
           maxMemories: input.options.maxMemories,
@@ -3679,6 +3888,8 @@ async function scoreCase(input: {
     failureTaxonomy: primaryFailureTaxonomy,
     warnings: allWarnings,
     diagnostics,
+    derivedRequiredAnchors,
+    requiredAnchorUnmetCount: diagnostics.requiredAnchorUnmet.length,
     promptTokenEstimate:
       prepared?.stats.promptTokenEstimate ?? reconstructed?.stats.promptTokenEstimate ?? 0,
     retrievedMemoryCount:
@@ -3881,6 +4092,15 @@ async function runCaseGroup(input: {
               },
             }
           : { embedQuery: false },
+        queryPlanner: input.runtimeIntelligence.manifest.queryPlanner.enabled
+          ? input.runtimeIntelligence.hooks?.queryPlanner
+          : undefined,
+        plannerMaxAnchors: input.runtimeIntelligence.manifest.queryPlanner.maxAnchors ?? 4,
+        onPlannerFailure: () => {
+          input.runtimeIntelligence.plannerFailureCount += 1;
+          input.runtimeIntelligence.manifest.queryPlanner.failureCount =
+            input.runtimeIntelligence.plannerFailureCount;
+        },
         writeDebugReaderContext: input.writeDebugReaderContext,
       });
       results.push(result);
@@ -3979,6 +4199,7 @@ export async function runExternalMemoryBenchmark(
   const debugDumpMemories = normalizedDebugDumpMemories(options.debugDumpMemories);
   const debugContextFailureLimit = normalizedDebugContextFailureLimit(options.debugContextFailureLimit);
   const readerContextCharLimit = normalizedReaderContextCharLimit(options.readerContextCharLimit);
+  const plannerMaxAnchors = normalizedPlannerMaxAnchors(options.plannerMaxAnchors);
   const debugDir = options.debugDir ??
     (options.intelligence && isIntelligenceConfig(options.intelligence)
       ? options.intelligence.debugDir
@@ -3991,6 +4212,12 @@ export async function runExternalMemoryBenchmark(
   });
   const embedQuery = options.embedQuery ?? runtimeIntelligence.hooks?.embeddingProvider !== undefined;
   runtimeIntelligence.manifest.embedQuery = embedQuery;
+  const queryPlanner = options.queryPlanner ?? runtimeIntelligence.hooks?.queryPlanner !== undefined;
+  runtimeIntelligence.manifest.queryPlanner = {
+    ...runtimeIntelligence.manifest.queryPlanner,
+    enabled: queryPlanner && runtimeIntelligence.hooks?.queryPlanner !== undefined,
+    maxAnchors: plannerMaxAnchors,
+  };
   const normalizedOptions: RunExternalMemoryBenchmarkOptions = {
     ...options,
     cases: selectedCases,
@@ -4007,6 +4234,8 @@ export async function runExternalMemoryBenchmark(
     debugDumpMemories,
     debugContextFailureLimit,
     readerContextCharLimit,
+    plannerMaxAnchors,
+    queryPlanner,
     ...(debugDir ? { debugDir } : {}),
     extractionWindow,
     ingestReplayAttempts,
@@ -4060,6 +4289,7 @@ export async function runExternalMemoryBenchmark(
       pass: result.pass,
       durationMs: result.durationMs,
       queryEmbeddingFailureCount: runtimeIntelligence.queryEmbeddingFailureCount,
+      plannerFailureCount: runtimeIntelligence.plannerFailureCount,
       result,
     });
   };

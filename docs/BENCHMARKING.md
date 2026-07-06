@@ -323,6 +323,16 @@ retrieval, or `--embed-query on` to make the opt-in explicit. Manifests record
 the effective `runtimeIntelligence.embedQuery` and
 `queryEmbeddingFailureCount`; failures fall back to lexical retrieval.
 
+When intelligence is configured, query planning defaults on. The planner is a
+host-side hook that sees the question as data and may return
+`requiredAnchors: [{ cue, hint? }]`; gmOS then asks the kernel to satisfy those
+anchors during reconstruction. Use `--query-planner off` to skip the planner, or
+`--query-planner on` to make the default explicit. `--planner-model` and
+`--planner-base-url` override only the planner model/endpoint and still use the
+env-only key from `--intelligence-api-key-env`. Manifests disclose
+`runtimeIntelligence.queryPlanner` and `failureCount`, and per-case results
+record derived anchors and unmet counts.
+
 With `--progress`, message-mode setup prints content-free window progress every
 10 windows and at completion: windows done/total, outcome counts, extracted
 candidate count so far, retry count, outcome character totals, elapsed time,
@@ -426,7 +436,9 @@ that endpoint is approved for that data.
 Claim boundary: intelligence-backed `deterministic_local` runs are still local
 adapter scores. Judge-only official runs are still not leaderboard-comparable.
 Only reader+judge runs may be described as official-protocol comparable, and
-only when the manifest says `officialProtocol=host_reader_and_judge`.
+only when the manifest says `officialProtocol=host_reader_and_judge`. If query
+planning is enabled, it is part of the disclosed intelligence stack, not a hidden
+benchmark shortcut.
 
 Before scaling a paid reader+judge run, read the markdown attribution table.
 Official failures are bucketed deterministically:

@@ -266,6 +266,11 @@ interface ReconstructionIntent {
     name: string;
     tags: Set<string>;
   }>;
+  requiredAnchors: Array<{
+    cue: string;
+    key: string;
+    hint?: string | undefined;
+  }>;
   queryCues: Set<string>;
   explicitQueryCues: Set<string>;
   reason: string;
@@ -295,6 +300,8 @@ interface RankedMemoryCandidate {
 interface AnchorCoverageDraft {
   anchorCue: string;
   key: string;
+  required: boolean;
+  hint?: string | undefined;
   candidateCount: number;
   attemptCount: number;
   includedCount: number;
@@ -476,6 +483,31 @@ function normalizedCueHints(values: string[] | undefined, max: number): string[]
       .map((value) => value.slice(0, 80))
       .filter(Boolean),
   ).slice(0, max);
+}
+
+function normalizedRequiredAnchors(
+  values: ReconstructionIntentHint["requiredAnchors"] | undefined,
+  max: number,
+): ReconstructionIntent["requiredAnchors"] {
+  if (!Array.isArray(values)) return [];
+  const seen = new Set<string>();
+  const output: ReconstructionIntent["requiredAnchors"] = [];
+  for (const value of values) {
+    if (!value || typeof value !== "object") continue;
+    const cue = typeof value.cue === "string" ? value.cue.trim().slice(0, 160) : "";
+    if (!cue || classifySensitivity(cue) !== "normal") continue;
+    const key = associationCueKey(cue);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const hint = typeof value.hint === "string" ? value.hint.trim().slice(0, 240) : "";
+    output.push({
+      cue,
+      key,
+      ...(hint && classifySensitivity(hint) === "normal" ? { hint } : {}),
+    });
+    if (output.length >= max) break;
+  }
+  return output;
 }
 
 function routeSignalAppearsInPublicQuery(
@@ -713,22 +745,28 @@ function anchorCuesForQuery(
   intent: ReconstructionIntent,
   cueExtractor?: MemoryCueExtractor | undefined,
   inferTemporalCuesFromText = false,
-): string[] {
+): Array<{ cue: string; required: boolean; hint?: string | undefined }> {
   // Host-declared intent cues outrank derived lexical cues so tiny budgets
   // never starve an anchor the host explicitly asked for.
   const anchors = [
-    ...intent.explicitQueryCues,
-    ...queryAssociationCues(query, 12, cueExtractor, inferTemporalCuesFromText).map((cue) => cue.cue),
+    ...intent.requiredAnchors.map((anchor) => ({
+      cue: anchor.cue,
+      required: true,
+      ...(anchor.hint ? { hint: anchor.hint } : {}),
+    })),
+    ...[...intent.explicitQueryCues].map((cue) => ({ cue, required: false })),
+    ...queryAssociationCues(query, 12, cueExtractor, inferTemporalCuesFromText)
+      .map((cue) => ({ cue: cue.cue, required: false })),
   ];
   const seen = new Set<string>();
-  const output: string[] = [];
+  const output: Array<{ cue: string; required: boolean; hint?: string | undefined }> = [];
   for (const anchor of anchors) {
-    const key = associationCueKey(anchor);
+    const key = associationCueKey(anchor.cue);
     if (!key || seen.has(key)) continue;
     seen.add(key);
     output.push(anchor);
   }
-  return output.length > 0 ? output : [query];
+  return output.length > 0 ? output : [{ cue: query, required: false }];
 }
 
 function createAnchorCoveragePlan(input: {
@@ -744,8 +782,10 @@ function createAnchorCoveragePlan(input: {
     input.cueExtractor,
     input.inferTemporalCuesFromText,
   ).map((anchorCue) => ({
-    anchorCue,
-    key: associationCueKey(anchorCue),
+    anchorCue: anchorCue.cue,
+    key: associationCueKey(anchorCue.cue),
+    required: anchorCue.required,
+    ...(anchorCue.hint ? { hint: anchorCue.hint } : {}),
     candidateCount: 0,
     attemptCount: 0,
     includedCount: 0,
@@ -828,6 +868,19 @@ function reservableUncoveredSeedLaneCount(
   return count;
 }
 
+function reservableRequiredAnchorCount(
+  plan: AnchorCoveragePlan | null,
+  excludeAnchorKey?: string | undefined,
+): number {
+  if (!plan) return 0;
+  return plan.anchors.filter((anchor) =>
+    anchor.required &&
+    anchor.key !== excludeAnchorKey &&
+    anchor.includedCount === 0 &&
+    !anchor.exhausted
+  ).length;
+}
+
 function canIncludeMemoryForAnchor(input: {
   plan: AnchorCoveragePlan | null;
   cue: FrontierCue;
@@ -842,13 +895,12 @@ function canIncludeMemoryForAnchor(input: {
   if (isSeedAnchor(input.plan, anchor) && anchor.includedCount === 0 && !anchor.exhausted) {
     return true;
   }
+  if (anchor.required && anchor.includedCount === 0 && !anchor.exhausted) return true;
   // Covered lanes can keep expanding, but not by spending the last slot that
   // an uncovered seed lane could still use for its first included memory.
-  const reserved = reservableUncoveredSeedLaneCount(
-    input.plan,
-    input.frontier,
-    input.explored,
-  );
+  const reserved =
+    reservableRequiredAnchorCount(input.plan, anchor.key) +
+    reservableUncoveredSeedLaneCount(input.plan, input.frontier, input.explored);
   return input.memoryCount + 1 <= input.maxMemories - reserved;
 }
 
@@ -933,15 +985,23 @@ function anchorCoverageReport(
     ).length;
     return {
       anchorCue: anchor.anchorCue,
+      ...(anchor.required ? { required: true } : {}),
+      ...(anchor.hint ? { hint: anchor.hint } : {}),
       candidateCount: anchor.candidateCount,
       includedCount,
       uncovered: includedCount === 0,
     };
   });
+  const requiredAnchors = anchors.filter((anchor) => anchor.required === true);
   return {
     anchorCount: anchors.length,
     coveredAnchorCount: anchors.filter((anchor) => !anchor.uncovered).length,
     uncoveredAnchors: anchors.filter((anchor) => anchor.uncovered).map((anchor) => anchor.anchorCue),
+    requiredAnchorCount: requiredAnchors.length,
+    coveredRequiredAnchorCount: requiredAnchors.filter((anchor) => !anchor.uncovered).length,
+    requiredAnchorUnmet: requiredAnchors
+      .filter((anchor) => anchor.uncovered)
+      .map((anchor) => anchor.anchorCue),
     anchors,
   };
 }
@@ -953,15 +1013,24 @@ function publicAnchorCoverage(
   if (!report) return undefined;
   const merged = new Map<string, ReconstructionAnchorCoverageReport["anchors"][number]>();
   for (const anchor of report.anchors) {
-    const anchorCue = publicRouteSignal(anchor.anchorCue, privateSignalKeys);
-    const key = normalizedText(anchorCue);
+    const anchorCue = anchor.required === true
+      ? safePublicInlineField(anchor.anchorCue)
+      : publicRouteSignal(anchor.anchorCue, privateSignalKeys);
+    const hint = anchor.hint ? safePublicInlineField(anchor.hint) : undefined;
+    const key = `${anchor.required === true ? "required" : "ordinary"}:${normalizedText(anchorCue)}`;
     const existing = merged.get(key);
     if (existing) {
       existing.candidateCount += anchor.candidateCount;
       existing.includedCount += anchor.includedCount;
       existing.uncovered = existing.includedCount === 0;
+      if (anchor.required === true) existing.required = true;
+      existing.hint = existing.hint ?? hint;
     } else {
-      merged.set(key, { ...anchor, anchorCue });
+      merged.set(key, {
+        ...anchor,
+        anchorCue,
+        ...(hint ? { hint } : {}),
+      });
     }
   }
   const anchors = [...merged.values()].map((anchor) => ({
@@ -972,6 +1041,13 @@ function publicAnchorCoverage(
     anchorCount: anchors.length,
     coveredAnchorCount: anchors.filter((anchor) => !anchor.uncovered).length,
     uncoveredAnchors: anchors.filter((anchor) => anchor.uncovered).map((anchor) => anchor.anchorCue),
+    requiredAnchorCount: anchors.filter((anchor) => anchor.required === true).length,
+    coveredRequiredAnchorCount: anchors.filter((anchor) =>
+      anchor.required === true && !anchor.uncovered
+    ).length,
+    requiredAnchorUnmet: anchors
+      .filter((anchor) => anchor.required === true && anchor.uncovered)
+      .map((anchor) => anchor.anchorCue),
     anchors,
   };
 }
@@ -992,10 +1068,16 @@ function anchorCoverageWithIncludedCounts(
       uncovered: includedCount === 0,
     };
   });
+  const requiredAnchors = anchors.filter((anchor) => anchor.required === true);
   return {
     anchorCount: anchors.length,
     coveredAnchorCount: anchors.filter((anchor) => !anchor.uncovered).length,
     uncoveredAnchors: anchors.filter((anchor) => anchor.uncovered).map((anchor) => anchor.anchorCue),
+    requiredAnchorCount: requiredAnchors.length,
+    coveredRequiredAnchorCount: requiredAnchors.filter((anchor) => !anchor.uncovered).length,
+    requiredAnchorUnmet: requiredAnchors
+      .filter((anchor) => anchor.uncovered)
+      .map((anchor) => anchor.anchorCue),
     anchors,
   };
 }
@@ -1282,6 +1364,7 @@ function explicitReconstructionIntent(
   hint: ReconstructionIntentHint | undefined,
   cueExtractor?: MemoryCueExtractor | undefined,
   inferTemporalCuesFromText = false,
+  options: { includeRequiredAnchors?: boolean | undefined } = {},
 ): ReconstructionIntent | null {
   if (!hint) return null;
   const expectedTags = new Set(normalizedIntentTokens(hint.expectedTags, 32));
@@ -1296,10 +1379,14 @@ function explicitReconstructionIntent(
     );
   }
   const explicitQueryCues = normalizedCueHints(hint.queryCues, 32);
+  const requiredAnchors = options.includeRequiredAnchors === false
+    ? []
+    : normalizedRequiredAnchors(hint.requiredAnchors, 12);
   if (
     expectedTags.size === 0 &&
     requiredTagGroups.length === 0 &&
-    explicitQueryCues.length === 0
+    explicitQueryCues.length === 0 &&
+    requiredAnchors.length === 0
   ) {
     return null;
   }
@@ -1309,10 +1396,14 @@ function explicitReconstructionIntent(
     queryCues: new Set([
       ...queryCueSet(query, cueExtractor, inferTemporalCuesFromText),
       ...explicitQueryCues,
+      ...requiredAnchors.map((anchor) => anchor.cue),
     ]),
-    explicitQueryCues: new Set(explicitQueryCues),
+    explicitQueryCues: new Set([...explicitQueryCues, ...requiredAnchors.map((anchor) => anchor.cue)]),
+    requiredAnchors,
     reason:
-      requiredTagGroups.length > 0
+      requiredAnchors.length > 0
+        ? "structured:required_anchors"
+        : requiredTagGroups.length > 0
         ? `structured:${requiredTagGroups.map((group) => group.name).join("+")}`
         : expectedTags.size > 0
           ? "structured:expected_tags"
@@ -1325,12 +1416,20 @@ function inferReconstructionIntent(
   hint?: ReconstructionIntentHint | undefined,
   cueExtractor?: MemoryCueExtractor | undefined,
   inferTemporalCuesFromText = false,
+  options: { includeRequiredAnchors?: boolean | undefined } = {},
 ): ReconstructionIntent {
-  const explicit = explicitReconstructionIntent(query, hint, cueExtractor, inferTemporalCuesFromText);
+  const explicit = explicitReconstructionIntent(
+    query,
+    hint,
+    cueExtractor,
+    inferTemporalCuesFromText,
+    options,
+  );
   if (explicit) return explicit;
   return {
     expectedTags: new Set<string>(),
     requiredTagGroups: [],
+    requiredAnchors: [],
     queryCues: queryCueSet(query, cueExtractor, inferTemporalCuesFromText),
     explicitQueryCues: new Set<string>(),
     reason: "associative",
@@ -1732,6 +1831,7 @@ async function searchDirectMemoryCandidates(input: {
   includeSensitive?: boolean | undefined;
   maxMemories: number;
   searchQueries?: string[] | undefined;
+  freshQueryEmbedding?: boolean | undefined;
   cueExtractor?: MemoryCueExtractor | undefined;
   inferTemporalCuesFromText?: boolean | undefined;
 }): Promise<DirectMemoryCandidate[]> {
@@ -1750,7 +1850,11 @@ async function searchDirectMemoryCandidates(input: {
       purpose: input.recallPurpose,
       includeSensitive: input.includeSensitive,
       limit,
-      ...(input.queryEmbedding ? { queryEmbedding: input.queryEmbedding } : {}),
+      ...(input.freshQueryEmbedding
+        ? { freshQueryEmbedding: true }
+        : input.queryEmbedding
+          ? { queryEmbedding: input.queryEmbedding }
+          : {}),
     });
     for (const [memoryIndex, memory] of memories.entries()) {
       const existing = candidates.get(memory.id);
@@ -1916,6 +2020,7 @@ async function fuseDirectMemorySearch(input: {
   inferTemporalCuesFromText?: boolean | undefined;
   searchQueries?: string[] | undefined;
   anchorCue?: string | undefined;
+  freshQueryEmbedding?: boolean | undefined;
   maxNewPaths?: number | undefined;
   reinforceExisting?: boolean | undefined;
 }): Promise<{
@@ -1933,6 +2038,7 @@ async function fuseDirectMemorySearch(input: {
     includeSensitive: input.includeSensitive,
     maxMemories: input.maxMemories,
     ...(input.searchQueries ? { searchQueries: input.searchQueries } : {}),
+    ...(input.freshQueryEmbedding ? { freshQueryEmbedding: true } : {}),
     cueExtractor: input.cueExtractor,
     inferTemporalCuesFromText: input.inferTemporalCuesFromText,
   });
@@ -2000,11 +2106,16 @@ async function topUpUncoveredAnchors(input: {
   selectedSourceCues: Set<string>;
   cueExtractor?: MemoryCueExtractor | undefined;
   inferTemporalCuesFromText?: boolean | undefined;
+  requiredOnly?: boolean | undefined;
+  cueReason?: string | undefined;
 }): Promise<ReconstructedPlannerStep[]> {
   const report = anchorCoverageReport(input.plan, input.paths);
   if (!input.plan || !report || input.memories.length >= input.maxMemories) return [];
   const steps: ReconstructedPlannerStep[] = [];
-  for (const anchor of report.anchors.filter((entry) => entry.uncovered)) {
+  for (const anchor of report.anchors.filter((entry) =>
+    entry.uncovered &&
+    (input.requiredOnly === true ? entry.required === true : entry.required !== true)
+  )) {
     if (input.memories.length >= input.maxMemories) break;
     const trace = await fuseDirectMemorySearch({
       store: input.store,
@@ -2021,18 +2132,23 @@ async function topUpUncoveredAnchors(input: {
       selectedSourceCues: input.selectedSourceCues,
       searchQueries: [anchor.anchorCue],
       anchorCue: anchor.anchorCue,
+      ...(anchor.required === true ? { freshQueryEmbedding: true } : {}),
       maxNewPaths: 1,
       reinforceExisting: false,
       cueExtractor: input.cueExtractor,
       inferTemporalCuesFromText: input.inferTemporalCuesFromText,
     });
     addAnchorCandidateCount(input.plan, anchor.anchorCue, trace.candidateCount);
+    if (trace.selectedNewPaths.length === 0) noteAnchorExhausted(input.plan, anchor.anchorCue);
+    for (const path of trace.selectedNewPaths) {
+      noteAnchorIncludedMemory(input.plan, path.anchorCue);
+    }
     if (trace.candidateCount === 0) continue;
     const paths = [...trace.reinforcedPaths, ...trace.selectedNewPaths];
     steps.push({
       step: paths.length > 0 ? Math.max(...paths.map((path) => path.step)) : stepCountForTrace(input.paths),
       selectedCue: anchor.anchorCue,
-      cueReason: "anchor_fallback_memory_search",
+      cueReason: input.cueReason ?? "anchor_fallback_memory_search",
       exploredAssociationCount: 0,
       hybridCandidateCount: trace.candidateCount,
       selectedBranchCount: paths.length,
@@ -2294,6 +2410,9 @@ function composeReconstructedContext(input: {
       uncertainty: output.uncertainty,
       evidenceConvergence: output.evidenceConvergence,
       ...(output.anchorCoverage ? { anchorCoverage: output.anchorCoverage } : {}),
+      ...(output.anchorCoverage?.requiredAnchorUnmet.length
+        ? { requiredAnchorUnmet: output.anchorCoverage.requiredAnchorUnmet }
+        : {}),
     },
   };
 }
@@ -2355,7 +2474,7 @@ async function fallbackReconstruction(input: {
       if (anchorCue) memoryAnchors.set(memory.id, anchorCue);
     }
   };
-  if (anchorPlan && anchorPlan.anchors.length > 1) {
+  if (anchorPlan && (anchorPlan.anchors.length > 1 || anchorPlan.anchors.some((anchor) => anchor.required))) {
     for (const anchor of anchorPlan.anchors) {
       if (memoryById.size >= input.maxMemories) break;
       const found = await input.store.searchMemories({
@@ -2363,10 +2482,17 @@ async function fallbackReconstruction(input: {
         query: anchor.anchorCue,
         purpose: input.recallPurpose,
         includeSensitive: input.includeSensitive,
-        limit: Math.max(1, Math.ceil(input.maxMemories / anchorPlan.anchors.length)),
-        ...(input.queryEmbedding ? { queryEmbedding: input.queryEmbedding } : {}),
+        limit: anchor.required
+          ? 1
+          : Math.max(1, Math.ceil(input.maxMemories / anchorPlan.anchors.length)),
+        ...(anchor.required
+          ? { freshQueryEmbedding: true }
+          : input.queryEmbedding
+            ? { queryEmbedding: input.queryEmbedding }
+            : {}),
       });
       anchor.candidateCount += found.length;
+      if (anchor.required && found.length === 0) anchor.exhausted = true;
       addMemories(found, anchor.anchorCue);
     }
   }
@@ -2520,6 +2646,7 @@ export async function reconstructMemoryContext(input: {
     input.request.reconstructionIntent,
     input.cueExtractor,
     inferTemporalCuesFromText,
+    { includeRequiredAnchors: anchorCoverageEnabled },
   );
   const recallPurpose = inferTemporalRecallPurpose(
     query,
@@ -2576,6 +2703,26 @@ export async function reconstructMemoryContext(input: {
   let associationCount = 0;
   let prunedBranchCount = 0;
   let stopReason: ReconstructedContext["stats"]["stopReason"] = "no_frontier";
+
+  if (anchorPlan?.anchors.some((anchor) => anchor.required)) {
+    plannerSteps.push(...await topUpUncoveredAnchors({
+      store: input.store,
+      profileId,
+      plan: anchorPlan,
+      intent,
+      recallPurpose,
+      includeSensitive: input.request.includeSensitive,
+      maxMemories,
+      memories,
+      paths,
+      seenMemoryIds,
+      selectedSourceCues,
+      cueExtractor: input.cueExtractor,
+      inferTemporalCuesFromText,
+      requiredOnly: true,
+      cueReason: "required_anchor_memory_search",
+    }));
+  }
 
   for (let step = 1; step <= maxSteps; step += 1) {
     const cue = selectFrontierCue(frontier, explored, anchorPlan);
@@ -2780,6 +2927,7 @@ export async function reconstructMemoryContext(input: {
     if (
       stopWhenEvidenceEnough &&
       convergence.reached &&
+      reservableRequiredAnchorCount(anchorPlan) === 0 &&
       reservableUncoveredSeedLaneCount(anchorPlan, frontier, explored) === 0
     ) {
       stopReason = "evidence_sufficient";
