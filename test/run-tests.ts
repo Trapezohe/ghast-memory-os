@@ -67,6 +67,7 @@ import {
   createDefaultIntelligence,
   createOpenAICompatibleConsolidator,
   createOpenAICompatibleEmbeddingProvider,
+  type DefaultIntelligence,
 } from "../src/intelligence/index.js";
 import {
   renderHostCompatibilityGymMarkdown,
@@ -2379,6 +2380,7 @@ async function runWindowConcurrencyFixture(concurrency: number) {
       content: `Parallel window ${index + 1} source message.`,
     })),
     window: { maxMessages: 1, concurrency },
+    extraction: { replayAttempts: 0 },
     progress: {
       everyWindows: 2,
       onWindow: (entry) => {
@@ -6245,6 +6247,7 @@ const retryFailureIngest = await retryFailureMemory.ingestConversation({
     content: retryFailureContent,
   }],
   window: { maxMessages: 1 },
+  extraction: { replayAttempts: 0 },
 });
 assert.equal(retryFailureCalls, 3);
 assert.equal(retryFailureIngest.memoryIds.length, 0);
@@ -6255,6 +6258,104 @@ assert.deepEqual(retryFailureIngest.extractionFailedWindowIndexes, [0]);
 assert.equal(retryFailureIngest.extractionReports[0]?.outcome, "transport_failure");
 assert.equal(retryFailureIngest.extractionReports[0]?.windowIndex, 0);
 await retryFailureMemory.close();
+let replayRecoveredCalls = 0;
+const replayRecoveredStore = createSqliteMemoryStore({
+  path: path.join(tmp, "replay-recovered.db"),
+});
+const replayRecoveredMemory = createMemoryOS({
+  profileId: "replay-recovered",
+  store: replayRecoveredStore,
+  extractor: createOpenAICompatibleExtractor({
+    model: "fixture-replay-recovered-model",
+    timeoutMs: 1000,
+    retries: 0,
+    backoffMs: 0,
+    fetch: async () => {
+      replayRecoveredCalls += 1;
+      if (replayRecoveredCalls === 1) {
+        return {
+          ok: false,
+          status: 500,
+          statusText: "Server Error",
+          text: async () => "first attempt fails",
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () => JSON.stringify(openAICompletionResponse([{
+          kind: "fact",
+          content: "Replay recovered candidate persists once.",
+          confidence: 0.8,
+          predicate: "project.note",
+          subject: "project:replay",
+          object: "recovered",
+        }])),
+      };
+    },
+  }),
+});
+const replayRecoveredIngest = await replayRecoveredMemory.ingestConversation({
+  profileId: "replay-recovered",
+  messages: [{
+    conversationId: "replay-recovered",
+    messageId: "replay-recovered-1",
+    role: "user",
+    content: "Replay recovered source.",
+  }],
+  window: { maxMessages: 1 },
+});
+assert.equal(replayRecoveredCalls, 2);
+assert.equal(replayRecoveredIngest.memoryIds.length, 1);
+assert.equal(replayRecoveredIngest.extractionCallCount, 2);
+assert.equal(replayRecoveredIngest.replayedWindowCount, 1);
+assert.equal(replayRecoveredIngest.replayRecoveredCount, 1);
+assert.deepEqual(replayRecoveredIngest.extractionFailedWindowIndexes, []);
+assert.equal(
+  (await replayRecoveredMemory.list({ profileId: "replay-recovered", status: "any", limit: 10 })).length,
+  1,
+);
+await replayRecoveredMemory.close();
+let replayPermanentCalls = 0;
+const replayPermanentStore = createSqliteMemoryStore({
+  path: path.join(tmp, "replay-permanent.db"),
+});
+const replayPermanentMemory = createMemoryOS({
+  profileId: "replay-permanent",
+  store: replayPermanentStore,
+  extractor: createOpenAICompatibleExtractor({
+    model: "fixture-replay-permanent-model",
+    timeoutMs: 1000,
+    retries: 0,
+    backoffMs: 0,
+    fetch: async () => {
+      replayPermanentCalls += 1;
+      return {
+        ok: false,
+        status: 500,
+        statusText: "Server Error",
+        text: async () => "permanent failure",
+      };
+    },
+  }),
+});
+const replayPermanentIngest = await replayPermanentMemory.ingestConversation({
+  profileId: "replay-permanent",
+  messages: [{
+    conversationId: "replay-permanent",
+    messageId: "replay-permanent-1",
+    role: "user",
+    content: "Replay permanent source.",
+  }],
+  window: { maxMessages: 1 },
+});
+assert.equal(replayPermanentCalls, 2);
+assert.equal(replayPermanentIngest.memoryIds.length, 0);
+assert.equal(replayPermanentIngest.replayedWindowCount, 1);
+assert.equal(replayPermanentIngest.replayRecoveredCount, 0);
+assert.deepEqual(replayPermanentIngest.extractionFailedWindowIndexes, [0]);
+await replayPermanentMemory.close();
 let retryAfterCalls = 0;
 const retryAfterStartedMs = Date.now();
 const retryAfterExtractor = createOpenAICompatibleExtractor({
@@ -6324,6 +6425,7 @@ const mixedCharIngest = await mixedCharMemory.ingestConversation({
     { conversationId: "mixed-char", messageId: "mixed-char-3", role: "user", content: mixedFailContent },
   ],
   window: { maxMessages: 1 },
+  extraction: { replayAttempts: 0 },
 });
 assert.equal(mixedCharIngest.extractionOkWithCandidatesCharCount, mixedOkContent.length);
 assert.equal(mixedCharIngest.extractionEmptyCharCount, mixedEmptyContent.length);
@@ -12831,6 +12933,130 @@ assert.equal(
   vectorOnlyFalsePositiveMatches.some((entry) => entry.id === vectorOnlyFalsePositiveMemory.id),
   false,
 );
+const reconstructEmbeddingCalls: string[] = [];
+const reconstructEmbeddingStore = createSqliteMemoryStore({
+  path: path.join(tmp, "reconstruct-query-embedding.db"),
+});
+const reconstructEmbeddingMemory = createMemoryOS({
+  profileId: "reconstruct-query-embedding",
+  store: reconstructEmbeddingStore,
+  embeddingProvider: {
+    name: "test-reconstruct-provider",
+    dimensions: 3,
+    async embed(texts) {
+      reconstructEmbeddingCalls.push(...texts);
+      return texts.map((text) =>
+        /beverage|VXQZ-9173/iu.test(text) ? [1, 0, 0] : [0, 1, 0]
+      );
+    },
+  },
+});
+await reconstructEmbeddingMemory.add({
+  profileId: "reconstruct-query-embedding",
+  kind: "fact",
+  content: "VXQZ-9173.",
+  confidence: 0.9,
+});
+const originalReconstructEmbeddingSearch = reconstructEmbeddingStore.searchMemories.bind(reconstructEmbeddingStore);
+const reconstructSearchEmbeddings: Array<{ providerName: string; dimensions: number; vector: number[] }> = [];
+reconstructEmbeddingStore.searchMemories = ((input) => {
+  if (input.queryEmbedding) reconstructSearchEmbeddings.push(input.queryEmbedding);
+  return originalReconstructEmbeddingSearch(input);
+}) as typeof reconstructEmbeddingStore.searchMemories;
+const reconstructEmbeddingBefore = reconstructEmbeddingStore.readAuditSnapshot();
+const reconstructionWithoutQueryEmbedding = await reconstructEmbeddingMemory.reconstructContext({
+  profileId: "reconstruct-query-embedding",
+  query: "Which beverage should the launch recall use?",
+  maxSteps: 1,
+  maxBranch: 1,
+  maxMemories: 1,
+  retrieval: { embedQuery: false },
+});
+assert.equal(reconstructionWithoutQueryEmbedding.contextBlock.includes("VXQZ-9173"), false);
+reconstructEmbeddingCalls.length = 0;
+const reconstructionWithQueryEmbedding = await reconstructEmbeddingMemory.reconstructContext({
+  profileId: "reconstruct-query-embedding",
+  query: "Which beverage should the launch recall use?",
+  maxSteps: 1,
+  maxBranch: 1,
+  maxMemories: 1,
+  retrieval: { embedQuery: true },
+});
+assert.match(reconstructionWithQueryEmbedding.contextBlock, /VXQZ-9173/);
+assert.deepEqual(reconstructEmbeddingCalls, ["Which beverage should the launch recall use?"]);
+assert.equal(reconstructSearchEmbeddings.length > 0, true);
+assert.equal(
+  reconstructSearchEmbeddings.every((embedding) =>
+    embedding.providerName === "test-reconstruct-provider" &&
+    embedding.dimensions === 3 &&
+    embedding.vector.length === 3
+  ),
+  true,
+);
+reconstructEmbeddingCalls.length = 0;
+const preparedWithQueryEmbedding = await reconstructEmbeddingMemory.prepareTurn({
+  profileId: "reconstruct-query-embedding",
+  messages: [{ role: "user", content: "Which beverage should the launch recall use?" }],
+  retrieval: { embedQuery: true },
+});
+assert.match(preparedWithQueryEmbedding.contextBlock, /VXQZ-9173/);
+assert.deepEqual(reconstructEmbeddingCalls, ["Which beverage should the launch recall use?"]);
+assert.deepEqual(reconstructEmbeddingStore.readAuditSnapshot(), reconstructEmbeddingBefore);
+reconstructEmbeddingCalls.length = 0;
+await reconstructEmbeddingMemory.reconstructContext({
+  profileId: "reconstruct-query-embedding",
+  query: "api key sk-reconstructquerysecret1234567890",
+  maxSteps: 1,
+  maxBranch: 1,
+  maxMemories: 1,
+  retrieval: { embedQuery: true },
+});
+assert.deepEqual(reconstructEmbeddingCalls, []);
+await reconstructEmbeddingMemory.close();
+const failingQueryEmbeddingCalls: string[] = [];
+let failingQueryEmbeddingFailureCount = 0;
+const failingQueryEmbeddingStore = createSqliteMemoryStore({
+  path: path.join(tmp, "failing-query-embedding.db"),
+});
+const failingQueryEmbeddingMemory = createMemoryOS({
+  profileId: "failing-query-embedding",
+  store: failingQueryEmbeddingStore,
+  embeddingProvider: {
+    name: "test-failing-query-provider",
+    dimensions: 3,
+    async embed(texts) {
+      failingQueryEmbeddingCalls.push(...texts);
+      if (texts.some((text) => text.includes("lexical fallback query"))) {
+        throw new Error("planned query embedding failure");
+      }
+      return texts.map(() => [0, 1, 0]);
+    },
+  },
+});
+await failingQueryEmbeddingMemory.add({
+  profileId: "failing-query-embedding",
+  kind: "fact",
+  content: "lexical fallback query still retrieves lexically.",
+  confidence: 0.9,
+});
+failingQueryEmbeddingCalls.length = 0;
+const failingQueryEmbeddingReconstruction = await failingQueryEmbeddingMemory.reconstructContext({
+  profileId: "failing-query-embedding",
+  query: "lexical fallback query",
+  maxSteps: 1,
+  maxBranch: 1,
+  maxMemories: 1,
+  retrieval: {
+    embedQuery: true,
+    onQueryEmbeddingFailure: () => {
+      failingQueryEmbeddingFailureCount += 1;
+    },
+  },
+});
+assert.match(failingQueryEmbeddingReconstruction.contextBlock, /retrieves lexically/);
+assert.deepEqual(failingQueryEmbeddingCalls, ["lexical fallback query"]);
+assert.equal(failingQueryEmbeddingFailureCount, 1);
+await failingQueryEmbeddingMemory.close();
 const repairDbPath = path.join(tmp, "repair-search-index.db");
 const repairStore = createSqliteMemoryStore({ path: repairDbPath });
 const repairMemory = createMemoryOS({ profileId: "repair", store: repairStore });
@@ -23889,6 +24115,7 @@ try {
     cases: externalIntelligenceMessageCases.cases,
     datasetFormat: externalIntelligenceMessageCases.datasetFormat,
     ingestMode: "message",
+    ingestReplayAttempts: 0,
     maintainPhases: ["decay"],
     intelligence: {
       baseUrl: "https://user:pass@bench-intelligence.invalid/v1",
@@ -23957,6 +24184,8 @@ try {
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.apiKeyEnv, "GMOS_BENCH_TEST_KEY");
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.model, "bench-chat");
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.embedModel, "bench-embed");
+  assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.embedQuery, true);
+  assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.queryEmbeddingFailureCount, 0);
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.concurrency, 1);
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.timeoutMs, 5000);
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.retries, 2);
@@ -23981,7 +24210,7 @@ try {
   assert.equal(externalIntelligenceJson.includes("bench-intelligence.invalid/v1"), false);
   assert.match(
     renderExternalMemoryBenchmarkMarkdown(externalIntelligenceRun),
-    /Runtime intelligence: enabled=true ingestMode=message model=bench-chat embedModel=bench-embed host=bench-intelligence\.invalid maintainPhases=decay concurrency=1 timeoutMs=5000 retries=2 backoffMs=250 extractionWindows=2 extractionCalls=2 extractionRetries=2 extractionEmpty=0 okChars=\d+ emptyChars=0 parseFailureChars=0 transportFailureChars=\d+ extractionParseFailures=0 extractionTransportFailures=1 extractionFailures=1/,
+    /Runtime intelligence: enabled=true ingestMode=message model=bench-chat embedModel=bench-embed embedQuery=true queryEmbeddingFailures=0 host=bench-intelligence\.invalid maintainPhases=decay concurrency=1 timeoutMs=5000 retries=2 backoffMs=250 extractionWindows=2 extractionCalls=2 extractionRetries=2 extractionEmpty=0 replayedWindows=0 replayRecovered=0 okChars=\d+ emptyChars=0 parseFailureChars=0 transportFailureChars=\d+ extractionParseFailures=0 extractionTransportFailures=1 extractionFailures=1/,
   );
 } finally {
   if (previousExternalBenchKey === undefined) {
@@ -23990,6 +24219,105 @@ try {
     process.env.GMOS_BENCH_TEST_KEY = previousExternalBenchKey;
   }
 }
+const externalQueryEmbeddingCalls: string[] = [];
+const externalQueryEmbeddingIntelligence: DefaultIntelligence = {
+  embeddingProvider: {
+    name: "external-query-provider",
+    dimensions: 3,
+    async embed(texts) {
+      externalQueryEmbeddingCalls.push(...texts);
+      return texts.map((text) =>
+        /beverage|obsidian tea|semantic benchmark/iu.test(text) ? [1, 0, 0] : [0, 1, 0]
+      );
+    },
+  },
+};
+const externalQueryEmbeddingCases = [{
+  id: "external-query-embedding-default",
+  events: [{
+    type: "memory" as const,
+    kind: "fact" as const,
+    content: "The semantic benchmark answer is obsidian tea.",
+  }],
+  question: "Which beverage should benchmark recall use?",
+  expectedAny: ["obsidian tea"],
+}];
+const externalQueryEmbeddingDefaultRun = await runExternalMemoryBenchmark({
+  cases: externalQueryEmbeddingCases,
+  intelligence: externalQueryEmbeddingIntelligence,
+});
+assert.equal(externalQueryEmbeddingDefaultRun.pass, true);
+assert.equal(externalQueryEmbeddingDefaultRun.runManifest.runtimeIntelligence.embedQuery, true);
+assert.equal(externalQueryEmbeddingCalls.includes("Which beverage should benchmark recall use?"), true);
+externalQueryEmbeddingCalls.length = 0;
+const externalQueryEmbeddingOffRun = await runExternalMemoryBenchmark({
+  cases: externalQueryEmbeddingCases,
+  intelligence: externalQueryEmbeddingIntelligence,
+  embedQuery: false,
+});
+assert.equal(externalQueryEmbeddingOffRun.runManifest.runtimeIntelligence.embedQuery, false);
+assert.equal(externalQueryEmbeddingCalls.includes("Which beverage should benchmark recall use?"), false);
+let externalQueryEmbeddingFailureCount = 0;
+const externalFailingQueryIntelligence: DefaultIntelligence = {
+  embeddingProvider: {
+    name: "external-failing-query-provider",
+    dimensions: 3,
+    async embed(texts) {
+      if (texts.some((text) => text === "fail query lexical answer")) {
+        externalQueryEmbeddingFailureCount += 1;
+        throw new Error("planned external query embedding failure");
+      }
+      return texts.map(() => [0, 1, 0]);
+    },
+  },
+};
+const externalFailingQueryRun = await runExternalMemoryBenchmark({
+  cases: [{
+    id: "external-query-embedding-fallback",
+    events: [{
+      type: "memory" as const,
+      kind: "fact" as const,
+      content: "fail query lexical answer is still present.",
+    }],
+    question: "fail query lexical answer",
+    expectedAny: ["lexical answer"],
+  }],
+  intelligence: externalFailingQueryIntelligence,
+});
+assert.equal(externalFailingQueryRun.pass, true);
+assert.equal(externalQueryEmbeddingFailureCount, 1);
+assert.equal(externalFailingQueryRun.runManifest.runtimeIntelligence.queryEmbeddingFailureCount, 1);
+let externalReplayExtractorCalls = 0;
+const externalReplayRun = await runExternalMemoryBenchmark({
+  cases: [{
+    id: "external-replay-recovered",
+    events: [{ content: "Replay benchmark source." }],
+    question: "What is the replay benchmark answer?",
+    expectedAny: ["cobalt answer"],
+  }],
+  ingestMode: "message",
+  intelligence: {
+    extractor: {
+      name: "external-replay-extractor",
+      extract() {
+        externalReplayExtractorCalls += 1;
+        if (externalReplayExtractorCalls === 1) {
+          throw new Error("planned replay transport failure");
+        }
+        return {
+          kind: "fact",
+          content: "Replay benchmark recovered cobalt answer.",
+          confidence: 0.9,
+        };
+      },
+    },
+  },
+});
+assert.equal(externalReplayRun.pass, true);
+assert.equal(externalReplayRun.runManifest.runtimeIntelligence.replayedWindowCount, 1);
+assert.equal(externalReplayRun.runManifest.runtimeIntelligence.replayRecoveredCount, 1);
+assert.equal(externalReplayRun.runManifest.runtimeIntelligence.ingestCaseGroups[0]?.replayedWindowCount, 1);
+assert.equal(externalReplayRun.runManifest.runtimeIntelligence.ingestCaseGroups[0]?.replayRecoveredCount, 1);
 const sameProfileDifferentEventsBenchmark = await runExternalMemoryBenchmark({
   cases: [
     {
@@ -26052,7 +26380,7 @@ assert.equal(cliLocomoJson.runManifest?.options?.concurrency, 2);
 assert.equal(cliLocomoJson.runManifest?.options?.reuseProfiles, true);
 assert.match(
   cliLocomoExternal.stderr,
-  /\[gmos external\] 1\/1 pass case=locomo-cli-atlas:qa-1 durationMs=\d+ passed=1 failed=0/,
+  /\[gmos external\] 1\/1 pass case=locomo-cli-atlas:qa-1 durationMs=\d+ retrieved=\d+ queryEmbeddingFailures=\d+ passed=1 failed=0/,
 );
 const stateBenchArtifactFile = path.join(tmp, "statebench-learnings.json");
 const cliStateBenchBuild = spawnSync(

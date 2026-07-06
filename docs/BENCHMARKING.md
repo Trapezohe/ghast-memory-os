@@ -316,6 +316,13 @@ case group with id, kind, redacted content, and temporal label. Official reader
 failures also write bounded `reader-context-*` files into the same directory;
 `--debug-context-failure-limit` caps their count.
 
+Provider embeddings affect retrieval only when query embedding is active. When
+an embedding provider is configured, external benchmark scoring reads default
+to `embedQuery=true`; use `--embed-query off` to force lexical/association
+retrieval, or `--embed-query on` to make the opt-in explicit. Manifests record
+the effective `runtimeIntelligence.embedQuery` and
+`queryEmbeddingFailureCount`; failures fall back to lexical retrieval.
+
 With `--progress`, message-mode setup prints content-free window progress every
 10 windows and at completion: windows done/total, outcome counts, extracted
 candidate count so far, retry count, outcome character totals, elapsed time,
@@ -323,7 +330,10 @@ and rough ETA. Runtime manifests include `extractionRetryCount`,
 `extractionEmptyCount`, `extractionParseFailureCount`,
 `extractionTransportFailureCount`, outcome character totals such as
 `extractionOkWithCandidatesCharCount` and `extractionEmptyCharCount`, alongside
-`extractionFailureCount`.
+`extractionFailureCount`. Failed windows are replayed once after the ingest pass
+by default; `--ingest-replay-attempts 0` disables it. Progress, reports, and
+manifests include `replayedWindowCount` and `replayRecoveredCount`, and
+recovered windows are removed from `extractionFailedWindowIndexes`.
 
 Local Ollama-style OpenAI-compatible endpoint:
 
@@ -333,6 +343,7 @@ gmos gym external \
   --dataset-format longmemeval \
   --ingest-mode message \
   --extraction-window 12 \
+  --ingest-replay-attempts 1 \
   --intelligence-base-url http://127.0.0.1:11434/v1 \
   --intelligence-model llama3.1 \
   --intelligence-embed-model nomic-embed-text \
@@ -341,6 +352,7 @@ gmos gym external \
   --intelligence-retries 2 \
   --intelligence-backoff-ms 250 \
   --intelligence-debug-dir ./gmos-debug \
+  --embed-query on \
   --progress \
   --format json
 ```

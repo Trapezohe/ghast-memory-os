@@ -20,6 +20,7 @@ import type {
   MemoryCueExtractor,
   MemoryRecord,
   MemoryStore,
+  QueryVectorEmbedding,
   ReconstructedContext,
   ReconstructionAnchorCoverageReport,
   ReconstructedEvidencePath,
@@ -1725,6 +1726,7 @@ async function searchDirectMemoryCandidates(input: {
   store: MemoryStore;
   profileId: string;
   query: string;
+  queryEmbedding?: QueryVectorEmbedding | undefined;
   intent: ReconstructionIntent;
   recallPurpose: ReconstructionRecallPurpose;
   includeSensitive?: boolean | undefined;
@@ -1748,6 +1750,7 @@ async function searchDirectMemoryCandidates(input: {
       purpose: input.recallPurpose,
       includeSensitive: input.includeSensitive,
       limit,
+      ...(input.queryEmbedding ? { queryEmbedding: input.queryEmbedding } : {}),
     });
     for (const [memoryIndex, memory] of memories.entries()) {
       const existing = candidates.get(memory.id);
@@ -1900,6 +1903,7 @@ async function fuseDirectMemorySearch(input: {
   store: MemoryStore;
   profileId: string;
   query: string;
+  queryEmbedding?: QueryVectorEmbedding | undefined;
   intent: ReconstructionIntent;
   recallPurpose: ReconstructionRecallPurpose;
   includeSensitive?: boolean | undefined;
@@ -1923,6 +1927,7 @@ async function fuseDirectMemorySearch(input: {
     store: input.store,
     profileId: input.profileId,
     query: input.query,
+    queryEmbedding: input.queryEmbedding,
     intent: input.intent,
     recallPurpose: input.recallPurpose,
     includeSensitive: input.includeSensitive,
@@ -1985,6 +1990,7 @@ async function topUpUncoveredAnchors(input: {
   profileId: string;
   plan: AnchorCoveragePlan | null;
   intent: ReconstructionIntent;
+  queryEmbedding?: QueryVectorEmbedding | undefined;
   recallPurpose: ReconstructionRecallPurpose;
   includeSensitive?: boolean | undefined;
   maxMemories: number;
@@ -2004,6 +2010,7 @@ async function topUpUncoveredAnchors(input: {
       store: input.store,
       profileId: input.profileId,
       query: anchor.anchorCue,
+      queryEmbedding: input.queryEmbedding,
       intent: input.intent,
       recallPurpose: input.recallPurpose,
       includeSensitive: input.includeSensitive,
@@ -2317,6 +2324,7 @@ async function fallbackReconstruction(input: {
   contextBudgetTokens?: number | undefined;
   maxMemories: number;
   intent: ReconstructionIntent;
+  queryEmbedding?: QueryVectorEmbedding | undefined;
   displayQuery?: string | undefined;
   stopWhenEvidenceEnough: boolean;
   evidenceConvergenceThreshold: number;
@@ -2356,6 +2364,7 @@ async function fallbackReconstruction(input: {
         purpose: input.recallPurpose,
         includeSensitive: input.includeSensitive,
         limit: Math.max(1, Math.ceil(input.maxMemories / anchorPlan.anchors.length)),
+        ...(input.queryEmbedding ? { queryEmbedding: input.queryEmbedding } : {}),
       });
       anchor.candidateCount += found.length;
       addMemories(found, anchor.anchorCue);
@@ -2368,6 +2377,7 @@ async function fallbackReconstruction(input: {
       purpose: input.recallPurpose,
       includeSensitive: input.includeSensitive,
       limit: input.maxMemories,
+      ...(input.queryEmbedding ? { queryEmbedding: input.queryEmbedding } : {}),
     }));
   }
   const memories = [...memoryById.values()];
@@ -2482,6 +2492,7 @@ export async function reconstructMemoryContext(input: {
   request: ReconstructMemoryContextRequest;
   cueExtractor?: MemoryCueExtractor | undefined;
   inferTemporalCuesFromText?: boolean | undefined;
+  queryEmbedding?: QueryVectorEmbedding | undefined;
   sanitizeEvidenceForOutput?: EvidenceOutputSanitizer | undefined;
 }): Promise<ReconstructedContext> {
   const profileId = input.request.profileId ?? input.defaultProfileId;
@@ -2528,6 +2539,7 @@ export async function reconstructMemoryContext(input: {
       contextBudgetTokens: input.request.contextBudgetTokens,
       maxMemories,
       intent,
+      queryEmbedding: input.queryEmbedding,
       stopWhenEvidenceEnough,
       evidenceConvergenceThreshold,
       targetMemoryCount,
@@ -2802,6 +2814,7 @@ export async function reconstructMemoryContext(input: {
       profileId,
       plan: anchorPlan,
       intent,
+      queryEmbedding: input.queryEmbedding,
       recallPurpose,
       includeSensitive: input.request.includeSensitive,
       maxMemories,
@@ -2853,6 +2866,7 @@ export async function reconstructMemoryContext(input: {
       store: input.store,
       profileId,
       query,
+      queryEmbedding: input.queryEmbedding,
       intent,
       recallPurpose,
       includeSensitive: input.request.includeSensitive,

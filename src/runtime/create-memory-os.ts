@@ -102,6 +102,7 @@ import type {
   MemoryDossierCandidate,
   MemoryDossierEntitySnapshot,
   MemoryDossierResult,
+  QueryVectorEmbedding,
   MemoryRole,
   MemoryGapSuppressionReason,
   MemoryRecord,
@@ -768,6 +769,10 @@ function prepareTurnDisplayQuery(input: PrepareTurnInput): string {
   return [...input.messages].reverse().find((message) => message.role === "user")?.content ?? "";
 }
 
+function reconstructQueryForEmbedding(input: ReconstructContextInput): string | undefined {
+  return input.query ?? [...(input.messages ?? [])].reverse().find((message) => message.role === "user")?.content;
+}
+
 interface TaskRouteSignal {
   value: string;
   privateByDefault: boolean;
@@ -1222,35 +1227,67 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     query: string | undefined,
     options: MemoryReadRetrievalOptions | undefined,
   ) {
-    if (!query || options?.embedQuery !== true || !embeddingProvider) return undefined;
+    const readRetrieval = readRetrievalOptions(options);
+    if (!query || readRetrieval?.embedQuery !== true || !embeddingProvider) return undefined;
     if (!queryEligibleForEmbeddingProvider(query)) return undefined;
     const embedding = await embeddingForQuery({
       provider: embeddingProvider,
       query,
-      timeoutMs: options.queryEmbeddingTimeoutMs,
+      timeoutMs: readRetrieval.queryEmbeddingTimeoutMs,
     });
+    if (!embedding) readRetrieval.onQueryEmbeddingFailure?.();
     return embedding ?? undefined;
+  }
+
+  function readRetrievalOptions(
+    options: MemoryReadRetrievalOptions | undefined,
+  ): MemoryReadRetrievalOptions | undefined {
+    const embedQuery = options?.embedQuery ?? retrieval?.embedQuery;
+    const queryEmbeddingTimeoutMs =
+      options?.queryEmbeddingTimeoutMs ?? retrieval?.queryEmbeddingTimeoutMs;
+    const onQueryEmbeddingFailure =
+      options?.onQueryEmbeddingFailure ?? retrieval?.onQueryEmbeddingFailure;
+    if (
+      embedQuery === undefined &&
+      queryEmbeddingTimeoutMs === undefined &&
+      onQueryEmbeddingFailure === undefined
+    ) {
+      return undefined;
+    }
+    return {
+      ...(embedQuery !== undefined ? { embedQuery } : {}),
+      ...(queryEmbeddingTimeoutMs !== undefined ? { queryEmbeddingTimeoutMs } : {}),
+      ...(onQueryEmbeddingFailure !== undefined ? { onQueryEmbeddingFailure } : {}),
+    };
   }
 
   async function searchMemoriesWithRetrieval(
     input: MemorySearchInput,
     readRetrieval?: MemoryReadRetrievalOptions | undefined,
+    queryEmbedding?: QueryVectorEmbedding | null | undefined,
   ): Promise<MemoryRecord[]> {
-    const queryEmbedding = await queryEmbeddingForSearch(input.query, readRetrieval);
+    const resolvedQueryEmbedding =
+      input.queryEmbedding ??
+      (queryEmbedding === undefined
+        ? await queryEmbeddingForSearch(input.query, readRetrieval)
+        : queryEmbedding ?? undefined);
     const memories = await store.searchMemories({
       ...input,
       retrieval,
-      ...(queryEmbedding ? { queryEmbedding } : {}),
+      ...(resolvedQueryEmbedding ? { queryEmbedding: resolvedQueryEmbedding } : {}),
     });
     const reranked = await callRetrievalReranker({ retrieval, memories });
     return reranked ?? memories;
   }
 
-  function storeWithRetrieval(readRetrieval?: MemoryReadRetrievalOptions | undefined) {
+  function storeWithRetrieval(
+    readRetrieval?: MemoryReadRetrievalOptions | undefined,
+    queryEmbedding?: QueryVectorEmbedding | null | undefined,
+  ) {
     return {
       ...store,
       searchMemories(input: MemorySearchInput) {
-        return searchMemoriesWithRetrieval(input, readRetrieval);
+        return searchMemoriesWithRetrieval(input, readRetrieval, queryEmbedding);
       },
     };
   }
@@ -1839,6 +1876,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const maxChars = boundedPositiveInteger(input.window?.maxChars, 7000, 256, 200000);
     const windowConcurrency = boundedPositiveInteger(input.window?.concurrency, 1, 1, 32);
     const progressEveryWindows = boundedPositiveInteger(input.progress?.everyWindows, 10, 1, 100000);
+    const replayAttempts = boundedPositiveInteger(input.extraction?.replayAttempts, 1, 0, 5);
     const extractionStartedMs = Date.now();
     const overlapMessages = boundedPositiveInteger(
       input.window?.overlapMessages,
@@ -1862,7 +1900,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     let extractionParseFailureCharCount = 0;
     let extractionTransportFailureCharCount = 0;
     let extractedMemoryCountForProgress = 0;
-    const extractionFailedWindowIndexes: number[] = [];
+    let replayedWindowCount = 0;
+    let replayRecoveredCount = 0;
+    const extractionFailedWindowIndexes = new Set<number>();
 
     interface WindowMember extends ConversationEvidenceWrite {
       result: ObserveResult;
@@ -1935,7 +1975,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         (report.outcome === "parse_failure" || report.outcome === "transport_failure") &&
         report.windowIndex !== undefined
       ) {
-        extractionFailedWindowIndexes.push(report.windowIndex);
+        extractionFailedWindowIndexes.add(report.windowIndex);
       }
       extractedMemoryCountForProgress += report.acceptedCandidateCount;
     }
@@ -1964,6 +2004,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         extractionEmptyCharCount,
         extractionParseFailureCharCount,
         extractionTransportFailureCharCount,
+        replayedWindowCount,
+        replayRecoveredCount,
         extractedMemoryCount: extractedMemoryCountForProgress,
         elapsedMs,
         etaMs,
@@ -2025,6 +2067,33 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         }),
       );
       return outputs.filter((output): output is ExtractionWindowResult => output !== undefined);
+    }
+
+    async function replayFailedWindows(): Promise<void> {
+      for (let attempt = 0; attempt < replayAttempts; attempt += 1) {
+        const indexes = [...extractionFailedWindowIndexes].sort((left, right) => left - right);
+        if (indexes.length === 0) return;
+        for (const index of indexes) {
+          const task = extractionTasks[index];
+          if (!task || !extractionFailedWindowIndexes.has(index)) continue;
+          replayedWindowCount += 1;
+          if (options.extractor) extractionCallCount += 1;
+          const output = await extractWindow(task);
+          recordExtractionOutcome(output.safeReport);
+          if (
+            output.safeReport.outcome !== "parse_failure" &&
+            output.safeReport.outcome !== "transport_failure"
+          ) {
+            extractionFailedWindowIndexes.delete(index);
+            replayRecoveredCount += 1;
+            await applyWindowExtraction(output);
+          } else {
+            extractionReports.push(output.safeReport);
+            task.last.result.extraction = output.safeReport;
+          }
+          emitExtractionProgress(extractionTasks.length, extractionTasks.length);
+        }
+      }
     }
 
     async function applyWindowExtraction(output: ExtractionWindowResult): Promise<void> {
@@ -2130,6 +2199,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     for (const output of windowExtractions) {
       await applyWindowExtraction(output);
     }
+    await replayFailedWindows();
 
     return {
       profileId,
@@ -2150,7 +2220,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       extractionEmptyCharCount,
       extractionParseFailureCharCount,
       extractionTransportFailureCharCount,
-      extractionFailedWindowIndexes,
+      extractionFailedWindowIndexes: [...extractionFailedWindowIndexes].sort((left, right) => left - right),
+      replayedWindowCount,
+      replayRecoveredCount,
       extractionMinConfidence,
       extractionReports,
     };
@@ -2211,6 +2283,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       classifyRuntimeSensitivity,
     );
     const hideTaskRetrievalHints = displayQuery !== query || privateRouteSignals.length > 0;
+    const queryEmbedding = await queryEmbeddingForSearch(query, input.retrieval) ?? null;
     const memories = sourceScopedMemories(await searchMemoriesWithRetrieval({
       profileId,
       query,
@@ -2219,7 +2292,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       purpose: "context",
       includeSensitive: input.includeSensitive,
       ...(trace ? { trace } : {}),
-    }, input.retrieval), query);
+    }, input.retrieval, queryEmbedding), query);
     const actionPolicies = await store.listActionPolicies(profileId, {
       includeSensitive: input.includeSensitive,
     });
@@ -2292,10 +2365,11 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const reconstruction =
       input.reconstruction?.mode === "shadow"
         ? await reconstructMemoryContext({
-            store: storeWithRetrieval(input.retrieval),
+            store: storeWithRetrieval(input.retrieval, queryEmbedding),
             defaultProfileId,
             cueExtractor: options.reconstruction?.cueExtractor,
             inferTemporalCuesFromText: options.reconstruction?.inferTemporalCuesFromText,
+            queryEmbedding: queryEmbedding ?? undefined,
             sanitizeEvidenceForOutput: (event) =>
               sanitizeRuntimeEvidenceForPublicOutput(event, classifyRuntimeSensitivity),
             request: {
@@ -2463,11 +2537,16 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       request: sanitizedReconstructRequest(input, classifyRuntimeSensitivity),
       defaultPreset: defaultDisposition,
     });
+    const queryEmbedding = await queryEmbeddingForSearch(
+      reconstructQueryForEmbedding(disposition.request),
+      input.retrieval,
+    ) ?? null;
     const reconstructed = await reconstructMemoryContext({
-      store: storeWithRetrieval(input.retrieval),
+      store: storeWithRetrieval(input.retrieval, queryEmbedding),
       defaultProfileId,
       cueExtractor: options.reconstruction?.cueExtractor,
       inferTemporalCuesFromText: options.reconstruction?.inferTemporalCuesFromText,
+      queryEmbedding: queryEmbedding ?? undefined,
       sanitizeEvidenceForOutput: (event) =>
         sanitizeRuntimeEvidenceForPublicOutput(event, classifyRuntimeSensitivity),
       request: disposition.request,
@@ -2492,11 +2571,16 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       }, classifyRuntimeSensitivity),
       defaultPreset: defaultDisposition,
     });
+    const queryEmbedding = await queryEmbeddingForSearch(
+      reconstructQueryForEmbedding(disposition.request),
+      input.retrieval,
+    ) ?? null;
     const reconstructed = await reconstructMemoryContext({
-      store: storeWithRetrieval(input.retrieval),
+      store: storeWithRetrieval(input.retrieval, queryEmbedding),
       defaultProfileId,
       cueExtractor: options.reconstruction?.cueExtractor,
       inferTemporalCuesFromText: options.reconstruction?.inferTemporalCuesFromText,
+      queryEmbedding: queryEmbedding ?? undefined,
       sanitizeEvidenceForOutput: (event) =>
         sanitizeRuntimeEvidenceForPublicOutput(event, classifyRuntimeSensitivity),
       request: disposition.request,

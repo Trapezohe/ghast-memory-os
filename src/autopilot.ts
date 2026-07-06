@@ -22,6 +22,7 @@ export interface TranscriptIngestInput {
   text?: string | undefined;
   format: TranscriptIngestFormat;
   dryRun?: boolean | undefined;
+  replayAttempts?: number | undefined;
   now?: string | undefined;
   fileName?: string | undefined;
 }
@@ -48,6 +49,8 @@ export interface TranscriptIngestReport {
   extractionParseFailureCount: number;
   extractionTransportFailureCount: number;
   extractionFailureCount: number;
+  replayedWindowCount: number;
+  replayRecoveredCount: number;
   byRole: Partial<Record<MemoryRole, number>>;
   skippedRecords: TranscriptIngestSkippedRecord[];
 }
@@ -66,6 +69,8 @@ export interface AutopilotIngestDirectoryReport {
   extractionParseFailureCount: number;
   extractionTransportFailureCount: number;
   extractionFailureCount: number;
+  replayedWindowCount: number;
+  replayRecoveredCount: number;
   files: Array<{
     fileName: string;
     sourceFileHash: string;
@@ -80,6 +85,8 @@ export interface AutopilotIngestDirectoryReport {
     extractionParseFailureCount: number;
     extractionTransportFailureCount: number;
     extractionFailureCount: number;
+    replayedWindowCount: number;
+    replayRecoveredCount: number;
     fullyKnown: boolean;
   }>;
   errors: Array<{ fileName: string; message: string }>;
@@ -167,7 +174,7 @@ export interface RunAutopilotInput {
   profileId?: string | undefined;
   phases?: MaintenancePhase[] | undefined;
   embedBackfill?: boolean | { batchSize?: number | undefined } | undefined;
-  ingest?: { dir?: string | undefined } | undefined;
+  ingest?: { dir?: string | undefined; replayAttempts?: number | undefined } | undefined;
   dryRun?: boolean | undefined;
   now?: string | undefined;
   historyRetention?: number | undefined;
@@ -410,6 +417,8 @@ export async function ingestTranscript(input: TranscriptIngestInput): Promise<Tr
     extractionParseFailureCount: 0,
     extractionTransportFailureCount: 0,
     extractionFailureCount: 0,
+    replayedWindowCount: 0,
+    replayRecoveredCount: 0,
     byRole: {},
     skippedRecords: parsed.skipped,
   };
@@ -433,6 +442,9 @@ export async function ingestTranscript(input: TranscriptIngestInput): Promise<Tr
         recordIndex: index,
       },
     })),
+    extraction: {
+      ...(input.replayAttempts !== undefined ? { replayAttempts: input.replayAttempts } : {}),
+    },
   });
   for (const observed of ingested.results) {
     if (observed.skippedReason === "deduplicated_event") report.deduplicated += 1;
@@ -445,6 +457,8 @@ export async function ingestTranscript(input: TranscriptIngestInput): Promise<Tr
   report.extractionParseFailureCount = ingested.extractionParseFailureCount;
   report.extractionTransportFailureCount = ingested.extractionTransportFailureCount;
   report.extractionFailureCount = ingested.extractionFailureCount;
+  report.replayedWindowCount = ingested.replayedWindowCount;
+  report.replayRecoveredCount = ingested.replayRecoveredCount;
   return report;
 }
 
@@ -460,6 +474,7 @@ async function ingestDirectory(input: {
   dir?: string | undefined;
   dryRun: boolean;
   now: string;
+  replayAttempts?: number | undefined;
 }): Promise<AutopilotIngestDirectoryReport> {
   if (!input.dir) {
     return {
@@ -476,6 +491,8 @@ async function ingestDirectory(input: {
       extractionParseFailureCount: 0,
       extractionTransportFailureCount: 0,
       extractionFailureCount: 0,
+      replayedWindowCount: 0,
+      replayRecoveredCount: 0,
       files: [],
       errors: [],
     };
@@ -495,6 +512,8 @@ async function ingestDirectory(input: {
     extractionParseFailureCount: 0,
     extractionTransportFailureCount: 0,
     extractionFailureCount: 0,
+    replayedWindowCount: 0,
+    replayRecoveredCount: 0,
     files: [],
     errors: [],
   };
@@ -508,6 +527,7 @@ async function ingestDirectory(input: {
         inputFile: file,
         format: "auto",
         dryRun: input.dryRun,
+        replayAttempts: input.replayAttempts,
         now: input.now,
         fileName: path.basename(name),
       });
@@ -521,6 +541,8 @@ async function ingestDirectory(input: {
       report.extractionParseFailureCount += child.extractionParseFailureCount;
       report.extractionTransportFailureCount += child.extractionTransportFailureCount;
       report.extractionFailureCount += child.extractionFailureCount;
+      report.replayedWindowCount += child.replayedWindowCount;
+      report.replayRecoveredCount += child.replayRecoveredCount;
       report.files.push({
         fileName: path.basename(name),
         sourceFileHash: child.sourceFileHash,
@@ -535,6 +557,8 @@ async function ingestDirectory(input: {
         extractionParseFailureCount: child.extractionParseFailureCount,
         extractionTransportFailureCount: child.extractionTransportFailureCount,
         extractionFailureCount: child.extractionFailureCount,
+        replayedWindowCount: child.replayedWindowCount,
+        replayRecoveredCount: child.replayRecoveredCount,
         fullyKnown: child.parsed > 0 && child.observed === 0 && child.deduplicated === child.parsed,
       });
     } catch (error) {
@@ -673,6 +697,7 @@ export async function runAutopilot(input: RunAutopilotInput): Promise<AutopilotR
         dir: input.ingest?.dir,
         dryRun,
         now: startedAt,
+        replayAttempts: input.ingest?.replayAttempts,
       });
     } catch (error) {
       ingest = {
@@ -689,6 +714,8 @@ export async function runAutopilot(input: RunAutopilotInput): Promise<AutopilotR
         extractionParseFailureCount: 0,
         extractionTransportFailureCount: 0,
         extractionFailureCount: 0,
+        replayedWindowCount: 0,
+        replayRecoveredCount: 0,
         files: [],
         errors: [{ fileName: "directory", message: safeError(error) }],
       };

@@ -509,6 +509,7 @@ export interface IngestConversationInput {
   } | undefined;
   extraction?: {
     extractFromRoles?: MemoryRole[] | undefined;
+    replayAttempts?: number | undefined;
   } | undefined;
   progress?: {
     everyWindows?: number | undefined;
@@ -532,6 +533,8 @@ export interface IngestConversationProgress {
   extractionEmptyCharCount: number;
   extractionParseFailureCharCount: number;
   extractionTransportFailureCharCount: number;
+  replayedWindowCount: number;
+  replayRecoveredCount: number;
   extractedMemoryCount: number;
   elapsedMs: number;
   etaMs: number | null;
@@ -557,6 +560,8 @@ export interface IngestConversationResult {
   extractionParseFailureCharCount: number;
   extractionTransportFailureCharCount: number;
   extractionFailedWindowIndexes: number[];
+  replayedWindowCount: number;
+  replayRecoveredCount: number;
   extractionMinConfidence: number;
   extractionReports: MemoryExtractionReport[];
 }
@@ -694,14 +699,15 @@ export interface MemoryRetrievalFusionWeights {
   association?: number | undefined;
 }
 
-export interface MemoryRetrievalConfig {
-  fusion?: MemoryRetrievalFusionWeights | undefined;
-  reranker?: MemoryRetrievalReranker | undefined;
-}
-
 export interface MemoryReadRetrievalOptions {
   embedQuery?: boolean | undefined;
   queryEmbeddingTimeoutMs?: number | undefined;
+  onQueryEmbeddingFailure?: (() => void) | undefined;
+}
+
+export interface MemoryRetrievalConfig extends MemoryReadRetrievalOptions {
+  fusion?: MemoryRetrievalFusionWeights | undefined;
+  reranker?: MemoryRetrievalReranker | undefined;
 }
 
 export interface MemoryRetrievalRerankerCandidate {

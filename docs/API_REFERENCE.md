@@ -56,7 +56,8 @@ Key write methods:
   changes. `window.concurrency` runs bounded extractor windows in parallel
   while applying results in window order; the default is `1` unless a caller
   wires a higher concurrency. `extraction.extractFromRoles` overrides the
-  runtime default for that ingest call.
+  runtime default for that ingest call. `extraction.replayAttempts` replays
+  failed windows once by default; `0` disables replay.
 
 Windowed extraction keeps evidence granularity. Accepted memories store
 `metadata.windowEvidenceIds` with every contributing evidence id and keep
@@ -67,7 +68,8 @@ window provenance. Ingest reports include `extractionOkWithCandidatesCount`,
 `extractionRetryCount`, `extractionEmptyCount`,
 `extractionParseFailureCount`, `extractionTransportFailureCount`, the legacy
 aggregate `extractionFailureCount`, `extractionFailedWindowIndexes`,
-`extractionMinConfidence`, and per-outcome character totals such as
+`replayedWindowCount`, `replayRecoveredCount`, `extractionMinConfidence`, and
+per-outcome character totals such as
 `extractionOkWithCandidatesCharCount` and `extractionEmptyCharCount`.
 
 ### SQLite Store Encryption
@@ -158,6 +160,12 @@ Read paths do not call the provider unless the host explicitly enables query
 embedding:
 
 ```ts
+const memory = createMemoryOS({
+  store,
+  embeddingProvider,
+  retrieval: { embedQuery: true, queryEmbeddingTimeoutMs: 1000 },
+});
+
 await memory.search({
   query: "semantic paraphrase",
   retrieval: { embedQuery: true, queryEmbeddingTimeoutMs: 1000 },
@@ -165,8 +173,12 @@ await memory.search({
 ```
 
 The same `retrieval` read option is available on `prepareTurn()` and
-`reconstructContext()`. Without it, provider-backed stores still use lexical FTS
-and local fallback vectors on reads.
+`reconstructContext()`, and `createMemoryOS({ retrieval })` can set the default
+for all reads. `reconstructContext()` and shadow `prepareTurn()` reconstruction
+compute one query embedding per read and reuse it across direct/hybrid searches.
+Provider failure falls back to lexical retrieval; hosts that need telemetry can
+pass `onQueryEmbeddingFailure`. Without query embedding, provider-backed stores
+still use lexical FTS and local fallback vectors on reads.
 
 ### Recall Disposition Presets
 
@@ -334,6 +346,7 @@ await ingestTranscript({
   profileId: "local-user",
   inputFile: "./thread.jsonl",
   format: "jsonl",
+  replayAttempts: 1,
   dryRun: true,
 });
 ```

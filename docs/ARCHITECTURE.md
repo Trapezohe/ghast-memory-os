@@ -58,9 +58,9 @@ Embedding providers are write-path hooks. gmOS may call them while adding or
 updating memory, while writing host consolidation summaries or distilled
 procedures, and during explicit search-index repair/backfill. Ordinary
 `prepareTurn`, `reconstructContext`, `explainTurn`, `explainEvidencePath`, and
-`search` do not call the provider. Query embedding is the only read-time
-exception and requires an explicit `retrieval.embedQuery` option with timeout
-and the same secret-like sensitivity gate as stored content.
+`search` do not call the provider. Host-opted query embedding is the sole
+read-time provider call and requires an explicit `retrieval.embedQuery` option
+with timeout and the same secret-like sensitivity gate as stored content.
 
 Write paths:
 

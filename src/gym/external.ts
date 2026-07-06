@@ -14,6 +14,7 @@ import type {
   MemoryKind,
   MemoryRecord,
   MemoryOS,
+  MemoryReadRetrievalOptions,
   MemoryProcedureDistiller,
   PrivacyMode,
   ReconstructedContext,
@@ -241,6 +242,8 @@ export interface ExternalMemoryBenchmarkCaseResult {
   extractionEmptyCharCount: number;
   extractionParseFailureCharCount: number;
   extractionTransportFailureCharCount: number;
+  replayedWindowCount: number;
+  replayRecoveredCount: number;
   mode: ExternalMemoryBenchmarkMode;
   temporalMode: ExternalMemoryBenchmarkTemporalMode | null;
   slices?: string[] | undefined;
@@ -305,6 +308,8 @@ export interface ExternalMemoryBenchmarkGroupTiming {
   extractionEmptyCharCount: number;
   extractionParseFailureCharCount: number;
   extractionTransportFailureCharCount: number;
+  replayedWindowCount: number;
+  replayRecoveredCount: number;
   passedCount: number;
   failedCount: number;
 }
@@ -357,6 +362,8 @@ export interface ExternalMemoryBenchmarkFailureSample {
   extractionEmptyCharCount: number;
   extractionParseFailureCharCount: number;
   extractionTransportFailureCharCount: number;
+  replayedWindowCount: number;
+  replayRecoveredCount: number;
   durationMs: number;
   scoringRuntimeMs: number;
   taxonomyRuntimeMs: number;
@@ -393,6 +400,7 @@ export interface ExternalMemoryBenchmarkSummary {
   slowestCases: ExternalMemoryBenchmarkCaseTiming[];
   slowestCaseGroups: ExternalMemoryBenchmarkGroupTiming[];
   failureSampleLimit: number;
+  retrievalEmptyCount: number;
   failureSamples: ExternalMemoryBenchmarkFailureSample[];
 }
 
@@ -448,6 +456,8 @@ export interface ExternalMemoryBenchmarkRuntimeIngestGroupManifest {
   extractionEmptyCharCount: number;
   extractionParseFailureCharCount: number;
   extractionTransportFailureCharCount: number;
+  replayedWindowCount: number;
+  replayRecoveredCount: number;
   ingestDurationMs: number;
 }
 
@@ -463,6 +473,8 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   timeoutMs: number | null;
   retries: number | null;
   backoffMs: number | null;
+  embedQuery: boolean;
+  queryEmbeddingFailureCount: number;
   hookNames: {
     extractor: string | null;
     consolidator: string | null;
@@ -482,6 +494,8 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   extractionEmptyCharCount: number;
   extractionParseFailureCharCount: number;
   extractionTransportFailureCharCount: number;
+  replayedWindowCount: number;
+  replayRecoveredCount: number;
   ingestCaseGroups: ExternalMemoryBenchmarkRuntimeIngestGroupManifest[];
   answerer: ExternalMemoryBenchmarkRuntimeAnswererManifest;
 }
@@ -502,6 +516,8 @@ export interface ExternalMemoryBenchmarkCaseGroupProgress {
   extractionEmptyCharCount: number;
   extractionParseFailureCharCount: number;
   extractionTransportFailureCharCount: number;
+  replayedWindowCount: number;
+  replayRecoveredCount: number;
   ingestDurationMs: number;
 }
 
@@ -584,6 +600,7 @@ export interface ExternalMemoryBenchmarkRunManifest {
     failureSampleLimit: number;
     diagnosticsLevel: ExternalMemoryBenchmarkDiagnosticsLevel;
     protocol: ExternalMemoryBenchmarkProtocol;
+    ingestReplayAttempts: number;
   };
   scoreSemantics: ExternalMemoryBenchmarkScoreSemantics;
   runtimeIntelligence: ExternalMemoryBenchmarkRuntimeIntelligenceManifest;
@@ -605,6 +622,7 @@ export interface ExternalMemoryBenchmarkResult {
   normalizedEvidencePassedCount: number;
   officialScore: number | null;
   officialPassedCount: number | null;
+  retrievalEmptyCount: number;
   ceilingMetrics: ExternalMemoryBenchmarkCeilingMetrics | null;
   summary: ExternalMemoryBenchmarkSummary;
   runManifest: ExternalMemoryBenchmarkRunManifest;
@@ -638,6 +656,8 @@ export interface RunExternalMemoryBenchmarkOptions {
   answerer?: ExternalMemoryBenchmarkAnswerer | undefined;
   ingestMode?: ExternalMemoryBenchmarkIngestMode | undefined;
   extractionWindow?: number | undefined;
+  ingestReplayAttempts?: number | undefined;
+  embedQuery?: boolean | undefined;
   intelligence?: ExternalMemoryBenchmarkIntelligence | undefined;
   maintainPhases?: MaintenancePhase[] | undefined;
   debugDir?: string | undefined;
@@ -815,6 +835,7 @@ export interface ExternalMemoryBenchmarkProgress {
   caseIndex: number;
   pass: boolean;
   durationMs: number;
+  queryEmbeddingFailureCount: number;
   result: ExternalMemoryBenchmarkCaseResult;
 }
 
@@ -1540,6 +1561,7 @@ async function wideBudgetRunContainsTerm(input: {
   mode: ExternalMemoryBenchmarkMode;
   options: RunExternalMemoryBenchmarkOptions;
   term: string;
+  readRetrieval?: MemoryReadRetrievalOptions | undefined;
 }): Promise<boolean> {
   const contextBudgetTokens = diagnosticContextBudgetTokens(input.options.contextBudgetTokens);
   if (input.mode === "prepare") {
@@ -1549,6 +1571,7 @@ async function wideBudgetRunContainsTerm(input: {
       contextBudgetTokens,
       includeTemporalContext: input.options.includeTemporalContext,
       ...(input.options.includeSensitive === true ? { includeSensitive: true } : {}),
+      ...(input.readRetrieval ? { retrieval: input.readRetrieval } : {}),
     });
     return includesTerm(prepared.contextBlock, input.term) || memoriesContainTerm(prepared.memories, input.term);
   }
@@ -1566,6 +1589,7 @@ async function wideBudgetRunContainsTerm(input: {
     includeTemporalMetadata: input.options.includeTemporalMetadata ?? false,
     includeTemporalContext: input.options.includeTemporalContext,
     ...(input.options.includeSensitive === true ? { includeSensitive: true } : {}),
+    ...(input.readRetrieval ? { retrieval: input.readRetrieval } : {}),
   });
   return reconstructedContainsTerm(reconstructed, input.term);
 }
@@ -1625,6 +1649,7 @@ async function failureTaxonomyForCase(input: {
   prepared: Awaited<ReturnType<MemoryOS["prepareTurn"]>> | null;
   reconstructed: ReconstructedContext | null;
   diagnosticsLevel: ExternalMemoryBenchmarkDiagnosticsLevel;
+  readRetrieval?: MemoryReadRetrievalOptions | undefined;
 }): Promise<FailureTaxonomyResult> {
   const startedMs = Date.now();
   let wideBudgetDiagnosticRuntimeMs = 0;
@@ -1648,6 +1673,7 @@ async function failureTaxonomyForCase(input: {
       query: term,
       limit: 10,
       purpose: "history",
+      ...(input.readRetrieval ? { retrieval: input.readRetrieval } : {}),
     });
     if (!memoriesContainTerm(historyHits, term)) {
       addTaxonomyEntry(
@@ -1664,6 +1690,7 @@ async function failureTaxonomyForCase(input: {
       query: term,
       limit: 10,
       purpose: "context",
+      ...(input.readRetrieval ? { retrieval: input.readRetrieval } : {}),
     });
     if (!memoriesContainTerm(contextHits, term)) {
       addTaxonomyEntry(entries, "retrieval_policy_filtered", [term]);
@@ -1688,6 +1715,7 @@ async function failureTaxonomyForCase(input: {
         mode: input.mode,
         options: input.options,
         term,
+        readRetrieval: input.readRetrieval,
       });
       wideBudgetDiagnosticRuntimeMs += Math.max(0, Date.now() - wideStartedMs);
     }
@@ -2288,6 +2316,7 @@ function createRunManifest(input: {
       requireConvergence: input.options.requireConvergence ?? false,
       concurrency: normalizedConcurrency(input.options.concurrency),
       extractionWindow: normalizedExtractionWindow(input.options.extractionWindow),
+      ingestReplayAttempts: normalizedIngestReplayAttempts(input.options.ingestReplayAttempts),
       reuseProfiles: input.options.reuseProfiles ?? true,
       failureSampleLimit: normalizedFailureSampleLimit(input.options.failureSampleLimit),
       diagnosticsLevel: normalizedDiagnosticsLevel(input.options.diagnosticsLevel),
@@ -2312,6 +2341,9 @@ function createRunManifest(input: {
       extractionEmptyCharCount: input.runtimeIntelligence.extractionEmptyCharCount,
       extractionParseFailureCharCount: input.runtimeIntelligence.extractionParseFailureCharCount,
       extractionTransportFailureCharCount: input.runtimeIntelligence.extractionTransportFailureCharCount,
+      replayedWindowCount: input.runtimeIntelligence.replayedWindowCount,
+      replayRecoveredCount: input.runtimeIntelligence.replayRecoveredCount,
+      queryEmbeddingFailureCount: input.runtimeIntelligence.queryEmbeddingFailureCount,
       ingestCaseGroups: [...input.runtimeIntelligence.ingestCaseGroups].sort((left, right) =>
         left.groupKey.localeCompare(right.groupKey)
       ),
@@ -2424,6 +2456,14 @@ function normalizedExtractionWindow(value: number | undefined): number {
     throw new Error("External benchmark extraction window must be a positive integer");
   }
   return Math.min(input, 1000);
+}
+
+function normalizedIngestReplayAttempts(value: number | undefined): number {
+  const input = value ?? 1;
+  if (!Number.isInteger(input) || input < 0) {
+    throw new Error("External benchmark ingestReplayAttempts must be a non-negative integer");
+  }
+  return Math.min(input, 5);
 }
 
 const MAINTENANCE_PHASES = new Set<MaintenancePhase>([
@@ -2740,6 +2780,9 @@ interface RuntimeIntelligenceState {
   extractionEmptyCharCount: number;
   extractionParseFailureCharCount: number;
   extractionTransportFailureCharCount: number;
+  replayedWindowCount: number;
+  replayRecoveredCount: number;
+  queryEmbeddingFailureCount: number;
   ingestCaseGroups: ExternalMemoryBenchmarkRuntimeIngestGroupManifest[];
 }
 
@@ -2760,6 +2803,8 @@ function disabledRuntimeIntelligence(
       timeoutMs: null,
       retries: null,
       backoffMs: null,
+      embedQuery: false,
+      queryEmbeddingFailureCount: 0,
       hookNames: {
         extractor: null,
         consolidator: null,
@@ -2779,6 +2824,8 @@ function disabledRuntimeIntelligence(
       extractionEmptyCharCount: 0,
       extractionParseFailureCharCount: 0,
       extractionTransportFailureCharCount: 0,
+      replayedWindowCount: 0,
+      replayRecoveredCount: 0,
       ingestCaseGroups: [],
       answerer: disabledRuntimeAnswerer(),
     },
@@ -2793,6 +2840,9 @@ function disabledRuntimeIntelligence(
     extractionEmptyCharCount: 0,
     extractionParseFailureCharCount: 0,
     extractionTransportFailureCharCount: 0,
+    replayedWindowCount: 0,
+    replayRecoveredCount: 0,
+    queryEmbeddingFailureCount: 0,
     ingestCaseGroups: [],
   };
 }
@@ -2865,6 +2915,8 @@ function resolveRuntimeIntelligence(input: {
       timeoutMs,
       retries,
       backoffMs,
+      embedQuery: false,
+      queryEmbeddingFailureCount: 0,
       hookNames: hookNamesFor(hooks),
       extractionEmptyCount: 0,
       extractionParseFailureCount: 0,
@@ -2877,6 +2929,8 @@ function resolveRuntimeIntelligence(input: {
       extractionEmptyCharCount: 0,
       extractionParseFailureCharCount: 0,
       extractionTransportFailureCharCount: 0,
+      replayedWindowCount: 0,
+      replayRecoveredCount: 0,
       ingestCaseGroups: [],
       answerer: disabledRuntimeAnswerer(),
     },
@@ -2891,6 +2945,9 @@ function resolveRuntimeIntelligence(input: {
     extractionEmptyCharCount: 0,
     extractionParseFailureCharCount: 0,
     extractionTransportFailureCharCount: 0,
+    replayedWindowCount: 0,
+    replayRecoveredCount: 0,
+    queryEmbeddingFailureCount: 0,
     ingestCaseGroups: [],
   };
 }
@@ -2981,6 +3038,8 @@ function failureSampleForCase(
     extractionEmptyCharCount: entry.extractionEmptyCharCount,
     extractionParseFailureCharCount: entry.extractionParseFailureCharCount,
     extractionTransportFailureCharCount: entry.extractionTransportFailureCharCount,
+    replayedWindowCount: entry.replayedWindowCount,
+    replayRecoveredCount: entry.replayRecoveredCount,
     durationMs: entry.durationMs,
     scoringRuntimeMs: entry.scoringRuntimeMs,
     taxonomyRuntimeMs: entry.taxonomyRuntimeMs,
@@ -3067,6 +3126,7 @@ function buildExternalMemoryBenchmarkSummary(
     notReached: 0,
     unknown: 0,
   };
+  const retrievalEmptyCount = cases.filter((entry) => entry.retrievedMemoryCount === 0).length;
   const failureSamples: ExternalMemoryBenchmarkFailureSample[] = [];
   for (const entry of cases) {
     if (!entry.pass) {
@@ -3128,6 +3188,7 @@ function buildExternalMemoryBenchmarkSummary(
       .sort((left, right) => right.durationMs - left.durationMs || left.groupKey.localeCompare(right.groupKey))
       .slice(0, 20),
     failureSampleLimit,
+    retrievalEmptyCount,
     failureSamples,
   };
 }
@@ -3198,6 +3259,8 @@ interface AppliedBenchmarkEvent {
   extractionEmptyCharCount?: number | undefined;
   extractionParseFailureCharCount?: number | undefined;
   extractionTransportFailureCharCount?: number | undefined;
+  replayedWindowCount?: number | undefined;
+  replayRecoveredCount?: number | undefined;
 }
 
 interface AppliedBenchmarkEvents {
@@ -3213,6 +3276,8 @@ interface AppliedBenchmarkEvents {
   extractionEmptyCharCount: number;
   extractionParseFailureCharCount: number;
   extractionTransportFailureCharCount: number;
+  replayedWindowCount: number;
+  replayRecoveredCount: number;
 }
 
 function isBenchmarkMessageEvent(
@@ -3298,6 +3363,7 @@ async function applyBenchmarkEvents(input: {
   events: ExternalMemoryBenchmarkEvent[];
   ingestMode: ExternalMemoryBenchmarkIngestMode;
   extractionWindow: number | undefined;
+  ingestReplayAttempts: number | undefined;
   windowConcurrency?: number | undefined;
   countExtractionFailures?: boolean | undefined;
   onWindowProgress?: ((progress: IngestConversationProgress) => void) | undefined;
@@ -3315,6 +3381,8 @@ async function applyBenchmarkEvents(input: {
     extractionEmptyCharCount: 0,
     extractionParseFailureCharCount: 0,
     extractionTransportFailureCharCount: 0,
+    replayedWindowCount: 0,
+    replayRecoveredCount: 0,
   };
   const pendingMessages: ExternalMemoryBenchmarkMessageEvent[] = [];
 
@@ -3334,7 +3402,10 @@ async function applyBenchmarkEvents(input: {
         maxMessages: input.extractionWindow ?? 12,
         ...(input.windowConcurrency !== undefined ? { concurrency: input.windowConcurrency } : {}),
       },
-      extraction: { extractFromRoles: ["user", "assistant"] },
+      extraction: {
+        extractFromRoles: ["user", "assistant"],
+        ...(input.ingestReplayAttempts !== undefined ? { replayAttempts: input.ingestReplayAttempts } : {}),
+      },
       ...(input.onWindowProgress
         ? { progress: { onWindow: input.onWindowProgress } }
         : {}),
@@ -3352,6 +3423,8 @@ async function applyBenchmarkEvents(input: {
       output.extractionParseFailureCharCount += ingested.extractionParseFailureCharCount;
       output.extractionTransportFailureCharCount += ingested.extractionTransportFailureCharCount;
     }
+    output.replayedWindowCount += ingested.replayedWindowCount;
+    output.replayRecoveredCount += ingested.replayRecoveredCount;
   }
 
   for (const event of input.events) {
@@ -3373,6 +3446,8 @@ async function applyBenchmarkEvents(input: {
     output.extractionEmptyCharCount += applied.extractionEmptyCharCount ?? 0;
     output.extractionParseFailureCharCount += applied.extractionParseFailureCharCount ?? 0;
     output.extractionTransportFailureCharCount += applied.extractionTransportFailureCharCount ?? 0;
+    output.replayedWindowCount += applied.replayedWindowCount ?? 0;
+    output.replayRecoveredCount += applied.replayRecoveredCount ?? 0;
   }
   await flushMessages();
   return output;
@@ -3395,10 +3470,13 @@ async function scoreCase(input: {
   extractionEmptyCharCount: number;
   extractionParseFailureCharCount: number;
   extractionTransportFailureCharCount: number;
+  replayedWindowCount: number;
+  replayRecoveredCount: number;
   benchmarkCase: ExternalMemoryBenchmarkCase;
   index: number;
   options: RunExternalMemoryBenchmarkOptions;
   setupWarnings?: string[] | undefined;
+  readRetrieval?: MemoryReadRetrievalOptions | undefined;
   writeDebugReaderContext?: ((caseId: string, context: string) => void) | undefined;
 }): Promise<ExternalMemoryBenchmarkCaseResult> {
   const startedMs = Date.now();
@@ -3425,6 +3503,7 @@ async function scoreCase(input: {
           contextBudgetTokens: input.options.contextBudgetTokens,
           includeTemporalContext: input.options.includeTemporalContext,
           ...(input.options.includeSensitive === true ? { includeSensitive: true } : {}),
+          ...(input.readRetrieval ? { retrieval: input.readRetrieval } : {}),
         })
       : null;
   const reconstructed =
@@ -3442,6 +3521,7 @@ async function scoreCase(input: {
           includeTemporalMetadata: input.options.includeTemporalMetadata ?? false,
           includeTemporalContext: input.options.includeTemporalContext,
           ...(input.options.includeSensitive === true ? { includeSensitive: true } : {}),
+          ...(input.readRetrieval ? { retrieval: input.readRetrieval } : {}),
         })
       : null;
   const context = prepared?.contextBlock ?? reconstructed?.contextBlock ?? "";
@@ -3515,6 +3595,7 @@ async function scoreCase(input: {
         prepared,
         reconstructed,
         diagnosticsLevel,
+        readRetrieval: input.readRetrieval,
       })
     : { entries: [], runtimeMs: 0, wideBudgetDiagnosticRuntimeMs: 0 };
   const warnings = diagnosticsLevel === "off" ? [] : warningsForCase({ mode, diagnostics });
@@ -3580,6 +3661,8 @@ async function scoreCase(input: {
     extractionEmptyCharCount: input.extractionEmptyCharCount,
     extractionParseFailureCharCount: input.extractionParseFailureCharCount,
     extractionTransportFailureCharCount: input.extractionTransportFailureCharCount,
+    replayedWindowCount: input.replayedWindowCount,
+    replayRecoveredCount: input.replayRecoveredCount,
     mode,
     temporalMode,
     slices: input.benchmarkCase.slices ?? [],
@@ -3669,6 +3752,8 @@ async function runCaseGroup(input: {
   let extractionEmptyCharCount = 0;
   let extractionParseFailureCharCount = 0;
   let extractionTransportFailureCharCount = 0;
+  let replayedWindowCount = 0;
+  let replayRecoveredCount = 0;
   let caseGroupMemories: MemoryRecord[] = [];
   try {
     await store.initialize();
@@ -3679,6 +3764,7 @@ async function runCaseGroup(input: {
       events: input.group.events,
       ingestMode: input.options.ingestMode ?? "memory",
       extractionWindow: input.options.extractionWindow,
+      ingestReplayAttempts: input.options.ingestReplayAttempts,
       windowConcurrency: input.runtimeIntelligence.manifest.concurrency ?? undefined,
       countExtractionFailures: input.runtimeIntelligence.hooks?.extractor !== undefined,
       ...(input.options.onCaseGroupIngestProgress
@@ -3702,6 +3788,8 @@ async function runCaseGroup(input: {
     input.runtimeIntelligence.extractionEmptyCharCount += applied.extractionEmptyCharCount;
     input.runtimeIntelligence.extractionParseFailureCharCount += applied.extractionParseFailureCharCount;
     input.runtimeIntelligence.extractionTransportFailureCharCount += applied.extractionTransportFailureCharCount;
+    input.runtimeIntelligence.replayedWindowCount += applied.replayedWindowCount;
+    input.runtimeIntelligence.replayRecoveredCount += applied.replayRecoveredCount;
     extractionWindowCount = applied.extractionWindowCount;
     extractionCallCount = applied.extractionCallCount;
     extractionRetryCount = applied.extractionRetryCount;
@@ -3713,6 +3801,8 @@ async function runCaseGroup(input: {
     extractionEmptyCharCount = applied.extractionEmptyCharCount;
     extractionParseFailureCharCount = applied.extractionParseFailureCharCount;
     extractionTransportFailureCharCount = applied.extractionTransportFailureCharCount;
+    replayedWindowCount = applied.replayedWindowCount;
+    replayRecoveredCount = applied.replayRecoveredCount;
     input.runtimeIntelligence.extractionWindowCount += extractionWindowCount;
     input.runtimeIntelligence.extractionCallCount += extractionCallCount;
     caseGroupMemories = await memory.list({
@@ -3744,6 +3834,8 @@ async function runCaseGroup(input: {
       extractionEmptyCharCount,
       extractionParseFailureCharCount,
       extractionTransportFailureCharCount,
+      replayedWindowCount,
+      replayRecoveredCount,
       ingestDurationMs,
     };
     input.runtimeIntelligence.ingestCaseGroups.push(ingestCaseGroup);
@@ -3775,10 +3867,20 @@ async function runCaseGroup(input: {
         extractionEmptyCharCount,
         extractionParseFailureCharCount,
         extractionTransportFailureCharCount,
+        replayedWindowCount,
+        replayRecoveredCount,
         benchmarkCase: item.benchmarkCase,
         index: item.index,
         options: input.options,
         setupWarnings,
+        readRetrieval: input.runtimeIntelligence.manifest.embedQuery
+          ? {
+              embedQuery: true,
+              onQueryEmbeddingFailure: () => {
+                input.runtimeIntelligence.queryEmbeddingFailureCount += 1;
+              },
+            }
+          : { embedQuery: false },
         writeDebugReaderContext: input.writeDebugReaderContext,
       });
       results.push(result);
@@ -3816,6 +3918,8 @@ async function runCaseGroup(input: {
       extractionEmptyCharCount,
       extractionParseFailureCharCount,
       extractionTransportFailureCharCount,
+      replayedWindowCount,
+      replayRecoveredCount,
       passedCount: results.filter((result) => result.pass).length,
       failedCount: results.filter((result) => !result.pass).length,
     };
@@ -3871,6 +3975,7 @@ export async function runExternalMemoryBenchmark(
   const readerProfile = normalizedReaderProfile(options.readerProfile);
   const ingestMode = normalizedIngestMode(options.ingestMode);
   const extractionWindow = normalizedExtractionWindow(options.extractionWindow);
+  const ingestReplayAttempts = normalizedIngestReplayAttempts(options.ingestReplayAttempts);
   const debugDumpMemories = normalizedDebugDumpMemories(options.debugDumpMemories);
   const debugContextFailureLimit = normalizedDebugContextFailureLimit(options.debugContextFailureLimit);
   const readerContextCharLimit = normalizedReaderContextCharLimit(options.readerContextCharLimit);
@@ -3884,6 +3989,8 @@ export async function runExternalMemoryBenchmark(
     ingestMode,
     maintainPhases,
   });
+  const embedQuery = options.embedQuery ?? runtimeIntelligence.hooks?.embeddingProvider !== undefined;
+  runtimeIntelligence.manifest.embedQuery = embedQuery;
   const normalizedOptions: RunExternalMemoryBenchmarkOptions = {
     ...options,
     cases: selectedCases,
@@ -3902,6 +4009,8 @@ export async function runExternalMemoryBenchmark(
     readerContextCharLimit,
     ...(debugDir ? { debugDir } : {}),
     extractionWindow,
+    ingestReplayAttempts,
+    embedQuery,
     reuseProfiles: options.reuseProfiles ?? true,
     failureSampleLimit,
     diagnosticsLevel,
@@ -3950,6 +4059,7 @@ export async function runExternalMemoryBenchmark(
       caseIndex: index,
       pass: result.pass,
       durationMs: result.durationMs,
+      queryEmbeddingFailureCount: runtimeIntelligence.queryEmbeddingFailureCount,
       result,
     });
   };
@@ -3990,6 +4100,7 @@ export async function runExternalMemoryBenchmark(
       ? 0
       : officialPassedCount / completedCases.length;
   const primaryScore = protocol === "official_protocol" ? officialScore ?? 0 : strictScore;
+  const retrievalEmptyCount = completedCases.filter((entry) => entry.retrievedMemoryCount === 0).length;
   const interrupted = shouldStop() && completedCases.length < selectedCases.length;
   const partial = completedCases.length < totalDatasetCases || interrupted;
   return {
@@ -4006,6 +4117,7 @@ export async function runExternalMemoryBenchmark(
     normalizedEvidencePassedCount,
     officialScore,
     officialPassedCount,
+    retrievalEmptyCount,
     ceilingMetrics,
     summary,
     runManifest: createRunManifest({
