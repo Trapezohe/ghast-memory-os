@@ -226,6 +226,16 @@ selected it sets `maxSteps=8`, `maxBranch=10`, `maxMemories=24`, and
 anchor coverage in reader runs. Reports and manifests record `readerProfile`
 plus the effective budget values.
 
+Use `--reader-profile wide` when the benchmark reader needs high supply
+bandwidth, such as LongMemEval-style stores with distilled session summaries,
+extraction atoms, and raw turn memories competing for the same read. It sets
+`maxSteps=8`, `maxBranch=10`, `maxMemories=200`,
+`contextBudgetTokens=8000`, `maxCharsPerMemory=400`, and
+`layerPolicy={ summaryMinShare: 0.3, turnMaxShare: 0.4 }`. Explicit
+`--max-memories` and `--context-budget-tokens` still override those two values.
+Use the default profile for scale smoke gates unless a run is intentionally
+measuring wide-reader latency.
+
 Paid smoke workflow:
 
 ```bash

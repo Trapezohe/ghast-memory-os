@@ -237,6 +237,15 @@ budget remains, uncovered anchors get a bounded direct-memory top-up before the
 ordinary hybrid path runs. Diagnostics report candidate and included counts per
 anchor plus `uncoveredAnchors`.
 
+Layered supply is a post-ranking allocation, not a second retrieval system. If a
+host passes `layerPolicy`, reconstruction first builds the same visible ranked
+candidate pool, using provenance metadata only to classify summaries
+(`sessionDistillation`), raw turns (`turnMemory`), and atoms (everything else).
+It then applies the summary minimum and turn maximum to the final slots, releases
+unused reservations back to rank order, and filters paths/anchor diagnostics to
+the post-policy inclusion. Without `layerPolicy`, this pass is absent and the
+legacy global pool remains byte-identical.
+
 Hosts may also declare `reconstructionIntent.requiredAnchors`. These are not
 inferred by the kernel and are not dataset rules; they are host-owned endpoint
 descriptions. Required anchors reserve memory slots ahead of ordinary anchors and

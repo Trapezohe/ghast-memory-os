@@ -20,6 +20,8 @@ import type {
   PrivacyMode,
   ReconstructedContext,
   ReconstructionIntentHint,
+  ReconstructionLayerCounts,
+  ReconstructionLayerPolicy,
   ReconstructionRequiredAnchorHint,
   MemoryRetrievalConfig,
   MemoryRetrievalReranker,
@@ -52,7 +54,7 @@ export type ExternalMemoryBenchmarkProtocol = "deterministic_local" | "official_
 export type ExternalMemoryBenchmarkTemporalMode = "auto" | "current" | "history";
 export type ExternalMemoryBenchmarkDiagnosticsLevel = "off" | "basic" | "full";
 export type ExternalMemoryBenchmarkIngestMode = "memory" | "message";
-export type ExternalMemoryBenchmarkReaderProfile = "default" | "expansive";
+export type ExternalMemoryBenchmarkReaderProfile = "default" | "expansive" | "wide";
 export type ExternalMemoryBenchmarkDatasetFormat =
   | "gmos.external_long_memory_qa.jsonl"
   | "longmemeval.json"
@@ -285,6 +287,7 @@ export interface ExternalMemoryBenchmarkCaseResult {
   sweepCues: string[];
   sweepIncludedCount: number;
   requiredAnchorUnmetCount: number;
+  reconstructedLayerIncludedCounts?: ReconstructionLayerCounts | undefined;
   promptTokenEstimate: number;
   retrievedMemoryCount: number;
   reconstructedPathCount: number;
@@ -684,6 +687,8 @@ export interface ExternalMemoryBenchmarkRunManifest {
     maxBranch: number | null;
     maxMemories: number | null;
     contextBudgetTokens: number | null;
+    maxCharsPerMemory?: number | null | undefined;
+    layerPolicy?: ReconstructionLayerPolicy | null | undefined;
     readerProfile: ExternalMemoryBenchmarkReaderProfile;
     temporalMode: ExternalMemoryBenchmarkTemporalMode | null;
     includeSensitive: boolean;
@@ -748,6 +753,8 @@ export interface RunExternalMemoryBenchmarkOptions {
   maxMemories?: number | undefined;
   anchorCoverage?: boolean | undefined;
   contextBudgetTokens?: number | undefined;
+  maxCharsPerMemory?: number | undefined;
+  layerPolicy?: ReconstructionLayerPolicy | undefined;
   temporalMode?: ExternalMemoryBenchmarkTemporalMode | undefined;
   includeSensitive?: boolean | undefined;
   includeTemporalMetadata?: boolean | undefined;
@@ -1939,6 +1946,8 @@ async function wideBudgetRunContainsTerm(input: {
     maxBranch: input.options.maxBranch,
     maxMemories: input.options.maxMemories,
     contextBudgetTokens,
+    maxCharsPerMemory: input.options.maxCharsPerMemory,
+    layerPolicy: input.options.layerPolicy,
     ...(input.options.anchorCoverage !== undefined ? { anchorCoverage: input.options.anchorCoverage } : {}),
     ...(temporalMode !== null ? { temporalMode } : {}),
     includeTemporalMetadata: input.options.includeTemporalMetadata ?? false,
@@ -2709,6 +2718,12 @@ function createRunManifest(input: {
       maxBranch: input.options.maxBranch ?? null,
       maxMemories: input.options.maxMemories ?? null,
       contextBudgetTokens: input.options.contextBudgetTokens ?? null,
+      ...(input.options.maxCharsPerMemory !== undefined
+        ? { maxCharsPerMemory: input.options.maxCharsPerMemory }
+        : {}),
+      ...(input.options.layerPolicy !== undefined
+        ? { layerPolicy: input.options.layerPolicy }
+        : {}),
       readerProfile: input.options.readerProfile ?? "default",
       temporalMode: input.options.temporalMode ?? null,
       includeSensitive: input.options.includeSensitive ?? false,
@@ -2799,8 +2814,8 @@ function normalizedReaderProfile(
   value: ExternalMemoryBenchmarkReaderProfile | undefined,
 ): ExternalMemoryBenchmarkReaderProfile {
   if (value === undefined) return "default";
-  if (value === "default" || value === "expansive") return value;
-  throw new Error("External benchmark readerProfile must be default or expansive");
+  if (value === "default" || value === "expansive" || value === "wide") return value;
+  throw new Error("External benchmark readerProfile must be default, expansive, or wide");
 }
 
 function readerProfileMaxMemories(
@@ -2808,6 +2823,7 @@ function readerProfileMaxMemories(
   value: number | undefined,
 ): number | undefined {
   if (value !== undefined) return value;
+  if (profile === "wide") return 200;
   return profile === "expansive" ? 24 : 6;
 }
 
@@ -2816,7 +2832,7 @@ function readerProfileMaxSteps(
   value: number | undefined,
 ): number | undefined {
   if (value !== undefined) return value;
-  return profile === "expansive" ? 8 : 4;
+  return profile === "default" ? 4 : 8;
 }
 
 function readerProfileMaxBranch(
@@ -2824,7 +2840,7 @@ function readerProfileMaxBranch(
   value: number | undefined,
 ): number | undefined {
   if (value !== undefined) return value;
-  return profile === "expansive" ? 10 : 6;
+  return profile === "default" ? 6 : 10;
 }
 
 function readerProfileContextBudgetTokens(
@@ -2832,7 +2848,44 @@ function readerProfileContextBudgetTokens(
   value: number | undefined,
 ): number | undefined {
   if (value !== undefined) return value;
+  if (profile === "wide") return 8000;
   return profile === "expansive" ? 4000 : 1600;
+}
+
+function readerProfileMaxCharsPerMemory(
+  profile: ExternalMemoryBenchmarkReaderProfile,
+  value: number | undefined,
+): number | undefined {
+  if (value !== undefined) return value;
+  return profile === "wide" ? 400 : undefined;
+}
+
+function normalizedLayerPolicyOption(
+  value: ReconstructionLayerPolicy | undefined,
+): ReconstructionLayerPolicy | undefined {
+  if (value === undefined) return undefined;
+  const output: ReconstructionLayerPolicy = {};
+  if (value.summaryMinShare !== undefined) {
+    if (!Number.isFinite(value.summaryMinShare)) {
+      throw new Error("External benchmark layerPolicy.summaryMinShare must be finite");
+    }
+    output.summaryMinShare = Math.max(0, Math.min(value.summaryMinShare, 1));
+  }
+  if (value.turnMaxShare !== undefined) {
+    if (!Number.isFinite(value.turnMaxShare)) {
+      throw new Error("External benchmark layerPolicy.turnMaxShare must be finite");
+    }
+    output.turnMaxShare = Math.max(0, Math.min(value.turnMaxShare, 1));
+  }
+  return output;
+}
+
+function readerProfileLayerPolicy(
+  profile: ExternalMemoryBenchmarkReaderProfile,
+  value: ReconstructionLayerPolicy | undefined,
+): ReconstructionLayerPolicy | undefined {
+  if (value !== undefined) return normalizedLayerPolicyOption(value);
+  return profile === "wide" ? { summaryMinShare: 0.3, turnMaxShare: 0.4 } : undefined;
 }
 
 function normalizedReaderContextCharLimit(value: number | undefined): number {
@@ -4376,6 +4429,8 @@ async function scoreCase(input: {
           maxBranch: input.options.maxBranch,
           maxMemories: input.options.maxMemories,
           contextBudgetTokens: input.options.contextBudgetTokens,
+          maxCharsPerMemory: input.options.maxCharsPerMemory,
+          layerPolicy: input.options.layerPolicy,
           ...(input.options.anchorCoverage !== undefined ? { anchorCoverage: input.options.anchorCoverage } : {}),
           ...(temporalMode !== null ? { temporalMode } : {}),
           includeTemporalMetadata: input.options.includeTemporalMetadata ?? false,
@@ -4548,6 +4603,9 @@ async function scoreCase(input: {
     sweepCues: derivedSweepCues,
     sweepIncludedCount: reconstructed?.stats.sweeps?.included ?? 0,
     requiredAnchorUnmetCount: diagnostics.requiredAnchorUnmet.length,
+    ...(reconstructed?.stats.layers
+      ? { reconstructedLayerIncludedCounts: reconstructed.stats.layers.included }
+      : {}),
     promptTokenEstimate:
       prepared?.stats.promptTokenEstimate ?? reconstructed?.stats.promptTokenEstimate ?? 0,
     retrievedMemoryCount:
@@ -4990,6 +5048,8 @@ export async function runExternalMemoryBenchmark(
       readerProfile,
       options.contextBudgetTokens,
     ),
+    maxCharsPerMemory: readerProfileMaxCharsPerMemory(readerProfile, options.maxCharsPerMemory),
+    layerPolicy: readerProfileLayerPolicy(readerProfile, options.layerPolicy),
     debugDumpMemories,
     debugContextFailureLimit,
     readerContextCharLimit,

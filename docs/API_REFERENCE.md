@@ -1055,6 +1055,27 @@ needs the legacy global best-first planner. Reconstruction stats and planner tra
 `uncoveredAnchors`; required-anchor misses are additionally exposed as
 `requiredAnchorUnmet` in reconstruction stats and `anchorCoverage`.
 
+`maxMemories` accepts `1..256` memories per reconstruction read and still
+defaults to `8`. Values above `256` are rejected instead of silently clamped.
+`maxCharsPerMemory?: number` can cap only the rendered memory-content segment in
+the prompt block; it is bounded to `80..4000`, preserves the temporal bracket,
+and appends `...` deterministically when truncation happens. Returned
+`memories[]` still carry full content.
+
+`layerPolicy?: { summaryMinShare?: number; turnMaxShare?: number }` is an
+opt-in host policy for layered stores. Absent policy keeps reconstruction output
+byte-identical to the legacy global pool. When present, gmOS derives layers only
+from existing provenance metadata: `metadata.sessionDistillation === true` is a
+summary, `metadata.turnMemory === true` is a raw turn, and everything else is an
+atom. The kernel first ranks visible candidates through the normal fusion path,
+then guarantees up to `ceil(summaryMinShare * maxMemories)` top-ranked summaries
+when that many summaries exist, caps turns at `floor(turnMaxShare *
+maxMemories)`, and fills released slots by rank. Summary guarantees never invert
+summary-vs-summary rank, filtered memories stay filtered, and stats expose
+`stats.layers.{candidates,included,culled}`. Under token pressure with a policy,
+path lines are still removed first; memory lines are then culled by lowest rank
+in turn, atom, then summary order.
+
 Hosts with their own entity, calendar, or route parser can configure
 `createMemoryOS({ reconstruction: { cueExtractor } })`. The extractor returns
 bounded `{ cue, cueKind }` values for query and intermediate evidence text; gmOS
@@ -1112,9 +1133,12 @@ host reader prompting. When present, gmOS prepends `Question date: YYYY-MM-DD`
 to the question sent to the answerer. Judge callbacks still receive the original
 question. `readerProfile: "expansive"` sets effective reader budgets to
 `maxSteps=8`, `maxBranch=10`, `maxMemories=24`, and
-`contextBudgetTokens=4000` unless those options are explicitly supplied;
-reports record the effective values in
-`runManifest.options`.
+`contextBudgetTokens=4000` unless those options are explicitly supplied.
+`readerProfile: "wide"` keeps `maxSteps=8` and `maxBranch=10`, sets
+`maxMemories=200`, `contextBudgetTokens=8000`, `maxCharsPerMemory=400`, and
+`layerPolicy={ summaryMinShare: 0.3, turnMaxShare: 0.4 }`. Reports record the
+effective values in `runManifest.options`, and per-case results include
+`reconstructedLayerIncludedCounts` when a layer policy was active.
 
 External benchmark protocol handling is explicit:
 

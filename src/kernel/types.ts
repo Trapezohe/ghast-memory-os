@@ -152,6 +152,8 @@ export interface PrepareTurnInput {
     temporalMode?: "auto" | "current" | "history" | undefined;
     recallPurpose?: ReconstructionRecallPurpose | undefined;
     reconstructionIntent?: ReconstructionIntentHint | undefined;
+    maxCharsPerMemory?: number | undefined;
+    layerPolicy?: ReconstructionLayerPolicy | undefined;
   } | undefined;
   retrieval?: MemoryReadRetrievalOptions | undefined;
 }
@@ -865,14 +867,15 @@ export interface TurnExplanationBudgetReport {
   contextBudgetTokens: number;
   promptTokenEstimate: number;
   actionPolicyCount: number;
-  planner?: {
-    maxSteps: number;
-    maxBranch: number;
-    maxMemories: number;
-    stopReason: ReconstructedContext["stats"]["stopReason"];
-    anchorCoverage?: ReconstructionAnchorCoverageReport | undefined;
-    sweeps?: ReconstructedContext["stats"]["sweeps"] | undefined;
-  } | undefined;
+    planner?: {
+      maxSteps: number;
+      maxBranch: number;
+      maxMemories: number;
+      stopReason: ReconstructedContext["stats"]["stopReason"];
+      anchorCoverage?: ReconstructionAnchorCoverageReport | undefined;
+      sweeps?: ReconstructedContext["stats"]["sweeps"] | undefined;
+      layers?: ReconstructedContext["stats"]["layers"] | undefined;
+    } | undefined;
   stoppedAt: "memory_search" | "token_budget" | "planner" | "complete";
 }
 
@@ -981,6 +984,29 @@ export interface ReconstructionIntentHint {
   sweepCues?: string[] | undefined;
 }
 
+export type ReconstructionMemoryLayer = "summary" | "atom" | "turn";
+
+export interface ReconstructionLayerCounts {
+  summary: number;
+  atom: number;
+  turn: number;
+}
+
+export interface ReconstructionLayerPolicy {
+  summaryMinShare?: number | undefined;
+  turnMaxShare?: number | undefined;
+}
+
+export interface ReconstructionLayerStats {
+  policy: {
+    summaryMinShare: number;
+    turnMaxShare: number;
+  };
+  candidates: ReconstructionLayerCounts;
+  included: ReconstructionLayerCounts;
+  culled: ReconstructionLayerCounts;
+}
+
 export interface ReconstructContextInput {
   profileId?: string | undefined;
   query?: string | undefined;
@@ -1000,6 +1026,8 @@ export interface ReconstructContextInput {
   temporalMode?: "auto" | "current" | "history" | undefined;
   recallPurpose?: ReconstructionRecallPurpose | undefined;
   reconstructionIntent?: ReconstructionIntentHint | undefined;
+  maxCharsPerMemory?: number | undefined;
+  layerPolicy?: ReconstructionLayerPolicy | undefined;
   retrieval?: MemoryReadRetrievalOptions | undefined;
 }
 
@@ -1126,6 +1154,7 @@ export interface ReconstructedContext {
     anchorCoverage?: ReconstructionAnchorCoverageReport | undefined;
     requiredAnchorUnmet?: string[] | undefined;
     sweeps?: ReconstructionSweepStats | undefined;
+    layers?: ReconstructionLayerStats | undefined;
   };
 }
 

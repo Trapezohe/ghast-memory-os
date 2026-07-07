@@ -613,10 +613,10 @@ function diagnosticsLevelOption(): "off" | "basic" | "full" | undefined {
   return raw;
 }
 
-function readerProfileOption(): "default" | "expansive" {
+function readerProfileOption(): "default" | "expansive" | "wide" {
   const raw = value("--reader-profile", "default");
-  if (raw === "default" || raw === "expansive") return raw;
-  throw new Error("--reader-profile must be default or expansive");
+  if (raw === "default" || raw === "expansive" || raw === "wide") return raw;
+  throw new Error("--reader-profile must be default, expansive, or wide");
 }
 
 function externalProtocolOption(): "deterministic_local" | "official_protocol" {

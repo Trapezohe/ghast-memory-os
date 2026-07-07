@@ -20860,6 +20860,311 @@ const requiredAnchorOrdinaryIncluded = await reconstructMemoryContext({
 });
 assert.match(requiredAnchorOrdinaryIncluded.contextBlock, /report the answer in days/);
 
+const layerNow = "2026-07-04T00:00:00.000Z";
+const layerMemory = (
+  id: string,
+  layer: "summary" | "atom" | "turn",
+  content: string,
+  sensitivity: "normal" | "sensitive" = "normal",
+): MemoryRecord => ({
+  id,
+  profileId: "layer",
+  kind: layer === "summary" ? "project" : "fact",
+  scope: "global",
+  content,
+  sensitivity,
+  status: "active",
+  confidence: 0.9,
+  metadata:
+    layer === "summary"
+      ? { sessionDistillation: true }
+      : layer === "turn"
+        ? { turnMemory: true }
+        : {},
+  createdAt: layerNow,
+  updatedAt: layerNow,
+});
+const layerStoreFor = (rows: MemoryRecord[]): MemoryStore => ({
+  searchMemories(input: { includeSensitive?: boolean; limit?: number }) {
+    return rows
+      .filter((memoryRecord) =>
+        input.includeSensitive === true ? true : memoryRecord.sensitivity === "normal"
+      )
+      .slice(0, input.limit ?? rows.length);
+  },
+  listEvidenceForMemory() {
+    return [];
+  },
+} as unknown as MemoryStore);
+const layerRows = [
+  layerMemory("memory_layer_turn_1", "turn", "LayerKey turn ranked first."),
+  layerMemory("memory_layer_turn_2", "turn", "LayerKey turn ranked second."),
+  layerMemory("memory_layer_turn_3", "turn", "LayerKey turn ranked third."),
+  layerMemory("memory_layer_atom_1", "atom", "LayerKey atom fills released slot one."),
+  layerMemory("memory_layer_atom_2", "atom", "LayerKey atom fills released slot two."),
+  layerMemory("memory_layer_summary_1", "summary", "LayerKey summary ranked sixth."),
+  layerMemory("memory_layer_summary_2", "summary", "LayerKey summary ranked seventh."),
+  layerMemory("memory_layer_summary_3", "summary", "LayerKey summary ranked eighth."),
+  layerMemory("memory_layer_sensitive_summary", "summary", "LayerKey gated sensitive summary.", "sensitive"),
+];
+const layerNoPolicy = await reconstructMemoryContext({
+  store: layerStoreFor(layerRows),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "LayerKey",
+    maxMemories: 5,
+    contextBudgetTokens: 6000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.equal(layerNoPolicy.stats.layers, undefined);
+assert.equal(layerNoPolicy.memories.some((memoryRecord) => memoryRecord.metadata.sessionDistillation === true), false);
+const layerPolicyRequest = {
+  profileId: "layer",
+  query: "LayerKey",
+  maxMemories: 5,
+  contextBudgetTokens: 6000,
+  stopWhenEvidenceEnough: false,
+  layerPolicy: { summaryMinShare: 0.4, turnMaxShare: 0.4 },
+} as const;
+const layerPolicyContext = await reconstructMemoryContext({
+  store: layerStoreFor(layerRows),
+  defaultProfileId: "layer",
+  request: layerPolicyRequest,
+});
+const layerPolicyContextAgain = await reconstructMemoryContext({
+  store: layerStoreFor(layerRows),
+  defaultProfileId: "layer",
+  request: layerPolicyRequest,
+});
+assert.deepEqual(layerPolicyContext, layerPolicyContextAgain);
+assert.equal(layerPolicyContext.stats.layers?.candidates.summary, 3);
+assert.equal(layerPolicyContext.stats.layers?.included.summary, 2);
+assert.equal(layerPolicyContext.stats.layers?.included.turn, 2);
+assert.equal(layerPolicyContext.stats.layers?.included.atom, 1);
+assert.equal(layerPolicyContext.memories.some((memoryRecord) =>
+  memoryRecord.content.includes("gated sensitive summary")
+), false);
+assert.deepEqual(
+  layerPolicyContext.memories
+    .filter((memoryRecord) => memoryRecord.metadata.sessionDistillation === true)
+    .map((memoryRecord) => memoryRecord.id),
+  ["memory_layer_summary_1", "memory_layer_summary_2"],
+);
+const layerAnchorPolicyContext = await reconstructMemoryContext({
+  store: layerStoreFor(layerRows),
+  defaultProfileId: "layer",
+  request: {
+    ...layerPolicyRequest,
+    reconstructionIntent: { requiredAnchors: [{ cue: "LayerKey" }] },
+  },
+});
+const layerAnchorCoverage = layerAnchorPolicyContext.stats.anchorCoverage;
+assert.ok(layerAnchorCoverage);
+const layerKeyAnchor = layerAnchorCoverage.anchors.find((anchor) => anchor.anchorCue === "LayerKey");
+assert.ok(layerKeyAnchor);
+assert.equal(layerKeyAnchor.required, true);
+assert.equal(layerKeyAnchor.uncovered, false);
+assert.deepEqual(layerAnchorCoverage.requiredAnchorUnmet, []);
+assert.equal(layerAnchorPolicyContext.stats.layers?.included.summary, 2);
+assert.equal(layerAnchorPolicyContext.stats.layers?.included.turn, 2);
+assert.equal(layerAnchorPolicyContext.stats.layers?.included.atom, 1);
+assert.equal(
+  layerKeyAnchor.includedCount,
+  layerAnchorPolicyContext.paths.filter(
+    (path) => path.anchorCue === "LayerKey" && path.targetType === "memory",
+  ).length,
+);
+assert.equal(
+  layerAnchorPolicyContext.memories.filter((memoryRecord) =>
+    memoryRecord.content.includes("LayerKey")
+  ).length,
+  layerAnchorPolicyContext.memories.length,
+);
+assert.equal(
+  layerKeyAnchor.includedCount < layerAnchorPolicyContext.memories.length,
+  true,
+);
+assert.equal(
+  layerAnchorPolicyContext.memories.some((memoryRecord) =>
+    memoryRecord.content.includes("gated sensitive summary")
+  ),
+  false,
+);
+const zeroSummaryRows = layerRows.filter((memoryRecord) =>
+  memoryRecord.metadata.sessionDistillation !== true
+);
+const zeroSummaryNoPolicy = await reconstructMemoryContext({
+  store: layerStoreFor(zeroSummaryRows),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "LayerKey",
+    maxMemories: 5,
+    contextBudgetTokens: 6000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+const zeroSummaryPolicy = await reconstructMemoryContext({
+  store: layerStoreFor(zeroSummaryRows),
+  defaultProfileId: "layer",
+  request: layerPolicyRequest,
+});
+assert.equal(zeroSummaryPolicy.contextBlock, zeroSummaryNoPolicy.contextBlock);
+assert.deepEqual(zeroSummaryPolicy.memories, zeroSummaryNoPolicy.memories);
+const wideRows = Array.from({ length: 220 }, (_entry, index) =>
+  layerMemory(`memory_wide_${index}`, "atom", `WideKey atom ${index}`)
+);
+const wideAccepted = await reconstructMemoryContext({
+  store: layerStoreFor(wideRows),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "WideKey",
+    maxMemories: 200,
+    contextBudgetTokens: 100000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.equal(wideAccepted.memories.length, 200);
+await assert.rejects(
+  () =>
+    reconstructMemoryContext({
+      store: layerStoreFor(wideRows),
+      defaultProfileId: "layer",
+      request: {
+        profileId: "layer",
+        query: "WideKey",
+        maxMemories: 300,
+      },
+    }),
+  /maxMemories must be between 1 and 256/u,
+);
+const longMemoryContent = `ChronoKey ${"x".repeat(120)}`;
+const fullMemoryContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    {
+      ...layerMemory("memory_truncate_full", "atom", longMemoryContent),
+      createdAt: "2026-01-02T00:00:00.000Z",
+      updatedAt: "2026-01-02T00:00:00.000Z",
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "ChronoKey",
+    maxMemories: 1,
+    contextBudgetTokens: 2000,
+  },
+});
+const truncatedMemoryContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    {
+      ...layerMemory("memory_truncate_short", "atom", longMemoryContent),
+      createdAt: "2026-01-02T00:00:00.000Z",
+      updatedAt: "2026-01-02T00:00:00.000Z",
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "ChronoKey",
+    maxMemories: 1,
+    contextBudgetTokens: 2000,
+    maxCharsPerMemory: 80,
+  },
+});
+const truncatedMemoryContent = `${[...longMemoryContent].slice(0, 80).join("")}...`;
+assert.match(fullMemoryContext.contextBlock, new RegExp(`${"x".repeat(100)}`, "u"));
+assert.equal(truncatedMemoryContext.contextBlock.includes(truncatedMemoryContent), true);
+assert.doesNotMatch(truncatedMemoryContext.contextBlock, new RegExp(`${"x".repeat(100)}`, "u"));
+assert.match(truncatedMemoryContext.contextBlock, /observed 2026-01-02/u);
+const truncatedMemoryPathSection = truncatedMemoryContext.contextBlock.slice(
+  truncatedMemoryContext.contextBlock.indexOf("Reconstructed evidence paths:"),
+  truncatedMemoryContext.contextBlock.indexOf("Memory content:"),
+);
+assert.match(
+  truncatedMemoryPathSection,
+  /- \[step=1; cue=chronokey; tag=fact; kind=fact; observed 2026-01-02; confidence=0\.90/u,
+);
+assert.equal(truncatedMemoryPathSection.includes(truncatedMemoryContent), true);
+assert.doesNotMatch(truncatedMemoryPathSection, new RegExp(`${"x".repeat(100)}`, "u"));
+const longSweepContent = `SweepCapKey ${"s".repeat(120)}`;
+const truncatedSweepContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    layerMemory("memory_sweep_cap_ordinary", "atom", "SweepCap ordinary memory occupies ordinary slot."),
+    {
+      ...layerMemory("memory_sweep_cap_long", "atom", longSweepContent),
+      createdAt: "2026-01-03T00:00:00.000Z",
+      updatedAt: "2026-01-03T00:00:00.000Z",
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "SweepCap",
+    maxMemories: 1,
+    contextBudgetTokens: 2000,
+    stopWhenEvidenceEnough: false,
+    reconstructionIntent: { sweepCues: ["SweepCapKey"] },
+    maxCharsPerMemory: 80,
+  },
+});
+const truncatedSweepContent = `${[...longSweepContent].slice(0, 80).join("")}...`;
+const truncatedSweepSection = truncatedSweepContext.contextBlock.slice(
+  truncatedSweepContext.contextBlock.indexOf("Additional dated mentions:"),
+);
+assert.match(truncatedSweepSection, /Additional dated mentions:/u);
+assert.match(truncatedSweepSection, /observed 2026-01-03/u);
+assert.equal(truncatedSweepSection.includes(truncatedSweepContent), true);
+assert.doesNotMatch(truncatedSweepSection, new RegExp(`${"s".repeat(100)}`, "u"));
+const cullRows = [
+  layerMemory("memory_cull_turn", "turn", `CullKey turn ${"T".repeat(500)}`),
+  layerMemory("memory_cull_atom", "atom", `CullKey atom ${"A".repeat(500)}`),
+  layerMemory("memory_cull_summary", "summary", "CullKey summary survives."),
+];
+const cullTurnOnlyBudget = (await reconstructMemoryContext({
+  store: layerStoreFor([cullRows[0]!]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "CullKey",
+    maxMemories: 3,
+    contextBudgetTokens: 100000,
+    stopWhenEvidenceEnough: false,
+  },
+})).stats.promptTokenEstimate;
+const cullNoPolicy = await reconstructMemoryContext({
+  store: layerStoreFor(cullRows),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "CullKey",
+    maxMemories: 3,
+    contextBudgetTokens: cullTurnOnlyBudget,
+    stopWhenEvidenceEnough: false,
+  },
+});
+const cullPolicy = await reconstructMemoryContext({
+  store: layerStoreFor(cullRows),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "CullKey",
+    maxMemories: 3,
+    contextBudgetTokens: cullTurnOnlyBudget,
+    stopWhenEvidenceEnough: false,
+    layerPolicy: { summaryMinShare: 0.34, turnMaxShare: 1 },
+  },
+});
+assert.match(cullNoPolicy.contextBlock, /CullKey turn/u);
+assert.doesNotMatch(cullNoPolicy.contextBlock, /CullKey summary survives/u);
+assert.match(cullPolicy.contextBlock, /CullKey summary survives/u);
+assert.doesNotMatch(cullPolicy.contextBlock, /CullKey turn/u);
+assert.equal(cullPolicy.stats.layers?.culled.turn, 1);
+assert.equal(cullPolicy.stats.layers?.culled.summary, 0);
+
 const sweepDb = path.join(tmp, "reconstruction-sweep.db");
 const sweepStore = createSqliteMemoryStore({ path: sweepDb });
 const sweepMemory = createMemoryOS({
@@ -24440,6 +24745,24 @@ assert.equal(externalReaderProfileBenchmark.runManifest.options.maxSteps, 8);
 assert.equal(externalReaderProfileBenchmark.runManifest.options.maxBranch, 10);
 assert.equal(externalReaderProfileBenchmark.runManifest.options.maxMemories, 24);
 assert.equal(externalReaderProfileBenchmark.runManifest.options.contextBudgetTokens, 4000);
+const externalReaderProfileWideBenchmark = await runExternalMemoryBenchmark({
+  cases: externalCases.slice(0, 1),
+  readerProfile: "wide",
+});
+assert.equal(externalReaderProfileWideBenchmark.runManifest.options.readerProfile, "wide");
+assert.equal(externalReaderProfileWideBenchmark.runManifest.options.maxSteps, 8);
+assert.equal(externalReaderProfileWideBenchmark.runManifest.options.maxBranch, 10);
+assert.equal(externalReaderProfileWideBenchmark.runManifest.options.maxMemories, 200);
+assert.equal(externalReaderProfileWideBenchmark.runManifest.options.contextBudgetTokens, 8000);
+assert.equal(externalReaderProfileWideBenchmark.runManifest.options.maxCharsPerMemory, 400);
+assert.deepEqual(externalReaderProfileWideBenchmark.runManifest.options.layerPolicy, {
+  summaryMinShare: 0.3,
+  turnMaxShare: 0.4,
+});
+assert.equal(
+  (externalReaderProfileWideBenchmark.cases[0]?.reconstructedLayerIncludedCounts?.atom ?? 0) > 0,
+  true,
+);
 const externalReaderProfileExplicitBenchmark = await runExternalMemoryBenchmark({
   cases: externalCases.slice(0, 1),
   readerProfile: "expansive",
@@ -27737,6 +28060,47 @@ assert.equal(cliExternalJson.ceilingMetrics?.reachableScore, 1);
 assert.equal(cliExternalJson.ceilingMetrics?.unreachableCount, 0);
 assert.equal(cliExternalJson.summary?.failureSampleLimit, 3);
 assert.deepEqual(cliExternalJson.summary?.scoreAttribution, []);
+const cliExternalWide = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--format",
+    "json",
+    "--max-cases",
+    "1",
+    "--reader-profile",
+    "wide",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliExternalWide.status, 0, cliExternalWide.stderr);
+const cliExternalWideJson = JSON.parse(cliExternalWide.stdout) as {
+  runManifest?: {
+    options?: {
+      readerProfile?: string;
+      maxMemories?: number | null;
+      contextBudgetTokens?: number | null;
+      maxCharsPerMemory?: number | null;
+      layerPolicy?: { summaryMinShare?: number; turnMaxShare?: number } | null;
+    };
+  };
+  cases?: Array<{ reconstructedLayerIncludedCounts?: { summary?: number; atom?: number; turn?: number } }>;
+};
+assert.equal(cliExternalWideJson.runManifest?.options?.readerProfile, "wide");
+assert.equal(cliExternalWideJson.runManifest?.options?.maxMemories, 200);
+assert.equal(cliExternalWideJson.runManifest?.options?.contextBudgetTokens, 8000);
+assert.equal(cliExternalWideJson.runManifest?.options?.maxCharsPerMemory, 400);
+assert.deepEqual(cliExternalWideJson.runManifest?.options?.layerPolicy, {
+  summaryMinShare: 0.3,
+  turnMaxShare: 0.4,
+});
+assert.equal((cliExternalWideJson.cases?.[0]?.reconstructedLayerIncludedCounts?.atom ?? 0) > 0, true);
 assert.equal(existsSync(cliExternalJsonFile), true);
 assert.equal(existsSync(cliExternalMarkdownFile), true);
 assert.equal(JSON.parse(readFileSync(cliExternalJsonFile, "utf8")).schema, "gmos.external_long_memory_qa.v1");

@@ -3045,6 +3045,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
                 input.reconstruction.reconstructionIntent,
                 classifyRuntimeSensitivity,
               ),
+              maxCharsPerMemory: input.reconstruction.maxCharsPerMemory,
+              layerPolicy: input.reconstruction.layerPolicy,
               privateRouteSignals,
             },
           })
@@ -3131,6 +3133,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
             : {}),
           ...(prepared.reconstruction.stats.sweeps
             ? { sweeps: prepared.reconstruction.stats.sweeps }
+            : {}),
+          ...(prepared.reconstruction.stats.layers
+            ? { layers: prepared.reconstruction.stats.layers }
             : {}),
         }
       : undefined;
