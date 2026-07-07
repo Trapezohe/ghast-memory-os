@@ -13989,6 +13989,106 @@ function memoryVectorRows(dbPath: string, memoryIds: string[]) {
   }
 }
 
+const addManyBatchInputs = Array.from({ length: 5 }, (_entry, index) => ({
+  profileId: "add-many-batch",
+  kind: "fact" as const,
+  content: `Add many batch memory ${index}`,
+  confidence: 0.8,
+  createdAt: `2026-07-06T00:10:0${index}.000Z`,
+}));
+const addManyBatchDbPath = path.join(tmp, "add-many-batch.db");
+const addManyBatchProvider = createBatchEmbeddingProvider("test-add-many-batch-provider", 2);
+const addManyBatchMemory = createMemoryOS({
+  profileId: "add-many-batch",
+  store: createSqliteMemoryStore({ path: addManyBatchDbPath }),
+  embeddingProvider: addManyBatchProvider,
+});
+const addManyBatchResult = await addManyBatchMemory.addMany([
+  addManyBatchInputs[0]!,
+  {
+    profileId: "add-many-batch",
+    kind: "fact",
+    content: "api key sk-addmanybatchsecret1234567890",
+    createdAt: "2026-07-06T00:10:01.500Z",
+  },
+  ...addManyBatchInputs.slice(1),
+]);
+assert.deepEqual(addManyBatchResult.skipped, [{
+  index: 1,
+  reason: "secret_like",
+  message: "gmOS low-level mutation rejects secret-like content or scope",
+}]);
+assert.deepEqual(addManyBatchProvider.calls, [
+  ["Add many batch memory 0", "Add many batch memory 1"],
+  ["Add many batch memory 2", "Add many batch memory 3"],
+  ["Add many batch memory 4"],
+]);
+assert.deepEqual(
+  addManyBatchResult.memories.map((memoryRecord) => memoryRecord.content),
+  addManyBatchInputs.map((input) => input.content),
+);
+assert.equal(JSON.stringify(addManyBatchProvider.calls).includes("sk-addmanybatchsecret"), false);
+await addManyBatchMemory.close();
+
+const addManySequentialProvider = createBatchEmbeddingProvider("test-add-many-sequential-provider", 2);
+const addManySequentialMemory = createMemoryOS({
+  profileId: "add-many-sequential",
+  store: createSqliteMemoryStore({ path: path.join(tmp, "add-many-sequential.db") }),
+  embeddingProvider: addManySequentialProvider,
+});
+const sequentialAddManyRows: MemoryRecord[] = [];
+for (const input of addManyBatchInputs) {
+  sequentialAddManyRows.push(await addManySequentialMemory.add({
+    ...input,
+    profileId: "add-many-sequential",
+  }));
+}
+assert.deepEqual(
+  addManyBatchResult.memories.map((memoryRecord) => ({
+    kind: memoryRecord.kind,
+    content: memoryRecord.content,
+    confidence: memoryRecord.confidence,
+    createdAt: memoryRecord.createdAt,
+  })),
+  sequentialAddManyRows.map((memoryRecord) => ({
+    kind: memoryRecord.kind,
+    content: memoryRecord.content,
+    confidence: memoryRecord.confidence,
+    createdAt: memoryRecord.createdAt,
+  })),
+);
+assert.equal(addManySequentialProvider.calls.length, 5);
+await addManySequentialMemory.close();
+
+const addManyFailureDbPath = path.join(tmp, "add-many-batch-failure.db");
+const addManyFailureProvider = createBatchEmbeddingProvider("test-add-many-failure-provider", 2, [1]);
+const addManyFailureMemory = createMemoryOS({
+  profileId: "add-many-failure",
+  store: createSqliteMemoryStore({ path: addManyFailureDbPath }),
+  embeddingProvider: addManyFailureProvider,
+});
+const addManyFailureResult = await addManyFailureMemory.addMany(
+  Array.from({ length: 5 }, (_entry, index) => ({
+    profileId: "add-many-failure",
+    kind: "fact" as const,
+    content: `Add many failure memory ${index}`,
+    confidence: 0.8,
+  })),
+);
+assert.equal(addManyFailureProvider.calls.length, 3);
+const addManyFailureRows = memoryVectorRows(
+  addManyFailureDbPath,
+  addManyFailureResult.memories.map((memoryRecord) => memoryRecord.id),
+);
+assert.equal(addManyFailureRows.get(addManyFailureResult.memories[0]!.id)?.providerName, "test-add-many-failure-provider");
+assert.equal(addManyFailureRows.get(addManyFailureResult.memories[1]!.id)?.providerName, "test-add-many-failure-provider");
+assert.equal(addManyFailureRows.get(addManyFailureResult.memories[2]!.id)?.providerName, "local-hash-v1");
+assert.equal(addManyFailureRows.get(addManyFailureResult.memories[2]!.id)?.embeddingStatus, "pending");
+assert.equal(addManyFailureRows.get(addManyFailureResult.memories[3]!.id)?.providerName, "local-hash-v1");
+assert.equal(addManyFailureRows.get(addManyFailureResult.memories[3]!.id)?.embeddingStatus, "pending");
+assert.equal(addManyFailureRows.get(addManyFailureResult.memories[4]!.id)?.providerName, "test-add-many-failure-provider");
+await addManyFailureMemory.close();
+
 const batchEmbeddingDbPath = path.join(tmp, "batch-embedding-ingest.db");
 const batchEmbeddingProvider = createBatchEmbeddingProvider("test-batch-provider", 2);
 const batchEmbeddingMemory = createMemoryOS({
@@ -23942,6 +24042,138 @@ assert.equal(
   ),
   true,
 );
+const externalMemoryBatchProvider = createBatchEmbeddingProvider("external-memory-batch-provider", 2);
+const externalMemoryBatchBenchmark = await runExternalMemoryBenchmark({
+  cases: [{
+    id: "external-memory-mode-batches-consecutive-events",
+    events: [
+      { type: "memory", kind: "fact", content: "Runner batch alpha marker." },
+      { type: "memory", kind: "fact", content: "Runner batch beta marker." },
+      {
+        type: "task",
+        taskId: "runner-batch-flush",
+        objective: "Flush pending memory events",
+        status: "completed",
+      },
+      {
+        type: "memory",
+        kind: "fact",
+        content: "Runner batch api key sk-runnerbatchsecret1234567890",
+      },
+      { type: "memory", kind: "fact", content: "Runner batch gamma marker." },
+      { type: "memory", kind: "fact", content: "Runner batch delta marker." },
+    ],
+    question: "Which runner batch markers exist?",
+    expectedAll: ["alpha", "beta", "gamma", "delta"],
+    forbiddenAny: ["sk-runnerbatchsecret"],
+  }],
+  embedQuery: false,
+  intelligence: {
+    embeddingProvider: externalMemoryBatchProvider,
+  },
+});
+assert.equal(externalMemoryBatchBenchmark.pass, true);
+assert.deepEqual(externalMemoryBatchProvider.calls, [
+  ["Runner batch alpha marker.", "Runner batch beta marker."],
+  ["Runner batch gamma marker.", "Runner batch delta marker."],
+]);
+assert.equal(
+  externalMemoryBatchBenchmark.cases[0]?.warnings.includes(
+    "skipped_external_memory_event_secret_like",
+  ),
+  true,
+);
+const priorityEmbeddingStartOrder: string[] = [];
+let releaseFirstPriorityBulk: (() => void) | undefined;
+const firstPriorityBulkReleased = new Promise<void>((resolve) => {
+  releaseFirstPriorityBulk = resolve;
+});
+let firstPriorityBulkBlocked = false;
+const priorityEmbeddingProvider = {
+  name: "external-priority-embedding-provider",
+  dimensions: 3,
+  maxBatchSize: 2,
+  async embed(texts: string[]) {
+    const firstText = texts[0] ?? "";
+    const label = firstText.includes("Priority bulk A memory")
+      ? "bulk-a"
+      : firstText.includes("Priority bulk C memory")
+        ? "bulk-c"
+        : firstText === "priority query marker"
+          ? "query-b"
+          : "query-other";
+    priorityEmbeddingStartOrder.push(label);
+    if ((label === "bulk-a" || label === "bulk-c") && !firstPriorityBulkBlocked) {
+      firstPriorityBulkBlocked = true;
+      await firstPriorityBulkReleased;
+    }
+    return texts.map(batchVectorForText);
+  },
+};
+const priorityBenchmarkPromise = runExternalMemoryBenchmark({
+  cases: [
+    {
+      id: "priority-bulk-a",
+      events: Array.from({ length: 4 }, (_entry, index) => ({
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: `Priority bulk A memory ${index}`,
+      })),
+      question: "priority other marker a",
+      forbiddenAny: ["priority forbidden marker"],
+    },
+    {
+      id: "priority-bulk-c",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "Priority bulk C memory 0",
+      }],
+      question: "priority other marker c",
+      forbiddenAny: ["priority forbidden marker"],
+    },
+    {
+      id: "priority-query-b",
+      events: [{
+        type: "task" as const,
+        taskId: "priority-query-b-task",
+        objective: "Keep priority query case valid",
+        status: "completed" as const,
+      }],
+      question: "priority query marker",
+      forbiddenAny: ["priority forbidden marker"],
+    },
+  ],
+  concurrency: 3,
+  intelligenceConcurrency: 1,
+  intelligenceTimeoutMs: 5000,
+  intelligence: {
+    embeddingProvider: priorityEmbeddingProvider,
+  },
+});
+for (
+  let attempt = 0;
+  attempt < 50 &&
+    priorityEmbeddingStartOrder[0] !== "bulk-a" &&
+    priorityEmbeddingStartOrder[0] !== "bulk-c";
+  attempt += 1
+) {
+  await new Promise((resolve) => setTimeout(resolve, 5));
+}
+assert.equal(
+  priorityEmbeddingStartOrder[0] === "bulk-a" || priorityEmbeddingStartOrder[0] === "bulk-c",
+  true,
+);
+await new Promise((resolve) => setTimeout(resolve, 20));
+releaseFirstPriorityBulk?.();
+const priorityBenchmark = await priorityBenchmarkPromise;
+assert.equal(priorityBenchmark.partial, false);
+const priorityQueuedBulk = priorityEmbeddingStartOrder[0] === "bulk-a" ? "bulk-c" : "bulk-a";
+const priorityQueryStart = priorityEmbeddingStartOrder.indexOf("query-b");
+const priorityQueuedBulkStart = priorityEmbeddingStartOrder.indexOf(priorityQueuedBulk);
+assert.notEqual(priorityQueryStart, -1);
+assert.notEqual(priorityQueuedBulkStart, -1);
+assert.equal(priorityQueryStart < priorityQueuedBulkStart, true);
 await assert.rejects(
   () =>
     runExternalMemoryBenchmark({

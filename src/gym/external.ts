@@ -44,6 +44,7 @@ import {
   sanitizePublicPayload,
 } from "../kernel/safety.js";
 import { temporalContextLabel } from "../kernel/temporal-format.js";
+import { currentEmbeddingProviderCallPriority } from "../kernel/embeddings.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 import { GMOS_SQLITE_SCHEMA_VERSION } from "../store/sqlite/schema.js";
@@ -3309,21 +3310,36 @@ function isIntelligenceConfig(
     (!hasBaseUrl && hasDistillerBaseUrl && hasDistillerModel);
 }
 
-function createLimit(concurrency: number): <T>(task: () => Promise<T>) => Promise<T> {
+type IntelligenceTaskPriority = "default" | "query";
+
+function createLimit(
+  concurrency: number,
+): <T>(priority: IntelligenceTaskPriority, task: () => Promise<T>) => Promise<T> {
   let active = 0;
-  const queue: Array<() => void> = [];
-  return async (task) => {
-    if (active >= concurrency) {
-      await new Promise<void>((resolve) => queue.push(resolve));
+  const queue: Array<{
+    priority: IntelligenceTaskPriority;
+    run: () => void;
+  }> = [];
+  function drain(): void {
+    if (active >= concurrency || queue.length === 0) return;
+    const queryIndex = queue.findIndex((entry) => entry.priority === "query");
+    const [next] = queue.splice(queryIndex >= 0 ? queryIndex : 0, 1);
+    next?.run();
+  }
+  return (priority, task) => new Promise((resolve, reject) => {
+    const run = () => {
+      active += 1;
+      task().then(resolve, reject).finally(() => {
+        active -= 1;
+        drain();
+      });
+    };
+    if (active < concurrency) {
+      run();
+    } else {
+      queue.push({ priority, run });
     }
-    active += 1;
-    try {
-      return await task();
-    } finally {
-      active -= 1;
-      queue.shift()?.();
-    }
-  };
+  });
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
@@ -3727,7 +3743,12 @@ function resolveRuntimeIntelligence(input: {
   }
   const limit = createLimit(concurrency);
   const run = <T>(label: string, task: () => Promise<T>): Promise<T> =>
-    limit(() => withTimeout(Promise.resolve().then(task), timeoutMs, label));
+    limit(
+      label === "embeddingProvider" && currentEmbeddingProviderCallPriority() === "query"
+        ? "query"
+        : "default",
+      () => withTimeout(Promise.resolve().then(task), timeoutMs, label),
+    );
   const extractor = wrapExtractor(rawHooks.extractor, run);
   const sessionDistiller = wrapSessionDistiller(rawHooks.sessionDistiller, run);
   if (input.sessionDistillation && !sessionDistiller) {
@@ -4311,6 +4332,29 @@ async function applyBenchmarkEvents(input: {
     distillationFailureCount: 0,
   };
   const pendingMessages: ExternalMemoryBenchmarkMessageEvent[] = [];
+  const pendingMemoryEvents: ExternalMemoryBenchmarkMemoryEvent[] = [];
+
+  async function flushMemoryEvents(): Promise<void> {
+    if (pendingMemoryEvents.length === 0) return;
+    const events = pendingMemoryEvents.splice(0);
+    const inputs: Parameters<MemoryOS["addMany"]>[0] = [];
+    for (const event of events) {
+      if (!eventEligibleForLongTermMemory(event)) {
+        output.warnings.push("skipped_external_memory_event_secret_like");
+        continue;
+      }
+      inputs.push({
+        profileId: input.profileId,
+        kind: event.kind,
+        content: event.content,
+        confidence: event.confidence,
+        sensitivity: event.sensitivity,
+        createdAt: event.createdAt,
+        ...(event.metadata !== undefined ? { metadata: event.metadata } : {}),
+      });
+    }
+    if (inputs.length > 0) await input.memory.addMany(inputs);
+  }
 
   async function flushMessages(): Promise<void> {
     if (pendingMessages.length === 0) return;
@@ -4368,9 +4412,16 @@ async function applyBenchmarkEvents(input: {
 
   for (const event of input.events) {
     if (input.ingestMode === "message" && isBenchmarkMessageEvent(event)) {
+      await flushMemoryEvents();
       pendingMessages.push(event);
       continue;
     }
+    if (input.ingestMode === "memory" && event.type === "memory") {
+      await flushMessages();
+      pendingMemoryEvents.push(event);
+      continue;
+    }
+    await flushMemoryEvents();
     await flushMessages();
     const applied = await applyBenchmarkEvent(input.memory, input.profileId, event, {
       countExtractionFailures: input.countExtractionFailures,
@@ -4388,6 +4439,7 @@ async function applyBenchmarkEvents(input: {
     output.replayedWindowCount += applied.replayedWindowCount ?? 0;
     output.replayRecoveredCount += applied.replayRecoveredCount ?? 0;
   }
+  await flushMemoryEvents();
   await flushMessages();
   return output;
 }

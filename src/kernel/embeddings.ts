@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import {
   LOCAL_TEXT_VECTOR_DIMENSIONS,
   LOCAL_TEXT_VECTOR_PROVIDER,
@@ -17,6 +19,14 @@ import type {
 export const DEFAULT_EMBEDDING_TIMEOUT_MS = 1500;
 export const DEFAULT_EMBEDDING_BATCH_SIZE = 32;
 export const DEFAULT_VECTOR_BACKFILL_BATCH_SIZE = DEFAULT_EMBEDDING_BATCH_SIZE;
+
+export type EmbeddingProviderCallPriority = "bulk" | "query";
+
+const embeddingProviderCallPriority = new AsyncLocalStorage<EmbeddingProviderCallPriority>();
+
+export function currentEmbeddingProviderCallPriority(): EmbeddingProviderCallPriority | undefined {
+  return embeddingProviderCallPriority.getStore();
+}
 
 export interface MemoryEmbeddingInput {
   kind: MemoryKind;
@@ -164,6 +174,7 @@ export async function embeddingsForMemories(input: {
       provider,
       texts: batch.map((candidate) => candidate.memory.content),
       timeoutMs: input.timeoutMs,
+      priority: "bulk",
     });
     if (!embedded) {
       providerFailureCount += 1;
@@ -200,6 +211,7 @@ export async function embeddingForQuery(input: {
     provider: input.provider,
     texts: [input.query],
     timeoutMs: input.timeoutMs,
+    priority: "query",
   });
   if (!embedded) return null;
   return {
@@ -254,10 +266,14 @@ async function callProvider(input: {
   provider: ResolvedEmbeddingProviderConfig;
   texts: string[];
   timeoutMs?: number | undefined;
+  priority: EmbeddingProviderCallPriority;
 }): Promise<{ dimensions: number; vectors: number[][] } | null> {
   try {
     const timeoutMs = boundedTimeout(input.timeoutMs ?? input.provider.timeoutMs);
-    const vectors = await withTimeout(input.provider.embed(input.texts), timeoutMs);
+    const vectors = await withTimeout(
+      embeddingProviderCallPriority.run(input.priority, () => input.provider.embed(input.texts)),
+      timeoutMs,
+    );
     if (vectors.length !== input.texts.length) return null;
     const dimensions =
       input.provider.dimensions > 0 ? input.provider.dimensions : vectors[0]?.length ?? 0;

@@ -49,6 +49,13 @@ Key write methods:
 - `observe(event)`: records one host event. For `conversation.message`, the
   extractor is called once for that message when its role is extractable.
 - `observeWithReport(event)`: same write path, with a sanitized report.
+- `add(input)`: writes one low-level host memory after the same secret-like,
+  person-routing, sensitivity, and metadata redaction gates used by runtime
+  writes. It rejects ineligible input.
+- `addMany(inputs)`: writes low-level host memories in input order and embeds
+  eligible items through the configured provider's batch size. Ineligible items
+  are skipped instead of failing the batch; the result is
+  `{ memories, skipped }`, where `skipped` reports each input index and reason.
 - `ingestConversation({ profileId?, messages, window?, extraction?, turnRetention?, sessionDistillation? })`:
   records each message as its own evidence event, then calls the extractor once
   per eligible message window. `window.maxMessages` defaults to `12`; metadata

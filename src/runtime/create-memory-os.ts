@@ -62,6 +62,7 @@ import {
   sourceMetadataSpeakerIsPerson,
 } from "../kernel/safety.js";
 import type {
+  AddMemoryInput,
   CommitOutcomeInput,
   ActionPolicy,
   EvidencePathExplanation,
@@ -77,6 +78,8 @@ import type {
   HostEvent,
   IngestConversationInput,
   IngestConversationResult,
+  LowLevelAddManyResult,
+  LowLevelAddManySkipped,
   LowLevelAddMemoryInput,
   LowLevelArchiveMemoryInput,
   LowLevelClearMemoriesInput,
@@ -1328,6 +1331,98 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     };
   }
 
+  interface PreparedLowLevelAdd {
+    embeddingInput: {
+      kind: MemoryKind;
+      sensitivity: Sensitivity;
+      content: string;
+    };
+    storeInput: AddMemoryInput;
+  }
+
+  function skippedLowLevelAdd(
+    input: LowLevelAddMemoryInput,
+    index: number,
+  ): LowLevelAddManySkipped | null {
+    const content = input.content.trim();
+    if (!content) {
+      return {
+        index,
+        reason: "empty_content",
+        message: "gmOS low-level add requires non-empty content",
+      };
+    }
+    const kind = lowLevelKind({ ...input, content });
+    if ((kind === "person" || isPersonRoutedMemory(content)) && !input.allowPerson) {
+      return {
+        index,
+        reason: "person_routed",
+        message: "gmOS low-level add rejects person memory unless allowPerson is true",
+      };
+    }
+    try {
+      lowLevelSensitivity({
+        content,
+        scope: input.scope,
+        sensitivity: input.sensitivity,
+        classifyRuntimeSensitivity,
+      });
+    } catch {
+      return {
+        index,
+        reason: "secret_like",
+        message: "gmOS low-level mutation rejects secret-like content or scope",
+      };
+    }
+    return null;
+  }
+
+  async function prepareLowLevelAdd(input: LowLevelAddMemoryInput): Promise<PreparedLowLevelAdd> {
+    const content = input.content.trim();
+    if (!content) throw new Error("gmOS low-level add requires non-empty content");
+    const kind = lowLevelKind({ ...input, content });
+    assertLowLevelPersonAllowed({ ...input, kind, content });
+    const profileId = profileIdFor(defaultProfileId, input.profileId);
+    const sensitivity = lowLevelSensitivity({ ...input, content, classifyRuntimeSensitivity });
+    const createdAt = input.createdAt ?? nowIso();
+    const evidence = await store.recordEvidence({
+      profileId,
+      eventKey: ["sdk.low_level_add", profileId, createdAt, randomUUID()].join(":"),
+      sourceType: "sdk.low_level_add",
+      sourceUri: null,
+      content,
+      sensitivity,
+      eligibleForLongTermMemory: true,
+      payload: {
+        kind: safePublicLabel(kind),
+        scope: input.scope ?? "global",
+        metadata: redactRuntimeSourceMetadataRecord(input.metadata, classifyRuntimeSensitivity),
+      },
+      createdAt,
+    });
+    return {
+      embeddingInput: {
+        kind,
+        sensitivity,
+        content,
+      },
+      storeInput: {
+        profileId,
+        kind,
+        content,
+        sensitivity,
+        sourceEventId: evidence.id,
+        metadata: {
+          ...sanitizeRuntimeExternalMemoryMetadata(input.metadata, classifyRuntimeSensitivity),
+          lowLevelApi: true,
+        },
+        createdAt,
+        ...(input.scope !== undefined ? { scope: input.scope } : {}),
+        ...(input.confidence !== undefined ? { confidence: input.confidence } : {}),
+      },
+    };
+  }
+
   async function queryEmbeddingForSearch(
     query: string | undefined,
     options: MemoryReadRetrievalOptions | undefined,
@@ -1401,48 +1496,45 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
 
   async function add(input: LowLevelAddMemoryInput): Promise<MemoryRecord> {
     await initialize();
-    const content = input.content.trim();
-    if (!content) throw new Error("gmOS low-level add requires non-empty content");
-    assertLowLevelPersonAllowed(input);
-    const profileId = profileIdFor(defaultProfileId, input.profileId);
-    const kind = lowLevelKind(input);
-    const sensitivity = lowLevelSensitivity({ ...input, classifyRuntimeSensitivity });
-    const createdAt = input.createdAt ?? nowIso();
-    const evidence = await store.recordEvidence({
-      profileId,
-      eventKey: ["sdk.low_level_add", profileId, createdAt, randomUUID()].join(":"),
-      sourceType: "sdk.low_level_add",
-      sourceUri: null,
-      content,
-      sensitivity,
-      eligibleForLongTermMemory: true,
-      payload: {
-        kind: safePublicLabel(kind),
-        scope: input.scope ?? "global",
-        metadata: redactRuntimeSourceMetadataRecord(input.metadata, classifyRuntimeSensitivity),
-      },
-      createdAt,
-    });
-    const embedding = await embeddingForRuntimeWrite({
-      kind,
-      sensitivity,
-      content,
-    });
+    const prepared = await prepareLowLevelAdd(input);
+    const embedding = await embeddingForRuntimeWrite(prepared.embeddingInput);
     return publicMemoryRecord(await store.addMemory({
-      profileId,
-      kind,
-      content,
-      sensitivity,
-      sourceEventId: evidence.id,
-      metadata: {
-        ...sanitizeRuntimeExternalMemoryMetadata(input.metadata, classifyRuntimeSensitivity),
-        lowLevelApi: true,
-      },
-      createdAt,
+      ...prepared.storeInput,
       ...(embedding ? { embedding } : {}),
-      ...(input.scope !== undefined ? { scope: input.scope } : {}),
-      ...(input.confidence !== undefined ? { confidence: input.confidence } : {}),
     }), classifyRuntimeSensitivity);
+  }
+
+  async function addMany(inputs: LowLevelAddMemoryInput[]): Promise<LowLevelAddManyResult> {
+    await initialize();
+    if (inputs.length === 0) return { memories: [], skipped: [] };
+    const prepared: PreparedLowLevelAdd[] = [];
+    const skipped: LowLevelAddManySkipped[] = [];
+    for (const [index, input] of inputs.entries()) {
+      const skip = skippedLowLevelAdd(input, index);
+      if (skip) {
+        skipped.push(skip);
+      } else {
+        prepared.push(await prepareLowLevelAdd(input));
+      }
+    }
+    if (prepared.length === 0) return { memories: [], skipped };
+    const embedded = await embeddingsForRuntimeWrites(
+      prepared.map((entry) => entry.embeddingInput),
+    );
+    const storeInputs = prepared.map((entry, index) => ({
+      ...entry.storeInput,
+      ...(embedded.embeddings[index] ? { embedding: embedded.embeddings[index] } : {}),
+    }));
+    const stored = store.addMemories ? await store.addMemories(storeInputs) : [];
+    if (!store.addMemories) {
+      for (const entry of storeInputs) {
+        stored.push(await store.addMemory(entry));
+      }
+    }
+    return {
+      memories: stored.map((memory) => publicMemoryRecord(memory, classifyRuntimeSensitivity)),
+      skipped,
+    };
   }
 
   async function update(input: LowLevelUpdateMemoryInput): Promise<MemoryRecord | null> {
@@ -4393,6 +4485,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
 
   return {
     add,
+    addMany,
     update,
     archive,
     restoreArchived,

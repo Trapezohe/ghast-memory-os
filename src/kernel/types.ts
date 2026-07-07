@@ -1344,6 +1344,19 @@ export interface LowLevelAddMemoryInput {
   allowPerson?: boolean | undefined;
 }
 
+export type LowLevelAddManySkippedReason = "empty_content" | "secret_like" | "person_routed";
+
+export interface LowLevelAddManySkipped {
+  index: number;
+  reason: LowLevelAddManySkippedReason;
+  message: string;
+}
+
+export interface LowLevelAddManyResult {
+  memories: MemoryRecord[];
+  skipped: LowLevelAddManySkipped[];
+}
+
 export interface LowLevelUpdateMemoryInput {
   profileId?: string | undefined;
   id: string;
@@ -2268,6 +2281,7 @@ export interface MemoryOSOptions {
 
 export interface MemoryOS {
   add(input: LowLevelAddMemoryInput): Promise<MemoryRecord>;
+  addMany(inputs: LowLevelAddMemoryInput[]): Promise<LowLevelAddManyResult>;
   update(input: LowLevelUpdateMemoryInput): Promise<MemoryRecord | null>;
   archive(input: LowLevelArchiveMemoryInput): Promise<ForgetResult>;
   restoreArchived(input: LowLevelRestoreArchivedMemoryInput): Promise<RestoreArchivedResult>;

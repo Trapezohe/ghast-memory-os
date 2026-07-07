@@ -238,6 +238,20 @@ try {
         kind: "preference",
         content: "Consumer low-level compatibility prefers stable manifests.",
       });
+      const lowLevelBatch = await memory.addMany([
+        {
+          profileId: "consumer",
+          kind: "fact",
+          content: "Consumer batch compatibility recalls routine calibration notes.",
+        },
+        {
+          profileId: "consumer",
+          kind: "fact",
+          content: "api key sk-consumerbatchsecret1234567890",
+        },
+      ]);
+      assert.equal(lowLevelBatch.memories.length, 1);
+      assert.equal(lowLevelBatch.skipped[0].reason, "secret_like");
       const lowLevelMatches = await memory.search({
         profileId: "consumer",
         query: "stable manifests",
@@ -867,6 +881,7 @@ try {
         type EvidencePathExplanation,
         type ExplainEvidencePathInput,
         type ExplainTurnInput,
+        type LowLevelAddManyResult,
         type MemoryExtractor,
         type MemoryOS,
         type MemoryRecord,
@@ -1083,6 +1098,13 @@ try {
         kind: "preference",
         content: "Typed consumer low-level API fixture.",
       });
+      const typedBatch: LowLevelAddManyResult = await memory.addMany([{
+        profileId: "consumer-types",
+        kind: "fact",
+        content: "Typed consumer low-level batch fixture.",
+      }]);
+      const typedBatchCount: number = typedBatch.memories.length;
+      void typedBatchCount;
       const typedResults = await memory.search({
         profileId: "consumer-types",
         query: "fixture",

@@ -375,6 +375,18 @@ retrieval, or `--embed-query on` to make the opt-in explicit. Manifests record
 the effective `runtimeIntelligence.embedQuery` and
 `queryEmbeddingFailureCount`; failures fall back to lexical retrieval.
 
+In memory ingest mode, consecutive `type: "memory"` events in a case group are
+batched until a non-memory event forces a flush. The runtime `addMany()` path
+still applies per-item gates and skip reporting, but eligible rows share
+provider embedding calls up to the provider `maxBatchSize` instead of embedding
+one event per round trip.
+
+Runtime intelligence uses one shared concurrency limit. Pending query embedding
+calls are dequeued before pending non-query intelligence calls so read-path
+semantic retrieval is not starved behind bulk ingest embeddings. Running calls
+are not preempted; `queryEmbeddingFailureCount` remains the observability signal
+for query fallback.
+
 Query planning defaults OFF: a measured 30-case comparison showed
 model-derived required anchors regressing the reader score (0.30 -> 0.17)
 because anchor-matched memories displaced whole-question-relevant ones and
