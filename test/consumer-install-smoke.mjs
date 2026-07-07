@@ -1287,6 +1287,7 @@ try {
               officialProtocol: "not_run",
               officialScore: null,
               comparableToOfficialScore: false,
+              judgeProfile: "strict",
             },
             ceilingMetrics: null,
             protocols: ["deterministic_local"],

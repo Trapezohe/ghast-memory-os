@@ -136,6 +136,27 @@ gmos gym external \
 Claim ladder: `deterministic_local` < `host_judge_context` <
 `host_reader_and_judge`. Do not compare a lower rung to leaderboard claims.
 
+### Judge profiles
+
+OpenAI-compatible CLI judges support `--judge-profile strict|official`.
+`strict` is the default and remains the internal regression profile. It uses the
+original strict gmOS judge prompt and is best for tracking whether a local change
+moves the gmOS baseline.
+
+`official` is for external comparisons where the published protocol uses a
+lenient model judge: lenient on phrasing, formatting, equivalent units, and extra
+correct detail, but strict on factual correctness. If the expected answer is
+unavailable or unanswerable, an answer that declines or states the missing
+information is correct; a fabricated specific answer is incorrect.
+
+Reports and manifests record `judgeProfile` alongside protocol, judge
+provenance, and `comparableToOfficialScore`. Publish both the score and the
+judge profile. Internal regression tables should use `strict`; apples-to-apples
+external comparisons should use `official` only when the rest of the protocol,
+reader, judge model, and settings match. SDK host-provided judge objects must
+implement their own rubric; `judgeProfile` applies only to gmOS-created
+OpenAI-compatible judges.
+
 Host SDK official-protocol sketch:
 
 ```ts
@@ -522,6 +543,7 @@ gmos gym external \
   --protocol official-protocol \
   --answerer-base-url http://127.0.0.1:11434/v1 \
   --answerer-model llama3.1 \
+  --judge-profile official \
   --format json
 ```
 
@@ -536,6 +558,7 @@ gmos gym external \
   --answerer-base-url https://provider.example/v1 \
   --answerer-model provider-reader-model \
   --answerer-api-key-env GMOS_BENCH_API_KEY \
+  --judge-profile official \
   --format json
 ```
 
@@ -557,7 +580,9 @@ adapter scores. Judge-only official runs are still not leaderboard-comparable.
 Only reader+judge runs may be described as official-protocol comparable, and
 only when the manifest says `officialProtocol=host_reader_and_judge`. If query
 planning is enabled, it is part of the disclosed intelligence stack, not a hidden
-benchmark shortcut.
+benchmark shortcut. Always state `judgeProfile`; use `strict` for gmOS internal
+regression tracking and `official` for published comparisons that need the
+lenient official-style rubric.
 
 Before scaling a paid reader+judge run, read the markdown attribution table.
 Official failures are bucketed deterministically:
@@ -612,6 +637,7 @@ External reports should separate:
 - reader+judge official score (`officialProtocol=host_reader_and_judge`);
 - lexical ceiling and reachable score for deterministic reports;
 - judge provenance;
+- judge profile;
 - answerer provenance when reader mode is enabled;
 - setup/runtime ingestion cost;
 - scoring runtime;
@@ -628,6 +654,7 @@ state, reconstruction, context composition, safety, action policy, or feedback.
 - Do not quote a report as leaderboard-comparable unless its manifest says
   `protocol=official_protocol`, `officialProtocol=host_reader_and_judge`, and
   names both the answerer and judge.
+- Do not publish an external comparison without the recorded `judgeProfile`.
 - Do not claim SOTA without the official dataset, official or strictly
   equivalent runner, fixed model/judge settings, and a public reproduction
   bundle.

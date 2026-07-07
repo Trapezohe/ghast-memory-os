@@ -42,6 +42,7 @@ import {
   buildStateBenchLearnings,
   createOpenAICompatibleExternalBenchmarkAnswerer,
   createOpenAICompatibleExternalBenchmarkJudge,
+  type ExternalMemoryBenchmarkJudgeProfile,
   prepareStateBenchAgentLearningRun,
   summarizeStateBenchResults,
   parseExternalMemoryBenchmarkDataset,
@@ -630,6 +631,13 @@ function externalProtocolOption(): "deterministic_local" | "official_protocol" {
   throw new Error("--protocol must be deterministic-local or official-protocol");
 }
 
+function externalJudgeProfileOption(): ExternalMemoryBenchmarkJudgeProfile | undefined {
+  const raw = value("--judge-profile");
+  if (raw === undefined) return undefined;
+  if (raw === "strict" || raw === "official") return raw;
+  throw new Error("--judge-profile must be strict or official");
+}
+
 function externalIngestModeOption(): "memory" | "message" {
   const raw = value("--ingest-mode", "memory");
   if (raw === "memory" || raw === "message") return raw;
@@ -831,7 +839,7 @@ function externalAnswererConfigOption(
 function externalJudgeConfigOption(
   intelligence: ReturnType<typeof externalIntelligenceOption>,
 ): CliOpenAICompatibleHookConfig | undefined {
-  const hasJudgeFlag = process.argv.some((arg) => arg.startsWith("--judge-"));
+  const hasJudgeFlag = process.argv.some((arg) => arg.startsWith("--judge-") && !arg.startsWith("--judge-profile"));
   if (!hasJudgeFlag) return undefined;
   const model = value("--judge-model");
   if (!model) {
@@ -865,6 +873,7 @@ function externalOfficialJudgeOption(
   intelligence: ReturnType<typeof externalIntelligenceOption>,
   answererConfig: CliOpenAICompatibleHookConfig | undefined,
   judgeConfig: CliOpenAICompatibleHookConfig | undefined,
+  judgeProfile: ExternalMemoryBenchmarkJudgeProfile | undefined,
 ) {
   if (protocol !== "official_protocol") return undefined;
   const config = judgeConfig ?? (intelligence?.baseUrl && intelligence.model
@@ -887,7 +896,10 @@ function externalOfficialJudgeOption(
   if (!config) {
     throw new Error("gmos gym external --protocol official-protocol requires an OpenAI-compatible judge endpoint via --intelligence-base-url/--intelligence-model or --answerer-base-url/--answerer-model");
   }
-  return createOpenAICompatibleExternalBenchmarkJudge(config);
+  return createOpenAICompatibleExternalBenchmarkJudge({
+    ...config,
+    ...(judgeProfile !== undefined ? { profile: judgeProfile } : {}),
+  });
 }
 
 function listStatusOption(): LowLevelListMemoriesInput["status"] {
@@ -2088,6 +2100,7 @@ async function main(): Promise<void> {
       throw new Error("--require-convergence requires reconstruct mode for every external benchmark case");
     }
     const protocol = externalProtocolOption();
+    const judgeProfile = externalJudgeProfileOption();
     const answererConfig = externalAnswererConfigOption(intelligence);
     if (answererConfig && protocol !== "official_protocol") {
       throw new Error("gmos gym external --answerer-* flags require --protocol official-protocol");
@@ -2099,7 +2112,7 @@ async function main(): Promise<void> {
     const answerer = answererConfig
       ? createOpenAICompatibleExternalBenchmarkAnswerer(answererConfig)
       : undefined;
-    const judge = externalOfficialJudgeOption(protocol, intelligence, answererConfig, judgeConfig);
+    const judge = externalOfficialJudgeOption(protocol, intelligence, answererConfig, judgeConfig, judgeProfile);
     const resultsJsonl = strictOptionValue("--results-jsonl");
     const maxCases = positiveIntegerOptionValue("--max-cases");
     const caseOffset = nonNegativeIntegerOptionValue("--case-offset");
@@ -2162,6 +2175,7 @@ async function main(): Promise<void> {
       failureSampleLimit: nonNegativeIntegerOption("--failure-sample-limit", 20),
       diagnosticsLevel: diagnosticsLevelOption(),
       protocol,
+      ...(judgeProfile !== undefined ? { judgeProfile } : {}),
       ...(maxCases !== undefined ? { maxCases } : {}),
       ...(caseOffset !== undefined ? { caseOffset } : {}),
       ...(caseIds !== undefined ? { caseIds } : {}),

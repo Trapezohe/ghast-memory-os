@@ -155,8 +155,11 @@ export interface ExternalMemoryBenchmarkJudgeResult {
   rationale?: string | undefined;
 }
 
+export type ExternalMemoryBenchmarkJudgeProfile = "strict" | "official";
+
 export interface ExternalMemoryBenchmarkJudge {
   name: string;
+  profile?: ExternalMemoryBenchmarkJudgeProfile | undefined;
   judge(
     question: string,
     expectedAnswer: string,
@@ -463,6 +466,7 @@ export interface ExternalMemoryBenchmarkScoreSemantics {
   officialProtocol: "not_run" | "host_judge_context" | "host_reader_and_judge";
   officialScore: number | null;
   comparableToOfficialScore: boolean;
+  judgeProfile: ExternalMemoryBenchmarkJudgeProfile;
 }
 
 export interface ExternalMemoryBenchmarkCeilingMetrics {
@@ -637,6 +641,7 @@ export const EXTERNAL_MEMORY_BENCHMARK_SCORE_SEMANTICS: ExternalMemoryBenchmarkS
   officialProtocol: "not_run",
   officialScore: null,
   comparableToOfficialScore: false,
+  judgeProfile: "strict",
 };
 
 export interface ExternalMemoryBenchmarkRunManifest {
@@ -680,6 +685,7 @@ export interface ExternalMemoryBenchmarkRunManifest {
     partial: boolean;
   };
   protocol: ExternalMemoryBenchmarkProtocol;
+  judgeProfile: ExternalMemoryBenchmarkJudgeProfile;
   judgeProvenance: ExternalMemoryBenchmarkJudgeProvenance;
   options: {
     mode: ExternalMemoryBenchmarkMode | null;
@@ -701,6 +707,7 @@ export interface ExternalMemoryBenchmarkRunManifest {
     failureSampleLimit: number;
     diagnosticsLevel: ExternalMemoryBenchmarkDiagnosticsLevel;
     protocol: ExternalMemoryBenchmarkProtocol;
+    judgeProfile: ExternalMemoryBenchmarkJudgeProfile;
     ingestReplayAttempts: number;
     turnRetention: boolean;
     sessionDistillation: boolean;
@@ -766,6 +773,7 @@ export interface RunExternalMemoryBenchmarkOptions {
   failureSampleLimit?: number | undefined;
   diagnosticsLevel?: ExternalMemoryBenchmarkDiagnosticsLevel | undefined;
   protocol?: ExternalMemoryBenchmarkProtocol | undefined;
+  judgeProfile?: ExternalMemoryBenchmarkJudgeProfile | undefined;
   judge?: ExternalMemoryBenchmarkJudge | undefined;
   answerer?: ExternalMemoryBenchmarkAnswerer | undefined;
   ingestMode?: ExternalMemoryBenchmarkIngestMode | undefined;
@@ -861,6 +869,7 @@ function reproductionReadme(input: {
     `Slice: ${input.report.partial ? "partial" : "full"} executed=${input.report.runManifest.slice.executedCases}/${input.report.runManifest.slice.totalDatasetCases} selected=${input.report.runManifest.slice.selectedCases} maxCases=${input.report.runManifest.slice.sliceSpec.maxCases ?? "none"} caseOffset=${input.report.runManifest.slice.sliceSpec.caseOffset} caseIds=${input.report.runManifest.slice.sliceSpec.caseIds.join(",") || "none"}`,
     `Protocol: ${input.report.runManifest.protocol}`,
     `Judge: ${input.report.runManifest.judgeProvenance.kind}:${input.report.runManifest.judgeProvenance.name ?? "none"}`,
+    `Judge profile: ${input.report.runManifest.judgeProfile}`,
     "",
     "## Command",
     "",
@@ -903,6 +912,7 @@ export function writeExternalMemoryBenchmarkReproductionBundle(
     node: input.report.runManifest.node,
     platform: input.report.runManifest.platform,
     protocol: input.report.runManifest.protocol,
+    judgeProfile: input.report.runManifest.judgeProfile,
     judgeProvenance: input.report.runManifest.judgeProvenance,
     options: input.report.runManifest.options,
     slice: input.report.runManifest.slice,
@@ -1229,6 +1239,12 @@ function normalizeProtocol(value: unknown): ExternalMemoryBenchmarkProtocol {
   throw new Error("External benchmark protocol must be deterministic_local or official_protocol");
 }
 
+function normalizeJudgeProfile(value: unknown): ExternalMemoryBenchmarkJudgeProfile {
+  if (value === undefined) return "strict";
+  if (value === "strict" || value === "official") return value;
+  throw new Error("External benchmark judgeProfile must be strict or official");
+}
+
 function normalizedJudge(
   protocol: ExternalMemoryBenchmarkProtocol,
   judge: ExternalMemoryBenchmarkJudge | undefined,
@@ -1243,7 +1259,18 @@ function normalizedJudge(
   if (typeof judge.judge !== "function") {
     throw new Error("External benchmark judge must provide a judge callback");
   }
-  return { name: judge.name.trim(), judge: judge.judge };
+  return {
+    name: judge.name.trim(),
+    ...(judge.profile !== undefined ? { profile: normalizeJudgeProfile(judge.profile) } : {}),
+    judge: judge.judge,
+  };
+}
+
+function effectiveJudgeProfile(input: {
+  judge: ExternalMemoryBenchmarkJudge | undefined;
+  requested: ExternalMemoryBenchmarkJudgeProfile | undefined;
+}): ExternalMemoryBenchmarkJudgeProfile {
+  return input.judge?.profile ?? input.requested ?? "strict";
 }
 
 function normalizedAnswerer(
@@ -2238,9 +2265,30 @@ export interface ExternalMemoryBenchmarkOpenAICompatibleHookOptions {
   disableThinking?: boolean | undefined;
 }
 
+export type ExternalMemoryBenchmarkOpenAICompatibleJudgeOptions =
+  ExternalMemoryBenchmarkOpenAICompatibleHookOptions & {
+    profile?: ExternalMemoryBenchmarkJudgeProfile | undefined;
+  };
+
 const DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_MS = 20_000;
 const MAX_RECORDED_GENERATED_ANSWER_CHARS = 2000;
 const MAX_RECORDED_ERROR_CHARS = 300;
+const STRICT_JUDGE_SYSTEM_PROMPT = [
+  "You are a strict but fair long-memory benchmark judge.",
+  "Return JSON only: {\"correct\":true|false,\"rationale\":\"...\"}.",
+].join("\n");
+const OFFICIAL_JUDGE_SYSTEM_PROMPT = [
+  "You are a long-memory benchmark judge.",
+  "Judge correctness by factual content.",
+  "Be lenient on phrasing, formatting, units spelled differently, and extra correct detail.",
+  "Be strict on factual correctness: wrong values, wrong entities, and contradictions are incorrect.",
+  "If the expected answer indicates the information is unavailable or unanswerable, an answer that appropriately declines or states the information is missing is CORRECT, and any fabricated specific answer is INCORRECT.",
+  "Return JSON only: {\"correct\":true|false,\"rationale\":\"...\"}.",
+].join("\n");
+
+function judgeSystemPrompt(profile: ExternalMemoryBenchmarkJudgeProfile): string {
+  return profile === "official" ? OFFICIAL_JUDGE_SYSTEM_PROMPT : STRICT_JUDGE_SYSTEM_PROMPT;
+}
 
 function openAICompatibleEndpoint(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/u, "")}/chat/completions`;
@@ -2386,19 +2434,18 @@ export function createOpenAICompatibleExternalBenchmarkAnswerer(
 }
 
 export function createOpenAICompatibleExternalBenchmarkJudge(
-  options: ExternalMemoryBenchmarkOpenAICompatibleHookOptions,
+  options: ExternalMemoryBenchmarkOpenAICompatibleJudgeOptions,
 ): ExternalMemoryBenchmarkJudge {
   const name = options.name ?? `openai-compatible-judge:${options.model}`;
+  const profile = normalizeJudgeProfile(options.profile);
   return {
     name,
+    profile,
     async judge(question, expectedAnswer, actualAnswer) {
       const parsed = parsedCompletionObject(await fetchOpenAICompatibleJson(options, [
         {
           role: "system",
-          content: [
-            "You are a strict but fair long-memory benchmark judge.",
-            "Return JSON only: {\"correct\":true|false,\"rationale\":\"...\"}.",
-          ].join("\n"),
+          content: judgeSystemPrompt(profile),
         },
         { role: "user", content: JSON.stringify({ question, expectedAnswer, actualAnswer }) },
       ]));
@@ -2562,6 +2609,7 @@ function scoreSemanticsForRun(input: {
   judge: ExternalMemoryBenchmarkJudge | undefined;
   answerer: ExternalMemoryBenchmarkAnswerer | undefined;
   officialScore: number | null;
+  judgeProfile: ExternalMemoryBenchmarkJudgeProfile;
 }): ExternalMemoryBenchmarkScoreSemantics {
   if (input.protocol === "official_protocol") {
     const hasAnswerer = input.answerer !== undefined;
@@ -2582,9 +2630,10 @@ function scoreSemanticsForRun(input: {
       officialProtocol: hasAnswerer ? "host_reader_and_judge" : "host_judge_context",
       officialScore: input.officialScore,
       comparableToOfficialScore: hasAnswerer,
+      judgeProfile: input.judgeProfile,
     };
   }
-  return { ...EXTERNAL_MEMORY_BENCHMARK_SCORE_SEMANTICS };
+  return { ...EXTERNAL_MEMORY_BENCHMARK_SCORE_SEMANTICS, judgeProfile: input.judgeProfile };
 }
 
 function disabledRuntimeAnswerer(): ExternalMemoryBenchmarkRuntimeAnswererManifest {
@@ -2672,6 +2721,7 @@ function createRunManifest(input: {
   const protocol = normalizeProtocol(input.options.protocol);
   const judge = normalizedJudge(protocol, input.options.judge);
   const answerer = normalizedAnswerer(protocol, input.options.answerer);
+  const judgeProfile = effectiveJudgeProfile({ judge, requested: input.options.judgeProfile });
   return {
     framework: "gmos-external-long-memory-qa",
     startedAt: input.startedAt,
@@ -2709,6 +2759,7 @@ function createRunManifest(input: {
       partial: input.partial,
     },
     protocol,
+    judgeProfile,
     judgeProvenance: protocol === "official_protocol"
       ? { kind: "host_provided", name: judge?.name ?? null }
       : { kind: "none", name: null },
@@ -2742,12 +2793,14 @@ function createRunManifest(input: {
       failureSampleLimit: normalizedFailureSampleLimit(input.options.failureSampleLimit),
       diagnosticsLevel: normalizedDiagnosticsLevel(input.options.diagnosticsLevel),
       protocol,
+      judgeProfile,
     },
     scoreSemantics: scoreSemanticsForRun({
       protocol,
       judge,
       answerer,
       officialScore: input.officialScore,
+      judgeProfile,
     }),
     runtimeIntelligence: {
       ...input.runtimeIntelligence.manifest,
@@ -4971,6 +5024,13 @@ export async function runExternalMemoryBenchmark(
   const defaultMode = normalizeMode(options.mode);
   const protocol = normalizeProtocol(options.protocol);
   const judge = normalizedJudge(protocol, options.judge);
+  const requestedJudgeProfile = options.judgeProfile !== undefined
+    ? normalizeJudgeProfile(options.judgeProfile)
+    : undefined;
+  if (judge && requestedJudgeProfile !== undefined && judge.profile === undefined) {
+    throw new Error("External benchmark judgeProfile applies only to OpenAI-compatible judge factory judges");
+  }
+  const judgeProfile = effectiveJudgeProfile({ judge, requested: requestedJudgeProfile });
   const answerer = normalizedAnswerer(protocol, options.answerer);
   const eventCache = new WeakMap<object, ExternalMemoryBenchmarkEvent[]>();
   const normalizedCases = options.cases.map((benchmarkCase, index) =>
@@ -5064,6 +5124,7 @@ export async function runExternalMemoryBenchmark(
     failureSampleLimit,
     diagnosticsLevel,
     protocol,
+    judgeProfile,
     ingestMode,
     turnRetention,
     sessionDistillation,
