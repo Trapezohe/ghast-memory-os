@@ -25453,6 +25453,191 @@ assert.equal(externalTurnRetentionOn.runManifest.options.turnRetention, true);
 assert.equal(externalTurnRetentionOn.runManifest.runtimeIntelligence.ingestCaseGroups[0]?.turnMemoryCount, 1);
 assert.deepEqual(externalTurnRetentionOn.cases[0]?.expectedAnyMatched, ["marigold"]);
 assert.equal(externalMissedExtractorCalls, 2);
+const externalIngestCacheCases = [
+  {
+    id: "external-ingest-cache-alpha",
+    profileId: "external_ingest_cache_alpha",
+    events: [{
+      type: "message" as const,
+      role: "user" as const,
+      content: "External ingest cache alpha answer is amber.",
+      createdAt: "2026-07-07T01:00:00.000Z",
+    }],
+    question: "What is the external ingest cache alpha answer?",
+    expectedAny: ["amber"],
+  },
+  {
+    id: "external-ingest-cache-beta",
+    profileId: "external_ingest_cache_beta",
+    events: [{
+      type: "message" as const,
+      role: "user" as const,
+      content: "External ingest cache beta answer is teal.",
+      createdAt: "2026-07-07T02:00:00.000Z",
+    }],
+    question: "What is the external ingest cache beta answer?",
+    expectedAny: ["teal"],
+  },
+];
+let externalIngestCacheExtractorCalls = 0;
+const externalIngestCacheExtractor = {
+  name: "external-ingest-cache-extractor",
+  extract(input: MemoryExtractionInput) {
+    externalIngestCacheExtractorCalls += 1;
+    const text = (input.window?.messages ?? [{ content: input.event.content }])
+      .map((message) => message.content)
+      .join("\n");
+    const match = /External ingest cache (alpha|beta) answer is ([a-z]+)/iu.exec(text);
+    return match
+      ? [{
+          kind: "fact" as const,
+          content: `External ingest cache ${match[1]} answer is ${match[2]}.`,
+          confidence: 0.9,
+        }]
+      : [];
+  },
+};
+const externalIngestCacheDir = path.join(tmp, "external-ingest-cache");
+const externalIngestCacheFirst = await runExternalMemoryBenchmark({
+  cases: externalIngestCacheCases,
+  ingestMode: "message",
+  turnRetention: false,
+  concurrency: 1,
+  ingestCacheDir: externalIngestCacheDir,
+  intelligence: { extractor: externalIngestCacheExtractor },
+});
+assert.equal(externalIngestCacheFirst.pass, true);
+assert.equal(externalIngestCacheExtractorCalls, 2);
+assert.deepEqual(externalIngestCacheFirst.runManifest.ingestCache, {
+  enabled: true,
+  dir: path.resolve(process.cwd(), externalIngestCacheDir),
+  hits: 0,
+  misses: 2,
+});
+assert.equal(readdirSync(externalIngestCacheDir).filter((entry) => entry.endsWith(".db")).length, 2);
+assert.equal(readdirSync(externalIngestCacheDir).filter((entry) => entry.endsWith(".meta.json")).length, 2);
+externalIngestCacheExtractorCalls = 0;
+const externalIngestCacheSecond = await runExternalMemoryBenchmark({
+  cases: externalIngestCacheCases,
+  ingestMode: "message",
+  turnRetention: false,
+  concurrency: 1,
+  ingestCacheDir: externalIngestCacheDir,
+  intelligence: { extractor: externalIngestCacheExtractor },
+});
+assert.equal(externalIngestCacheSecond.pass, true);
+assert.equal(externalIngestCacheExtractorCalls, 0);
+assert.equal(externalIngestCacheSecond.score, externalIngestCacheFirst.score);
+assert.equal(externalIngestCacheSecond.strictScore, externalIngestCacheFirst.strictScore);
+assert.equal(externalIngestCacheSecond.normalizedEvidenceScore, externalIngestCacheFirst.normalizedEvidenceScore);
+assert.deepEqual(
+  externalIngestCacheSecond.cases.map((entry) => ({
+    id: entry.id,
+    pass: entry.pass,
+    strictPass: entry.strictPass,
+    normalizedEvidencePass: entry.normalizedEvidencePass,
+    expectedAnyMatched: entry.expectedAnyMatched,
+  })),
+  externalIngestCacheFirst.cases.map((entry) => ({
+    id: entry.id,
+    pass: entry.pass,
+    strictPass: entry.strictPass,
+    normalizedEvidencePass: entry.normalizedEvidencePass,
+    expectedAnyMatched: entry.expectedAnyMatched,
+  })),
+);
+assert.deepEqual(externalIngestCacheSecond.runManifest.ingestCache, {
+  enabled: true,
+  dir: path.resolve(process.cwd(), externalIngestCacheDir),
+  hits: 2,
+  misses: 0,
+});
+assert.equal(externalIngestCacheSecond.cases.every((entry) => entry.cacheHit), true);
+assert.equal(
+  externalIngestCacheSecond.runManifest.runtimeIntelligence.ingestCaseGroups.every((group) =>
+    group.cacheHit && group.extractionCallCount === 0 && group.embeddingCallCount === 0
+  ),
+  true,
+);
+externalIngestCacheExtractorCalls = 0;
+const externalIngestCacheTurnRetentionMiss = await runExternalMemoryBenchmark({
+  cases: externalIngestCacheCases,
+  ingestMode: "message",
+  turnRetention: true,
+  concurrency: 1,
+  ingestCacheDir: externalIngestCacheDir,
+  intelligence: { extractor: externalIngestCacheExtractor },
+});
+assert.equal(externalIngestCacheTurnRetentionMiss.pass, true);
+assert.equal(externalIngestCacheExtractorCalls, 2);
+assert.equal(externalIngestCacheTurnRetentionMiss.runManifest.ingestCache.hits, 0);
+assert.equal(externalIngestCacheTurnRetentionMiss.runManifest.ingestCache.misses, 2);
+const externalSchemaGuardCacheDir = path.join(tmp, "external-ingest-cache-schema");
+externalIngestCacheExtractorCalls = 0;
+await runExternalMemoryBenchmark({
+  cases: externalIngestCacheCases.slice(0, 1),
+  ingestMode: "message",
+  turnRetention: false,
+  ingestCacheDir: externalSchemaGuardCacheDir,
+  intelligence: { extractor: externalIngestCacheExtractor },
+});
+const schemaGuardDbName = readdirSync(externalSchemaGuardCacheDir).find((entry) => entry.endsWith(".db"));
+assert.ok(schemaGuardDbName);
+const schemaGuardDbFile = path.join(externalSchemaGuardCacheDir, schemaGuardDbName);
+const schemaGuardDb = new Database(schemaGuardDbFile);
+schemaGuardDb.prepare("DELETE FROM gmos_schema_migrations WHERE version = 14").run();
+schemaGuardDb.pragma("wal_checkpoint(TRUNCATE)");
+schemaGuardDb.close();
+externalIngestCacheExtractorCalls = 0;
+const externalSchemaGuardRun = await runExternalMemoryBenchmark({
+  cases: externalIngestCacheCases.slice(0, 1),
+  ingestMode: "message",
+  turnRetention: false,
+  ingestCacheDir: externalSchemaGuardCacheDir,
+  intelligence: { extractor: externalIngestCacheExtractor },
+});
+assert.equal(externalSchemaGuardRun.pass, true);
+assert.equal(externalSchemaGuardRun.runManifest.ingestCache.hits, 0);
+assert.equal(externalSchemaGuardRun.runManifest.ingestCache.misses, 1);
+assert.equal(externalIngestCacheExtractorCalls, 1);
+const externalCorruptCacheDir = path.join(tmp, "external-ingest-cache-corrupt");
+await runExternalMemoryBenchmark({
+  cases: externalIngestCacheCases.slice(0, 1),
+  ingestMode: "message",
+  turnRetention: false,
+  ingestCacheDir: externalCorruptCacheDir,
+  intelligence: { extractor: externalIngestCacheExtractor },
+});
+const corruptCacheDbName = readdirSync(externalCorruptCacheDir).find((entry) => entry.endsWith(".db"));
+assert.ok(corruptCacheDbName);
+const corruptCacheDbFile = path.join(externalCorruptCacheDir, corruptCacheDbName);
+writeFileSync(corruptCacheDbFile, "not a sqlite database");
+externalIngestCacheExtractorCalls = 0;
+const externalCorruptCacheRun = await runExternalMemoryBenchmark({
+  cases: externalIngestCacheCases.slice(0, 1),
+  ingestMode: "message",
+  turnRetention: false,
+  ingestCacheDir: externalCorruptCacheDir,
+  intelligence: { extractor: externalIngestCacheExtractor },
+});
+assert.equal(externalCorruptCacheRun.pass, true);
+assert.equal(externalCorruptCacheRun.runManifest.ingestCache.hits, 0);
+assert.equal(externalCorruptCacheRun.runManifest.ingestCache.misses, 1);
+assert.equal(externalIngestCacheExtractorCalls, 1);
+const disabledExternalCacheDir = path.join(tmp, "external-ingest-cache-disabled");
+const externalIngestCacheDisabled = await runExternalMemoryBenchmark({
+  cases: externalIngestCacheCases.slice(0, 1),
+  ingestMode: "message",
+  turnRetention: false,
+  intelligence: { extractor: externalIngestCacheExtractor },
+});
+assert.equal(externalIngestCacheDisabled.pass, true);
+assert.deepEqual(externalIngestCacheDisabled.runManifest.ingestCache, {
+  enabled: false,
+  hits: 0,
+  misses: 0,
+});
+assert.equal(existsSync(disabledExternalCacheDir), false);
 const longMemEvalJsonlCases = parseLongMemEvalBenchmarkDataset(
   longMemEvalFixture.slice(1, -1),
 );

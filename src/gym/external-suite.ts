@@ -156,6 +156,7 @@ export interface RunExternalMemoryBenchmarkSuiteOptions {
   suite: ExternalMemoryBenchmarkSuiteDocument;
   suiteFile?: string | undefined;
   baseDir?: string | undefined;
+  ingestCacheDir?: string | undefined;
   failOnBenchmarkFail?: boolean | undefined;
   judge?: ExternalMemoryBenchmarkJudge | undefined;
   onRunResult?: ((summary: ExternalMemoryBenchmarkSuiteRunSummary) => void) | undefined;
@@ -394,6 +395,7 @@ function reportOptions(input: {
   inputText: string;
   parsed: ReturnType<typeof parsedDataset>;
   inputPath: string;
+  ingestCacheDir?: string | undefined;
   judge?: ExternalMemoryBenchmarkJudge | undefined;
 }): RunExternalMemoryBenchmarkOptions {
   const requireConvergence = input.run.requireConvergence === true;
@@ -429,6 +431,7 @@ function reportOptions(input: {
     ...(input.run.maxCases !== undefined ? { maxCases: input.run.maxCases } : {}),
     ...(input.run.caseOffset !== undefined ? { caseOffset: input.run.caseOffset } : {}),
     ...(input.run.caseIds !== undefined ? { caseIds: input.run.caseIds } : {}),
+    ...(input.ingestCacheDir !== undefined ? { ingestCacheDir: input.ingestCacheDir } : {}),
     ...(input.judge !== undefined ? { judge: input.judge } : {}),
     ...(requireConvergence ? { requireConvergence: true } : {}),
   };
@@ -475,6 +478,7 @@ export async function runExternalMemoryBenchmarkSuite(
         inputText,
         parsed,
         inputPath,
+        ingestCacheDir: options.ingestCacheDir,
         judge: options.judge,
       }),
     );

@@ -2064,6 +2064,7 @@ async function main(): Promise<void> {
     const ingestMode = externalIngestModeOption();
     const debugDir = value("--intelligence-debug-dir");
     const resolvedDebugDir = debugDir ? path.resolve(process.cwd(), debugDir) : undefined;
+    const ingestCacheDir = value("--ingest-cache-dir");
     const intelligence = externalIntelligenceOption(resolvedDebugDir);
     const maintainPhases = externalMaintainPhasesOption();
     const parsedDataset =
@@ -2156,6 +2157,7 @@ async function main(): Promise<void> {
       concurrency: positiveIntegerOption("--concurrency", 4),
       extractionWindow: positiveIntegerOption("--extraction-window", 12),
       ingestReplayAttempts,
+      ...(ingestCacheDir ? { ingestCacheDir } : {}),
       reuseProfiles: !has("--no-reuse-profiles"),
       failureSampleLimit: nonNegativeIntegerOption("--failure-sample-limit", 20),
       diagnosticsLevel: diagnosticsLevelOption(),
@@ -2179,7 +2181,7 @@ async function main(): Promise<void> {
             onCaseGroupSetup: (progress) => {
               if (has("--progress")) {
                 console.error(
-                  `[gmos external] setup group=${progress.groupKey} events=${progress.eventCount} memories=${progress.extractedMemoryCount} turnMemories=${progress.turnMemoryCount} distilledMemories=${progress.distilledMemoryCount} windows=${progress.extractionWindowCount} extractionCalls=${progress.extractionCallCount} extractionRetries=${progress.extractionRetryCount} extractionEmpty=${progress.extractionEmptyCount} replayedWindows=${progress.replayedWindowCount} replayRecovered=${progress.replayRecoveredCount} okChars=${progress.extractionOkWithCandidatesCharCount} emptyChars=${progress.extractionEmptyCharCount} parseFailureChars=${progress.extractionParseFailureCharCount} transportFailureChars=${progress.extractionTransportFailureCharCount} extractionParseFailures=${progress.extractionParseFailureCount} extractionTransportFailures=${progress.extractionTransportFailureCount} extractionFailures=${progress.extractionFailureCount} ingestMs=${progress.ingestDurationMs}`,
+                  `[gmos external] setup${progress.cacheHit ? " [cache hit]" : ""} group=${progress.groupKey} events=${progress.eventCount} memories=${progress.extractedMemoryCount} turnMemories=${progress.turnMemoryCount} distilledMemories=${progress.distilledMemoryCount} windows=${progress.extractionWindowCount} extractionCalls=${progress.extractionCallCount} extractionRetries=${progress.extractionRetryCount} extractionEmpty=${progress.extractionEmptyCount} replayedWindows=${progress.replayedWindowCount} replayRecovered=${progress.replayRecoveredCount} okChars=${progress.extractionOkWithCandidatesCharCount} emptyChars=${progress.extractionEmptyCharCount} parseFailureChars=${progress.extractionParseFailureCharCount} transportFailureChars=${progress.extractionTransportFailureCharCount} extractionParseFailures=${progress.extractionParseFailureCount} extractionTransportFailures=${progress.extractionTransportFailureCount} extractionFailures=${progress.extractionFailureCount} ingestMs=${progress.ingestDurationMs}`,
                 );
               }
             },
@@ -2230,9 +2232,11 @@ async function main(): Promise<void> {
     if (!suiteFile) throw new Error("gmos gym external-suite requires --suite-file");
     const suitePath = path.resolve(process.cwd(), suiteFile);
     const suite = parseExternalMemoryBenchmarkSuite(readFileSync(suitePath, "utf8"));
+    const ingestCacheDir = value("--ingest-cache-dir");
     const execution = await runExternalMemoryBenchmarkSuite({
       suite,
       suiteFile: suitePath,
+      ...(ingestCacheDir ? { ingestCacheDir } : {}),
       failOnBenchmarkFail: has("--fail-on-benchmark-fail"),
       ...(has("--progress")
         ? {

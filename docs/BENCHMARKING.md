@@ -412,6 +412,48 @@ by default; `--ingest-replay-attempts 0` disables it. Progress, reports, and
 manifests include `replayedWindowCount` and `replayRecoveredCount`, and
 recovered windows are removed from `extractionFailedWindowIndexes`.
 
+## Ingest Cache
+
+Use `--ingest-cache-dir <dir>` when repeating the same ingest with different
+reader, judge, context-budget, planner, or reporting settings:
+
+```bash
+gmos gym external \
+  --input-file ./long-memory-cleaned.json \
+  --dataset-format longmemeval \
+  --ingest-mode message \
+  --intelligence-base-url http://127.0.0.1:11434/v1 \
+  --intelligence-model llama3.1 \
+  --ingest-cache-dir ./.gmos-ingest-cache \
+  --progress
+```
+
+The cache stores the pre-maintain, pre-read SQLite file for each case group.
+On a hit gmOS copies the cached `.db` into that group's temp directory, verifies
+the SQLite schema version, skips ingest, and then runs maintain/read/scoring on
+the temp copy as usual. The cache entry is never mutated by answering. Cache-hit
+groups report ingestion counters such as extraction, embedding, replay, and
+distillation calls as zero; `cacheHit=true` records that those diagnostics were
+skipped, while scores, failure attribution, lexical ceiling, and context checks
+still come from the copied store.
+
+The key is `sha256` over:
+
+- package version and SQLite schema version;
+- dataset format, group profile id, case count, event count, and a hash of the
+  canonical JSON for the group's case ids, event times, and event payloads;
+- ingest mode, turn retention, extraction window, ingest replay attempts,
+  extraction concurrency, extractor name/model/host, and hook timeout/retry
+  settings;
+- session-distillation enabled/name/model/host;
+- embedding provider name, embed model, host, and dimensions.
+
+The sidecar `<key>.meta.json` records these non-secret fields plus created-at
+and package info. Event content is recorded only as hashes. Entries invalidate
+when any key field changes. Reader-only settings are not part of the key because
+they run after the cached ingest copy is loaded. Corrupt cache files or schema
+mismatches are treated as misses and overwritten after a fresh ingest.
+
 Local Ollama-style OpenAI-compatible endpoint:
 
 ```bash
