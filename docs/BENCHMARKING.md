@@ -287,12 +287,16 @@ option off so production hosts consciously trade storage for recall.
 Session distillation is a separate message-mode opt-in with
 `--session-distill on`. It requires either the intelligence config path or hooks
 that provide `sessionDistiller`; memory-mode runs reject it. The hook is called
-once per ingested session and writes compact dated `fact` memories at default
-confidence `0.6`, so aggregation questions can retrieve per-session
-enumerations instead of many scattered raw turns. The cost is one extra model
-call per session. Use it for multi-session totals, counts, purchases, durations,
-and other questions where every instance matters. Leave it off for cheap
-deterministic baselines.
+once per session key inside each ingest batch, using the same
+`sessionId`/`sessionKey`/`windowId` boundary as extraction windows. Messages
+without a session key share one whole-call fallback group. Each session
+distiller input is capped at 24,000 source content characters by default, with
+over-cap messages truncated from the tail of that session input. The hook writes
+compact dated `fact` memories at default confidence `0.6`, so aggregation
+questions can retrieve per-session enumerations instead of many scattered raw
+turns. The cost is one extra model call per session. Use it for multi-session
+totals, counts, purchases, durations, and other questions where every instance
+matters. Leave it off for cheap deterministic baselines.
 
 Message-mode extraction defaults to `["user", "assistant"]` so answer-bearing
 assistant turns in LongMemEval are extractable. LoCoMo still maps both speakers

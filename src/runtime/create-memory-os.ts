@@ -773,7 +773,7 @@ function stableSessionDistillationHash(
           conversationId: event.conversationId ?? null,
           messageId: event.messageId ?? null,
           createdAt: event.createdAt ?? null,
-          sessionId: event.metadata?.sessionId ?? event.metadata?.sessionKey ?? null,
+          sessionKey: windowSessionKey(event),
         })),
       ),
       "utf8",
@@ -784,12 +784,11 @@ function stableSessionDistillationHash(
 
 function sessionDistillationEventKey(input: {
   profileId: string;
+  sessionKey: string | null;
   events: readonly Extract<HostEvent, { type: "conversation.message" }>[];
 }): string {
   const first = input.events[0];
-  const sessionKey = first
-    ? windowSessionKey(first) ?? first.conversationId ?? "conversation"
-    : "conversation";
+  const sessionKey = input.sessionKey ?? first?.conversationId ?? "conversation";
   return [
     "conversation.session_distillation",
     input.profileId,
@@ -813,6 +812,8 @@ function windowSessionKey(event: Extract<HostEvent, { type: "conversation.messag
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
+
+const DEFAULT_SESSION_DISTILLATION_MAX_CHARS = 24_000;
 
 function prepareTurnDisplayQuery(input: PrepareTurnInput): string {
   return [...input.messages].reverse().find((message) => message.role === "user")?.content ?? "";
@@ -2095,6 +2096,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     let distillationEmptyCount = 0;
     let distillationParseFailureCount = 0;
     let distillationTransportFailureCount = 0;
+    let distillationTruncatedMessageCount = 0;
     let replayedWindowCount = 0;
     let replayRecoveredCount = 0;
     const extractionFailedWindowIndexes = new Set<number>();
@@ -2115,6 +2117,12 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       task: ExtractionWindowTask;
       extraction: Awaited<ReturnType<typeof extractMemoryCandidatePlan>>;
       safeReport: MemoryExtractionReport;
+    }
+
+    interface SessionDistillationGroup {
+      sessionKey: string | null;
+      members: WindowMember[];
+      firstIndex: number;
     }
 
     function sessionEventTime(members: WindowMember[]): string {
@@ -2165,12 +2173,78 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       };
     }
 
-    async function applySessionDistillation(members: WindowMember[]): Promise<void> {
+    function sessionDistillationGroups(members: WindowMember[]): SessionDistillationGroup[] {
+      const groups = new Map<string, SessionDistillationGroup>();
+      for (const [firstIndex, member] of members.entries()) {
+        const sessionKey = windowSessionKey(member.event);
+        const groupKey = sessionKey === null ? "whole-call" : `session:${sessionKey}`;
+        let group = groups.get(groupKey);
+        if (!group) {
+          group = { sessionKey, members: [], firstIndex };
+          groups.set(groupKey, group);
+        }
+        group.members.push(member);
+      }
+      return [...groups.values()].sort((left, right) => {
+        const leftMs = Date.parse(sessionEventTime(left.members));
+        const rightMs = Date.parse(sessionEventTime(right.members));
+        if (Number.isFinite(leftMs) && Number.isFinite(rightMs) && leftMs !== rightMs) {
+          return leftMs - rightMs;
+        }
+        return left.firstIndex - right.firstIndex;
+      });
+    }
+
+    function sessionDistillationMessages(members: WindowMember[]): {
+      messages: Array<{
+        role: MemoryRole;
+        content: string;
+        createdAt?: string | undefined;
+        evidenceId: string;
+        metadata?: Record<string, unknown> | undefined;
+      }>;
+      truncatedMessageCount: number;
+    } {
+      let remainingChars = DEFAULT_SESSION_DISTILLATION_MAX_CHARS;
+      let truncatedMessageCount = 0;
+      const messages = [];
+      for (const member of members) {
+        if (remainingChars <= 0) {
+          truncatedMessageCount += 1;
+          continue;
+        }
+        const content = member.event.content.length > remainingChars
+          ? member.event.content.slice(0, remainingChars)
+          : member.event.content;
+        if (content.length < member.event.content.length) truncatedMessageCount += 1;
+        remainingChars -= content.length;
+        messages.push({
+          role: member.event.role,
+          content,
+          ...(member.event.createdAt ? { createdAt: member.event.createdAt } : {}),
+          evidenceId: member.evidence.id,
+          ...(Object.keys(member.eventMetadata).length > 0
+            ? { metadata: member.eventMetadata }
+            : {}),
+        });
+      }
+      return { messages, truncatedMessageCount };
+    }
+
+    async function applySessionDistillationGroup(group: SessionDistillationGroup): Promise<void> {
       const distiller = options.sessionDistiller;
-      if (!sessionDistillation || !distiller || members.length === 0) return;
-      if (input.messages.some((message) => message.privacyMode === "incognito")) return;
+      const members = group.members;
+      if (!distiller || members.length === 0) return;
       const events = members.map((member) => member.event);
-      const distillationEventKey = sessionDistillationEventKey({ profileId, events });
+      const distillationEventKey = sessionDistillationEventKey({
+        profileId,
+        sessionKey: group.sessionKey,
+        events,
+      });
+      const existingSessionEvidence = store.getEvidenceByEventKey
+        ? await store.getEvidenceByEventKey(distillationEventKey)
+        : null;
+      if (existingSessionEvidence) return;
       const eventTime = sessionEventTime(members);
       const conversationId = commonSessionString(members, (member) => member.event.conversationId);
       const sessionId = commonSessionString(members, (member) => windowSessionKey(member.event) ?? undefined);
@@ -2178,6 +2252,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         member.event.conversationId ? `conversation:${member.event.conversationId}` : undefined
       ) ?? null;
       const sessionEvidenceIds = members.map((member) => member.evidence.id);
+      const { messages, truncatedMessageCount } = sessionDistillationMessages(members);
+      distillationTruncatedMessageCount += truncatedMessageCount;
       const distillerInput = {
         profileId,
         eventTime,
@@ -2188,15 +2264,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           ...(sourceUri ? { sourceUri } : {}),
           evidenceIds: sessionEvidenceIds,
         },
-        messages: members.map((member) => ({
-          role: member.event.role,
-          content: member.event.content,
-          ...(member.event.createdAt ? { createdAt: member.event.createdAt } : {}),
-          evidenceId: member.evidence.id,
-          ...(Object.keys(member.eventMetadata).length > 0
-            ? { metadata: member.eventMetadata }
-            : {}),
-        })),
+        messages,
       };
       distillationCallCount += 1;
       let rawCandidates: MemorySessionDistillationCandidate[] | null;
@@ -2287,6 +2355,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           dedupeKeys,
         });
         distilledMemoryCount += Math.max(0, sessionResult.memoryIds.length - before);
+      }
+    }
+
+    async function applySessionDistillation(members: WindowMember[]): Promise<void> {
+      if (!sessionDistillation || members.length === 0) return;
+      if (input.messages.some((message) => message.privacyMode === "incognito")) return;
+      for (const group of sessionDistillationGroups(members)) {
+        await applySessionDistillationGroup(group);
       }
     }
 
@@ -2620,6 +2696,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       distillationParseFailureCount,
       distillationTransportFailureCount,
       distillationFailureCount: distillationParseFailureCount + distillationTransportFailureCount,
+      distillationTruncatedMessageCount,
       extractionMinConfidence,
       extractionReports,
     };

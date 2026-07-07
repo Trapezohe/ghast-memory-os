@@ -63,9 +63,13 @@ Key write methods:
   confidence `0.35` unless `confidence` is supplied, `metadata.turnMemory =
   true`, `metadata.sourceEvidenceId`, and the same evidence id as
   `sourceEventId`. `sessionDistillation` defaults to disabled. When `true` and
-  the runtime has a `sessionDistiller` hook, gmOS calls that hook once for the
-  full ingest session after extraction and turn retention. Returned candidates
-  are stored as ordinary evidence-linked memories with default `kind: "fact"`,
+  the runtime has a `sessionDistiller` hook, gmOS groups messages by the same
+  `sessionId`/`sessionKey`/`windowId` boundary used by extraction windows, then
+  calls the hook once per session after extraction and turn retention. Messages
+  without a session key use one whole-call fallback group. Each distiller input
+  is capped at 24,000 source content characters by default; over-cap messages
+  are truncated from the tail of that session input. Returned candidates are
+  stored as ordinary evidence-linked memories with default `kind: "fact"`,
   default confidence `0.6`, and `metadata.sessionDistillation = true`.
 
 Windowed extraction keeps evidence granularity. Accepted memories store
@@ -83,7 +87,8 @@ per-outcome character totals such as
 Session distillation adds `distilledMemoryCount`, `distillationCallCount`,
 `distillationOkWithCandidatesCount`, `distillationEmptyCount`,
 `distillationParseFailureCount`, `distillationTransportFailureCount`, and
-`distillationFailureCount`.
+`distillationFailureCount`; `distillationTruncatedMessageCount` counts messages
+whose content was shortened or omitted by the per-session distiller input cap.
 Turn-retention writes use the same secret-like, incognito, person-routing,
 trust-cap, and lower-trust policy gates as extracted memories. Re-running the
 same event-keyed ingest writes no new turn memories.
@@ -1217,7 +1222,9 @@ results record `sweepCues` and `sweepIncludedCount`; manifests record
 External benchmark runners can enable write-side session distillation with
 `sessionDistillation: true` or CLI `--session-distill on`. It is valid only with
 message ingest and requires either hooks with `sessionDistiller` or an
-intelligence config that can build one. Per-case results record
+intelligence config that can build one. Distillation runs once per session key,
+with no-key messages using one whole-call fallback group and the same 24,000
+character per-session input cap as SDK ingest. Per-case results record
 `distilledMemoryCount`; manifests record
 `runtimeIntelligence.sessionDistillation` with hook provenance, model/host when
 available, call counts, candidate outcome counts, and total

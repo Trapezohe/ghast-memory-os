@@ -620,6 +620,7 @@ export interface IngestConversationResult {
   distillationParseFailureCount: number;
   distillationTransportFailureCount: number;
   distillationFailureCount: number;
+  distillationTruncatedMessageCount: number;
   extractionMinConfidence: number;
   extractionReports: MemoryExtractionReport[];
 }
