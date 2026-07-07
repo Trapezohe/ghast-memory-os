@@ -77,6 +77,21 @@ function validIsoCalendarPrefix(raw: string): boolean {
     parsed.getUTCDate() === day;
 }
 
+function isoTimestamp(year: number, month: number, day: number, hour: number, minute: number): string | undefined {
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return undefined;
+  const parsed = new Date(Date.UTC(year, month, day, hour, minute));
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month ||
+    parsed.getUTCDate() !== day ||
+    parsed.getUTCHours() !== hour ||
+    parsed.getUTCMinutes() !== minute
+  ) {
+    return undefined;
+  }
+  return parsed.toISOString().replace(".000Z", "Z");
+}
+
 const MONTHS: Record<string, number> = {
   january: 0,
   jan: 0,
@@ -104,9 +119,27 @@ const MONTHS: Record<string, number> = {
   dec: 11,
 };
 
-function normalizeExternalDate(value: unknown): string | undefined {
+export function normalizeAdapterTimestamp(value: unknown): string | undefined {
   const raw = stringValue(value);
   if (!raw) return undefined;
+  const isoLike =
+    /^\d{4}-\d{2}-\d{2}$/u.test(raw) ||
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/u.test(raw);
+  if (isoLike) {
+    if (!validIsoCalendarPrefix(raw)) return undefined;
+    const parsed = new Date(raw);
+    return Number.isNaN(parsed.getTime()) ? undefined : raw;
+  }
+  const longMemEval = /^(\d{4})\/(\d{1,2})\/(\d{1,2})(?:\s*\([^)]*\))?(?:\s+(\d{1,2}):(\d{2}))?$/u.exec(raw);
+  if (longMemEval) {
+    const year = Number(longMemEval[1]);
+    const month = Number(longMemEval[2]) - 1;
+    const day = Number(longMemEval[3]);
+    const hour = longMemEval[4] ? Number(longMemEval[4]) : 0;
+    const minute = longMemEval[5] ? Number(longMemEval[5]) : 0;
+    // LongMemEval supplies no timezone, so adapter-local normalization treats it as UTC.
+    return isoTimestamp(year, month, day, hour, minute);
+  }
   const dayMonthYear = /^(?:(\d{1,2}):(\d{2})\s*(am|pm)\s+on\s+)?(\d{1,2})\s+([A-Za-z]+),?\s+(\d{4})$/iu.exec(raw);
   if (dayMonthYear) {
     const hourRaw = dayMonthYear[1] ? Number(dayMonthYear[1]) : 0;
@@ -124,21 +157,18 @@ function normalizeExternalDate(value: unknown): string | undefined {
       minute <= 59
     ) {
       const hour = ampm === "pm" && hourRaw < 12 ? hourRaw + 12 : ampm === "am" && hourRaw === 12 ? 0 : hourRaw;
-      const parsed = new Date(Date.UTC(year, month, day, hour, minute));
-      if (
-        parsed.getUTCFullYear() === year &&
-        parsed.getUTCMonth() === month &&
-        parsed.getUTCDate() === day
-      ) {
-        return parsed.toISOString();
-      }
+      return isoTimestamp(year, month, day, hour, minute);
     }
     return undefined;
   }
-  const isoLike = /^\d{4}-\d{2}-\d{2}(?:T.*)?$/u.test(raw);
-  if (isoLike && !validIsoCalendarPrefix(raw)) return undefined;
-  const parsed = isoLike ? new Date(raw) : null;
-  return parsed && !Number.isNaN(parsed.getTime()) ? parsed.toISOString() : undefined;
+  return undefined;
+}
+
+function normalizeExternalDate(value: unknown): string | undefined {
+  const normalized = normalizeAdapterTimestamp(value);
+  if (!normalized) return undefined;
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
 }
 
 function stringsFromAnswer(value: unknown): string[] {
@@ -249,7 +279,7 @@ function messageEvent(input: {
   fallbackRole?: ExternalMemoryBenchmarkMessageEvent["role"] | undefined;
   metadata?: Record<string, unknown> | undefined;
 }): ExternalMemoryBenchmarkMessageEvent {
-  const createdAt = stringValue(input.createdAt);
+  const createdAt = normalizeAdapterTimestamp(input.createdAt);
   return {
     type: "message",
     role: normalizeRole(input.role, input.fallbackRole ?? "user"),
@@ -264,7 +294,7 @@ function memoryEvent(input: {
   createdAt?: unknown;
   metadata?: Record<string, unknown> | undefined;
 }): ExternalMemoryBenchmarkMemoryEvent {
-  const createdAt = stringValue(input.createdAt);
+  const createdAt = normalizeAdapterTimestamp(input.createdAt);
   const metadata = input.metadata ?? {};
   return {
     type: "memory",
@@ -421,7 +451,7 @@ function locomoEvents(
   for (const sessionKey of locomoSessionKeys(conversation)) {
     const turns = conversation[sessionKey];
     if (!Array.isArray(turns)) continue;
-    const createdAt = normalizeExternalDate(conversation[`${sessionKey}_date_time`]);
+    const createdAt = normalizeAdapterTimestamp(conversation[`${sessionKey}_date_time`]);
     for (const turn of turns) {
       const record = assertRecord(turn, `LoCoMo sample ${sampleId} ${sessionKey} turn`);
       const content = contentFromTurn(record);

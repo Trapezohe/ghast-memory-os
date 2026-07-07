@@ -110,6 +110,11 @@ evidence ids, category labels, `has_answer`, dataset names, case IDs, session
 ids, or adapter trace labels into runtime memory or evidence. Those fields may
 appear in benchmark reports and manifests only.
 
+Adapters also normalize dataset-native timestamps before runtime ingest. For
+example, LongMemEval slash dates with weekday annotations and LoCoMo session
+date strings are converted to ISO timestamps; source timestamps without an
+explicit timezone are treated as UTC at the adapter boundary.
+
 Every external report carries a protocol label:
 
 - `deterministic_local`: default offline adapter scoring. This is the local
@@ -251,9 +256,12 @@ Use `--reader-profile wide` when the benchmark reader needs high supply
 bandwidth, such as LongMemEval-style stores with distilled session summaries,
 extraction atoms, and raw turn memories competing for the same read. It sets
 `maxSteps=8`, `maxBranch=10`, `maxMemories=200`,
-`contextBudgetTokens=8000`, `maxCharsPerMemory=400`, and
+`contextBudgetTokens=16000`, `maxCharsPerMemory=400`, and
 `layerPolicy={ summaryMinShare: 0.3, turnMaxShare: 0.4 }`. Explicit
 `--max-memories` and `--context-budget-tokens` still override those two values.
+The wider token budget is sized for direct-import LongMemEval-style turns:
+roughly 200 full-turn memory lines can require about 20k raw tokens before
+truncation, and 8k culled saturated supplies too aggressively.
 Use the default profile for scale smoke gates unless a run is intentionally
 measuring wide-reader latency.
 

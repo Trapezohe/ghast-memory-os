@@ -2911,7 +2911,7 @@ function readerProfileContextBudgetTokens(
   value: number | undefined,
 ): number | undefined {
   if (value !== undefined) return value;
-  if (profile === "wide") return 8000;
+  if (profile === "wide") return 16000;
   return profile === "expansive" ? 4000 : 1600;
 }
 

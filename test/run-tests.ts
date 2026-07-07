@@ -98,6 +98,7 @@ import {
   stateBenchAgentPythonTemplate,
   writeExternalMemoryBenchmarkReproductionBundle,
 } from "../src/gym/index.js";
+import { normalizeAdapterTimestamp } from "../src/gym/external-adapters.js";
 import { summarizeMemoryScaleLatenciesForTest } from "../src/gym/scale.js";
 import {
   createSqliteMemoryStore,
@@ -25244,7 +25245,7 @@ assert.equal(externalReaderProfileWideBenchmark.runManifest.options.readerProfil
 assert.equal(externalReaderProfileWideBenchmark.runManifest.options.maxSteps, 8);
 assert.equal(externalReaderProfileWideBenchmark.runManifest.options.maxBranch, 10);
 assert.equal(externalReaderProfileWideBenchmark.runManifest.options.maxMemories, 200);
-assert.equal(externalReaderProfileWideBenchmark.runManifest.options.contextBudgetTokens, 8000);
+assert.equal(externalReaderProfileWideBenchmark.runManifest.options.contextBudgetTokens, 16000);
 assert.equal(externalReaderProfileWideBenchmark.runManifest.options.maxCharsPerMemory, 400);
 assert.deepEqual(externalReaderProfileWideBenchmark.runManifest.options.layerPolicy, {
   summaryMinShare: 0.3,
@@ -26190,6 +26191,14 @@ const longMemEvalFixture = JSON.stringify([
     answer_session_ids: ["session-2"],
   },
 ]);
+assert.equal(normalizeAdapterTimestamp("2023/05/20 (Sat) 02:21"), "2023-05-20T02:21:00Z");
+assert.equal(normalizeAdapterTimestamp("2023/05/20 02:21"), "2023-05-20T02:21:00Z");
+assert.equal(normalizeAdapterTimestamp("2023/05/20 (Sat)"), "2023-05-20T00:00:00Z");
+assert.equal(normalizeAdapterTimestamp("2023/05/20"), "2023-05-20T00:00:00Z");
+assert.equal(normalizeAdapterTimestamp("1:56 pm on 8 May, 2023"), "2023-05-08T13:56:00Z");
+assert.equal(normalizeAdapterTimestamp("8 May, 2023"), "2023-05-08T00:00:00Z");
+assert.equal(normalizeAdapterTimestamp("2026-06-20T09:00:00Z"), "2026-06-20T09:00:00Z");
+assert.equal(normalizeAdapterTimestamp("not a timestamp"), undefined);
 const longMemEvalCases = parseLongMemEvalBenchmarkDataset(longMemEvalFixture);
 assert.equal(longMemEvalCases.length, 1);
 assert.equal(longMemEvalCases[0]?.id, "lme-vega-next-step");
@@ -26588,6 +26597,57 @@ assert.deepEqual(longMemEvalBenchmark.summary.sliceScores, [
     score: 1,
   },
 ]);
+const nativeTimestampWideFixture = JSON.stringify([
+  {
+    question_id: "lme-native-timestamp-wide",
+    question_type: "temporal-reasoning",
+    question: "What phrase repeats across the native timestamp budget markers?",
+    answer: "wide budget ok",
+    question_date: "2023/05/29 (Mon) 00:00",
+    haystack_dates: Array.from(
+      { length: 200 },
+      (_entry, index) =>
+        `2023/05/${String((index % 28) + 1).padStart(2, "0")} (Sat) ${String(index % 24).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}`,
+    ),
+    haystack_sessions: Array.from({ length: 200 }, (_entry, index) => [
+      {
+        role: "user",
+        content: `Native timestamp budget marker ${index}: wide budget ok.`,
+      },
+    ]),
+  },
+]);
+const nativeTimestampWideCases = parseLongMemEvalBenchmarkDataset(nativeTimestampWideFixture);
+let nativeTimestampWideContext = "";
+const nativeTimestampWideBenchmark = await runExternalMemoryBenchmark({
+  cases: nativeTimestampWideCases,
+  datasetFormat: "longmemeval.json",
+  protocol: "official_protocol",
+  readerProfile: "wide",
+  answerer: {
+    name: "native-timestamp-wide-reader",
+    answer(_question, context) {
+      nativeTimestampWideContext = context;
+      return "wide budget ok";
+    },
+  },
+  judge: {
+    name: "native-timestamp-wide-judge",
+    judge(_question, expectedAnswer, actualAnswer) {
+      return { correct: expectedAnswer === actualAnswer };
+    },
+  },
+});
+const nativeTimestampWideLines = nativeTimestampWideContext
+  .split("\n")
+  .filter((line) => line.startsWith("- "));
+assert.equal(nativeTimestampWideBenchmark.pass, true);
+assert.equal(nativeTimestampWideBenchmark.runManifest.options.contextBudgetTokens, 16000);
+assert.equal((nativeTimestampWideBenchmark.cases[0]?.retrievedMemoryCount ?? 0) >= 150, true);
+assert.equal(
+  nativeTimestampWideLines.filter((line) => /\d{4}-\d{2}-\d{2}/u.test(line)).length >= 150,
+  true,
+);
 const locomoFixture = JSON.stringify([
   {
     sample_id: "locomo-atlas",
@@ -26678,7 +26738,7 @@ const parsedLocomoMessageDataset = parseExternalMemoryBenchmarkDataset(locomoFix
 assert.equal(parsedLocomoMessageDataset.cases[0]?.events[0]?.type, "message");
 assert.equal(parsedLocomoMessageDataset.cases[0]?.events[0]?.role, "user");
 assert.equal(parsedLocomoMessageDataset.cases[0]?.events[0]?.content, "Atlas 项目的流程步骤是先核证据链，再写风险清单。Atlas 年份是 2022。");
-assert.equal(parsedLocomoMessageDataset.cases[0]?.events[0]?.createdAt, "2026-06-20T09:00:00.000Z");
+assert.equal(parsedLocomoMessageDataset.cases[0]?.events[0]?.createdAt, "2026-06-20T09:00:00Z");
 assert.equal(parsedLocomoMessageDataset.cases[0]?.events[0]?.metadata?.speaker, "Alex");
 assert.equal(parsedLocomoMessageDataset.cases[0]?.events[0]?.metadata?.speakerKind, "person");
 assert.deepEqual(parsedLocomoMessageDataset.cases[0]?.events[0]?.metadata?.participants, ["Alex", "Blair"]);
@@ -26844,7 +26904,7 @@ const locomoExplicitDateFixture = JSON.stringify([
   },
 ]);
 const locomoExplicitDateCases = parseLocomoBenchmarkDataset(locomoExplicitDateFixture);
-assert.equal(locomoExplicitDateCases[0]?.events[0]?.createdAt, "2023-05-08T13:56:00.000Z");
+assert.equal(locomoExplicitDateCases[0]?.events[0]?.createdAt, "2023-05-08T13:56:00Z");
 const locomoExplicitDateBenchmark = await runExternalMemoryBenchmark({
   cases: locomoExplicitDateCases,
   datasetFormat: "locomo.json",
@@ -28723,7 +28783,7 @@ const cliExternalWideJson = JSON.parse(cliExternalWide.stdout) as {
 };
 assert.equal(cliExternalWideJson.runManifest?.options?.readerProfile, "wide");
 assert.equal(cliExternalWideJson.runManifest?.options?.maxMemories, 200);
-assert.equal(cliExternalWideJson.runManifest?.options?.contextBudgetTokens, 8000);
+assert.equal(cliExternalWideJson.runManifest?.options?.contextBudgetTokens, 16000);
 assert.equal(cliExternalWideJson.runManifest?.options?.maxCharsPerMemory, 400);
 assert.deepEqual(cliExternalWideJson.runManifest?.options?.layerPolicy, {
   summaryMinShare: 0.3,

@@ -1145,7 +1145,7 @@ question. `readerProfile: "expansive"` sets effective reader budgets to
 `maxSteps=8`, `maxBranch=10`, `maxMemories=24`, and
 `contextBudgetTokens=4000` unless those options are explicitly supplied.
 `readerProfile: "wide"` keeps `maxSteps=8` and `maxBranch=10`, sets
-`maxMemories=200`, `contextBudgetTokens=8000`, `maxCharsPerMemory=400`, and
+`maxMemories=200`, `contextBudgetTokens=16000`, `maxCharsPerMemory=400`, and
 `layerPolicy={ summaryMinShare: 0.3, turnMaxShare: 0.4 }`. Reports record the
 effective values in `runManifest.options`, and per-case results include
 `reconstructedLayerIncludedCounts` when a layer policy was active. Wide
