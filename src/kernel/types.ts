@@ -758,6 +758,8 @@ export interface QueryVectorEmbedding {
   vector: number[];
 }
 
+export type QueryEmbeddingFailureReason = "timeout" | "http_status" | "transport" | "parse";
+
 export interface MemoryRetrievalFusionWeights {
   fts?: number | undefined;
   vector?: number | undefined;
@@ -767,7 +769,9 @@ export interface MemoryRetrievalFusionWeights {
 export interface MemoryReadRetrievalOptions {
   embedQuery?: boolean | undefined;
   queryEmbeddingTimeoutMs?: number | undefined;
-  onQueryEmbeddingFailure?: (() => void) | undefined;
+  onQueryEmbeddingFailure?: ((reason: QueryEmbeddingFailureReason) => void) | undefined;
+  onQueryEmbeddingRetry?: ((reason: QueryEmbeddingFailureReason) => void) | undefined;
+  onQueryEmbeddingRecovered?: (() => void) | undefined;
 }
 
 export interface MemoryRetrievalConfig extends MemoryReadRetrievalOptions {

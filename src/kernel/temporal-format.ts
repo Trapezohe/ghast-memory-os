@@ -64,6 +64,7 @@ function normalizedInstantDateLabel(value: unknown): string {
       } UTC`;
 }
 
+// Keep emitted temporal annotation segments in sync with filterTemporalAnnotationSegments().
 export function observedAtMetadata(createdAt: string | undefined): string {
   const parsed = dateFromCreatedAt(createdAt);
   if (!parsed) return "";
@@ -108,6 +109,7 @@ export function eventDateMetadataFromTrustedOffset(
   };
 }
 
+// Keep emitted temporal annotation segments in sync with filterTemporalAnnotationSegments().
 export function relativeEventDateSegment(metadata: Record<string, unknown>): string {
   const eventDate = typeof metadata.eventDate === "string" ? metadata.eventDate.trim() : "";
   if (!eventDate) return "";
@@ -116,6 +118,7 @@ export function relativeEventDateSegment(metadata: Record<string, unknown>): str
   return `; event_date=${eventDate}; event_date_text=${calendarDateText(parsed)}`;
 }
 
+// Keep emitted temporal annotation segments in sync with filterTemporalAnnotationSegments().
 export function eventTimeSegment(metadata: Record<string, unknown>): string {
   const eventTime = typeof metadata.eventTime === "string" ? metadata.eventTime.trim() : "";
   if (!eventTime) return "";
@@ -156,6 +159,7 @@ function validityInstantSegment(label: "valid_from" | "valid_to", value: unknown
   return `; ${label}=${eventDate}; ${label}_text=${calendarDateText(parsed)}${time}`;
 }
 
+// Keep emitted temporal annotation segments in sync with filterTemporalAnnotationSegments().
 export function validityWindowSegment(metadata: Record<string, unknown>): string {
   const validFrom = validityInstantSegment("valid_from", metadata.validFrom ?? metadata.valid_from);
   const validTo = validityInstantSegment(
@@ -179,6 +183,7 @@ export function temporalContextLabel(
   return observedAtLabel(createdAt);
 }
 
+// Keep emitted temporal annotation segments in sync with filterTemporalAnnotationSegments().
 export function temporalContextSegment(
   createdAt: string | undefined,
   metadata: Record<string, unknown> = {},
@@ -187,6 +192,35 @@ export function temporalContextSegment(
   return label ? `; ${label}` : "";
 }
 
+const CALENDAR_SEGMENT = "\\d{4}-\\d{2}-\\d{2}";
+const CLOCK_SEGMENT = "\\d{2}:\\d{2}(?::\\d{2})?";
+const INSTANT_LABEL_SEGMENT = `${CALENDAR_SEGMENT}(?: ${CLOCK_SEGMENT} UTC)?`;
+const INTERVAL_LABEL_SEGMENT = `(?:${INSTANT_LABEL_SEGMENT}|\\.\\.)\\.\\.(?:${INSTANT_LABEL_SEGMENT}|\\.\\.)`;
+const MONTH_SEGMENT = MONTH_NAMES.join("|");
+
+const TEMPORAL_ANNOTATION_SEGMENT_PATTERNS = [
+  new RegExp(`^(?:observed\\s+)?${INSTANT_LABEL_SEGMENT}$`, "u"),
+  new RegExp(`^${INTERVAL_LABEL_SEGMENT}$`, "u"),
+  new RegExp(`^(?:observed|event_date|event_time|valid_from|valid_to)=${CALENDAR_SEGMENT}$`, "u"),
+  new RegExp(`^time=${CLOCK_SEGMENT} UTC$`, "u"),
+  new RegExp(`^(?:event_time_utc|valid_from_utc|valid_to_utc)=${CLOCK_SEGMENT}$`, "u"),
+  new RegExp(
+    `^(?:event_date_text|event_time_text|valid_from_text|valid_to_text)=\\d{1,2} (?:${MONTH_SEGMENT}) \\d{4}$`,
+    "u",
+  ),
+];
+
+export function filterTemporalAnnotationSegments(bracketContent: string): string[] {
+  return bracketContent
+    .split(";")
+    .map((segment) => segment.trim())
+    .filter((segment) =>
+      segment.length > 0 &&
+      TEMPORAL_ANNOTATION_SEGMENT_PATTERNS.some((pattern) => pattern.test(segment))
+    );
+}
+
+// Keep emitted temporal annotation segments in sync with filterTemporalAnnotationSegments().
 export function temporalMetadataSegment(
   createdAt: string | undefined,
   metadata: Record<string, unknown> = {},

@@ -207,9 +207,12 @@ The same `retrieval` read option is available on `prepareTurn()` and
 `reconstructContext()`, and `createMemoryOS({ retrieval })` can set the default
 for all reads. `reconstructContext()` and shadow `prepareTurn()` reconstruction
 compute one query embedding per read and reuse it across direct/hybrid searches.
-Provider failure falls back to lexical retrieval; hosts that need telemetry can
-pass `onQueryEmbeddingFailure`. Without query embedding, provider-backed stores
-still use lexical FTS and local fallback vectors on reads.
+Provider failure retries once, then falls back to lexical retrieval; hosts that
+need telemetry can pass `onQueryEmbeddingRetry`, `onQueryEmbeddingRecovered`,
+and `onQueryEmbeddingFailure(reason)`. `reason` is
+`"timeout" | "http_status" | "transport" | "parse"`. Without query embedding,
+provider-backed stores still use lexical FTS and local fallback vectors on
+reads.
 
 ### Recall Disposition Presets
 
@@ -1145,7 +1148,10 @@ question. `readerProfile: "expansive"` sets effective reader budgets to
 `maxMemories=200`, `contextBudgetTokens=8000`, `maxCharsPerMemory=400`, and
 `layerPolicy={ summaryMinShare: 0.3, turnMaxShare: 0.4 }`. Reports record the
 effective values in `runManifest.options`, and per-case results include
-`reconstructedLayerIncludedCounts` when a layer policy was active.
+`reconstructedLayerIncludedCounts` when a layer policy was active. Wide
+reconstruction also runs a final direct supply pass so eligible visible memories
+can fill the requested memory count, subject to gates and the context token
+budget.
 
 External benchmark protocol handling is explicit:
 

@@ -6,12 +6,14 @@ import {
   localTextVector,
   normalizeVector,
 } from "./local-vector.js";
+import { OpenAICompatibleResponseError } from "./openai-compatible-response.js";
 import { classifySensitivity, isPersonRoutedMemory } from "./safety.js";
 import type {
   EmbeddingProvider,
   EmbeddingProviderConfig,
   MemoryKind,
   MemoryVectorEmbedding,
+  QueryEmbeddingFailureReason,
   QueryVectorEmbedding,
   Sensitivity,
 } from "./types.js";
@@ -50,6 +52,10 @@ export interface ResolvedEmbeddingProviderConfig {
   timeoutMs: number;
   embed(texts: string[]): Promise<number[][]>;
 }
+
+export type QueryEmbeddingResult =
+  | { embedding: QueryVectorEmbedding }
+  | { failureReason: QueryEmbeddingFailureReason };
 
 export function resolveEmbeddingProviderConfig(
   input: EmbeddingProvider | EmbeddingProviderConfig | undefined,
@@ -206,18 +212,29 @@ export async function embeddingForQuery(input: {
   query: string;
   timeoutMs?: number | undefined;
 }): Promise<QueryVectorEmbedding | null> {
+  const result = await queryEmbeddingResult(input);
+  return result && "embedding" in result ? result.embedding : null;
+}
+
+export async function queryEmbeddingResult(input: {
+  provider: ResolvedEmbeddingProviderConfig | null;
+  query: string;
+  timeoutMs?: number | undefined;
+}): Promise<QueryEmbeddingResult | null> {
   if (!input.provider || !queryEligibleForEmbeddingProvider(input.query)) return null;
-  const embedded = await callProvider({
+  const embedded = await callProviderResult({
     provider: input.provider,
     texts: [input.query],
     timeoutMs: input.timeoutMs,
     priority: "query",
   });
-  if (!embedded) return null;
+  if (!embedded.ok) return { failureReason: embedded.failureReason };
   return {
-    providerName: input.provider.name,
-    dimensions: embedded.dimensions,
-    vector: embedded.vectors[0] ?? [],
+    embedding: {
+      providerName: input.provider.name,
+      dimensions: embedded.dimensions,
+      vector: embedded.vectors[0] ?? [],
+    },
   };
 }
 
@@ -268,21 +285,48 @@ async function callProvider(input: {
   timeoutMs?: number | undefined;
   priority: EmbeddingProviderCallPriority;
 }): Promise<{ dimensions: number; vectors: number[][] } | null> {
+  const result = await callProviderResult(input);
+  return result.ok ? { dimensions: result.dimensions, vectors: result.vectors } : null;
+}
+
+async function callProviderResult(input: {
+  provider: ResolvedEmbeddingProviderConfig;
+  texts: string[];
+  timeoutMs?: number | undefined;
+  priority: EmbeddingProviderCallPriority;
+}): Promise<
+  | { ok: true; dimensions: number; vectors: number[][] }
+  | { ok: false; failureReason: QueryEmbeddingFailureReason }
+> {
   try {
     const timeoutMs = boundedTimeout(input.timeoutMs ?? input.provider.timeoutMs);
     const vectors = await withTimeout(
       embeddingProviderCallPriority.run(input.priority, () => input.provider.embed(input.texts)),
       timeoutMs,
     );
-    if (vectors.length !== input.texts.length) return null;
+    if (vectors.length !== input.texts.length) return { ok: false, failureReason: "parse" };
     const dimensions =
       input.provider.dimensions > 0 ? input.provider.dimensions : vectors[0]?.length ?? 0;
     const normalized = vectors.map((vector) => normalizeVector(vector));
-    if (normalized.some((vector) => vector.length !== dimensions)) return null;
-    return { dimensions, vectors: normalized };
-  } catch {
-    return null;
+    if (normalized.some((vector) => vector.length !== dimensions)) {
+      return { ok: false, failureReason: "parse" };
+    }
+    return { ok: true, dimensions, vectors: normalized };
+  } catch (error) {
+    return { ok: false, failureReason: queryEmbeddingFailureReason(error) };
   }
+}
+
+function queryEmbeddingFailureReason(error: unknown): QueryEmbeddingFailureReason {
+  if (error instanceof OpenAICompatibleResponseError) {
+    if (error.status !== undefined) return "http_status";
+    return error.failureKind === "parse_failure" ? "parse" : "transport";
+  }
+  if (error instanceof SyntaxError) return "parse";
+  const message = error instanceof Error ? error.message : String(error);
+  if (/timed out|timeout|aborted/iu.test(message)) return "timeout";
+  if (/malformed|parse|json|dimension|finite/iu.test(message)) return "parse";
+  return "transport";
 }
 
 function boundedTimeout(value: number | undefined): number {

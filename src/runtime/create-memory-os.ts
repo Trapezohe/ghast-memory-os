@@ -46,7 +46,7 @@ import {
 } from "../kernel/exploration.js";
 import {
   embeddingsForMemories,
-  embeddingForQuery,
+  queryEmbeddingResult,
   queryEligibleForEmbeddingProvider,
   resolveEmbeddingProviderConfig,
 } from "../kernel/embeddings.js";
@@ -1430,13 +1430,29 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const readRetrieval = readRetrievalOptions(options);
     if (!query || readRetrieval?.embedQuery !== true || !embeddingProvider) return undefined;
     if (!queryEligibleForEmbeddingProvider(query)) return undefined;
-    const embedding = await embeddingForQuery({
+    const first = await queryEmbeddingResult({
       provider: embeddingProvider,
       query,
       timeoutMs: readRetrieval.queryEmbeddingTimeoutMs,
     });
-    if (!embedding) readRetrieval.onQueryEmbeddingFailure?.();
-    return embedding ?? undefined;
+    if (!first || "embedding" in first) return first?.embedding;
+    readRetrieval.onQueryEmbeddingRetry?.(first.failureReason);
+    await queryEmbeddingRetryBackoff();
+    const second = await queryEmbeddingResult({
+      provider: embeddingProvider,
+      query,
+      timeoutMs: readRetrieval.queryEmbeddingTimeoutMs,
+    });
+    if (second && "embedding" in second) {
+      readRetrieval.onQueryEmbeddingRecovered?.();
+      return second.embedding;
+    }
+    readRetrieval.onQueryEmbeddingFailure?.(second?.failureReason ?? first.failureReason);
+    return undefined;
+  }
+
+  function queryEmbeddingRetryBackoff(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 250));
   }
 
   function readRetrievalOptions(
@@ -1447,10 +1463,16 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       options?.queryEmbeddingTimeoutMs ?? retrieval?.queryEmbeddingTimeoutMs;
     const onQueryEmbeddingFailure =
       options?.onQueryEmbeddingFailure ?? retrieval?.onQueryEmbeddingFailure;
+    const onQueryEmbeddingRetry =
+      options?.onQueryEmbeddingRetry ?? retrieval?.onQueryEmbeddingRetry;
+    const onQueryEmbeddingRecovered =
+      options?.onQueryEmbeddingRecovered ?? retrieval?.onQueryEmbeddingRecovered;
     if (
       embedQuery === undefined &&
       queryEmbeddingTimeoutMs === undefined &&
-      onQueryEmbeddingFailure === undefined
+      onQueryEmbeddingFailure === undefined &&
+      onQueryEmbeddingRetry === undefined &&
+      onQueryEmbeddingRecovered === undefined
     ) {
       return undefined;
     }
@@ -1458,6 +1480,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       ...(embedQuery !== undefined ? { embedQuery } : {}),
       ...(queryEmbeddingTimeoutMs !== undefined ? { queryEmbeddingTimeoutMs } : {}),
       ...(onQueryEmbeddingFailure !== undefined ? { onQueryEmbeddingFailure } : {}),
+      ...(onQueryEmbeddingRetry !== undefined ? { onQueryEmbeddingRetry } : {}),
+      ...(onQueryEmbeddingRecovered !== undefined ? { onQueryEmbeddingRecovered } : {}),
     };
   }
 

@@ -17,6 +17,7 @@ import type {
   MemoryOS,
   MemoryReadRetrievalOptions,
   MemoryProcedureDistiller,
+  QueryEmbeddingFailureReason,
   PrivacyMode,
   ReconstructedContext,
   ReconstructionIntentHint,
@@ -43,7 +44,7 @@ import {
   redactForReport,
   sanitizePublicPayload,
 } from "../kernel/safety.js";
-import { temporalContextLabel } from "../kernel/temporal-format.js";
+import { filterTemporalAnnotationSegments, temporalContextLabel } from "../kernel/temporal-format.js";
 import { currentEmbeddingProviderCallPriority } from "../kernel/embeddings.js";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
@@ -565,6 +566,12 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   backoffMs: number | null;
   embedQuery: boolean;
   queryEmbeddingFailureCount: number;
+  queryEmbeddingRetryCount: number;
+  queryEmbeddingRecoveredCount: number;
+  queryEmbeddingTimeoutFailureCount: number;
+  queryEmbeddingHttpStatusFailureCount: number;
+  queryEmbeddingTransportFailureCount: number;
+  queryEmbeddingParseFailureCount: number;
   hookNames: {
     extractor: string | null;
     sessionDistiller: string | null;
@@ -969,6 +976,8 @@ export interface ExternalMemoryBenchmarkProgress {
   pass: boolean;
   durationMs: number;
   queryEmbeddingFailureCount: number;
+  queryEmbeddingRetryCount: number;
+  queryEmbeddingRecoveredCount: number;
   plannerFailureCount: number;
   result: ExternalMemoryBenchmarkCaseResult;
 }
@@ -2228,9 +2237,6 @@ const INTERNAL_RECORD_ID_PATTERN =
 
 const CONTEXT_LINE_ANNOTATION_PATTERN = /^(\s*-\s*)\[([^\]]*)\]\s*/gmu;
 
-const CONTEXT_LINE_DATE_SEGMENT_PATTERN =
-  /^(?:observed\s+)?\d{4}-\d{2}-\d{2}(?:\.\.\d{4}-\d{2}-\d{2})?$/u;
-
 const CONTEXT_DIAGNOSTIC_LINE_PATTERN =
   /^(?:Query|Evidence coverage|Evidence convergence|Anchor coverage|Reconstruction uncertainty|Reconstructed evidence paths):.*$/gmu;
 
@@ -2238,11 +2244,8 @@ const CONTEXT_DIAGNOSTIC_LINE_PATTERN =
 // context annotations, but preserves temporal anchors (dates and validity
 // ranges) because the reader needs them for time reasoning.
 function judgeSafeContextAnnotation(dash: string, bracketContent: string): string {
-  const dates = bracketContent
-    .split(";")
-    .map((segment) => segment.trim())
-    .filter((segment) => CONTEXT_LINE_DATE_SEGMENT_PATTERN.test(segment));
-  return dates.length > 0 ? `${dash}${dates.join(" ")} ` : dash;
+  const dates = filterTemporalAnnotationSegments(bracketContent);
+  return dates.length > 0 ? `${dash}${dates.join("; ")} ` : dash;
 }
 
 function judgeSafeAnswer(actualAnswer: string): string {
@@ -2822,6 +2825,12 @@ function createRunManifest(input: {
       embeddedMemoryCount: input.runtimeIntelligence.embeddedMemoryCount,
       embeddingFailureCount: input.runtimeIntelligence.embeddingFailureCount,
       queryEmbeddingFailureCount: input.runtimeIntelligence.queryEmbeddingFailureCount,
+      queryEmbeddingRetryCount: input.runtimeIntelligence.queryEmbeddingRetryCount,
+      queryEmbeddingRecoveredCount: input.runtimeIntelligence.queryEmbeddingRecoveredCount,
+      queryEmbeddingTimeoutFailureCount: input.runtimeIntelligence.queryEmbeddingTimeoutFailureCount,
+      queryEmbeddingHttpStatusFailureCount: input.runtimeIntelligence.queryEmbeddingHttpStatusFailureCount,
+      queryEmbeddingTransportFailureCount: input.runtimeIntelligence.queryEmbeddingTransportFailureCount,
+      queryEmbeddingParseFailureCount: input.runtimeIntelligence.queryEmbeddingParseFailureCount,
       sessionDistillation: {
         ...input.runtimeIntelligence.manifest.sessionDistillation,
         callCount: input.runtimeIntelligence.distillationCallCount,
@@ -3539,6 +3548,12 @@ interface RuntimeIntelligenceState {
   distillationTransportFailureCount: number;
   distillationFailureCount: number;
   queryEmbeddingFailureCount: number;
+  queryEmbeddingRetryCount: number;
+  queryEmbeddingRecoveredCount: number;
+  queryEmbeddingTimeoutFailureCount: number;
+  queryEmbeddingHttpStatusFailureCount: number;
+  queryEmbeddingTransportFailureCount: number;
+  queryEmbeddingParseFailureCount: number;
   plannerFailureCount: number;
   ingestCaseGroups: ExternalMemoryBenchmarkRuntimeIngestGroupManifest[];
 }
@@ -3564,6 +3579,12 @@ function disabledRuntimeIntelligence(
       backoffMs: null,
       embedQuery: false,
       queryEmbeddingFailureCount: 0,
+      queryEmbeddingRetryCount: 0,
+      queryEmbeddingRecoveredCount: 0,
+      queryEmbeddingTimeoutFailureCount: 0,
+      queryEmbeddingHttpStatusFailureCount: 0,
+      queryEmbeddingTransportFailureCount: 0,
+      queryEmbeddingParseFailureCount: 0,
       hookNames: {
         extractor: null,
         sessionDistiller: null,
@@ -3620,9 +3641,36 @@ function disabledRuntimeIntelligence(
     distillationTransportFailureCount: 0,
     distillationFailureCount: 0,
     queryEmbeddingFailureCount: 0,
+    queryEmbeddingRetryCount: 0,
+    queryEmbeddingRecoveredCount: 0,
+    queryEmbeddingTimeoutFailureCount: 0,
+    queryEmbeddingHttpStatusFailureCount: 0,
+    queryEmbeddingTransportFailureCount: 0,
+    queryEmbeddingParseFailureCount: 0,
     plannerFailureCount: 0,
     ingestCaseGroups: [],
   };
+}
+
+function recordQueryEmbeddingFailure(
+  runtime: RuntimeIntelligenceState,
+  reason: QueryEmbeddingFailureReason,
+): void {
+  runtime.queryEmbeddingFailureCount += 1;
+  switch (reason) {
+    case "timeout":
+      runtime.queryEmbeddingTimeoutFailureCount += 1;
+      break;
+    case "http_status":
+      runtime.queryEmbeddingHttpStatusFailureCount += 1;
+      break;
+    case "parse":
+      runtime.queryEmbeddingParseFailureCount += 1;
+      break;
+    case "transport":
+      runtime.queryEmbeddingTransportFailureCount += 1;
+      break;
+  }
 }
 
 function resolveRuntimeIntelligence(input: {
@@ -3801,6 +3849,12 @@ function resolveRuntimeIntelligence(input: {
       backoffMs,
       embedQuery: false,
       queryEmbeddingFailureCount: 0,
+      queryEmbeddingRetryCount: 0,
+      queryEmbeddingRecoveredCount: 0,
+      queryEmbeddingTimeoutFailureCount: 0,
+      queryEmbeddingHttpStatusFailureCount: 0,
+      queryEmbeddingTransportFailureCount: 0,
+      queryEmbeddingParseFailureCount: 0,
       hookNames: hookNamesFor(hooks),
       extractionEmptyCount: 0,
       extractionParseFailureCount: 0,
@@ -3861,6 +3915,12 @@ function resolveRuntimeIntelligence(input: {
     distillationTransportFailureCount: 0,
     distillationFailureCount: 0,
     queryEmbeddingFailureCount: 0,
+    queryEmbeddingRetryCount: 0,
+    queryEmbeddingRecoveredCount: 0,
+    queryEmbeddingTimeoutFailureCount: 0,
+    queryEmbeddingHttpStatusFailureCount: 0,
+    queryEmbeddingTransportFailureCount: 0,
+    queryEmbeddingParseFailureCount: 0,
     plannerFailureCount: 0,
     ingestCaseGroups: [],
   };
@@ -4974,8 +5034,14 @@ async function runCaseGroup(input: {
         readRetrieval: input.runtimeIntelligence.manifest.embedQuery
           ? {
               embedQuery: true,
-              onQueryEmbeddingFailure: () => {
-                input.runtimeIntelligence.queryEmbeddingFailureCount += 1;
+              onQueryEmbeddingRetry: () => {
+                input.runtimeIntelligence.queryEmbeddingRetryCount += 1;
+              },
+              onQueryEmbeddingRecovered: () => {
+                input.runtimeIntelligence.queryEmbeddingRecoveredCount += 1;
+              },
+              onQueryEmbeddingFailure: (reason) => {
+                recordQueryEmbeddingFailure(input.runtimeIntelligence, reason);
               },
             }
           : { embedQuery: false },
@@ -5224,6 +5290,8 @@ export async function runExternalMemoryBenchmark(
       pass: result.pass,
       durationMs: result.durationMs,
       queryEmbeddingFailureCount: runtimeIntelligence.queryEmbeddingFailureCount,
+      queryEmbeddingRetryCount: runtimeIntelligence.queryEmbeddingRetryCount,
+      queryEmbeddingRecoveredCount: runtimeIntelligence.queryEmbeddingRecoveredCount,
       plannerFailureCount: runtimeIntelligence.plannerFailureCount,
       result,
     });

@@ -161,7 +161,9 @@ import { composeTurnContext } from "../src/kernel/context-composer.js";
 import {
   eventDateMetadataFromTrustedOffset,
   eventTimeSegment,
+  filterTemporalAnnotationSegments,
   observedAtMetadata,
+  observedAtSegment,
   temporalContextLabel,
   temporalMetadataSegment,
 } from "../src/kernel/temporal-format.js";
@@ -172,6 +174,7 @@ import {
   normalizeExplicitTemporalInstant,
   temporalCueValuesFromText,
 } from "../src/kernel/temporal-validity.js";
+import { OpenAICompatibleResponseError } from "../src/kernel/openai-compatible-response.js";
 
 const extractRuleMemoryCandidates = extractLegacyRuleMemoryCandidates;
 const legacyRuleTestExtractor: MemoryExtractor = {
@@ -5404,6 +5407,36 @@ assert.doesNotMatch(temporalReconstruction.contextBlock, /time=06:45 UTC/);
 assert.equal(temporalReconstruction.paths.some((path) => path.createdAt === "2026-06-03T06:45:00.000Z"), true);
 assert.doesNotMatch(temporalReconstruction.contextBlock, /ExpiredOwner/);
 assert.doesNotMatch(temporalReconstruction.contextBlock, /FutureOwner/);
+assert.deepEqual(
+  filterTemporalAnnotationSegments(
+    `fact${observedAtSegment("2023-05-20T14:33:00.000Z")}; kind=fact; confidence=0.90`,
+  ),
+  ["observed=2023-05-20", "time=14:33 UTC"],
+);
+assert.deepEqual(
+  filterTemporalAnnotationSegments("fact; observed 2023-05-20; 2023-05-21; confidence=0.90"),
+  ["observed 2023-05-20", "2023-05-21"],
+);
+assert.deepEqual(
+  filterTemporalAnnotationSegments(
+    `fact${temporalMetadataSegment("2023-05-20T00:00:00.000Z", {
+      eventTime: "2023-05-21T14:33:12.000Z",
+      validFrom: "2023-05-01T00:00:00.000Z",
+      validTo: "2023-05-31T18:45:00.000Z",
+    })}; route=private`,
+  ),
+  [
+    "observed=2023-05-20",
+    "event_time=2023-05-21",
+    "event_time_text=21 May 2023",
+    "event_time_utc=14:33:12",
+    "valid_from=2023-05-01",
+    "valid_from_text=1 May 2023",
+    "valid_to=2023-05-31",
+    "valid_to_text=31 May 2023",
+    "valid_to_utc=18:45",
+  ],
+);
 const nonTemporalReconstruction = await temporalMemory.reconstructContext({
   profileId: "temporal",
   query: "When was the Temporal window Atlas owner observed?",
@@ -13883,8 +13916,68 @@ assert.equal(
   false,
 );
 await reconstructEmbeddingMemory.close();
+const recoveringQueryEmbeddingCalls: string[] = [];
+const recoveringQueryEmbeddingRetryReasons: string[] = [];
+let recoveringQueryEmbeddingRecoveredCount = 0;
+let recoveringQueryEmbeddingAttempts = 0;
+const recoveringQueryEmbeddingMemory = createMemoryOS({
+  profileId: "recovering-query-embedding",
+  store: createSqliteMemoryStore({ path: path.join(tmp, "recovering-query-embedding.db") }),
+  embeddingProvider: {
+    name: "test-recovering-query-provider",
+    dimensions: 3,
+    async embed(texts) {
+      recoveringQueryEmbeddingCalls.push(...texts);
+      if (texts.some((text) => text === "Which beverage should the recovery recall use?")) {
+        recoveringQueryEmbeddingAttempts += 1;
+        if (recoveringQueryEmbeddingAttempts === 1) {
+          throw new Error("planned one-shot query embedding failure");
+        }
+      }
+      return texts.map((text) =>
+        /beverage|VXQZ-RECOVERY-9173/iu.test(text) ? [1, 0, 0] : [0, 1, 0]
+      );
+    },
+  },
+});
+await recoveringQueryEmbeddingMemory.add({
+  profileId: "recovering-query-embedding",
+  kind: "fact",
+  content: "VXQZ-RECOVERY-9173.",
+  confidence: 0.9,
+});
+recoveringQueryEmbeddingCalls.length = 0;
+const recoveringQueryEmbeddingReconstruction = await recoveringQueryEmbeddingMemory.reconstructContext({
+  profileId: "recovering-query-embedding",
+  query: "Which beverage should the recovery recall use?",
+  maxSteps: 1,
+  maxBranch: 1,
+  maxMemories: 1,
+  retrieval: {
+    embedQuery: true,
+    onQueryEmbeddingRetry: (reason) => {
+      recoveringQueryEmbeddingRetryReasons.push(reason);
+    },
+    onQueryEmbeddingRecovered: () => {
+      recoveringQueryEmbeddingRecoveredCount += 1;
+    },
+    onQueryEmbeddingFailure: () => {
+      throw new Error("recovering query embedding should not report final failure");
+    },
+  },
+});
+assert.match(recoveringQueryEmbeddingReconstruction.contextBlock, /VXQZ-RECOVERY-9173/);
+assert.deepEqual(recoveringQueryEmbeddingCalls, [
+  "Which beverage should the recovery recall use?",
+  "Which beverage should the recovery recall use?",
+]);
+assert.deepEqual(recoveringQueryEmbeddingRetryReasons, ["transport"]);
+assert.equal(recoveringQueryEmbeddingRecoveredCount, 1);
+await recoveringQueryEmbeddingMemory.close();
 const failingQueryEmbeddingCalls: string[] = [];
 let failingQueryEmbeddingFailureCount = 0;
+let failingQueryEmbeddingRetryCount = 0;
+const failingQueryEmbeddingFailureReasons: string[] = [];
 const failingQueryEmbeddingStore = createSqliteMemoryStore({
   path: path.join(tmp, "failing-query-embedding.db"),
 });
@@ -13918,14 +14011,20 @@ const failingQueryEmbeddingReconstruction = await failingQueryEmbeddingMemory.re
   maxMemories: 1,
   retrieval: {
     embedQuery: true,
-    onQueryEmbeddingFailure: () => {
+    onQueryEmbeddingRetry: () => {
+      failingQueryEmbeddingRetryCount += 1;
+    },
+    onQueryEmbeddingFailure: (reason) => {
       failingQueryEmbeddingFailureCount += 1;
+      failingQueryEmbeddingFailureReasons.push(reason);
     },
   },
 });
 assert.match(failingQueryEmbeddingReconstruction.contextBlock, /retrieves lexically/);
-assert.deepEqual(failingQueryEmbeddingCalls, ["lexical fallback query"]);
+assert.deepEqual(failingQueryEmbeddingCalls, ["lexical fallback query", "lexical fallback query"]);
+assert.equal(failingQueryEmbeddingRetryCount, 1);
 assert.equal(failingQueryEmbeddingFailureCount, 1);
+assert.deepEqual(failingQueryEmbeddingFailureReasons, ["transport"]);
 await failingQueryEmbeddingMemory.close();
 
 function normalizedTestVector(vector: number[]): number[] {
@@ -21129,6 +21228,79 @@ const wideAccepted = await reconstructMemoryContext({
   },
 });
 assert.equal(wideAccepted.memories.length, 200);
+const wideSupplyStore = createSqliteMemoryStore({ path: path.join(tmp, "wide-supply-saturation.db") });
+const wideSupplyMemory = createMemoryOS({
+  profileId: "wide-supply",
+  store: wideSupplyStore,
+  extractor: () => [],
+});
+await wideSupplyMemory.addMany(
+  Array.from({ length: 300 }, (_entry, index) => ({
+    profileId: "wide-supply",
+    kind: "fact" as const,
+    content: index < 60
+      ? `WideSupplyKey direct match memory ${index}.`
+      : `Broad eligible supply memory ${index}.`,
+    confidence: 0.9,
+    createdAt: `2026-07-04T00:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
+  })),
+);
+await wideSupplyMemory.add({
+  profileId: "wide-supply",
+  kind: "person",
+  content: "WideSupplyKey person gated row.",
+  confidence: 0.9,
+  allowPerson: true,
+});
+await wideSupplyMemory.add({
+  profileId: "wide-supply",
+  kind: "fact",
+  content: "WideSupplyKey sensitive gated row.",
+  sensitivity: "sensitive",
+  confidence: 0.9,
+});
+await wideSupplyMemory.add({
+  profileId: "wide-supply",
+  kind: "fact",
+  content: "WideSupplyForgotten archived row.",
+  confidence: 0.9,
+});
+const wideSupplyForget = await wideSupplyMemory.forget({
+  profileId: "wide-supply",
+  query: "WideSupplyForgotten",
+});
+assert.equal(wideSupplyForget.archivedMemoryIds.length > 0, true);
+await wideSupplyStore.rebuildAssociations({ profileId: "wide-supply" });
+const wideSupplyRequest = {
+  profileId: "wide-supply",
+  query: "WideSupplyKey",
+  maxMemories: 200,
+  maxSteps: 8,
+  maxBranch: 10,
+  contextBudgetTokens: 100000,
+  maxCharsPerMemory: 80,
+  stopWhenEvidenceEnough: false,
+} as const;
+const wideSupplyContext = await wideSupplyMemory.reconstructContext(wideSupplyRequest);
+const wideSupplyContextAgain = await wideSupplyMemory.reconstructContext(wideSupplyRequest);
+assert.equal(wideSupplyContext.memories.length >= 180, true);
+assert.deepEqual(
+  wideSupplyContext.memories.map((memoryRecord) => memoryRecord.id),
+  wideSupplyContextAgain.memories.map((memoryRecord) => memoryRecord.id),
+);
+assert.equal(
+  wideSupplyContext.memories.some((memoryRecord) => memoryRecord.content.includes("person gated")),
+  false,
+);
+assert.equal(
+  wideSupplyContext.memories.some((memoryRecord) => memoryRecord.content.includes("sensitive gated")),
+  false,
+);
+assert.equal(
+  wideSupplyContext.memories.some((memoryRecord) => memoryRecord.content.includes("WideSupplyForgotten")),
+  false,
+);
+await wideSupplyMemory.close();
 await assert.rejects(
   () =>
     reconstructMemoryContext({
@@ -25118,6 +25290,51 @@ const externalObservedDateBenchmark = await runExternalMemoryBenchmark({
 assert.equal(externalObservedDateBenchmark.pass, true);
 assert.equal(externalObservedDateBenchmark.runManifest.options.includeSensitive, false);
 assert.equal(externalObservedDateBenchmark.runManifest.options.includeTemporalMetadata, true);
+assert.match(externalObservedDateBenchmark.cases[0]?.readerContext ?? "", /observed 2023-05-07/u);
+assert.doesNotMatch(externalObservedDateBenchmark.cases[0]?.readerContext ?? "", /confidence=0\.90/u);
+let sanitizedActualAnswer = "";
+const externalTemporalSanitizerBenchmark = await runExternalMemoryBenchmark({
+  protocol: "official_protocol",
+  includeTemporalMetadata: true,
+  cases: [
+    {
+      id: "observed-date-equals-sanitizer",
+      events: [{
+        type: "memory",
+        kind: "fact",
+        content: "I just got a smoker today.",
+        createdAt: "2023-05-20T14:33:00.000Z",
+      }],
+      question: "What happened today?",
+      expectedAny: ["smoker"],
+    },
+  ],
+  answerer: {
+    name: "temporal-sanitizer-answerer",
+    answer() {
+      return [
+        `- [fact${observedAtSegment("2023-05-20T14:33:00.000Z")}; kind=fact; confidence=0.90] I just got a smoker today.`,
+        "- [fact; observed 2023-05-21; confidence=0.70] Old observed label.",
+        "- [fact; 2023-05-22; confidence=0.60] Bare date label.",
+      ].join("\n");
+    },
+  },
+  judge: {
+    name: "temporal-sanitizer-judge",
+    judge(_question, _expectedAnswer, actualAnswer) {
+      sanitizedActualAnswer = actualAnswer;
+      return { correct: true };
+    },
+  },
+});
+assert.equal(externalTemporalSanitizerBenchmark.pass, true);
+assert.match(externalTemporalSanitizerBenchmark.cases[0]?.readerContext ?? "", /observed 2023-05-20/u);
+assert.doesNotMatch(externalTemporalSanitizerBenchmark.cases[0]?.readerContext ?? "", /confidence=0\.90/u);
+assert.match(sanitizedActualAnswer, /observed=2023-05-20; time=14:33 UTC/u);
+assert.match(sanitizedActualAnswer, /observed 2023-05-21/u);
+assert.match(sanitizedActualAnswer, /2023-05-22/u);
+assert.doesNotMatch(sanitizedActualAnswer, /confidence=0\.90/u);
+assert.doesNotMatch(sanitizedActualAnswer, /confidence=0\.70/u);
 const externalObservedDateWithoutTemporal = await runExternalMemoryBenchmark({
   includeTemporalMetadata: false,
   includeTemporalContext: false,
@@ -26840,7 +27057,7 @@ try {
   assert.equal(externalIntelligenceJson.includes("bench-intelligence.invalid/v1"), false);
   assert.match(
     renderExternalMemoryBenchmarkMarkdown(externalIntelligenceRun),
-    /Runtime intelligence: enabled=true ingestMode=message turnRetention=true model=bench-chat embedModel=bench-embed embedQuery=true queryEmbeddingFailures=0 host=bench-intelligence\.invalid maintainPhases=decay concurrency=1 timeoutMs=5000 retries=2 backoffMs=250 extractionWindows=2 extractionCalls=2 extractionRetries=2 extractionEmpty=0 replayedWindows=0 replayRecovered=0 okChars=\d+ emptyChars=0 parseFailureChars=0 transportFailureChars=\d+ extractionParseFailures=0 extractionTransportFailures=1 extractionFailures=1/,
+    /Runtime intelligence: enabled=true ingestMode=message turnRetention=true model=bench-chat embedModel=bench-embed embedQuery=true queryEmbeddingFailures=0 queryEmbeddingRetries=0 queryEmbeddingRecovered=0 queryEmbeddingTimeoutFailures=0 queryEmbeddingHttpStatusFailures=0 queryEmbeddingTransportFailures=0 queryEmbeddingParseFailures=0 host=bench-intelligence\.invalid maintainPhases=decay concurrency=1 timeoutMs=5000 retries=2 backoffMs=250 extractionWindows=2 extractionCalls=2 extractionRetries=2 extractionEmpty=0 replayedWindows=0 replayRecovered=0 okChars=\d+ emptyChars=0 parseFailureChars=0 transportFailureChars=\d+ extractionParseFailures=0 extractionTransportFailures=1 extractionFailures=1/,
   );
 } finally {
   if (previousExternalBenchKey === undefined) {
@@ -27108,6 +27325,41 @@ const externalQueryEmbeddingOffRun = await runExternalMemoryBenchmark({
 });
 assert.equal(externalQueryEmbeddingOffRun.runManifest.runtimeIntelligence.embedQuery, false);
 assert.equal(externalQueryEmbeddingCalls.includes("Which beverage should benchmark recall use?"), false);
+let externalRecoveringQueryEmbeddingAttempts = 0;
+const externalRecoveringQueryEmbeddingIntelligence: DefaultIntelligence = {
+  embeddingProvider: {
+    name: "external-recovering-query-provider",
+    dimensions: 3,
+    async embed(texts) {
+      if (texts.some((text) => text === "Which beverage should recovered benchmark recall use?")) {
+        externalRecoveringQueryEmbeddingAttempts += 1;
+        if (externalRecoveringQueryEmbeddingAttempts === 1) {
+          throw new Error("planned recovering external query embedding failure");
+        }
+      }
+      return texts.map((text) =>
+        /beverage|silver tea/iu.test(text) ? [1, 0, 0] : [0, 1, 0]
+      );
+    },
+  },
+};
+const externalRecoveringQueryRun = await runExternalMemoryBenchmark({
+  cases: [{
+    id: "external-query-embedding-recovered",
+    events: [{
+      type: "memory" as const,
+      kind: "fact" as const,
+      content: "The codeword is silver tea.",
+    }],
+    question: "Which beverage should recovered benchmark recall use?",
+    expectedAny: ["silver tea"],
+  }],
+  intelligence: externalRecoveringQueryEmbeddingIntelligence,
+});
+assert.equal(externalRecoveringQueryRun.pass, true);
+assert.equal(externalRecoveringQueryRun.runManifest.runtimeIntelligence.queryEmbeddingRetryCount, 1);
+assert.equal(externalRecoveringQueryRun.runManifest.runtimeIntelligence.queryEmbeddingRecoveredCount, 1);
+assert.equal(externalRecoveringQueryRun.runManifest.runtimeIntelligence.queryEmbeddingFailureCount, 0);
 let externalQueryEmbeddingFailureCount = 0;
 const externalFailingQueryIntelligence: DefaultIntelligence = {
   embeddingProvider: {
@@ -27136,8 +27388,60 @@ const externalFailingQueryRun = await runExternalMemoryBenchmark({
   intelligence: externalFailingQueryIntelligence,
 });
 assert.equal(externalFailingQueryRun.pass, true);
-assert.equal(externalQueryEmbeddingFailureCount, 1);
+assert.equal(externalQueryEmbeddingFailureCount, 2);
+assert.equal(externalFailingQueryRun.runManifest.runtimeIntelligence.queryEmbeddingRetryCount, 1);
+assert.equal(externalFailingQueryRun.runManifest.runtimeIntelligence.queryEmbeddingRecoveredCount, 0);
 assert.equal(externalFailingQueryRun.runManifest.runtimeIntelligence.queryEmbeddingFailureCount, 1);
+assert.equal(externalFailingQueryRun.runManifest.runtimeIntelligence.queryEmbeddingTransportFailureCount, 1);
+assert.equal(externalFailingQueryRun.runManifest.runtimeIntelligence.queryEmbeddingParseFailureCount, 0);
+const externalClassifiedQueryRun = await runExternalMemoryBenchmark({
+  cases: [
+    {
+      id: "external-query-embedding-parse-fallback",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "parse fallback answer remains lexical.",
+      }],
+      question: "parse fallback answer",
+      expectedAny: ["lexical"],
+    },
+    {
+      id: "external-query-embedding-http-fallback",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "http fallback answer remains lexical.",
+      }],
+      question: "http fallback answer",
+      expectedAny: ["lexical"],
+    },
+  ],
+  intelligence: {
+    embeddingProvider: {
+      name: "external-classified-query-provider",
+      dimensions: 3,
+      async embed(texts) {
+        if (texts.some((text) => text === "parse fallback answer")) {
+          throw new SyntaxError("planned malformed query embedding payload");
+        }
+        if (texts.some((text) => text === "http fallback answer")) {
+          throw new OpenAICompatibleResponseError(
+            "planned query embedding http status",
+            "transport_failure",
+            { status: 503 },
+          );
+        }
+        return texts.map(() => [0, 1, 0]);
+      },
+    },
+  },
+});
+assert.equal(externalClassifiedQueryRun.pass, true);
+assert.equal(externalClassifiedQueryRun.runManifest.runtimeIntelligence.queryEmbeddingFailureCount, 2);
+assert.equal(externalClassifiedQueryRun.runManifest.runtimeIntelligence.queryEmbeddingRetryCount, 2);
+assert.equal(externalClassifiedQueryRun.runManifest.runtimeIntelligence.queryEmbeddingParseFailureCount, 1);
+assert.equal(externalClassifiedQueryRun.runManifest.runtimeIntelligence.queryEmbeddingHttpStatusFailureCount, 1);
 let externalReplayExtractorCalls = 0;
 const externalReplayRun = await runExternalMemoryBenchmark({
   cases: [{

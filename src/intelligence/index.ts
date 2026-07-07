@@ -12,6 +12,7 @@ import {
   parseOpenAICompatibleCompletionJson,
   runOpenAICompatibleRetry,
 } from "../kernel/openai-compatible-response.js";
+import { currentEmbeddingProviderCallPriority } from "../kernel/embeddings.js";
 import { classifySensitivity, isPersonRoutedMemory } from "../kernel/safety.js";
 import type {
   EmbeddingProvider,
@@ -678,6 +679,7 @@ export function createOpenAICompatibleEmbeddingProvider(
       const vectors: number[][] = [];
       for (let index = 0; index < texts.length; index += maxBatchSize) {
         const batch = texts.slice(index, index + maxBatchSize);
+        const queryPriority = currentEmbeddingProviderCallPriority() === "query";
         const payload = await fetchJsonWithRetry(
           endpoint(options.baseUrl, "/embeddings"),
           {
@@ -692,9 +694,10 @@ export function createOpenAICompatibleEmbeddingProvider(
           {
             fetchImpl,
             timeoutMs: options.timeoutMs,
-            retries: options.retries,
-            maxRetries: options.maxRetries,
+            retries: queryPriority ? 0 : options.retries,
+            maxRetries: queryPriority ? 0 : options.maxRetries,
             backoffMs: options.backoffMs,
+            throwOnFailure: true,
           },
         );
         const batchVectors = embeddingVectors(payload);

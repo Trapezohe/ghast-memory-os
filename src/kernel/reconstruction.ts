@@ -2457,6 +2457,57 @@ async function topUpUncoveredAnchors(input: {
   return steps;
 }
 
+function directMemoryTraceStep(input: {
+  trace: {
+    candidateCount: number;
+    reinforcedPaths: ReconstructedEvidencePath[];
+    selectedNewPaths: ReconstructedEvidencePath[];
+  };
+  selectedCue: string;
+  selectedReason: string;
+  reinforcedReason: string;
+  noNewPathReason: string;
+  fallbackStep: number;
+}): ReconstructedPlannerStep | null {
+  if (input.trace.candidateCount === 0) return null;
+  const paths = [
+    ...input.trace.reinforcedPaths,
+    ...input.trace.selectedNewPaths,
+  ];
+  const step = paths.length > 0 ? Math.max(...paths.map((path) => path.step)) : input.fallbackStep;
+  return {
+    step,
+    selectedCue: input.selectedCue,
+    cueReason:
+      input.trace.selectedNewPaths.length > 0
+        ? input.selectedReason
+        : input.trace.reinforcedPaths.length > 0
+          ? input.reinforcedReason
+          : input.noNewPathReason,
+    exploredAssociationCount: 0,
+    hybridCandidateCount: input.trace.candidateCount,
+    selectedBranchCount: paths.length,
+    prunedBranchCount: 0,
+    generatedCues: [],
+    branches: [
+      ...input.trace.reinforcedPaths.map((path) =>
+        traceBranchFromPath(
+          path,
+          "reinforced",
+          path.routeReason ?? input.reinforcedReason,
+        )
+      ),
+      ...input.trace.selectedNewPaths.map((path) =>
+        traceBranchFromPath(
+          path,
+          "selected_new_path",
+          path.routeReason ?? input.selectedReason,
+        )
+      ),
+    ],
+  };
+}
+
 function composeReconstructedContext(input: {
   profileId: string;
   query: string;
@@ -3418,44 +3469,43 @@ export async function reconstructMemoryContext(input: {
       cueExtractor: input.cueExtractor,
       inferTemporalCuesFromText,
     });
-    if (hybridTrace.candidateCount > 0) {
-      const hybridPaths = [
-        ...hybridTrace.reinforcedPaths,
-        ...hybridTrace.selectedNewPaths,
-      ];
-      const hybridStep =
-        hybridPaths.length > 0 ? Math.max(...hybridPaths.map((path) => path.step)) : stepCountForTrace(paths);
-      plannerSteps.push({
-        step: hybridStep,
-        selectedCue: query,
-        cueReason:
-          hybridTrace.selectedNewPaths.length > 0
-            ? "hybrid_direct_memory_search"
-            : hybridTrace.reinforcedPaths.length > 0
-              ? "hybrid_direct_memory_search_reinforced"
-              : "hybrid_direct_memory_search_no_new_path",
-        exploredAssociationCount: 0,
-        hybridCandidateCount: hybridTrace.candidateCount,
-        selectedBranchCount: hybridPaths.length,
-        prunedBranchCount: 0,
-        generatedCues: [],
-        branches: [
-          ...hybridTrace.reinforcedPaths.map((path) =>
-            traceBranchFromPath(
-              path,
-              "reinforced",
-              path.routeReason ?? "hybrid_direct_memory_search_reinforced",
-            ),
-          ),
-          ...hybridTrace.selectedNewPaths.map((path) =>
-            traceBranchFromPath(
-              path,
-              "selected_new_path",
-              path.routeReason ?? "hybrid_direct_memory_search",
-            ),
-          ),
-        ],
+    const hybridStep = directMemoryTraceStep({
+      trace: hybridTrace,
+      selectedCue: query,
+      selectedReason: "hybrid_direct_memory_search",
+      reinforcedReason: "hybrid_direct_memory_search_reinforced",
+      noNewPathReason: "hybrid_direct_memory_search_no_new_path",
+      fallbackStep: stepCountForTrace(paths),
+    });
+    if (hybridStep) plannerSteps.push(hybridStep);
+    const wideSupplyRequested = layerPolicy !== undefined || maxMemories > 24;
+    if (wideSupplyRequested && memories.length < candidateMemoryLimit) {
+      const saturationTrace = await fuseDirectMemorySearch({
+        store: input.store,
+        profileId,
+        query,
+        intent,
+        recallPurpose,
+        includeSensitive: input.request.includeSensitive,
+        maxMemories: candidateMemoryLimit,
+        memories,
+        paths,
+        seenMemoryIds,
+        selectedSourceCues,
+        searchQueries: [""],
+        reinforceExisting: false,
+        cueExtractor: input.cueExtractor,
+        inferTemporalCuesFromText,
       });
+      const saturationStep = directMemoryTraceStep({
+        trace: saturationTrace,
+        selectedCue: query,
+        selectedReason: "wide_supply_saturation",
+        reinforcedReason: "wide_supply_saturation_reinforced",
+        noNewPathReason: "wide_supply_saturation_no_new_path",
+        fallbackStep: stepCountForTrace(paths),
+      });
+      if (saturationStep) plannerSteps.push(saturationStep);
     }
     const convergence = evidenceConvergenceForPaths({
       coverage: evidenceCoverageForPaths(query, paths, input.cueExtractor, inferTemporalCuesFromText),

@@ -884,10 +884,12 @@ try {
         type LowLevelAddManyResult,
         type MemoryExtractor,
         type MemoryOS,
+        type MemoryReadRetrievalOptions,
         type MemoryRecord,
         type MemoryStore,
         type ObserveResult,
         type OpenAICompatibleExtractorOptions,
+        type QueryEmbeddingFailureReason,
         type ReadAuditSnapshot,
         type RepairSearchIndexResult,
         type SearchIndexStatus,
@@ -1093,6 +1095,17 @@ try {
         : typedIntelligence.embeddingProvider.embed.bind(typedIntelligence.embeddingProvider);
       const typedVectors = await typedEmbed(["typed vector"]);
       if (typedVectors[0]?.length !== 3) throw new Error("typed intelligence vector failed");
+      const typedQueryRetrieval: MemoryReadRetrievalOptions = {
+        embedQuery: true,
+        onQueryEmbeddingRetry(reason: QueryEmbeddingFailureReason) {
+          void reason;
+        },
+        onQueryEmbeddingRecovered() {},
+        onQueryEmbeddingFailure(reason: QueryEmbeddingFailureReason) {
+          void reason;
+        },
+      };
+      void typedQueryRetrieval;
       await memory.add({
         profileId: "consumer-types",
         kind: "preference",

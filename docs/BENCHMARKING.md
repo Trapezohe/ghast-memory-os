@@ -373,7 +373,10 @@ an embedding provider is configured, external benchmark scoring reads default
 to `embedQuery=true`; use `--embed-query off` to force lexical/association
 retrieval, or `--embed-query on` to make the opt-in explicit. Manifests record
 the effective `runtimeIntelligence.embedQuery` and
-`queryEmbeddingFailureCount`; failures fall back to lexical retrieval.
+`queryEmbeddingFailureCount`; query embedding failures retry once before falling
+back to lexical retrieval. Manifests also record
+`queryEmbeddingRetryCount`, `queryEmbeddingRecoveredCount`, and failure reason
+counters for `timeout`, `http_status`, `transport`, and `parse`.
 
 In memory ingest mode, consecutive `type: "memory"` events in a case group are
 batched until a non-memory event forces a flush. The runtime `addMany()` path
@@ -384,8 +387,15 @@ one event per round trip.
 Runtime intelligence uses one shared concurrency limit. Pending query embedding
 calls are dequeued before pending non-query intelligence calls so read-path
 semantic retrieval is not starved behind bulk ingest embeddings. Running calls
-are not preempted; `queryEmbeddingFailureCount` remains the observability signal
-for query fallback.
+are not preempted; the query embedding retry/recovered/failure counters remain
+the observability signal for query fallback.
+
+Reader context sanitization removes internal ids and non-temporal diagnostics
+from bracket annotations, but preserves temporal segments emitted by the kernel,
+including `observed=YYYY-MM-DD`, `time=HH:MM UTC`, old `observed YYYY-MM-DD`
+labels, bare dates, and event/validity windows. This keeps official readers from
+losing dates needed for relative-time questions while still stripping kind,
+confidence, route, and sensitivity diagnostics.
 
 Query planning defaults OFF: a measured 30-case comparison showed
 model-derived required anchors regressing the reader score (0.30 -> 0.17)
