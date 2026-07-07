@@ -247,6 +247,9 @@ export interface ExternalMemoryBenchmarkCaseResult {
   caseGroupKey: string;
   extractedMemoryCount: number;
   distilledMemoryCount: number;
+  embeddingCallCount: number;
+  embeddedMemoryCount: number;
+  embeddingFailureCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
   extractionRetryCount: number;
@@ -318,6 +321,9 @@ export interface ExternalMemoryBenchmarkGroupTiming {
   wideBudgetDiagnosticRuntimeMs: number;
   extractedMemoryCount: number;
   distilledMemoryCount: number;
+  embeddingCallCount: number;
+  embeddedMemoryCount: number;
+  embeddingFailureCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
   extractionRetryCount: number;
@@ -379,6 +385,9 @@ export interface ExternalMemoryBenchmarkFailureSample {
   reconstructedPathCount: number;
   extractedMemoryCount: number;
   distilledMemoryCount: number;
+  embeddingCallCount: number;
+  embeddedMemoryCount: number;
+  embeddingFailureCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
   extractionRetryCount: number;
@@ -510,6 +519,9 @@ export interface ExternalMemoryBenchmarkRuntimeIngestGroupManifest {
   extractedMemoryCount: number;
   turnMemoryCount: number;
   distilledMemoryCount: number;
+  embeddingCallCount: number;
+  embeddedMemoryCount: number;
+  embeddingFailureCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
   extractionRetryCount: number;
@@ -564,6 +576,9 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   extractionTransportFailureCharCount: number;
   replayedWindowCount: number;
   replayRecoveredCount: number;
+  embeddingCallCount: number;
+  embeddedMemoryCount: number;
+  embeddingFailureCount: number;
   ingestCaseGroups: ExternalMemoryBenchmarkRuntimeIngestGroupManifest[];
   sessionDistillation: ExternalMemoryBenchmarkRuntimeSessionDistillationManifest;
   answerer: ExternalMemoryBenchmarkRuntimeAnswererManifest;
@@ -578,6 +593,9 @@ export interface ExternalMemoryBenchmarkCaseGroupProgress {
   extractedMemoryCount: number;
   turnMemoryCount: number;
   distilledMemoryCount: number;
+  embeddingCallCount: number;
+  embeddedMemoryCount: number;
+  embeddingFailureCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
   extractionRetryCount: number;
@@ -2509,6 +2527,9 @@ function createRunManifest(input: {
       extractionTransportFailureCharCount: input.runtimeIntelligence.extractionTransportFailureCharCount,
       replayedWindowCount: input.runtimeIntelligence.replayedWindowCount,
       replayRecoveredCount: input.runtimeIntelligence.replayRecoveredCount,
+      embeddingCallCount: input.runtimeIntelligence.embeddingCallCount,
+      embeddedMemoryCount: input.runtimeIntelligence.embeddedMemoryCount,
+      embeddingFailureCount: input.runtimeIntelligence.embeddingFailureCount,
       queryEmbeddingFailureCount: input.runtimeIntelligence.queryEmbeddingFailureCount,
       sessionDistillation: {
         ...input.runtimeIntelligence.manifest.sessionDistillation,
@@ -3087,6 +3108,9 @@ function wrapEmbeddingProvider(
   return {
     name: embeddingProvider.name,
     dimensions: embeddingProvider.dimensions,
+    ...(embeddingProvider.maxBatchSize !== undefined
+      ? { maxBatchSize: embeddingProvider.maxBatchSize }
+      : {}),
     embed(texts) {
       return run("embeddingProvider", async () => embeddingProvider.embed(texts));
     },
@@ -3154,6 +3178,9 @@ interface RuntimeIntelligenceState {
   extractionTransportFailureCharCount: number;
   replayedWindowCount: number;
   replayRecoveredCount: number;
+  embeddingCallCount: number;
+  embeddedMemoryCount: number;
+  embeddingFailureCount: number;
   distillationCallCount: number;
   distilledMemoryCount: number;
   distillationOkWithCandidatesCount: number;
@@ -3210,6 +3237,9 @@ function disabledRuntimeIntelligence(
       extractionTransportFailureCharCount: 0,
       replayedWindowCount: 0,
       replayRecoveredCount: 0,
+      embeddingCallCount: 0,
+      embeddedMemoryCount: 0,
+      embeddingFailureCount: 0,
       ingestCaseGroups: [],
       sessionDistillation: disabledRuntimeSessionDistillation(),
       answerer: disabledRuntimeAnswerer(),
@@ -3229,6 +3259,9 @@ function disabledRuntimeIntelligence(
     extractionTransportFailureCharCount: 0,
     replayedWindowCount: 0,
     replayRecoveredCount: 0,
+    embeddingCallCount: 0,
+    embeddedMemoryCount: 0,
+    embeddingFailureCount: 0,
     distillationCallCount: 0,
     distilledMemoryCount: 0,
     distillationOkWithCandidatesCount: 0,
@@ -3427,6 +3460,9 @@ function resolveRuntimeIntelligence(input: {
       extractionTransportFailureCharCount: 0,
       replayedWindowCount: 0,
       replayRecoveredCount: 0,
+      embeddingCallCount: 0,
+      embeddedMemoryCount: 0,
+      embeddingFailureCount: 0,
       ingestCaseGroups: [],
       sessionDistillation: sessionDistillationManifest,
       answerer: disabledRuntimeAnswerer(),
@@ -3459,6 +3495,9 @@ function resolveRuntimeIntelligence(input: {
     extractionTransportFailureCharCount: 0,
     replayedWindowCount: 0,
     replayRecoveredCount: 0,
+    embeddingCallCount: 0,
+    embeddedMemoryCount: 0,
+    embeddingFailureCount: 0,
     distillationCallCount: 0,
     distilledMemoryCount: 0,
     distillationOkWithCandidatesCount: 0,
@@ -3553,6 +3592,9 @@ function failureSampleForCase(
     reconstructedPathCount: entry.reconstructedPathCount,
     extractedMemoryCount: entry.extractedMemoryCount,
     distilledMemoryCount: entry.distilledMemoryCount,
+    embeddingCallCount: entry.embeddingCallCount,
+    embeddedMemoryCount: entry.embeddedMemoryCount,
+    embeddingFailureCount: entry.embeddingFailureCount,
     extractionWindowCount: entry.extractionWindowCount,
     extractionCallCount: entry.extractionCallCount,
     extractionRetryCount: entry.extractionRetryCount,
@@ -3806,6 +3848,9 @@ interface AppliedBenchmarkEvents {
   replayRecoveredCount: number;
   turnMemoryCount: number;
   distilledMemoryCount: number;
+  embeddingCallCount: number;
+  embeddedMemoryCount: number;
+  embeddingFailureCount: number;
   distillationCallCount: number;
   distillationOkWithCandidatesCount: number;
   distillationEmptyCount: number;
@@ -3921,6 +3966,9 @@ async function applyBenchmarkEvents(input: {
     replayRecoveredCount: 0,
     turnMemoryCount: 0,
     distilledMemoryCount: 0,
+    embeddingCallCount: 0,
+    embeddedMemoryCount: 0,
+    embeddingFailureCount: 0,
     distillationCallCount: 0,
     distillationOkWithCandidatesCount: 0,
     distillationEmptyCount: 0,
@@ -3973,6 +4021,9 @@ async function applyBenchmarkEvents(input: {
     output.replayRecoveredCount += ingested.replayRecoveredCount;
     output.turnMemoryCount += ingested.turnMemoryCount;
     output.distilledMemoryCount += ingested.distilledMemoryCount;
+    output.embeddingCallCount += ingested.embeddingCallCount;
+    output.embeddedMemoryCount += ingested.embeddedMemoryCount;
+    output.embeddingFailureCount += ingested.embeddingFailureCount;
     output.distillationCallCount += ingested.distillationCallCount;
     output.distillationOkWithCandidatesCount += ingested.distillationOkWithCandidatesCount;
     output.distillationEmptyCount += ingested.distillationEmptyCount;
@@ -4014,6 +4065,9 @@ async function scoreCase(input: {
   caseGroupMemories: MemoryRecord[];
   extractedMemoryCount: number;
   distilledMemoryCount: number;
+  embeddingCallCount: number;
+  embeddedMemoryCount: number;
+  embeddingFailureCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
   extractionRetryCount: number;
@@ -4228,6 +4282,9 @@ async function scoreCase(input: {
     caseGroupKey: input.caseGroupKey,
     extractedMemoryCount: input.extractedMemoryCount,
     distilledMemoryCount: input.distilledMemoryCount,
+    embeddingCallCount: input.embeddingCallCount,
+    embeddedMemoryCount: input.embeddedMemoryCount,
+    embeddingFailureCount: input.embeddingFailureCount,
     extractionWindowCount: input.extractionWindowCount,
     extractionCallCount: input.extractionCallCount,
     extractionRetryCount: input.extractionRetryCount,
@@ -4339,6 +4396,9 @@ async function runCaseGroup(input: {
   let replayRecoveredCount = 0;
   let turnMemoryCount = 0;
   let distilledMemoryCount = 0;
+  let embeddingCallCount = 0;
+  let embeddedMemoryCount = 0;
+  let embeddingFailureCount = 0;
   let caseGroupMemories: MemoryRecord[] = [];
   try {
     await store.initialize();
@@ -4377,6 +4437,9 @@ async function runCaseGroup(input: {
     input.runtimeIntelligence.extractionTransportFailureCharCount += applied.extractionTransportFailureCharCount;
     input.runtimeIntelligence.replayedWindowCount += applied.replayedWindowCount;
     input.runtimeIntelligence.replayRecoveredCount += applied.replayRecoveredCount;
+    input.runtimeIntelligence.embeddingCallCount += applied.embeddingCallCount;
+    input.runtimeIntelligence.embeddedMemoryCount += applied.embeddedMemoryCount;
+    input.runtimeIntelligence.embeddingFailureCount += applied.embeddingFailureCount;
     input.runtimeIntelligence.distillationCallCount += applied.distillationCallCount;
     input.runtimeIntelligence.distilledMemoryCount += applied.distilledMemoryCount;
     input.runtimeIntelligence.distillationOkWithCandidatesCount += applied.distillationOkWithCandidatesCount;
@@ -4399,6 +4462,9 @@ async function runCaseGroup(input: {
     replayRecoveredCount = applied.replayRecoveredCount;
     turnMemoryCount = applied.turnMemoryCount;
     distilledMemoryCount = applied.distilledMemoryCount;
+    embeddingCallCount = applied.embeddingCallCount;
+    embeddedMemoryCount = applied.embeddedMemoryCount;
+    embeddingFailureCount = applied.embeddingFailureCount;
     input.runtimeIntelligence.extractionWindowCount += extractionWindowCount;
     input.runtimeIntelligence.extractionCallCount += extractionCallCount;
     caseGroupMemories = await memory.list({
@@ -4421,6 +4487,9 @@ async function runCaseGroup(input: {
       extractedMemoryCount,
       turnMemoryCount,
       distilledMemoryCount,
+      embeddingCallCount,
+      embeddedMemoryCount,
+      embeddingFailureCount,
       extractionWindowCount,
       extractionCallCount,
       extractionRetryCount,
@@ -4455,6 +4524,9 @@ async function runCaseGroup(input: {
         caseGroupMemories,
         extractedMemoryCount,
         distilledMemoryCount,
+        embeddingCallCount,
+        embeddedMemoryCount,
+        embeddingFailureCount,
         extractionWindowCount,
         extractionCallCount,
         extractionRetryCount,
@@ -4518,6 +4590,9 @@ async function runCaseGroup(input: {
       wideBudgetDiagnosticRuntimeMs,
       extractedMemoryCount,
       distilledMemoryCount,
+      embeddingCallCount,
+      embeddedMemoryCount,
+      embeddingFailureCount,
       extractionWindowCount,
       extractionCallCount,
       extractionRetryCount,

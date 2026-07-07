@@ -74,6 +74,12 @@ procedures, and during explicit search-index repair/backfill. Ordinary
 `search` do not call the provider. Host-opted query embedding is the sole
 read-time provider call and requires an explicit `retrieval.embedQuery` option
 with timeout and the same secret-like sensitivity gate as stored content.
+Memory-content embeddings created inside one ingest/import operation are
+batched before persistence. gmOS keeps the same privacy gates and row order,
+uses the provider's declared `maxBatchSize` or `32`, and applies the existing
+timeout to each provider call. A failed provider batch counts as one embedding
+failure for ingest stats; only that batch's rows fall back to the local hash
+lane with pending repair status.
 
 Write paths:
 

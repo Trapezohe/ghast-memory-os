@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import type {
+  AddMemoryInput,
   MemoryKind,
   MemoryRecord,
   MemoryStore,
@@ -164,6 +165,8 @@ export async function loadMem0ExportIntoStore(input: Mem0ImportInput): Promise<M
     loadedMemoryIds: [],
     skipped: [],
   };
+  const loadedMemoryIdsByIndex = new Map<number, string>();
+  const pendingAdds: Array<{ index: number; input: AddMemoryInput }> = [];
 
   for (let index = 0; index < rows.length; index += 1) {
     const parsed = parseMem0Record(rows[index], index);
@@ -190,7 +193,7 @@ export async function loadMem0ExportIntoStore(input: Mem0ImportInput): Promise<M
       ? await input.store.getEvidenceByEventKey(eventKey({ profileId, sourceFileHash, index }))
       : null;
     if (existing || existingEvidence) {
-      if (existing) report.loadedMemoryIds.push(existing.id);
+      if (existing) loadedMemoryIdsByIndex.set(index, existing.id);
       report.reusedCount += 1;
       continue;
     }
@@ -213,29 +216,47 @@ export async function loadMem0ExportIntoStore(input: Mem0ImportInput): Promise<M
       },
       createdAt,
     });
-    const memory = await input.store.addMemory({
-      profileId,
-      kind: parsed.kind,
-      scope: parsed.scope,
-      content,
-      sensitivity: parsed.sensitivity,
-      confidence: 0.7,
-      sourceEventId: evidence.id,
-      metadata: {
-        ...sanitizePublicPayloadRecord(parsed.metadata),
-        importSource: "mem0",
-        importSourceOriginalId: parsed.id,
-        importKey: key,
-        sourceFileHash,
-        recordIndex: index,
-        provenance: "low_level_import",
-        sourceTrust: "external",
+    pendingAdds.push({
+      index,
+      input: {
+        profileId,
+        kind: parsed.kind,
+        scope: parsed.scope,
+        content,
+        sensitivity: parsed.sensitivity,
+        confidence: 0.7,
+        sourceEventId: evidence.id,
+        metadata: {
+          ...sanitizePublicPayloadRecord(parsed.metadata),
+          importSource: "mem0",
+          importSourceOriginalId: parsed.id,
+          importKey: key,
+          sourceFileHash,
+          recordIndex: index,
+          provenance: "low_level_import",
+          sourceTrust: "external",
+        },
+        createdAt,
       },
-      createdAt,
-    }) as MemoryRecord;
-    report.loadedMemoryIds.push(memory.id);
+    });
+  }
+  const memories = input.store.addMemories
+    ? await input.store.addMemories(pendingAdds.map((pending) => pending.input))
+    : [];
+  if (!input.store.addMemories) {
+    for (const pending of pendingAdds) {
+      memories.push(await input.store.addMemory(pending.input) as MemoryRecord);
+    }
+  }
+  for (const [offset, memory] of memories.entries()) {
+    const pending = pendingAdds[offset];
+    if (!pending) continue;
+    loadedMemoryIdsByIndex.set(pending.index, (memory as MemoryRecord).id);
     report.loadedCount += 1;
   }
+  report.loadedMemoryIds = [...loadedMemoryIdsByIndex.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map((entry) => entry[1]);
   report.skippedCount = report.skipped.length;
   return report;
 }

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type {
+  AddMemoryInput,
   MemoryKind,
   MemoryRecord,
   MemoryStore,
@@ -183,8 +184,10 @@ export async function loadHostMemorySnapshotsIntoStore(
   if (!input.store.findActiveMemoryByMetadata) {
     throw new Error("Host memory snapshot import requires MemoryStore.findActiveMemoryByMetadata");
   }
+  const loadedMemoryIdsByIndex = new Map<number, string>();
+  const pendingAdds: Array<{ index: number; input: AddMemoryInput }> = [];
 
-  for (const snapshot of input.memories) {
+  for (const [index, snapshot] of input.memories.entries()) {
     const content = snapshot.content.trim();
     if (!content) {
       report.skipped.push({ id: snapshot.id, reason: "empty_content" });
@@ -214,7 +217,7 @@ export async function loadHostMemorySnapshotsIntoStore(
       importKey,
     );
     if (existing) {
-      report.loadedMemoryIds.push(existing.id);
+      loadedMemoryIdsByIndex.set(index, existing.id);
       report.reusedCount += 1;
       continue;
     }
@@ -239,27 +242,45 @@ export async function loadHostMemorySnapshotsIntoStore(
       },
       createdAt: snapshot.createdAt ?? nowIso,
     });
-    const memory = (await input.store.addMemory({
-      profileId: input.profileId,
-      kind,
-      scope: snapshot.scope ?? "global",
-      content,
-      sensitivity,
-      confidence: snapshot.confidence ?? 0.7,
-      sourceEventId: evidence.id,
-      metadata: {
-        hostImportKey: importKey,
-        hostImportSourceType: sourceType,
-        hostMemoryId: snapshot.id,
-        hostMemoryKind: kind,
-        hostContentHash: contentHash(content),
-        hostSnapshotImport: true,
-        sourceTrust: "external",
+    pendingAdds.push({
+      index,
+      input: {
+        profileId: input.profileId,
+        kind,
+        scope: snapshot.scope ?? "global",
+        content,
+        sensitivity,
+        confidence: snapshot.confidence ?? 0.7,
+        sourceEventId: evidence.id,
+        metadata: {
+          hostImportKey: importKey,
+          hostImportSourceType: sourceType,
+          hostMemoryId: snapshot.id,
+          hostMemoryKind: kind,
+          hostContentHash: contentHash(content),
+          hostSnapshotImport: true,
+          sourceTrust: "external",
+        },
+        createdAt: snapshot.createdAt ?? nowIso,
       },
-      createdAt: snapshot.createdAt ?? nowIso,
-    })) as MemoryRecord;
-    report.loadedMemoryIds.push(memory.id);
+    });
   }
+  const memories = input.store.addMemories
+    ? await input.store.addMemories(pendingAdds.map((pending) => pending.input))
+    : [];
+  if (!input.store.addMemories) {
+    for (const pending of pendingAdds) {
+      memories.push(await input.store.addMemory(pending.input) as MemoryRecord);
+    }
+  }
+  for (const [offset, memory] of memories.entries()) {
+    const pending = pendingAdds[offset];
+    if (!pending) continue;
+    loadedMemoryIdsByIndex.set(pending.index, (memory as MemoryRecord).id);
+  }
+  report.loadedMemoryIds = [...loadedMemoryIdsByIndex.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map((entry) => entry[1]);
   report.loadedCount = report.loadedMemoryIds.length;
   report.skippedCount = report.skipped.length;
   return report;

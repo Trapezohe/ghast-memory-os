@@ -614,6 +614,9 @@ export interface IngestConversationResult {
   replayRecoveredCount: number;
   turnMemoryCount: number;
   distilledMemoryCount: number;
+  embeddingCallCount: number;
+  embeddedMemoryCount: number;
+  embeddingFailureCount: number;
   distillationCallCount: number;
   distillationOkWithCandidatesCount: number;
   distillationEmptyCount: number;
@@ -729,6 +732,7 @@ export type EmbeddingProvider =
   | {
       name: string;
       dimensions: number;
+      maxBatchSize?: number | undefined;
       embed(texts: string[]): Promise<number[][]>;
     };
 
@@ -2106,6 +2110,7 @@ export interface MemoryStore {
   recordEvidence(input: RecordEvidenceInput): Promise<EvidenceEvent> | EvidenceEvent;
   getEvidenceByEventKey?(eventKey: string): Promise<EvidenceEvent | null> | EvidenceEvent | null;
   addMemory(input: AddMemoryInput): Promise<MemoryRecord> | MemoryRecord;
+  addMemories?(input: AddMemoryInput[]): Promise<MemoryRecord[]> | MemoryRecord[];
   updateMemory?(input: UpdateMemoryInput): Promise<MemoryRecord | null> | MemoryRecord | null;
   archiveMemoryById?(input: ArchiveMemoryInput): Promise<boolean> | boolean;
   restoreArchivedMemory?(input: RestoreArchivedMemoryInput): Promise<boolean> | boolean;

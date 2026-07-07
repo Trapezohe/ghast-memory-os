@@ -673,6 +673,7 @@ export function createOpenAICompatibleEmbeddingProvider(
   return {
     name: options.name ?? `openai-compatible-embedding:${options.model}`,
     dimensions,
+    maxBatchSize,
     async embed(texts: string[]) {
       const vectors: number[][] = [];
       for (let index = 0; index < texts.length; index += maxBatchSize) {

@@ -45,7 +45,7 @@ import {
   resolveMemoryExplorationConfig,
 } from "../kernel/exploration.js";
 import {
-  embeddingForMemory,
+  embeddingsForMemories,
   embeddingForQuery,
   queryEligibleForEmbeddingProvider,
   resolveEmbeddingProviderConfig,
@@ -106,6 +106,7 @@ import type {
   MemoryDossierEntitySnapshot,
   MemoryDossierResult,
   QueryVectorEmbedding,
+  MemoryVectorEmbedding,
   MemoryRole,
   MemoryGapSuppressionReason,
   MemoryRecord,
@@ -1276,14 +1277,55 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     kind: MemoryKind;
     sensitivity: Sensitivity;
     content: string;
-  }) {
-    if (!embeddingProvider) return undefined;
-    return embeddingForMemory({
+  }): Promise<MemoryVectorEmbedding | undefined> {
+    const embedded = await embeddingsForRuntimeWrites([input]);
+    return embedded.embeddings[0];
+  }
+
+  interface RuntimeEmbeddingStats {
+    embeddingCallCount: number;
+    embeddedMemoryCount: number;
+    embeddingFailureCount: number;
+  }
+
+  function emptyRuntimeEmbeddingStats(): RuntimeEmbeddingStats {
+    return {
+      embeddingCallCount: 0,
+      embeddedMemoryCount: 0,
+      embeddingFailureCount: 0,
+    };
+  }
+
+  function addRuntimeEmbeddingStats(
+    total: RuntimeEmbeddingStats,
+    next: RuntimeEmbeddingStats,
+  ): void {
+    total.embeddingCallCount += next.embeddingCallCount;
+    total.embeddedMemoryCount += next.embeddedMemoryCount;
+    total.embeddingFailureCount += next.embeddingFailureCount;
+  }
+
+  async function embeddingsForRuntimeWrites(
+    memories: Array<{ kind: MemoryKind; sensitivity: Sensitivity; content: string }>,
+  ): Promise<{ embeddings: MemoryVectorEmbedding[]; stats: RuntimeEmbeddingStats }> {
+    if (!embeddingProvider || memories.length === 0) {
+      return {
+        embeddings: [],
+        stats: emptyRuntimeEmbeddingStats(),
+      };
+    }
+    const result = await embeddingsForMemories({
       provider: embeddingProvider,
-      kind: input.kind,
-      sensitivity: input.sensitivity,
-      content: input.content,
+      memories,
     });
+    return {
+      embeddings: result.embeddings,
+      stats: {
+        embeddingCallCount: result.providerCallCount,
+        embeddedMemoryCount: result.embeddedMemoryCount,
+        embeddingFailureCount: result.providerFailureCount,
+      },
+    };
   }
 
   async function queryEmbeddingForSearch(
@@ -1638,7 +1680,19 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     return `${label}: ${event.content}`;
   }
 
-  async function applyTurnMemory(input: {
+  interface TurnMemoryWrite {
+    result: ObserveResult;
+    profileId: string;
+    kind: MemoryKind;
+    content: string;
+    confidence: number;
+    sensitivity: Sensitivity;
+    sourceEventId: string;
+    metadata: Record<string, unknown>;
+    createdAt: string;
+  }
+
+  async function prepareTurnMemoryWrite(input: {
     result: ObserveResult;
     profileId: string;
     event: ConversationEvent;
@@ -1649,7 +1703,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     allowLowerTrustPolicyWrites: boolean;
     kind: MemoryKind;
     confidence: number;
-  }): Promise<MemoryRecord | null> {
+  }): Promise<TurnMemoryWrite | null> {
     if (input.kind === "person" || isPersonRoutedMemory(input.event.content)) return null;
     if (
       input.sourceTrust !== "user" &&
@@ -1705,12 +1759,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       maxSensitivity(input.sensitivity, contentSensitivity),
       metadataSensitivity,
     );
-    const embedding = await embeddingForRuntimeWrite({
-      kind: input.kind,
-      sensitivity: memorySensitivity,
-      content,
-    });
-    const memory = await store.addMemory({
+    return {
+      result: input.result,
       profileId: input.profileId,
       kind: input.kind,
       content,
@@ -1729,10 +1779,38 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         ...(entityMentions.length > 0 ? { entityMentions } : {}),
       },
       createdAt: eventTime,
-      ...(embedding ? { embedding } : {}),
-    });
-    input.result.memoryIds.push(memory.id);
-    return memory;
+    };
+  }
+
+  async function applyTurnMemoryWrites(
+    writes: TurnMemoryWrite[],
+    stats?: RuntimeEmbeddingStats | undefined,
+  ): Promise<number> {
+    if (writes.length === 0) return 0;
+    const embedded = await embeddingsForRuntimeWrites(writes.map((write) => ({
+      kind: write.kind,
+      sensitivity: write.sensitivity,
+      content: write.content,
+    })));
+    if (stats) addRuntimeEmbeddingStats(stats, embedded.stats);
+    let count = 0;
+    for (const [index, write] of writes.entries()) {
+      const embedding = embedded.embeddings[index];
+      const memory = await store.addMemory({
+        profileId: write.profileId,
+        kind: write.kind,
+        content: write.content,
+        confidence: write.confidence,
+        sensitivity: write.sensitivity,
+        sourceEventId: write.sourceEventId,
+        metadata: write.metadata,
+        createdAt: write.createdAt,
+        ...(embedding ? { embedding } : {}),
+      });
+      write.result.memoryIds.push(memory.id);
+      count += 1;
+    }
+    return count;
   }
 
   async function recordConversationEvidence(
@@ -1801,6 +1879,18 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     };
   }
 
+  interface ExtractionCandidateContext {
+    result: ObserveResult;
+    event: ConversationEvent;
+    evidence: EvidenceEvent;
+    eventMetadata: Record<string, unknown>;
+    sensitivity: Sensitivity;
+    sourceTrust: SourceTrust;
+    allowLowerTrustPolicyWrites: boolean;
+    sourceEventId: string;
+    metadata?: Record<string, unknown> | undefined;
+  }
+
   async function applyExtractionCandidates(input: {
     result: ObserveResult;
     profileId: string;
@@ -1814,12 +1904,41 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     sourceEventId: string;
     metadata?: Record<string, unknown> | undefined;
     dedupeKeys?: Set<string> | undefined;
+    contextForCandidate?: (
+      candidate: MemoryExtractionCandidate,
+      index: number,
+    ) => ExtractionCandidateContext;
+    embeddingStats?: RuntimeEmbeddingStats | undefined;
   }): Promise<void> {
-    for (const candidate of input.candidates) {
+    const writes: Array<{
+      result: ObserveResult;
+      context: ExtractionCandidateContext;
+      candidate: MemoryExtractionCandidate;
+      writeCandidate: MemoryExtractionCandidate;
+      subject: string | null;
+      candidateSourceMetadata: Record<string, unknown>;
+      structuredMetadata: Record<string, unknown>;
+      memoryEntityMentions: ReturnType<typeof buildEntityMentions>;
+      memorySensitivity: Sensitivity;
+      confidence: number;
+      annealingMetadata: Record<string, unknown>;
+    }> = [];
+    for (const [candidateIndex, candidate] of input.candidates.entries()) {
+      const context = input.contextForCandidate?.(candidate, candidateIndex) ?? {
+        result: input.result,
+        event: input.event,
+        evidence: input.evidence,
+        eventMetadata: input.eventMetadata,
+        sensitivity: input.sensitivity,
+        sourceTrust: input.sourceTrust,
+        allowLowerTrustPolicyWrites: input.allowLowerTrustPolicyWrites,
+        sourceEventId: input.sourceEventId,
+        ...(input.metadata ? { metadata: input.metadata } : {}),
+      };
       const dedupeKey = candidateDedupeKey(candidate);
       if (input.dedupeKeys?.has(dedupeKey)) continue;
       const candidateSourceMetadata = sourceMetadataForCandidate(
-        input.eventMetadata,
+        context.eventMetadata,
         candidate,
         classifyRuntimeSensitivity,
       );
@@ -1834,9 +1953,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         entityResolver: options.entityResolver,
       });
       if (
-        input.sourceTrust !== "user" &&
+        context.sourceTrust !== "user" &&
         lowerTrustPolicyWrite(writeCandidate) &&
-        !input.allowLowerTrustPolicyWrites
+        !context.allowLowerTrustPolicyWrites
       ) {
         continue;
       }
@@ -1864,93 +1983,116 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         predicate: writeCandidate.predicate,
         subjectAliases: writeCandidate.subjectAliases,
         sourceMetadata: candidateSourceMetadata,
-          entityResolver: options.entityResolver,
-        });
+        entityResolver: options.entityResolver,
+      });
       input.dedupeKeys?.add(dedupeKey);
       const memorySensitivity = memorySensitivityForCandidate({
-        eventSensitivity: input.sensitivity,
+        eventSensitivity: context.sensitivity,
         candidateContentSensitivity: candidateSensitivity,
         candidateMetadataSensitivity,
         candidateStructuredSensitivity,
       });
-      const confidenceCap = sourceTrustConfidenceCap(input.sourceTrust, trust);
+      const confidenceCap = sourceTrustConfidenceCap(context.sourceTrust, trust);
       const confidence = confidenceCap === undefined
         ? writeCandidate.confidence
         : Math.min(writeCandidate.confidence, confidenceCap);
       const annealingMetadata = lowerTrustAnnealingMetadata({
-        sourceTrust: input.sourceTrust,
+        sourceTrust: context.sourceTrust,
         confidence,
-        startedAt: input.event.createdAt ?? input.evidence.createdAt,
+        startedAt: context.event.createdAt ?? context.evidence.createdAt,
         lifecycle,
       });
-      const embedding = await embeddingForRuntimeWrite({
-        kind: writeCandidate.kind,
-        sensitivity: memorySensitivity,
-        content: writeCandidate.content,
+      writes.push({
+        result: context.result,
+        context,
+        candidate,
+        writeCandidate,
+        subject,
+        candidateSourceMetadata,
+        structuredMetadata,
+        memoryEntityMentions,
+        memorySensitivity,
+        confidence,
+        annealingMetadata,
       });
+    }
+    const embedded = await embeddingsForRuntimeWrites(writes.map((write) => ({
+      kind: write.writeCandidate.kind,
+      sensitivity: write.memorySensitivity,
+      content: write.writeCandidate.content,
+    })));
+    if (input.embeddingStats) addRuntimeEmbeddingStats(input.embeddingStats, embedded.stats);
+    for (const [index, write] of writes.entries()) {
+      const embedding = embedded.embeddings[index];
       const memory = await store.addMemory({
         profileId: input.profileId,
-        kind: writeCandidate.kind,
-        content: writeCandidate.content,
-        confidence,
-        sensitivity: memorySensitivity,
-        sourceEventId: input.sourceEventId,
+        kind: write.writeCandidate.kind,
+        content: write.writeCandidate.content,
+        confidence: write.confidence,
+        sensitivity: write.memorySensitivity,
+        sourceEventId: write.context.sourceEventId,
         metadata: {
           ...sanitizeRuntimeExternalMemoryMetadata(
-            candidate.metadata,
+            write.candidate.metadata,
             classifyRuntimeSensitivity,
           ),
-          ...structuredMetadata,
-          ...(input.metadata ?? {}),
-          sourceTrust: input.sourceTrust,
-          ...annealingMetadata,
-          sourceRole: input.event.role,
-          ...(Object.keys(candidateSourceMetadata).length > 0 ? { sourceMetadata: candidateSourceMetadata } : {}),
-          ...(memoryEntityMentions.length > 0 ? { entityMentions: memoryEntityMentions } : {}),
+          ...write.structuredMetadata,
+          ...(write.context.metadata ?? {}),
+          sourceTrust: write.context.sourceTrust,
+          ...write.annealingMetadata,
+          sourceRole: write.context.event.role,
+          ...(Object.keys(write.candidateSourceMetadata).length > 0
+            ? { sourceMetadata: write.candidateSourceMetadata }
+            : {}),
+          ...(write.memoryEntityMentions.length > 0
+            ? { entityMentions: write.memoryEntityMentions }
+            : {}),
         },
-        createdAt: input.event.createdAt,
+        createdAt: write.context.event.createdAt,
         ...(embedding ? { embedding } : {}),
       });
-      input.result.memoryIds.push(memory.id);
-      if (writeCandidate.predicate && subject) {
+      write.result.memoryIds.push(memory.id);
+      if (write.writeCandidate.predicate && write.subject) {
         const subjectAliases = worldBeliefSubjectAliasesForCandidate({
-          candidate: writeCandidate,
-          subject,
-          eventMetadata: candidateSourceMetadata,
+          candidate: write.writeCandidate,
+          subject: write.subject,
+          eventMetadata: write.candidateSourceMetadata,
           classifyRuntimeSensitivity,
         });
         const beliefEntityMentions = buildEntityMentions({
-          subject,
-          predicate: writeCandidate.predicate,
+          subject: write.subject,
+          predicate: write.writeCandidate.predicate,
           subjectAliases,
-          sourceMetadata: candidateSourceMetadata,
+          sourceMetadata: write.candidateSourceMetadata,
           entityResolver: options.entityResolver,
         });
         const belief = await store.addWorldBelief({
           profileId: input.profileId,
-          subject,
+          subject: write.subject,
           subjectAliases,
-          predicate: writeCandidate.predicate,
-          object: writeCandidate.object ?? writeCandidate.content,
-          confidence,
+          predicate: write.writeCandidate.predicate,
+          object: write.writeCandidate.object ?? write.writeCandidate.content,
+          confidence: write.confidence,
           sourceMemoryId: memory.id,
-          cardinality: writeCandidate.cardinality,
-          createdAt: input.event.createdAt ?? memory.createdAt,
+          cardinality: write.writeCandidate.cardinality,
+          createdAt: write.context.event.createdAt ?? memory.createdAt,
           metadata: {
             ...sanitizeRuntimeExternalMemoryMetadata(
-              writeCandidate.metadata,
+              write.writeCandidate.metadata,
               classifyRuntimeSensitivity,
             ),
-            ...structuredMetadata,
-            ...(input.metadata ?? {}),
-            sourceTrust: input.sourceTrust,
-            ...annealingMetadata,
-            sourceRole: input.event.role,
-            ...(Object.keys(candidateSourceMetadata).length > 0 ? { sourceMetadata: candidateSourceMetadata } : {}),
+            ...write.structuredMetadata,
+            ...(write.context.metadata ?? {}),
+            sourceTrust: write.context.sourceTrust,
+            ...write.annealingMetadata,
+            sourceRole: write.context.event.role,
+            ...(Object.keys(write.candidateSourceMetadata).length > 0
+              ? { sourceMetadata: write.candidateSourceMetadata }
+              : {}),
             ...(beliefEntityMentions.length > 0 ? { entityMentions: beliefEntityMentions } : {}),
           },
         });
-        input.result.worldBeliefIds.push(belief.id);
+        write.result.worldBeliefIds.push(belief.id);
       }
     }
   }
@@ -2091,6 +2233,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     let extractedMemoryCountForProgress = 0;
     let turnMemoryCount = 0;
     let distilledMemoryCount = 0;
+    const embeddingStats = emptyRuntimeEmbeddingStats();
     let distillationCallCount = 0;
     let distillationOkWithCandidatesCount = 0;
     let distillationEmptyCount = 0;
@@ -2323,8 +2466,11 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         content: sessionEvidence.content,
         createdAt: eventTime,
       };
+      const freshCandidates: MemoryExtractionCandidate[] = [];
+      const metadataByDedupeKey = new Map<string, Record<string, unknown>>();
       for (const candidate of candidates) {
-        const key = `${sessionEvidence.id}:${candidateDedupeKey(candidate)}`;
+        const dedupeKey = candidateDedupeKey(candidate);
+        const key = `${sessionEvidence.id}:${dedupeKey}`;
         const existing = store.findActiveMemoryByMetadata
           ? await store.findActiveMemoryByMetadata(profileId, "sessionDistillationKey", key)
           : null;
@@ -2332,11 +2478,32 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           sessionResult.memoryIds.push(existing.id);
           continue;
         }
-        const before = sessionResult.memoryIds.length;
-        await applyExtractionCandidates({
+        freshCandidates.push(candidate);
+        metadataByDedupeKey.set(dedupeKey, {
+          sessionDistillation: true,
+          sessionDistillationKey: key,
+          sessionDistillationEvidenceId: sessionEvidence.id,
+          sourceEvidenceId: sessionEvidence.id,
+          sessionEvidenceIds,
+          eventTime,
+        });
+      }
+      const before = sessionResult.memoryIds.length;
+      await applyExtractionCandidates({
+        result: sessionResult,
+        profileId,
+        candidates: freshCandidates,
+        event: sessionEvent,
+        evidence: sessionEvidence,
+        eventMetadata: {},
+        sensitivity: sessionSensitivity,
+        sourceTrust: sessionSourceTrust,
+        allowLowerTrustPolicyWrites: sessionAllowLowerTrustPolicyWrites,
+        sourceEventId: sessionEvidence.id,
+        dedupeKeys,
+        embeddingStats,
+        contextForCandidate: (candidate) => ({
           result: sessionResult,
-          profileId,
-          candidates: [candidate],
           event: sessionEvent,
           evidence: sessionEvidence,
           eventMetadata: {},
@@ -2344,18 +2511,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           sourceTrust: sessionSourceTrust,
           allowLowerTrustPolicyWrites: sessionAllowLowerTrustPolicyWrites,
           sourceEventId: sessionEvidence.id,
-          metadata: {
-            sessionDistillation: true,
-            sessionDistillationKey: key,
-            sessionDistillationEvidenceId: sessionEvidence.id,
-            sourceEvidenceId: sessionEvidence.id,
-            sessionEvidenceIds,
-            eventTime,
-          },
-          dedupeKeys,
-        });
-        distilledMemoryCount += Math.max(0, sessionResult.memoryIds.length - before);
-      }
+          metadata: metadataByDedupeKey.get(candidateDedupeKey(candidate)) ?? {},
+        }),
+      });
+      distilledMemoryCount += Math.max(0, sessionResult.memoryIds.length - before);
     }
 
     async function applySessionDistillation(members: WindowMember[]): Promise<void> {
@@ -2371,6 +2530,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     let pendingWindowChars = 0;
     const extractionTasks: ExtractionWindowTask[] = [];
     const sessionMembers: WindowMember[] = [];
+    const turnMemoryWrites: TurnMemoryWrite[] = [];
 
     function windowChars(members: WindowMember[]): number {
       return members.reduce((sum, member) => sum + member.event.content.length, 0);
@@ -2556,36 +2716,47 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         (sourceTrust, member) => lowerTrust(sourceTrust, member.sourceTrust),
         "user",
       );
-      for (const candidate of extraction.candidates) {
-        const sourceIndex = Number.isInteger(candidate.sourceIndex)
-          ? candidate.sourceIndex
-          : undefined;
-        const sourceMember = sourceIndex !== undefined ? members[sourceIndex] : undefined;
-        const source = sourceMember ?? last;
-        const validSourceIndex = sourceMember !== undefined ? sourceIndex : undefined;
-        await applyExtractionCandidates({
-          result: last.result,
-          profileId,
-          candidates: [candidate],
-          event: source.event,
-          evidence: last.evidence,
-          eventMetadata: source.eventMetadata,
-          sensitivity: sourceMember ? source.sensitivity : windowSensitivity,
-          sourceTrust: sourceMember ? source.sourceTrust : windowSourceTrust,
-          allowLowerTrustPolicyWrites: source.allowLowerTrustPolicyWrites,
-          sourceEventId: last.evidence.id,
-          metadata: {
-            windowEvidenceIds,
-            ...(validSourceIndex !== undefined
-              ? {
-                  sourceIndex: validSourceIndex,
-                  sourceEvidenceId: source.evidence.id,
-                }
-              : {}),
-          },
-          dedupeKeys,
-        });
-      }
+      await applyExtractionCandidates({
+        result: last.result,
+        profileId,
+        candidates: extraction.candidates,
+        event: last.event,
+        evidence: last.evidence,
+        eventMetadata: last.eventMetadata,
+        sensitivity: windowSensitivity,
+        sourceTrust: windowSourceTrust,
+        allowLowerTrustPolicyWrites: last.allowLowerTrustPolicyWrites,
+        sourceEventId: last.evidence.id,
+        dedupeKeys,
+        embeddingStats,
+        contextForCandidate: (candidate) => {
+          const sourceIndex = Number.isInteger(candidate.sourceIndex)
+            ? candidate.sourceIndex
+            : undefined;
+          const sourceMember = sourceIndex !== undefined ? members[sourceIndex] : undefined;
+          const source = sourceMember ?? last;
+          const validSourceIndex = sourceMember !== undefined ? sourceIndex : undefined;
+          return {
+            result: last.result,
+            event: source.event,
+            evidence: last.evidence,
+            eventMetadata: source.eventMetadata,
+            sensitivity: sourceMember ? source.sensitivity : windowSensitivity,
+            sourceTrust: sourceMember ? source.sourceTrust : windowSourceTrust,
+            allowLowerTrustPolicyWrites: source.allowLowerTrustPolicyWrites,
+            sourceEventId: last.evidence.id,
+            metadata: {
+              windowEvidenceIds,
+              ...(validSourceIndex !== undefined
+                ? {
+                    sourceIndex: validSourceIndex,
+                    sourceEvidenceId: source.evidence.id,
+                  }
+                : {}),
+            },
+          };
+        },
+      });
     }
 
     for (const [index, message] of input.messages.entries()) {
@@ -2612,7 +2783,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       const member: WindowMember = { ...recorded.write, result: recorded.result };
       sessionMembers.push(member);
       if (turnRetention && !isPersonRoutedMemory(event.content)) {
-        const turnMemory = await applyTurnMemory({
+        const turnMemory = await prepareTurnMemoryWrite({
           result: recorded.result,
           profileId: eventProfileId,
           event,
@@ -2624,7 +2795,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           kind: turnRetention.kind,
           confidence: turnRetention.confidence,
         });
-        if (turnMemory) turnMemoryCount += 1;
+        if (turnMemory) turnMemoryWrites.push(turnMemory);
       }
       if (!extractFromRoles.includes(event.role)) {
         recorded.result.skippedReason = "non_user_message";
@@ -2659,6 +2830,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       pendingWindowChars += eventChars;
     }
     flushWindow();
+    turnMemoryCount += await applyTurnMemoryWrites(turnMemoryWrites, embeddingStats);
     const windowExtractions = await extractQueuedWindows();
     for (const output of windowExtractions) {
       await applyWindowExtraction(output);
@@ -2690,6 +2862,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       replayRecoveredCount,
       turnMemoryCount,
       distilledMemoryCount,
+      embeddingCallCount: embeddingStats.embeddingCallCount,
+      embeddedMemoryCount: embeddingStats.embeddedMemoryCount,
+      embeddingFailureCount: embeddingStats.embeddingFailureCount,
       distillationCallCount,
       distillationOkWithCandidatesCount,
       distillationEmptyCount,

@@ -15,11 +15,26 @@ import type {
 } from "./types.js";
 
 export const DEFAULT_EMBEDDING_TIMEOUT_MS = 1500;
-export const DEFAULT_VECTOR_BACKFILL_BATCH_SIZE = 32;
+export const DEFAULT_EMBEDDING_BATCH_SIZE = 32;
+export const DEFAULT_VECTOR_BACKFILL_BATCH_SIZE = DEFAULT_EMBEDDING_BATCH_SIZE;
+
+export interface MemoryEmbeddingInput {
+  kind: MemoryKind;
+  sensitivity: Sensitivity;
+  content: string;
+}
+
+export interface MemoryEmbeddingBatchResult {
+  embeddings: MemoryVectorEmbedding[];
+  providerCallCount: number;
+  providerFailureCount: number;
+  embeddedMemoryCount: number;
+}
 
 export interface ResolvedEmbeddingProviderConfig {
   name: string;
   dimensions: number;
+  maxBatchSize: number;
   embedSensitive: boolean;
   embedPerson: boolean;
   timeoutMs: number;
@@ -44,6 +59,10 @@ export function resolveEmbeddingProviderConfig(
   }
   const name = typeof provider === "function" ? "host-embedding-provider" : provider.name.trim();
   const dimensions = typeof provider === "function" ? 0 : Math.trunc(provider.dimensions);
+  const maxBatchSize =
+    typeof provider === "function"
+      ? DEFAULT_EMBEDDING_BATCH_SIZE
+      : boundedBatchSize(provider.maxBatchSize);
   const embed = typeof provider === "function" ? provider : provider.embed.bind(provider);
   if (!name) throw new Error("gmOS embedding provider requires a non-empty name");
   if (typeof provider !== "function" && (!Number.isInteger(dimensions) || dimensions <= 0)) {
@@ -52,6 +71,7 @@ export function resolveEmbeddingProviderConfig(
   return {
     name,
     dimensions,
+    maxBatchSize,
     embedSensitive,
     embedPerson,
     timeoutMs: boundedTimeout(timeoutMs),
@@ -104,21 +124,69 @@ export async function embeddingForMemory(input: {
   content: string;
   timeoutMs?: number | undefined;
 }): Promise<MemoryVectorEmbedding> {
-  const fallback = localMemoryEmbedding(input.content, "embedded");
-  const provider = input.provider;
-  if (!provider) return fallback;
-  if (!memoryEligibleForEmbeddingProvider(input)) return fallback;
-  const embedded = await callProvider({
-    provider,
-    texts: [input.content],
+  const result = await embeddingsForMemories({
+    provider: input.provider,
+    memories: [input],
     timeoutMs: input.timeoutMs,
   });
-  if (!embedded) return localMemoryEmbedding(input.content, "pending");
+  return result.embeddings[0] ?? localMemoryEmbedding(input.content, "embedded");
+}
+
+export async function embeddingsForMemories(input: {
+  provider: ResolvedEmbeddingProviderConfig | null;
+  memories: MemoryEmbeddingInput[];
+  timeoutMs?: number | undefined;
+}): Promise<MemoryEmbeddingBatchResult> {
+  const embeddings = input.memories.map((memory) =>
+    localMemoryEmbedding(memory.content, "embedded")
+  );
+  const provider = input.provider;
+  if (!provider || input.memories.length === 0) {
+    return {
+      embeddings,
+      providerCallCount: 0,
+      providerFailureCount: 0,
+      embeddedMemoryCount: 0,
+    };
+  }
+  const candidates = input.memories.flatMap((memory, index) =>
+    memoryEligibleForEmbeddingProvider({ provider, ...memory })
+      ? [{ index, memory }]
+      : []
+  );
+  let providerCallCount = 0;
+  let providerFailureCount = 0;
+  let embeddedMemoryCount = 0;
+  for (let index = 0; index < candidates.length; index += provider.maxBatchSize) {
+    const batch = candidates.slice(index, index + provider.maxBatchSize);
+    providerCallCount += 1;
+    const embedded = await callProvider({
+      provider,
+      texts: batch.map((candidate) => candidate.memory.content),
+      timeoutMs: input.timeoutMs,
+    });
+    if (!embedded) {
+      providerFailureCount += 1;
+      for (const candidate of batch) {
+        embeddings[candidate.index] = localMemoryEmbedding(candidate.memory.content, "pending");
+      }
+      continue;
+    }
+    embeddedMemoryCount += batch.length;
+    for (const [offset, candidate] of batch.entries()) {
+      embeddings[candidate.index] = {
+        providerName: provider.name,
+        dimensions: embedded.dimensions,
+        vector: embedded.vectors[offset] ?? [],
+        status: "embedded",
+      };
+    }
+  }
   return {
-    providerName: provider.name,
-    dimensions: embedded.dimensions,
-    vector: embedded.vectors[0] ?? [],
-    status: "embedded",
+    embeddings,
+    providerCallCount,
+    providerFailureCount,
+    embeddedMemoryCount,
   };
 }
 
@@ -204,6 +272,11 @@ async function callProvider(input: {
 function boundedTimeout(value: number | undefined): number {
   if (value === undefined || !Number.isFinite(value)) return DEFAULT_EMBEDDING_TIMEOUT_MS;
   return Math.max(50, Math.min(Math.trunc(value), 30_000));
+}
+
+function boundedBatchSize(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return DEFAULT_EMBEDDING_BATCH_SIZE;
+  return Math.max(1, Math.min(Math.trunc(value), 256));
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

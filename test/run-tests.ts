@@ -13926,6 +13926,249 @@ assert.match(failingQueryEmbeddingReconstruction.contextBlock, /retrieves lexica
 assert.deepEqual(failingQueryEmbeddingCalls, ["lexical fallback query"]);
 assert.equal(failingQueryEmbeddingFailureCount, 1);
 await failingQueryEmbeddingMemory.close();
+
+function normalizedTestVector(vector: number[]): number[] {
+  const magnitude = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0));
+  return magnitude > 0 ? vector.map((value) => Number((value / magnitude).toFixed(6))) : vector;
+}
+
+function batchVectorForText(text: string): number[] {
+  const number = Number(text.match(/(\d+)(?!.*\d)/u)?.[1] ?? "0") + 1;
+  return [number, number + 1, number + 2];
+}
+
+function createBatchEmbeddingProvider(
+  name: string,
+  maxBatchSize: number,
+  failCallIndexes: number[] = [],
+) {
+  const failedCalls = new Set(failCallIndexes);
+  const provider = {
+    name,
+    dimensions: 3,
+    maxBatchSize,
+    calls: [] as string[][],
+    async embed(texts: string[]) {
+      const callIndex = provider.calls.length;
+      provider.calls.push([...texts]);
+      if (failedCalls.has(callIndex)) throw new Error("planned batch embedding failure");
+      return texts.map(batchVectorForText);
+    },
+  };
+  return provider;
+}
+
+function memoryVectorRows(dbPath: string, memoryIds: string[]) {
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    return new Map(memoryIds.map((memoryId) => {
+      const row = db
+        .prepare(
+          `SELECT provider_name AS providerName,
+                  embedding_status AS embeddingStatus,
+                  vector_json AS vectorJson
+           FROM gmos_memory_vectors
+           WHERE id = ?`,
+        )
+        .get(memoryId) as
+        | { providerName: string; embeddingStatus: string; vectorJson: string }
+        | undefined;
+      assert.ok(row);
+      return [
+        memoryId,
+        {
+          providerName: row.providerName,
+          embeddingStatus: row.embeddingStatus,
+          vector: JSON.parse(row.vectorJson) as number[],
+        },
+      ] as const;
+    }));
+  } finally {
+    db.close();
+  }
+}
+
+const batchEmbeddingDbPath = path.join(tmp, "batch-embedding-ingest.db");
+const batchEmbeddingProvider = createBatchEmbeddingProvider("test-batch-provider", 2);
+const batchEmbeddingMemory = createMemoryOS({
+  profileId: "batch-embedding-ingest",
+  store: createSqliteMemoryStore({ path: batchEmbeddingDbPath }),
+  embeddingProvider: batchEmbeddingProvider,
+  extractor: () =>
+    Array.from({ length: 5 }, (_entry, index) => ({
+      kind: "fact" as const,
+      content: `Batch embedding memory ${index}`,
+      confidence: 0.8,
+    })),
+});
+const batchEmbeddingIngest = await batchEmbeddingMemory.ingestConversation({
+  profileId: "batch-embedding-ingest",
+  messages: [{
+    role: "user",
+    content: "Batch embedding source message.",
+    createdAt: "2026-07-06T00:00:00.000Z",
+  }],
+});
+assert.deepEqual(batchEmbeddingProvider.calls, [
+  ["Batch embedding memory 0", "Batch embedding memory 1"],
+  ["Batch embedding memory 2", "Batch embedding memory 3"],
+  ["Batch embedding memory 4"],
+]);
+assert.equal(batchEmbeddingIngest.embeddingCallCount, 3);
+assert.equal(batchEmbeddingIngest.embeddedMemoryCount, 5);
+assert.equal(batchEmbeddingIngest.embeddingFailureCount, 0);
+const batchEmbeddingRows = memoryVectorRows(batchEmbeddingDbPath, batchEmbeddingIngest.memoryIds);
+for (const index of [0, 2, 4]) {
+  const memoryId = batchEmbeddingIngest.memoryIds[index]!;
+  const row = batchEmbeddingRows.get(memoryId)!;
+  assert.equal(row.providerName, "test-batch-provider");
+  assert.deepEqual(row.vector, normalizedTestVector(batchVectorForText(`Batch embedding memory ${index}`)));
+}
+await batchEmbeddingMemory.close();
+
+const mixedEmbeddingDbPath = path.join(tmp, "batch-embedding-mixed.db");
+const mixedEmbeddingProvider = createBatchEmbeddingProvider("test-mixed-batch-provider", 4);
+const mixedEmbeddingMemory = createMemoryOS({
+  profileId: "batch-embedding-mixed",
+  store: createSqliteMemoryStore({ path: mixedEmbeddingDbPath }),
+  embeddingProvider: mixedEmbeddingProvider,
+  extractor: () => [],
+});
+const mixedEmbeddingIngest = await mixedEmbeddingMemory.ingestConversation({
+  profileId: "batch-embedding-mixed",
+  messages: [
+    {
+      role: "user",
+      content: "Batch mixed normal turn 1.",
+      createdAt: "2026-07-06T00:01:00.000Z",
+    },
+    {
+      role: "user",
+      content: "Mental health support plan should stay local fallback.",
+      createdAt: "2026-07-06T00:01:01.000Z",
+    },
+    {
+      role: "user",
+      content: "api key sk-batchmixedsecret1234567890",
+      createdAt: "2026-07-06T00:01:02.000Z",
+    },
+    {
+      role: "user",
+      content: "PERSON: Batch Mixed Person should stay gated.",
+      createdAt: "2026-07-06T00:01:03.000Z",
+    },
+  ],
+  turnRetention: { enabled: true },
+});
+assert.equal(mixedEmbeddingIngest.turnMemoryCount, 2);
+assert.equal(mixedEmbeddingIngest.embeddingCallCount, 1);
+assert.equal(mixedEmbeddingIngest.embeddedMemoryCount, 1);
+assert.deepEqual(mixedEmbeddingProvider.calls, [["user: Batch mixed normal turn 1."]]);
+const mixedRows = await mixedEmbeddingMemory.list({
+  profileId: "batch-embedding-mixed",
+  status: "any",
+  includeSensitive: true,
+  limit: 10,
+});
+const mixedVectorRows = memoryVectorRows(mixedEmbeddingDbPath, mixedRows.map((memoryRecord) => memoryRecord.id));
+const sensitiveTurn = mixedRows.find((memoryRecord) => memoryRecord.content.includes("Mental health"));
+assert.ok(sensitiveTurn);
+assert.equal(mixedVectorRows.get(sensitiveTurn.id)?.providerName, "local-hash-v1");
+assert.equal(JSON.stringify(mixedEmbeddingProvider.calls).includes("sk-batchmixedsecret"), false);
+assert.equal(JSON.stringify(mixedEmbeddingProvider.calls).includes("PERSON:"), false);
+await mixedEmbeddingMemory.close();
+
+const failedBatchDbPath = path.join(tmp, "batch-embedding-failure.db");
+const failedBatchProvider = createBatchEmbeddingProvider("test-failed-batch-provider", 2, [1]);
+const failedBatchMemory = createMemoryOS({
+  profileId: "batch-embedding-failure",
+  store: createSqliteMemoryStore({ path: failedBatchDbPath }),
+  embeddingProvider: failedBatchProvider,
+  extractor: () =>
+    Array.from({ length: 5 }, (_entry, index) => ({
+      kind: "fact" as const,
+      content: `Failed batch memory ${index}`,
+      confidence: 0.8,
+    })),
+});
+const failedBatchIngest = await failedBatchMemory.ingestConversation({
+  profileId: "batch-embedding-failure",
+  messages: [{
+    role: "user",
+    content: "Failed batch source message.",
+    createdAt: "2026-07-06T00:02:00.000Z",
+  }],
+});
+assert.equal(failedBatchIngest.embeddingCallCount, 3);
+assert.equal(failedBatchIngest.embeddedMemoryCount, 3);
+assert.equal(failedBatchIngest.embeddingFailureCount, 1);
+const failedBatchRows = memoryVectorRows(failedBatchDbPath, failedBatchIngest.memoryIds);
+assert.equal(failedBatchRows.get(failedBatchIngest.memoryIds[0]!)?.providerName, "test-failed-batch-provider");
+assert.equal(failedBatchRows.get(failedBatchIngest.memoryIds[1]!)?.providerName, "test-failed-batch-provider");
+assert.equal(failedBatchRows.get(failedBatchIngest.memoryIds[2]!)?.providerName, "local-hash-v1");
+assert.equal(failedBatchRows.get(failedBatchIngest.memoryIds[2]!)?.embeddingStatus, "pending");
+assert.equal(failedBatchRows.get(failedBatchIngest.memoryIds[3]!)?.providerName, "local-hash-v1");
+assert.equal(failedBatchRows.get(failedBatchIngest.memoryIds[3]!)?.embeddingStatus, "pending");
+assert.equal(failedBatchRows.get(failedBatchIngest.memoryIds[4]!)?.providerName, "test-failed-batch-provider");
+await failedBatchMemory.close();
+
+async function deterministicBatchSnapshot(label: string) {
+  const dbPath = path.join(tmp, `${label}.db`);
+  const provider = createBatchEmbeddingProvider(`test-${label}-provider`, 2);
+  const memoryForSnapshot = createMemoryOS({
+    profileId: label,
+    store: createSqliteMemoryStore({ path: dbPath }),
+    embeddingProvider: provider,
+    extractor: () =>
+      Array.from({ length: 4 }, (_entry, index) => ({
+        kind: "fact" as const,
+        content: `Deterministic batch memory ${index}`,
+        confidence: 0.8,
+      })),
+  });
+  const ingest = await memoryForSnapshot.ingestConversation({
+    profileId: label,
+    messages: [{
+      role: "user",
+      content: "Deterministic batch source message.",
+      createdAt: "2026-07-06T00:03:00.000Z",
+    }],
+  });
+  const rows = memoryVectorRows(dbPath, ingest.memoryIds);
+  await memoryForSnapshot.close();
+  return {
+    calls: provider.calls,
+    vectors: ingest.memoryIds.map((memoryId) => rows.get(memoryId)?.vector),
+  };
+}
+const deterministicBatchA = await deterministicBatchSnapshot("batch-determinism-a");
+const deterministicBatchB = await deterministicBatchSnapshot("batch-determinism-b");
+assert.deepEqual(deterministicBatchA.calls, deterministicBatchB.calls);
+assert.deepEqual(deterministicBatchA.vectors, deterministicBatchB.vectors);
+
+const importBatchDbPath = path.join(tmp, "batch-embedding-import.db");
+const importBatchProvider = createBatchEmbeddingProvider("test-import-batch-provider", 2);
+const importBatchStore = createSqliteMemoryStore({
+  path: importBatchDbPath,
+  embeddingProvider: importBatchProvider,
+});
+const importBatchReport = await loadHostMemorySnapshotsIntoStore({
+  store: importBatchStore,
+  profileId: "batch-embedding-import",
+  memories: Array.from({ length: 5 }, (_entry, index) => ({
+    id: `import-batch-${index}`,
+    content: `Import batch memory ${index}`,
+    kind: "fact",
+    createdAt: "2026-07-06T00:04:00.000Z",
+  })),
+});
+assert.equal(importBatchReport.loadedCount, 5);
+assert.deepEqual(importBatchProvider.calls, [
+  ["Import batch memory 0", "Import batch memory 1"],
+  ["Import batch memory 2", "Import batch memory 3"],
+  ["Import batch memory 4"],
+]);
+await importBatchStore.close();
 const repairDbPath = path.join(tmp, "repair-search-index.db");
 const repairStore = createSqliteMemoryStore({ path: repairDbPath });
 const repairMemory = createMemoryOS({ profileId: "repair", store: repairStore });

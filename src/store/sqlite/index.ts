@@ -119,7 +119,7 @@ import {
 } from "../../kernel/local-vector.js";
 import {
   DEFAULT_VECTOR_BACKFILL_BATCH_SIZE,
-  embeddingForMemory,
+  embeddingsForMemories,
   localMemoryEmbedding,
   memoryEligibleForEmbeddingProvider,
   providerDimensionsForHealth,
@@ -1411,13 +1411,46 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     content: string;
     embedding?: MemoryVectorEmbedding | undefined;
   }): Promise<MemoryVectorEmbedding> {
-    if (input.embedding) return validateStoredEmbedding(input.embedding);
-    return embeddingForMemory({
-      provider: embeddingProvider,
-      kind: input.kind,
-      sensitivity: input.sensitivity ?? "normal",
-      content: input.content,
-    });
+    return (await embeddingsForWriteBatch([input]))[0]!;
+  }
+
+  async function embeddingsForWriteBatch(
+    inputs: Array<{
+      kind: MemoryKind;
+      sensitivity?: Sensitivity | undefined;
+      content: string;
+      embedding?: MemoryVectorEmbedding | undefined;
+    }>,
+  ): Promise<MemoryVectorEmbedding[]> {
+    const embeddings = new Array<MemoryVectorEmbedding>(inputs.length);
+    const pending: Array<{
+      index: number;
+      kind: MemoryKind;
+      sensitivity: Sensitivity;
+      content: string;
+    }> = [];
+    for (const [index, input] of inputs.entries()) {
+      if (input.embedding) {
+        embeddings[index] = validateStoredEmbedding(input.embedding);
+      } else {
+        pending.push({
+          index,
+          kind: input.kind,
+          sensitivity: input.sensitivity ?? "normal",
+          content: input.content,
+        });
+      }
+    }
+    if (pending.length > 0) {
+      const embedded = await embeddingsForMemories({
+        provider: embeddingProvider,
+        memories: pending,
+      });
+      for (const [offset, pendingInput] of pending.entries()) {
+        embeddings[pendingInput.index] = embedded.embeddings[offset]!;
+      }
+    }
+    return embeddings;
   }
 
   function rebuildMemoryVectorIndex(): void {
@@ -3326,13 +3359,16 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       rebuildMemoryVectorIndex();
       vectorBackfill.fallbackCount = vectorCandidates.length;
     } else {
-      for (const candidate of vectorCandidates) {
-        const embedding = await embeddingForMemory({
-          provider: embeddingProvider,
+      const embedded = await embeddingsForMemories({
+        provider: embeddingProvider,
+        memories: vectorCandidates.map((candidate) => ({
           kind: candidate.kind,
           sensitivity: candidate.sensitivity,
           content: candidate.content,
-        });
+        })),
+      });
+      for (const [index, candidate] of vectorCandidates.entries()) {
+        const embedding = embedded.embeddings[index]!;
         syncMemoryVector(candidate.id, embedding);
         if (embedding.providerName === LOCAL_TEXT_VECTOR_PROVIDER) {
           vectorBackfill.fallbackCount += 1;
@@ -3911,44 +3947,53 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   }
 
   async function addMemory(input: AddMemoryInput): Promise<MemoryRecord> {
+    return (await addMemories([input]))[0]!;
+  }
+
+  async function addMemories(inputs: AddMemoryInput[]): Promise<MemoryRecord[]> {
     initialize();
-    const embedding = await embeddingForWrite({
+    if (inputs.length === 0) return [];
+    const embeddings = await embeddingsForWriteBatch(inputs.map((input) => ({
       kind: input.kind,
       sensitivity: input.sensitivity,
       content: input.content,
       embedding: input.embedding,
-    });
-    const tx = db.transaction((): MemoryRecord => {
-      const createdAt = input.createdAt ?? nowIso();
-      const memoryId = id("memory");
-      db.prepare(
-        `INSERT INTO gmos_memories (
-          id, profile_id, kind, scope, content, sensitivity, status, confidence,
-          source_event_id, metadata_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
-      ).run(
-        memoryId,
-        input.profileId,
-        input.kind,
-        input.scope ?? "global",
-        input.content,
-        input.sensitivity ?? "normal",
-        input.confidence ?? 0.5,
-        input.sourceEventId ?? null,
-        JSON.stringify(input.metadata ?? {}),
-        createdAt,
-        createdAt,
-      );
-      syncMemoryVector(memoryId, embedding);
-      const memory = normalizeMemory(
-        db
-          .prepare("SELECT * FROM gmos_memories WHERE id = ?")
-          .get(memoryId) as Record<string, unknown>,
-      );
-      projectMemoryAssociations(memory, { replaceExisting: false });
-      return memory;
-    });
+    })));
+    const tx = db.transaction((): MemoryRecord[] =>
+      inputs.map((input, index) => insertMemory(input, embeddings[index]!))
+    );
     return tx();
+  }
+
+  function insertMemory(input: AddMemoryInput, embedding: MemoryVectorEmbedding): MemoryRecord {
+    const createdAt = input.createdAt ?? nowIso();
+    const memoryId = id("memory");
+    db.prepare(
+      `INSERT INTO gmos_memories (
+        id, profile_id, kind, scope, content, sensitivity, status, confidence,
+        source_event_id, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
+    ).run(
+      memoryId,
+      input.profileId,
+      input.kind,
+      input.scope ?? "global",
+      input.content,
+      input.sensitivity ?? "normal",
+      input.confidence ?? 0.5,
+      input.sourceEventId ?? null,
+      JSON.stringify(input.metadata ?? {}),
+      createdAt,
+      createdAt,
+    );
+    syncMemoryVector(memoryId, embedding);
+    const memory = normalizeMemory(
+      db
+        .prepare("SELECT * FROM gmos_memories WHERE id = ?")
+        .get(memoryId) as Record<string, unknown>,
+    );
+    projectMemoryAssociations(memory, { replaceExisting: false });
+    return memory;
   }
 
   async function updateMemory(input: UpdateMemoryInput): Promise<MemoryRecord | null> {
@@ -6855,6 +6900,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     recordEvidence,
     getEvidenceByEventKey,
     addMemory,
+    addMemories,
     updateMemory,
     archiveMemoryById,
     restoreArchivedMemory,
