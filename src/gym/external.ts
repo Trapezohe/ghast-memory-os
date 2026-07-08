@@ -1332,12 +1332,16 @@ function optionalBoolean(value: unknown, field: string): boolean | undefined {
 }
 
 const EXTERNAL_RUNTIME_STRING_METADATA_KEYS = new Set([
+  "conversationId",
   "eventDate",
   "eventTime",
   "expiresAt",
+  "sessionId",
+  "sessionKey",
   "speaker",
   "speakerId",
   "speakerKind",
+  "sourceId",
   "validFrom",
   "validTo",
 ]);
@@ -4485,6 +4489,127 @@ function isBenchmarkMessageEvent(
   return event.type === undefined || event.type === "message";
 }
 
+interface MemorySessionGroup {
+  key: string;
+  sessionId: string;
+  conversationId: string;
+  eventTime: string;
+  firstIndex: number;
+  events: ExternalMemoryBenchmarkMemoryEvent[];
+}
+
+const MEMORY_SESSION_METADATA_KEYS = [
+  "sessionId",
+  "sessionKey",
+  "windowId",
+  "conversationId",
+  "sourceId",
+];
+
+function externalMetadataString(value: unknown): string | null {
+  if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+function createdAtCalendarDay(value: string | undefined): string {
+  if (!value) return "undated";
+  const parsed = Date.parse(value);
+  if (Number.isFinite(parsed)) return new Date(parsed).toISOString().slice(0, 10);
+  const match = /^(\d{4}-\d{2}-\d{2})/u.exec(value.trim());
+  return match?.[1] ?? "undated";
+}
+
+function memoryEventSessionIdentity(event: ExternalMemoryBenchmarkMemoryEvent): {
+  key: string;
+  sessionId: string;
+  conversationId: string;
+} {
+  const metadata = event.metadata ?? {};
+  for (const key of MEMORY_SESSION_METADATA_KEYS) {
+    const value = externalMetadataString(metadata[key]);
+    if (value) {
+      return {
+        key: `metadata:${key}:${value}`,
+        sessionId: value,
+        conversationId: `external-memory:${value}`,
+      };
+    }
+  }
+  const day = createdAtCalendarDay(event.createdAt);
+  return {
+    key: `createdAtDay:${day}`,
+    sessionId: `createdAtDay:${day}`,
+    conversationId: `external-memory:${day}`,
+  };
+}
+
+function memoryEventTime(events: ExternalMemoryBenchmarkMemoryEvent[]): string {
+  let latestMs = Number.NEGATIVE_INFINITY;
+  let latestIso = events[events.length - 1]?.createdAt ?? "1970-01-01T00:00:00.000Z";
+  for (const event of events) {
+    if (!event.createdAt) continue;
+    const parsed = Date.parse(event.createdAt);
+    if (Number.isFinite(parsed) && parsed >= latestMs) {
+      latestMs = parsed;
+      latestIso = new Date(parsed).toISOString();
+    }
+  }
+  return latestIso;
+}
+
+function groupedMemorySessions(events: ExternalMemoryBenchmarkMemoryEvent[]): MemorySessionGroup[] {
+  const groups = new Map<string, MemorySessionGroup>();
+  for (const [firstIndex, event] of events.entries()) {
+    const identity = memoryEventSessionIdentity(event);
+    let group = groups.get(identity.key);
+    if (!group) {
+      group = {
+        ...identity,
+        eventTime: event.createdAt ?? "1970-01-01T00:00:00.000Z",
+        firstIndex,
+        events: [],
+      };
+      groups.set(identity.key, group);
+    }
+    group.events.push(event);
+    group.eventTime = memoryEventTime(group.events);
+  }
+  return [...groups.values()].sort((left, right) => {
+    const leftMs = Date.parse(left.eventTime);
+    const rightMs = Date.parse(right.eventTime);
+    if (Number.isFinite(leftMs) && Number.isFinite(rightMs) && leftMs !== rightMs) {
+      return leftMs - rightMs;
+    }
+    return left.firstIndex - right.firstIndex;
+  });
+}
+
+function memoryDistillationMessageId(
+  event: ExternalMemoryBenchmarkMemoryEvent,
+  group: MemorySessionGroup,
+  index: number,
+): string {
+  return `external-memory:${sha256Hex(canonicalJson({
+    groupKey: group.key,
+    index,
+    kind: event.kind,
+    content: event.content,
+    createdAt: event.createdAt ?? null,
+    metadata: event.metadata ?? null,
+  }))}`;
+}
+
+function memoryDistillationMetadata(
+  event: ExternalMemoryBenchmarkMemoryEvent,
+  group: MemorySessionGroup,
+): Record<string, unknown> {
+  return {
+    ...(event.metadata ?? {}),
+    sessionId: group.sessionId,
+  };
+}
+
 async function applyBenchmarkEvent(
   memory: MemoryOS,
   profileId: string,
@@ -4603,11 +4728,13 @@ async function applyBenchmarkEvents(input: {
     if (pendingMemoryEvents.length === 0) return;
     const events = pendingMemoryEvents.splice(0);
     const inputs: Parameters<MemoryOS["addMany"]>[0] = [];
+    const distillationEvents: ExternalMemoryBenchmarkMemoryEvent[] = [];
     for (const event of events) {
       if (!eventEligibleForLongTermMemory(event)) {
         output.warnings.push("skipped_external_memory_event_secret_like");
         continue;
       }
+      distillationEvents.push(event);
       inputs.push({
         profileId: input.profileId,
         kind: event.kind,
@@ -4619,6 +4746,31 @@ async function applyBenchmarkEvents(input: {
       });
     }
     if (inputs.length > 0) await input.memory.addMany(inputs);
+    if (input.sessionDistillation && distillationEvents.length > 0) {
+      for (const group of groupedMemorySessions(distillationEvents)) {
+        const distilled = await input.memory.distillAndAdd({
+          profileId: input.profileId,
+          messages: group.events.map((event, index) => ({
+            role: "user",
+            content: event.content,
+            conversationId: group.conversationId,
+            messageId: memoryDistillationMessageId(event, group, index),
+            ...(event.createdAt !== undefined ? { createdAt: event.createdAt } : {}),
+            metadata: memoryDistillationMetadata(event, group),
+          })),
+        });
+        output.distilledMemoryCount += distilled.distilledMemoryCount;
+        output.embeddingCallCount += distilled.embeddingCallCount;
+        output.embeddedMemoryCount += distilled.embeddedMemoryCount;
+        output.embeddingFailureCount += distilled.embeddingFailureCount;
+        output.distillationCallCount += distilled.distillationCallCount;
+        output.distillationOkWithCandidatesCount += distilled.distillationOkWithCandidatesCount;
+        output.distillationEmptyCount += distilled.distillationEmptyCount;
+        output.distillationParseFailureCount += distilled.distillationParseFailureCount;
+        output.distillationTransportFailureCount += distilled.distillationTransportFailureCount;
+        output.distillationFailureCount += distilled.distillationFailureCount;
+      }
+    }
   }
 
   async function flushMessages(): Promise<void> {
@@ -5371,9 +5523,6 @@ export async function runExternalMemoryBenchmark(
   const ingestMode = normalizedIngestMode(options.ingestMode);
   const turnRetention = normalizedTurnRetention(options.turnRetention, ingestMode);
   const sessionDistillation = normalizedSessionDistillation(options.sessionDistillation);
-  if (sessionDistillation && ingestMode !== "message") {
-    throw new Error("External benchmark sessionDistillation requires --ingest-mode message");
-  }
   const extractionWindow = normalizedExtractionWindow(options.extractionWindow);
   const ingestReplayAttempts = normalizedIngestReplayAttempts(options.ingestReplayAttempts);
   const debugDumpMemories = normalizedDebugDumpMemories(options.debugDumpMemories);

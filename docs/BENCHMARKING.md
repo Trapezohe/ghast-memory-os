@@ -339,19 +339,24 @@ because extraction can miss facts that direct import would keep. Use
 to make the default explicit. SDK and host transcript ingestion default this
 option off so production hosts consciously trade storage for recall.
 
-Session distillation is a separate message-mode opt-in with
-`--session-distill on`. It requires either the intelligence config path or hooks
-that provide `sessionDistiller`; memory-mode runs reject it. The hook is called
-once per session key inside each ingest batch, using the same
-`sessionId`/`sessionKey`/`windowId` boundary as extraction windows. Messages
-without a session key share one whole-call fallback group. Each session
-distiller input is capped at 24,000 source content characters by default, with
-over-cap messages truncated from the tail of that session input. The hook writes
-compact dated `fact` memories at default confidence `0.6`, so aggregation
-questions can retrieve per-session enumerations instead of many scattered raw
-turns. The cost is one extra model call per session. Use it for multi-session
-totals, counts, purchases, durations, and other questions where every instance
-matters. Leave it off for cheap deterministic baselines.
+Session distillation is a separate opt-in with `--session-distill on`. It
+requires either the intelligence config path or hooks that provide
+`sessionDistiller`. In message mode, the hook is called once per session key
+inside each ingest batch, using the same `sessionId`/`sessionKey`/`windowId`
+boundary as extraction windows. Messages without a session key share one
+whole-call fallback group. In memory mode, gmOS direct-imports the raw
+`type: "memory"` events first, then distills consecutive memory batches grouped
+by metadata session identity (`sessionId`, `sessionKey`, `windowId`,
+`conversationId`, or `sourceId`). If no identity exists, memory mode falls back
+to the UTC calendar day of `createdAt`; LongMemEval haystack sessions carry
+distinct normalized timestamps. Each session distiller input is capped at 24,000
+source content characters by default, with over-cap messages truncated from the
+tail of that session input. The hook writes compact dated `fact` memories at
+default confidence `0.6`, so aggregation questions can retrieve per-session
+enumerations instead of many scattered raw turns. The cost is one extra model
+call per session. Use it for multi-session totals, counts, purchases, durations,
+and other questions where every instance matters. Leave it off for cheap
+deterministic baselines.
 
 Message-mode extraction defaults to `["user", "assistant"]` so answer-bearing
 assistant turns in LongMemEval are extractable. LoCoMo still maps both speakers
@@ -406,7 +411,10 @@ In memory ingest mode, consecutive `type: "memory"` events in a case group are
 batched until a non-memory event forces a flush. The runtime `addMany()` path
 still applies per-item gates and skip reporting, but eligible rows share
 provider embedding calls up to the provider `maxBatchSize` instead of embedding
-one event per round trip.
+one event per round trip. When `--session-distill on` is also enabled, those
+same eligible memory events are grouped per session/day and sent to the
+distiller after the direct import; distiller failures are counted and isolated
+per group, so one bad session summary does not fail ingest.
 
 Runtime intelligence uses one shared concurrency limit. Pending query embedding
 calls are dequeued before pending non-query intelligence calls so read-path

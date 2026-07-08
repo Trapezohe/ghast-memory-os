@@ -2813,6 +2813,58 @@ assert.equal(
 );
 await perSessionDistillationMemory.close();
 
+const distillAndAddStore = createSqliteMemoryStore({
+  path: path.join(tmp, "session-distillation-distill-and-add.db"),
+});
+let distillAndAddCalls = 0;
+const distillAndAddMemory = createMemoryOS({
+  profileId: "session-distillation-distill-and-add",
+  store: distillAndAddStore,
+  sessionDistiller: {
+    name: "distill-and-add-session-distiller",
+    distill(input) {
+      distillAndAddCalls += 1;
+      assert.equal(input.context.sessionId, "distill-and-add-session");
+      return [{ content: "DistillAndAdd summary marker is cobalt." }];
+    },
+  },
+});
+const distillAndAddMessages = [{
+  conversationId: "session-distillation-distill-and-add",
+  messageId: "session-distillation-distill-and-add-user",
+  role: "user" as const,
+  content: "Raw direct distillAndAdd source.",
+  createdAt: "2026-07-04T12:30:00.000Z",
+  metadata: { sessionId: "distill-and-add-session" },
+}];
+const firstDistillAndAdd = await distillAndAddMemory.distillAndAdd({
+  profileId: "session-distillation-distill-and-add",
+  messages: distillAndAddMessages,
+});
+assert.equal(firstDistillAndAdd.distillationCallCount, 1);
+assert.equal(firstDistillAndAdd.distilledMemoryCount, 1);
+const distillAndAddRows = await distillAndAddMemory.list({
+  profileId: "session-distillation-distill-and-add",
+  status: "any",
+  includeSensitive: true,
+  limit: 20,
+});
+const distillAndAddSummary = distillAndAddRows.find(
+  (memoryRecord) => memoryRecord.metadata.sessionDistillation === true,
+);
+assert.match(distillAndAddSummary?.content ?? "", /cobalt/u);
+assert.equal(distillAndAddSummary?.metadata.sessionDistillationEvidenceId, distillAndAddSummary?.sourceEventId);
+const distillAndAddCountsAfterFirst = await distillAndAddStore.rowCounts();
+const secondDistillAndAdd = await distillAndAddMemory.distillAndAdd({
+  profileId: "session-distillation-distill-and-add",
+  messages: distillAndAddMessages,
+});
+assert.equal(secondDistillAndAdd.distillationCallCount, 0);
+assert.equal(secondDistillAndAdd.distilledMemoryCount, 0);
+assert.equal(distillAndAddCalls, 1);
+assert.deepEqual(await distillAndAddStore.rowCounts(), distillAndAddCountsAfterFirst);
+await distillAndAddMemory.close();
+
 const failingSessionDistillationStore = createSqliteMemoryStore({
   path: path.join(tmp, "session-distillation-failure-isolation.db"),
 });
@@ -27846,24 +27898,218 @@ const externalDefaultTimeoutRun = await runExternalMemoryBenchmark({
   },
 });
 assert.equal(externalDefaultTimeoutRun.runManifest.runtimeIntelligence.timeoutMs, 20_000);
-await assert.rejects(
-  () => runExternalMemoryBenchmark({
-    cases: externalSessionDistillationRun.cases.map((result) => ({
-      id: result.id,
-      events: [{ type: "memory" as const, kind: "fact" as const, content: "distilled amber marker" }],
-      question: "Which marker should session distillation recall?",
-      expectedAny: ["distilled amber marker"],
-    })),
-    ingestMode: "memory",
-    sessionDistillation: true,
-    intelligence: {
-      sessionDistiller: {
-        distill: () => [],
+const externalMemoryModeDistillerInputs: Array<{
+  eventTime: string;
+  sessionId: string | undefined;
+  messages: string[];
+  roles: string[];
+  createdAts: Array<string | undefined>;
+}> = [];
+let externalMemoryModeContext = "";
+const externalMemoryModeDistillationRun = await runExternalMemoryBenchmark({
+  cases: [{
+    id: "external-memory-mode-session-distillation",
+    events: [
+      {
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "Memory-mode raw alpha session source.",
+        createdAt: "2026-07-01T09:00:00.000Z",
+      },
+      {
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "Memory-mode raw beta session source.",
+        createdAt: "2026-07-02T10:00:00.000Z",
+        metadata: { sessionId: "memory-mode-session-beta" },
+      },
+      {
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "Memory-mode raw gamma session source.",
+        createdAt: "2026-07-03T11:00:00.000Z",
+        metadata: { windowId: 3 },
+      },
+    ],
+    question: "Which memory-mode summary marker should be recalled?",
+    expectedAny: ["prism summary"],
+  }],
+  ingestMode: "memory",
+  sessionDistillation: true,
+  readerProfile: "wide",
+  protocol: "official_protocol",
+  answerer: {
+    name: "memory-mode-session-distillation-reader",
+    answer(_question, context) {
+      externalMemoryModeContext = context;
+      return "prism summary";
+    },
+  },
+  judge: {
+    name: "memory-mode-session-distillation-judge",
+    judge() {
+      return { correct: true };
+    },
+  },
+  intelligence: {
+    sessionDistiller: {
+      name: "external-memory-mode-session-distiller",
+      distill(input) {
+        externalMemoryModeDistillerInputs.push({
+          eventTime: input.eventTime,
+          sessionId: input.context.sessionId,
+          messages: input.messages.map((message) => message.content),
+          roles: input.messages.map((message) => message.role),
+          createdAts: input.messages.map((message) => message.createdAt),
+        });
+        const text = input.messages.map((message) => message.content).join("\n");
+        const label = text.includes("alpha") ? "alpha" : text.includes("beta") ? "beta" : "gamma";
+        return [{ content: `${input.eventTime}: Memory-mode prism summary ${label}.` }];
       },
     },
-  }),
-  /sessionDistillation requires --ingest-mode message/,
+  },
+});
+assert.equal(externalMemoryModeDistillationRun.pass, true);
+assert.deepEqual(externalMemoryModeDistillerInputs, [
+  {
+    eventTime: "2026-07-01T09:00:00.000Z",
+    sessionId: "createdAtDay:2026-07-01",
+    messages: ["Memory-mode raw alpha session source."],
+    roles: ["user"],
+    createdAts: ["2026-07-01T09:00:00.000Z"],
+  },
+  {
+    eventTime: "2026-07-02T10:00:00.000Z",
+    sessionId: "memory-mode-session-beta",
+    messages: ["Memory-mode raw beta session source."],
+    roles: ["user"],
+    createdAts: ["2026-07-02T10:00:00.000Z"],
+  },
+  {
+    eventTime: "2026-07-03T11:00:00.000Z",
+    sessionId: "3",
+    messages: ["Memory-mode raw gamma session source."],
+    roles: ["user"],
+    createdAts: ["2026-07-03T11:00:00.000Z"],
+  },
+]);
+assert.match(externalMemoryModeContext, /Memory-mode prism summary alpha/u);
+assert.match(externalMemoryModeContext, /Memory-mode prism summary beta/u);
+assert.match(externalMemoryModeContext, /Memory-mode prism summary gamma/u);
+assert.equal(externalMemoryModeDistillationRun.cases[0]?.distilledMemoryCount, 3);
+assert.equal(
+  (externalMemoryModeDistillationRun.cases[0]?.reconstructedLayerIncludedCounts?.summary ?? 0) >= 3,
+  true,
 );
+assert.equal(externalMemoryModeDistillationRun.runManifest.runtimeIntelligence.sessionDistillation.callCount, 3);
+assert.equal(
+  externalMemoryModeDistillationRun.runManifest.runtimeIntelligence.sessionDistillation.distilledMemoryCount,
+  3,
+);
+assert.equal(
+  externalMemoryModeDistillationRun.runManifest.runtimeIntelligence.ingestCaseGroups[0]?.distilledMemoryCount,
+  3,
+);
+const externalMemoryModeFailureRun = await runExternalMemoryBenchmark({
+  cases: [{
+    id: "external-memory-mode-distiller-failure",
+    events: [1, 2, 3].map((index) => ({
+      type: "memory" as const,
+      kind: "fact" as const,
+      content: `Memory-mode failure isolation source ${index}.`,
+      createdAt: `2026-07-0${index}T08:00:00.000Z`,
+      metadata: { sessionId: `memory-mode-failure-${index}` },
+    })),
+    question: "Which memory-mode failure marker survived?",
+    expectedAny: ["surviving memory-mode failure marker"],
+  }],
+  ingestMode: "memory",
+  sessionDistillation: true,
+  intelligence: {
+    sessionDistiller: {
+      name: "external-memory-mode-failing-session-distiller",
+      distill(input) {
+        if (input.context.sessionId === "memory-mode-failure-2") {
+          throw new Error("planned memory-mode distiller failure");
+        }
+        return [{
+          content: `The surviving memory-mode failure marker is ${input.context.sessionId}.`,
+        }];
+      },
+    },
+  },
+});
+assert.equal(externalMemoryModeFailureRun.pass, true);
+assert.equal(externalMemoryModeFailureRun.runManifest.runtimeIntelligence.sessionDistillation.callCount, 3);
+assert.equal(externalMemoryModeFailureRun.runManifest.runtimeIntelligence.sessionDistillation.okWithCandidatesCount, 2);
+assert.equal(externalMemoryModeFailureRun.runManifest.runtimeIntelligence.sessionDistillation.transportFailureCount, 1);
+assert.equal(externalMemoryModeFailureRun.runManifest.runtimeIntelligence.sessionDistillation.failureCount, 1);
+assert.equal(externalMemoryModeFailureRun.runManifest.runtimeIntelligence.sessionDistillation.distilledMemoryCount, 2);
+let externalMemoryModeCacheDistillerCalls = 0;
+const externalMemoryModeCacheDistiller: MemorySessionDistiller = {
+  name: "external-memory-mode-cache-distiller",
+  distill() {
+    externalMemoryModeCacheDistillerCalls += 1;
+    return [{ content: "Memory-mode cached summary answer is garnet." }];
+  },
+};
+const externalMemoryModeCacheCases = [{
+  id: "external-memory-mode-cache",
+  events: [{
+    type: "memory" as const,
+    kind: "fact" as const,
+    content: "Memory-mode cache raw source without the final answer.",
+    createdAt: "2026-07-04T09:00:00.000Z",
+  }],
+  question: "What is the memory-mode cached summary answer?",
+  expectedAny: ["garnet"],
+}];
+const externalMemoryModeCacheDir = path.join(tmp, "external-memory-mode-distillation-cache");
+const externalMemoryModeCacheOffFirst = await runExternalMemoryBenchmark({
+  cases: externalMemoryModeCacheCases,
+  ingestMode: "memory",
+  sessionDistillation: false,
+  ingestCacheDir: externalMemoryModeCacheDir,
+  intelligence: { sessionDistiller: externalMemoryModeCacheDistiller },
+});
+assert.equal(externalMemoryModeCacheOffFirst.pass, false);
+assert.equal(externalMemoryModeCacheOffFirst.runManifest.ingestCache.hits, 0);
+assert.equal(externalMemoryModeCacheOffFirst.runManifest.ingestCache.misses, 1);
+const externalMemoryModeCacheOnFirst = await runExternalMemoryBenchmark({
+  cases: externalMemoryModeCacheCases,
+  ingestMode: "memory",
+  sessionDistillation: true,
+  ingestCacheDir: externalMemoryModeCacheDir,
+  intelligence: { sessionDistiller: externalMemoryModeCacheDistiller },
+});
+assert.equal(externalMemoryModeCacheOnFirst.pass, true);
+assert.equal(externalMemoryModeCacheDistillerCalls, 1);
+assert.equal(externalMemoryModeCacheOnFirst.runManifest.ingestCache.hits, 0);
+assert.equal(externalMemoryModeCacheOnFirst.runManifest.ingestCache.misses, 1);
+assert.equal(externalMemoryModeCacheOnFirst.cases[0]?.distilledMemoryCount, 1);
+externalMemoryModeCacheDistillerCalls = 0;
+const externalMemoryModeCacheOnSecond = await runExternalMemoryBenchmark({
+  cases: externalMemoryModeCacheCases,
+  ingestMode: "memory",
+  sessionDistillation: true,
+  ingestCacheDir: externalMemoryModeCacheDir,
+  intelligence: { sessionDistiller: externalMemoryModeCacheDistiller },
+});
+assert.equal(externalMemoryModeCacheOnSecond.pass, true);
+assert.equal(externalMemoryModeCacheDistillerCalls, 0);
+assert.equal(externalMemoryModeCacheOnSecond.runManifest.ingestCache.hits, 1);
+assert.equal(externalMemoryModeCacheOnSecond.runManifest.ingestCache.misses, 0);
+assert.equal(externalMemoryModeCacheOnSecond.cases[0]?.cacheHit, true);
+const externalMemoryModeCacheOffSecond = await runExternalMemoryBenchmark({
+  cases: externalMemoryModeCacheCases,
+  ingestMode: "memory",
+  sessionDistillation: false,
+  ingestCacheDir: externalMemoryModeCacheDir,
+  intelligence: { sessionDistiller: externalMemoryModeCacheDistiller },
+});
+assert.equal(externalMemoryModeCacheOffSecond.pass, false);
+assert.equal(externalMemoryModeCacheOffSecond.runManifest.ingestCache.hits, 1);
+assert.equal(externalMemoryModeCacheOffSecond.runManifest.ingestCache.misses, 0);
 await assert.rejects(
   () => runExternalMemoryBenchmark({
     cases: [{

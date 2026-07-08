@@ -632,6 +632,31 @@ export interface IngestConversationResult {
   extractionReports: MemoryExtractionReport[];
 }
 
+export interface DistillAndAddInput {
+  profileId?: string | undefined;
+  messages: IngestConversationInput["messages"];
+}
+
+export interface DistillAndAddResult {
+  profileId: string;
+  observedAt: string;
+  results: ObserveResult[];
+  evidenceIds: string[];
+  memoryIds: string[];
+  worldBeliefIds: string[];
+  distilledMemoryCount: number;
+  embeddingCallCount: number;
+  embeddedMemoryCount: number;
+  embeddingFailureCount: number;
+  distillationCallCount: number;
+  distillationOkWithCandidatesCount: number;
+  distillationEmptyCount: number;
+  distillationParseFailureCount: number;
+  distillationTransportFailureCount: number;
+  distillationFailureCount: number;
+  distillationTruncatedMessageCount: number;
+}
+
 export interface MemoryRecord {
   id: string;
   profileId: string;
@@ -2292,6 +2317,7 @@ export interface MemoryOSOptions {
 export interface MemoryOS {
   add(input: LowLevelAddMemoryInput): Promise<MemoryRecord>;
   addMany(inputs: LowLevelAddMemoryInput[]): Promise<LowLevelAddManyResult>;
+  distillAndAdd(input: DistillAndAddInput): Promise<DistillAndAddResult>;
   update(input: LowLevelUpdateMemoryInput): Promise<MemoryRecord | null>;
   archive(input: LowLevelArchiveMemoryInput): Promise<ForgetResult>;
   restoreArchived(input: LowLevelRestoreArchivedMemoryInput): Promise<RestoreArchivedResult>;

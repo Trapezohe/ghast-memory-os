@@ -56,6 +56,11 @@ Key write methods:
   eligible items through the configured provider's batch size. Ineligible items
   are skipped instead of failing the batch; the result is
   `{ memories, skipped }`, where `skipped` reports each input index and reason.
+- `distillAndAdd({ profileId?, messages })`: records evidence for message-shaped
+  inputs and runs only the configured `sessionDistiller` summary write path. It
+  does not run extraction or turn retention. Use it when a host already imported
+  low-level memories but wants the same session-summary layer and idempotence as
+  `ingestConversation()`.
 - `ingestConversation({ profileId?, messages, window?, extraction?, turnRetention?, sessionDistillation? })`:
   records each message as its own evidence event, then calls the extractor once
   per eligible message window. `window.maxMessages` defaults to `12`; metadata
@@ -1268,11 +1273,14 @@ results record `sweepCues` and `sweepIncludedCount`; manifests record
 `runtimeIntelligence.sweepCues` provenance and failure count.
 
 External benchmark runners can enable write-side session distillation with
-`sessionDistillation: true` or CLI `--session-distill on`. It is valid only with
-message ingest and requires either hooks with `sessionDistiller` or an
-intelligence config that can build one. Distillation runs once per session key,
-with no-key messages using one whole-call fallback group and the same 24,000
-character per-session input cap as SDK ingest. Per-case results record
+`sessionDistillation: true` or CLI `--session-distill on`. It requires either
+hooks with `sessionDistiller` or an intelligence config that can build one.
+Message ingest distills once per session key, with no-key messages using one
+whole-call fallback group. Memory ingest first direct-imports eligible memory
+events, then distills consecutive memory batches grouped by metadata session
+identity (`sessionId`, `sessionKey`, `windowId`, `conversationId`, or `sourceId`)
+or, when absent, by the UTC calendar day of `createdAt`. Both modes use the same
+24,000 character per-session input cap as SDK ingest. Per-case results record
 `distilledMemoryCount`; manifests record
 `runtimeIntelligence.sessionDistillation` with hook provenance, model/host when
 available, call counts, candidate outcome counts, and total

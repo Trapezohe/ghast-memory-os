@@ -878,6 +878,7 @@ try {
         type ConversationMessageEvent,
         type ConversationSourceMetadata,
         type ConversationSpeakerKind,
+        type DistillAndAddResult,
         type EvidencePathExplanation,
         type ExplainEvidencePathInput,
         type ExplainTurnInput,
@@ -1121,6 +1122,18 @@ try {
       }]);
       const typedBatchCount: number = typedBatch.memories.length;
       void typedBatchCount;
+      const typedDistillAndAdd: DistillAndAddResult = await memory.distillAndAdd({
+        profileId: "consumer-types",
+        messages: [{
+          role: "user",
+          content: "Typed consumer direct distillation fixture.",
+          messageId: "consumer-types-distill-and-add",
+          createdAt: "2026-07-08T00:00:00.000Z",
+          metadata: { sessionId: "consumer-types-distill-and-add" },
+        }],
+      });
+      const typedDistilledCount: number = typedDistillAndAdd.distilledMemoryCount;
+      void typedDistilledCount;
       const typedResults = await memory.search({
         profileId: "consumer-types",
         query: "fixture",

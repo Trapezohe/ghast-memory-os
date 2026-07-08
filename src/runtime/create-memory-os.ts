@@ -64,6 +64,8 @@ import {
 import type {
   AddMemoryInput,
   CommitOutcomeInput,
+  DistillAndAddInput,
+  DistillAndAddResult,
   ActionPolicy,
   EvidencePathExplanation,
   EvidenceEvent,
@@ -2003,6 +2005,313 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     };
   }
 
+  interface WindowMember extends ConversationEvidenceWrite {
+    result: ObserveResult;
+  }
+
+  interface SessionDistillationGroup {
+    sessionKey: string | null;
+    members: WindowMember[];
+    firstIndex: number;
+  }
+
+  interface SessionDistillationStats {
+    distilledMemoryCount: number;
+    distillationCallCount: number;
+    distillationOkWithCandidatesCount: number;
+    distillationEmptyCount: number;
+    distillationParseFailureCount: number;
+    distillationTransportFailureCount: number;
+    distillationTruncatedMessageCount: number;
+  }
+
+  function emptySessionDistillationStats(): SessionDistillationStats {
+    return {
+      distilledMemoryCount: 0,
+      distillationCallCount: 0,
+      distillationOkWithCandidatesCount: 0,
+      distillationEmptyCount: 0,
+      distillationParseFailureCount: 0,
+      distillationTransportFailureCount: 0,
+      distillationTruncatedMessageCount: 0,
+    };
+  }
+
+  function sessionDistillationFailureCount(stats: SessionDistillationStats): number {
+    return stats.distillationParseFailureCount + stats.distillationTransportFailureCount;
+  }
+
+  function sessionEventTime(members: WindowMember[], observedAt: string): string {
+    let latestMs = Number.NEGATIVE_INFINITY;
+    let latestIso: string | null = null;
+    for (const member of members) {
+      const value = member.event.createdAt ?? member.evidence.createdAt;
+      const parsed = Date.parse(value);
+      if (Number.isFinite(parsed) && parsed >= latestMs) {
+        latestMs = parsed;
+        latestIso = value;
+      }
+    }
+    return latestIso ?? members[members.length - 1]?.evidence.createdAt ?? observedAt;
+  }
+
+  function commonSessionString(
+    members: WindowMember[],
+    value: (member: WindowMember) => string | undefined,
+  ): string | undefined {
+    const values = [...new Set(members.flatMap((member) => {
+      const item = value(member);
+      return item && item.trim().length > 0 ? [item.trim()] : [];
+    }))];
+    return values.length === 1 ? values[0] : undefined;
+  }
+
+  function sessionDistillationEvidenceContent(members: WindowMember[]): string {
+    return members
+      .map((member) => {
+        const createdAt = member.event.createdAt ?? member.evidence.createdAt;
+        return `[${createdAt}] ${turnMemoryContent(member.event, member.eventMetadata)}`;
+      })
+      .join("\n");
+  }
+
+  function normalizeSessionDistillationCandidate(
+    candidate: MemorySessionDistillationCandidate,
+  ): MemoryExtractionCandidate | null {
+    const content = typeof candidate.content === "string" ? candidate.content.trim() : "";
+    if (!content) return null;
+    const kind = isLowLevelMemoryKind(candidate.kind) ? candidate.kind : "fact";
+    return {
+      kind,
+      content,
+      confidence: clamp01(candidate.confidence ?? 0.6, 0.6),
+      metadata: {},
+    };
+  }
+
+  function sessionDistillationGroups(members: WindowMember[], observedAt: string): SessionDistillationGroup[] {
+    const groups = new Map<string, SessionDistillationGroup>();
+    for (const [firstIndex, member] of members.entries()) {
+      const sessionKey = windowSessionKey(member.event);
+      const groupKey = sessionKey === null ? "whole-call" : `session:${sessionKey}`;
+      let group = groups.get(groupKey);
+      if (!group) {
+        group = { sessionKey, members: [], firstIndex };
+        groups.set(groupKey, group);
+      }
+      group.members.push(member);
+    }
+    return [...groups.values()].sort((left, right) => {
+      const leftMs = Date.parse(sessionEventTime(left.members, observedAt));
+      const rightMs = Date.parse(sessionEventTime(right.members, observedAt));
+      if (Number.isFinite(leftMs) && Number.isFinite(rightMs) && leftMs !== rightMs) {
+        return leftMs - rightMs;
+      }
+      return left.firstIndex - right.firstIndex;
+    });
+  }
+
+  function sessionDistillationMessages(members: WindowMember[]): {
+    messages: Array<{
+      role: MemoryRole;
+      content: string;
+      createdAt?: string | undefined;
+      evidenceId: string;
+      metadata?: Record<string, unknown> | undefined;
+    }>;
+    truncatedMessageCount: number;
+  } {
+    let remainingChars = DEFAULT_SESSION_DISTILLATION_MAX_CHARS;
+    let truncatedMessageCount = 0;
+    const messages = [];
+    for (const member of members) {
+      if (remainingChars <= 0) {
+        truncatedMessageCount += 1;
+        continue;
+      }
+      const content = member.event.content.length > remainingChars
+        ? member.event.content.slice(0, remainingChars)
+        : member.event.content;
+      if (content.length < member.event.content.length) truncatedMessageCount += 1;
+      remainingChars -= content.length;
+      messages.push({
+        role: member.event.role,
+        content,
+        ...(member.event.createdAt ? { createdAt: member.event.createdAt } : {}),
+        evidenceId: member.evidence.id,
+        ...(Object.keys(member.eventMetadata).length > 0
+          ? { metadata: member.eventMetadata }
+          : {}),
+      });
+    }
+    return { messages, truncatedMessageCount };
+  }
+
+  async function applySessionDistillationGroup(input: {
+    profileId: string;
+    group: SessionDistillationGroup;
+    observedAt: string;
+    stats: SessionDistillationStats;
+    embeddingStats: RuntimeEmbeddingStats;
+    dedupeKeys: Set<string>;
+  }): Promise<void> {
+    const distiller = options.sessionDistiller;
+    const members = input.group.members;
+    if (!distiller || members.length === 0) return;
+    const events = members.map((member) => member.event);
+    const distillationEventKey = sessionDistillationEventKey({
+      profileId: input.profileId,
+      sessionKey: input.group.sessionKey,
+      events,
+    });
+    const existingSessionEvidence = store.getEvidenceByEventKey
+      ? await store.getEvidenceByEventKey(distillationEventKey)
+      : null;
+    if (existingSessionEvidence) return;
+    const eventTime = sessionEventTime(members, input.observedAt);
+    const conversationId = commonSessionString(members, (member) => member.event.conversationId);
+    const sessionId = commonSessionString(members, (member) => windowSessionKey(member.event) ?? undefined);
+    const sourceUri = commonSessionString(members, (member) =>
+      member.event.conversationId ? `conversation:${member.event.conversationId}` : undefined
+    ) ?? null;
+    const sessionEvidenceIds = members.map((member) => member.evidence.id);
+    const { messages, truncatedMessageCount } = sessionDistillationMessages(members);
+    input.stats.distillationTruncatedMessageCount += truncatedMessageCount;
+    const distillerInput = {
+      profileId: input.profileId,
+      eventTime,
+      context: {
+        eventKey: distillationEventKey,
+        ...(conversationId ? { conversationId } : {}),
+        ...(sessionId ? { sessionId } : {}),
+        ...(sourceUri ? { sourceUri } : {}),
+        evidenceIds: sessionEvidenceIds,
+      },
+      messages,
+    };
+    input.stats.distillationCallCount += 1;
+    let rawCandidates: MemorySessionDistillationCandidate[] | null;
+    try {
+      const result = typeof distiller === "function"
+        ? await distiller(distillerInput)
+        : await distiller.distill(distillerInput);
+      rawCandidates = asSessionDistillationCandidateArray(result);
+    } catch (error) {
+      const outcome = openAICompatibleOutcomeForError(error);
+      if (outcome === "parse_failure") input.stats.distillationParseFailureCount += 1;
+      else input.stats.distillationTransportFailureCount += 1;
+      return;
+    }
+    const candidates = (rawCandidates ?? [])
+      .map(normalizeSessionDistillationCandidate)
+      .filter((candidate): candidate is MemoryExtractionCandidate => candidate !== null);
+    if (candidates.length === 0) {
+      input.stats.distillationEmptyCount += 1;
+      return;
+    }
+    input.stats.distillationOkWithCandidatesCount += 1;
+    const sessionSourceTrust = members.reduce<SourceTrust>(
+      (sourceTrust, member) => lowerTrust(sourceTrust, member.sourceTrust),
+      "user",
+    );
+    const sessionSensitivity = members.reduce<Sensitivity>(
+      (sensitivity, member) => maxSensitivity(sensitivity, member.sensitivity),
+      "normal",
+    );
+    const sessionAllowLowerTrustPolicyWrites = members.some(
+      (member) => member.allowLowerTrustPolicyWrites,
+    );
+    const sessionEvidence = await store.recordEvidence({
+      profileId: input.profileId,
+      eventKey: distillationEventKey,
+      sourceType: "conversation.session_distillation",
+      sourceUri,
+      content: sessionDistillationEvidenceContent(members),
+      sensitivity: sessionSensitivity,
+      eligibleForLongTermMemory: true,
+      payload: {
+        purpose: "session_distillation",
+        eventTime,
+        evidenceIds: sessionEvidenceIds,
+        conversationId,
+        sessionId,
+      },
+      createdAt: eventTime,
+    });
+    const sessionResult = members[members.length - 1]!.result;
+    const sessionEvent: ConversationEvent = {
+      type: "conversation.message",
+      profileId: input.profileId,
+      role: "user",
+      content: sessionEvidence.content,
+      createdAt: eventTime,
+    };
+    const freshCandidates: MemoryExtractionCandidate[] = [];
+    const metadataByDedupeKey = new Map<string, Record<string, unknown>>();
+    for (const candidate of candidates) {
+      const dedupeKey = candidateDedupeKey(candidate);
+      const key = `${sessionEvidence.id}:${dedupeKey}`;
+      const existing = store.findActiveMemoryByMetadata
+        ? await store.findActiveMemoryByMetadata(input.profileId, "sessionDistillationKey", key)
+        : null;
+      if (existing) {
+        sessionResult.memoryIds.push(existing.id);
+        continue;
+      }
+      freshCandidates.push(candidate);
+      metadataByDedupeKey.set(dedupeKey, {
+        sessionDistillation: true,
+        sessionDistillationKey: key,
+        sessionDistillationEvidenceId: sessionEvidence.id,
+        sourceEvidenceId: sessionEvidence.id,
+        sessionEvidenceIds,
+        eventTime,
+      });
+    }
+    const before = sessionResult.memoryIds.length;
+    await applyExtractionCandidates({
+      result: sessionResult,
+      profileId: input.profileId,
+      candidates: freshCandidates,
+      event: sessionEvent,
+      evidence: sessionEvidence,
+      eventMetadata: {},
+      sensitivity: sessionSensitivity,
+      sourceTrust: sessionSourceTrust,
+      allowLowerTrustPolicyWrites: sessionAllowLowerTrustPolicyWrites,
+      sourceEventId: sessionEvidence.id,
+      dedupeKeys: input.dedupeKeys,
+      embeddingStats: input.embeddingStats,
+      contextForCandidate: (candidate) => ({
+        result: sessionResult,
+        event: sessionEvent,
+        evidence: sessionEvidence,
+        eventMetadata: {},
+        sensitivity: sessionSensitivity,
+        sourceTrust: sessionSourceTrust,
+        allowLowerTrustPolicyWrites: sessionAllowLowerTrustPolicyWrites,
+        sourceEventId: sessionEvidence.id,
+        metadata: metadataByDedupeKey.get(candidateDedupeKey(candidate)) ?? {},
+      }),
+    });
+    input.stats.distilledMemoryCount += Math.max(0, sessionResult.memoryIds.length - before);
+  }
+
+  async function applySessionDistillation(input: {
+    profileId: string;
+    members: WindowMember[];
+    observedAt: string;
+    skip: boolean;
+    stats: SessionDistillationStats;
+    embeddingStats: RuntimeEmbeddingStats;
+    dedupeKeys: Set<string>;
+  }): Promise<void> {
+    if (input.skip || input.members.length === 0) return;
+    for (const group of sessionDistillationGroups(input.members, input.observedAt)) {
+      await applySessionDistillationGroup({ ...input, group });
+    }
+  }
+
   interface ExtractionCandidateContext {
     result: ObserveResult;
     event: ConversationEvent;
@@ -2356,21 +2665,11 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     let extractionTransportFailureCharCount = 0;
     let extractedMemoryCountForProgress = 0;
     let turnMemoryCount = 0;
-    let distilledMemoryCount = 0;
     const embeddingStats = emptyRuntimeEmbeddingStats();
-    let distillationCallCount = 0;
-    let distillationOkWithCandidatesCount = 0;
-    let distillationEmptyCount = 0;
-    let distillationParseFailureCount = 0;
-    let distillationTransportFailureCount = 0;
-    let distillationTruncatedMessageCount = 0;
+    const sessionDistillationStats = emptySessionDistillationStats();
     let replayedWindowCount = 0;
     let replayRecoveredCount = 0;
     const extractionFailedWindowIndexes = new Set<number>();
-
-    interface WindowMember extends ConversationEvidenceWrite {
-      result: ObserveResult;
-    }
 
     interface ExtractionWindowTask {
       windowIndex: number;
@@ -2384,269 +2683,6 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       task: ExtractionWindowTask;
       extraction: Awaited<ReturnType<typeof extractMemoryCandidatePlan>>;
       safeReport: MemoryExtractionReport;
-    }
-
-    interface SessionDistillationGroup {
-      sessionKey: string | null;
-      members: WindowMember[];
-      firstIndex: number;
-    }
-
-    function sessionEventTime(members: WindowMember[]): string {
-      let latestMs = Number.NEGATIVE_INFINITY;
-      let latestIso: string | null = null;
-      for (const member of members) {
-        const value = member.event.createdAt ?? member.evidence.createdAt;
-        const parsed = Date.parse(value);
-        if (Number.isFinite(parsed) && parsed >= latestMs) {
-          latestMs = parsed;
-          latestIso = value;
-        }
-      }
-      return latestIso ?? members[members.length - 1]?.evidence.createdAt ?? observedAt;
-    }
-
-    function commonSessionString(
-      members: WindowMember[],
-      value: (member: WindowMember) => string | undefined,
-    ): string | undefined {
-      const values = [...new Set(members.flatMap((member) => {
-        const item = value(member);
-        return item && item.trim().length > 0 ? [item.trim()] : [];
-      }))];
-      return values.length === 1 ? values[0] : undefined;
-    }
-
-    function sessionDistillationEvidenceContent(members: WindowMember[]): string {
-      return members
-        .map((member) => {
-          const createdAt = member.event.createdAt ?? member.evidence.createdAt;
-          return `[${createdAt}] ${turnMemoryContent(member.event, member.eventMetadata)}`;
-        })
-        .join("\n");
-    }
-
-    function normalizeSessionDistillationCandidate(
-      candidate: MemorySessionDistillationCandidate,
-    ): MemoryExtractionCandidate | null {
-      const content = typeof candidate.content === "string" ? candidate.content.trim() : "";
-      if (!content) return null;
-      const kind = isLowLevelMemoryKind(candidate.kind) ? candidate.kind : "fact";
-      return {
-        kind,
-        content,
-        confidence: clamp01(candidate.confidence ?? 0.6, 0.6),
-        metadata: {},
-      };
-    }
-
-    function sessionDistillationGroups(members: WindowMember[]): SessionDistillationGroup[] {
-      const groups = new Map<string, SessionDistillationGroup>();
-      for (const [firstIndex, member] of members.entries()) {
-        const sessionKey = windowSessionKey(member.event);
-        const groupKey = sessionKey === null ? "whole-call" : `session:${sessionKey}`;
-        let group = groups.get(groupKey);
-        if (!group) {
-          group = { sessionKey, members: [], firstIndex };
-          groups.set(groupKey, group);
-        }
-        group.members.push(member);
-      }
-      return [...groups.values()].sort((left, right) => {
-        const leftMs = Date.parse(sessionEventTime(left.members));
-        const rightMs = Date.parse(sessionEventTime(right.members));
-        if (Number.isFinite(leftMs) && Number.isFinite(rightMs) && leftMs !== rightMs) {
-          return leftMs - rightMs;
-        }
-        return left.firstIndex - right.firstIndex;
-      });
-    }
-
-    function sessionDistillationMessages(members: WindowMember[]): {
-      messages: Array<{
-        role: MemoryRole;
-        content: string;
-        createdAt?: string | undefined;
-        evidenceId: string;
-        metadata?: Record<string, unknown> | undefined;
-      }>;
-      truncatedMessageCount: number;
-    } {
-      let remainingChars = DEFAULT_SESSION_DISTILLATION_MAX_CHARS;
-      let truncatedMessageCount = 0;
-      const messages = [];
-      for (const member of members) {
-        if (remainingChars <= 0) {
-          truncatedMessageCount += 1;
-          continue;
-        }
-        const content = member.event.content.length > remainingChars
-          ? member.event.content.slice(0, remainingChars)
-          : member.event.content;
-        if (content.length < member.event.content.length) truncatedMessageCount += 1;
-        remainingChars -= content.length;
-        messages.push({
-          role: member.event.role,
-          content,
-          ...(member.event.createdAt ? { createdAt: member.event.createdAt } : {}),
-          evidenceId: member.evidence.id,
-          ...(Object.keys(member.eventMetadata).length > 0
-            ? { metadata: member.eventMetadata }
-            : {}),
-        });
-      }
-      return { messages, truncatedMessageCount };
-    }
-
-    async function applySessionDistillationGroup(group: SessionDistillationGroup): Promise<void> {
-      const distiller = options.sessionDistiller;
-      const members = group.members;
-      if (!distiller || members.length === 0) return;
-      const events = members.map((member) => member.event);
-      const distillationEventKey = sessionDistillationEventKey({
-        profileId,
-        sessionKey: group.sessionKey,
-        events,
-      });
-      const existingSessionEvidence = store.getEvidenceByEventKey
-        ? await store.getEvidenceByEventKey(distillationEventKey)
-        : null;
-      if (existingSessionEvidence) return;
-      const eventTime = sessionEventTime(members);
-      const conversationId = commonSessionString(members, (member) => member.event.conversationId);
-      const sessionId = commonSessionString(members, (member) => windowSessionKey(member.event) ?? undefined);
-      const sourceUri = commonSessionString(members, (member) =>
-        member.event.conversationId ? `conversation:${member.event.conversationId}` : undefined
-      ) ?? null;
-      const sessionEvidenceIds = members.map((member) => member.evidence.id);
-      const { messages, truncatedMessageCount } = sessionDistillationMessages(members);
-      distillationTruncatedMessageCount += truncatedMessageCount;
-      const distillerInput = {
-        profileId,
-        eventTime,
-        context: {
-          eventKey: distillationEventKey,
-          ...(conversationId ? { conversationId } : {}),
-          ...(sessionId ? { sessionId } : {}),
-          ...(sourceUri ? { sourceUri } : {}),
-          evidenceIds: sessionEvidenceIds,
-        },
-        messages,
-      };
-      distillationCallCount += 1;
-      let rawCandidates: MemorySessionDistillationCandidate[] | null;
-      try {
-        const result = typeof distiller === "function"
-          ? await distiller(distillerInput)
-          : await distiller.distill(distillerInput);
-        rawCandidates = asSessionDistillationCandidateArray(result);
-      } catch (error) {
-        const outcome = openAICompatibleOutcomeForError(error);
-        if (outcome === "parse_failure") distillationParseFailureCount += 1;
-        else distillationTransportFailureCount += 1;
-        return;
-      }
-      const candidates = (rawCandidates ?? [])
-        .map(normalizeSessionDistillationCandidate)
-        .filter((candidate): candidate is MemoryExtractionCandidate => candidate !== null);
-      if (candidates.length === 0) {
-        distillationEmptyCount += 1;
-        return;
-      }
-      distillationOkWithCandidatesCount += 1;
-      const sessionSourceTrust = members.reduce<SourceTrust>(
-        (sourceTrust, member) => lowerTrust(sourceTrust, member.sourceTrust),
-        "user",
-      );
-      const sessionSensitivity = members.reduce<Sensitivity>(
-        (sensitivity, member) => maxSensitivity(sensitivity, member.sensitivity),
-        "normal",
-      );
-      const sessionAllowLowerTrustPolicyWrites = members.some(
-        (member) => member.allowLowerTrustPolicyWrites,
-      );
-      const sessionEvidence = await store.recordEvidence({
-        profileId,
-        eventKey: distillationEventKey,
-        sourceType: "conversation.session_distillation",
-        sourceUri,
-        content: sessionDistillationEvidenceContent(members),
-        sensitivity: sessionSensitivity,
-        eligibleForLongTermMemory: true,
-        payload: {
-          purpose: "session_distillation",
-          eventTime,
-          evidenceIds: sessionEvidenceIds,
-          conversationId,
-          sessionId,
-        },
-        createdAt: eventTime,
-      });
-      const sessionResult = members[members.length - 1]!.result;
-      const sessionEvent: ConversationEvent = {
-        type: "conversation.message",
-        profileId,
-        role: "user",
-        content: sessionEvidence.content,
-        createdAt: eventTime,
-      };
-      const freshCandidates: MemoryExtractionCandidate[] = [];
-      const metadataByDedupeKey = new Map<string, Record<string, unknown>>();
-      for (const candidate of candidates) {
-        const dedupeKey = candidateDedupeKey(candidate);
-        const key = `${sessionEvidence.id}:${dedupeKey}`;
-        const existing = store.findActiveMemoryByMetadata
-          ? await store.findActiveMemoryByMetadata(profileId, "sessionDistillationKey", key)
-          : null;
-        if (existing) {
-          sessionResult.memoryIds.push(existing.id);
-          continue;
-        }
-        freshCandidates.push(candidate);
-        metadataByDedupeKey.set(dedupeKey, {
-          sessionDistillation: true,
-          sessionDistillationKey: key,
-          sessionDistillationEvidenceId: sessionEvidence.id,
-          sourceEvidenceId: sessionEvidence.id,
-          sessionEvidenceIds,
-          eventTime,
-        });
-      }
-      const before = sessionResult.memoryIds.length;
-      await applyExtractionCandidates({
-        result: sessionResult,
-        profileId,
-        candidates: freshCandidates,
-        event: sessionEvent,
-        evidence: sessionEvidence,
-        eventMetadata: {},
-        sensitivity: sessionSensitivity,
-        sourceTrust: sessionSourceTrust,
-        allowLowerTrustPolicyWrites: sessionAllowLowerTrustPolicyWrites,
-        sourceEventId: sessionEvidence.id,
-        dedupeKeys,
-        embeddingStats,
-        contextForCandidate: (candidate) => ({
-          result: sessionResult,
-          event: sessionEvent,
-          evidence: sessionEvidence,
-          eventMetadata: {},
-          sensitivity: sessionSensitivity,
-          sourceTrust: sessionSourceTrust,
-          allowLowerTrustPolicyWrites: sessionAllowLowerTrustPolicyWrites,
-          sourceEventId: sessionEvidence.id,
-          metadata: metadataByDedupeKey.get(candidateDedupeKey(candidate)) ?? {},
-        }),
-      });
-      distilledMemoryCount += Math.max(0, sessionResult.memoryIds.length - before);
-    }
-
-    async function applySessionDistillation(members: WindowMember[]): Promise<void> {
-      if (!sessionDistillation || members.length === 0) return;
-      if (input.messages.some((message) => message.privacyMode === "incognito")) return;
-      for (const group of sessionDistillationGroups(members)) {
-        await applySessionDistillationGroup(group);
-      }
     }
 
     let pendingWindow: WindowMember[] = [];
@@ -2737,7 +2773,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         replayRecoveredCount,
         extractedMemoryCount: extractedMemoryCountForProgress,
         turnMemoryCount,
-        distilledMemoryCount,
+        distilledMemoryCount: sessionDistillationStats.distilledMemoryCount,
         elapsedMs,
         etaMs,
       });
@@ -2960,7 +2996,17 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       await applyWindowExtraction(output);
     }
     await replayFailedWindows();
-    await applySessionDistillation(sessionMembers);
+    if (sessionDistillation) {
+      await applySessionDistillation({
+        profileId,
+        members: sessionMembers,
+        observedAt,
+        skip: input.messages.some((message) => message.privacyMode === "incognito"),
+        stats: sessionDistillationStats,
+        embeddingStats,
+        dedupeKeys,
+      });
+    }
 
     return {
       profileId,
@@ -2985,19 +3031,80 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       replayedWindowCount,
       replayRecoveredCount,
       turnMemoryCount,
-      distilledMemoryCount,
+      distilledMemoryCount: sessionDistillationStats.distilledMemoryCount,
       embeddingCallCount: embeddingStats.embeddingCallCount,
       embeddedMemoryCount: embeddingStats.embeddedMemoryCount,
       embeddingFailureCount: embeddingStats.embeddingFailureCount,
-      distillationCallCount,
-      distillationOkWithCandidatesCount,
-      distillationEmptyCount,
-      distillationParseFailureCount,
-      distillationTransportFailureCount,
-      distillationFailureCount: distillationParseFailureCount + distillationTransportFailureCount,
-      distillationTruncatedMessageCount,
+      distillationCallCount: sessionDistillationStats.distillationCallCount,
+      distillationOkWithCandidatesCount: sessionDistillationStats.distillationOkWithCandidatesCount,
+      distillationEmptyCount: sessionDistillationStats.distillationEmptyCount,
+      distillationParseFailureCount: sessionDistillationStats.distillationParseFailureCount,
+      distillationTransportFailureCount: sessionDistillationStats.distillationTransportFailureCount,
+      distillationFailureCount: sessionDistillationFailureCount(sessionDistillationStats),
+      distillationTruncatedMessageCount: sessionDistillationStats.distillationTruncatedMessageCount,
       extractionMinConfidence,
       extractionReports,
+    };
+  }
+
+  async function distillAndAdd(input: DistillAndAddInput): Promise<DistillAndAddResult> {
+    await initialize();
+    const profileId = profileIdFor(defaultProfileId, input.profileId);
+    const observedAt = nowIso();
+    const results: ObserveResult[] = [];
+    const members: WindowMember[] = [];
+    const embeddingStats = emptyRuntimeEmbeddingStats();
+    const sessionDistillationStats = emptySessionDistillationStats();
+    const dedupeKeys = new Set<string>();
+    for (const message of input.messages) {
+      const eventProfileId = profileIdFor(profileId, message.profileId);
+      const event: ConversationEvent = {
+        type: "conversation.message",
+        profileId: eventProfileId,
+        role: message.role,
+        content: message.content,
+        ...(message.conversationId !== undefined ? { conversationId: message.conversationId } : {}),
+        ...(message.messageId !== undefined ? { messageId: message.messageId } : {}),
+        ...(message.sourceTrust !== undefined ? { sourceTrust: message.sourceTrust } : {}),
+        ...(message.allowLowerTrustPolicyWrites !== undefined
+          ? { allowLowerTrustPolicyWrites: message.allowLowerTrustPolicyWrites }
+          : {}),
+        ...(message.privacyMode !== undefined ? { privacyMode: message.privacyMode } : {}),
+        ...(message.createdAt !== undefined ? { createdAt: message.createdAt } : {}),
+        ...(message.metadata !== undefined ? { metadata: message.metadata } : {}),
+      };
+      const result = observeResultFor(eventProfileId, event);
+      const recorded = await recordConversationEvidence(event, result);
+      results.push(recorded.result);
+      if (recorded.write) members.push({ ...recorded.write, result: recorded.result });
+    }
+    await applySessionDistillation({
+      profileId,
+      members,
+      observedAt,
+      skip: input.messages.some((message) => message.privacyMode === "incognito"),
+      stats: sessionDistillationStats,
+      embeddingStats,
+      dedupeKeys,
+    });
+    return {
+      profileId,
+      observedAt,
+      results,
+      evidenceIds: results.flatMap((result) => result.evidenceId ? [result.evidenceId] : []),
+      memoryIds: results.flatMap((result) => result.memoryIds),
+      worldBeliefIds: results.flatMap((result) => result.worldBeliefIds),
+      distilledMemoryCount: sessionDistillationStats.distilledMemoryCount,
+      embeddingCallCount: embeddingStats.embeddingCallCount,
+      embeddedMemoryCount: embeddingStats.embeddedMemoryCount,
+      embeddingFailureCount: embeddingStats.embeddingFailureCount,
+      distillationCallCount: sessionDistillationStats.distillationCallCount,
+      distillationOkWithCandidatesCount: sessionDistillationStats.distillationOkWithCandidatesCount,
+      distillationEmptyCount: sessionDistillationStats.distillationEmptyCount,
+      distillationParseFailureCount: sessionDistillationStats.distillationParseFailureCount,
+      distillationTransportFailureCount: sessionDistillationStats.distillationTransportFailureCount,
+      distillationFailureCount: sessionDistillationFailureCount(sessionDistillationStats),
+      distillationTruncatedMessageCount: sessionDistillationStats.distillationTruncatedMessageCount,
     };
   }
 
@@ -4523,6 +4630,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   return {
     add,
     addMany,
+    distillAndAdd,
     update,
     archive,
     restoreArchived,
