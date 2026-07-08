@@ -162,6 +162,7 @@ export type ExternalMemoryBenchmarkJudgeProfile = "strict" | "official";
 export interface ExternalMemoryBenchmarkJudge {
   name: string;
   profile?: ExternalMemoryBenchmarkJudgeProfile | undefined;
+  manifest?: Partial<ExternalMemoryBenchmarkRuntimeAnswererManifest> | undefined;
   judge(
     question: string,
     expectedAnswer: string,
@@ -487,6 +488,7 @@ export interface ExternalMemoryBenchmarkRuntimeAnswererManifest {
   apiKeyEnv: string | null;
   model: string | null;
   timeoutMs: number | null;
+  maxTokens: number | null;
 }
 
 export interface ExternalMemoryBenchmarkRuntimeQueryPlannerManifest {
@@ -601,6 +603,7 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   ingestCaseGroups: ExternalMemoryBenchmarkRuntimeIngestGroupManifest[];
   sessionDistillation: ExternalMemoryBenchmarkRuntimeSessionDistillationManifest;
   answerer: ExternalMemoryBenchmarkRuntimeAnswererManifest;
+  judge: ExternalMemoryBenchmarkRuntimeAnswererManifest;
   queryPlanner: ExternalMemoryBenchmarkRuntimeQueryPlannerManifest;
   sweepCues: ExternalMemoryBenchmarkRuntimeSweepCuesManifest;
 }
@@ -1272,6 +1275,7 @@ function normalizedJudge(
   return {
     name: judge.name.trim(),
     ...(judge.profile !== undefined ? { profile: normalizeJudgeProfile(judge.profile) } : {}),
+    ...(judge.manifest !== undefined ? { manifest: judge.manifest } : {}),
     judge: judge.judge,
   };
 }
@@ -2264,6 +2268,7 @@ export interface ExternalMemoryBenchmarkOpenAICompatibleHookOptions {
   apiKeyEnv?: string | undefined;
   model: string;
   timeoutMs?: number | undefined;
+  maxTokens?: number | undefined;
   maxRetries?: number | undefined;
   fetchImpl?: OpenAICompatibleFetch | undefined;
   disableThinking?: boolean | undefined;
@@ -2275,6 +2280,9 @@ export type ExternalMemoryBenchmarkOpenAICompatibleJudgeOptions =
   };
 
 const DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_MS = 20_000;
+const DEFAULT_OPENAI_COMPATIBLE_MAX_TOKENS = 2048;
+const MIN_OPENAI_COMPATIBLE_MAX_TOKENS = 64;
+const MAX_OPENAI_COMPATIBLE_MAX_TOKENS = 8192;
 const MAX_RECORDED_GENERATED_ANSWER_CHARS = 2000;
 const MAX_RECORDED_ERROR_CHARS = 300;
 const STRICT_JUDGE_SYSTEM_PROMPT = [
@@ -2314,12 +2322,27 @@ function hookTimeoutMs(value: number | undefined): number {
   );
 }
 
+function hookMaxTokens(value: number | undefined): number {
+  const maxTokens = normalizedPositiveInteger(
+    value,
+    DEFAULT_OPENAI_COMPATIBLE_MAX_TOKENS,
+    "External benchmark OpenAI-compatible hook maxTokens",
+  );
+  if (maxTokens < MIN_OPENAI_COMPATIBLE_MAX_TOKENS || maxTokens > MAX_OPENAI_COMPATIBLE_MAX_TOKENS) {
+    throw new Error(
+      `External benchmark OpenAI-compatible hook maxTokens must be between ${MIN_OPENAI_COMPATIBLE_MAX_TOKENS} and ${MAX_OPENAI_COMPATIBLE_MAX_TOKENS}`,
+    );
+  }
+  return maxTokens;
+}
+
 async function fetchOpenAICompatibleJson(
   options: ExternalMemoryBenchmarkOpenAICompatibleHookOptions,
   messages: Array<{ role: "system" | "user"; content: string }>,
 ): Promise<unknown> {
   const fetchImpl = openAICompatibleFetch(options);
   const timeoutMs = hookTimeoutMs(options.timeoutMs);
+  const maxTokens = hookMaxTokens(options.maxTokens);
   const maxRetries = Math.max(0, Math.min(Math.trunc(options.maxRetries ?? 0), 3));
   let lastError: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
@@ -2336,7 +2359,7 @@ async function fetchOpenAICompatibleJson(
         body: JSON.stringify({
           model: options.model,
           temperature: 0,
-          max_tokens: 512,
+          max_tokens: maxTokens,
           ...(options.disableThinking ? { enable_thinking: false } : {}),
           response_format: { type: "json_object" },
           messages,
@@ -2405,6 +2428,7 @@ function runtimeAnswererManifest(
     apiKeyEnv: apiKeyEnvName(options.apiKeyEnv) ?? null,
     model: options.model,
     timeoutMs: hookTimeoutMs(options.timeoutMs),
+    maxTokens: hookMaxTokens(options.maxTokens),
   };
 }
 
@@ -2444,6 +2468,7 @@ export function createOpenAICompatibleExternalBenchmarkJudge(
   const profile = normalizeJudgeProfile(options.profile);
   return {
     name,
+    manifest: runtimeAnswererManifest({ ...options, name }),
     profile,
     async judge(question, expectedAnswer, actualAnswer) {
       const parsed = parsedCompletionObject(await fetchOpenAICompatibleJson(options, [
@@ -2648,6 +2673,7 @@ function disabledRuntimeAnswerer(): ExternalMemoryBenchmarkRuntimeAnswererManife
     apiKeyEnv: null,
     model: null,
     timeoutMs: null,
+    maxTokens: null,
   };
 }
 
@@ -2701,6 +2727,18 @@ function runtimeAnswererForManifest(
     enabled: true,
     name: answerer.name,
     ...(answerer.manifest ?? {}),
+  };
+}
+
+function runtimeJudgeForManifest(
+  judge: ExternalMemoryBenchmarkJudge | undefined,
+): ExternalMemoryBenchmarkRuntimeAnswererManifest {
+  if (!judge) return disabledRuntimeAnswerer();
+  return {
+    ...disabledRuntimeAnswerer(),
+    enabled: true,
+    name: judge.name,
+    ...(judge.manifest ?? {}),
   };
 }
 
@@ -2853,6 +2891,7 @@ function createRunManifest(input: {
         left.groupKey.localeCompare(right.groupKey)
       ),
       answerer: runtimeAnswererForManifest(answerer),
+      judge: runtimeJudgeForManifest(judge),
     },
     ingestCache: {
       enabled: input.ingestCache.enabled,
@@ -3614,6 +3653,7 @@ function disabledRuntimeIntelligence(
       ingestCaseGroups: [],
       sessionDistillation: disabledRuntimeSessionDistillation(),
       answerer: disabledRuntimeAnswerer(),
+      judge: disabledRuntimeAnswerer(),
       queryPlanner: disabledRuntimeQueryPlanner(),
       sweepCues: disabledRuntimeSweepCues(),
     },
@@ -3875,6 +3915,7 @@ function resolveRuntimeIntelligence(input: {
       ingestCaseGroups: [],
       sessionDistillation: sessionDistillationManifest,
       answerer: disabledRuntimeAnswerer(),
+      judge: disabledRuntimeAnswerer(),
       queryPlanner: {
         ...disabledRuntimeQueryPlanner(),
         name: hookName(hooks.queryPlanner),

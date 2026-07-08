@@ -80,6 +80,7 @@ import {
   renderMemoryReleaseGateMarkdown,
   renderMemoryScaleMarkdown,
   buildStateBenchLearnings,
+  createOpenAICompatibleExternalBenchmarkAnswerer,
   createOpenAICompatibleExternalBenchmarkJudge,
   hashExternalMemoryBenchmarkInput,
   parseExternalMemoryBenchmarkDataset,
@@ -24355,12 +24356,17 @@ await assert.rejects(
     }),
   /official_protocol requires a host-provided judge callback/,
 );
-const strictJudgeBodies: Array<{ messages?: Array<{ role?: string; content?: string }> }> = [];
+const strictJudgeBodies: Array<{
+  max_tokens?: number;
+  messages?: Array<{ role?: string; content?: string }>;
+}> = [];
 const strictOpenAIJudge = createOpenAICompatibleExternalBenchmarkJudge({
   baseUrl: "https://judge.invalid/v1",
   model: "strict-judge",
+  maxTokens: 1024,
   fetchImpl: async (_url, init) => {
     strictJudgeBodies.push(JSON.parse(String(init?.body ?? "{}")) as {
+      max_tokens?: number;
       messages?: Array<{ role?: string; content?: string }>;
     });
     return {
@@ -24374,10 +24380,12 @@ const strictOpenAIJudge = createOpenAICompatibleExternalBenchmarkJudge({
   },
 });
 assert.equal(strictOpenAIJudge.profile, "strict");
+assert.equal(strictOpenAIJudge.manifest?.maxTokens, 1024);
 assert.deepEqual(await strictOpenAIJudge.judge("Question?", "Expected", "Actual"), {
   correct: true,
   rationale: "strict parsed",
 });
+assert.equal(strictJudgeBodies[0]?.max_tokens, 1024);
 assert.equal(
   strictJudgeBodies[0]?.messages?.[0]?.content,
   [
@@ -24390,13 +24398,17 @@ assert.deepEqual(JSON.parse(strictJudgeBodies[0]?.messages?.[1]?.content ?? "{}"
   expectedAnswer: "Expected",
   actualAnswer: "Actual",
 });
-const officialJudgeBodies: Array<{ messages?: Array<{ role?: string; content?: string }> }> = [];
+const officialJudgeBodies: Array<{
+  max_tokens?: number;
+  messages?: Array<{ role?: string; content?: string }>;
+}> = [];
 const officialOpenAIJudge = createOpenAICompatibleExternalBenchmarkJudge({
   baseUrl: "https://judge.invalid/v1",
   model: "official-judge",
   profile: "official",
   fetchImpl: async (_url, init) => {
     officialJudgeBodies.push(JSON.parse(String(init?.body ?? "{}")) as {
+      max_tokens?: number;
       messages?: Array<{ role?: string; content?: string }>;
     });
     return {
@@ -24410,10 +24422,12 @@ const officialOpenAIJudge = createOpenAICompatibleExternalBenchmarkJudge({
   },
 });
 assert.equal(officialOpenAIJudge.profile, "official");
+assert.equal(officialOpenAIJudge.manifest?.maxTokens, 2048);
 assert.deepEqual(await officialOpenAIJudge.judge("Question?", "Expected", "Actual"), {
   correct: false,
   rationale: "official parsed",
 });
+assert.equal(officialJudgeBodies[0]?.max_tokens, 2048);
 const officialJudgeSystemPrompt = officialJudgeBodies[0]?.messages?.[0]?.content ?? "";
 assert.match(officialJudgeSystemPrompt, /lenient on phrasing, formatting, units spelled differently, and extra correct detail/);
 assert.match(officialJudgeSystemPrompt, /strict on factual correctness/);
@@ -24421,6 +24435,49 @@ assert.match(officialJudgeSystemPrompt, /unavailable or unanswerable/);
 assert.match(officialJudgeSystemPrompt, /appropriately declines or states the information is missing is CORRECT/);
 assert.match(officialJudgeSystemPrompt, /fabricated specific answer is INCORRECT/);
 assert.match(officialJudgeSystemPrompt, /Return JSON only: \{"correct":true\|false,"rationale":"\.\.\."\}/);
+const reasoningAnswererBodies: Array<{ max_tokens?: number }> = [];
+const reasoningAnswerer = createOpenAICompatibleExternalBenchmarkAnswerer({
+  baseUrl: "https://answerer.invalid/v1",
+  model: "reasoning-answerer",
+  maxTokens: 3072,
+  fetchImpl: async (_url, init) => {
+    reasoningAnswererBodies.push(JSON.parse(String(init?.body ?? "{}")) as { max_tokens?: number });
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({
+        choices: [{
+          message: {
+            reasoning_content: "The model used hidden reasoning before emitting JSON.",
+            content: JSON.stringify({ answer: "reasoning answer parsed" }),
+          },
+        }],
+      }),
+    };
+  },
+});
+assert.equal(reasoningAnswerer.manifest?.maxTokens, 3072);
+assert.equal(await reasoningAnswerer.answer("Question?", "Context."), "reasoning answer parsed");
+assert.equal(reasoningAnswererBodies[0]?.max_tokens, 3072);
+assert.throws(
+  () =>
+    createOpenAICompatibleExternalBenchmarkAnswerer({
+      baseUrl: "https://answerer.invalid/v1",
+      model: "too-small-answerer",
+      maxTokens: 63,
+    }),
+  /maxTokens must be between 64 and 8192/u,
+);
+assert.throws(
+  () =>
+    createOpenAICompatibleExternalBenchmarkJudge({
+      baseUrl: "https://judge.invalid/v1",
+      model: "too-large-judge",
+      maxTokens: 8193,
+    }),
+  /maxTokens must be between 64 and 8192/u,
+);
 await assert.rejects(
   () =>
     runExternalMemoryBenchmark({
@@ -28966,6 +29023,7 @@ writeFileSync(
         url: String(url),
         authorization: headers.authorization,
         model: body.model,
+        max_tokens: body.max_tokens,
         system,
       }) + "\\n");
       if (String(url).endsWith("/embeddings")) {
@@ -29027,8 +29085,12 @@ const cliExternalReader = spawnSync(
     "5000",
     "--answerer-model",
     "cli-reader",
+    "--answerer-max-tokens",
+    "3072",
     "--judge-model",
     "cli-judge-override",
+    "--judge-max-tokens",
+    "4096",
     "--judge-profile",
     "official",
     "--markdown-file",
@@ -29069,6 +29131,15 @@ const cliExternalReaderJson = JSON.parse(cliExternalReader.stdout) as {
         apiKeyEnv?: string | null;
         model?: string | null;
         timeoutMs?: number | null;
+        maxTokens?: number | null;
+      };
+      judge?: {
+        enabled?: boolean;
+        baseUrlHost?: string | null;
+        apiKeyEnv?: string | null;
+        model?: string | null;
+        timeoutMs?: number | null;
+        maxTokens?: number | null;
       };
     };
   };
@@ -29095,9 +29166,21 @@ assert.equal(cliExternalReaderJson.runManifest?.runtimeIntelligence?.answerer?.b
 assert.equal(cliExternalReaderJson.runManifest?.runtimeIntelligence?.answerer?.apiKeyEnv, "GMOS_CLI_READER_SECRET");
 assert.equal(cliExternalReaderJson.runManifest?.runtimeIntelligence?.answerer?.model, "cli-reader");
 assert.equal(cliExternalReaderJson.runManifest?.runtimeIntelligence?.answerer?.timeoutMs, 5000);
+assert.equal(cliExternalReaderJson.runManifest?.runtimeIntelligence?.answerer?.maxTokens, 3072);
+assert.equal(cliExternalReaderJson.runManifest?.runtimeIntelligence?.judge?.enabled, true);
+assert.equal(cliExternalReaderJson.runManifest?.runtimeIntelligence?.judge?.baseUrlHost, "cli-reader.invalid");
+assert.equal(cliExternalReaderJson.runManifest?.runtimeIntelligence?.judge?.apiKeyEnv, "GMOS_CLI_READER_SECRET");
+assert.equal(cliExternalReaderJson.runManifest?.runtimeIntelligence?.judge?.model, "cli-judge-override");
+assert.equal(cliExternalReaderJson.runManifest?.runtimeIntelligence?.judge?.timeoutMs, 5000);
+assert.equal(cliExternalReaderJson.runManifest?.runtimeIntelligence?.judge?.maxTokens, 4096);
 const cliExternalReaderFetchLog = readFileSync(cliExternalReaderFetchLogFile, "utf8");
+const cliExternalReaderFetchLogEntries = cliExternalReaderFetchLog.trim().split("\n").map((line) =>
+  JSON.parse(line) as { model?: string; max_tokens?: number }
+);
 assert.match(cliExternalReaderFetchLog, /"model":"cli-reader"/);
 assert.match(cliExternalReaderFetchLog, /"model":"cli-judge-override"/);
+assert.equal(cliExternalReaderFetchLogEntries.find((entry) => entry.model === "cli-reader")?.max_tokens, 3072);
+assert.equal(cliExternalReaderFetchLogEntries.find((entry) => entry.model === "cli-judge-override")?.max_tokens, 4096);
 assert.match(cliExternalReaderFetchLog, /Use dates in the context to reason about time/);
 assert.match(cliExternalReaderFetchLog, /lenient on phrasing, formatting, units spelled differently/);
 assert.match(cliExternalReaderFetchLog, /unavailable or unanswerable/);
@@ -29286,6 +29369,83 @@ const cliExternalReaderBadEnv = spawnSync(
 );
 assert.notEqual(cliExternalReaderBadEnv.status, 0);
 assert.match(cliExternalReaderBadEnv.stderr, /--answerer-api-key-env must be an environment variable name/);
+const cliExternalAnswererZeroMaxTokens = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    cliExternalReaderFixtureFile,
+    "--protocol",
+    "official-protocol",
+    "--intelligence-base-url",
+    "https://cli-reader.invalid/v1",
+    "--intelligence-model",
+    "cli-judge",
+    "--answerer-model",
+    "cli-reader",
+    "--answerer-max-tokens",
+    "0",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalAnswererZeroMaxTokens.status, 0);
+assert.match(cliExternalAnswererZeroMaxTokens.stderr, /--answerer-max-tokens must be a positive integer/);
+const cliExternalJudgeNegativeMaxTokens = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    cliExternalReaderFixtureFile,
+    "--protocol",
+    "official-protocol",
+    "--intelligence-base-url",
+    "https://cli-reader.invalid/v1",
+    "--intelligence-model",
+    "cli-judge",
+    "--judge-max-tokens",
+    "-1",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalJudgeNegativeMaxTokens.status, 0);
+assert.match(cliExternalJudgeNegativeMaxTokens.stderr, /--judge-max-tokens must be a positive integer/);
+const cliExternalJudgeFractionalMaxTokens = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    cliExternalReaderFixtureFile,
+    "--protocol",
+    "official-protocol",
+    "--intelligence-base-url",
+    "https://cli-reader.invalid/v1",
+    "--intelligence-model",
+    "cli-judge",
+    "--judge-max-tokens",
+    "1.5",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalJudgeFractionalMaxTokens.status, 0);
+assert.match(cliExternalJudgeFractionalMaxTokens.stderr, /--judge-max-tokens must be a positive integer/);
 const cliExternalIntelligenceMissingBaseUrl = spawnSync(
   process.execPath,
   [

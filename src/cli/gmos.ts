@@ -791,6 +791,7 @@ interface CliOpenAICompatibleHookConfig {
   apiKey?: string | undefined;
   model: string;
   timeoutMs?: number | undefined;
+  maxTokens?: number | undefined;
   disableThinking?: boolean | undefined;
 }
 
@@ -823,6 +824,7 @@ function externalAnswererConfigOption(
     throw new Error("--answerer-api-key-env must be an environment variable name");
   }
   const answererTimeoutMs = positiveIntegerOptionValue("--answerer-timeout-ms");
+  const answererMaxTokens = positiveIntegerOptionValue("--answerer-max-tokens");
   const answererDisableThinking = has("--answerer-disable-thinking");
   const apiKeyEnv = answererApiKeyEnv ?? (answererBaseUrl === undefined ? intelligence?.apiKeyEnv : undefined);
   return {
@@ -832,6 +834,7 @@ function externalAnswererConfigOption(
     ...(answererTimeoutMs !== undefined || intelligence?.timeoutMs !== undefined
       ? { timeoutMs: answererTimeoutMs ?? intelligence?.timeoutMs }
       : {}),
+    ...(answererMaxTokens !== undefined ? { maxTokens: answererMaxTokens } : {}),
     ...(answererDisableThinking || intelligence?.disableThinking ? { disableThinking: true } : {}),
   };
 }
@@ -839,7 +842,10 @@ function externalAnswererConfigOption(
 function externalJudgeConfigOption(
   intelligence: ReturnType<typeof externalIntelligenceOption>,
 ): CliOpenAICompatibleHookConfig | undefined {
-  const hasJudgeFlag = process.argv.some((arg) => arg.startsWith("--judge-") && !arg.startsWith("--judge-profile"));
+  const judgeMaxTokens = positiveIntegerOptionValue("--judge-max-tokens");
+  const hasJudgeFlag = process.argv.some((arg) =>
+    arg.startsWith("--judge-") && !arg.startsWith("--judge-profile") && arg !== "--judge-max-tokens"
+  );
   if (!hasJudgeFlag) return undefined;
   const model = value("--judge-model");
   if (!model) {
@@ -864,6 +870,7 @@ function externalJudgeConfigOption(
     ...(judgeTimeoutMs !== undefined || intelligence?.timeoutMs !== undefined
       ? { timeoutMs: judgeTimeoutMs ?? intelligence?.timeoutMs }
       : {}),
+    ...(judgeMaxTokens !== undefined ? { maxTokens: judgeMaxTokens } : {}),
     ...(judgeDisableThinking || intelligence?.disableThinking ? { disableThinking: true } : {}),
   };
 }
@@ -876,6 +883,7 @@ function externalOfficialJudgeOption(
   judgeProfile: ExternalMemoryBenchmarkJudgeProfile | undefined,
 ) {
   if (protocol !== "official_protocol") return undefined;
+  const judgeMaxTokens = positiveIntegerOptionValue("--judge-max-tokens");
   const config = judgeConfig ?? (intelligence?.baseUrl && intelligence.model
     ? {
         baseUrl: intelligence.baseUrl,
@@ -890,9 +898,15 @@ function externalOfficialJudgeOption(
             }
           : {}),
         ...(intelligence.timeoutMs !== undefined ? { timeoutMs: intelligence.timeoutMs } : {}),
+        ...(judgeMaxTokens !== undefined ? { maxTokens: judgeMaxTokens } : {}),
         ...(intelligence.disableThinking ? { disableThinking: true } : {}),
       }
-    : answererConfig);
+    : answererConfig
+      ? {
+          ...answererConfig,
+          ...(judgeMaxTokens !== undefined ? { maxTokens: judgeMaxTokens } : {}),
+        }
+      : undefined);
   if (!config) {
     throw new Error("gmos gym external --protocol official-protocol requires an OpenAI-compatible judge endpoint via --intelligence-base-url/--intelligence-model or --answerer-base-url/--answerer-model");
   }
@@ -2106,7 +2120,7 @@ async function main(): Promise<void> {
       throw new Error("gmos gym external --answerer-* flags require --protocol official-protocol");
     }
     const judgeConfig = externalJudgeConfigOption(intelligence);
-    if (judgeConfig && protocol !== "official_protocol") {
+    if ((judgeConfig || has("--judge-max-tokens")) && protocol !== "official_protocol") {
       throw new Error("gmos gym external --judge-* flags require --protocol official-protocol");
     }
     const answerer = answererConfig

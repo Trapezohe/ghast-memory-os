@@ -927,9 +927,12 @@ try {
         type ExternalMemoryBenchmarkDatasetFormat,
         type ExternalMemoryBenchmarkJudge,
         type ExternalMemoryBenchmarkIngestMode,
+        type ExternalMemoryBenchmarkOpenAICompatibleHookOptions,
+        type ExternalMemoryBenchmarkOpenAICompatibleJudgeOptions,
         type ExternalMemoryBenchmarkProtocol,
         type ExternalMemoryBenchmarkCaseMatched,
         type ExternalMemoryBenchmarkResult,
+        type ExternalMemoryBenchmarkRuntimeAnswererManifest,
         type ExternalMemoryBenchmarkRuntimeIntelligenceManifest,
         type ExternalMemoryBenchmarkSliceScore,
         type ExternalMemoryBenchmarkSuiteExecution,
@@ -1232,16 +1235,41 @@ try {
       if (typedRuntimeIntelligence.enabled !== false) {
         throw new Error("typed runtime intelligence manifest failed");
       }
+      const typedRuntimeAnswererManifest: ExternalMemoryBenchmarkRuntimeAnswererManifest =
+        typedRuntimeIntelligence.answerer;
+      const typedRuntimeAnswererMaxTokens: number | null = typedRuntimeAnswererManifest.maxTokens;
+      const typedRuntimeJudgeMaxTokens: number | null = typedRuntimeIntelligence.judge.maxTokens;
+      void typedRuntimeAnswererMaxTokens;
+      void typedRuntimeJudgeMaxTokens;
       const typedJudge: ExternalMemoryBenchmarkJudge = {
         name: "typed-judge",
+        manifest: {
+          maxTokens: 2048,
+        },
         judge: () => ({ correct: true }),
       };
       void typedJudge;
       const typedAnswerer: ExternalMemoryBenchmarkAnswerer = {
         name: "typed-answerer",
+        manifest: {
+          maxTokens: 2048,
+        },
         answer: () => "rollback matrix",
       };
       void typedAnswerer;
+      const typedOpenAIHookOptions: ExternalMemoryBenchmarkOpenAICompatibleHookOptions = {
+        baseUrl: "https://consumer.invalid/v1",
+        model: "consumer-answerer",
+        maxTokens: 2048,
+      };
+      const typedOpenAIJudgeOptions: ExternalMemoryBenchmarkOpenAICompatibleJudgeOptions = {
+        baseUrl: "https://consumer.invalid/v1",
+        model: "consumer-judge",
+        maxTokens: 4096,
+        profile: "official",
+      };
+      void typedOpenAIHookOptions;
+      void typedOpenAIJudgeOptions;
       const typedCeilingMetrics: ExternalMemoryBenchmarkCeilingMetrics | null = externalResult.ceilingMetrics;
       if (typedCeilingMetrics?.reachableScore !== 1) {
         throw new Error("typed external ceiling metrics failed");

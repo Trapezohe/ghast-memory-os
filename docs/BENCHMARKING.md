@@ -573,6 +573,7 @@ gmos gym external \
   --protocol official-protocol \
   --answerer-base-url http://127.0.0.1:11434/v1 \
   --answerer-model llama3.1 \
+  --answerer-max-tokens 2048 \
   --judge-profile official \
   --format json
 ```
@@ -587,6 +588,8 @@ gmos gym external \
   --protocol official-protocol \
   --answerer-base-url https://provider.example/v1 \
   --answerer-model provider-reader-model \
+  --answerer-max-tokens 4096 \
+  --judge-max-tokens 2048 \
   --answerer-api-key-env GMOS_BENCH_API_KEY \
   --judge-profile official \
   --format json
@@ -600,6 +603,10 @@ reader model separately.
 For CLI runs, the configured OpenAI-compatible endpoint is also the host-side
 judge endpoint. SDK users who need a custom judge prompt, retry policy, or
 rubric should pass explicit `judge` and `answerer` callbacks instead.
+`--answerer-max-tokens <n>` and `--judge-max-tokens <n>` set separate
+OpenAI-compatible completion budgets; unset values default to `2048`. Reasoning
+models that cannot disable thinking should generally use at least `2048`, and
+aggregation/enumeration reader runs may need more.
 
 Privacy boundary: benchmark dataset content is sent to the configured endpoint.
 Do not run this mode on real personal profiles or private user histories unless
