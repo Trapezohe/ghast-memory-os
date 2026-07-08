@@ -27646,6 +27646,7 @@ const externalIntelligenceMessageCases = parseExternalMemoryBenchmarkDataset(
 const previousExternalBenchKey = process.env.GMOS_BENCH_TEST_KEY;
 process.env.GMOS_BENCH_TEST_KEY = "sdk-bench-secret-1234567890";
 const externalIntelligenceAuthHeaders: Array<string | undefined> = [];
+const externalIntelligenceRequestUrls: string[] = [];
 try {
   const externalIntelligenceRun = await runExternalMemoryBenchmark({
     cases: externalIntelligenceMessageCases.cases,
@@ -27662,6 +27663,7 @@ try {
       concurrency: 1,
       timeoutMs: 5000,
       fetchImpl: async (url, init) => {
+        externalIntelligenceRequestUrls.push(String(url));
         const headers = init?.headers as Record<string, string> | undefined;
         externalIntelligenceAuthHeaders.push(headers?.authorization);
         const request = JSON.parse(String(init?.body ?? "{}")) as {
@@ -27717,6 +27719,7 @@ try {
   assert.deepEqual(externalIntelligenceRun.cases[0]?.expectedAnyMatched, ["orbit tea"]);
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.enabled, true);
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.baseUrlHost, "bench-intelligence.invalid");
+  assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.embedBaseUrlHost, undefined);
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.apiKeyEnv, "GMOS_BENCH_TEST_KEY");
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.turnRetention, true);
   assert.equal(
@@ -27745,6 +27748,10 @@ try {
     externalIntelligenceAuthHeaders.includes("Bearer sdk-bench-secret-1234567890"),
     true,
   );
+  assert.equal(
+    externalIntelligenceRequestUrls.some((url) => url === "https://user:pass@bench-intelligence.invalid/v1/embeddings"),
+    true,
+  );
   const externalIntelligenceJson = JSON.stringify(externalIntelligenceRun);
   assert.equal(externalIntelligenceJson.includes("sdk-bench-secret"), false);
   assert.equal(externalIntelligenceJson.includes("user:pass"), false);
@@ -27752,6 +27759,112 @@ try {
   assert.match(
     renderExternalMemoryBenchmarkMarkdown(externalIntelligenceRun),
     /Runtime intelligence: enabled=true ingestMode=message turnRetention=true model=bench-chat embedModel=bench-embed embedQuery=true queryEmbeddingFailures=0 queryEmbeddingRetries=0 queryEmbeddingRecovered=0 queryEmbeddingTimeoutFailures=0 queryEmbeddingHttpStatusFailures=0 queryEmbeddingTransportFailures=0 queryEmbeddingParseFailures=0 host=bench-intelligence\.invalid maintainPhases=decay concurrency=1 timeoutMs=5000 retries=2 backoffMs=250 extractionWindows=2 extractionCalls=2 extractionRetries=2 extractionEmpty=0 replayedWindows=0 replayRecovered=0 okChars=\d+ emptyChars=0 parseFailureChars=0 transportFailureChars=\d+ extractionParseFailures=0 extractionTransportFailures=1 extractionFailures=1/,
+  );
+  const externalSplitIntelligenceRequests: Array<{
+    url: string;
+    authorization?: string | undefined;
+    model?: string | undefined;
+    system?: string | undefined;
+  }> = [];
+  const externalSplitIntelligenceRun = await runExternalMemoryBenchmark({
+    cases: externalIntelligenceMessageCases.cases,
+    datasetFormat: externalIntelligenceMessageCases.datasetFormat,
+    ingestMode: "message",
+    queryPlanner: true,
+    intelligence: {
+      baseUrl: "https://bench-chat.invalid/v1",
+      apiKeyEnv: "GMOS_BENCH_TEST_KEY",
+      model: "bench-chat",
+      embedBaseUrl: "http://127.0.0.1:11434/v1",
+      embedModel: "bench-local-embed",
+      dimensions: 3,
+      concurrency: 1,
+      timeoutMs: 5000,
+      fetchImpl: async (url, init) => {
+        const headers = init?.headers as Record<string, string> | undefined;
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          input?: string[];
+          messages?: Array<{ content?: string }>;
+          model?: string;
+        };
+        const system = body.messages?.[0]?.content;
+        externalSplitIntelligenceRequests.push({
+          url: String(url),
+          authorization: headers?.authorization,
+          model: body.model,
+          system,
+        });
+        if (String(url).endsWith("/embeddings")) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            text: async () => JSON.stringify({
+              data: (body.input ?? []).map((_text, index) => ({
+                index,
+                embedding: [0.1, 0.2, 0.3],
+              })),
+            }),
+          };
+        }
+        const content = system?.includes("structured memory extractor")
+          ? JSON.stringify({
+              memories: [{
+                kind: "preference",
+                content: "Split intelligence extracted recall drink is orbit tea.",
+                confidence: 0.93,
+                predicate: "user.preference",
+              }],
+            })
+          : system?.includes("retrieval reranker")
+            ? JSON.stringify({ ids: [] })
+            : system?.includes("query planner")
+              ? JSON.stringify({ requiredAnchors: [], sweepCues: [] })
+              : "{}";
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          text: async () => JSON.stringify({ choices: [{ message: { content } }] }),
+        };
+      },
+    },
+  });
+  assert.equal(externalSplitIntelligenceRun.pass, true);
+  assert.equal(externalSplitIntelligenceRun.runManifest.runtimeIntelligence.baseUrlHost, "bench-chat.invalid");
+  assert.equal(externalSplitIntelligenceRun.runManifest.runtimeIntelligence.embedBaseUrlHost, "127.0.0.1");
+  assert.equal(externalSplitIntelligenceRun.runManifest.runtimeIntelligence.embedModel, "bench-local-embed");
+  assert.equal(
+    externalSplitIntelligenceRequests.some((request) => request.url.endsWith("/embeddings")),
+    true,
+  );
+  assert.equal(
+    externalSplitIntelligenceRequests
+      .filter((request) => request.url.endsWith("/embeddings"))
+      .every((request) =>
+        request.url === "http://127.0.0.1:11434/v1/embeddings" && request.authorization === undefined
+      ),
+    true,
+  );
+  assert.equal(
+    externalSplitIntelligenceRequests.some((request) => request.url.endsWith("/chat/completions")),
+    true,
+  );
+  assert.equal(
+    externalSplitIntelligenceRequests
+      .filter((request) => request.url.endsWith("/chat/completions"))
+      .every((request) =>
+        request.url === "https://bench-chat.invalid/v1/chat/completions"
+        && request.authorization === "Bearer sdk-bench-secret-1234567890"
+      ),
+    true,
+  );
+  assert.equal(
+    externalSplitIntelligenceRequests.some((request) =>
+      request.url === "https://bench-chat.invalid/v1/chat/completions"
+      && request.system?.includes("query planner")
+    ),
+    true,
   );
 } finally {
   if (previousExternalBenchKey === undefined) {
@@ -30293,6 +30406,34 @@ const cliExternalIntelligenceMissingBaseUrl = spawnSync(
 );
 assert.notEqual(cliExternalIntelligenceMissingBaseUrl.status, 0);
 assert.match(cliExternalIntelligenceMissingBaseUrl.stderr, /require --intelligence-base-url/);
+const cliExternalIntelligenceBadEmbedEnv = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--intelligence-base-url",
+    "https://cli-intelligence.invalid/v1",
+    "--intelligence-model",
+    "bench-chat",
+    "--intelligence-embed-base-url",
+    "https://cli-embed.invalid/v1",
+    "--intelligence-embed-api-key-env",
+    "bad-env-name",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalIntelligenceBadEmbedEnv.status, 0);
+assert.match(
+  cliExternalIntelligenceBadEmbedEnv.stderr,
+  /--intelligence-embed-api-key-env must be an environment variable name/,
+);
 const cliExternalPlannerOnly = spawnSync(
   process.execPath,
   [
@@ -30406,6 +30547,7 @@ writeFileSync(
       const headers = init.headers ?? {};
       const body = JSON.parse(String(init.body ?? "{}"));
       appendFileSync(process.env.GMOS_CLI_INTELLIGENCE_FETCH_LOG, JSON.stringify({
+        url: String(url),
         authorization: headers.authorization,
         model: body.model,
         enableThinking: body.enable_thinking,
@@ -30457,6 +30599,7 @@ const cliExternalIntelligenceJsonFile = path.join(tmp, "cli-external-intelligenc
 const cliExternalIntelligenceMarkdownFile = path.join(tmp, "cli-external-intelligence-report.md");
 const cliExternalIntelligenceDebugDir = path.join(tmp, "cli-external-intelligence-debug");
 const cliExternalIntelligenceSecret = "cli-bench-secret-1234567890";
+const cliExternalEmbedSecret = "cli-embed-secret-1234567890";
 const cliExternalIntelligence = spawnSync(
   process.execPath,
   [
@@ -30479,10 +30622,16 @@ const cliExternalIntelligence = spawnSync(
     "https://user:pass@cli-intelligence.invalid/v1",
     "--intelligence-model",
     "cli-chat",
+    "--intelligence-embed-base-url",
+    "https://cli-embed.invalid/v1",
     "--intelligence-embed-model",
     "cli-embed",
+    "--intelligence-embed-dimensions",
+    "3",
     "--intelligence-api-key-env",
     "GMOS_CLI_BENCH_SECRET",
+    "--intelligence-embed-api-key-env",
+    "GMOS_CLI_EMBED_SECRET",
     "--intelligence-concurrency",
     "1",
     "--intelligence-timeout-ms",
@@ -30494,6 +30643,8 @@ const cliExternalIntelligence = spawnSync(
     "--intelligence-disable-thinking",
     "--intelligence-debug-dir",
     cliExternalIntelligenceDebugDir,
+    "--embed-query",
+    "on",
     "--json-file",
     cliExternalIntelligenceJsonFile,
     "--markdown-file",
@@ -30508,6 +30659,7 @@ const cliExternalIntelligence = spawnSync(
     env: {
       ...process.env,
       GMOS_CLI_BENCH_SECRET: cliExternalIntelligenceSecret,
+      GMOS_CLI_EMBED_SECRET: cliExternalEmbedSecret,
       GMOS_CLI_INTELLIGENCE_FETCH_LOG: cliExternalIntelligenceFetchLogFile,
     },
   },
@@ -30519,6 +30671,7 @@ const cliExternalIntelligenceJson = JSON.parse(cliExternalIntelligence.stdout) a
     runtimeIntelligence?: {
       enabled?: boolean;
       baseUrlHost?: string | null;
+      embedBaseUrlHost?: string | null;
       apiKeyEnv?: string | null;
       ingestMode?: string;
       turnRetention?: boolean;
@@ -30547,6 +30700,7 @@ const cliExternalIntelligenceJson = JSON.parse(cliExternalIntelligence.stdout) a
 assert.equal(cliExternalIntelligenceJson.pass, true);
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.enabled, true);
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.baseUrlHost, "cli-intelligence.invalid");
+assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.embedBaseUrlHost, "cli-embed.invalid");
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.apiKeyEnv, "GMOS_CLI_BENCH_SECRET");
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.ingestMode, "message");
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.turnRetention, true);
@@ -30570,7 +30724,29 @@ assert.equal((cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.extr
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.extractionEmptyCharCount, 0);
 const cliExternalIntelligenceFetchLog = readFileSync(cliExternalIntelligenceFetchLogFile, "utf8");
 assert.match(cliExternalIntelligenceFetchLog, new RegExp(`Bearer ${cliExternalIntelligenceSecret}`));
+assert.match(cliExternalIntelligenceFetchLog, new RegExp(`Bearer ${cliExternalEmbedSecret}`));
 assert.match(cliExternalIntelligenceFetchLog, /"enableThinking":false/u);
+const cliExternalIntelligenceFetchEntries = cliExternalIntelligenceFetchLog
+  .trim()
+  .split("\n")
+  .filter(Boolean)
+  .map((line) => JSON.parse(line) as { url?: string; authorization?: string; model?: string });
+assert.equal(
+  cliExternalIntelligenceFetchEntries.some((entry) =>
+    entry.url === "https://cli-embed.invalid/v1/embeddings"
+    && entry.authorization === `Bearer ${cliExternalEmbedSecret}`
+    && entry.model === "cli-embed"
+  ),
+  true,
+);
+assert.equal(
+  cliExternalIntelligenceFetchEntries.some((entry) =>
+    entry.url === "https://user:pass@cli-intelligence.invalid/v1/chat/completions"
+    && entry.authorization === `Bearer ${cliExternalIntelligenceSecret}`
+    && entry.model === "cli-chat"
+  ),
+  true,
+);
 assert.match(cliExternalIntelligence.stderr, /\[gmos external\] ingest .*windows=1\/1 .*extractionParseFailures=0/u);
 assert.match(cliExternalIntelligence.stderr, /turnMemories=1/u);
 assert.match(cliExternalIntelligence.stderr, /distilledMemories=1/u);
@@ -30584,9 +30760,12 @@ assert.equal(cliExternalIntelligenceDebugText.includes("Bearer"), false);
 assert.equal(cliExternalIntelligenceDebugText.includes("user:pass"), false);
 assert.equal(cliExternalIntelligence.stdout.includes(cliExternalIntelligenceSecret), false);
 assert.equal(readFileSync(cliExternalIntelligenceJsonFile, "utf8").includes(cliExternalIntelligenceSecret), false);
+assert.equal(readFileSync(cliExternalIntelligenceJsonFile, "utf8").includes(cliExternalEmbedSecret), false);
 assert.equal(readFileSync(cliExternalIntelligenceMarkdownFile, "utf8").includes(cliExternalIntelligenceSecret), false);
+assert.equal(readFileSync(cliExternalIntelligenceMarkdownFile, "utf8").includes(cliExternalEmbedSecret), false);
 assert.equal(cliExternalIntelligence.stdout.includes("user:pass"), false);
 assert.equal(cliExternalIntelligence.stdout.includes("cli-intelligence.invalid/v1"), false);
+assert.equal(cliExternalIntelligence.stdout.includes("cli-embed.invalid/v1"), false);
 const cliExternalSuiteOutputDir = path.join(tmp, "cli-external-suite");
 const cliExternalSuiteJsonFile = path.join(tmp, "cli-external-suite-summary.json");
 const cliExternalSuiteMarkdownFile = path.join(tmp, "cli-external-suite-summary.md");

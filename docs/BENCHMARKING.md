@@ -578,9 +578,34 @@ gmos gym external \
   --format json
 ```
 
-Never pass an API key as a flag value. The CLI accepts only the environment
-variable name via `--intelligence-api-key-env`; reports record that env var name
-and the endpoint hostname only, not the secret or full URL.
+Hosted chat with local embeddings:
+
+```bash
+export GMOS_DEEPSEEK_API_KEY="..."
+gmos gym external \
+  --input-file ./multi-session-memory.json \
+  --dataset-format locomo \
+  --ingest-mode message \
+  --extraction-window 12 \
+  --intelligence-base-url https://api.deepseek.com/v1 \
+  --intelligence-model deepseek-chat \
+  --intelligence-api-key-env GMOS_DEEPSEEK_API_KEY \
+  --intelligence-embed-base-url http://127.0.0.1:11434/v1 \
+  --intelligence-embed-model dengcao/Qwen3-Embedding-0.6B:Q8_0 \
+  --intelligence-embed-dimensions 1024 \
+  --maintain-phases decay \
+  --format json
+```
+
+Omit `--intelligence-embed-api-key-env` for local embedding endpoints that do
+not require auth. Reports record the hosted chat host in
+`runtimeIntelligence.baseUrlHost` and the embedding host in
+`runtimeIntelligence.embedBaseUrlHost`.
+
+Never pass an API key as a flag value. The CLI accepts only environment variable
+names via `--intelligence-api-key-env` and `--intelligence-embed-api-key-env`;
+reports record env var names and endpoint hostnames only, not secrets or full
+URLs.
 
 ## Reader Mode
 

@@ -928,6 +928,7 @@ try {
         type ExternalMemoryBenchmarkDatasetFormat,
         type ExternalMemoryBenchmarkJudge,
         type ExternalMemoryBenchmarkIngestMode,
+        type ExternalMemoryBenchmarkIntelligenceConfig,
         type ExternalMemoryBenchmarkOpenAICompatibleHookOptions,
         type ExternalMemoryBenchmarkOpenAICompatibleJudgeOptions,
         type ExternalMemoryBenchmarkProtocol,
@@ -1248,6 +1249,13 @@ try {
       if (typedRuntimeIntelligence.enabled !== false) {
         throw new Error("typed runtime intelligence manifest failed");
       }
+      const typedIntelligenceConfig: ExternalMemoryBenchmarkIntelligenceConfig = {
+        baseUrl: "https://typed-chat.invalid/v1",
+        model: "typed-chat",
+        embedBaseUrl: "http://127.0.0.1:11434/v1",
+        embedApiKeyEnv: "GMOS_TYPED_EMBED_KEY",
+      };
+      const typedEmbedBaseUrlHost: string | null | undefined = typedRuntimeIntelligence.embedBaseUrlHost;
       const typedAnswererRetryCount: number = typedRuntimeIntelligence.answererRetryCount;
       const typedJudgeRecoveredCount: number = typedRuntimeIntelligence.judgeRecoveredCount;
       const typedRuntimeAnswererManifest: ExternalMemoryBenchmarkRuntimeAnswererManifest =
@@ -1258,6 +1266,8 @@ try {
       const typedRuntimeJudgeRetryCount: number | undefined = typedRuntimeIntelligence.judge.judgeRetryCount;
       void typedAnswererRetryCount;
       void typedJudgeRecoveredCount;
+      void typedIntelligenceConfig;
+      void typedEmbedBaseUrlHost;
       void typedRuntimeAnswererMaxTokens;
       void typedRuntimeAnswererRetryCount;
       void typedRuntimeJudgeMaxTokens;

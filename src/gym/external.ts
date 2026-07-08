@@ -67,6 +67,8 @@ export interface ExternalMemoryBenchmarkIntelligenceConfig {
   baseUrl?: string | undefined;
   apiKeyEnv?: string | undefined;
   model?: string | undefined;
+  embedBaseUrl?: string | undefined;
+  embedApiKeyEnv?: string | undefined;
   embedModel?: string | undefined;
   plannerBaseUrl?: string | undefined;
   plannerModel?: string | undefined;
@@ -561,6 +563,7 @@ export interface ExternalMemoryBenchmarkRuntimeIngestGroupManifest {
 export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   enabled: boolean;
   baseUrlHost: string | null;
+  embedBaseUrlHost?: string | null | undefined;
   apiKeyEnv: string | null;
   model: string | null;
   embedModel: string | null;
@@ -1158,7 +1161,7 @@ function ingestCacheKeyFields(input: {
     embedding: {
       providerName: runtime.hookNames.embeddingProvider,
       model: runtime.embedModel,
-      baseUrlHost: runtime.baseUrlHost,
+      baseUrlHost: runtime.embedBaseUrlHost ?? runtime.baseUrlHost,
       dimensions: embeddingDimensionsForCache(input.runtimeIntelligence.hooks),
     },
   };
@@ -3504,8 +3507,16 @@ function isIntelligenceConfig(
   const hasPlannerModel = "plannerModel" in value && value.plannerModel !== undefined;
   const hasDistillerBaseUrl = "distillerBaseUrl" in value && value.distillerBaseUrl !== undefined;
   const hasDistillerModel = "distillerModel" in value && value.distillerModel !== undefined;
+  const hasEmbedBaseUrl = "embedBaseUrl" in value && value.embedBaseUrl !== undefined;
+  const hasEmbedApiKeyEnv = "embedApiKeyEnv" in value && value.embedApiKeyEnv !== undefined;
   if (hasBaseUrl && !hasModel) {
     throw new Error("External benchmark intelligence baseUrl requires model");
+  }
+  if (hasEmbedApiKeyEnv && !hasEmbedBaseUrl) {
+    throw new Error("External benchmark intelligence embedApiKeyEnv requires embedBaseUrl");
+  }
+  if (!hasBaseUrl && hasEmbedBaseUrl) {
+    throw new Error("External benchmark intelligence embedBaseUrl requires baseUrl");
   }
   if (!hasBaseUrl && hasPlannerBaseUrl !== hasPlannerModel) {
     throw new Error("planner-only intelligence requires both --planner-base-url and --planner-model");
@@ -3911,6 +3922,11 @@ function resolveRuntimeIntelligence(input: {
   if (apiKeyEnv && !apiKey) {
     throw new Error(`External benchmark intelligence API key environment variable is not set: ${apiKeyEnv}`);
   }
+  const embedApiKeyEnv = config?.embedBaseUrl ? apiKeyEnvName(config.embedApiKeyEnv) : undefined;
+  const embedApiKey = embedApiKeyEnv ? process.env[embedApiKeyEnv] : undefined;
+  if (embedApiKeyEnv && !embedApiKey) {
+    throw new Error(`External benchmark intelligence embedding API key environment variable is not set: ${embedApiKeyEnv}`);
+  }
   let rawHooks: DefaultIntelligence;
   if (config?.baseUrl) {
     const model = config.model;
@@ -3920,6 +3936,14 @@ function resolveRuntimeIntelligence(input: {
       model,
       ...(config.embedModel ? { embedModel: config.embedModel } : {}),
       ...(config.dimensions !== undefined ? { dimensions: config.dimensions } : {}),
+      ...(config.embedBaseUrl
+        ? {
+            embeddingProvider: {
+              baseUrl: config.embedBaseUrl,
+              apiKey: embedApiKey,
+            },
+          }
+        : {}),
       ...(config.plannerBaseUrl || config.plannerModel
         ? {
             queryPlanner: {
@@ -4026,6 +4050,7 @@ function resolveRuntimeIntelligence(input: {
       : {}),
   };
   const baseIntelligenceUrl = config?.baseUrl;
+  const embedIntelligenceUrl = config?.embedBaseUrl;
   const plannerIntelligenceUrl = config?.plannerBaseUrl ?? config?.baseUrl;
   const distillerIntelligenceUrl = config?.distillerBaseUrl ?? config?.baseUrl;
   const sessionDistillationManifest: ExternalMemoryBenchmarkRuntimeSessionDistillationManifest = {
@@ -4041,6 +4066,7 @@ function resolveRuntimeIntelligence(input: {
     manifest: {
       enabled: true,
       baseUrlHost: baseIntelligenceUrl ? baseUrlHost(baseIntelligenceUrl) : null,
+      ...(embedIntelligenceUrl ? { embedBaseUrlHost: baseUrlHost(embedIntelligenceUrl) } : {}),
       apiKeyEnv: apiKeyEnv ?? null,
       model: baseIntelligenceUrl ? config?.model ?? null : null,
       embedModel: baseIntelligenceUrl ? config?.embedModel ?? null : null,
