@@ -21302,7 +21302,91 @@ assert.equal(
   wideSupplyContext.memories.some((memoryRecord) => memoryRecord.content.includes("WideSupplyForgotten")),
   false,
 );
-await wideSupplyMemory.close();
+const wideSupplyRerankedMemory = createMemoryOS({
+  profileId: "wide-supply",
+  store: wideSupplyStore,
+  extractor: () => [],
+  retrieval: {
+    reranker: (candidates) => candidates.slice(0, 33).map((candidate) => candidate.id),
+  },
+});
+const wideSupplyRerankedContext = await wideSupplyRerankedMemory.reconstructContext(wideSupplyRequest);
+assert.equal(wideSupplyRerankedContext.memories.length, wideSupplyContext.memories.length);
+await wideSupplyRerankedMemory.close();
+const rerankerContractStore = createSqliteMemoryStore({ path: path.join(tmp, "reranker-contract.db") });
+const baselineRerankerContractMemory = createMemoryOS({
+  profileId: "reranker-contract",
+  store: rerankerContractStore,
+  extractor: () => [],
+});
+await baselineRerankerContractMemory.addMany(
+  Array.from({ length: 60 }, (_entry, index) => ({
+    profileId: "reranker-contract",
+    kind: "fact" as const,
+    content: `RerankWindowKey candidate memory ${index}.`,
+    confidence: 0.9,
+    createdAt: `2026-07-04T01:${String(index).padStart(2, "0")}:00.000Z`,
+  })),
+);
+const originalRerankerOrder = (
+  await baselineRerankerContractMemory.search({
+    profileId: "reranker-contract",
+    query: "RerankWindowKey",
+    limit: 60,
+  })
+).map((memoryRecord) => memoryRecord.id);
+let rerankerContractCandidateIds: string[] = [];
+const partialRerankerContractMemory = createMemoryOS({
+  profileId: "reranker-contract",
+  store: rerankerContractStore,
+  extractor: () => [],
+  retrieval: {
+    reranker: (candidates) => {
+      rerankerContractCandidateIds = candidates.map((candidate) => candidate.id);
+      return [
+        candidates[2]?.id ?? "",
+        candidates[0]?.id ?? "",
+        candidates[2]?.id ?? "",
+        "unknown_memory_id",
+        originalRerankerOrder[55] ?? "",
+      ];
+    },
+  },
+});
+const partialRerankerOrder = (
+  await partialRerankerContractMemory.search({
+    profileId: "reranker-contract",
+    query: "RerankWindowKey",
+    limit: 60,
+  })
+).map((memoryRecord) => memoryRecord.id);
+assert.equal(rerankerContractCandidateIds.length, 50);
+assert.deepEqual(partialRerankerOrder, [
+  rerankerContractCandidateIds[2],
+  rerankerContractCandidateIds[0],
+  ...originalRerankerOrder.filter(
+    (id) => id !== rerankerContractCandidateIds[2] && id !== rerankerContractCandidateIds[0],
+  ),
+]);
+const throwingRerankerContractMemory = createMemoryOS({
+  profileId: "reranker-contract",
+  store: rerankerContractStore,
+  extractor: () => [],
+  retrieval: {
+    reranker: () => {
+      throw new Error("deterministic reranker failure");
+    },
+  },
+});
+const throwingRerankerOrder = (
+  await throwingRerankerContractMemory.search({
+    profileId: "reranker-contract",
+    query: "RerankWindowKey",
+    limit: 60,
+  })
+).map((memoryRecord) => memoryRecord.id);
+assert.deepEqual(throwingRerankerOrder, originalRerankerOrder);
+await throwingRerankerContractMemory.close();
 const wideEmbeddingEventMarkers = [
   "AggregationWideEvent-0",
   "AggregationWideEvent-1",
@@ -31782,5 +31866,6 @@ assert.match(
   /release evidence cannot skip pr_gate or fresh_install_smoke/,
 );
 assert.equal(existsSync(path.join(skippedReleaseEvidenceDir, "manifest.json")), true);
+await import("./wide-saturation-fixture.js");
 rmSync(tmp, { recursive: true, force: true });
 console.log("[gmos-sdk] tests passed");

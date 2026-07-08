@@ -728,7 +728,8 @@ async function callRetrievalReranker(input: {
   const reranker = input.retrieval?.reranker;
   if (!reranker || input.memories.length === 0) return null;
   try {
-    const candidates = input.memories.slice(0, 50).map((memory, index) => ({
+    const head = input.memories.slice(0, 50);
+    const candidates = head.map((memory, index) => ({
       id: memory.id,
       kind: memory.kind,
       snippet: redactForReport(memory.content).slice(0, 240),
@@ -737,13 +738,18 @@ async function callRetrievalReranker(input: {
     const order = typeof reranker === "function"
       ? await reranker(candidates)
       : await reranker.rerank(candidates);
-    const allowed = new Map(input.memories.map((memory) => [memory.id, memory]));
+    const allowed = new Map(head.map((memory) => [memory.id, memory]));
     const reranked: MemoryRecord[] = [];
     const seen = new Set<string>();
     for (const id of order) {
       const memory = allowed.get(id);
       if (!memory || seen.has(id)) continue;
       seen.add(id);
+      reranked.push(memory);
+    }
+    for (const memory of input.memories) {
+      if (seen.has(memory.id)) continue;
+      seen.add(memory.id);
       reranked.push(memory);
     }
     return reranked;

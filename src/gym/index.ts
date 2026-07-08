@@ -3173,11 +3173,11 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
     gate(
       result,
       "retrieval_reranker_contract",
-      reranked.length === 1 &&
+      reranked.length === 2 &&
         reranked[0]?.id === alpha.id &&
-        !reranked.some((entry) => entry.id === beta.id) &&
+        reranked[1]?.id === beta.id &&
         thrownFallback.length > 0,
-      "reranker may reorder/drop known ids, unknown ids are ignored, and failures fall back to fusion",
+      "reranker reorders without dropping, unknown ids are ignored, and failures fall back to fusion",
       "semantic_recall",
     );
   } finally {

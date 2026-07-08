@@ -2315,6 +2315,7 @@ async function fuseDirectMemorySearch(input: {
   freshQueryEmbedding?: boolean | undefined;
   maxNewPaths?: number | undefined;
   reinforceExisting?: boolean | undefined;
+  supplyFill?: boolean | undefined;
 }): Promise<{
   candidateCount: number;
   reinforcedPaths: ReconstructedEvidencePath[];
@@ -2358,15 +2359,17 @@ async function fuseDirectMemorySearch(input: {
   );
   for (const candidate of rankedCandidates) {
     if (input.memories.length >= input.maxMemories) break;
-    if (input.maxNewPaths !== undefined && selectedNewPaths.length >= input.maxNewPaths) break;
+    if (input.supplyFill !== true && input.maxNewPaths !== undefined && selectedNewPaths.length >= input.maxNewPaths) break;
     if (input.seenMemoryIds.has(candidate.memory.id)) continue;
     if (!memoryMatchesTemporalConstraint(candidate.memory, temporalConstraints)) continue;
-    const sourceRejectReason = sourceScopeRejectReason(
-      candidate.memory,
-      input.intent,
-      input.selectedSourceCues,
-    );
-    if (sourceRejectReason) continue;
+    if (input.supplyFill !== true) {
+      const sourceRejectReason = sourceScopeRejectReason(
+        candidate.memory,
+        input.intent,
+        input.selectedSourceCues,
+      );
+      if (sourceRejectReason) continue;
+    }
     input.seenMemoryIds.add(candidate.memory.id);
     input.memories.push(candidate.memory);
     const path = pathFromDirectMemory(
@@ -3498,6 +3501,9 @@ export async function reconstructMemoryContext(input: {
         selectedSourceCues,
         searchQueries: [""],
         reinforceExisting: false,
+        // Saturation is supply fill, not exploration: candidateMemoryLimit and
+        // the output token budget bound it, so branch/source narrowing should not.
+        supplyFill: true,
         cueExtractor: input.cueExtractor,
         inferTemporalCuesFromText,
       });
