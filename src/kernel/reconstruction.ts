@@ -2113,7 +2113,7 @@ async function searchDirectMemoryCandidates(input: {
   store: MemoryStore;
   profileId: string;
   query: string;
-  queryEmbedding?: QueryVectorEmbedding | undefined;
+  queryEmbedding?: QueryVectorEmbedding | null | undefined;
   intent: ReconstructionIntent;
   recallPurpose: ReconstructionRecallPurpose;
   includeSensitive?: boolean | undefined;
@@ -2142,9 +2142,11 @@ async function searchDirectMemoryCandidates(input: {
       limit,
       ...(input.freshQueryEmbedding
         ? { freshQueryEmbedding: true }
-        : input.queryEmbedding
-          ? { queryEmbedding: input.queryEmbedding }
-          : {}),
+        : input.queryEmbedding === null
+          ? { queryEmbedding: null }
+          : input.queryEmbedding
+            ? { queryEmbedding: input.queryEmbedding }
+            : {}),
     });
     for (const [memoryIndex, memory] of memories.entries()) {
       const existing = candidates.get(memory.id);
@@ -2297,7 +2299,7 @@ async function fuseDirectMemorySearch(input: {
   store: MemoryStore;
   profileId: string;
   query: string;
-  queryEmbedding?: QueryVectorEmbedding | undefined;
+  queryEmbedding?: QueryVectorEmbedding | null | undefined;
   intent: ReconstructionIntent;
   recallPurpose: ReconstructionRecallPurpose;
   includeSensitive?: boolean | undefined;
@@ -3484,6 +3486,8 @@ export async function reconstructMemoryContext(input: {
         store: input.store,
         profileId,
         query,
+        // Saturation is supply fill, not semantic retrieval; null blocks runtime query embedding injection.
+        queryEmbedding: null,
         intent,
         recallPurpose,
         includeSensitive: input.request.includeSensitive,

@@ -1491,12 +1491,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     queryEmbedding?: QueryVectorEmbedding | null | undefined,
   ): Promise<MemoryRecord[]> {
     const resolvedQueryEmbedding =
-      input.queryEmbedding ??
-      (input.freshQueryEmbedding
-        ? await queryEmbeddingForSearch(input.query, readRetrieval)
-        : queryEmbedding === undefined
-        ? await queryEmbeddingForSearch(input.query, readRetrieval)
-        : queryEmbedding ?? undefined);
+      input.queryEmbedding === null
+        ? undefined
+        : input.queryEmbedding ??
+          (input.freshQueryEmbedding
+            ? await queryEmbeddingForSearch(input.query, readRetrieval)
+            : queryEmbedding === undefined
+            ? await queryEmbeddingForSearch(input.query, readRetrieval)
+            : queryEmbedding ?? undefined);
     const memories = await store.searchMemories({
       ...input,
       retrieval,

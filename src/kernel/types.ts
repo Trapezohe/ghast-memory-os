@@ -1441,7 +1441,7 @@ export interface MemorySearchInput {
   includeSecretLike?: boolean | undefined;
   trace?: MemorySearchTraceCollector | undefined;
   retrieval?: MemoryRetrievalConfig | undefined;
-  queryEmbedding?: QueryVectorEmbedding | undefined;
+  queryEmbedding?: QueryVectorEmbedding | null | undefined;
   freshQueryEmbedding?: boolean | undefined;
 }
 

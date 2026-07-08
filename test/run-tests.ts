@@ -21303,6 +21303,120 @@ assert.equal(
   false,
 );
 await wideSupplyMemory.close();
+const wideEmbeddingEventMarkers = [
+  "AggregationWideEvent-0",
+  "AggregationWideEvent-1",
+  "AggregationWideEvent-2",
+  "AggregationWideEvent-3",
+  "AggregationWideEvent-4",
+  "AggregationWideEvent-5",
+  "AggregationWideEvent-6",
+];
+async function runWideEmbeddingSaturationFixture(input: {
+  profileId: string;
+  dbName: string;
+  withEmbedding: boolean;
+}): Promise<{
+  retrieved: number;
+  eventCount: number;
+  embeddingCalls: string[];
+  emptyQueryEmbeddingStates: string[];
+}> {
+  const embeddingCalls: string[] = [];
+  const emptyQueryEmbeddingStates: string[] = [];
+  const store = createSqliteMemoryStore({ path: path.join(tmp, input.dbName) });
+  const memory = createMemoryOS({
+    profileId: input.profileId,
+    store,
+    extractor: () => [],
+    ...(input.withEmbedding
+      ? {
+          embeddingProvider: {
+            name: "test-wide-saturation-provider",
+            dimensions: 3,
+            async embed(texts: string[]) {
+              embeddingCalls.push(...texts);
+              return texts.map((text) =>
+                /SemanticSaturationNeedle/u.test(text) ? [1, 0, 0] : [0, 1, 0]
+              );
+            },
+          },
+        }
+      : {}),
+  });
+  const eventIndexes = new Map([
+    [120, wideEmbeddingEventMarkers[0]!],
+    [150, wideEmbeddingEventMarkers[1]!],
+    [180, wideEmbeddingEventMarkers[2]!],
+    [210, wideEmbeddingEventMarkers[3]!],
+    [240, wideEmbeddingEventMarkers[4]!],
+    [270, wideEmbeddingEventMarkers[5]!],
+    [299, wideEmbeddingEventMarkers[6]!],
+  ]);
+  await memory.addMany(
+    Array.from({ length: 300 }, (_entry, index) => ({
+      profileId: input.profileId,
+      kind: "fact" as const,
+      content: index < 8
+        ? `SemanticSaturationNeedle direct semantic match ${index}.`
+        : eventIndexes.has(index)
+          ? `${eventIndexes.get(index)} scattered aggregation instance ${index}.`
+          : `Broad eligible supply memory ${index}.`,
+      confidence: 0.9,
+      createdAt: `2026-07-05T00:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
+    })),
+  );
+  embeddingCalls.length = 0;
+  const originalSearchMemories = store.searchMemories.bind(store);
+  store.searchMemories = ((searchInput) => {
+    if ((searchInput.query?.trim() ?? "") === "") {
+      emptyQueryEmbeddingStates.push(
+        searchInput.queryEmbedding === null
+          ? "null"
+          : searchInput.queryEmbedding
+            ? "embedding"
+            : "absent",
+      );
+    }
+    return originalSearchMemories(searchInput);
+  }) as typeof store.searchMemories;
+  const context = await memory.reconstructContext({
+    profileId: input.profileId,
+    query: "SemanticSaturationNeedle launch recall",
+    maxMemories: 200,
+    maxSteps: 8,
+    maxBranch: 10,
+    contextBudgetTokens: 100000,
+    maxCharsPerMemory: 80,
+    stopWhenEvidenceEnough: false,
+    retrieval: { embedQuery: input.withEmbedding },
+  });
+  await memory.close();
+  return {
+    retrieved: context.memories.length,
+    eventCount: wideEmbeddingEventMarkers.filter((marker) =>
+      context.memories.some((memoryRecord) => memoryRecord.content.includes(marker))
+    ).length,
+    embeddingCalls,
+    emptyQueryEmbeddingStates,
+  };
+}
+const wideLexicalSaturation = await runWideEmbeddingSaturationFixture({
+  profileId: "wide-saturation-lexical",
+  dbName: "wide-saturation-lexical.db",
+  withEmbedding: false,
+});
+const wideEmbeddingSaturation = await runWideEmbeddingSaturationFixture({
+  profileId: "wide-saturation-embedding",
+  dbName: "wide-saturation-embedding.db",
+  withEmbedding: true,
+});
+assert.equal(wideLexicalSaturation.retrieved, 200);
+assert.equal(wideEmbeddingSaturation.retrieved, wideLexicalSaturation.retrieved);
+assert.equal(wideEmbeddingSaturation.eventCount, wideEmbeddingEventMarkers.length);
+assert.deepEqual(wideEmbeddingSaturation.embeddingCalls, ["SemanticSaturationNeedle launch recall"]);
+assert.equal(wideEmbeddingSaturation.emptyQueryEmbeddingStates.includes("null"), true);
+assert.equal(wideEmbeddingSaturation.emptyQueryEmbeddingStates.includes("embedding"), false);
 await assert.rejects(
   () =>
     reconstructMemoryContext({
