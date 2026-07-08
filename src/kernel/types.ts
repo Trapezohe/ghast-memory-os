@@ -153,6 +153,8 @@ export interface PrepareTurnInput {
     recallPurpose?: ReconstructionRecallPurpose | undefined;
     reconstructionIntent?: ReconstructionIntentHint | undefined;
     maxCharsPerMemory?: number | undefined;
+    fullContentTopRank?: number | undefined;
+    fullContentMaxChars?: number | undefined;
     layerPolicy?: ReconstructionLayerPolicy | undefined;
   } | undefined;
   retrieval?: MemoryReadRetrievalOptions | undefined;
@@ -879,6 +881,7 @@ export interface TurnExplanationBudgetReport {
       anchorCoverage?: ReconstructionAnchorCoverageReport | undefined;
       sweeps?: ReconstructedContext["stats"]["sweeps"] | undefined;
       layers?: ReconstructedContext["stats"]["layers"] | undefined;
+      fullContentMemoryCount?: number | undefined;
     } | undefined;
   stoppedAt: "memory_search" | "token_budget" | "planner" | "complete";
 }
@@ -1031,6 +1034,8 @@ export interface ReconstructContextInput {
   recallPurpose?: ReconstructionRecallPurpose | undefined;
   reconstructionIntent?: ReconstructionIntentHint | undefined;
   maxCharsPerMemory?: number | undefined;
+  fullContentTopRank?: number | undefined;
+  fullContentMaxChars?: number | undefined;
   layerPolicy?: ReconstructionLayerPolicy | undefined;
   retrieval?: MemoryReadRetrievalOptions | undefined;
 }
@@ -1159,6 +1164,7 @@ export interface ReconstructedContext {
     requiredAnchorUnmet?: string[] | undefined;
     sweeps?: ReconstructionSweepStats | undefined;
     layers?: ReconstructionLayerStats | undefined;
+    fullContentMemoryCount?: number | undefined;
   };
 }
 

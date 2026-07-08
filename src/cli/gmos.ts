@@ -664,6 +664,22 @@ function nonNegativeIntegerOptionValue(name: string): number | undefined {
   return parsed;
 }
 
+function fullContentTopRankOption(): number | undefined {
+  const parsed = nonNegativeIntegerOptionValue("--full-content-top-rank");
+  if (parsed !== undefined && parsed > 64) {
+    throw new Error("--full-content-top-rank must be an integer between 0 and 64");
+  }
+  return parsed;
+}
+
+function fullContentMaxCharsOption(): number | undefined {
+  const parsed = positiveIntegerOptionValue("--full-content-max-chars");
+  if (parsed !== undefined && parsed > 8000) {
+    throw new Error("--full-content-max-chars must be a positive integer at most 8000");
+  }
+  return parsed;
+}
+
 function commaSeparatedStringOption(name: string): string[] | undefined {
   const raw = value(name);
   if (raw === undefined) return undefined;
@@ -2136,6 +2152,8 @@ async function main(): Promise<void> {
     const maxBranch = positiveIntegerOptionValue("--max-branch");
     const maxMemories = positiveIntegerOptionValue("--max-memories");
     const contextBudgetTokens = positiveIntegerOptionValue("--context-budget-tokens");
+    const fullContentTopRank = fullContentTopRankOption();
+    const fullContentMaxChars = fullContentMaxCharsOption();
     const readerContextCharLimit = nonNegativeIntegerOptionValue("--reader-context-char-limit");
     const debugContextFailureLimit = nonNegativeIntegerOptionValue("--debug-context-failure-limit");
     const debugDumpMemories = nonNegativeIntegerOptionValue("--debug-dump-memories");
@@ -2172,6 +2190,8 @@ async function main(): Promise<void> {
       ...(maxBranch !== undefined ? { maxBranch } : {}),
       ...(maxMemories !== undefined ? { maxMemories } : {}),
       ...(contextBudgetTokens !== undefined ? { contextBudgetTokens } : {}),
+      ...(fullContentTopRank !== undefined ? { fullContentTopRank } : {}),
+      ...(fullContentMaxChars !== undefined ? { fullContentMaxChars } : {}),
       ...(has("--no-anchor-coverage") ? { anchorCoverage: false } : {}),
       readerProfile,
       ...(resolvedDebugDir ? { debugDir: resolvedDebugDir } : {}),

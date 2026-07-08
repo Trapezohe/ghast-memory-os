@@ -171,6 +171,15 @@ function truncateMemoryContent(content: string, maxCharsPerMemory: number | unde
   return `${chars.slice(0, maxCharsPerMemory).join("")}...`;
 }
 
+function normalizedFullContentMaxChars(input: {
+  maxCharsPerMemory: number | undefined;
+  fullContentTopRank: number | undefined;
+  fullContentMaxChars: number | undefined;
+}): number | undefined {
+  if (input.fullContentTopRank === undefined || input.maxCharsPerMemory === undefined) return undefined;
+  return boundedInteger(input.fullContentMaxChars, 1600, input.maxCharsPerMemory, 8000);
+}
+
 function dropLowestRankMemoryByLayer(
   memories: MemoryRecord[],
   layer: ReconstructionMemoryLayer,
@@ -2535,6 +2544,8 @@ function composeReconstructedContext(input: {
   includeTemporalContext?: boolean | undefined;
   maxMemories: number;
   maxCharsPerMemory?: number | undefined;
+  fullContentTopRank?: number | undefined;
+  fullContentMaxChars?: number | undefined;
   layerPolicy?: ReconstructionLayerStats["policy"] | undefined;
   displayQuery?: string | undefined;
   plannerTrace?: ReconstructedPlannerTrace | undefined;
@@ -2678,8 +2689,15 @@ function composeReconstructedContext(input: {
       })),
     };
   };
+  const fullContentMemoryIds = (): Set<string> =>
+    input.fullContentTopRank === undefined
+      ? new Set()
+      : new Set(memories.slice(0, input.fullContentTopRank).map((memory) => memory.id));
+  const capForMemoryId = (memoryId: string | null | undefined, fullIds: Set<string>): number | undefined =>
+    memoryId && fullIds.has(memoryId) ? input.fullContentMaxChars : input.maxCharsPerMemory;
   const renderSweepSection = (candidates: ReconstructionSweepCandidate[]): string => {
     if (candidates.length === 0) return "";
+    const fullIds = fullContentMemoryIds();
     const lines = [
       "Additional dated mentions:",
       ...candidates.sort(compareSweepChronological).map((candidate) => {
@@ -2691,7 +2709,7 @@ function composeReconstructedContext(input: {
         const temporal = includeTemporalContext
           ? temporalContextLabel(memory.createdAt, memory.metadata)
           : "";
-        const content = truncateMemoryContent(memory.content, input.maxCharsPerMemory);
+        const content = truncateMemoryContent(memory.content, capForMemoryId(memory.id, fullIds));
         return temporal ? `- [${temporal}] ${content}` : `- ${content}`;
       }),
     ];
@@ -2724,11 +2742,16 @@ function composeReconstructedContext(input: {
     });
     const output = outputState();
     const memoryById = new Map(memories.map((memory) => [memory.id, memory]));
+    const fullIds = fullContentMemoryIds();
     const temporalLabelForPath = (path: ReconstructedEvidencePath): string => {
       const memory = memoryById.get(path.targetId) ?? memoryById.get(path.sourceMemoryId ?? "");
       return memory
         ? temporalContextLabel(memory.createdAt, memory.metadata)
         : temporalContextLabel(path.createdAt, {});
+    };
+    const capForPath = (path: ReconstructedEvidencePath): number | undefined => {
+      if (memoryById.has(path.targetId)) return capForMemoryId(path.targetId, fullIds);
+      return capForMemoryId(path.sourceMemoryId, fullIds);
     };
     const lines = [
       "<gmos-reconstructed-context>",
@@ -2746,7 +2769,7 @@ function composeReconstructedContext(input: {
         formatPathLine(
           path,
           includeTemporalContext ? temporalLabelForPath(path) : "",
-          input.maxCharsPerMemory,
+          capForPath(path),
         )
       ),
       "Memory content:",
@@ -2754,7 +2777,7 @@ function composeReconstructedContext(input: {
         publicMemory(memory, hideInternalRouteSignals, privateOutputSignalKeySet)
       ).map(
         (memory) =>
-          `- [${safePublicLabel(memory.kind)}${includeTemporalContext ? temporalContextSegment(memory.createdAt, memory.metadata) : ""}; confidence=${memory.confidence.toFixed(2)}] ${truncateMemoryContent(memory.content, input.maxCharsPerMemory)}`,
+          `- [${safePublicLabel(memory.kind)}${includeTemporalContext ? temporalContextSegment(memory.createdAt, memory.metadata) : ""}; confidence=${memory.confidence.toFixed(2)}] ${truncateMemoryContent(memory.content, capForMemoryId(memory.id, fullIds))}`,
       ),
     ];
     if (input.includeEvidence) {
@@ -2811,6 +2834,9 @@ function composeReconstructedContext(input: {
         culled: subtractLayerCounts(layerCounts(layerCandidates), layerCounts(memories)),
       }
     : undefined;
+  const fullContentMemoryCount = input.fullContentTopRank === undefined
+    ? undefined
+    : Math.min(input.fullContentTopRank, memories.length);
 
   return {
     profileId: input.profileId,
@@ -2836,6 +2862,7 @@ function composeReconstructedContext(input: {
         : {}),
       ...(sweeps ? { sweeps } : {}),
       ...(layers ? { layers } : {}),
+      ...(fullContentMemoryCount !== undefined ? { fullContentMemoryCount } : {}),
     },
   };
 }
@@ -2867,6 +2894,8 @@ async function fallbackReconstruction(input: {
   maxMemories: number;
   candidateMemoryLimit: number;
   maxCharsPerMemory?: number | undefined;
+  fullContentTopRank?: number | undefined;
+  fullContentMaxChars?: number | undefined;
   layerPolicy?: ReconstructionLayerStats["policy"] | undefined;
   intent: ReconstructionIntent;
   queryEmbedding?: QueryVectorEmbedding | undefined;
@@ -3039,6 +3068,8 @@ async function fallbackReconstruction(input: {
     includeTemporalContext: input.includeTemporalContext,
     maxMemories: input.maxMemories,
     maxCharsPerMemory: input.maxCharsPerMemory,
+    fullContentTopRank: input.fullContentTopRank,
+    fullContentMaxChars: input.fullContentMaxChars,
     layerPolicy: input.layerPolicy,
     plannerTrace,
     ...(fallbackAnchorCoverage ? { anchorCoverage: fallbackAnchorCoverage } : {}),
@@ -3069,6 +3100,12 @@ export async function reconstructMemoryContext(input: {
   const maxBranch = boundedInteger(input.request.maxBranch, 4, 1, 12);
   const maxMemories = boundedMaxMemories(input.request.maxMemories);
   const maxCharsPerMemory = optionalBoundedInteger(input.request.maxCharsPerMemory, 80, 4000);
+  const fullContentTopRank = optionalBoundedInteger(input.request.fullContentTopRank, 0, 64);
+  const fullContentMaxChars = normalizedFullContentMaxChars({
+    maxCharsPerMemory,
+    fullContentTopRank,
+    fullContentMaxChars: input.request.fullContentMaxChars,
+  });
   const layerPolicy = normalizedLayerPolicy(input.request.layerPolicy);
   const candidateMemoryLimit = layerCandidateMemoryLimit(maxMemories, layerPolicy);
   const anchorCoverageEnabled = input.request.anchorCoverage !== false;
@@ -3112,6 +3149,8 @@ export async function reconstructMemoryContext(input: {
       maxMemories,
       candidateMemoryLimit,
       maxCharsPerMemory,
+      fullContentTopRank,
+      fullContentMaxChars,
       layerPolicy,
       intent,
       queryEmbedding: input.queryEmbedding,
@@ -3565,6 +3604,8 @@ export async function reconstructMemoryContext(input: {
     includeTemporalContext,
     maxMemories,
     maxCharsPerMemory,
+    fullContentTopRank,
+    fullContentMaxChars,
     layerPolicy,
     cueExtractor: input.cueExtractor,
     inferTemporalCuesFromText,

@@ -21563,6 +21563,82 @@ assert.match(
 );
 assert.equal(truncatedMemoryPathSection.includes(truncatedMemoryContent), true);
 assert.doesNotMatch(truncatedMemoryPathSection, new RegExp(`${"x".repeat(100)}`, "u"));
+const graduatedContent = (label: string): string =>
+  `GraduatedDepthKey ${label} ${"a".repeat(430)} ${label}_AFTER_400 ${"b".repeat(480)} ${label}_AFTER_900`;
+const graduatedRows = [
+  layerMemory("memory_graduated_top_1", "atom", graduatedContent("TOP_ONE")),
+  layerMemory("memory_graduated_top_2", "atom", graduatedContent("TOP_TWO")),
+  layerMemory("memory_graduated_tail_3", "atom", graduatedContent("TAIL_THREE")),
+  layerMemory("memory_graduated_tail_4", "atom", graduatedContent("TAIL_FOUR")),
+];
+const uniformGraduatedRequest = {
+  profileId: "layer",
+  query: "GraduatedDepthKey",
+  maxMemories: 4,
+  contextBudgetTokens: 10000,
+  maxCharsPerMemory: 400,
+  stopWhenEvidenceEnough: false,
+} as const;
+const uniformGraduatedContext = await reconstructMemoryContext({
+  store: layerStoreFor(graduatedRows),
+  defaultProfileId: "layer",
+  request: uniformGraduatedRequest,
+});
+assert.equal(uniformGraduatedContext.stats.fullContentMemoryCount, undefined);
+assert.doesNotMatch(uniformGraduatedContext.contextBlock, /TOP_ONE_AFTER_400/u);
+assert.match(uniformGraduatedContext.contextBlock, /\.\.\./u);
+const graduatedRequest = {
+  ...uniformGraduatedRequest,
+  fullContentTopRank: 2,
+  fullContentMaxChars: 900,
+} as const;
+const graduatedContext = await reconstructMemoryContext({
+  store: layerStoreFor(graduatedRows),
+  defaultProfileId: "layer",
+  request: graduatedRequest,
+});
+const graduatedContextAgain = await reconstructMemoryContext({
+  store: layerStoreFor(graduatedRows),
+  defaultProfileId: "layer",
+  request: graduatedRequest,
+});
+assert.equal(graduatedContext.contextBlock, graduatedContextAgain.contextBlock);
+assert.deepEqual(graduatedContext.stats, graduatedContextAgain.stats);
+assert.equal(graduatedContext.stats.fullContentMemoryCount, 2);
+assert.match(graduatedContext.contextBlock, /TOP_ONE_AFTER_400/u);
+assert.match(graduatedContext.contextBlock, /TOP_TWO_AFTER_400/u);
+assert.doesNotMatch(graduatedContext.contextBlock, /TOP_ONE_AFTER_900/u);
+assert.doesNotMatch(graduatedContext.contextBlock, /TAIL_THREE_AFTER_400/u);
+const graduatedPathSection = graduatedContext.contextBlock.slice(
+  graduatedContext.contextBlock.indexOf("Reconstructed evidence paths:"),
+  graduatedContext.contextBlock.indexOf("Memory content:"),
+);
+assert.match(graduatedPathSection, /TOP_ONE_AFTER_400/u);
+assert.match(graduatedPathSection, /TOP_TWO_AFTER_400/u);
+assert.doesNotMatch(graduatedPathSection, /TOP_ONE_AFTER_900/u);
+assert.doesNotMatch(graduatedPathSection, /TAIL_THREE_AFTER_400/u);
+const graduatedMemorySection = graduatedContext.contextBlock.slice(
+  graduatedContext.contextBlock.indexOf("Memory content:"),
+);
+assert.match(graduatedMemorySection, /TOP_ONE_AFTER_400/u);
+assert.match(graduatedMemorySection, /TOP_TWO_AFTER_400/u);
+assert.doesNotMatch(graduatedMemorySection, /TOP_ONE_AFTER_900/u);
+assert.doesNotMatch(graduatedMemorySection, /TAIL_THREE_AFTER_400/u);
+const graduatedCullBudget = 430;
+const graduatedCullContext = await reconstructMemoryContext({
+  store: layerStoreFor(graduatedRows),
+  defaultProfileId: "layer",
+  request: {
+    ...graduatedRequest,
+    contextBudgetTokens: graduatedCullBudget,
+  },
+});
+assert.equal(graduatedCullContext.stats.promptTokenEstimate <= graduatedCullBudget, true);
+assert.equal(graduatedCullContext.memories.length < graduatedRows.length, true);
+assert.equal(
+  graduatedCullContext.stats.fullContentMemoryCount,
+  Math.min(2, graduatedCullContext.memories.length),
+);
 const longSweepContent = `SweepCapKey ${"s".repeat(120)}`;
 const truncatedSweepContext = await reconstructMemoryContext({
   store: layerStoreFor([
@@ -21592,6 +21668,33 @@ assert.match(truncatedSweepSection, /Additional dated mentions:/u);
 assert.match(truncatedSweepSection, /observed 2026-01-03/u);
 assert.equal(truncatedSweepSection.includes(truncatedSweepContent), true);
 assert.doesNotMatch(truncatedSweepSection, new RegExp(`${"s".repeat(100)}`, "u"));
+const graduatedSweepContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    layerMemory("memory_sweep_graduated_ordinary", "atom", "SweepCap ordinary memory occupies ordinary slot."),
+    {
+      ...layerMemory("memory_sweep_graduated_long", "atom", longSweepContent),
+      createdAt: "2026-01-03T00:00:00.000Z",
+      updatedAt: "2026-01-03T00:00:00.000Z",
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "SweepCap",
+    maxMemories: 1,
+    contextBudgetTokens: 2000,
+    stopWhenEvidenceEnough: false,
+    reconstructionIntent: { sweepCues: ["SweepCapKey"] },
+    maxCharsPerMemory: 80,
+    fullContentTopRank: 1,
+    fullContentMaxChars: 140,
+  },
+});
+const graduatedSweepSection = graduatedSweepContext.contextBlock.slice(
+  graduatedSweepContext.contextBlock.indexOf("Additional dated mentions:"),
+);
+assert.equal(graduatedSweepSection.includes(truncatedSweepContent), true);
+assert.doesNotMatch(graduatedSweepSection, new RegExp(`${"s".repeat(100)}`, "u"));
 const cullRows = [
   layerMemory("memory_cull_turn", "turn", `CullKey turn ${"T".repeat(500)}`),
   layerMemory("memory_cull_atom", "atom", `CullKey atom ${"A".repeat(500)}`),
@@ -24674,7 +24777,11 @@ const reasoningContentOnlyAnswerer = createOpenAICompatibleExternalBenchmarkAnsw
         choices: [{
           message: {
             content: "",
-            reasoning_content: JSON.stringify({ answer: "reasoning content answer parsed" }),
+            reasoning_content: [
+              "We are asked to answer from the context.",
+              JSON.stringify({ answer: "reasoning content answer parsed" }),
+              "Done.",
+            ].join("\n"),
           },
         }],
       }),
@@ -24688,6 +24795,36 @@ assert.equal(
 assert.equal(reasoningContentOnlyAnswererCalls, 1);
 assert.equal(reasoningContentOnlyAnswerer.manifest?.answererRetryCount, 0);
 assert.equal(reasoningContentOnlyAnswerer.manifest?.answererRecoveredCount, 0);
+let reasoningProseOnlyAnswererCalls = 0;
+const reasoningProseOnlyAnswerer = createOpenAICompatibleExternalBenchmarkAnswerer({
+  baseUrl: "https://answerer.invalid/v1",
+  model: "reasoning-prose-only-answerer",
+  fetchImpl: async () => {
+    reasoningProseOnlyAnswererCalls += 1;
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({
+        choices: [{
+          message: reasoningProseOnlyAnswererCalls === 1
+            ? {
+                content: "",
+                reasoning_content: "We are asked: answer the benchmark question from context.",
+              }
+            : { content: JSON.stringify({ answer: "reasoning prose retry recovered" }) },
+        }],
+      }),
+    };
+  },
+});
+assert.equal(
+  await reasoningProseOnlyAnswerer.answer("Question?", "Context."),
+  "reasoning prose retry recovered",
+);
+assert.equal(reasoningProseOnlyAnswererCalls, 2);
+assert.equal(reasoningProseOnlyAnswerer.manifest?.answererRetryCount, 1);
+assert.equal(reasoningProseOnlyAnswerer.manifest?.answererRecoveredCount, 1);
 let recoveringAnswererCalls = 0;
 const recoveringAnswerer = createOpenAICompatibleExternalBenchmarkAnswerer({
   baseUrl: "https://answerer.invalid/v1",
@@ -25690,6 +25827,8 @@ assert.equal(externalReaderProfileWideBenchmark.runManifest.options.maxBranch, 1
 assert.equal(externalReaderProfileWideBenchmark.runManifest.options.maxMemories, 200);
 assert.equal(externalReaderProfileWideBenchmark.runManifest.options.contextBudgetTokens, 16000);
 assert.equal(externalReaderProfileWideBenchmark.runManifest.options.maxCharsPerMemory, 400);
+assert.equal(externalReaderProfileWideBenchmark.runManifest.options.fullContentTopRank, 16);
+assert.equal(externalReaderProfileWideBenchmark.runManifest.options.fullContentMaxChars, 1600);
 assert.deepEqual(externalReaderProfileWideBenchmark.runManifest.options.layerPolicy, {
   summaryMinShare: 0.3,
   turnMaxShare: 0.4,
@@ -29219,6 +29358,8 @@ const cliExternalWideJson = JSON.parse(cliExternalWide.stdout) as {
       maxMemories?: number | null;
       contextBudgetTokens?: number | null;
       maxCharsPerMemory?: number | null;
+      fullContentTopRank?: number | null;
+      fullContentMaxChars?: number | null;
       layerPolicy?: { summaryMinShare?: number; turnMaxShare?: number } | null;
     };
   };
@@ -29228,11 +29369,47 @@ assert.equal(cliExternalWideJson.runManifest?.options?.readerProfile, "wide");
 assert.equal(cliExternalWideJson.runManifest?.options?.maxMemories, 200);
 assert.equal(cliExternalWideJson.runManifest?.options?.contextBudgetTokens, 16000);
 assert.equal(cliExternalWideJson.runManifest?.options?.maxCharsPerMemory, 400);
+assert.equal(cliExternalWideJson.runManifest?.options?.fullContentTopRank, 16);
+assert.equal(cliExternalWideJson.runManifest?.options?.fullContentMaxChars, 1600);
 assert.deepEqual(cliExternalWideJson.runManifest?.options?.layerPolicy, {
   summaryMinShare: 0.3,
   turnMaxShare: 0.4,
 });
 assert.equal((cliExternalWideJson.cases?.[0]?.reconstructedLayerIncludedCounts?.atom ?? 0) > 0, true);
+const cliExternalWideOverride = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--format",
+    "json",
+    "--max-cases",
+    "1",
+    "--reader-profile",
+    "wide",
+    "--full-content-top-rank",
+    "3",
+    "--full-content-max-chars",
+    "1200",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.equal(cliExternalWideOverride.status, 0, cliExternalWideOverride.stderr);
+const cliExternalWideOverrideJson = JSON.parse(cliExternalWideOverride.stdout) as {
+  runManifest?: {
+    options?: {
+      fullContentTopRank?: number | null;
+      fullContentMaxChars?: number | null;
+    };
+  };
+};
+assert.equal(cliExternalWideOverrideJson.runManifest?.options?.fullContentTopRank, 3);
+assert.equal(cliExternalWideOverrideJson.runManifest?.options?.fullContentMaxChars, 1200);
 assert.equal(existsSync(cliExternalJsonFile), true);
 assert.equal(existsSync(cliExternalMarkdownFile), true);
 assert.equal(JSON.parse(readFileSync(cliExternalJsonFile, "utf8")).schema, "gmos.external_long_memory_qa.v1");
@@ -29385,6 +29562,25 @@ const cliExternalInvalidJudgeProfile = spawnSync(
 );
 assert.notEqual(cliExternalInvalidJudgeProfile.status, 0);
 assert.match(cliExternalInvalidJudgeProfile.stderr, /--judge-profile must be strict or official/);
+const cliExternalInvalidFullContentTopRank = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--full-content-top-rank",
+    "65",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalInvalidFullContentTopRank.status, 0);
+assert.match(cliExternalInvalidFullContentTopRank.stderr, /--full-content-top-rank must be an integer between 0 and 64/);
 const cliExternalReaderFixtureFile = path.join(tmp, "cli-external-reader.jsonl");
 writeFileSync(
   cliExternalReaderFixtureFile,

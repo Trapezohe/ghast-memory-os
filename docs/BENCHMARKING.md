@@ -269,12 +269,15 @@ Use `--reader-profile wide` when the benchmark reader needs high supply
 bandwidth, such as LongMemEval-style stores with distilled session summaries,
 extraction atoms, and raw turn memories competing for the same read. It sets
 `maxSteps=8`, `maxBranch=10`, `maxMemories=200`,
-`contextBudgetTokens=16000`, `maxCharsPerMemory=400`, and
+`contextBudgetTokens=16000`, `maxCharsPerMemory=400`,
+`fullContentTopRank=16`, `fullContentMaxChars=1600`, and
 `layerPolicy={ summaryMinShare: 0.3, turnMaxShare: 0.4 }`. Explicit
-`--max-memories` and `--context-budget-tokens` still override those two values.
+`--max-memories`, `--context-budget-tokens`, `--full-content-top-rank`, and
+`--full-content-max-chars` override those effective values.
 The wider token budget is sized for direct-import LongMemEval-style turns:
-roughly 200 full-turn memory lines can require about 20k raw tokens before
-truncation, and 8k culled saturated supplies too aggressively.
+the top 16 ranked memories render up to 1600 chars so details late in long
+assistant turns remain visible, while the remaining wide supply stays at the
+400-char tail cap.
 Use the default profile for scale smoke gates unless a run is intentionally
 measuring wide-reader latency.
 

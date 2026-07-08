@@ -1072,6 +1072,16 @@ the prompt block; it is bounded to `80..4000`, preserves the temporal bracket,
 and appends `...` deterministically when truncation happens. Returned
 `memories[]` still carry full content.
 
+`fullContentTopRank?: number` enables rank-graduated rendering for the first
+`0..64` memories after final ranking and budget culling. When set, those top
+memories use `fullContentMaxChars?: number` while the remaining tail keeps
+`maxCharsPerMemory`. `fullContentMaxChars` is bounded to
+`maxCharsPerMemory..8000` and defaults to `1600`; if `maxCharsPerMemory` is not
+set, memory content is already uncapped and the graduated cap has no rendering
+effect. The same resolved per-memory cap is used for memory-content lines and
+matching evidence-path lines; reconstruction stats expose
+`fullContentMemoryCount` when rank-graduated rendering is enabled.
+
 `layerPolicy?: { summaryMinShare?: number; turnMaxShare?: number }` is an
 opt-in host policy for layered stores. Absent policy keeps reconstruction output
 byte-identical to the legacy global pool. When present, gmOS derives layers only
@@ -1145,7 +1155,8 @@ question. `readerProfile: "expansive"` sets effective reader budgets to
 `maxSteps=8`, `maxBranch=10`, `maxMemories=24`, and
 `contextBudgetTokens=4000` unless those options are explicitly supplied.
 `readerProfile: "wide"` keeps `maxSteps=8` and `maxBranch=10`, sets
-`maxMemories=200`, `contextBudgetTokens=16000`, `maxCharsPerMemory=400`, and
+`maxMemories=200`, `contextBudgetTokens=16000`, `maxCharsPerMemory=400`,
+`fullContentTopRank=16`, `fullContentMaxChars=1600`, and
 `layerPolicy={ summaryMinShare: 0.3, turnMaxShare: 0.4 }`. Reports record the
 effective values in `runManifest.options`, and per-case results include
 `reconstructedLayerIncludedCounts` when a layer policy was active. Wide

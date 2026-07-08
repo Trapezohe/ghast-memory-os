@@ -3170,6 +3170,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
                 classifyRuntimeSensitivity,
               ),
               maxCharsPerMemory: input.reconstruction.maxCharsPerMemory,
+              fullContentTopRank: input.reconstruction.fullContentTopRank,
+              fullContentMaxChars: input.reconstruction.fullContentMaxChars,
               layerPolicy: input.reconstruction.layerPolicy,
               privateRouteSignals,
             },
@@ -3260,6 +3262,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
             : {}),
           ...(prepared.reconstruction.stats.layers
             ? { layers: prepared.reconstruction.stats.layers }
+            : {}),
+          ...(prepared.reconstruction.stats.fullContentMemoryCount !== undefined
+            ? { fullContentMemoryCount: prepared.reconstruction.stats.fullContentMemoryCount }
             : {}),
         }
       : undefined;

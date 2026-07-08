@@ -38,6 +38,7 @@ import {
   type OpenAICompatibleFetch,
 } from "../intelligence/index.js";
 import { readGmosPackageInfo, readGmosPackageRoot } from "../kernel/package-info.js";
+import { parseOpenAICompatibleJsonText } from "../kernel/openai-compatible-response.js";
 import {
   classifySensitivity,
   eligibleForLongTermMemory,
@@ -713,6 +714,8 @@ export interface ExternalMemoryBenchmarkRunManifest {
     maxMemories: number | null;
     contextBudgetTokens: number | null;
     maxCharsPerMemory?: number | null | undefined;
+    fullContentTopRank?: number | null | undefined;
+    fullContentMaxChars?: number | null | undefined;
     layerPolicy?: ReconstructionLayerPolicy | null | undefined;
     readerProfile: ExternalMemoryBenchmarkReaderProfile;
     temporalMode: ExternalMemoryBenchmarkTemporalMode | null;
@@ -780,6 +783,8 @@ export interface RunExternalMemoryBenchmarkOptions {
   anchorCoverage?: boolean | undefined;
   contextBudgetTokens?: number | undefined;
   maxCharsPerMemory?: number | undefined;
+  fullContentTopRank?: number | undefined;
+  fullContentMaxChars?: number | undefined;
   layerPolicy?: ReconstructionLayerPolicy | undefined;
   temporalMode?: ExternalMemoryBenchmarkTemporalMode | undefined;
   includeSensitive?: boolean | undefined;
@@ -1996,6 +2001,8 @@ async function wideBudgetRunContainsTerm(input: {
     maxMemories: input.options.maxMemories,
     contextBudgetTokens,
     maxCharsPerMemory: input.options.maxCharsPerMemory,
+    fullContentTopRank: input.options.fullContentTopRank,
+    fullContentMaxChars: input.options.fullContentMaxChars,
     layerPolicy: input.options.layerPolicy,
     ...(input.options.anchorCoverage !== undefined ? { anchorCoverage: input.options.anchorCoverage } : {}),
     ...(temporalMode !== null ? { temporalMode } : {}),
@@ -2421,8 +2428,35 @@ function textFromCompletionContent(value: unknown): string {
     const text = textFromCompletionContent(record.content);
     if (text) return text;
   }
-  if (record.reasoning_content !== undefined) return textFromCompletionContent(record.reasoning_content);
+  if (record.reasoning_content !== undefined) return jsonObjectTextFromReasoningContent(record.reasoning_content);
+  if (record.reasoning !== undefined) return jsonObjectTextFromReasoningContent(record.reasoning);
   return "";
+}
+
+function textFromReasoningContent(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(textFromReasoningContent).filter(Boolean).join("\n");
+  if (!value || typeof value !== "object") return "";
+  const record = value as Record<string, unknown>;
+  if (typeof record.text === "string") return record.text;
+  if (typeof record.output_text === "string") return record.output_text;
+  return record.content !== undefined ? textFromReasoningContent(record.content) : "";
+}
+
+function jsonObjectTextFromReasoningContent(value: unknown): string {
+  const text = textFromReasoningContent(value).trim();
+  if (!text) return "";
+  try {
+    const parsed = parseOpenAICompatibleJsonText(
+      text,
+      "OpenAI-compatible benchmark reasoning_content",
+    );
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? JSON.stringify(parsed)
+      : "";
+  } catch {
+    return "";
+  }
 }
 
 function completionText(payload: unknown): string {
@@ -2437,7 +2471,7 @@ function completionText(payload: unknown): string {
   if (!Array.isArray(choices)) return "";
   const first = choices[0] as { message?: { content?: unknown; reasoning_content?: unknown }; text?: unknown } | undefined;
   const text = textFromCompletionContent(first?.message?.content ?? first?.text);
-  return text || textFromCompletionContent(first?.message?.reasoning_content);
+  return text || jsonObjectTextFromReasoningContent(first?.message?.reasoning_content);
 }
 
 function parsedCompletionObject(payload: unknown): Record<string, unknown> {
@@ -2882,6 +2916,12 @@ function createRunManifest(input: {
       ...(input.options.maxCharsPerMemory !== undefined
         ? { maxCharsPerMemory: input.options.maxCharsPerMemory }
         : {}),
+      ...(input.options.fullContentTopRank !== undefined
+        ? { fullContentTopRank: input.options.fullContentTopRank }
+        : {}),
+      ...(input.options.fullContentMaxChars !== undefined
+        ? { fullContentMaxChars: input.options.fullContentMaxChars }
+        : {}),
       ...(input.options.layerPolicy !== undefined
         ? { layerPolicy: input.options.layerPolicy }
         : {}),
@@ -3032,6 +3072,50 @@ function readerProfileMaxCharsPerMemory(
 ): number | undefined {
   if (value !== undefined) return value;
   return profile === "wide" ? 400 : undefined;
+}
+
+function normalizedFullContentTopRank(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) || value < 0 || value > 64) {
+    throw new Error("External benchmark fullContentTopRank must be an integer between 0 and 64");
+  }
+  return value;
+}
+
+function readerProfileFullContentTopRank(
+  profile: ExternalMemoryBenchmarkReaderProfile,
+  value: number | undefined,
+): number | undefined {
+  if (value !== undefined) return normalizedFullContentTopRank(value);
+  return profile === "wide" ? 16 : undefined;
+}
+
+function normalizedFullContentMaxChars(
+  value: number | undefined,
+  maxCharsPerMemory: number | undefined,
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) || value < 1 || value > 8000) {
+    throw new Error("External benchmark fullContentMaxChars must be an integer between 1 and 8000");
+  }
+  if (maxCharsPerMemory !== undefined && value < maxCharsPerMemory) {
+    throw new Error("External benchmark fullContentMaxChars must be greater than or equal to maxCharsPerMemory");
+  }
+  return value;
+}
+
+function readerProfileFullContentMaxChars(input: {
+  profile: ExternalMemoryBenchmarkReaderProfile;
+  value: number | undefined;
+  fullContentTopRank: number | undefined;
+  maxCharsPerMemory: number | undefined;
+}): number | undefined {
+  if (input.value !== undefined) {
+    return normalizedFullContentMaxChars(input.value, input.maxCharsPerMemory);
+  }
+  return input.fullContentTopRank !== undefined
+    ? Math.max(1600, input.maxCharsPerMemory ?? 1600)
+    : undefined;
 }
 
 function normalizedLayerPolicyOption(
@@ -4716,6 +4800,8 @@ async function scoreCase(input: {
           maxMemories: input.options.maxMemories,
           contextBudgetTokens: input.options.contextBudgetTokens,
           maxCharsPerMemory: input.options.maxCharsPerMemory,
+          fullContentTopRank: input.options.fullContentTopRank,
+          fullContentMaxChars: input.options.fullContentMaxChars,
           layerPolicy: input.options.layerPolicy,
           ...(input.options.anchorCoverage !== undefined ? { anchorCoverage: input.options.anchorCoverage } : {}),
           ...(temporalMode !== null ? { temporalMode } : {}),
@@ -5334,6 +5420,17 @@ export async function runExternalMemoryBenchmark(
     enabled: sweepCues && runtimeIntelligence.hooks?.queryPlanner !== undefined,
     maxCues: 3,
   };
+  const maxCharsPerMemory = readerProfileMaxCharsPerMemory(readerProfile, options.maxCharsPerMemory);
+  const fullContentTopRank = readerProfileFullContentTopRank(
+    readerProfile,
+    options.fullContentTopRank,
+  );
+  const fullContentMaxChars = readerProfileFullContentMaxChars({
+    profile: readerProfile,
+    value: options.fullContentMaxChars,
+    fullContentTopRank,
+    maxCharsPerMemory,
+  });
   const normalizedOptions: RunExternalMemoryBenchmarkOptions = {
     ...options,
     cases: selectedCases,
@@ -5347,7 +5444,9 @@ export async function runExternalMemoryBenchmark(
       readerProfile,
       options.contextBudgetTokens,
     ),
-    maxCharsPerMemory: readerProfileMaxCharsPerMemory(readerProfile, options.maxCharsPerMemory),
+    maxCharsPerMemory,
+    ...(fullContentTopRank !== undefined ? { fullContentTopRank } : {}),
+    ...(fullContentMaxChars !== undefined ? { fullContentMaxChars } : {}),
     layerPolicy: readerProfileLayerPolicy(readerProfile, options.layerPolicy),
     debugDumpMemories,
     debugContextFailureLimit,
