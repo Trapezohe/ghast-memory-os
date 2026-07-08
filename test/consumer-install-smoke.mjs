@@ -1235,12 +1235,20 @@ try {
       if (typedRuntimeIntelligence.enabled !== false) {
         throw new Error("typed runtime intelligence manifest failed");
       }
+      const typedAnswererRetryCount: number = typedRuntimeIntelligence.answererRetryCount;
+      const typedJudgeRecoveredCount: number = typedRuntimeIntelligence.judgeRecoveredCount;
       const typedRuntimeAnswererManifest: ExternalMemoryBenchmarkRuntimeAnswererManifest =
         typedRuntimeIntelligence.answerer;
       const typedRuntimeAnswererMaxTokens: number | null = typedRuntimeAnswererManifest.maxTokens;
+      const typedRuntimeAnswererRetryCount: number | undefined = typedRuntimeAnswererManifest.answererRetryCount;
       const typedRuntimeJudgeMaxTokens: number | null = typedRuntimeIntelligence.judge.maxTokens;
+      const typedRuntimeJudgeRetryCount: number | undefined = typedRuntimeIntelligence.judge.judgeRetryCount;
+      void typedAnswererRetryCount;
+      void typedJudgeRecoveredCount;
       void typedRuntimeAnswererMaxTokens;
+      void typedRuntimeAnswererRetryCount;
       void typedRuntimeJudgeMaxTokens;
+      void typedRuntimeJudgeRetryCount;
       const typedJudge: ExternalMemoryBenchmarkJudge = {
         name: "typed-judge",
         manifest: {

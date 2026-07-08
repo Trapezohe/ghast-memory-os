@@ -217,6 +217,19 @@ be sent to the judge in judge-only mode. gmOS removes internal ids and
 reconstruction diagnostics before calling the answerer. Generated answers are
 recorded per case with a bounded length for failure analysis.
 
+OpenAI-compatible gmOS reader and judge factories retry transient invalid
+completions by default: three total attempts with a 250ms backoff. Reader retry
+validation requires a non-empty trimmed `answer`; judge retry validation requires
+a boolean `correct`. Reports and manifests record
+`runtimeIntelligence.answererRetryCount`,
+`runtimeIntelligence.answererRecoveredCount`,
+`runtimeIntelligence.judgeRetryCount`, and
+`runtimeIntelligence.judgeRecoveredCount` so load-induced empty response rates
+stay visible. If a reasoning model returns an empty `content` field but places
+the required JSON in `reasoning_content`, gmOS parses that JSON before treating
+the response as empty; still prefer disabling thinking when a provider supports
+it and the official protocol does not require reasoning output.
+
 Example:
 
 ```bash

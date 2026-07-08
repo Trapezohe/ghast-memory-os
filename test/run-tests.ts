@@ -24460,6 +24460,135 @@ const reasoningAnswerer = createOpenAICompatibleExternalBenchmarkAnswerer({
 assert.equal(reasoningAnswerer.manifest?.maxTokens, 3072);
 assert.equal(await reasoningAnswerer.answer("Question?", "Context."), "reasoning answer parsed");
 assert.equal(reasoningAnswererBodies[0]?.max_tokens, 3072);
+assert.equal(reasoningAnswerer.manifest?.answererRetryCount, 0);
+assert.equal(reasoningAnswerer.manifest?.answererRecoveredCount, 0);
+let reasoningContentOnlyAnswererCalls = 0;
+const reasoningContentOnlyAnswerer = createOpenAICompatibleExternalBenchmarkAnswerer({
+  baseUrl: "https://answerer.invalid/v1",
+  model: "reasoning-content-only-answerer",
+  fetchImpl: async () => {
+    reasoningContentOnlyAnswererCalls += 1;
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({
+        choices: [{
+          message: {
+            content: "",
+            reasoning_content: JSON.stringify({ answer: "reasoning content answer parsed" }),
+          },
+        }],
+      }),
+    };
+  },
+});
+assert.equal(
+  await reasoningContentOnlyAnswerer.answer("Question?", "Context."),
+  "reasoning content answer parsed",
+);
+assert.equal(reasoningContentOnlyAnswererCalls, 1);
+assert.equal(reasoningContentOnlyAnswerer.manifest?.answererRetryCount, 0);
+assert.equal(reasoningContentOnlyAnswerer.manifest?.answererRecoveredCount, 0);
+let recoveringAnswererCalls = 0;
+const recoveringAnswerer = createOpenAICompatibleExternalBenchmarkAnswerer({
+  baseUrl: "https://answerer.invalid/v1",
+  model: "recovering-answerer",
+  fetchImpl: async () => {
+    recoveringAnswererCalls += 1;
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({
+        choices: [{
+          message: {
+            content: recoveringAnswererCalls === 1 ? "" : JSON.stringify({ answer: "recovered answer" }),
+          },
+        }],
+      }),
+    };
+  },
+});
+assert.equal(await recoveringAnswerer.answer("Question?", "Context."), "recovered answer");
+assert.equal(recoveringAnswererCalls, 2);
+assert.equal(recoveringAnswerer.manifest?.answererRetryCount, 1);
+assert.equal(recoveringAnswerer.manifest?.answererRecoveredCount, 1);
+let failingAnswererCalls = 0;
+const failingAnswerer = createOpenAICompatibleExternalBenchmarkAnswerer({
+  baseUrl: "https://answerer.invalid/v1",
+  model: "failing-answerer",
+  fetchImpl: async () => {
+    failingAnswererCalls += 1;
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ choices: [{ message: { content: "" } }] }),
+    };
+  },
+});
+await assert.rejects(
+  () => failingAnswerer.answer("Question?", "Context."),
+  /OpenAI-compatible benchmark answerer returned no answer/u,
+);
+assert.equal(failingAnswererCalls, 3);
+assert.equal(failingAnswerer.manifest?.answererRetryCount, 2);
+assert.equal(failingAnswerer.manifest?.answererRecoveredCount, 0);
+let recoveringJudgeCalls = 0;
+const recoveringJudge = createOpenAICompatibleExternalBenchmarkJudge({
+  baseUrl: "https://judge.invalid/v1",
+  model: "recovering-judge",
+  fetchImpl: async () => {
+    recoveringJudgeCalls += 1;
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify(
+              recoveringJudgeCalls === 1
+                ? { correct: "yes" }
+                : { correct: true, rationale: "judge recovered" },
+            ),
+          },
+        }],
+      }),
+    };
+  },
+});
+assert.deepEqual(await recoveringJudge.judge("Question?", "Expected", "Actual"), {
+  correct: true,
+  rationale: "judge recovered",
+});
+assert.equal(recoveringJudgeCalls, 2);
+assert.equal(recoveringJudge.manifest?.judgeRetryCount, 1);
+assert.equal(recoveringJudge.manifest?.judgeRecoveredCount, 1);
+let failingJudgeCalls = 0;
+const failingJudge = createOpenAICompatibleExternalBenchmarkJudge({
+  baseUrl: "https://judge.invalid/v1",
+  model: "failing-judge",
+  fetchImpl: async () => {
+    failingJudgeCalls += 1;
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ correct: "yes" }) } }],
+      }),
+    };
+  },
+});
+await assert.rejects(
+  () => failingJudge.judge("Question?", "Expected", "Actual"),
+  /OpenAI-compatible benchmark judge returned no boolean correct field/u,
+);
+assert.equal(failingJudgeCalls, 3);
+assert.equal(failingJudge.manifest?.judgeRetryCount, 2);
+assert.equal(failingJudge.manifest?.judgeRecoveredCount, 0);
 assert.throws(
   () =>
     createOpenAICompatibleExternalBenchmarkAnswerer({
@@ -24638,6 +24767,65 @@ assert.match(officialReaderAnswererCalls[0]?.context ?? "", /blue/iu);
 assert.equal(JSON.stringify(officialReaderAnswererCalls[0]).includes("memory_"), false);
 assert.equal(JSON.stringify(officialReaderAnswererCalls[0]).includes("Evidence coverage"), false);
 assert.equal(officialReaderJudgeCalls[0]?.actualAnswer, "Blue Comet");
+let openAIRetryManifestAnswererCalls = 0;
+let openAIRetryManifestJudgeCalls = 0;
+const openAIRetryManifestBenchmark = await runExternalMemoryBenchmark({
+  cases: [readerMotivationCase],
+  protocol: "official_protocol",
+  answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
+    baseUrl: "https://answerer.invalid/v1",
+    model: "manifest-retry-answerer",
+    fetchImpl: async () => {
+      openAIRetryManifestAnswererCalls += 1;
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () => JSON.stringify({
+          choices: [{
+            message: {
+              content: openAIRetryManifestAnswererCalls === 1
+                ? ""
+                : JSON.stringify({ answer: "Blue Comet" }),
+            },
+          }],
+        }),
+      };
+    },
+  }),
+  judge: createOpenAICompatibleExternalBenchmarkJudge({
+    baseUrl: "https://judge.invalid/v1",
+    model: "manifest-retry-judge",
+    fetchImpl: async () => {
+      openAIRetryManifestJudgeCalls += 1;
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () => JSON.stringify({
+          choices: [{
+            message: {
+              content: JSON.stringify(
+                openAIRetryManifestJudgeCalls === 1
+                  ? { correct: "yes" }
+                  : { correct: true, rationale: "manifest retry recovered" },
+              ),
+            },
+          }],
+        }),
+      };
+    },
+  }),
+});
+assert.equal(openAIRetryManifestBenchmark.pass, true);
+assert.equal(openAIRetryManifestAnswererCalls, 2);
+assert.equal(openAIRetryManifestJudgeCalls, 2);
+assert.equal(openAIRetryManifestBenchmark.runManifest.runtimeIntelligence.answererRetryCount, 1);
+assert.equal(openAIRetryManifestBenchmark.runManifest.runtimeIntelligence.answererRecoveredCount, 1);
+assert.equal(openAIRetryManifestBenchmark.runManifest.runtimeIntelligence.judgeRetryCount, 1);
+assert.equal(openAIRetryManifestBenchmark.runManifest.runtimeIntelligence.judgeRecoveredCount, 1);
+assert.match(renderExternalMemoryBenchmarkMarkdown(openAIRetryManifestBenchmark), /Runtime answerer: .*retries=1 recovered=1/u);
+assert.match(renderExternalMemoryBenchmarkMarkdown(openAIRetryManifestBenchmark), /Runtime judge: .*retries=1 recovered=1/u);
 const questionDateFixture = JSON.stringify([
   {
     question_id: "question-date-threading",

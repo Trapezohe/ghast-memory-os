@@ -489,6 +489,10 @@ export interface ExternalMemoryBenchmarkRuntimeAnswererManifest {
   model: string | null;
   timeoutMs: number | null;
   maxTokens: number | null;
+  answererRetryCount?: number | undefined;
+  answererRecoveredCount?: number | undefined;
+  judgeRetryCount?: number | undefined;
+  judgeRecoveredCount?: number | undefined;
 }
 
 export interface ExternalMemoryBenchmarkRuntimeQueryPlannerManifest {
@@ -574,6 +578,10 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   queryEmbeddingHttpStatusFailureCount: number;
   queryEmbeddingTransportFailureCount: number;
   queryEmbeddingParseFailureCount: number;
+  answererRetryCount: number;
+  answererRecoveredCount: number;
+  judgeRetryCount: number;
+  judgeRecoveredCount: number;
   hookNames: {
     extractor: string | null;
     sessionDistiller: string | null;
@@ -2281,6 +2289,8 @@ export type ExternalMemoryBenchmarkOpenAICompatibleJudgeOptions =
 
 const DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_MS = 20_000;
 const DEFAULT_OPENAI_COMPATIBLE_MAX_TOKENS = 2048;
+const DEFAULT_OPENAI_COMPATIBLE_ANSWERER_JUDGE_RETRIES = 2;
+const DEFAULT_OPENAI_COMPATIBLE_RETRY_BACKOFF_MS = 250;
 const MIN_OPENAI_COMPATIBLE_MAX_TOKENS = 64;
 const MAX_OPENAI_COMPATIBLE_MAX_TOKENS = 8192;
 const MAX_RECORDED_GENERATED_ANSWER_CHARS = 2000;
@@ -2336,14 +2346,27 @@ function hookMaxTokens(value: number | undefined): number {
   return maxTokens;
 }
 
+interface OpenAICompatibleJsonValidator {
+  defaultMaxRetries: number;
+  errorMessage: string;
+  validate(payload: unknown): boolean;
+  onRetry?: (() => void) | undefined;
+  onRecovered?: (() => void) | undefined;
+}
+
+function waitForOpenAICompatibleRetry(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, DEFAULT_OPENAI_COMPATIBLE_RETRY_BACKOFF_MS));
+}
+
 async function fetchOpenAICompatibleJson(
   options: ExternalMemoryBenchmarkOpenAICompatibleHookOptions,
   messages: Array<{ role: "system" | "user"; content: string }>,
+  validator?: OpenAICompatibleJsonValidator | undefined,
 ): Promise<unknown> {
   const fetchImpl = openAICompatibleFetch(options);
   const timeoutMs = hookTimeoutMs(options.timeoutMs);
   const maxTokens = hookMaxTokens(options.maxTokens);
-  const maxRetries = Math.max(0, Math.min(Math.trunc(options.maxRetries ?? 0), 3));
+  const maxRetries = Math.max(0, Math.min(Math.trunc(options.maxRetries ?? validator?.defaultMaxRetries ?? 0), 3));
   let lastError: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     const controller = new AbortController();
@@ -2369,10 +2392,17 @@ async function fetchOpenAICompatibleJson(
       if (!response.ok) {
         throw new Error(`request failed: ${response.status} ${response.statusText}`);
       }
-      return JSON.parse(text) as unknown;
+      const parsed = JSON.parse(text) as unknown;
+      if (validator && !validator.validate(parsed)) {
+        throw new Error(validator.errorMessage);
+      }
+      if (attempt > 0) validator?.onRecovered?.();
+      return parsed;
     } catch (error) {
       lastError = error;
       if (attempt >= maxRetries) break;
+      validator?.onRetry?.();
+      await waitForOpenAICompatibleRetry();
     } finally {
       clearTimeout(timer);
     }
@@ -2387,7 +2417,11 @@ function textFromCompletionContent(value: unknown): string {
   const record = value as Record<string, unknown>;
   if (typeof record.text === "string") return record.text;
   if (typeof record.output_text === "string") return record.output_text;
-  if (record.content !== undefined) return textFromCompletionContent(record.content);
+  if (record.content !== undefined) {
+    const text = textFromCompletionContent(record.content);
+    if (text) return text;
+  }
+  if (record.reasoning_content !== undefined) return textFromCompletionContent(record.reasoning_content);
   return "";
 }
 
@@ -2401,8 +2435,9 @@ function completionText(payload: unknown): string {
   }
   const choices = record.choices;
   if (!Array.isArray(choices)) return "";
-  const first = choices[0] as { message?: { content?: unknown }; text?: unknown } | undefined;
-  return textFromCompletionContent(first?.message?.content ?? first?.text);
+  const first = choices[0] as { message?: { content?: unknown; reasoning_content?: unknown }; text?: unknown } | undefined;
+  const text = textFromCompletionContent(first?.message?.content ?? first?.text);
+  return text || textFromCompletionContent(first?.message?.reasoning_content);
 }
 
 function parsedCompletionObject(payload: unknown): Record<string, unknown> {
@@ -2436,9 +2471,12 @@ export function createOpenAICompatibleExternalBenchmarkAnswerer(
   options: ExternalMemoryBenchmarkOpenAICompatibleHookOptions,
 ): ExternalMemoryBenchmarkAnswerer {
   const name = options.name ?? `openai-compatible-answerer:${options.model}`;
+  const manifest = runtimeAnswererManifest({ ...options, name });
+  manifest.answererRetryCount = 0;
+  manifest.answererRecoveredCount = 0;
   return {
     name,
-    manifest: runtimeAnswererManifest({ ...options, name }),
+    manifest,
     async answer(question, context) {
       const parsed = parsedCompletionObject(await fetchOpenAICompatibleJson(options, [
         {
@@ -2451,7 +2489,20 @@ export function createOpenAICompatibleExternalBenchmarkAnswerer(
           ].join("\n"),
         },
         { role: "user", content: JSON.stringify({ question, context }) },
-      ]));
+      ], {
+        defaultMaxRetries: DEFAULT_OPENAI_COMPATIBLE_ANSWERER_JUDGE_RETRIES,
+        errorMessage: "OpenAI-compatible benchmark answerer returned no answer",
+        validate(payload) {
+          const answer = parsedCompletionObject(payload).answer;
+          return typeof answer === "string" && answer.trim().length > 0;
+        },
+        onRetry() {
+          manifest.answererRetryCount = (manifest.answererRetryCount ?? 0) + 1;
+        },
+        onRecovered() {
+          manifest.answererRecoveredCount = (manifest.answererRecoveredCount ?? 0) + 1;
+        },
+      }));
       const answer = parsed.answer;
       if (typeof answer !== "string" || answer.trim().length === 0) {
         throw new Error("OpenAI-compatible benchmark answerer returned no answer");
@@ -2466,9 +2517,12 @@ export function createOpenAICompatibleExternalBenchmarkJudge(
 ): ExternalMemoryBenchmarkJudge {
   const name = options.name ?? `openai-compatible-judge:${options.model}`;
   const profile = normalizeJudgeProfile(options.profile);
+  const manifest = runtimeAnswererManifest({ ...options, name });
+  manifest.judgeRetryCount = 0;
+  manifest.judgeRecoveredCount = 0;
   return {
     name,
-    manifest: runtimeAnswererManifest({ ...options, name }),
+    manifest,
     profile,
     async judge(question, expectedAnswer, actualAnswer) {
       const parsed = parsedCompletionObject(await fetchOpenAICompatibleJson(options, [
@@ -2477,7 +2531,19 @@ export function createOpenAICompatibleExternalBenchmarkJudge(
           content: judgeSystemPrompt(profile),
         },
         { role: "user", content: JSON.stringify({ question, expectedAnswer, actualAnswer }) },
-      ]));
+      ], {
+        defaultMaxRetries: DEFAULT_OPENAI_COMPATIBLE_ANSWERER_JUDGE_RETRIES,
+        errorMessage: "OpenAI-compatible benchmark judge returned no boolean correct field",
+        validate(payload) {
+          return typeof parsedCompletionObject(payload).correct === "boolean";
+        },
+        onRetry() {
+          manifest.judgeRetryCount = (manifest.judgeRetryCount ?? 0) + 1;
+        },
+        onRecovered() {
+          manifest.judgeRecoveredCount = (manifest.judgeRecoveredCount ?? 0) + 1;
+        },
+      }));
       if (typeof parsed.correct !== "boolean") {
         throw new Error("OpenAI-compatible benchmark judge returned no boolean correct field");
       }
@@ -2764,6 +2830,8 @@ function createRunManifest(input: {
   const judge = normalizedJudge(protocol, input.options.judge);
   const answerer = normalizedAnswerer(protocol, input.options.answerer);
   const judgeProfile = effectiveJudgeProfile({ judge, requested: input.options.judgeProfile });
+  const runtimeAnswerer = runtimeAnswererForManifest(answerer);
+  const runtimeJudge = runtimeJudgeForManifest(judge);
   return {
     framework: "gmos-external-long-memory-qa",
     startedAt: input.startedAt,
@@ -2869,6 +2937,10 @@ function createRunManifest(input: {
       queryEmbeddingHttpStatusFailureCount: input.runtimeIntelligence.queryEmbeddingHttpStatusFailureCount,
       queryEmbeddingTransportFailureCount: input.runtimeIntelligence.queryEmbeddingTransportFailureCount,
       queryEmbeddingParseFailureCount: input.runtimeIntelligence.queryEmbeddingParseFailureCount,
+      answererRetryCount: runtimeAnswerer.answererRetryCount ?? 0,
+      answererRecoveredCount: runtimeAnswerer.answererRecoveredCount ?? 0,
+      judgeRetryCount: runtimeJudge.judgeRetryCount ?? 0,
+      judgeRecoveredCount: runtimeJudge.judgeRecoveredCount ?? 0,
       sessionDistillation: {
         ...input.runtimeIntelligence.manifest.sessionDistillation,
         callCount: input.runtimeIntelligence.distillationCallCount,
@@ -2890,8 +2962,8 @@ function createRunManifest(input: {
       ingestCaseGroups: [...input.runtimeIntelligence.ingestCaseGroups].sort((left, right) =>
         left.groupKey.localeCompare(right.groupKey)
       ),
-      answerer: runtimeAnswererForManifest(answerer),
-      judge: runtimeJudgeForManifest(judge),
+      answerer: runtimeAnswerer,
+      judge: runtimeJudge,
     },
     ingestCache: {
       enabled: input.ingestCache.enabled,
@@ -3624,6 +3696,10 @@ function disabledRuntimeIntelligence(
       queryEmbeddingHttpStatusFailureCount: 0,
       queryEmbeddingTransportFailureCount: 0,
       queryEmbeddingParseFailureCount: 0,
+      answererRetryCount: 0,
+      answererRecoveredCount: 0,
+      judgeRetryCount: 0,
+      judgeRecoveredCount: 0,
       hookNames: {
         extractor: null,
         sessionDistiller: null,
@@ -3895,6 +3971,10 @@ function resolveRuntimeIntelligence(input: {
       queryEmbeddingHttpStatusFailureCount: 0,
       queryEmbeddingTransportFailureCount: 0,
       queryEmbeddingParseFailureCount: 0,
+      answererRetryCount: 0,
+      answererRecoveredCount: 0,
+      judgeRetryCount: 0,
+      judgeRecoveredCount: 0,
       hookNames: hookNamesFor(hooks),
       extractionEmptyCount: 0,
       extractionParseFailureCount: 0,
