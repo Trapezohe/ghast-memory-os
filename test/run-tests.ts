@@ -7687,53 +7687,158 @@ assert.deepEqual(
 );
 const entityClusterMemory = (
   id: string,
-  object: string | undefined,
   content: string,
+  metadata: Record<string, unknown> = {},
+  overrides: Partial<Pick<MemoryRecord, "kind" | "status">> = {},
 ): MemoryRecord => ({
   id,
   profileId: "entity_cluster_fixture",
-  kind: "fact",
+  kind: overrides.kind ?? "fact",
   scope: "global",
   content,
   sensitivity: "normal",
-  status: "active",
+  status: overrides.status ?? "active",
   confidence: 0.8,
   metadata: {
     subject: "user",
     predicate: "has fact about",
-    ...(object ? { object } : {}),
     cardinality: "single",
+    ...metadata,
   },
   createdAt: "2026-07-03T00:00:00.000Z",
   updatedAt: "2026-07-03T00:00:00.000Z",
 });
-const b29Objects = ["1/72 scale B-29 bomber model kit", "B-29 model", "B-29 bomber"];
-const camaroObjects = ["1969 Camaro Z/28 model kit", "Camaro model", "1969 Camaro"];
+const entityClusterContent = (label: string, index: number): string => [
+  `Workshop ${index}: building ${label} kit fragment ${index}.`,
+  `Workshop ${index}: paint plan mentions ${label} fragment ${index}.`,
+  `${label} appears in Workshop wire-detail fragment ${index}.`,
+  `photo-etch note for ${label} is in Workshop fragment ${index}.`,
+][index % 4]!;
+const entityClusterEntities = [
+  {
+    key: "b-29",
+    label: "B-29",
+    count: 24,
+    objects: [
+      "1/72 scale B-29 bomber model kit",
+      "aluminum finish plan",
+      "wire detail route",
+      "photo etch fret",
+      "display mount note",
+      "bomb bay checklist",
+    ],
+  },
+  {
+    key: "camaro",
+    label: "Camaro",
+    count: 17,
+    objects: [
+      "1969 Camaro model kit",
+      "body primer plan",
+      "stripe decal sheet",
+      "chrome trim note",
+      "engine bay wiring",
+    ],
+  },
+  {
+    key: "tiger-1",
+    label: "Tiger-1",
+    count: 13,
+    objects: [
+      "Tiger-1 armor model kit",
+      "zimmerit texture pass",
+      "track sag note",
+      "turret basket checklist",
+    ],
+  },
+  {
+    key: "f-15",
+    label: "F-15",
+    count: 5,
+    objects: ["F-15 aircraft model kit", "missile rail note"],
+  },
+  {
+    key: "spitfire",
+    label: "Spitfire",
+    count: 3,
+    objects: ["Tamiya Spitfire model kit", "wing root seam"],
+  },
+];
 const entityClusterFixture = [
-  ...Array.from({ length: 24 }, (_, index) =>
-    entityClusterMemory(
-      `b29-${index}`,
-      b29Objects[index % b29Objects.length],
-      `B-29 fragmented predicate ${index}.`,
+  ...entityClusterEntities.flatMap((entity) =>
+    Array.from({ length: entity.count }, (_, index) =>
+      entityClusterMemory(
+        `${entity.key}-${index}`,
+        entityClusterContent(entity.label, index),
+        {
+          subject: index % 3 === 0 ? entity.label : "user",
+          predicate: index % 3 === 1 ? `mentions_${entity.label.toLowerCase()}` : `fragment_${index}`,
+          object: entity.objects[index % entity.objects.length],
+        },
+      )
     )
   ),
-  ...Array.from({ length: 17 }, (_, index) =>
+  ...Array.from({ length: 31 }, (_, index) =>
     entityClusterMemory(
-      `camaro-${index}`,
-      camaroObjects[index % camaroObjects.length],
-      `Camaro fragmented predicate ${index}.`,
+      `common-${index}`,
+      `Commonword repeated filler ${index}.`,
+      { object: `common object ${index % 2}` },
     )
   ),
-  entityClusterMemory("singleton-1", "Tamiya Spitfire model kit", "Spitfire singleton."),
-  entityClusterMemory("missing-object", undefined, "No object metadata."),
+  ...Array.from({ length: 100 }, (_, index) =>
+    entityClusterMemory(
+      `noise-${index}`,
+      `zznoise${String(index).padStart(4, "0")}`,
+      { object: `noise object ${index}` },
+    )
+  ),
+  entityClusterMemory(
+    "person-gate-1",
+    "Gateprobe should not cluster from person memory.",
+    { object: "person gate one" },
+    { kind: "person" },
+  ),
+  entityClusterMemory(
+    "person-gate-2",
+    "Gateprobe should not cluster from person memory.",
+    { object: "person gate two" },
+    { kind: "person" },
+  ),
+  entityClusterMemory(
+    "forgotten-gate-1",
+    "Archiveprobe should not cluster from archived memory.",
+    { object: "archived gate one" },
+    { status: "archived" },
+  ),
+  entityClusterMemory(
+    "forgotten-gate-2",
+    "Archiveprobe should not cluster from archived memory.",
+    { object: "archived gate two" },
+    { status: "archived" },
+  ),
+  entityClusterMemory("missing-object", "lowercase note without object metadata."),
 ];
 const entityClusterConfig = resolveKernelMemoryConsolidationConfig({
   entityConsolidation: { enabled: true },
 });
 const entityClusters = selectEntityConsolidationClusters(entityClusterFixture, entityClusterConfig);
-assert.deepEqual(entityClusters.map((cluster) => cluster.kind), ["entity", "entity"]);
-assert.deepEqual(entityClusters.map((cluster) => cluster.entityKey), ["b-29", "camaro"]);
-assert.deepEqual(entityClusters.map((cluster) => cluster.memories.length), [24, 17]);
+assert.deepEqual(entityClusters.map((cluster) => cluster.kind), ["entity", "entity", "entity", "entity", "entity"]);
+assert.deepEqual(entityClusters.map((cluster) => cluster.entityKey), ["b-29", "camaro", "f-15", "spitfire", "tiger-1"]);
+assert.deepEqual(entityClusters.map((cluster) => cluster.memories.length), [24, 17, 5, 3, 13]);
+assert.deepEqual(
+  Object.fromEntries(entityClusters.map((cluster) => [
+    cluster.entityKey,
+    cluster.memories.map((memory) => memory.id).sort(),
+  ])),
+  Object.fromEntries(entityClusterEntities.map((entity) => [
+    entity.key,
+    Array.from({ length: entity.count }, (_, index) => `${entity.key}-${index}`).sort(),
+  ])),
+);
+assert.equal(entityClusters.some((cluster) => cluster.entityKey === "workshop"), false);
+assert.equal(entityClusters.some((cluster) => cluster.entityKey === "commonword"), false);
+assert.equal(entityClusters.some((cluster) => cluster.entityKey === "gateprobe"), false);
+assert.equal(entityClusters.some((cluster) => cluster.entityKey === "archiveprobe"), false);
 assert.deepEqual(
   selectEntityConsolidationClusters(entityClusterFixture, entityClusterConfig).map((cluster) =>
     cluster.memories.map((memory) => memory.id)
@@ -7918,6 +8023,16 @@ await entityRuntimeMemory.add({
   },
   createdAt: "2026-07-03T02:00:00.000Z",
 });
+for (const index of Array.from({ length: 20 }, (_, value) => value)) {
+  await entityRuntimeMemory.add({
+    profileId: "entity_runtime",
+    kind: "fact",
+    content: `zzruntime${String(index).padStart(4, "0")}`,
+    confidence: 0.8,
+    metadata: { subject: "user", predicate: `background-${index}`, object: `background ${index}`, cardinality: "single" },
+    createdAt: "2026-07-03T02:00:00.000Z",
+  });
+}
 const entityRuntimeReport = await entityRuntimeMemory.maintain({
   profileId: "entity_runtime",
   now: "2026-07-03T02:05:00.000Z",
@@ -27360,48 +27475,97 @@ const entityAggregationEntities = [
     key: "b-29",
     label: "B-29",
     object: "1/72 scale B-29 bomber model kit",
+    objects: [
+      "1/72 scale B-29 bomber model kit",
+      "aluminum finish plan",
+      "wire detail route",
+      "photo etch fret",
+    ],
     predicates: ["scale", "airframe", "box_art", "decals", "paint", "status", "display", "notes"],
   },
   {
     key: "camaro",
     label: "Camaro",
     object: "1969 Camaro model kit",
+    objects: [
+      "1969 Camaro model kit",
+      "body primer plan",
+      "stripe decal sheet",
+      "chrome trim note",
+    ],
     predicates: ["year", "trim", "box_art", "decals", "paint", "status", "display", "notes"],
   },
   {
     key: "spitfire",
     label: "Spitfire",
     object: "Tamiya Spitfire model kit",
+    objects: [
+      "Tamiya Spitfire model kit",
+      "wing root seam",
+      "roundel decal sheet",
+      "canopy mask note",
+    ],
     predicates: ["brand", "airframe", "box_art", "decals", "paint", "status", "display", "notes"],
   },
 ];
+const entityAggregationContent = (label: string, predicate: string, index: number): string => [
+  `Garage ${index}: ${label} fragmented ${predicate} model-kit fact.`,
+  `Garage ${index}: model-kit ${predicate} note names ${label}.`,
+  `${label} appears in Garage ${index} ${predicate} fragment.`,
+  `the ${predicate} fragment keeps ${label} in Garage ${index}.`,
+][index % 4]!;
 const entityAggregationFragments = entityAggregationEntities.flatMap((entity) =>
-  entity.predicates.map((predicate) => ({
+  entity.predicates.map((predicate, index) => ({
     entityKey: entity.key,
     label: entity.label,
-    object: entity.object,
+    object: entity.objects[index % entity.objects.length],
     predicate,
-    content: `${entity.label} fragmented ${predicate} model-kit fact.`,
+    content: entityAggregationContent(entity.label, predicate, index),
   }))
 );
-const entityAggregationClusterFixture: MemoryRecord[] = entityAggregationFragments.map((fragment, index) => ({
-  id: `entity-aggregation-${index}`,
-  profileId: "entity_aggregation_cluster_fixture",
-  kind: "fact",
-  scope: "global",
-  content: fragment.content,
-  sensitivity: "normal",
-  status: "active",
-  confidence: 0.87,
-  metadata: {
-    subject: "user",
-    predicate: `${fragment.entityKey}_${fragment.predicate}`,
-    object: fragment.object,
-    cardinality: "single",
-  },
-  createdAt: "2026-07-07T03:00:00.000Z",
-  updatedAt: "2026-07-07T03:00:00.000Z",
+const entityAggregationNoiseFragments = Array.from({ length: 40 }, (_, index) => ({
+  content: `zzaggregation${String(index).padStart(4, "0")}`,
+  predicate: `background_${index}`,
+  object: `background ${index}`,
 }));
+const entityAggregationClusterFixture: MemoryRecord[] = [
+  ...entityAggregationFragments.map((fragment, index) => ({
+    id: `entity-aggregation-${index}`,
+    profileId: "entity_aggregation_cluster_fixture",
+    kind: "fact",
+    scope: "global",
+    content: fragment.content,
+    sensitivity: "normal",
+    status: "active",
+    confidence: 0.87,
+    metadata: {
+      subject: "user",
+      predicate: `${fragment.entityKey}_${fragment.predicate}`,
+      object: fragment.object,
+      cardinality: "single",
+    },
+    createdAt: "2026-07-07T03:00:00.000Z",
+    updatedAt: "2026-07-07T03:00:00.000Z",
+  })),
+  ...entityAggregationNoiseFragments.map((fragment, index) => ({
+    id: `entity-aggregation-noise-${index}`,
+    profileId: "entity_aggregation_cluster_fixture",
+    kind: "fact" as const,
+    scope: "global",
+    content: fragment.content,
+    sensitivity: "normal" as const,
+    status: "active" as const,
+    confidence: 0.7,
+    metadata: {
+      subject: "user",
+      predicate: fragment.predicate,
+      object: fragment.object,
+      cardinality: "single",
+    },
+    createdAt: "2026-07-07T03:00:00.000Z",
+    updatedAt: "2026-07-07T03:00:00.000Z",
+  })),
+];
 const entityAggregationClusters = selectEntityConsolidationClusters(
   entityAggregationClusterFixture,
   resolveKernelMemoryConsolidationConfig({ entityConsolidation: { enabled: true, minClusterSize: 4 } }),
@@ -27422,15 +27586,26 @@ const entityAggregationExtractor = {
   name: "entity-aggregation-extractor",
   extract() {
     entityAggregationExtractorCalls += 1;
-    return entityAggregationFragments.map((fragment) => ({
-      kind: "fact" as const,
-      content: fragment.content,
-      confidence: 0.87,
-      subject: "user",
-      predicate: `${fragment.entityKey}_${fragment.predicate}`,
-      object: fragment.object,
-      cardinality: "single" as const,
-    }));
+    return [
+      ...entityAggregationFragments.map((fragment) => ({
+        kind: "fact" as const,
+        content: fragment.content,
+        confidence: 0.87,
+        subject: "user",
+        predicate: `${fragment.entityKey}_${fragment.predicate}`,
+        object: fragment.object,
+        cardinality: "single" as const,
+      })),
+      ...entityAggregationNoiseFragments.map((fragment) => ({
+        kind: "fact" as const,
+        content: fragment.content,
+        confidence: 0.7,
+        subject: "user",
+        predicate: fragment.predicate,
+        object: fragment.object,
+        cardinality: "single" as const,
+      })),
+    ];
   },
 };
 const entityAggregationConsolidatorCalls: Array<{
@@ -27494,7 +27669,7 @@ assert.deepEqual(
   Object.fromEntries(entityAggregationEntities.map((entity) => [
     entity.key,
     entityAggregationBeforeMaintain.filter((memory) =>
-      memory.status === "active" && memory.metadata.object === entity.object
+      memory.status === "active" && String(memory.metadata.predicate ?? "").startsWith(`${entity.key}_`)
     ).length,
   ])),
   Object.fromEntries(entityAggregationEntities.map((entity) => [entity.key, entity.predicates.length])),
@@ -27526,12 +27701,12 @@ assert.deepEqual(
     {
       dormantFragments: entityAggregationAfterMaintain.filter((memory) =>
         memory.status === "dormant" &&
-        memory.metadata.object === entity.object &&
+        String(memory.metadata.predicate ?? "").startsWith(`${entity.key}_`) &&
         typeof memory.metadata.consolidatedInto === "string"
       ).length,
       activeFragments: entityAggregationAfterMaintain.filter((memory) =>
         memory.status === "active" &&
-        memory.metadata.object === entity.object &&
+        String(memory.metadata.predicate ?? "").startsWith(`${entity.key}_`) &&
         memory.metadata.consolidationSummary !== true
       ).length,
       canonicalMemories: entityAggregationAfterMaintain.filter((memory) =>

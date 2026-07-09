@@ -162,11 +162,12 @@ episodes are demoted to dormant with lifecycle evidence.
 
 Entity consolidation is an opt-in selector inside the same `consolidate` phase.
 It addresses extracted-fact fragmentation by grouping different predicates about
-the same object before the host consolidator runs. The selector is read-pure and
-LLM-free: it only reads structured triple metadata already on memories,
-specifically `metadata.object`. The object is normalized, scale-only prefixes are
-ignored, and deterministic token containment/model-code matching groups variants
-such as `1/72 scale B-29 bomber model kit`, `B-29 model`, and `B-29 bomber`.
+the same entity before the host consolidator runs. The selector is read-pure and
+LLM-free: it computes document frequency over candidate tokens in memory content
+across the passed memories, then groups each eligible memory by its rarest
+distinctive token. Candidate tokens are model/product codes, scale codes, and
+proper-noun-like words; stopwords and tokens above the fixed high-frequency
+cutoff are ignored.
 The host consolidator receives `kind: "entity"` plus the source `memoryKind`,
 `entityKey`, and `entityObject`; accepted summaries use the same consolidation
 evidence and dormant-source provenance as other host summaries.

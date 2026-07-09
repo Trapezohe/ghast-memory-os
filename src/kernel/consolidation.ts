@@ -36,9 +36,11 @@ const DEFAULT_DUPLICATE_MIN_CLUSTER_SIZE = 2;
 const DEFAULT_HOOK_MIN_CLUSTER_SIZE = 3;
 const DEFAULT_MAX_CLUSTERS_PER_RUN = 10;
 const DEFAULT_MAX_MEMBERS_PER_CLUSTER = 8;
-const DEFAULT_ENTITY_MIN_CLUSTER_SIZE = 3;
-const DEFAULT_ENTITY_MAX_CLUSTERS_PER_RUN = 40;
-const DEFAULT_ENTITY_MAX_MEMBERS_PER_CLUSTER = 24;
+const DEFAULT_ENTITY_MIN_CLUSTER_SIZE = 2;
+const DEFAULT_ENTITY_MAX_CLUSTERS_PER_RUN = 100;
+const DEFAULT_ENTITY_MAX_MEMBERS_PER_CLUSTER = 40;
+const ENTITY_TOKEN_MIN_DF = 2;
+const ENTITY_TOKEN_MAX_DF_FRACTION = 0.15;
 export const MAX_CONSOLIDATION_SUMMARY_CONTENT_LENGTH = 2000;
 
 export interface DuplicateConsolidationCluster {
@@ -61,14 +63,14 @@ export interface ConsolidationCandidateDecision {
   };
 }
 
-interface EntityObjectSignal {
+interface EntityTokenCandidate {
+  token: string;
+  isCode: boolean;
+}
+
+interface EntityTokenSignal {
   memory: MemoryRecord;
-  object: string;
-  phrase: string;
-  tokens: string[];
-  distinctiveTokens: string[];
-  codeTokens: string[];
-  specificTokens: string[];
+  entityKey: string;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -228,118 +230,146 @@ function memberSnapshots(members: MemoryRecord[]): MemoryConsolidationSourceSnap
   }));
 }
 
-const ENTITY_GENERIC_TOKENS = new Set([
+const ENTITY_TOKEN_STOPWORDS = new Set([
   "a",
+  "about",
+  "after",
+  "all",
   "an",
-  "the",
-  "scale",
-  "model",
-  "models",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "been",
+  "before",
+  "but",
+  "by",
+  "can",
+  "could",
+  "do",
+  "does",
+  "for",
+  "from",
+  "had",
+  "has",
+  "have",
+  "in",
+  "into",
+  "is",
+  "it",
+  "its",
   "kit",
   "kits",
-  "miniature",
-  "miniatures",
+  "model",
+  "models",
+  "of",
+  "on",
+  "or",
+  "scale",
+  "some",
+  "that",
+  "the",
+  "this",
+  "to",
+  "user",
+  "was",
+  "were",
+  "will",
+  "with",
+  "would",
+  "you",
+  "your",
 ]);
 
-function isScaleToken(token: string): boolean {
-  return /^\d+\s*(?:[/:-]\s*\d+)$/u.test(token);
-}
-
-function isCodeToken(token: string): boolean {
-  return /[\p{L}]/u.test(token) && /[\d/-]/u.test(token);
-}
-
-function normalizedEntityPhrase(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const phrase = value
-    .normalize("NFKC")
-    .toLowerCase()
-    .replace(/['’]/gu, "")
-    .replace(/[^\p{L}\p{N}/:-]+/gu, " ")
-    .replace(/\s+/gu, " ")
-    .trim()
-    .replace(/^(?:a|an|the)\s+/u, "")
-    .replace(/^(?:\d+\s*(?:[/:-]\s*\d+)|\d+\s*:\s*\d+)\s*(?:scale)?\s+/u, "")
-    .replace(/^scale\s+/u, "")
-    .trim();
-  return phrase.length > 0 ? phrase : null;
-}
-
-function entityTokens(phrase: string): string[] {
-  return [...phrase.matchAll(/[\p{L}\p{N}]+(?:[/-][\p{L}\p{N}]+)*/gu)]
-    .map((match) => match[0]!)
-    .filter((token) => !ENTITY_GENERIC_TOKENS.has(token) && !isScaleToken(token));
-}
-
-function entityObjectSignal(memory: MemoryRecord): EntityObjectSignal | null {
-  const phrase = normalizedEntityPhrase(memory.metadata.object);
-  if (!phrase) return null;
-  const tokens = entityTokens(phrase);
-  const distinctiveTokens = tokens.filter((token) => token.length >= 3 || isCodeToken(token));
-  if (distinctiveTokens.length === 0) return null;
-  const codeTokens = distinctiveTokens.filter(isCodeToken);
-  const specificTokens = distinctiveTokens.filter((token) => isCodeToken(token) || /^\d+$/u.test(token));
-  return {
-    memory,
-    object: memory.metadata.object as string,
-    phrase,
-    tokens,
-    distinctiveTokens,
-    codeTokens,
-    specificTokens,
-  };
-}
-
-function tokenPhraseContains(left: string[], right: string[]): boolean {
-  if (right.length === 0 || right.length > left.length) return false;
-  for (let index = 0; index <= left.length - right.length; index += 1) {
-    if (right.every((token, offset) => left[index + offset] === token)) return true;
+function uniqueEntityTokenCandidates(candidates: EntityTokenCandidate[]): EntityTokenCandidate[] {
+  const byToken = new Map<string, EntityTokenCandidate>();
+  for (const candidate of candidates) {
+    const existing = byToken.get(candidate.token);
+    byToken.set(candidate.token, {
+      token: candidate.token,
+      isCode: candidate.isCode || existing?.isCode === true,
+    });
   }
-  return false;
+  return [...byToken.values()].sort((left, right) => left.token.localeCompare(right.token));
 }
 
-function intersects(left: readonly string[], right: readonly string[]): boolean {
-  const rightSet = new Set(right);
-  return left.some((value) => rightSet.has(value));
-}
-
-function conflictingSpecificTokens(left: EntityObjectSignal, right: EntityObjectSignal): boolean {
-  if (left.specificTokens.length === 0 || right.specificTokens.length === 0) return false;
-  return !intersects(left.specificTokens, right.specificTokens);
-}
-
-function entitySignalsCompatible(left: EntityObjectSignal, right: EntityObjectSignal): boolean {
-  if (left.phrase === right.phrase) return true;
-  if (tokenPhraseContains(left.tokens, right.tokens) || tokenPhraseContains(right.tokens, left.tokens)) {
-    return true;
+function entityTokenCandidates(content: string): EntityTokenCandidate[] {
+  const candidates: EntityTokenCandidate[] = [];
+  for (const match of content.matchAll(/\b[A-Za-z]{1,5}-\d{1,4}\b/gu)) {
+    candidates.push({ token: match[0]!.toLowerCase(), isCode: true });
   }
-  if (intersects(left.codeTokens, right.codeTokens)) return true;
-  const sharedNameToken = left.distinctiveTokens.some(
-    (token) => token.length >= 5 && right.distinctiveTokens.includes(token),
-  );
-  return sharedNameToken && !conflictingSpecificTokens(left, right);
-}
-
-function bestEntityToken(signals: EntityObjectSignal[]): string {
-  const [first, ...rest] = signals.map((signal) => signal.distinctiveTokens);
-  let shared = new Set(first ?? []);
-  for (const tokens of rest) {
-    const tokenSet = new Set(tokens);
-    shared = new Set([...shared].filter((token) => tokenSet.has(token)));
+  for (const match of content.matchAll(/\b\d\/\d{2,3}\b/gu)) {
+    candidates.push({ token: match[0]!.toLowerCase(), isCode: true });
   }
-  const sharedTokens = [...shared].sort(
-    (left, right) =>
-      Number(isCodeToken(right)) - Number(isCodeToken(left)) ||
-      right.length - left.length ||
-      left.localeCompare(right),
-  );
-  return sharedTokens[0] ?? signals[0]?.phrase ?? "entity";
+  for (const match of content.matchAll(/\b[A-Z][a-z]{2,}\b/gu)) {
+    candidates.push({ token: match[0]!.toLowerCase(), isCode: false });
+  }
+  return uniqueEntityTokenCandidates(candidates);
 }
 
-function bestEntityObject(signals: EntityObjectSignal[]): string {
-  return signals
-    .map((signal) => signal.object)
-    .sort((left, right) => right.length - left.length || left.localeCompare(right))[0]!;
+function entityTokenDocumentFrequency(memories: MemoryRecord[]): Map<string, EntityTokenCandidate & { df: number }> {
+  const frequencies = new Map<string, EntityTokenCandidate & { df: number }>();
+  for (const memory of memories) {
+    for (const candidate of entityTokenCandidates(memory.content)) {
+      const existing = frequencies.get(candidate.token);
+      frequencies.set(candidate.token, {
+        token: candidate.token,
+        isCode: candidate.isCode || existing?.isCode === true,
+        df: (existing?.df ?? 0) + 1,
+      });
+    }
+  }
+  return frequencies;
+}
+
+function primaryEntityToken(
+  memory: MemoryRecord,
+  frequencies: Map<string, EntityTokenCandidate & { df: number }>,
+  maxDf: number,
+): string | null {
+  const distinctiveTokens = entityTokenCandidates(memory.content)
+    .map((candidate) => frequencies.get(candidate.token))
+    .filter((candidate): candidate is EntityTokenCandidate & { df: number } =>
+      candidate !== undefined &&
+      candidate.df >= ENTITY_TOKEN_MIN_DF &&
+      candidate.df <= maxDf &&
+      !ENTITY_TOKEN_STOPWORDS.has(candidate.token)
+    )
+    .sort((left, right) =>
+      left.df - right.df ||
+      Number(right.isCode) - Number(left.isCode) ||
+      left.token.localeCompare(right.token)
+    );
+  return distinctiveTokens[0]?.token ?? null;
+}
+
+function contentSnippet(content: string): string {
+  const snippet = content.replace(/\s+/gu, " ").trim();
+  return snippet.length <= 160 ? snippet : `${snippet.slice(0, 157).trimEnd()}...`;
+}
+
+function normalizedMetadataObject(memory: MemoryRecord): string {
+  return typeof memory.metadata.object === "string"
+    ? memory.metadata.object.replace(/\s+/gu, " ").trim()
+    : "";
+}
+
+function phraseContainsEntityToken(phrase: string, entityKey: string): boolean {
+  const escaped = entityKey.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, "u").test(phrase.toLowerCase());
+}
+
+function bestEntityObject(members: MemoryRecord[], entityKey: string): string {
+  const objects = members.map(normalizedMetadataObject).filter((value) => value.length > 0);
+  const matchingObjects = objects.filter((candidate) => phraseContainsEntityToken(candidate, entityKey));
+  if (matchingObjects.length > 0) {
+    return matchingObjects.sort((left, right) => right.length - left.length || left.localeCompare(right))[0]!;
+  }
+  const snippets = members.map((memory) => contentSnippet(memory.content)).filter((value) => value.length > 0);
+  const matchingSnippets = snippets.filter((candidate) => phraseContainsEntityToken(candidate, entityKey));
+  return (matchingSnippets.length > 0 ? matchingSnippets : [...objects, ...snippets])
+    .sort((left, right) => right.length - left.length || left.localeCompare(right))[0] ?? entityKey;
 }
 
 export function selectDuplicateConsolidationClusters(
@@ -394,26 +424,26 @@ export function selectEntityConsolidationClusters(
 ): MemoryConsolidationCluster[] {
   if (!config.enabled || !config.entityConsolidation.enabled) return [];
   const minClusterSize = Math.max(2, config.entityConsolidation.minClusterSize);
+  const frequencies = entityTokenDocumentFrequency(memories);
+  const maxDf = Math.ceil(memories.length * ENTITY_TOKEN_MAX_DF_FRACTION);
   const candidates = memories
     .filter(memoryCanEnterConsolidation)
     .filter((memory) => !metadataHasConsolidationResidue(memory))
-    .map(entityObjectSignal)
-    .filter((signal): signal is EntityObjectSignal => signal !== null)
+    .map((memory) => {
+      const entityKey = primaryEntityToken(memory, frequencies, maxDf);
+      return entityKey ? { memory, entityKey } : null;
+    })
+    .filter((signal): signal is EntityTokenSignal => signal !== null)
     .sort((left, right) => stableMemoryOrder(left.memory, right.memory));
-  const groups: EntityObjectSignal[][] = [];
+  const groups = new Map<string, EntityTokenSignal[]>();
   for (const signal of candidates) {
-    const group = groups.find((entry) => entry.some((existing) => entitySignalsCompatible(existing, signal)));
-    if (group) {
-      group.push(signal);
-    } else {
-      groups.push([signal]);
-    }
+    groups.set(signal.entityKey, [...(groups.get(signal.entityKey) ?? []), signal]);
   }
-  return groups
+  return [...groups.values()]
     .map((group) => group.sort((left, right) => stableMemoryOrder(left.memory, right.memory)))
     .filter((group) => group.length >= minClusterSize)
     .sort((left, right) =>
-      bestEntityToken(left).localeCompare(bestEntityToken(right)) ||
+      left[0]!.entityKey.localeCompare(right[0]!.entityKey) ||
       stableMemoryOrder(left[0]!.memory, right[0]!.memory)
     )
     .slice(0, config.entityConsolidation.maxClustersPerRun)
@@ -421,12 +451,12 @@ export function selectEntityConsolidationClusters(
       const members = group
         .slice(0, config.entityConsolidation.maxMembersPerCluster)
         .map((signal) => signal.memory);
-      const signals = group.slice(0, members.length);
+      const entityKey = group[0]!.entityKey;
       return {
         kind: "entity",
         memoryKind: members[0]!.kind,
-        entityKey: bestEntityToken(signals),
-        entityObject: bestEntityObject(signals),
+        entityKey,
+        entityObject: bestEntityObject(members, entityKey),
         sharedTags: sharedTagsForMembers(members),
         memories: memberSnapshots(members),
       };

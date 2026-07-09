@@ -362,10 +362,10 @@ Entity consolidation is another message-mode opt-in for aggregation questions
 where extraction emits many facts about the same object. Use
 `--consolidate-entities on` with a consolidator-capable intelligence config.
 gmOS then runs extraction, runs the `consolidate` maintain phase automatically
-after ingest, and asks the consolidator to turn each metadata-derived entity
-cluster into one canonical memory. The selector is generic: it only reads
-structured `metadata.object` from extracted facts and does not special-case any
-benchmark dataset.
+after ingest, and asks the consolidator to turn each content-token-derived entity
+cluster into one canonical memory. The selector is generic: it uses document
+frequency over model/product codes, scale codes, and proper-noun-like tokens in
+memory content and does not special-case any benchmark dataset.
 
 Aggregation-oriented message-mode recipe:
 
