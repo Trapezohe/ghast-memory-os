@@ -4953,6 +4953,9 @@ const fallbackOnlyMemory = createMemoryOS({
   store: {
     initialize() {},
     close() {},
+    claimEvidence() {
+      throw new Error("fallback-only store does not claim evidence");
+    },
     recordEvidence() {
       throw new Error("fallback-only store does not record evidence");
     },
@@ -5126,6 +5129,9 @@ const fallbackSourceScopeMemory = createMemoryOS({
   store: {
     initialize() {},
     close() {},
+    claimEvidence() {
+      throw new Error("fallback source scope store does not claim evidence");
+    },
     recordEvidence() {
       throw new Error("fallback source scope store does not record evidence");
     },
@@ -9026,6 +9032,121 @@ assert.equal(secondDedupeObserve.skippedReason, "deduplicated_event");
 assert.equal(dedupeCountsAfterSecond.gmos_evidence_events, dedupeCountsAfterFirst.gmos_evidence_events);
 assert.equal(dedupeCountsAfterSecond.gmos_memories, dedupeCountsAfterFirst.gmos_memories);
 await dedupeObserveMemory.close();
+
+const immutableEvidenceStore = createSqliteMemoryStore({
+  path: path.join(tmp, "immutable-evidence.db"),
+});
+const firstEvidenceClaim = await immutableEvidenceStore.claimEvidence({
+  profileId: "immutable_evidence",
+  eventKey: "immutable-evidence-event",
+  sourceType: "test",
+  content: "Alpha evidence payload.",
+  sensitivity: "normal",
+  eligibleForLongTermMemory: true,
+  payload: { version: "alpha" },
+});
+const replayedEvidenceClaim = await immutableEvidenceStore.claimEvidence({
+  profileId: "immutable_evidence",
+  eventKey: "immutable-evidence-event",
+  sourceType: "test",
+  content: "Beta evidence payload.",
+  sensitivity: "sensitive",
+  eligibleForLongTermMemory: false,
+  payload: { version: "beta" },
+});
+const replayedEvidence = await immutableEvidenceStore.recordEvidence({
+  profileId: "immutable_evidence",
+  eventKey: "immutable-evidence-event",
+  sourceType: "test.replay",
+  content: "Gamma evidence payload.",
+  sensitivity: "secret_like",
+  eligibleForLongTermMemory: false,
+  payload: { version: "gamma" },
+});
+assert.equal(firstEvidenceClaim.inserted, true);
+assert.equal(replayedEvidenceClaim.inserted, false);
+assert.equal(replayedEvidenceClaim.evidence.id, firstEvidenceClaim.evidence.id);
+assert.equal(replayedEvidenceClaim.evidence.content, "Alpha evidence payload.");
+assert.equal(replayedEvidenceClaim.evidence.sensitivity, "normal");
+assert.deepEqual(replayedEvidenceClaim.evidence.payload, { version: "alpha" });
+assert.deepEqual(replayedEvidence, replayedEvidenceClaim.evidence);
+await assert.rejects(
+  async () => immutableEvidenceStore.claimEvidence({
+    profileId: "other_immutable_evidence_profile",
+    eventKey: "immutable-evidence-event",
+    sourceType: "test",
+    content: "Cross-profile collision payload.",
+    sensitivity: "normal",
+    eligibleForLongTermMemory: true,
+  }),
+  /already belongs to another profile/u,
+);
+await immutableEvidenceStore.close();
+
+const concurrentObserveStore = createSqliteMemoryStore({
+  path: path.join(tmp, "concurrent-observe-dedupe.db"),
+});
+let concurrentObserveExtractionCalls = 0;
+const concurrentObserveMemory = createMemoryOS({
+  profileId: "concurrent_observe_dedupe",
+  store: concurrentObserveStore,
+  extractor(input) {
+    concurrentObserveExtractionCalls += 1;
+    return [{
+      kind: "fact",
+      content: `${input.event.content} durable fact.`,
+      confidence: 0.9,
+    }];
+  },
+});
+await concurrentObserveMemory.list({
+  profileId: "concurrent_observe_dedupe",
+  status: "any",
+  limit: 1,
+});
+const concurrentObserveResults = await Promise.all(
+  Array.from({ length: 20 }, (_entry, index) =>
+    concurrentObserveMemory.observeWithReport({
+      type: "conversation.message",
+      profileId: "concurrent_observe_dedupe",
+      conversationId: "concurrent-observe-conversation",
+      messageId: "concurrent-observe-message",
+      role: "user",
+      content: index % 2 === 0 ? "Alpha concurrent payload." : "Beta concurrent payload.",
+      createdAt: "2026-07-03T01:06:00.000Z",
+    }),
+  ),
+);
+const concurrentObserveEvidence = await concurrentObserveMemory.listEvidence({
+  profileId: "concurrent_observe_dedupe",
+  includeSensitive: true,
+  limit: 10,
+});
+const concurrentObserveMemories = await concurrentObserveMemory.list({
+  profileId: "concurrent_observe_dedupe",
+  status: "any",
+  limit: 10,
+});
+assert.equal(concurrentObserveExtractionCalls, 1);
+assert.equal(concurrentObserveResults.filter((entry) => entry.memoryIds.length === 1).length, 1);
+assert.equal(
+  concurrentObserveResults.filter((entry) => entry.skippedReason === "deduplicated_event").length,
+  19,
+);
+assert.equal(concurrentObserveEvidence.length, 1);
+assert.equal(concurrentObserveMemories.length, 1);
+assert.equal(concurrentObserveMemories[0]?.sourceEventId, concurrentObserveEvidence[0]?.id);
+assert.equal(
+  concurrentObserveMemories[0]?.content,
+  `${concurrentObserveEvidence[0]?.content} durable fact.`,
+);
+assert.equal(
+  concurrentObserveResults.every(
+    (entry) => entry.evidenceId === concurrentObserveEvidence[0]?.id,
+  ),
+  true,
+);
+await concurrentObserveMemory.close();
 
 const ingestStore = createSqliteMemoryStore({ path: path.join(tmp, "transcript-ingest.db") });
 const ingestMemory = createMemoryOS({ profileId: "ingest_profile", store: ingestStore });

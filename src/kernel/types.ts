@@ -2219,6 +2219,9 @@ export interface MemoryStore {
   ): void;
   initialize(): Promise<void> | void;
   close(): Promise<void> | void;
+  claimEvidence(input: RecordEvidenceInput):
+    | Promise<{ evidence: EvidenceEvent; inserted: boolean }>
+    | { evidence: EvidenceEvent; inserted: boolean };
   recordEvidence(input: RecordEvidenceInput): Promise<EvidenceEvent> | EvidenceEvent;
   getEvidenceByEventKey?(eventKey: string): Promise<EvidenceEvent | null> | EvidenceEvent | null;
   addMemory(input: AddMemoryInput): Promise<MemoryRecord> | MemoryRecord;

@@ -1980,20 +1980,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       event.allowLowerTrustPolicyWrites === true || trust.allowLowerTrustPolicyWrites;
     const eventMetadata = sourceMetadataForEvent(event, classifyRuntimeSensitivity);
     const dedupeEventKey = eventKey(event);
-    const existingEvidence = store.getEvidenceByEventKey
-      ? await store.getEvidenceByEventKey(dedupeEventKey)
-      : null;
-    if (existingEvidence) {
-      return {
-        result: {
-          ...result,
-          evidenceId: existingEvidence.id,
-          eligibleForLongTermMemory: existingEvidence.eligibleForLongTermMemory,
-          skippedReason: "deduplicated_event",
-        },
-      };
-    }
-    const evidence = await store.recordEvidence({
+    const claimed = await store.claimEvidence({
       profileId: result.profileId,
       eventKey: dedupeEventKey,
       sourceType: event.type,
@@ -2013,6 +2000,17 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       },
       createdAt: event.createdAt,
     });
+    const evidence = claimed.evidence;
+    if (!claimed.inserted) {
+      return {
+        result: {
+          ...result,
+          evidenceId: evidence.id,
+          eligibleForLongTermMemory: evidence.eligibleForLongTermMemory,
+          skippedReason: "deduplicated_event",
+        },
+      };
+    }
     result.evidenceId = evidence.id;
     return {
       result,

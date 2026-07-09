@@ -3906,20 +3906,19 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .all(input.profileId, ...params, candidateLimit) as Record<string, unknown>[];
   }
 
-  function recordEvidence(input: RecordEvidenceInput): EvidenceEvent {
+  function claimEvidence(input: RecordEvidenceInput): {
+    evidence: EvidenceEvent;
+    inserted: boolean;
+  } {
     initialize();
     const createdAt = input.createdAt ?? nowIso();
     const eventId = id("evidence");
-    db.prepare(
+    const inserted = db.prepare(
       `INSERT INTO gmos_evidence_events (
         id, event_key, profile_id, source_type, source_uri, content, sensitivity,
         eligible_for_long_term_memory, payload_json, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(event_key) DO UPDATE SET
-        content = excluded.content,
-        sensitivity = excluded.sensitivity,
-        eligible_for_long_term_memory = excluded.eligible_for_long_term_memory,
-        payload_json = excluded.payload_json`,
+      ON CONFLICT(event_key) DO NOTHING`,
     ).run(
       eventId,
       input.eventKey,
@@ -3931,11 +3930,19 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       input.eligibleForLongTermMemory ? 1 : 0,
       JSON.stringify(input.payload ?? {}),
       createdAt,
-    );
+    ).changes > 0;
     const row = db
       .prepare("SELECT * FROM gmos_evidence_events WHERE event_key = ?")
       .get(input.eventKey) as Record<string, unknown>;
-    return normalizeEvidence(row);
+    const evidence = normalizeEvidence(row);
+    if (evidence.profileId !== input.profileId) {
+      throw new Error("evidence event key already belongs to another profile");
+    }
+    return { evidence, inserted };
+  }
+
+  function recordEvidence(input: RecordEvidenceInput): EvidenceEvent {
+    return claimEvidence(input).evidence;
   }
 
   function getEvidenceByEventKey(eventKey: string): EvidenceEvent | null {
@@ -6897,6 +6904,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       statementCache.clear();
       if (!options.handle) db.close();
     },
+    claimEvidence,
     recordEvidence,
     getEvidenceByEventKey,
     addMemory,
