@@ -8270,6 +8270,91 @@ assert.equal(
   ),
   true,
 );
+const temporalConsolidationStore = createSqliteMemoryStore({
+  path: path.join(tmp, "entity-consolidation-temporal-anchor.db"),
+});
+const temporalConsolidationMemory = createMemoryOS({
+  profileId: "entity_temporal_anchor",
+  store: temporalConsolidationStore,
+  consolidator: {
+    consolidate(cluster) {
+      if (cluster.kind !== "entity") return [];
+      return [{
+        kind: "fact" as const,
+        content: "Canonical temporal Hummus preference.",
+        confidence: 0.91,
+        subject: "user",
+        predicate: "canonical_hummus_preference",
+        object: cluster.entityObject ?? "Hummus",
+      }];
+    },
+  },
+  consolidation: {
+    hookMinClusterSize: 99,
+    entityConsolidation: { enabled: true, minClusterSize: 2 },
+  },
+});
+await temporalConsolidationMemory.add({
+  profileId: "entity_temporal_anchor",
+  kind: "fact",
+  content: "Hummus source one says the user is obsessed with hummus.",
+  confidence: 0.86,
+  metadata: { subject: "user", predicate: "hummus_early", object: "Hummus preference" },
+  createdAt: "2023-05-20T09:00:00.000Z",
+});
+await temporalConsolidationMemory.add({
+  profileId: "entity_temporal_anchor",
+  kind: "fact",
+  content: "Hummus source two says hummus is still the preferred snack.",
+  confidence: 0.87,
+  metadata: {
+    subject: "user",
+    predicate: "hummus_latest",
+    object: "Hummus preference",
+    eventDate: "2023-05-25",
+  },
+  createdAt: "2023-05-21T09:00:00.000Z",
+});
+for (const index of Array.from({ length: 12 }, (_, value) => value)) {
+  await temporalConsolidationMemory.add({
+    profileId: "entity_temporal_anchor",
+    kind: "fact",
+    content: `zztemporalanchor${String(index).padStart(3, "0")}`,
+    confidence: 0.5,
+    createdAt: "2023-05-19T09:00:00.000Z",
+  });
+}
+await temporalConsolidationMemory.maintain({
+  profileId: "entity_temporal_anchor",
+  now: "2026-07-03T02:35:00.000Z",
+  phases: ["consolidate"],
+});
+const temporalConsolidationAfter = await temporalConsolidationMemory.list({
+  profileId: "entity_temporal_anchor",
+  status: "any",
+  limit: 100,
+});
+const temporalCanonical = temporalConsolidationAfter.find((memoryRecord) =>
+  memoryRecord.status === "active" &&
+  memoryRecord.metadata.consolidationSummary === true &&
+  memoryRecord.content === "Canonical temporal Hummus preference."
+);
+assert.ok(temporalCanonical);
+assert.equal(temporalCanonical.createdAt, "2026-07-03T02:35:00.000Z");
+assert.equal(temporalCanonical.metadata.eventDate, "2023-05-25");
+assert.equal(temporalContextLabel(temporalCanonical.createdAt, temporalCanonical.metadata), "2023-05-25");
+const temporalCanonicalContext = await temporalConsolidationMemory.reconstructContext({
+  profileId: "entity_temporal_anchor",
+  query: "Hummus",
+  asOf: "2023-05-30T00:00:00.000Z",
+  maxMemories: 4,
+  contextBudgetTokens: 4000,
+  stopWhenEvidenceEnough: false,
+});
+assert.match(temporalCanonicalContext.contextBlock, /Canonical temporal Hummus preference/u);
+assert.match(temporalCanonicalContext.contextBlock, /2023-05-25; days_ago=5/u);
+assert.equal(temporalCanonicalContext.contextBlock.includes("days_ahead"), false);
+await temporalConsolidationMemory.close();
 const entityRuntimeReplay = await entityRuntimeMemory.maintain({
   profileId: "entity_runtime",
   now: "2026-07-03T02:06:00.000Z",
@@ -22329,6 +22414,103 @@ const zeroSummaryPolicy = await reconstructMemoryContext({
 });
 assert.equal(zeroSummaryPolicy.contextBlock, zeroSummaryNoPolicy.contextBlock);
 assert.deepEqual(zeroSummaryPolicy.memories, zeroSummaryNoPolicy.memories);
+const duplicateWideShared = layerMemory(
+  "memory_duplicate_wide_shared",
+  "atom",
+  "DuplicateWideKey shared fact.",
+);
+const duplicateWideFillers = Array.from({ length: 80 }, (_entry, index) =>
+  layerMemory(`memory_duplicate_wide_${index}`, "atom", `DuplicateWideKey filler fact ${index}.`)
+);
+const duplicateWideAssociations: MemoryAssociationRecord[] = ["alias_a", "alias_b"].map((targetId, index) => ({
+  id: `assoc_duplicate_wide_${index}`,
+  profileId: "layer",
+  cue: "DuplicateWideKey",
+  cueKind: "lexical",
+  tag: "fact",
+  targetType: "memory",
+  targetId,
+  targetKind: "fact",
+  targetSummary: duplicateWideShared.content,
+  sensitivity: "normal",
+  status: "active",
+  confidence: duplicateWideShared.confidence,
+  sourceMemoryId: duplicateWideShared.id,
+  createdAt: layerNow,
+  updatedAt: layerNow,
+}));
+const duplicateWideStore = {
+  searchAssociations(input: { limit?: number | undefined }) {
+    return duplicateWideAssociations.slice(0, input.limit ?? duplicateWideAssociations.length);
+  },
+  getMemoryById(_profileId: string, id: string) {
+    return id === duplicateWideShared.id || id.startsWith("alias_") ? duplicateWideShared : null;
+  },
+  searchMemories(input: { limit?: number | undefined }) {
+    return [duplicateWideShared, ...duplicateWideFillers].slice(
+      0,
+      input.limit ?? duplicateWideFillers.length + 1,
+    );
+  },
+  listEvidenceForMemory() {
+    return [];
+  },
+} as unknown as MemoryStore;
+const duplicateWideContext = await reconstructMemoryContext({
+  store: duplicateWideStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "DuplicateWideKey",
+    maxMemories: 30,
+    maxSteps: 1,
+    maxBranch: 2,
+    contextBudgetTokens: 100000,
+    stopWhenEvidenceEnough: false,
+    layerPolicy: { summaryMinShare: 0.1, turnMaxShare: 1 },
+  },
+});
+const duplicateWideIds = duplicateWideContext.memories.map((memoryRecord) => memoryRecord.id);
+assert.equal(duplicateWideContext.memories.length, 30);
+assert.equal(new Set(duplicateWideIds).size, duplicateWideIds.length);
+assert.equal(duplicateWideIds[0], duplicateWideShared.id);
+assert.equal(duplicateWideContext.memories.some((memoryRecord) =>
+  memoryRecord.content === "DuplicateWideKey filler fact 28."
+), true);
+const duplicateWideMemoryLines = duplicateWideContext.contextBlock
+  .split("\n")
+  .filter((line) => line.startsWith("- [fact;") && line.includes("DuplicateWideKey"));
+assert.equal(new Set(duplicateWideMemoryLines).size, duplicateWideMemoryLines.length);
+const singleWideContext = await reconstructMemoryContext({
+  store: {
+    searchAssociations() {
+      return duplicateWideAssociations.slice(0, 2);
+    },
+    getMemoryById() {
+      return duplicateWideShared;
+    },
+    searchMemories() {
+      return [duplicateWideShared];
+    },
+    listEvidenceForMemory() {
+      return [];
+    },
+  } as unknown as MemoryStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "DuplicateWideKey",
+    maxMemories: 30,
+    maxSteps: 1,
+    maxBranch: 2,
+    contextBudgetTokens: 100000,
+    stopWhenEvidenceEnough: false,
+    layerPolicy: { summaryMinShare: 0.1, turnMaxShare: 1 },
+  },
+});
+assert.deepEqual(singleWideContext.memories.map((memoryRecord) => memoryRecord.id), [
+  duplicateWideShared.id,
+]);
 const wideRows = Array.from({ length: 220 }, (_entry, index) =>
   layerMemory(`memory_wide_${index}`, "atom", `WideKey atom ${index}`)
 );

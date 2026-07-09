@@ -165,6 +165,9 @@ structured extractor boundary. gmOS selects bounded clusters and enforces write
 gates, but only the host hook can synthesize summary prose. Accepted summaries
 are new memories whose consolidation evidence lists source memory ids; source
 episodes are demoted to dormant with lifecycle evidence.
+For temporal rendering, accepted host summaries inherit `metadata.eventDate`
+from the latest resolvable calendar date across their source memories. The
+summary `created_at` remains the write instant for lifecycle bookkeeping.
 
 Entity consolidation is an opt-in selector available both in the `consolidate`
 maintain phase and directly inside `ingestConversation({ consolidateEntities })`.
@@ -272,8 +275,11 @@ candidate pool, using provenance metadata only to classify summaries
 (`sessionDistillation`), raw turns (`turnMemory`), and atoms (everything else).
 It then applies the summary minimum and turn maximum to the final slots, releases
 unused reservations back to rank order, and filters paths/anchor diagnostics to
-the post-policy inclusion. Without `layerPolicy`, this pass is absent and the
-legacy global pool remains byte-identical.
+the post-policy inclusion. Before final slot allocation, reconstruction keeps the
+first occurrence of each memory id across all supply lanes, so one memory cannot
+render twice or consume two reader-context slots. Without `layerPolicy`, this
+pass is absent and the legacy global pool remains byte-identical except for the
+same duplicate-id guard.
 
 Hosts may also declare `reconstructionIntent.requiredAnchors`. These are not
 inferred by the kernel and are not dataset rules; they are host-owned endpoint

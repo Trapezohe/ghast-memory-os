@@ -93,6 +93,14 @@ function temporalContextDate(
   return dateFromCreatedAt(createdAt);
 }
 
+export function temporalContextCalendarDate(
+  createdAt: string | undefined,
+  metadata: Record<string, unknown> = {},
+): string {
+  const date = temporalContextDate(createdAt, metadata);
+  return date ? calendarDate(date) : "";
+}
+
 function relativeTemporalSegment(
   createdAt: string | undefined,
   metadata: Record<string, unknown>,

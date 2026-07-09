@@ -53,7 +53,10 @@ import {
 } from "../kernel/embeddings.js";
 import { isReservedSpeakerIdentity } from "../kernel/person-identity.js";
 import { reconstructMemoryContext } from "../kernel/reconstruction.js";
-import { temporalContextLabel } from "../kernel/temporal-format.js";
+import {
+  temporalContextCalendarDate,
+  temporalContextLabel,
+} from "../kernel/temporal-format.js";
 import {
   isPersonRoutedMemory,
   redactForReport,
@@ -3712,6 +3715,16 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const stats = emptyEntityConsolidationStats();
     const seenCandidates = new Set<string>();
     const name = consolidatorName(options.consolidator);
+    const clusterEventDate = (sourceMemoryIds: string[]): string => {
+      let latest = "";
+      for (const sourceMemoryId of sourceMemoryIds) {
+        const memory = input.memoriesById.get(sourceMemoryId);
+        if (!memory) continue;
+        const eventDate = temporalContextCalendarDate(memory.createdAt, memory.metadata);
+        if (eventDate > latest) latest = eventDate;
+      }
+      return latest;
+    };
 
     interface ConsolidationClusterHookResult {
       cluster: MemoryConsolidationCluster;
@@ -3841,6 +3854,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
             lifecycle,
           }),
         };
+        const eventDate = clusterEventDate(sourceMemoryIds);
         const summary = {
           kind: normalized.normalized.kind,
           sourceMemoryIds,
@@ -3880,6 +3894,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           metadata: {
             consolidationSource: "host_consolidator",
             ...trustMetadata,
+            ...(eventDate ? { eventDate } : {}),
             ...(name ? { consolidatorName: name } : {}),
           },
           ...(embedding ? { embedding } : {}),

@@ -169,6 +169,28 @@ function allocateLayeredMemories(input: {
     .map((candidate) => candidate.memory);
 }
 
+function uniqueMemoriesById(memories: MemoryRecord[]): MemoryRecord[] {
+  const seen = new Set<string>();
+  const unique: MemoryRecord[] = [];
+  for (const memory of memories) {
+    if (seen.has(memory.id)) continue;
+    seen.add(memory.id);
+    unique.push(memory);
+  }
+  return unique;
+}
+
+function uniquePathsById(paths: ReconstructedEvidencePath[]): ReconstructedEvidencePath[] {
+  const seen = new Set<string>();
+  const unique: ReconstructedEvidencePath[] = [];
+  for (const path of paths) {
+    if (seen.has(path.id)) continue;
+    seen.add(path.id);
+    unique.push(path);
+  }
+  return unique;
+}
+
 function truncateMemoryContent(content: string, maxCharsPerMemory: number | undefined): string {
   if (maxCharsPerMemory === undefined) return content;
   const chars = [...content];
@@ -2561,15 +2583,16 @@ function composeReconstructedContext(input: {
   privateRouteSignals?: string[] | undefined;
   sanitizeEvidenceForOutput?: EvidenceOutputSanitizer | undefined;
 }): ReconstructedContext {
-  const layerCandidates = input.layerPolicy ? [...input.memories] : [];
+  const orderedMemories = uniqueMemoriesById(input.memories);
+  const layerCandidates = input.layerPolicy ? [...orderedMemories] : [];
   let memories = allocateLayeredMemories({
-    memories: input.memories,
+    memories: orderedMemories,
     maxMemories: input.maxMemories,
     policy: input.layerPolicy,
   });
   let paths = input.layerPolicy
-    ? filterPathsForIncludedMemories(input.paths, memories)
-    : [...input.paths];
+    ? filterPathsForIncludedMemories(uniquePathsById(input.paths), memories)
+    : uniquePathsById(input.paths);
   let sweepCandidates = [...(input.sweepDraft?.candidates ?? [])];
   const includeTemporalContext = input.includeTemporalContext !== false;
   const publicQuery = input.displayQuery ?? input.query;
