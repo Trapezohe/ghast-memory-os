@@ -182,6 +182,12 @@ consolidator receives `kind: "entity"` plus the source `memoryKind`, `entityKey`
 and `entityObject`; accepted summaries use the same consolidation evidence and
 dormant-source provenance as other host summaries. Hosts that want mem0-style
 canonical facts during normal ingest should enable `consolidateEntities`.
+Consolidator merge calls run through a bounded pool, but accepted candidates are
+validated and persisted in original cluster order, so canonical memory ids,
+dormant-source markers, and report ordering stay deterministic. Ingest uses the
+same concurrency as extractor windows, which external benchmark runs wire from
+`--intelligence-concurrency`; maintain-only consolidation uses the runtime
+intelligence concurrency when present, otherwise an internal limit of 8.
 
 Procedure distillation is a separate explicit `maintain({ phases: ["distill"] })`
 phase. gmOS deterministically clusters repeated completed task trajectories by

@@ -985,6 +985,12 @@ function boundedPositiveInteger(input: number | undefined, fallback: number, min
   return Math.max(min, Math.min(Math.trunc(input), max));
 }
 
+const DEFAULT_CONSOLIDATION_CONCURRENCY = 8;
+
+interface InternalMemoryOSOptions {
+  runtimeIntelligenceConcurrency?: number | undefined;
+}
+
 function publicTraceValues(values: string[], mode: "label" | "inline"): string[] {
   const seen = new Set<string>();
   const output: string[] = [];
@@ -1275,6 +1281,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   const dossier = resolveMemoryDossierConfig(options.dossier);
   const exploration = resolveMemoryExplorationConfig(options.exploration);
   const embeddingProvider = resolveEmbeddingProviderConfig(options.embeddingProvider);
+  const internalOptions = options as MemoryOSOptions & InternalMemoryOSOptions;
+  const defaultConsolidationConcurrency = boundedPositiveInteger(
+    internalOptions.runtimeIntelligenceConcurrency,
+    DEFAULT_CONSOLIDATION_CONCURRENCY,
+    1,
+    32,
+  );
   const retrieval = options.retrieval;
   const defaultDisposition = resolveRecallDispositionPreset({
     defaultPreset: options.disposition,
@@ -3028,6 +3041,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         factMemories: extractedFactMemories,
         config: entityConsolidationConfig,
         recordConsolidationSummary,
+        concurrency: windowConcurrency,
       });
     }
 
@@ -3693,16 +3707,62 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     clusters: MemoryConsolidationCluster[];
     memoriesById: Map<string, MemoryRecord>;
     recordConsolidationSummary: NonNullable<typeof store.recordConsolidationSummary>;
+    concurrency: number;
   }): Promise<EntityConsolidationStats> {
     const stats = emptyEntityConsolidationStats();
     const seenCandidates = new Set<string>();
     const name = consolidatorName(options.consolidator);
-    for (const cluster of input.clusters) {
-      const clusterMemoryKind = consolidationClusterMemoryKind(cluster);
-      const sourceMemoryIds = cluster.memories.map((memory) => memory.id);
-      const clusterSourceTrust = sourceTrustForMemoryIds(sourceMemoryIds, input.memoriesById);
-      stats.consolidatorCallCount += 1;
-      const rawCandidates = await callConsolidator(cluster);
+
+    interface ConsolidationClusterHookResult {
+      cluster: MemoryConsolidationCluster;
+      clusterMemoryKind: MemoryKind;
+      sourceMemoryIds: string[];
+      clusterSourceTrust: SourceTrust;
+      rawCandidates: MemoryConsolidationCandidate[] | null;
+    }
+
+    const hookResults: Array<ConsolidationClusterHookResult | undefined> =
+      new Array(input.clusters.length);
+    let nextClusterIndex = 0;
+    const workerCount = Math.min(
+      boundedPositiveInteger(input.concurrency, 1, 1, 32),
+      input.clusters.length,
+    );
+    stats.consolidatorCallCount = input.clusters.length;
+    await Promise.all(
+      Array.from({ length: workerCount }, async () => {
+        while (nextClusterIndex < input.clusters.length) {
+          const clusterIndex = nextClusterIndex;
+          nextClusterIndex += 1;
+          const cluster = input.clusters[clusterIndex]!;
+          const clusterMemoryKind = consolidationClusterMemoryKind(cluster);
+          const sourceMemoryIds = cluster.memories.map((memory) => memory.id);
+          const clusterSourceTrust = sourceTrustForMemoryIds(sourceMemoryIds, input.memoriesById);
+          let rawCandidates: MemoryConsolidationCandidate[] | null = null;
+          try {
+            rawCandidates = await callConsolidator(cluster);
+          } catch {
+            rawCandidates = null;
+          }
+          hookResults[clusterIndex] = {
+            cluster,
+            clusterMemoryKind,
+            sourceMemoryIds,
+            clusterSourceTrust,
+            rawCandidates,
+          };
+        }
+      }),
+    );
+
+    for (const output of hookResults) {
+      if (!output) {
+        stats.consolidatorFailureCount += 1;
+        addConsolidationSkipped(input.report, "consolidator_returned_null_or_failed");
+        continue;
+      }
+      const { cluster, clusterMemoryKind, sourceMemoryIds, clusterSourceTrust, rawCandidates } =
+        output;
       if (rawCandidates === null) {
         stats.consolidatorFailureCount += 1;
         addConsolidationSkipped(input.report, "consolidator_returned_null_or_failed");
@@ -3863,6 +3923,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     factMemories: MemoryRecord[];
     config: ResolvedMemoryConsolidationConfig;
     recordConsolidationSummary: NonNullable<typeof store.recordConsolidationSummary>;
+    concurrency: number;
   }): Promise<EntityConsolidationStats> {
     const stats = emptyEntityConsolidationStats();
     if (input.factMemories.length === 0) return stats;
@@ -3886,6 +3947,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       clusters,
       memoriesById: new Map(input.factMemories.map((memory) => [memory.id, memory])),
       recordConsolidationSummary: input.recordConsolidationSummary,
+      concurrency: input.concurrency,
     });
     return {
       ...applied,
@@ -3952,6 +4014,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       clusters,
       memoriesById,
       recordConsolidationSummary: store.recordConsolidationSummary,
+      concurrency: defaultConsolidationConcurrency,
     });
   }
 

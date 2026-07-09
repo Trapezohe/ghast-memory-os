@@ -15,6 +15,7 @@ import type {
   MemoryQueryPlanner,
   MemoryRecord,
   MemoryOS,
+  MemoryOSOptions,
   MemoryReadRetrievalOptions,
   MemoryProcedureDistiller,
   QueryEmbeddingFailureReason,
@@ -1108,6 +1109,10 @@ interface OpenedCaseGroupRuntime {
   store: ReturnType<typeof createSqliteMemoryStore>;
   memory: MemoryOS;
 }
+
+type RuntimeMemoryOSOptions = MemoryOSOptions & {
+  runtimeIntelligenceConcurrency?: number | undefined;
+};
 
 export function hashExternalMemoryBenchmarkInput(input: string): string {
   return `sha256:${createHash("sha256").update(input).digest("hex")}`;
@@ -5471,25 +5476,29 @@ async function runCaseGroup(input: {
       ...(hooks?.embeddingProvider ? { embeddingProvider: hooks.embeddingProvider } : {}),
       ...(retrieval ? { retrieval } : {}),
     });
+    const memoryOptions: RuntimeMemoryOSOptions = {
+      profileId: "external",
+      store,
+      ...(hooks?.extractor ? { extractor: hooks.extractor } : {}),
+      ...(hooks?.sessionDistiller ? { sessionDistiller: hooks.sessionDistiller } : {}),
+      ...(hooks?.consolidator ? { consolidator: hooks.consolidator } : {}),
+      ...(hooks?.procedureDistiller ? { procedureDistiller: hooks.procedureDistiller } : {}),
+      ...(hooks?.dossierSynthesizer ? { dossierSynthesizer: hooks.dossierSynthesizer } : {}),
+      ...(hooks?.embeddingProvider ? { embeddingProvider: hooks.embeddingProvider } : {}),
+      ...(retrieval ? { retrieval } : {}),
+      ...(input.runtimeIntelligence.manifest.concurrency !== null
+        ? { runtimeIntelligenceConcurrency: input.runtimeIntelligence.manifest.concurrency }
+        : {}),
+      ...(input.options.ingestMode === "message"
+        ? { extraction: { extractFromRoles: ["user", "assistant"] } }
+        : {}),
+      ...(input.options.consolidateEntities
+        ? { consolidation: { entityConsolidation: { enabled: true } } }
+        : {}),
+    };
     return {
       store,
-      memory: createMemoryOS({
-        profileId: "external",
-        store,
-        ...(hooks?.extractor ? { extractor: hooks.extractor } : {}),
-        ...(hooks?.sessionDistiller ? { sessionDistiller: hooks.sessionDistiller } : {}),
-        ...(hooks?.consolidator ? { consolidator: hooks.consolidator } : {}),
-        ...(hooks?.procedureDistiller ? { procedureDistiller: hooks.procedureDistiller } : {}),
-        ...(hooks?.dossierSynthesizer ? { dossierSynthesizer: hooks.dossierSynthesizer } : {}),
-        ...(hooks?.embeddingProvider ? { embeddingProvider: hooks.embeddingProvider } : {}),
-        ...(retrieval ? { retrieval } : {}),
-        ...(input.options.ingestMode === "message"
-          ? { extraction: { extractFromRoles: ["user", "assistant"] } }
-          : {}),
-        ...(input.options.consolidateEntities
-          ? { consolidation: { entityConsolidation: { enabled: true } } }
-          : {}),
-      }),
+      memory: createMemoryOS(memoryOptions),
     };
   };
   const cachePlan = input.ingestCache.dir

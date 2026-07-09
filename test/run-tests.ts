@@ -8466,6 +8466,220 @@ assert.equal(
   ).length,
   3,
 );
+const parallelEntityKinds = [
+  {
+    key: "nimbora",
+    object: "Nimbora planning notebook",
+    label: "Nimbora",
+  },
+  {
+    key: "cedarvale",
+    object: "Cedarvale desk setup",
+    label: "Cedarvale",
+  },
+  {
+    key: "orioncrest",
+    object: "Orioncrest reading lamp",
+    label: "Orioncrest",
+  },
+];
+const parallelEntityFragments = parallelEntityKinds.flatMap((entity) =>
+  ["color", "size", "location", "owner"].map((predicate, index) => ({
+    key: entity.key,
+    object: entity.object,
+    content: `Parallel note ${index}: ${entity.label} ${predicate} fragment.`,
+    predicate,
+  }))
+);
+const parallelEntityNoise = Array.from({ length: 24 }, (_, index) => ({
+  kind: "fact" as const,
+  content: `zzparallel${String(index).padStart(4, "0")}`,
+  confidence: 0.7,
+  subject: "user",
+  predicate: `parallel_noise_${index}`,
+  object: `parallel noise ${index}`,
+  cardinality: "single" as const,
+}));
+function entityConsolidationStateSnapshot(memories: MemoryRecord[]) {
+  const byId = new Map(memories.map((memory) => [memory.id, memory]));
+  return memories
+    .filter((memory) =>
+      memory.metadata.consolidationSummary === true ||
+      parallelEntityKinds.some((entity) =>
+        String(memory.metadata.predicate ?? "").startsWith(`${entity.key}_`)
+      )
+    )
+    .map((memory) => {
+      const consolidatedInto = typeof memory.metadata.consolidatedInto === "string"
+        ? byId.get(memory.metadata.consolidatedInto)?.content ?? null
+        : null;
+      const sourceMemoryIds = Array.isArray(memory.metadata.sourceMemoryIds)
+        ? memory.metadata.sourceMemoryIds.map(String)
+        : [];
+      return {
+        content: memory.content,
+        status: memory.status,
+        predicate: typeof memory.metadata.predicate === "string" ? memory.metadata.predicate : null,
+        consolidationSummary: memory.metadata.consolidationSummary === true,
+        consolidatedInto,
+        sourceContents: sourceMemoryIds
+          .map((memoryId) => byId.get(memoryId)?.content ?? memoryId)
+          .sort((left, right) => left.localeCompare(right)),
+      };
+    })
+    .sort((left, right) => left.content.localeCompare(right.content));
+}
+async function runParallelEntityConsolidationFixture(input: {
+  label: string;
+  concurrency: number;
+  failEntityKey?: string | undefined;
+}) {
+  const store = createSqliteMemoryStore({
+    path: path.join(tmp, `${input.label}.db`),
+  });
+  let active = 0;
+  let maxActive = 0;
+  const starts: string[] = [];
+  const memoryOptions = {
+    profileId: input.label,
+    store,
+    consolidator: {
+      async consolidate(cluster) {
+        const entityKey = cluster.entityKey ?? "unknown";
+        starts.push(entityKey);
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        try {
+          await new Promise((resolve) =>
+            setTimeout(resolve, entityKey === "cedarvale" ? 25 : entityKey === "nimbora" ? 10 : 1)
+          );
+          if (entityKey === input.failEntityKey) {
+            throw new Error(`planned consolidation failure: ${entityKey}`);
+          }
+          return [{
+            kind: "fact" as const,
+            content: `Concurrent canonical entity ${entityKey}: ${cluster.entityObject}.`,
+            confidence: 0.91,
+            subject: "user",
+            predicate: `parallel_canonical_${entityKey}`,
+            object: cluster.entityObject ?? entityKey,
+          }];
+        } finally {
+          active -= 1;
+        }
+      },
+    },
+    consolidation: {
+      hookMinClusterSize: 99,
+      entityConsolidation: { enabled: true, minClusterSize: 4 },
+    },
+    runtimeIntelligenceConcurrency: input.concurrency,
+  } as Parameters<typeof createMemoryOS>[0] & { runtimeIntelligenceConcurrency: number };
+  const memory = createMemoryOS(memoryOptions);
+  for (const fragment of parallelEntityFragments) {
+    await memory.add({
+      profileId: input.label,
+      kind: "fact",
+      content: fragment.content,
+      confidence: 0.87,
+      metadata: {
+        subject: "user",
+        predicate: `${fragment.key}_${fragment.predicate}`,
+        object: fragment.object,
+        cardinality: "single",
+      },
+      createdAt: "2026-07-03T02:24:00.000Z",
+    });
+  }
+  for (const candidate of parallelEntityNoise) {
+    await memory.add({
+      profileId: input.label,
+      kind: candidate.kind,
+      content: candidate.content,
+      confidence: candidate.confidence,
+      metadata: {
+        subject: candidate.subject,
+        predicate: candidate.predicate,
+        object: candidate.object,
+        cardinality: candidate.cardinality,
+      },
+      createdAt: "2026-07-03T02:24:00.000Z",
+    });
+  }
+  const report = await memory.maintain({
+    profileId: input.label,
+    phases: ["consolidate"],
+    now: "2026-07-03T02:25:00.000Z",
+  });
+  const memories = await memory.list({
+    profileId: input.label,
+    status: "any",
+    includeSensitive: true,
+    includePerson: true,
+    limit: 100,
+  });
+  await memory.close();
+  return {
+    report,
+    starts,
+    maxActive,
+    snapshot: entityConsolidationStateSnapshot(memories),
+  };
+}
+const sequentialEntityConsolidation = await runParallelEntityConsolidationFixture({
+  label: "maintain-entity-sequential-equivalence",
+  concurrency: 1,
+});
+const parallelEntityConsolidation = await runParallelEntityConsolidationFixture({
+  label: "maintain-entity-parallel-equivalence",
+  concurrency: 2,
+});
+assert.equal(parallelEntityConsolidation.report.consolidation.summaryMemories.length, 3);
+assert.deepEqual(parallelEntityConsolidation.report.consolidation.skipped, []);
+assert.deepEqual(
+  parallelEntityConsolidation.snapshot,
+  sequentialEntityConsolidation.snapshot,
+);
+assert.deepEqual(
+  parallelEntityConsolidation.report.consolidation.entityClusters?.map((cluster) => cluster.entityKey),
+  ["cedarvale", "nimbora", "orioncrest"],
+);
+assert.deepEqual(parallelEntityConsolidation.starts, ["cedarvale", "nimbora", "orioncrest"]);
+assert.equal(parallelEntityConsolidation.maxActive >= 2, true);
+assert.equal(parallelEntityConsolidation.maxActive <= 2, true);
+const partialFailureEntityConsolidation = await runParallelEntityConsolidationFixture({
+  label: "maintain-entity-parallel-partial-failure",
+  concurrency: 2,
+  failEntityKey: "nimbora",
+});
+assert.equal(partialFailureEntityConsolidation.report.consolidation.summaryMemories.length, 2);
+assert.deepEqual(partialFailureEntityConsolidation.report.consolidation.skipped, [{
+  reason: "consolidator_returned_null_or_failed",
+  count: 1,
+}]);
+assert.equal(partialFailureEntityConsolidation.maxActive <= 2, true);
+assert.deepEqual(
+  Object.fromEntries(parallelEntityKinds.map((entity) => [
+    entity.key,
+    {
+      activeFragments: partialFailureEntityConsolidation.snapshot.filter((entry) =>
+        entry.status === "active" && String(entry.predicate ?? "").startsWith(`${entity.key}_`)
+      ).length,
+      dormantFragments: partialFailureEntityConsolidation.snapshot.filter((entry) =>
+        entry.status === "dormant" && String(entry.predicate ?? "").startsWith(`${entity.key}_`)
+      ).length,
+      canonicals: partialFailureEntityConsolidation.snapshot.filter((entry) =>
+        entry.consolidationSummary &&
+        entry.content.includes(`Concurrent canonical entity ${entity.key}:`)
+      ).length,
+    },
+  ])),
+  {
+    cedarvale: { activeFragments: 0, dormantFragments: 4, canonicals: 1 },
+    nimbora: { activeFragments: 4, dormantFragments: 0, canonicals: 0 },
+    orioncrest: { activeFragments: 0, dormantFragments: 4, canonicals: 1 },
+  },
+);
 const ingestEntityOffStore = createSqliteMemoryStore({
   path: path.join(tmp, "ingest-entity-off.db"),
 });
