@@ -183,7 +183,7 @@ Usage:
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --reader-profile expansive --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
   gmos gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --max-cases 5 --results-jsonl ./paid-smoke.results.jsonl
-  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --turn-retention on --session-distill on --extraction-window 12 --ingest-replay-attempts 1 --embed-query on --intelligence-base-url https://api.deepseek.com/v1 --intelligence-model deepseek-chat --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-embed-base-url http://127.0.0.1:11434/v1 --intelligence-embed-model nomic-embed-text --intelligence-embed-dimensions 768 --intelligence-disable-thinking
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --turn-retention on --session-distill on --consolidate-entities on --extraction-window 12 --ingest-replay-attempts 1 --embed-query on --intelligence-base-url https://api.deepseek.com/v1 --intelligence-model deepseek-chat --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-embed-base-url http://127.0.0.1:11434/v1 --intelligence-embed-model nomic-embed-text --intelligence-embed-dimensions 768 --intelligence-disable-thinking
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --session-distill on --distiller-base-url http://127.0.0.1:11434/v1 --distiller-model llama3.1 --intelligence-api-key-env GMOS_BENCH_API_KEY
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode memory --query-planner on --sweep-cues on --planner-base-url http://127.0.0.1:11434/v1 --planner-model llama3.1 --intelligence-api-key-env GMOS_BENCH_API_KEY
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --protocol official-protocol --answerer-base-url http://127.0.0.1:11434/v1 --answerer-model llama3.1 --answerer-timeout-ms 90000 --answerer-disable-thinking
@@ -353,6 +353,14 @@ function sessionDistillOption(): boolean | undefined {
   if (raw === "on") return true;
   if (raw === "off") return false;
   throw new Error("--session-distill must be on or off");
+}
+
+function consolidateEntitiesOption(): boolean | undefined {
+  const raw = value("--consolidate-entities");
+  if (raw === undefined) return undefined;
+  if (raw === "on") return true;
+  if (raw === "off") return false;
+  throw new Error("--consolidate-entities must be on or off");
 }
 
 function hostPreset(): HostPreset | undefined {
@@ -1182,6 +1190,9 @@ function renderMaintenanceMarkdown(report: MaintenanceReport): string {
   const duplicateRows = report.consolidation.duplicateClusters.map((cluster) =>
     `| ${cluster.kind} | ${cluster.survivorId} | ${cluster.memberIds.join(", ")} | ${cluster.archivedMemberIds.join(", ")} | ${cluster.reasons.join(", ")} |`
   );
+  const entityRows = (report.consolidation.entityClusters ?? []).map((cluster) =>
+    `| ${cluster.kind} | ${cluster.entityKey} | ${cluster.entityObject} | ${cluster.summaryMemoryId ?? "dry-run"} | ${cluster.sourceMemoryIds.join(", ")} | ${cluster.reasons.join(", ")} |`
+  );
   const summaryRows = report.consolidation.summaryMemories.map((summary) =>
     `| ${summary.kind} | ${summary.memoryId ?? "dry-run"} | ${summary.sourceMemoryIds.join(", ")} | ${summary.confidence.toFixed(4)} | ${summary.sharedTags.join(", ")} |`
   );
@@ -1257,6 +1268,7 @@ function renderMaintenanceMarkdown(report: MaintenanceReport): string {
     `Enabled: ${report.consolidation.enabled ? "yes" : "no"}`,
     `Evaluated: ${report.consolidation.evaluated}`,
     `Duplicate clusters: ${report.consolidation.duplicateClusters.length}`,
+    `Entity clusters: ${report.consolidation.entityClusters?.length ?? 0}`,
     `Summary memories: ${report.consolidation.summaryMemories.length}`,
     "",
     "### Duplicate Clusters",
@@ -1265,6 +1277,13 @@ function renderMaintenanceMarkdown(report: MaintenanceReport): string {
       ? "No duplicate clusters."
       : "| Kind | Survivor | Members | Archived | Reasons |\n| --- | --- | --- | --- | --- |\n" +
           duplicateRows.join("\n"),
+    "",
+    "### Entity Clusters",
+    "",
+    entityRows.length === 0
+      ? "No entity clusters."
+      : "| Kind | Entity Key | Entity Object | Summary | Sources | Reasons |\n| --- | --- | --- | --- | --- | --- |\n" +
+          entityRows.join("\n"),
     "",
     "### Summary Memories",
     "",
@@ -2177,6 +2196,7 @@ async function main(): Promise<void> {
     const sweepCues = sweepCuesOption();
     const turnRetention = turnRetentionOption();
     const sessionDistillation = sessionDistillOption();
+    const consolidateEntities = consolidateEntitiesOption();
     if (debugDumpMemories !== undefined && debugDumpMemories > 0 && !resolvedDebugDir) {
       throw new Error("--debug-dump-memories requires --intelligence-debug-dir");
     }
@@ -2233,6 +2253,7 @@ async function main(): Promise<void> {
       ingestMode,
       ...(turnRetention !== undefined ? { turnRetention } : {}),
       ...(sessionDistillation !== undefined ? { sessionDistillation } : {}),
+      ...(consolidateEntities !== undefined ? { consolidateEntities } : {}),
       ...(embedQuery !== undefined ? { embedQuery } : {}),
       ...(queryPlanner !== undefined ? { queryPlanner } : {}),
       ...(sweepCues !== undefined ? { sweepCues } : {}),

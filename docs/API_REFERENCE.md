@@ -287,6 +287,12 @@ const memory = createMemoryOS({
     maxClustersPerRun: 10,
     maxMembersPerCluster: 8,
     eligibleKinds: ["task_trajectory", "fact", "project"],
+    entityConsolidation: {
+      enabled: false,
+      minClusterSize: 3,
+      maxClustersPerRun: 40,
+      maxMembersPerCluster: 24,
+    },
   },
   distillation: {
     enabled: true,
@@ -345,6 +351,16 @@ consolidation always excludes `boundary`, `person`, archived, sensitive, and
 secret-like memories. Host semantic consolidation additionally uses
 `eligibleKinds`, defaulting to episodic-leaning `task_trajectory`, `fact`, and
 `project`.
+
+Entity consolidation is opt-in under `consolidation.entityConsolidation`. It is
+deterministic and uses only existing structured triple metadata: memories must
+carry `metadata.object`. gmOS normalizes that object by lowercasing, trimming,
+collapsing whitespace, removing leading articles, and stripping leading
+scale-only prefixes such as `1/72 scale`. Entity clusters match exact normalized
+object phrases, token-sequence containment, shared model/code tokens such as
+`B-29` or `F-15`, or a shared long entity-name token when the objects do not
+carry conflicting numeric/model-code tokens. Memories without a usable object are
+never clustered.
 
 Dossier defaults are shown above. `enabled: false` disables the `dossier` phase
 even when requested. Dossiers are synthesized only from active world beliefs plus
@@ -859,9 +875,12 @@ const memory = createMemoryOS({
 });
 ```
 
-The consolidator input is `{ kind, sharedTags, memories }`, where `memories` is
-a bounded sanitized snapshot of `{ id, kind, content, confidence, createdAt,
-updatedAt }`. Returning `null` or throwing means no summary for that cluster.
+The legacy consolidator input is `{ kind, sharedTags, memories }`, where `kind`
+is the source memory kind. Entity consolidation sends
+`{ kind: "entity", memoryKind, entityKey, entityObject, sharedTags, memories }`.
+`memories` is a bounded sanitized snapshot of
+`{ id, kind, content, confidence, createdAt, updatedAt }`. Returning `null` or
+throwing means no summary for that cluster.
 gmOS rejects empty, overlong, duplicate, PERSON-routed, person-kind, or
 secret-like candidates, clamps confidence to `0..1`, and never synthesizes
 summary text itself. Accepted summaries are stored as new memories whose source

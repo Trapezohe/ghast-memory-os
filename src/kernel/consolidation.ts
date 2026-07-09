@@ -36,6 +36,9 @@ const DEFAULT_DUPLICATE_MIN_CLUSTER_SIZE = 2;
 const DEFAULT_HOOK_MIN_CLUSTER_SIZE = 3;
 const DEFAULT_MAX_CLUSTERS_PER_RUN = 10;
 const DEFAULT_MAX_MEMBERS_PER_CLUSTER = 8;
+const DEFAULT_ENTITY_MIN_CLUSTER_SIZE = 3;
+const DEFAULT_ENTITY_MAX_CLUSTERS_PER_RUN = 40;
+const DEFAULT_ENTITY_MAX_MEMBERS_PER_CLUSTER = 24;
 export const MAX_CONSOLIDATION_SUMMARY_CONTENT_LENGTH = 2000;
 
 export interface DuplicateConsolidationCluster {
@@ -56,6 +59,16 @@ export interface ConsolidationCandidateDecision {
     predicate?: string | undefined;
     object?: string | undefined;
   };
+}
+
+interface EntityObjectSignal {
+  memory: MemoryRecord;
+  object: string;
+  phrase: string;
+  tokens: string[];
+  distinctiveTokens: string[];
+  codeTokens: string[];
+  specificTokens: string[];
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -100,6 +113,21 @@ export function resolveMemoryConsolidationConfig(
       DEFAULT_MAX_MEMBERS_PER_CLUSTER,
     ),
     eligibleKinds: configuredKinds(input?.eligibleKinds, DEFAULT_CONSOLIDATION_ELIGIBLE_KINDS),
+    entityConsolidation: {
+      enabled: input?.entityConsolidation?.enabled ?? false,
+      minClusterSize: positiveInteger(
+        input?.entityConsolidation?.minClusterSize,
+        DEFAULT_ENTITY_MIN_CLUSTER_SIZE,
+      ),
+      maxClustersPerRun: positiveInteger(
+        input?.entityConsolidation?.maxClustersPerRun,
+        DEFAULT_ENTITY_MAX_CLUSTERS_PER_RUN,
+      ),
+      maxMembersPerCluster: positiveInteger(
+        input?.entityConsolidation?.maxMembersPerCluster,
+        DEFAULT_ENTITY_MAX_MEMBERS_PER_CLUSTER,
+      ),
+    },
   };
 }
 
@@ -200,6 +228,120 @@ function memberSnapshots(members: MemoryRecord[]): MemoryConsolidationSourceSnap
   }));
 }
 
+const ENTITY_GENERIC_TOKENS = new Set([
+  "a",
+  "an",
+  "the",
+  "scale",
+  "model",
+  "models",
+  "kit",
+  "kits",
+  "miniature",
+  "miniatures",
+]);
+
+function isScaleToken(token: string): boolean {
+  return /^\d+\s*(?:[/:-]\s*\d+)$/u.test(token);
+}
+
+function isCodeToken(token: string): boolean {
+  return /[\p{L}]/u.test(token) && /[\d/-]/u.test(token);
+}
+
+function normalizedEntityPhrase(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const phrase = value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/['’]/gu, "")
+    .replace(/[^\p{L}\p{N}/:-]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .replace(/^(?:a|an|the)\s+/u, "")
+    .replace(/^(?:\d+\s*(?:[/:-]\s*\d+)|\d+\s*:\s*\d+)\s*(?:scale)?\s+/u, "")
+    .replace(/^scale\s+/u, "")
+    .trim();
+  return phrase.length > 0 ? phrase : null;
+}
+
+function entityTokens(phrase: string): string[] {
+  return [...phrase.matchAll(/[\p{L}\p{N}]+(?:[/-][\p{L}\p{N}]+)*/gu)]
+    .map((match) => match[0]!)
+    .filter((token) => !ENTITY_GENERIC_TOKENS.has(token) && !isScaleToken(token));
+}
+
+function entityObjectSignal(memory: MemoryRecord): EntityObjectSignal | null {
+  const phrase = normalizedEntityPhrase(memory.metadata.object);
+  if (!phrase) return null;
+  const tokens = entityTokens(phrase);
+  const distinctiveTokens = tokens.filter((token) => token.length >= 3 || isCodeToken(token));
+  if (distinctiveTokens.length === 0) return null;
+  const codeTokens = distinctiveTokens.filter(isCodeToken);
+  const specificTokens = distinctiveTokens.filter((token) => isCodeToken(token) || /^\d+$/u.test(token));
+  return {
+    memory,
+    object: memory.metadata.object as string,
+    phrase,
+    tokens,
+    distinctiveTokens,
+    codeTokens,
+    specificTokens,
+  };
+}
+
+function tokenPhraseContains(left: string[], right: string[]): boolean {
+  if (right.length === 0 || right.length > left.length) return false;
+  for (let index = 0; index <= left.length - right.length; index += 1) {
+    if (right.every((token, offset) => left[index + offset] === token)) return true;
+  }
+  return false;
+}
+
+function intersects(left: readonly string[], right: readonly string[]): boolean {
+  const rightSet = new Set(right);
+  return left.some((value) => rightSet.has(value));
+}
+
+function conflictingSpecificTokens(left: EntityObjectSignal, right: EntityObjectSignal): boolean {
+  if (left.specificTokens.length === 0 || right.specificTokens.length === 0) return false;
+  return !intersects(left.specificTokens, right.specificTokens);
+}
+
+function entitySignalsCompatible(left: EntityObjectSignal, right: EntityObjectSignal): boolean {
+  if (left.phrase === right.phrase) return true;
+  if (tokenPhraseContains(left.tokens, right.tokens) || tokenPhraseContains(right.tokens, left.tokens)) {
+    return true;
+  }
+  if (intersects(left.codeTokens, right.codeTokens)) return true;
+  const sharedNameToken = left.distinctiveTokens.some(
+    (token) => token.length >= 5 && right.distinctiveTokens.includes(token),
+  );
+  return sharedNameToken && !conflictingSpecificTokens(left, right);
+}
+
+function bestEntityToken(signals: EntityObjectSignal[]): string {
+  const [first, ...rest] = signals.map((signal) => signal.distinctiveTokens);
+  let shared = new Set(first ?? []);
+  for (const tokens of rest) {
+    const tokenSet = new Set(tokens);
+    shared = new Set([...shared].filter((token) => tokenSet.has(token)));
+  }
+  const sharedTokens = [...shared].sort(
+    (left, right) =>
+      Number(isCodeToken(right)) - Number(isCodeToken(left)) ||
+      right.length - left.length ||
+      left.localeCompare(right),
+  );
+  return sharedTokens[0] ?? signals[0]?.phrase ?? "entity";
+}
+
+function bestEntityObject(signals: EntityObjectSignal[]): string {
+  return signals
+    .map((signal) => signal.object)
+    .sort((left, right) => right.length - left.length || left.localeCompare(right))[0]!;
+}
+
 export function selectDuplicateConsolidationClusters(
   memories: MemoryRecord[],
   config: ResolvedMemoryConsolidationConfig,
@@ -244,6 +386,51 @@ export function selectDuplicateConsolidationClusters(
     if (clusters.length >= config.maxClustersPerRun) break;
   }
   return clusters;
+}
+
+export function selectEntityConsolidationClusters(
+  memories: MemoryRecord[],
+  config: ResolvedMemoryConsolidationConfig,
+): MemoryConsolidationCluster[] {
+  if (!config.enabled || !config.entityConsolidation.enabled) return [];
+  const minClusterSize = Math.max(2, config.entityConsolidation.minClusterSize);
+  const candidates = memories
+    .filter(memoryCanEnterConsolidation)
+    .filter((memory) => !metadataHasConsolidationResidue(memory))
+    .map(entityObjectSignal)
+    .filter((signal): signal is EntityObjectSignal => signal !== null)
+    .sort((left, right) => stableMemoryOrder(left.memory, right.memory));
+  const groups: EntityObjectSignal[][] = [];
+  for (const signal of candidates) {
+    const group = groups.find((entry) => entry.some((existing) => entitySignalsCompatible(existing, signal)));
+    if (group) {
+      group.push(signal);
+    } else {
+      groups.push([signal]);
+    }
+  }
+  return groups
+    .map((group) => group.sort((left, right) => stableMemoryOrder(left.memory, right.memory)))
+    .filter((group) => group.length >= minClusterSize)
+    .sort((left, right) =>
+      bestEntityToken(left).localeCompare(bestEntityToken(right)) ||
+      stableMemoryOrder(left[0]!.memory, right[0]!.memory)
+    )
+    .slice(0, config.entityConsolidation.maxClustersPerRun)
+    .map((group) => {
+      const members = group
+        .slice(0, config.entityConsolidation.maxMembersPerCluster)
+        .map((signal) => signal.memory);
+      const signals = group.slice(0, members.length);
+      return {
+        kind: "entity",
+        memoryKind: members[0]!.kind,
+        entityKey: bestEntityToken(signals),
+        entityObject: bestEntityObject(signals),
+        sharedTags: sharedTagsForMembers(members),
+        memories: memberSnapshots(members),
+      };
+    });
 }
 
 export function selectSemanticConsolidationClusters(
@@ -298,7 +485,11 @@ export function normalizeConsolidationCandidate(
   const content = normalizeOptionalField(candidate.content);
   if (!content) return { reason: "empty_content" };
   if (content.length > MAX_CONSOLIDATION_SUMMARY_CONTENT_LENGTH) return { reason: "content_too_long" };
-  const kind = candidate.kind ?? cluster.kind;
+  const clusterMemoryKind = cluster.memoryKind ?? (KNOWN_MEMORY_KINDS.has(cluster.kind as MemoryKind)
+    ? cluster.kind as MemoryKind
+    : undefined);
+  const kind = candidate.kind ?? clusterMemoryKind;
+  if (!kind) return { reason: "invalid_kind" };
   if (!KNOWN_MEMORY_KINDS.has(kind)) return { reason: "invalid_kind" };
   if (CONSOLIDATION_EXCLUDED_KINDS.has(kind)) return { reason: "person_or_boundary_kind" };
   if (classifySensitivity(content) === "secret_like") return { reason: "secret_like" };

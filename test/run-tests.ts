@@ -177,6 +177,10 @@ import {
   temporalCueValuesFromText,
 } from "../src/kernel/temporal-validity.js";
 import { OpenAICompatibleResponseError } from "../src/kernel/openai-compatible-response.js";
+import {
+  resolveMemoryConsolidationConfig as resolveKernelMemoryConsolidationConfig,
+  selectEntityConsolidationClusters,
+} from "../src/kernel/consolidation.js";
 
 const extractRuleMemoryCandidates = extractLegacyRuleMemoryCandidates;
 const legacyRuleTestExtractor: MemoryExtractor = {
@@ -7681,6 +7685,136 @@ assert.deepEqual(
   }),
   [],
 );
+const entityClusterMemory = (
+  id: string,
+  object: string | undefined,
+  content: string,
+): MemoryRecord => ({
+  id,
+  profileId: "entity_cluster_fixture",
+  kind: "fact",
+  scope: "global",
+  content,
+  sensitivity: "normal",
+  status: "active",
+  confidence: 0.8,
+  metadata: {
+    subject: "user",
+    predicate: "has fact about",
+    ...(object ? { object } : {}),
+    cardinality: "single",
+  },
+  createdAt: "2026-07-03T00:00:00.000Z",
+  updatedAt: "2026-07-03T00:00:00.000Z",
+});
+const b29Objects = ["1/72 scale B-29 bomber model kit", "B-29 model", "B-29 bomber"];
+const camaroObjects = ["1969 Camaro Z/28 model kit", "Camaro model", "1969 Camaro"];
+const entityClusterFixture = [
+  ...Array.from({ length: 24 }, (_, index) =>
+    entityClusterMemory(
+      `b29-${index}`,
+      b29Objects[index % b29Objects.length],
+      `B-29 fragmented predicate ${index}.`,
+    )
+  ),
+  ...Array.from({ length: 17 }, (_, index) =>
+    entityClusterMemory(
+      `camaro-${index}`,
+      camaroObjects[index % camaroObjects.length],
+      `Camaro fragmented predicate ${index}.`,
+    )
+  ),
+  entityClusterMemory("singleton-1", "Tamiya Spitfire model kit", "Spitfire singleton."),
+  entityClusterMemory("missing-object", undefined, "No object metadata."),
+];
+const entityClusterConfig = resolveKernelMemoryConsolidationConfig({
+  entityConsolidation: { enabled: true },
+});
+const entityClusters = selectEntityConsolidationClusters(entityClusterFixture, entityClusterConfig);
+assert.deepEqual(entityClusters.map((cluster) => cluster.kind), ["entity", "entity"]);
+assert.deepEqual(entityClusters.map((cluster) => cluster.entityKey), ["b-29", "camaro"]);
+assert.deepEqual(entityClusters.map((cluster) => cluster.memories.length), [24, 17]);
+assert.deepEqual(
+  selectEntityConsolidationClusters(entityClusterFixture, entityClusterConfig).map((cluster) =>
+    cluster.memories.map((memory) => memory.id)
+  ),
+  entityClusters.map((cluster) => cluster.memories.map((memory) => memory.id)),
+);
+assert.deepEqual(
+  selectEntityConsolidationClusters(
+    entityClusterFixture,
+    resolveKernelMemoryConsolidationConfig({ entityConsolidation: { enabled: false } }),
+  ),
+  [],
+);
+assert.deepEqual(
+  selectEntityConsolidationClusters(
+    entityClusterFixture,
+    resolveKernelMemoryConsolidationConfig({
+      entityConsolidation: { enabled: true, minClusterSize: 18 },
+    }),
+  ).map((cluster) => cluster.entityKey),
+  ["b-29"],
+);
+let entityPromptSawEntityMode = false;
+let duplicatePromptSawEntityMode = false;
+const entityModeConsolidator = createOpenAICompatibleConsolidator({
+  model: "entity-mode",
+  fetchImpl: async (_url, init) => {
+    const request = JSON.parse(String(init?.body ?? "{}")) as {
+      messages?: Array<{ content?: string }>;
+    };
+    const system = request.messages?.[0]?.content ?? "";
+    const user = JSON.parse(request.messages?.[1]?.content ?? "{}") as {
+      cluster?: { kind?: string; entityObject?: string };
+    };
+    if (user.cluster?.kind === "entity") entityPromptSawEntityMode = system.includes("cluster.kind is \"entity\"");
+    if (user.cluster?.kind === "fact") duplicatePromptSawEntityMode = system.includes("cluster.kind is \"entity\"");
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              summaries: [{
+                kind: "fact",
+                content: `User has canonical ${user.cluster?.entityObject ?? "duplicate note"}.`,
+                confidence: 0.91,
+                subject: "user",
+                predicate: "has",
+                object: user.cluster?.entityObject ?? "duplicate note",
+              }],
+            }),
+          },
+        }],
+      }),
+    };
+  },
+});
+assert.deepEqual(await entityModeConsolidator.consolidate({
+  kind: "entity",
+  memoryKind: "fact",
+  entityKey: "b-29",
+  entityObject: "1/72 scale B-29 bomber model kit",
+  sharedTags: [],
+  memories: [],
+}), [{
+  kind: "fact",
+  content: "User has canonical 1/72 scale B-29 bomber model kit.",
+  confidence: 0.91,
+  subject: "user",
+  predicate: "has",
+  object: "1/72 scale B-29 bomber model kit",
+}]);
+assert.equal(entityPromptSawEntityMode, true);
+await entityModeConsolidator.consolidate({
+  kind: "fact",
+  sharedTags: [],
+  memories: [],
+});
+assert.equal(duplicatePromptSawEntityMode, false);
 const malformedConsolidator = createOpenAICompatibleConsolidator({
   model: "malformed",
   fetchImpl: async () => ({
@@ -7726,6 +7860,132 @@ await assert.rejects(
   () => badEmbeddingProvider.embed(["dimension mismatch"]),
   /dimensions do not match/,
 );
+const entityRuntimeStore = createSqliteMemoryStore({ path: path.join(tmp, "entity-consolidation-runtime.db") });
+const entityRuntimeClusters: string[] = [];
+const entityRuntimeMemory = createMemoryOS({
+  profileId: "entity_runtime",
+  store: entityRuntimeStore,
+  consolidator: {
+    name: "entity-runtime-consolidator",
+    consolidate(cluster) {
+      entityRuntimeClusters.push(String(cluster.kind));
+      if (cluster.kind !== "entity") return [];
+      return [{
+        kind: "fact" as const,
+        content: `Canonical model kit entity: ${cluster.entityObject}.`,
+        confidence: 0.92,
+        subject: "user",
+        predicate: "has_model_kit",
+        object: cluster.entityObject ?? cluster.entityKey ?? "model kit",
+      }];
+    },
+  },
+  consolidation: {
+    hookMinClusterSize: 99,
+    entityConsolidation: { enabled: true, minClusterSize: 3 },
+  },
+});
+for (const [index, object] of [
+  "1/72 scale B-29 bomber model kit",
+  "B-29 model",
+  "B-29 bomber",
+  "1969 Camaro Z/28 model kit",
+  "Camaro model",
+  "1969 Camaro",
+  "Tamiya Spitfire model kit",
+  "Spitfire model",
+  "Spitfire",
+].entries()) {
+  await entityRuntimeMemory.add({
+    profileId: "entity_runtime",
+    kind: "fact",
+    content: `Fragmented model kit predicate ${index}: ${object}.`,
+    confidence: 0.8,
+    metadata: { subject: "user", predicate: `predicate-${index}`, object, cardinality: "single" },
+    createdAt: "2026-07-03T02:00:00.000Z",
+  });
+}
+await entityRuntimeMemory.add({
+  profileId: "entity_runtime",
+  kind: "fact",
+  content: "Singleton model kit predicate stays active.",
+  confidence: 0.8,
+  metadata: {
+    subject: "user",
+    predicate: "mentions",
+    object: "Revell F-15 model kit",
+    cardinality: "single",
+  },
+  createdAt: "2026-07-03T02:00:00.000Z",
+});
+const entityRuntimeReport = await entityRuntimeMemory.maintain({
+  profileId: "entity_runtime",
+  now: "2026-07-03T02:05:00.000Z",
+  phases: ["consolidate"],
+});
+assert.deepEqual(entityRuntimeClusters, ["entity", "entity", "entity"]);
+assert.equal(entityRuntimeReport.consolidation.entityClusters?.length, 3);
+assert.equal(entityRuntimeReport.consolidation.summaryMemories.length, 3);
+const entityRuntimeAfter = await entityRuntimeMemory.list({
+  profileId: "entity_runtime",
+  status: "any",
+  includeSensitive: true,
+  limit: 100,
+});
+assert.equal(
+  entityRuntimeAfter.filter((memoryRecord) => memoryRecord.status === "active" && memoryRecord.metadata.consolidationSummary === true).length,
+  3,
+);
+assert.equal(
+  entityRuntimeAfter.filter((memoryRecord) => memoryRecord.status === "dormant" && memoryRecord.metadata.consolidatedInto).length,
+  9,
+);
+assert.equal(
+  entityRuntimeAfter.some((memoryRecord) =>
+    memoryRecord.status === "active" && memoryRecord.content === "Singleton model kit predicate stays active."
+  ),
+  true,
+);
+const entityRuntimeReplay = await entityRuntimeMemory.maintain({
+  profileId: "entity_runtime",
+  now: "2026-07-03T02:06:00.000Z",
+  phases: ["consolidate"],
+});
+assert.equal(entityRuntimeReplay.consolidation.summaryMemories.length, 0);
+const entityDisabledStore = createSqliteMemoryStore({ path: path.join(tmp, "entity-consolidation-disabled.db") });
+const entityDisabledMemory = createMemoryOS({
+  profileId: "entity_disabled",
+  store: entityDisabledStore,
+  consolidator: {
+    consolidate() {
+      return [{
+        kind: "fact" as const,
+        content: "Should not be written while entity consolidation is disabled.",
+        confidence: 0.9,
+      }];
+    },
+  },
+  consolidation: { hookMinClusterSize: 99 },
+});
+for (const [index, object] of ["B-29 model", "B-29 bomber", "1/72 scale B-29 bomber model kit"].entries()) {
+  await entityDisabledMemory.add({
+    profileId: "entity_disabled",
+    kind: "fact",
+    content: `Disabled entity predicate ${index}: ${object}.`,
+    confidence: 0.8,
+    metadata: { subject: "user", predicate: `predicate-${index}`, object, cardinality: "single" },
+    createdAt: "2026-07-03T02:10:00.000Z",
+  });
+}
+const entityDisabledBefore = await entityDisabledStore.readAuditSnapshot();
+const entityDisabledReport = await entityDisabledMemory.maintain({
+  profileId: "entity_disabled",
+  now: "2026-07-03T02:15:00.000Z",
+  phases: ["consolidate"],
+});
+const entityDisabledAfter = await entityDisabledStore.readAuditSnapshot();
+assert.equal(entityDisabledReport.consolidation.entityClusters, undefined);
+assert.equal(JSON.stringify(entityDisabledBefore), JSON.stringify(entityDisabledAfter));
 const intelligenceStore = createSqliteMemoryStore({ path: path.join(tmp, "default-intelligence.db") });
 const intelligenceMemory = createMemoryOS({
   profileId: "default_intelligence",
@@ -24332,6 +24592,26 @@ const externalBenchmarkJsonl = [
 ].join("\n");
 const externalBenchmarkFile = path.join(tmp, "external-long-memory-qa.jsonl");
 writeFileSync(externalBenchmarkFile, externalBenchmarkJsonl);
+const invalidConsolidateEntitiesCli = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--consolidate-entities",
+    "maybe",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(invalidConsolidateEntitiesCli.status, 0);
+assert.match(
+  `${invalidConsolidateEntitiesCli.stdout}\n${invalidConsolidateEntitiesCli.stderr}`,
+  /--consolidate-entities must be on or off/,
+);
 const externalCases = parseExternalMemoryBenchmarkJsonl(externalBenchmarkJsonl);
 assert.equal(externalCases.length, 9);
 assert.deepEqual(externalCases[0]?.slices, ["gmos:project_procedure"]);
@@ -27074,6 +27354,276 @@ assert.equal(externalIngestCacheTurnRetentionMiss.pass, true);
 assert.equal(externalIngestCacheExtractorCalls, 2);
 assert.equal(externalIngestCacheTurnRetentionMiss.runManifest.ingestCache.hits, 0);
 assert.equal(externalIngestCacheTurnRetentionMiss.runManifest.ingestCache.misses, 2);
+let entityAggregationExtractorCalls = 0;
+const entityAggregationEntities = [
+  {
+    key: "b-29",
+    label: "B-29",
+    object: "1/72 scale B-29 bomber model kit",
+    predicates: ["scale", "airframe", "box_art", "decals", "paint", "status", "display", "notes"],
+  },
+  {
+    key: "camaro",
+    label: "Camaro",
+    object: "1969 Camaro model kit",
+    predicates: ["year", "trim", "box_art", "decals", "paint", "status", "display", "notes"],
+  },
+  {
+    key: "spitfire",
+    label: "Spitfire",
+    object: "Tamiya Spitfire model kit",
+    predicates: ["brand", "airframe", "box_art", "decals", "paint", "status", "display", "notes"],
+  },
+];
+const entityAggregationFragments = entityAggregationEntities.flatMap((entity) =>
+  entity.predicates.map((predicate) => ({
+    entityKey: entity.key,
+    label: entity.label,
+    object: entity.object,
+    predicate,
+    content: `${entity.label} fragmented ${predicate} model-kit fact.`,
+  }))
+);
+const entityAggregationClusterFixture: MemoryRecord[] = entityAggregationFragments.map((fragment, index) => ({
+  id: `entity-aggregation-${index}`,
+  profileId: "entity_aggregation_cluster_fixture",
+  kind: "fact",
+  scope: "global",
+  content: fragment.content,
+  sensitivity: "normal",
+  status: "active",
+  confidence: 0.87,
+  metadata: {
+    subject: "user",
+    predicate: `${fragment.entityKey}_${fragment.predicate}`,
+    object: fragment.object,
+    cardinality: "single",
+  },
+  createdAt: "2026-07-07T03:00:00.000Z",
+  updatedAt: "2026-07-07T03:00:00.000Z",
+}));
+const entityAggregationClusters = selectEntityConsolidationClusters(
+  entityAggregationClusterFixture,
+  resolveKernelMemoryConsolidationConfig({ entityConsolidation: { enabled: true, minClusterSize: 4 } }),
+);
+assert.deepEqual(
+  entityAggregationClusters.map((cluster) => ({
+    entityKey: cluster.entityKey,
+    entityObject: cluster.entityObject,
+    sourceCount: cluster.memories.length,
+  })),
+  entityAggregationEntities.map((entity) => ({
+    entityKey: entity.key,
+    entityObject: entity.object,
+    sourceCount: entity.predicates.length,
+  })),
+);
+const entityAggregationExtractor = {
+  name: "entity-aggregation-extractor",
+  extract() {
+    entityAggregationExtractorCalls += 1;
+    return entityAggregationFragments.map((fragment) => ({
+      kind: "fact" as const,
+      content: fragment.content,
+      confidence: 0.87,
+      subject: "user",
+      predicate: `${fragment.entityKey}_${fragment.predicate}`,
+      object: fragment.object,
+      cardinality: "single" as const,
+    }));
+  },
+};
+const entityAggregationConsolidatorCalls: Array<{
+  kind: string;
+  entityKey?: string | undefined;
+  entityObject?: string | undefined;
+  sourceCount: number;
+}> = [];
+const entityAggregationConsolidator = {
+  name: "entity-aggregation-consolidator",
+  consolidate(cluster: {
+    kind: string;
+    entityObject?: string | undefined;
+    entityKey?: string | undefined;
+    memories?: Array<unknown> | undefined;
+  }) {
+    entityAggregationConsolidatorCalls.push({
+      kind: cluster.kind,
+      ...(cluster.entityKey ? { entityKey: cluster.entityKey } : {}),
+      ...(cluster.entityObject ? { entityObject: cluster.entityObject } : {}),
+      sourceCount: cluster.memories?.length ?? 0,
+    });
+    if (cluster.kind !== "entity") return [];
+    const entityKey = cluster.entityKey ?? "model-kit";
+    return [{
+      kind: "fact" as const,
+      content: `Canonical entity model kit ${entityKey}: ${cluster.entityObject ?? entityKey}.`,
+      confidence: 0.91,
+      subject: "user",
+      predicate: `canonical_model_kit_${entityKey}`,
+      object: cluster.entityObject ?? entityKey,
+    }];
+  },
+};
+const entityAggregationStore = createSqliteMemoryStore({
+  path: path.join(tmp, "external-entity-aggregation-store.db"),
+});
+const entityAggregationMemory = createMemoryOS({
+  profileId: "entity_aggregation_store",
+  store: entityAggregationStore,
+  extractor: entityAggregationExtractor,
+  consolidator: entityAggregationConsolidator,
+  consolidation: {
+    hookMinClusterSize: 99,
+    entityConsolidation: { enabled: true, minClusterSize: 4 },
+  },
+});
+await entityAggregationMemory.observe({
+  type: "conversation.message",
+  role: "user",
+  content: "I have several fragmented model-kit updates.",
+  createdAt: "2026-07-07T03:00:00.000Z",
+});
+const entityAggregationBeforeMaintain = await entityAggregationMemory.list({
+  profileId: "entity_aggregation_store",
+  status: "any",
+  includeSensitive: true,
+  limit: 100,
+});
+assert.deepEqual(
+  Object.fromEntries(entityAggregationEntities.map((entity) => [
+    entity.key,
+    entityAggregationBeforeMaintain.filter((memory) =>
+      memory.status === "active" && memory.metadata.object === entity.object
+    ).length,
+  ])),
+  Object.fromEntries(entityAggregationEntities.map((entity) => [entity.key, entity.predicates.length])),
+);
+entityAggregationConsolidatorCalls.length = 0;
+await entityAggregationMemory.maintain({
+  profileId: "entity_aggregation_store",
+  phases: ["consolidate"],
+  now: "2026-07-07T03:05:00.000Z",
+});
+assert.deepEqual(
+  entityAggregationConsolidatorCalls,
+  entityAggregationEntities.map((entity) => ({
+    kind: "entity",
+    entityKey: entity.key,
+    entityObject: entity.object,
+    sourceCount: entity.predicates.length,
+  })),
+);
+const entityAggregationAfterMaintain = await entityAggregationMemory.list({
+  profileId: "entity_aggregation_store",
+  status: "any",
+  includeSensitive: true,
+  limit: 100,
+});
+assert.deepEqual(
+  Object.fromEntries(entityAggregationEntities.map((entity) => [
+    entity.key,
+    {
+      dormantFragments: entityAggregationAfterMaintain.filter((memory) =>
+        memory.status === "dormant" &&
+        memory.metadata.object === entity.object &&
+        typeof memory.metadata.consolidatedInto === "string"
+      ).length,
+      activeFragments: entityAggregationAfterMaintain.filter((memory) =>
+        memory.status === "active" &&
+        memory.metadata.object === entity.object &&
+        memory.metadata.consolidationSummary !== true
+      ).length,
+      canonicalMemories: entityAggregationAfterMaintain.filter((memory) =>
+        memory.status === "active" &&
+        memory.metadata.consolidationSummary === true &&
+        memory.content.includes(`Canonical entity model kit ${entity.key}:`)
+      ).length,
+    },
+  ])),
+  Object.fromEntries(entityAggregationEntities.map((entity) => [
+    entity.key,
+    { dormantFragments: entity.predicates.length, activeFragments: 0, canonicalMemories: 1 },
+  ])),
+);
+await entityAggregationMemory.close();
+const entityAggregationCase = {
+  id: "entity-aggregation-count",
+  profileId: "entity_aggregation_count",
+  events: [{
+    type: "message" as const,
+    role: "user" as const,
+    content: "I have several fragmented model-kit updates.",
+    createdAt: "2026-07-07T03:00:00.000Z",
+  }],
+  question: "How many distinct model kits does the user have?",
+  expectedAny: ["3"],
+};
+const entityAggregationAnswerer = {
+  name: "entity-aggregation-answerer",
+  answer(_question: string, context: string) {
+    const entityKeys = new Set([
+      ...[...context.matchAll(/Canonical entity model kit ([a-z0-9-]+):/gu)].map((match) => match[1]),
+      ...[...context.matchAll(/\bcanonical_model_kit_([a-z0-9-]+)/gu)].map((match) => match[1]),
+    ]);
+    return String(entityKeys.size);
+  },
+};
+const entityAggregationJudge = {
+  name: "entity-aggregation-judge",
+  judge(_question: string, expectedAnswer: string, actualAnswer: string) {
+    return { correct: actualAnswer.trim() === expectedAnswer.trim(), rationale: actualAnswer };
+  },
+};
+const entityAggregationCacheDir = path.join(tmp, "external-entity-aggregation-cache");
+const entityAggregationOff = await runExternalMemoryBenchmark({
+  cases: [entityAggregationCase],
+  ingestMode: "message",
+  turnRetention: false,
+  maintainPhases: ["consolidate"],
+  ingestCacheDir: entityAggregationCacheDir,
+  protocol: "official_protocol",
+  intelligence: {
+    extractor: entityAggregationExtractor,
+    consolidator: entityAggregationConsolidator,
+  },
+  answerer: entityAggregationAnswerer,
+  judge: entityAggregationJudge,
+});
+assert.equal(entityAggregationOff.pass, false);
+assert.equal(entityAggregationOff.runManifest.runtimeIntelligence.consolidateEntities, false);
+assert.equal(entityAggregationOff.runManifest.ingestCache.misses, 1);
+entityAggregationConsolidatorCalls.length = 0;
+const entityAggregationOn = await runExternalMemoryBenchmark({
+  cases: [entityAggregationCase],
+  ingestMode: "message",
+  turnRetention: false,
+  consolidateEntities: true,
+  ingestCacheDir: entityAggregationCacheDir,
+  protocol: "official_protocol",
+  intelligence: {
+    extractor: entityAggregationExtractor,
+    consolidator: entityAggregationConsolidator,
+  },
+  answerer: entityAggregationAnswerer,
+  judge: entityAggregationJudge,
+});
+assert.equal(entityAggregationOn.pass, true);
+assert.deepEqual(
+  entityAggregationConsolidatorCalls,
+  entityAggregationEntities.map((entity) => ({
+    kind: "entity",
+    entityKey: entity.key,
+    entityObject: entity.object,
+    sourceCount: entity.predicates.length,
+  })),
+);
+assert.deepEqual(entityAggregationOn.runManifest.runtimeIntelligence.maintainPhases, ["consolidate"]);
+assert.equal(entityAggregationOn.runManifest.runtimeIntelligence.consolidateEntities, true);
+assert.equal(entityAggregationOn.runManifest.options.consolidateEntities, true);
+assert.equal(entityAggregationOn.runManifest.ingestCache.hits, 0);
+assert.equal(entityAggregationOn.runManifest.ingestCache.misses, 1);
+assert.equal(entityAggregationExtractorCalls, 3);
 const externalSchemaGuardCacheDir = path.join(tmp, "external-ingest-cache-schema");
 externalIngestCacheExtractorCalls = 0;
 await runExternalMemoryBenchmark({

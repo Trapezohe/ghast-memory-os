@@ -160,6 +160,17 @@ gates, but only the host hook can synthesize summary prose. Accepted summaries
 are new memories whose consolidation evidence lists source memory ids; source
 episodes are demoted to dormant with lifecycle evidence.
 
+Entity consolidation is an opt-in selector inside the same `consolidate` phase.
+It addresses extracted-fact fragmentation by grouping different predicates about
+the same object before the host consolidator runs. The selector is read-pure and
+LLM-free: it only reads structured triple metadata already on memories,
+specifically `metadata.object`. The object is normalized, scale-only prefixes are
+ignored, and deterministic token containment/model-code matching groups variants
+such as `1/72 scale B-29 bomber model kit`, `B-29 model`, and `B-29 bomber`.
+The host consolidator receives `kind: "entity"` plus the source `memoryKind`,
+`entityKey`, and `entityObject`; accepted summaries use the same consolidation
+evidence and dormant-source provenance as other host summaries.
+
 Procedure distillation is a separate explicit `maintain({ phases: ["distill"] })`
 phase. gmOS deterministically clusters repeated completed task trajectories by
 normalized objective and stable token set, but only the host `procedureDistiller`

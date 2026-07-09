@@ -396,6 +396,7 @@ export function createOpenAICompatibleConsolidator(
   return {
     name: options.name ?? `openai-compatible-consolidator:${options.model}`,
     async consolidate(cluster: MemoryConsolidationCluster) {
+      const isEntityCluster = cluster.kind === "entity";
       const parsed = await callChatJson(
         { ...options, fetchImpl },
         [
@@ -403,7 +404,13 @@ export function createOpenAICompatibleConsolidator(
             role: "system",
             content: commonSystemPrompt(
               "a memory consolidation hook",
-              "Return {\"summaries\":[{\"content\":\"...\",\"kind\":\"fact|preference|procedure|project|task_trajectory\",\"confidence\":0.7,\"subject\":\"optional\",\"predicate\":\"optional\",\"object\":\"optional\"}]}",
+              isEntityCluster
+                ? [
+                    "If cluster.kind is \"entity\", the memories are different facts about the same object/entity.",
+                    "Return one concise canonical durable user-world fact for that entity, preserving distinguishing attributes such as scale, brand, name, or model number.",
+                    "Return {\"summaries\":[{\"content\":\"...\",\"kind\":\"fact|preference|procedure|project|task_trajectory\",\"confidence\":0.7,\"subject\":\"optional\",\"predicate\":\"optional\",\"object\":\"optional\"}]}",
+                  ].join("\n")
+                : "Return {\"summaries\":[{\"content\":\"...\",\"kind\":\"fact|preference|procedure|project|task_trajectory\",\"confidence\":0.7,\"subject\":\"optional\",\"predicate\":\"optional\",\"object\":\"optional\"}]}",
             ),
           },
           { role: "user", content: JSON.stringify({ cluster }) },

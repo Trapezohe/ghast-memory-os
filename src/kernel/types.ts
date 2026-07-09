@@ -398,7 +398,10 @@ export interface MemoryConsolidationSourceSnapshot {
 }
 
 export interface MemoryConsolidationCluster {
-  kind: MemoryKind;
+  kind: MemoryKind | "duplicate" | "entity";
+  memoryKind?: MemoryKind | undefined;
+  entityKey?: string | undefined;
+  entityObject?: string | undefined;
   sharedTags: string[];
   memories: MemoryConsolidationSourceSnapshot[];
 }
@@ -1851,6 +1854,12 @@ export interface MemoryConsolidationConfig {
   maxClustersPerRun?: number | undefined;
   maxMembersPerCluster?: number | undefined;
   eligibleKinds?: MemoryKind[] | undefined;
+  entityConsolidation?: {
+    enabled?: boolean | undefined;
+    minClusterSize?: number | undefined;
+    maxClustersPerRun?: number | undefined;
+    maxMembersPerCluster?: number | undefined;
+  } | undefined;
 }
 
 export interface MemoryProcedureDistillationConfig {
@@ -1918,6 +1927,12 @@ export interface ResolvedMemoryConsolidationConfig {
   maxClustersPerRun: number;
   maxMembersPerCluster: number;
   eligibleKinds: MemoryKind[];
+  entityConsolidation: {
+    enabled: boolean;
+    minClusterSize: number;
+    maxClustersPerRun: number;
+    maxMembersPerCluster: number;
+  };
 }
 
 export interface ResolvedMemoryProcedureDistillationConfig {
@@ -2002,6 +2017,14 @@ export interface MaintenanceConsolidationReport {
   enabled: boolean;
   evaluated: number;
   duplicateClusters: MaintenanceDuplicateConsolidation[];
+  entityClusters?: Array<{
+    kind: MemoryKind;
+    entityKey: string;
+    entityObject: string;
+    sourceMemoryIds: string[];
+    summaryMemoryId?: string | undefined;
+    reasons: string[];
+  }> | undefined;
   summaryMemories: MaintenanceSummaryConsolidation[];
   rejectedCandidates: MaintenanceConsolidationRejection[];
   skipped: MaintenanceSkippedSummary[];

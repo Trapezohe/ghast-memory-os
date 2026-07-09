@@ -569,6 +569,7 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   embedModel: string | null;
   ingestMode: ExternalMemoryBenchmarkIngestMode;
   turnRetention: boolean;
+  consolidateEntities: boolean;
   maintainPhases: MaintenancePhase[];
   concurrency: number | null;
   timeoutMs: number | null;
@@ -739,6 +740,7 @@ export interface ExternalMemoryBenchmarkRunManifest {
     queryPlanner: boolean;
     sweepCues: boolean;
     plannerMaxAnchors: number;
+    consolidateEntities: boolean;
   };
   scoreSemantics: ExternalMemoryBenchmarkScoreSemantics;
   runtimeIntelligence: ExternalMemoryBenchmarkRuntimeIntelligenceManifest;
@@ -817,6 +819,7 @@ export interface RunExternalMemoryBenchmarkOptions {
   intelligenceTimeoutMs?: number | undefined;
   intelligenceConcurrency?: number | undefined;
   maintainPhases?: MaintenancePhase[] | undefined;
+  consolidateEntities?: boolean | undefined;
   debugDir?: string | undefined;
   debugDumpMemories?: number | undefined;
   debugContextFailureLimit?: number | undefined;
@@ -1041,6 +1044,7 @@ interface IngestCacheKeyFields {
   eventPayloadHash: string;
   ingestMode: ExternalMemoryBenchmarkIngestMode;
   turnRetention: boolean;
+  consolidateEntities: boolean;
   sessionDistillation: {
     enabled: boolean;
     name: string | null;
@@ -1141,6 +1145,7 @@ function ingestCacheKeyFields(input: {
     eventPayloadHash: eventPayloadHashForCache(input.group),
     ingestMode: input.options.ingestMode ?? "memory",
     turnRetention: runtime.turnRetention,
+    consolidateEntities: runtime.consolidateEntities,
     sessionDistillation: {
       enabled: runtime.sessionDistillation.enabled,
       name: runtime.sessionDistillation.name,
@@ -2946,6 +2951,7 @@ function createRunManifest(input: {
       queryPlanner: input.runtimeIntelligence.manifest.queryPlanner.enabled,
       sweepCues: input.runtimeIntelligence.manifest.sweepCues.enabled,
       plannerMaxAnchors: input.runtimeIntelligence.manifest.queryPlanner.maxAnchors ?? 4,
+      consolidateEntities: input.runtimeIntelligence.manifest.consolidateEntities,
       reuseProfiles: input.options.reuseProfiles ?? true,
       failureSampleLimit: normalizedFailureSampleLimit(input.options.failureSampleLimit),
       diagnosticsLevel: normalizedDiagnosticsLevel(input.options.diagnosticsLevel),
@@ -3254,6 +3260,18 @@ function normalizedMaintainPhases(value: MaintenancePhase[] | undefined): Mainte
     if (!output.includes(phase)) output.push(phase);
   }
   return output;
+}
+
+function normalizedConsolidateEntities(value: boolean | undefined): boolean {
+  return value ?? false;
+}
+
+function maintainPhasesForEntityConsolidation(
+  phases: MaintenancePhase[],
+  consolidateEntities: boolean,
+): MaintenancePhase[] {
+  if (!consolidateEntities || phases.includes("consolidate")) return phases;
+  return [...phases, "consolidate"];
 }
 
 function normalizedMaxCases(value: number | undefined): number | undefined {
@@ -3772,6 +3790,7 @@ function disabledRuntimeIntelligence(
   ingestMode: ExternalMemoryBenchmarkIngestMode,
   maintainPhases: MaintenancePhase[],
   turnRetention: boolean,
+  consolidateEntities: boolean,
 ): RuntimeIntelligenceState {
   return {
     manifest: {
@@ -3782,6 +3801,7 @@ function disabledRuntimeIntelligence(
       embedModel: null,
       ingestMode,
       turnRetention,
+      consolidateEntities,
       maintainPhases,
       concurrency: null,
       timeoutMs: null,
@@ -3892,6 +3912,7 @@ function resolveRuntimeIntelligence(input: {
   intelligence?: ExternalMemoryBenchmarkIntelligence | undefined;
   ingestMode: ExternalMemoryBenchmarkIngestMode;
   turnRetention: boolean;
+  consolidateEntities: boolean;
   sessionDistillation: boolean;
   maintainPhases: MaintenancePhase[];
   intelligenceTimeoutMs?: number | undefined;
@@ -3905,6 +3926,7 @@ function resolveRuntimeIntelligence(input: {
       input.ingestMode,
       input.maintainPhases,
       input.turnRetention,
+      input.consolidateEntities,
     );
   }
   const config = isIntelligenceConfig(input.intelligence) ? input.intelligence : null;
@@ -4072,6 +4094,7 @@ function resolveRuntimeIntelligence(input: {
       embedModel: baseIntelligenceUrl ? config?.embedModel ?? null : null,
       ingestMode: input.ingestMode,
       turnRetention: input.turnRetention,
+      consolidateEntities: input.consolidateEntities,
       maintainPhases: input.maintainPhases,
       concurrency,
       timeoutMs,
@@ -5218,6 +5241,9 @@ async function runCaseGroup(input: {
         ...(input.options.ingestMode === "message"
           ? { extraction: { extractFromRoles: ["user", "assistant"] } }
           : {}),
+        ...(input.options.consolidateEntities
+          ? { consolidation: { entityConsolidation: { enabled: true } } }
+          : {}),
       }),
     };
   };
@@ -5559,7 +5585,11 @@ export async function runExternalMemoryBenchmark(
     (options.intelligence && isIntelligenceConfig(options.intelligence)
       ? options.intelligence.debugDir
       : undefined);
-  const maintainPhases = normalizedMaintainPhases(options.maintainPhases);
+  const consolidateEntities = normalizedConsolidateEntities(options.consolidateEntities);
+  const maintainPhases = maintainPhasesForEntityConsolidation(
+    normalizedMaintainPhases(options.maintainPhases),
+    consolidateEntities,
+  );
   const ingestCache: IngestCacheCounters = options.ingestCacheDir
     ? {
         enabled: true,
@@ -5572,6 +5602,7 @@ export async function runExternalMemoryBenchmark(
     intelligence: options.intelligence,
     ingestMode,
     turnRetention,
+    consolidateEntities,
     sessionDistillation,
     maintainPhases,
     intelligenceTimeoutMs: options.intelligenceTimeoutMs,
@@ -5642,6 +5673,7 @@ export async function runExternalMemoryBenchmark(
     turnRetention,
     sessionDistillation,
     maintainPhases,
+    consolidateEntities,
     ...(judge ? { judge } : {}),
     ...(answerer ? { answerer } : {}),
   };

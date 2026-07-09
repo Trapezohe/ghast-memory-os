@@ -25,6 +25,7 @@ import {
 import {
   normalizeConsolidationCandidate,
   resolveMemoryConsolidationConfig,
+  selectEntityConsolidationClusters,
   selectSemanticConsolidationClusters,
   uniqueConsolidationCandidateKey,
 } from "../kernel/consolidation.js";
@@ -541,6 +542,10 @@ function worldBeliefSubjectForCandidate(input: {
   })
     ? `person:${speaker}`
     : "user";
+}
+
+function consolidationClusterMemoryKind(cluster: MemoryConsolidationCluster): MemoryKind {
+  return cluster.memoryKind ?? (cluster.kind as MemoryKind);
 }
 
 function worldBeliefSubjectAliasesForCandidate(input: {
@@ -3635,7 +3640,20 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       includePerson: true,
       limit: consolidation.maxClustersPerRun * consolidation.maxMembersPerCluster * 4,
     })).filter((memory) => !plannedArchived.has(memory.id));
-    const clusters = selectSemanticConsolidationClusters(memories, consolidation);
+    const entityClusters = selectEntityConsolidationClusters(memories, consolidation);
+    const entitySourceIds = new Set(entityClusters.flatMap((cluster) =>
+      cluster.memories.map((memory) => memory.id)
+    ));
+    const clusters = [
+      ...entityClusters,
+      ...selectSemanticConsolidationClusters(
+        memories.filter((memory) => !entitySourceIds.has(memory.id)),
+        consolidation,
+      ),
+    ];
+    if (entityClusters.length > 0) {
+      input.report.consolidation.entityClusters = [];
+    }
     input.report.consolidation.evaluated = Math.max(
       input.report.consolidation.evaluated,
       memories.length,
@@ -3648,6 +3666,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const seenCandidates = new Set<string>();
     const name = consolidatorName(options.consolidator);
     for (const cluster of clusters) {
+      const clusterMemoryKind = consolidationClusterMemoryKind(cluster);
       const sourceMemoryIds = cluster.memories.map((memory) => memory.id);
       const clusterSourceTrust = sourceTrustForMemoryIds(sourceMemoryIds, memoriesById);
       const rawCandidates = await callConsolidator(cluster);
@@ -3663,7 +3682,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         const normalized = normalizeConsolidationCandidate(candidate, cluster);
         if ("reason" in normalized) {
           input.report.consolidation.rejectedCandidates.push({
-            kind: cluster.kind,
+            kind: clusterMemoryKind,
             sourceMemoryIds,
             reason: normalized.reason,
           });
@@ -3674,7 +3693,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           lowerTrustConsolidationPolicyKind(normalized.normalized)
         ) {
           input.report.consolidation.rejectedCandidates.push({
-            kind: cluster.kind,
+            kind: clusterMemoryKind,
             sourceMemoryIds,
             reason: "lower_trust_policy_write",
           });
@@ -3696,7 +3715,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         );
         if (contentSensitivity === "secret_like" || structuredSensitivity === "secret_like") {
           input.report.consolidation.rejectedCandidates.push({
-            kind: cluster.kind,
+            kind: clusterMemoryKind,
             sourceMemoryIds,
             reason: "secret_like",
           });
@@ -3705,7 +3724,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         const key = uniqueConsolidationCandidateKey(normalized.normalized);
         if (seenCandidates.has(key)) {
           input.report.consolidation.rejectedCandidates.push({
-            kind: cluster.kind,
+            kind: clusterMemoryKind,
             sourceMemoryIds,
             reason: "duplicate",
           });
@@ -3735,6 +3754,15 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         };
         if (input.dryRun) {
           input.report.consolidation.summaryMemories.push(summary);
+          if (cluster.kind === "entity" && cluster.entityKey && cluster.entityObject) {
+            input.report.consolidation.entityClusters?.push({
+              kind: normalized.normalized.kind,
+              entityKey: cluster.entityKey,
+              entityObject: cluster.entityObject,
+              sourceMemoryIds,
+              reasons: ["host_consolidator_summary"],
+            });
+          }
           continue;
         }
         const embedding = await embeddingForRuntimeWrite({
@@ -3774,6 +3802,16 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           memoryId: result.memory.id,
           ...(result.worldBelief ? { worldBeliefId: result.worldBelief.id } : {}),
         });
+        if (cluster.kind === "entity" && cluster.entityKey && cluster.entityObject) {
+          input.report.consolidation.entityClusters?.push({
+            kind: normalized.normalized.kind,
+            entityKey: cluster.entityKey,
+            entityObject: cluster.entityObject,
+            sourceMemoryIds,
+            summaryMemoryId: result.memory.id,
+            reasons: ["host_consolidator_summary"],
+          });
+        }
       }
     }
   }

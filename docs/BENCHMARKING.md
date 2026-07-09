@@ -358,6 +358,30 @@ call per session. Use it for multi-session totals, counts, purchases, durations,
 and other questions where every instance matters. Leave it off for cheap
 deterministic baselines.
 
+Entity consolidation is another message-mode opt-in for aggregation questions
+where extraction emits many facts about the same object. Use
+`--consolidate-entities on` with a consolidator-capable intelligence config.
+gmOS then runs extraction, runs the `consolidate` maintain phase automatically
+after ingest, and asks the consolidator to turn each metadata-derived entity
+cluster into one canonical memory. The selector is generic: it only reads
+structured `metadata.object` from extracted facts and does not special-case any
+benchmark dataset.
+
+Aggregation-oriented message-mode recipe:
+
+```bash
+gmos gym external \
+  --input-file ./long-memory-cleaned.json \
+  --dataset-format longmemeval \
+  --ingest-mode message \
+  --turn-retention off \
+  --consolidate-entities on \
+  --intelligence-base-url https://provider.example/v1 \
+  --intelligence-model provider-chat-model \
+  --intelligence-api-key-env GMOS_BENCH_API_KEY \
+  --format json
+```
+
 Message-mode extraction defaults to `["user", "assistant"]` so answer-bearing
 assistant turns in LongMemEval are extractable. LoCoMo still maps both speakers
 to user-role messages with speaker metadata.
@@ -527,7 +551,7 @@ The key is `sha256` over:
 - package version and SQLite schema version;
 - dataset format, group profile id, case count, event count, and a hash of the
   canonical JSON for the group's case ids, event times, and event payloads;
-- ingest mode, turn retention, extraction window, ingest replay attempts,
+- ingest mode, turn retention, entity-consolidation setting, extraction window, ingest replay attempts,
   extraction concurrency, extractor name/model/host, and hook timeout/retry
   settings;
 - session-distillation enabled/name/model/host;
