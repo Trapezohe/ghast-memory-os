@@ -276,12 +276,13 @@ function formatPathLine(
   path: ReconstructedEvidencePath,
   temporalSegment: string,
   maxCharsPerMemory: number | undefined,
+  targetReference?: string | undefined,
 ): string {
   const routeScore = path.routeScore !== undefined ? `; routeScore=${path.routeScore.toFixed(2)}` : "";
   const routeReason = path.routeReason ? `; reason=${path.routeReason}` : "";
   const informationGain =
     path.informationGain !== undefined ? `; gain=${path.informationGain.toFixed(2)}` : "";
-  const targetSummary = truncateMemoryContent(path.targetSummary, maxCharsPerMemory);
+  const targetSummary = targetReference ?? truncateMemoryContent(path.targetSummary, maxCharsPerMemory);
   return `- [step=${path.step}; cue=${path.cue}; tag=${path.tag}; kind=${path.targetKind ?? path.targetType}${temporalSegment}; confidence=${path.confidence.toFixed(2)}${routeScore}${informationGain}${routeReason}] ${targetSummary}`;
 }
 
@@ -2770,6 +2771,7 @@ function composeReconstructedContext(input: {
     });
     const output = outputState();
     const memoryById = new Map(memories.map((memory) => [memory.id, memory]));
+    const printedMemoryIndexes = new Map(memories.map((memory, index) => [memory.id, index + 1]));
     const fullIds = fullContentMemoryIds();
     const asOf = temporalReferenceDateLabel(input.asOf);
     const temporalSegmentForPath = (path: ReconstructedEvidencePath): string => {
@@ -2781,6 +2783,23 @@ function composeReconstructedContext(input: {
     const capForPath = (path: ReconstructedEvidencePath): number | undefined => {
       if (memoryById.has(path.targetId)) return capForMemoryId(path.targetId, fullIds);
       return capForMemoryId(path.sourceMemoryId, fullIds);
+    };
+    const printedMemoryIndexForPath = (
+      path: ReconstructedEvidencePath,
+      rawPath: ReconstructedEvidencePath | undefined,
+    ): number | undefined => {
+      if ((rawPath?.targetType ?? path.targetType) !== "memory") return undefined;
+      return printedMemoryIndexes.get(rawPath?.targetId ?? "") ??
+        printedMemoryIndexes.get(path.targetId) ??
+        printedMemoryIndexes.get(rawPath?.sourceMemoryId ?? "") ??
+        printedMemoryIndexes.get(path.sourceMemoryId ?? "");
+    };
+    const targetReferenceForPath = (
+      path: ReconstructedEvidencePath,
+      rawPath: ReconstructedEvidencePath | undefined,
+    ): string | undefined => {
+      const printedIndex = printedMemoryIndexForPath(path, rawPath);
+      return printedIndex === undefined ? undefined : `see Memory content item ${printedIndex}`;
     };
     const lines = [
       "<gmos-reconstructed-context>",
@@ -2795,11 +2814,12 @@ function composeReconstructedContext(input: {
       `Evidence convergence: score=${output.evidenceConvergence.score.toFixed(2)}; reached=${output.evidenceConvergence.reached}; threshold=${output.evidenceConvergence.threshold.toFixed(2)}; pruned=${output.evidenceConvergence.prunedBranchCount}; frontier=${output.evidenceConvergence.frontierRemaining}; stopWhenEvidenceEnough=${output.evidenceConvergence.stopWhenEvidenceEnough}`,
       `Reconstruction uncertainty: ${output.uncertainty.level}${output.uncertainty.reasons.length ? ` (${output.uncertainty.reasons.join(", ")})` : ""}`,
       "Reconstructed evidence paths:",
-      ...output.paths.map((path) =>
+      ...output.paths.map((path, index) =>
         formatPathLine(
           path,
           includeTemporalContext ? temporalSegmentForPath(path) : "",
           capForPath(path),
+          targetReferenceForPath(path, paths[index]),
         )
       ),
       "Memory content:",

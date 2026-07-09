@@ -281,6 +281,14 @@ render twice or consume two reader-context slots. Without `layerPolicy`, this
 pass is absent and the legacy global pool remains byte-identical except for the
 same duplicate-id guard.
 
+Rendered evidence paths preserve provenance (`step`, cue, tag, kind,
+confidence, and route signals) without reprinting memory facts already present in
+the `Memory content:` section. When a path reaches a memory that is printed in
+that section, the path line uses a compact `Memory content item N` reference;
+full fact text remains in the memory section. Paths whose target content is not
+otherwise printed still render their target summary so reconstruction does not
+drop evidence.
+
 Hosts may also declare `reconstructionIntent.requiredAnchors`. These are not
 inferred by the kernel and are not dataset rules; they are host-owned endpoint
 descriptions. Required anchors reserve memory slots ahead of ordinary anchors and

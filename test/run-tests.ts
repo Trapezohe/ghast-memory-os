@@ -5565,12 +5565,13 @@ assert.match(relativeRendering.contextBlock, /\[fact; 2023-04-18; days_ago=2; co
 assert.match(relativeRendering.contextBlock, /\[fact; 2023-04-22; days_ahead=2; confidence=/);
 const relativeRenderingLines = relativeRendering.contextBlock.split("\n");
 const fernPathLine = relativeRenderingLines.find((line) =>
-  line.startsWith("- [step=") && line.includes("The fern cutting was acquired")
+  line.startsWith("- [step=") && /observed 2023-04-11; days_ago=9/u.test(line)
 );
 const fernMemoryLine = relativeRenderingLines.find((line) =>
   line.startsWith("- [fact;") && line.includes("The fern cutting was acquired")
 );
 assert.match(fernPathLine ?? "", /observed 2023-04-11; days_ago=9/);
+assert.match(fernPathLine ?? "", /see Memory content item/u);
 assert.match(fernMemoryLine ?? "", /observed 2023-04-11; days_ago=9/);
 await relativeRenderingMemory.close();
 const nonTemporalReconstruction = await temporalMemory.reconstructContext({
@@ -22419,6 +22420,8 @@ const duplicateWideShared = layerMemory(
   "atom",
   "DuplicateWideKey shared fact.",
 );
+const countExactContentOccurrences = (text: string, content: string): number =>
+  text.split(content).length - 1;
 const duplicateWideFillers = Array.from({ length: 80 }, (_entry, index) =>
   layerMemory(`memory_duplicate_wide_${index}`, "atom", `DuplicateWideKey filler fact ${index}.`)
 );
@@ -22481,6 +22484,20 @@ const duplicateWideMemoryLines = duplicateWideContext.contextBlock
   .split("\n")
   .filter((line) => line.startsWith("- [fact;") && line.includes("DuplicateWideKey"));
 assert.equal(new Set(duplicateWideMemoryLines).size, duplicateWideMemoryLines.length);
+assert.equal(
+  countExactContentOccurrences(duplicateWideContext.contextBlock, duplicateWideShared.content),
+  1,
+);
+const duplicateWidePathSection = duplicateWideContext.contextBlock.slice(
+  duplicateWideContext.contextBlock.indexOf("Reconstructed evidence paths:"),
+  duplicateWideContext.contextBlock.indexOf("Memory content:"),
+);
+assert.match(
+  duplicateWidePathSection,
+  /- \[step=1; cue=DuplicateWideKey; tag=fact; kind=fact; observed 2026-07-04; confidence=0\.90/u,
+);
+assert.match(duplicateWidePathSection, /see Memory content item 1/u);
+assert.equal(duplicateWidePathSection.includes(duplicateWideShared.content), false);
 const singleWideContext = await reconstructMemoryContext({
   store: {
     searchAssociations() {
@@ -22511,6 +22528,10 @@ const singleWideContext = await reconstructMemoryContext({
 assert.deepEqual(singleWideContext.memories.map((memoryRecord) => memoryRecord.id), [
   duplicateWideShared.id,
 ]);
+assert.equal(
+  countExactContentOccurrences(singleWideContext.contextBlock, duplicateWideShared.content),
+  1,
+);
 const wideRows = Array.from({ length: 220 }, (_entry, index) =>
   layerMemory(`memory_wide_${index}`, "atom", `WideKey atom ${index}`)
 );
@@ -22598,6 +22619,24 @@ assert.equal(
   wideSupplyContext.memories.some((memoryRecord) => memoryRecord.content.includes("WideSupplyForgotten")),
   false,
 );
+for (const memoryRecord of wideSupplyContext.memories) {
+  assert.equal(
+    countExactContentOccurrences(wideSupplyContext.contextBlock, memoryRecord.content) <= 1,
+    true,
+  );
+}
+const firstWideSupplyMemory = wideSupplyContext.memories[0];
+assert.ok(firstWideSupplyMemory);
+const wideSupplyPathSection = wideSupplyContext.contextBlock.slice(
+  wideSupplyContext.contextBlock.indexOf("Reconstructed evidence paths:"),
+  wideSupplyContext.contextBlock.indexOf("Memory content:"),
+);
+assert.match(
+  wideSupplyPathSection,
+  /- \[step=\d+; cue=[^;\]]+; tag=[^;\]]+; kind=[^;\]]+; observed 2026-07-04; confidence=0\.90/u,
+);
+assert.match(wideSupplyPathSection, /see Memory content item 1/u);
+assert.equal(wideSupplyPathSection.includes(firstWideSupplyMemory.content), false);
 const wideSupplyRerankedMemory = createMemoryOS({
   profileId: "wide-supply",
   store: wideSupplyStore,
@@ -22857,8 +22896,73 @@ assert.match(
   truncatedMemoryPathSection,
   /- \[step=1; cue=chronokey; tag=fact; kind=fact; observed 2026-01-02; confidence=0\.90/u,
 );
-assert.equal(truncatedMemoryPathSection.includes(truncatedMemoryContent), true);
+assert.match(truncatedMemoryPathSection, /see Memory content item 1/u);
+assert.equal(truncatedMemoryPathSection.includes(truncatedMemoryContent), false);
 assert.doesNotMatch(truncatedMemoryPathSection, new RegExp(`${"x".repeat(100)}`, "u"));
+const pathOnlyContent = `PathOnlyKey detached evidence target ${"p".repeat(120)}`;
+const pathOnlyStore = {
+  searchAssociations(input: { limit?: number | undefined }) {
+    return [{
+      id: "assoc_path_only",
+      profileId: "layer",
+      cue: "PathOnlyKey",
+      cueKind: "lexical",
+      tag: "fact",
+      targetType: "evidence",
+      targetId: "evidence_path_only",
+      targetKind: "fact",
+      targetSummary: pathOnlyContent,
+      sensitivity: "normal",
+      status: "active",
+      confidence: 0.91,
+      sourceMemoryId: null,
+      createdAt: layerNow,
+      updatedAt: layerNow,
+    } satisfies MemoryAssociationRecord].slice(0, input.limit ?? 1);
+  },
+  getMemoryById() {
+    return null;
+  },
+  searchMemories() {
+    return [];
+  },
+  listEvidenceForMemory() {
+    return [];
+  },
+} as unknown as MemoryStore;
+const pathOnlyRequest = {
+  profileId: "layer",
+  query: "PathOnlyKey",
+  maxMemories: 1,
+  maxSteps: 1,
+  maxBranch: 1,
+  contextBudgetTokens: 2000,
+  maxCharsPerMemory: 80,
+  stopWhenEvidenceEnough: false,
+  evidenceConvergenceThreshold: 0.35,
+} as const;
+const pathOnlyContext = await reconstructMemoryContext({
+  store: pathOnlyStore,
+  defaultProfileId: "layer",
+  request: pathOnlyRequest,
+});
+const pathOnlyInvalidAsOfContext = await reconstructMemoryContext({
+  store: pathOnlyStore,
+  defaultProfileId: "layer",
+  request: { ...pathOnlyRequest, asOf: "not-a-date" },
+});
+assert.equal(pathOnlyInvalidAsOfContext.contextBlock, pathOnlyContext.contextBlock);
+const pathOnlyTruncatedContent = `${[...pathOnlyContent].slice(0, 80).join("")}...`;
+const pathOnlyPathSection = pathOnlyContext.contextBlock.slice(
+  pathOnlyContext.contextBlock.indexOf("Reconstructed evidence paths:"),
+  pathOnlyContext.contextBlock.indexOf("Memory content:"),
+);
+assert.match(
+  pathOnlyPathSection,
+  /- \[step=1; cue=PathOnlyKey; tag=fact; kind=fact; confidence=0\.91/u,
+);
+assert.equal(pathOnlyPathSection.includes(pathOnlyTruncatedContent), true);
+assert.doesNotMatch(pathOnlyPathSection, /see Memory content item/u);
 const graduatedContent = (label: string): string =>
   `GraduatedDepthKey ${label} ${"a".repeat(430)} ${label}_AFTER_400 ${"b".repeat(480)} ${label}_AFTER_900`;
 const graduatedRows = [
@@ -22909,8 +23013,10 @@ const graduatedPathSection = graduatedContext.contextBlock.slice(
   graduatedContext.contextBlock.indexOf("Reconstructed evidence paths:"),
   graduatedContext.contextBlock.indexOf("Memory content:"),
 );
-assert.match(graduatedPathSection, /TOP_ONE_AFTER_400/u);
-assert.match(graduatedPathSection, /TOP_TWO_AFTER_400/u);
+assert.match(graduatedPathSection, /see Memory content item 1/u);
+assert.match(graduatedPathSection, /see Memory content item 2/u);
+assert.doesNotMatch(graduatedPathSection, /TOP_ONE_AFTER_400/u);
+assert.doesNotMatch(graduatedPathSection, /TOP_TWO_AFTER_400/u);
 assert.doesNotMatch(graduatedPathSection, /TOP_ONE_AFTER_900/u);
 assert.doesNotMatch(graduatedPathSection, /TAIL_THREE_AFTER_400/u);
 const graduatedMemorySection = graduatedContext.contextBlock.slice(
