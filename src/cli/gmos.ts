@@ -183,7 +183,7 @@ Usage:
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --reader-profile expansive --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
   gmos gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --max-cases 5 --results-jsonl ./paid-smoke.results.jsonl
-  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --turn-retention on --session-distill on --consolidate-entities on --extraction-window 1000 --extraction-max-chars 30000 --extractor-max-tokens 4000 --ingest-replay-attempts 1 --embed-query on --intelligence-base-url https://api.deepseek.com/v1 --intelligence-model deepseek-chat --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-embed-base-url http://127.0.0.1:11434/v1 --intelligence-embed-model nomic-embed-text --intelligence-embed-dimensions 768 --intelligence-disable-thinking
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --turn-retention on --session-distill on --consolidate-entities on --extraction-window 1000 --extraction-max-chars 30000 --extractor-max-candidates 32 --extractor-max-tokens 4000 --ingest-replay-attempts 1 --embed-query on --intelligence-base-url https://api.deepseek.com/v1 --intelligence-model deepseek-chat --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-embed-base-url http://127.0.0.1:11434/v1 --intelligence-embed-model nomic-embed-text --intelligence-embed-dimensions 768 --intelligence-disable-thinking
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --session-distill on --distiller-base-url http://127.0.0.1:11434/v1 --distiller-model llama3.1 --intelligence-api-key-env GMOS_BENCH_API_KEY
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode memory --query-planner on --sweep-cues on --planner-base-url http://127.0.0.1:11434/v1 --planner-model llama3.1 --intelligence-api-key-env GMOS_BENCH_API_KEY
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --protocol official-protocol --answerer-base-url http://127.0.0.1:11434/v1 --answerer-model llama3.1 --answerer-timeout-ms 90000 --answerer-disable-thinking
@@ -718,6 +718,7 @@ function externalIntelligenceOption(debugDir: string | undefined): {
   distillerBaseUrl?: string | undefined;
   distillerModel?: string | undefined;
   dimensions?: number | undefined;
+  extractorMaxCandidates?: number | undefined;
   extractorMaxTokens?: number | undefined;
   timeoutMs?: number | undefined;
   retries?: number | undefined;
@@ -732,6 +733,7 @@ function externalIntelligenceOption(debugDir: string | undefined): {
     arg === "--planner-model" ||
     arg === "--distiller-base-url" ||
     arg === "--distiller-model" ||
+    arg === "--extractor-max-candidates" ||
     arg === "--extractor-max-tokens"
   );
   if (!hasIntelligenceFlag) return undefined;
@@ -767,6 +769,7 @@ function externalIntelligenceOption(debugDir: string | undefined): {
         embedApiKeyEnv !== undefined ||
         embedModel !== undefined ||
         value("--intelligence-embed-dimensions") !== undefined ||
+        value("--extractor-max-candidates") !== undefined ||
         value("--extractor-max-tokens") !== undefined
       ) {
         throw new Error("gmos gym external intelligence flags require --intelligence-base-url");
@@ -808,6 +811,7 @@ function externalIntelligenceOption(debugDir: string | undefined): {
     throw new Error("--intelligence-embed-api-key-env requires --intelligence-embed-base-url");
   }
   const dimensions = positiveIntegerOptionValue("--intelligence-embed-dimensions");
+  const extractorMaxCandidates = boundedIntegerOptionValue("--extractor-max-candidates", 1, 64);
   const extractorMaxTokens = boundedIntegerOptionValue("--extractor-max-tokens", 256, 8192);
   const timeoutMs = positiveIntegerOptionValue("--intelligence-timeout-ms");
   const retries = nonNegativeIntegerOptionValue("--intelligence-retries");
@@ -825,6 +829,7 @@ function externalIntelligenceOption(debugDir: string | undefined): {
     ...(distillerBaseUrl ? { distillerBaseUrl } : {}),
     ...(distillerModel ? { distillerModel } : {}),
     ...(apiKeyEnv ? { apiKeyEnv } : {}),
+    ...(extractorMaxCandidates !== undefined ? { extractorMaxCandidates } : {}),
     ...(extractorMaxTokens !== undefined ? { extractorMaxTokens } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(retries !== undefined ? { retries } : {}),

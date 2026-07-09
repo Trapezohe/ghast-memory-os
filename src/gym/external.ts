@@ -68,6 +68,7 @@ export interface ExternalMemoryBenchmarkIntelligenceConfig {
   baseUrl?: string | undefined;
   apiKeyEnv?: string | undefined;
   model?: string | undefined;
+  extractorMaxCandidates?: number | undefined;
   extractorMaxTokens?: number | undefined;
   embedBaseUrl?: string | undefined;
   embedApiKeyEnv?: string | undefined;
@@ -586,6 +587,7 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   timeoutMs: number | null;
   retries: number | null;
   backoffMs: number | null;
+  extractorMaxCandidates: number | null;
   extractorMaxTokens: number | null;
   embedQuery: boolean;
   queryEmbeddingFailureCount: number;
@@ -747,6 +749,7 @@ export interface ExternalMemoryBenchmarkRunManifest {
     concurrency: number;
     extractionWindow: number;
     extractionMaxChars: number;
+    extractorMaxCandidates: number | null;
     extractorMaxTokens: number | null;
     reuseProfiles: boolean;
     failureSampleLimit: number;
@@ -1080,6 +1083,7 @@ interface IngestCacheKeyFields {
   extraction: {
     window: number;
     maxChars: number;
+    extractorMaxCandidates: number | null;
     extractorMaxTokens: number | null;
     replayAttempts: number;
     windowConcurrency: number | null;
@@ -1188,6 +1192,7 @@ function ingestCacheKeyFields(input: {
     extraction: {
       window: normalizedExtractionWindow(input.options.extractionWindow),
       maxChars: normalizedExtractionMaxChars(input.options.extractionMaxChars),
+      extractorMaxCandidates: runtime.extractorMaxCandidates,
       extractorMaxTokens: runtime.extractorMaxTokens,
       replayAttempts: normalizedIngestReplayAttempts(input.options.ingestReplayAttempts),
       windowConcurrency: runtime.concurrency,
@@ -3117,6 +3122,7 @@ function createRunManifest(input: {
       concurrency: normalizedConcurrency(input.options.concurrency),
       extractionWindow: normalizedExtractionWindow(input.options.extractionWindow),
       extractionMaxChars: normalizedExtractionMaxChars(input.options.extractionMaxChars),
+      extractorMaxCandidates: input.runtimeIntelligence.manifest.extractorMaxCandidates,
       extractorMaxTokens: input.runtimeIntelligence.manifest.extractorMaxTokens,
       ingestReplayAttempts: normalizedIngestReplayAttempts(input.options.ingestReplayAttempts),
       turnRetention: input.runtimeIntelligence.manifest.turnRetention,
@@ -3588,6 +3594,18 @@ function normalizedExtractorMaxTokens(value: number | undefined): number {
   return maxTokens;
 }
 
+function normalizedExtractorMaxCandidates(value: number | undefined): number {
+  const maxCandidates = normalizedPositiveInteger(
+    value,
+    12,
+    "External benchmark extractor maxCandidates",
+  );
+  if (maxCandidates > 64) {
+    throw new Error("External benchmark extractor maxCandidates must be at most 64");
+  }
+  return maxCandidates;
+}
+
 function hookName(value: unknown): string | null {
   if (!value) return null;
   if (typeof value === "function") return value.name || "anonymous";
@@ -3727,6 +3745,8 @@ function isIntelligenceConfig(
   const hasDistillerModel = "distillerModel" in value && value.distillerModel !== undefined;
   const hasEmbedBaseUrl = "embedBaseUrl" in value && value.embedBaseUrl !== undefined;
   const hasEmbedApiKeyEnv = "embedApiKeyEnv" in value && value.embedApiKeyEnv !== undefined;
+  const hasExtractorMaxCandidates =
+    "extractorMaxCandidates" in value && value.extractorMaxCandidates !== undefined;
   const hasExtractorMaxTokens = "extractorMaxTokens" in value && value.extractorMaxTokens !== undefined;
   if (hasBaseUrl && !hasModel) {
     throw new Error("External benchmark intelligence baseUrl requires model");
@@ -3737,8 +3757,8 @@ function isIntelligenceConfig(
   if (!hasBaseUrl && hasEmbedBaseUrl) {
     throw new Error("External benchmark intelligence embedBaseUrl requires baseUrl");
   }
-  if (!hasBaseUrl && hasExtractorMaxTokens) {
-    throw new Error("External benchmark extractorMaxTokens requires baseUrl");
+  if (!hasBaseUrl && (hasExtractorMaxCandidates || hasExtractorMaxTokens)) {
+    throw new Error("External benchmark extractor configuration requires baseUrl");
   }
   if (!hasBaseUrl && hasPlannerBaseUrl !== hasPlannerModel) {
     throw new Error("planner-only intelligence requires both --planner-base-url and --planner-model");
@@ -4015,6 +4035,7 @@ function disabledRuntimeIntelligence(
       timeoutMs: null,
       retries: null,
       backoffMs: null,
+      extractorMaxCandidates: null,
       extractorMaxTokens: null,
       embedQuery: false,
       queryEmbeddingFailureCount: 0,
@@ -4156,6 +4177,9 @@ function resolveRuntimeIntelligence(input: {
   const extractorMaxTokens = config?.baseUrl
     ? normalizedExtractorMaxTokens(config.extractorMaxTokens)
     : null;
+  const extractorMaxCandidates = config?.baseUrl
+    ? normalizedExtractorMaxCandidates(config.extractorMaxCandidates)
+    : null;
   const retries = normalizedNonNegativeInteger(config?.retries, 2, "External benchmark intelligence retries");
   if (retries > 5) throw new Error("External benchmark intelligence retries must be at most 5");
   const backoffMs = normalizedNonNegativeInteger(config?.backoffMs, 250, "External benchmark intelligence backoffMs");
@@ -4208,7 +4232,10 @@ function resolveRuntimeIntelligence(input: {
       timeoutMs,
       retries,
       backoffMs,
-      extractor: { maxTokens: extractorMaxTokens ?? undefined },
+      extractor: {
+        maxTokens: extractorMaxTokens ?? undefined,
+        windowMaxCandidates: extractorMaxCandidates ?? undefined,
+      },
       ...(config.disableThinking ? { disableThinking: true } : {}),
       ...(config.debugDir ? { debugDir: config.debugDir } : {}),
       ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
@@ -4321,6 +4348,7 @@ function resolveRuntimeIntelligence(input: {
       timeoutMs,
       retries,
       backoffMs,
+      extractorMaxCandidates,
       extractorMaxTokens,
       embedQuery: false,
       queryEmbeddingFailureCount: 0,

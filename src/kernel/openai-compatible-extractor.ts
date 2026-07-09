@@ -270,7 +270,7 @@ export function createOpenAICompatibleExtractor(
     options.windowMaxCandidates ?? options.maxCandidates,
     options.maxCandidates === undefined ? 12 : singleMessageMaxCandidates,
     1,
-    32,
+    64,
   );
   const timeoutMs = boundedInteger(options.timeoutMs, 20_000, 1000, 120_000);
   const maxTokens = boundedInteger(options.maxTokens, 1200, 64, 8192);
