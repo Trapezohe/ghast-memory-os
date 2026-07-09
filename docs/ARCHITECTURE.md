@@ -145,14 +145,14 @@ maintenance computes the same report but writes nothing and is covered by the
 read-audit snapshot mechanism. No read path runs lifecycle maintenance in the
 background.
 
-Consolidation is an explicit `maintain()` phase, not a read-time side effect.
-The kernel-side duplicate path is deterministic: active and dormant memories are
-clustered per profile/kind by normalized content equality or containment plus
-association tag overlap, while `boundary`, `person`, archived, sensitive, and
-secret-like memories are excluded. The canonical survivor is selected by
-confidence, newest `updated_at`, then id, and its content is never rewritten.
-Archived duplicate members carry `metadata.supersededBy` and a
-`source_type = "consolidation"` evidence event.
+Consolidation is a write-path capability, not a read-time side effect. The
+standalone duplicate path remains an explicit `maintain()` phase. Active and
+dormant memories are clustered per profile/kind by normalized content equality
+or containment plus association tag overlap, while `boundary`, `person`,
+archived, sensitive, and secret-like memories are excluded. The canonical
+survivor is selected by confidence, newest `updated_at`, then id, and its
+content is never rewritten. Archived duplicate members carry
+`metadata.supersededBy` and a `source_type = "consolidation"` evidence event.
 
 Semantic consolidation uses the second host hook, `consolidator`, mirroring the
 structured extractor boundary. gmOS selects bounded clusters and enforces write
@@ -160,17 +160,22 @@ gates, but only the host hook can synthesize summary prose. Accepted summaries
 are new memories whose consolidation evidence lists source memory ids; source
 episodes are demoted to dormant with lifecycle evidence.
 
-Entity consolidation is an opt-in selector inside the same `consolidate` phase.
+Entity consolidation is an opt-in selector available both in the `consolidate`
+maintain phase and directly inside `ingestConversation({ consolidateEntities })`.
 It addresses extracted-fact fragmentation by grouping different predicates about
-the same entity before the host consolidator runs. The selector is read-pure and
-LLM-free: it computes document frequency over candidate tokens in memory content
-across the passed memories, then groups each eligible memory by its rarest
-distinctive token. Candidate tokens are model/product codes, scale codes, and
-proper-noun-like words; stopwords and tokens above the fixed high-frequency
-cutoff are ignored.
-The host consolidator receives `kind: "entity"` plus the source `memoryKind`,
-`entityKey`, and `entityObject`; accepted summaries use the same consolidation
-evidence and dormant-source provenance as other host summaries.
+the same entity before the host consolidator runs. Ingest-integrated entity
+consolidation runs after window extraction, turn retention, and session
+distillation, but its scope is only the newly written extracted `fact` memories
+from that ingest call; raw turn memories and session summaries are not entity
+cluster inputs. The selector is read-pure and LLM-free: it computes document
+frequency over candidate tokens in memory content across the passed memories,
+then groups each eligible memory by its rarest distinctive token. Candidate
+tokens are model/product codes, scale codes, and proper-noun-like words;
+stopwords and tokens above the fixed high-frequency cutoff are ignored. The host
+consolidator receives `kind: "entity"` plus the source `memoryKind`, `entityKey`,
+and `entityObject`; accepted summaries use the same consolidation evidence and
+dormant-source provenance as other host summaries. Hosts that want mem0-style
+canonical facts during normal ingest should enable `consolidateEntities`.
 
 Procedure distillation is a separate explicit `maintain({ phases: ["distill"] })`
 phase. gmOS deterministically clusters repeated completed task trajectories by

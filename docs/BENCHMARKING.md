@@ -364,11 +364,16 @@ deterministic baselines.
 Entity consolidation is another message-mode opt-in for aggregation questions
 where extraction emits many facts about the same object. Use
 `--consolidate-entities on` with a consolidator-capable intelligence config.
-gmOS then runs extraction, runs the `consolidate` maintain phase automatically
-after ingest, and asks the consolidator to turn each content-token-derived entity
-cluster into one canonical memory. The selector is generic: it uses document
-frequency over model/product codes, scale codes, and proper-noun-like tokens in
-memory content and does not special-case any benchmark dataset.
+gmOS then runs entity consolidation inside `ingestConversation()` after
+extraction. The consolidator turns each content-token-derived entity cluster
+from that ingest batch's newly extracted `fact` memories into one canonical
+memory, and source fragments are demoted through the normal consolidation
+summary path. The selector is generic: it uses document frequency over
+model/product codes, scale codes, and proper-noun-like tokens in memory content
+and does not special-case any benchmark dataset. Standalone
+`--maintain-phases consolidate` remains available for periodic cross-batch
+consolidation, but message-mode `--consolidate-entities on` is cached as part of
+ingest.
 
 Aggregation-oriented message-mode recipe:
 
@@ -565,14 +570,17 @@ gmos gym external \
   --progress
 ```
 
-The cache stores the pre-maintain, pre-read SQLite file for each case group.
+The cache stores the post-ingest, pre-read SQLite file for each case group.
+Message-mode entity consolidation runs during ingest, so cached stores already
+contain canonical entity memories and demoted fragments.
 On a hit gmOS copies the cached `.db` into that group's temp directory, verifies
-the SQLite schema version, skips ingest, and then runs maintain/read/scoring on
-the temp copy as usual. The cache entry is never mutated by answering. Cache-hit
-groups report ingestion counters such as extraction, embedding, replay, and
-distillation calls as zero; `cacheHit=true` records that those diagnostics were
-skipped, while scores, failure attribution, lexical ceiling, and context checks
-still come from the copied store.
+the SQLite schema version, skips ingest, and then runs any requested standalone
+maintain/read/scoring on the temp copy as usual. The cache entry is never mutated
+by answering. Cache-hit groups report ingestion counters such as extraction,
+embedding, replay, distillation, and ingest-time entity-consolidator calls as
+zero; `cacheHit=true` records that those diagnostics were skipped, while scores,
+failure attribution, lexical ceiling, and context checks still come from the
+copied store.
 
 The key is `sha256` over:
 

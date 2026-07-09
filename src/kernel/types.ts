@@ -566,6 +566,11 @@ export interface IngestConversationInput {
     confidence?: number | undefined;
   } | undefined;
   sessionDistillation?: boolean | undefined;
+  consolidateEntities?: boolean | {
+    minClusterSize?: number | undefined;
+    maxClustersPerRun?: number | undefined;
+    maxMembersPerCluster?: number | undefined;
+  } | undefined;
   progress?: {
     everyWindows?: number | undefined;
     onWindow?: ((progress: IngestConversationProgress) => void) | undefined;
@@ -631,6 +636,12 @@ export interface IngestConversationResult {
   distillationTransportFailureCount: number;
   distillationFailureCount: number;
   distillationTruncatedMessageCount: number;
+  entityConsolidation?: {
+    clustersFound: number;
+    clustersMerged: number;
+    consolidatorCallCount: number;
+    consolidatorFailureCount: number;
+  } | undefined;
   extractionMinConfidence: number;
   extractionReports: MemoryExtractionReport[];
 }

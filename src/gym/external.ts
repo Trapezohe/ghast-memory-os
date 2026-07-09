@@ -353,6 +353,10 @@ export interface ExternalMemoryBenchmarkGroupTiming {
   extractionTransportFailureCharCount: number;
   replayedWindowCount: number;
   replayRecoveredCount: number;
+  entityConsolidationClustersFound: number;
+  entityConsolidationClustersMerged: number;
+  entityConsolidationConsolidatorCallCount: number;
+  entityConsolidationConsolidatorFailureCount: number;
   turnMemoryCount: number;
   passedCount: number;
   failedCount: number;
@@ -558,6 +562,10 @@ export interface ExternalMemoryBenchmarkRuntimeIngestGroupManifest {
   extractionTransportFailureCharCount: number;
   replayedWindowCount: number;
   replayRecoveredCount: number;
+  entityConsolidationClustersFound: number;
+  entityConsolidationClustersMerged: number;
+  entityConsolidationConsolidatorCallCount: number;
+  entityConsolidationConsolidatorFailureCount: number;
   ingestDurationMs: number;
 }
 
@@ -612,6 +620,10 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   extractionTransportFailureCharCount: number;
   replayedWindowCount: number;
   replayRecoveredCount: number;
+  entityConsolidationClustersFound: number;
+  entityConsolidationClustersMerged: number;
+  entityConsolidationConsolidatorCallCount: number;
+  entityConsolidationConsolidatorFailureCount: number;
   embeddingCallCount: number;
   embeddedMemoryCount: number;
   embeddingFailureCount: number;
@@ -1133,9 +1145,10 @@ function eventPayloadHashForCache(group: CaseGroup): string {
   }));
 }
 
-// Ingest cache key fields intentionally stop at the pre-maintain, pre-read store:
-// maintainPhases, embedQuery, queryPlanner, sweepCues, answerer, judge, and reader
-// budgets run after the cached ingest copy is loaded.
+// Ingest cache key fields intentionally stop at the cached ingest store:
+// message-mode entity consolidation is part of ingest, while maintainPhases,
+// embedQuery, queryPlanner, sweepCues, answerer, judge, and reader budgets run
+// after the cached ingest copy is loaded.
 function ingestCacheKeyFields(input: {
   group: CaseGroup;
   options: RunExternalMemoryBenchmarkOptions;
@@ -2991,6 +3004,12 @@ function createRunManifest(input: {
       extractionTransportFailureCharCount: input.runtimeIntelligence.extractionTransportFailureCharCount,
       replayedWindowCount: input.runtimeIntelligence.replayedWindowCount,
       replayRecoveredCount: input.runtimeIntelligence.replayRecoveredCount,
+      entityConsolidationClustersFound: input.runtimeIntelligence.entityConsolidationClustersFound,
+      entityConsolidationClustersMerged: input.runtimeIntelligence.entityConsolidationClustersMerged,
+      entityConsolidationConsolidatorCallCount:
+        input.runtimeIntelligence.entityConsolidationConsolidatorCallCount,
+      entityConsolidationConsolidatorFailureCount:
+        input.runtimeIntelligence.entityConsolidationConsolidatorFailureCount,
       embeddingCallCount: input.runtimeIntelligence.embeddingCallCount,
       embeddedMemoryCount: input.runtimeIntelligence.embeddedMemoryCount,
       embeddingFailureCount: input.runtimeIntelligence.embeddingFailureCount,
@@ -3288,8 +3307,9 @@ function normalizedConsolidateEntities(value: boolean | undefined): boolean {
 function maintainPhasesForEntityConsolidation(
   phases: MaintenancePhase[],
   consolidateEntities: boolean,
+  ingestMode: ExternalMemoryBenchmarkIngestMode,
 ): MaintenancePhase[] {
-  if (!consolidateEntities || phases.includes("consolidate")) return phases;
+  if (!consolidateEntities || ingestMode === "message" || phases.includes("consolidate")) return phases;
   return [...phases, "consolidate"];
 }
 
@@ -3800,6 +3820,10 @@ interface RuntimeIntelligenceState {
   extractionTransportFailureCharCount: number;
   replayedWindowCount: number;
   replayRecoveredCount: number;
+  entityConsolidationClustersFound: number;
+  entityConsolidationClustersMerged: number;
+  entityConsolidationConsolidatorCallCount: number;
+  entityConsolidationConsolidatorFailureCount: number;
   embeddingCallCount: number;
   embeddedMemoryCount: number;
   embeddingFailureCount: number;
@@ -3878,6 +3902,10 @@ function disabledRuntimeIntelligence(
       extractionTransportFailureCharCount: 0,
       replayedWindowCount: 0,
       replayRecoveredCount: 0,
+      entityConsolidationClustersFound: 0,
+      entityConsolidationClustersMerged: 0,
+      entityConsolidationConsolidatorCallCount: 0,
+      entityConsolidationConsolidatorFailureCount: 0,
       embeddingCallCount: 0,
       embeddedMemoryCount: 0,
       embeddingFailureCount: 0,
@@ -3901,6 +3929,10 @@ function disabledRuntimeIntelligence(
     extractionTransportFailureCharCount: 0,
     replayedWindowCount: 0,
     replayRecoveredCount: 0,
+    entityConsolidationClustersFound: 0,
+    entityConsolidationClustersMerged: 0,
+    entityConsolidationConsolidatorCallCount: 0,
+    entityConsolidationConsolidatorFailureCount: 0,
     embeddingCallCount: 0,
     embeddedMemoryCount: 0,
     embeddingFailureCount: 0,
@@ -4167,6 +4199,10 @@ function resolveRuntimeIntelligence(input: {
       extractionTransportFailureCharCount: 0,
       replayedWindowCount: 0,
       replayRecoveredCount: 0,
+      entityConsolidationClustersFound: 0,
+      entityConsolidationClustersMerged: 0,
+      entityConsolidationConsolidatorCallCount: 0,
+      entityConsolidationConsolidatorFailureCount: 0,
       embeddingCallCount: 0,
       embeddedMemoryCount: 0,
       embeddingFailureCount: 0,
@@ -4203,6 +4239,10 @@ function resolveRuntimeIntelligence(input: {
     extractionTransportFailureCharCount: 0,
     replayedWindowCount: 0,
     replayRecoveredCount: 0,
+    entityConsolidationClustersFound: 0,
+    entityConsolidationClustersMerged: 0,
+    entityConsolidationConsolidatorCallCount: 0,
+    entityConsolidationConsolidatorFailureCount: 0,
     embeddingCallCount: 0,
     embeddedMemoryCount: 0,
     embeddingFailureCount: 0,
@@ -4560,6 +4600,10 @@ interface AppliedBenchmarkEvents {
   extractionTransportFailureCharCount: number;
   replayedWindowCount: number;
   replayRecoveredCount: number;
+  entityConsolidationClustersFound: number;
+  entityConsolidationClustersMerged: number;
+  entityConsolidationConsolidatorCallCount: number;
+  entityConsolidationConsolidatorFailureCount: number;
   turnMemoryCount: number;
   distilledMemoryCount: number;
   embeddingCallCount: number;
@@ -4777,6 +4821,7 @@ async function applyBenchmarkEvents(input: {
   events: ExternalMemoryBenchmarkEvent[];
   ingestMode: ExternalMemoryBenchmarkIngestMode;
   turnRetention: boolean;
+  consolidateEntities: boolean;
   sessionDistillation: boolean;
   extractionWindow: number | undefined;
   extractionMaxChars: number | undefined;
@@ -4800,6 +4845,10 @@ async function applyBenchmarkEvents(input: {
     extractionTransportFailureCharCount: 0,
     replayedWindowCount: 0,
     replayRecoveredCount: 0,
+    entityConsolidationClustersFound: 0,
+    entityConsolidationClustersMerged: 0,
+    entityConsolidationConsolidatorCallCount: 0,
+    entityConsolidationConsolidatorFailureCount: 0,
     turnMemoryCount: 0,
     distilledMemoryCount: 0,
     embeddingCallCount: 0,
@@ -4887,6 +4936,7 @@ async function applyBenchmarkEvents(input: {
       },
       turnRetention: { enabled: input.turnRetention },
       sessionDistillation: input.sessionDistillation,
+      ...(input.consolidateEntities ? { consolidateEntities: true } : {}),
       ...(input.onWindowProgress
         ? { progress: { onWindow: input.onWindowProgress } }
         : {}),
@@ -4906,6 +4956,12 @@ async function applyBenchmarkEvents(input: {
     }
     output.replayedWindowCount += ingested.replayedWindowCount;
     output.replayRecoveredCount += ingested.replayRecoveredCount;
+    output.entityConsolidationClustersFound += ingested.entityConsolidation?.clustersFound ?? 0;
+    output.entityConsolidationClustersMerged += ingested.entityConsolidation?.clustersMerged ?? 0;
+    output.entityConsolidationConsolidatorCallCount +=
+      ingested.entityConsolidation?.consolidatorCallCount ?? 0;
+    output.entityConsolidationConsolidatorFailureCount +=
+      ingested.entityConsolidation?.consolidatorFailureCount ?? 0;
     output.turnMemoryCount += ingested.turnMemoryCount;
     output.distilledMemoryCount += ingested.distilledMemoryCount;
     output.embeddingCallCount += ingested.embeddingCallCount;
@@ -5323,6 +5379,10 @@ async function runCaseGroup(input: {
   let extractionTransportFailureCharCount = 0;
   let replayedWindowCount = 0;
   let replayRecoveredCount = 0;
+  let entityConsolidationClustersFound = 0;
+  let entityConsolidationClustersMerged = 0;
+  let entityConsolidationConsolidatorCallCount = 0;
+  let entityConsolidationConsolidatorFailureCount = 0;
   let turnMemoryCount = 0;
   let distilledMemoryCount = 0;
   let embeddingCallCount = 0;
@@ -5339,6 +5399,7 @@ async function runCaseGroup(input: {
         events: input.group.events,
         ingestMode: input.options.ingestMode ?? "memory",
         turnRetention: input.runtimeIntelligence.manifest.turnRetention,
+        consolidateEntities: input.runtimeIntelligence.manifest.consolidateEntities,
         sessionDistillation: input.runtimeIntelligence.manifest.sessionDistillation.enabled,
         extractionWindow: input.options.extractionWindow,
         extractionMaxChars: input.options.extractionMaxChars,
@@ -5368,6 +5429,14 @@ async function runCaseGroup(input: {
       input.runtimeIntelligence.extractionTransportFailureCharCount += applied.extractionTransportFailureCharCount;
       input.runtimeIntelligence.replayedWindowCount += applied.replayedWindowCount;
       input.runtimeIntelligence.replayRecoveredCount += applied.replayRecoveredCount;
+      input.runtimeIntelligence.entityConsolidationClustersFound +=
+        applied.entityConsolidationClustersFound;
+      input.runtimeIntelligence.entityConsolidationClustersMerged +=
+        applied.entityConsolidationClustersMerged;
+      input.runtimeIntelligence.entityConsolidationConsolidatorCallCount +=
+        applied.entityConsolidationConsolidatorCallCount;
+      input.runtimeIntelligence.entityConsolidationConsolidatorFailureCount +=
+        applied.entityConsolidationConsolidatorFailureCount;
       input.runtimeIntelligence.embeddingCallCount += applied.embeddingCallCount;
       input.runtimeIntelligence.embeddedMemoryCount += applied.embeddedMemoryCount;
       input.runtimeIntelligence.embeddingFailureCount += applied.embeddingFailureCount;
@@ -5391,6 +5460,12 @@ async function runCaseGroup(input: {
       extractionTransportFailureCharCount = applied.extractionTransportFailureCharCount;
       replayedWindowCount = applied.replayedWindowCount;
       replayRecoveredCount = applied.replayRecoveredCount;
+      entityConsolidationClustersFound = applied.entityConsolidationClustersFound;
+      entityConsolidationClustersMerged = applied.entityConsolidationClustersMerged;
+      entityConsolidationConsolidatorCallCount =
+        applied.entityConsolidationConsolidatorCallCount;
+      entityConsolidationConsolidatorFailureCount =
+        applied.entityConsolidationConsolidatorFailureCount;
       turnMemoryCount = applied.turnMemoryCount;
       distilledMemoryCount = applied.distilledMemoryCount;
       embeddingCallCount = applied.embeddingCallCount;
@@ -5444,6 +5519,10 @@ async function runCaseGroup(input: {
       extractionTransportFailureCharCount,
       replayedWindowCount,
       replayRecoveredCount,
+      entityConsolidationClustersFound,
+      entityConsolidationClustersMerged,
+      entityConsolidationConsolidatorCallCount,
+      entityConsolidationConsolidatorFailureCount,
       ingestDurationMs,
     };
     input.runtimeIntelligence.ingestCaseGroups.push(ingestCaseGroup);
@@ -5555,6 +5634,10 @@ async function runCaseGroup(input: {
       extractionTransportFailureCharCount,
       replayedWindowCount,
       replayRecoveredCount,
+      entityConsolidationClustersFound,
+      entityConsolidationClustersMerged,
+      entityConsolidationConsolidatorCallCount,
+      entityConsolidationConsolidatorFailureCount,
       turnMemoryCount,
       passedCount: results.filter((result) => result.pass).length,
       failedCount: results.filter((result) => !result.pass).length,
@@ -5634,6 +5717,7 @@ export async function runExternalMemoryBenchmark(
   const maintainPhases = maintainPhasesForEntityConsolidation(
     normalizedMaintainPhases(options.maintainPhases),
     consolidateEntities,
+    ingestMode,
   );
   const ingestCache: IngestCacheCounters = options.ingestCacheDir
     ? {

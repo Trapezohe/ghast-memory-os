@@ -121,6 +121,7 @@ import type {
   MemoryRetrievalConfig,
   MemoryOS,
   MemoryOSOptions,
+  ResolvedMemoryConsolidationConfig,
   MemorySessionDistillationCandidate,
   MemorySessionDistillationResult,
   ObserveResult,
@@ -2347,7 +2348,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       index: number,
     ) => ExtractionCandidateContext;
     embeddingStats?: RuntimeEmbeddingStats | undefined;
-  }): Promise<void> {
+  }): Promise<MemoryRecord[]> {
     const writes: Array<{
       result: ObserveResult;
       context: ExtractionCandidateContext;
@@ -2460,6 +2461,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       content: write.writeCandidate.content,
     })));
     if (input.embeddingStats) addRuntimeEmbeddingStats(input.embeddingStats, embedded.stats);
+    const writtenMemories: MemoryRecord[] = [];
     for (const [index, write] of writes.entries()) {
       const embedding = embedded.embeddings[index];
       const memory = await store.addMemory({
@@ -2490,6 +2492,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         ...(embedding ? { embedding } : {}),
       });
       write.result.memoryIds.push(memory.id);
+      writtenMemories.push(memory);
       if (write.writeCandidate.predicate && write.subject) {
         const subjectAliases = worldBeliefSubjectAliasesForCandidate({
           candidate: write.writeCandidate,
@@ -2533,6 +2536,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         write.result.worldBeliefIds.push(belief.id);
       }
     }
+    return writtenMemories;
   }
 
   async function observe(event: HostEvent): Promise<void> {
@@ -2646,6 +2650,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const windowConcurrency = boundedPositiveInteger(input.window?.concurrency, 1, 1, 32);
     const progressEveryWindows = boundedPositiveInteger(input.progress?.everyWindows, 10, 1, 100000);
     const replayAttempts = boundedPositiveInteger(input.extraction?.replayAttempts, 1, 0, 5);
+    const entityConsolidationConfig = ingestEntityConsolidationConfig(input.consolidateEntities);
     const extractionStartedMs = Date.now();
     const overlapMessages = boundedPositiveInteger(
       input.window?.overlapMessages,
@@ -2696,6 +2701,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const extractionTasks: ExtractionWindowTask[] = [];
     const sessionMembers: WindowMember[] = [];
     const turnMemoryWrites: TurnMemoryWrite[] = [];
+    const extractedFactMemories: MemoryRecord[] = [];
+    let entityConsolidationStats: EntityConsolidationStats | undefined;
 
     function windowChars(members: WindowMember[]): number {
       return members.reduce((sum, member) => sum + member.event.content.length, 0);
@@ -2881,7 +2888,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         (sourceTrust, member) => lowerTrust(sourceTrust, member.sourceTrust),
         "user",
       );
-      await applyExtractionCandidates({
+      const writtenMemories = await applyExtractionCandidates({
         result: last.result,
         profileId,
         candidates: extraction.candidates,
@@ -2922,6 +2929,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           };
         },
       });
+      extractedFactMemories.push(...writtenMemories.filter((memory) => memory.kind === "fact"));
     }
 
     for (const [index, message] of input.messages.entries()) {
@@ -3012,6 +3020,16 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         dedupeKeys,
       });
     }
+    const recordConsolidationSummary = store.recordConsolidationSummary;
+    if (entityConsolidationConfig && options.consolidator && recordConsolidationSummary) {
+      entityConsolidationStats = await applyIngestEntityConsolidation({
+        profileId,
+        now: observedAt,
+        factMemories: extractedFactMemories,
+        config: entityConsolidationConfig,
+        recordConsolidationSummary,
+      });
+    }
 
     return {
       profileId,
@@ -3047,6 +3065,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       distillationTransportFailureCount: sessionDistillationStats.distillationTransportFailureCount,
       distillationFailureCount: sessionDistillationFailureCount(sessionDistillationStats),
       distillationTruncatedMessageCount: sessionDistillationStats.distillationTruncatedMessageCount,
+      ...(entityConsolidationStats ? { entityConsolidation: entityConsolidationStats } : {}),
       extractionMinConfidence,
       extractionReports,
     };
@@ -3586,18 +3605,36 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     }, classifyRuntimeSensitivity);
   }
 
+  type RuntimeConsolidationReport = MaintenanceReport["consolidation"];
+
+  interface EntityConsolidationStats {
+    clustersFound: number;
+    clustersMerged: number;
+    consolidatorCallCount: number;
+    consolidatorFailureCount: number;
+  }
+
+  function emptyEntityConsolidationStats(): EntityConsolidationStats {
+    return {
+      clustersFound: 0,
+      clustersMerged: 0,
+      consolidatorCallCount: 0,
+      consolidatorFailureCount: 0,
+    };
+  }
+
   function addConsolidationSkipped(
-    report: MaintenanceReport,
+    report: RuntimeConsolidationReport,
     reason: string,
     count = 1,
   ): void {
-    const existing = report.consolidation.skipped.find((entry) => entry.reason === reason);
+    const existing = report.skipped.find((entry) => entry.reason === reason);
     if (existing) {
       existing.count += count;
     } else {
-      report.consolidation.skipped.push({ reason, count });
+      report.skipped.push({ reason, count });
     }
-    report.consolidation.skipped.sort((left, right) => left.reason.localeCompare(right.reason));
+    report.skipped.sort((left, right) => left.reason.localeCompare(right.reason));
   }
 
   async function callConsolidator(
@@ -3615,6 +3652,247 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     }
   }
 
+  function ingestEntityConsolidationConfig(
+    input: IngestConversationInput["consolidateEntities"],
+  ): ResolvedMemoryConsolidationConfig | null {
+    if (!input) return null;
+    const overrides = typeof input === "object" ? input : undefined;
+    return {
+      ...consolidation,
+      enabled: true,
+      entityConsolidation: {
+        ...consolidation.entityConsolidation,
+        enabled: true,
+        minClusterSize: boundedPositiveInteger(
+          overrides?.minClusterSize,
+          consolidation.entityConsolidation.minClusterSize,
+          2,
+          100000,
+        ),
+        maxClustersPerRun: boundedPositiveInteger(
+          overrides?.maxClustersPerRun,
+          consolidation.entityConsolidation.maxClustersPerRun,
+          1,
+          100000,
+        ),
+        maxMembersPerCluster: boundedPositiveInteger(
+          overrides?.maxMembersPerCluster,
+          consolidation.entityConsolidation.maxMembersPerCluster,
+          2,
+          100000,
+        ),
+      },
+    };
+  }
+
+  async function applyConsolidationClusters(input: {
+    profileId: string;
+    now: string;
+    dryRun: boolean;
+    report: RuntimeConsolidationReport;
+    clusters: MemoryConsolidationCluster[];
+    memoriesById: Map<string, MemoryRecord>;
+    recordConsolidationSummary: NonNullable<typeof store.recordConsolidationSummary>;
+  }): Promise<EntityConsolidationStats> {
+    const stats = emptyEntityConsolidationStats();
+    const seenCandidates = new Set<string>();
+    const name = consolidatorName(options.consolidator);
+    for (const cluster of input.clusters) {
+      const clusterMemoryKind = consolidationClusterMemoryKind(cluster);
+      const sourceMemoryIds = cluster.memories.map((memory) => memory.id);
+      const clusterSourceTrust = sourceTrustForMemoryIds(sourceMemoryIds, input.memoriesById);
+      stats.consolidatorCallCount += 1;
+      const rawCandidates = await callConsolidator(cluster);
+      if (rawCandidates === null) {
+        stats.consolidatorFailureCount += 1;
+        addConsolidationSkipped(input.report, "consolidator_returned_null_or_failed");
+        continue;
+      }
+      if (rawCandidates.length === 0) {
+        stats.consolidatorFailureCount += 1;
+        addConsolidationSkipped(input.report, "consolidator_returned_empty");
+        continue;
+      }
+      let clusterMerged = false;
+      for (const candidate of rawCandidates) {
+        if (cluster.kind === "entity" && clusterMerged) break;
+        const normalized = normalizeConsolidationCandidate(candidate, cluster);
+        if ("reason" in normalized) {
+          input.report.rejectedCandidates.push({
+            kind: clusterMemoryKind,
+            sourceMemoryIds,
+            reason: normalized.reason,
+          });
+          continue;
+        }
+        if (
+          clusterSourceTrust !== "user" &&
+          lowerTrustConsolidationPolicyKind(normalized.normalized)
+        ) {
+          input.report.rejectedCandidates.push({
+            kind: clusterMemoryKind,
+            sourceMemoryIds,
+            reason: "lower_trust_policy_write",
+          });
+          continue;
+        }
+        const contentSensitivity = classifyRuntimeSensitivity(
+          normalized.normalized.content,
+          "content",
+        );
+        const structuredSensitivity = runtimeValueSensitivity(
+          {
+            subject: normalized.normalized.subject,
+            predicate: normalized.normalized.predicate,
+            object: normalized.normalized.object,
+          },
+          classifyRuntimeSensitivity,
+          new WeakSet<object>(),
+          "structured_candidate",
+        );
+        if (contentSensitivity === "secret_like" || structuredSensitivity === "secret_like") {
+          input.report.rejectedCandidates.push({
+            kind: clusterMemoryKind,
+            sourceMemoryIds,
+            reason: "secret_like",
+          });
+          continue;
+        }
+        const key = uniqueConsolidationCandidateKey(normalized.normalized);
+        if (seenCandidates.has(key)) {
+          input.report.rejectedCandidates.push({
+            kind: clusterMemoryKind,
+            sourceMemoryIds,
+            reason: "duplicate",
+          });
+          continue;
+        }
+        seenCandidates.add(key);
+        const confidenceCap = sourceTrustConfidenceCap(clusterSourceTrust, trust);
+        const confidence = confidenceCap === undefined
+          ? normalized.normalized.confidence
+          : Math.min(normalized.normalized.confidence, confidenceCap);
+        const trustMetadata = {
+          sourceTrust: clusterSourceTrust,
+          ...lowerTrustAnnealingMetadata({
+            sourceTrust: clusterSourceTrust,
+            confidence,
+            startedAt: input.now,
+            lifecycle,
+          }),
+        };
+        const summary = {
+          kind: normalized.normalized.kind,
+          sourceMemoryIds,
+          sharedTags: cluster.sharedTags,
+          content: normalized.normalized.content,
+          confidence,
+          reasons: ["host_consolidator_summary"],
+        };
+        if (input.dryRun) {
+          input.report.summaryMemories.push(summary);
+          clusterMerged = true;
+          if (cluster.kind === "entity" && cluster.entityKey && cluster.entityObject) {
+            input.report.entityClusters?.push({
+              kind: normalized.normalized.kind,
+              entityKey: cluster.entityKey,
+              entityObject: cluster.entityObject,
+              sourceMemoryIds,
+              reasons: ["host_consolidator_summary"],
+            });
+          }
+          continue;
+        }
+        const embedding = await embeddingForRuntimeWrite({
+          kind: normalized.normalized.kind,
+          sensitivity: contentSensitivity,
+          content: normalized.normalized.content,
+        });
+        const result = await input.recordConsolidationSummary({
+          profileId: input.profileId,
+          kind: normalized.normalized.kind,
+          content: normalized.normalized.content,
+          sensitivity: contentSensitivity,
+          confidence,
+          sourceMemoryIds,
+          sharedTags: cluster.sharedTags,
+          createdAt: input.now,
+          metadata: {
+            consolidationSource: "host_consolidator",
+            ...trustMetadata,
+            ...(name ? { consolidatorName: name } : {}),
+          },
+          ...(embedding ? { embedding } : {}),
+          ...(normalized.normalized.subject &&
+          normalized.normalized.predicate &&
+          normalized.normalized.object
+            ? {
+                belief: {
+                  subject: normalized.normalized.subject,
+                  predicate: normalized.normalized.predicate,
+                  object: normalized.normalized.object,
+                },
+              }
+            : {}),
+        });
+        clusterMerged = true;
+        input.report.summaryMemories.push({
+          ...summary,
+          memoryId: result.memory.id,
+          ...(result.worldBelief ? { worldBeliefId: result.worldBelief.id } : {}),
+        });
+        if (cluster.kind === "entity" && cluster.entityKey && cluster.entityObject) {
+          input.report.entityClusters?.push({
+            kind: normalized.normalized.kind,
+            entityKey: cluster.entityKey,
+            entityObject: cluster.entityObject,
+            sourceMemoryIds,
+            summaryMemoryId: result.memory.id,
+            reasons: ["host_consolidator_summary"],
+          });
+        }
+      }
+      if (clusterMerged) stats.clustersMerged += 1;
+    }
+    return stats;
+  }
+
+  async function applyIngestEntityConsolidation(input: {
+    profileId: string;
+    now: string;
+    factMemories: MemoryRecord[];
+    config: ResolvedMemoryConsolidationConfig;
+    recordConsolidationSummary: NonNullable<typeof store.recordConsolidationSummary>;
+  }): Promise<EntityConsolidationStats> {
+    const stats = emptyEntityConsolidationStats();
+    if (input.factMemories.length === 0) return stats;
+    const clusters = selectEntityConsolidationClusters(input.factMemories, input.config);
+    stats.clustersFound = clusters.length;
+    if (clusters.length === 0) return stats;
+    const report: RuntimeConsolidationReport = {
+      enabled: input.config.enabled,
+      evaluated: input.factMemories.length,
+      duplicateClusters: [],
+      entityClusters: [],
+      summaryMemories: [],
+      rejectedCandidates: [],
+      skipped: [],
+    };
+    const applied = await applyConsolidationClusters({
+      profileId: input.profileId,
+      now: input.now,
+      dryRun: false,
+      report,
+      clusters,
+      memoriesById: new Map(input.factMemories.map((memory) => [memory.id, memory])),
+      recordConsolidationSummary: input.recordConsolidationSummary,
+    });
+    return {
+      ...applied,
+      clustersFound: stats.clustersFound,
+    };
+  }
+
   async function applySemanticConsolidation(input: {
     profileId: string;
     now: string;
@@ -3623,11 +3901,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   }): Promise<void> {
     if (!input.report.consolidation.enabled) return;
     if (!options.consolidator) {
-      addConsolidationSkipped(input.report, "consolidator_not_configured");
+      addConsolidationSkipped(input.report.consolidation, "consolidator_not_configured");
       return;
     }
     if (!store.listMemories || !store.recordConsolidationSummary) {
-      addConsolidationSkipped(input.report, "store_consolidation_summary_unsupported");
+      addConsolidationSkipped(
+        input.report.consolidation,
+        "store_consolidation_summary_unsupported",
+      );
       return;
     }
     const plannedArchived = new Set(
@@ -3659,161 +3940,19 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       memories.length,
     );
     if (clusters.length === 0) {
-      addConsolidationSkipped(input.report, "no_semantic_clusters");
+      addConsolidationSkipped(input.report.consolidation, "no_semantic_clusters");
       return;
     }
     const memoriesById = new Map(memories.map((memory) => [memory.id, memory]));
-    const seenCandidates = new Set<string>();
-    const name = consolidatorName(options.consolidator);
-    for (const cluster of clusters) {
-      const clusterMemoryKind = consolidationClusterMemoryKind(cluster);
-      const sourceMemoryIds = cluster.memories.map((memory) => memory.id);
-      const clusterSourceTrust = sourceTrustForMemoryIds(sourceMemoryIds, memoriesById);
-      const rawCandidates = await callConsolidator(cluster);
-      if (rawCandidates === null) {
-        addConsolidationSkipped(input.report, "consolidator_returned_null_or_failed");
-        continue;
-      }
-      if (rawCandidates.length === 0) {
-        addConsolidationSkipped(input.report, "consolidator_returned_empty");
-        continue;
-      }
-      for (const candidate of rawCandidates) {
-        const normalized = normalizeConsolidationCandidate(candidate, cluster);
-        if ("reason" in normalized) {
-          input.report.consolidation.rejectedCandidates.push({
-            kind: clusterMemoryKind,
-            sourceMemoryIds,
-            reason: normalized.reason,
-          });
-          continue;
-        }
-        if (
-          clusterSourceTrust !== "user" &&
-          lowerTrustConsolidationPolicyKind(normalized.normalized)
-        ) {
-          input.report.consolidation.rejectedCandidates.push({
-            kind: clusterMemoryKind,
-            sourceMemoryIds,
-            reason: "lower_trust_policy_write",
-          });
-          continue;
-        }
-        const contentSensitivity = classifyRuntimeSensitivity(
-          normalized.normalized.content,
-          "content",
-        );
-        const structuredSensitivity = runtimeValueSensitivity(
-          {
-            subject: normalized.normalized.subject,
-            predicate: normalized.normalized.predicate,
-            object: normalized.normalized.object,
-          },
-          classifyRuntimeSensitivity,
-          new WeakSet<object>(),
-          "structured_candidate",
-        );
-        if (contentSensitivity === "secret_like" || structuredSensitivity === "secret_like") {
-          input.report.consolidation.rejectedCandidates.push({
-            kind: clusterMemoryKind,
-            sourceMemoryIds,
-            reason: "secret_like",
-          });
-          continue;
-        }
-        const key = uniqueConsolidationCandidateKey(normalized.normalized);
-        if (seenCandidates.has(key)) {
-          input.report.consolidation.rejectedCandidates.push({
-            kind: clusterMemoryKind,
-            sourceMemoryIds,
-            reason: "duplicate",
-          });
-          continue;
-        }
-        seenCandidates.add(key);
-        const confidenceCap = sourceTrustConfidenceCap(clusterSourceTrust, trust);
-        const confidence = confidenceCap === undefined
-          ? normalized.normalized.confidence
-          : Math.min(normalized.normalized.confidence, confidenceCap);
-        const trustMetadata = {
-          sourceTrust: clusterSourceTrust,
-          ...lowerTrustAnnealingMetadata({
-            sourceTrust: clusterSourceTrust,
-            confidence,
-            startedAt: input.now,
-            lifecycle,
-          }),
-        };
-        const summary = {
-          kind: normalized.normalized.kind,
-          sourceMemoryIds,
-          sharedTags: cluster.sharedTags,
-          content: normalized.normalized.content,
-          confidence,
-          reasons: ["host_consolidator_summary"],
-        };
-        if (input.dryRun) {
-          input.report.consolidation.summaryMemories.push(summary);
-          if (cluster.kind === "entity" && cluster.entityKey && cluster.entityObject) {
-            input.report.consolidation.entityClusters?.push({
-              kind: normalized.normalized.kind,
-              entityKey: cluster.entityKey,
-              entityObject: cluster.entityObject,
-              sourceMemoryIds,
-              reasons: ["host_consolidator_summary"],
-            });
-          }
-          continue;
-        }
-        const embedding = await embeddingForRuntimeWrite({
-          kind: normalized.normalized.kind,
-          sensitivity: contentSensitivity,
-          content: normalized.normalized.content,
-        });
-        const result = await store.recordConsolidationSummary({
-          profileId: input.profileId,
-          kind: normalized.normalized.kind,
-          content: normalized.normalized.content,
-          sensitivity: contentSensitivity,
-          confidence,
-          sourceMemoryIds,
-          sharedTags: cluster.sharedTags,
-          createdAt: input.now,
-          metadata: {
-            consolidationSource: "host_consolidator",
-            ...trustMetadata,
-            ...(name ? { consolidatorName: name } : {}),
-          },
-          ...(embedding ? { embedding } : {}),
-          ...(normalized.normalized.subject &&
-          normalized.normalized.predicate &&
-          normalized.normalized.object
-            ? {
-                belief: {
-                  subject: normalized.normalized.subject,
-                  predicate: normalized.normalized.predicate,
-                  object: normalized.normalized.object,
-                },
-              }
-            : {}),
-        });
-        input.report.consolidation.summaryMemories.push({
-          ...summary,
-          memoryId: result.memory.id,
-          ...(result.worldBelief ? { worldBeliefId: result.worldBelief.id } : {}),
-        });
-        if (cluster.kind === "entity" && cluster.entityKey && cluster.entityObject) {
-          input.report.consolidation.entityClusters?.push({
-            kind: normalized.normalized.kind,
-            entityKey: cluster.entityKey,
-            entityObject: cluster.entityObject,
-            sourceMemoryIds,
-            summaryMemoryId: result.memory.id,
-            reasons: ["host_consolidator_summary"],
-          });
-        }
-      }
-    }
+    await applyConsolidationClusters({
+      profileId: input.profileId,
+      now: input.now,
+      dryRun: input.dryRun,
+      report: input.report.consolidation,
+      clusters,
+      memoriesById,
+      recordConsolidationSummary: store.recordConsolidationSummary,
+    });
   }
 
   function addDistillationSkipped(

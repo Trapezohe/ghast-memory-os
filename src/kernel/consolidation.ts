@@ -424,9 +424,10 @@ export function selectEntityConsolidationClusters(
 ): MemoryConsolidationCluster[] {
   if (!config.enabled || !config.entityConsolidation.enabled) return [];
   const minClusterSize = Math.max(2, config.entityConsolidation.minClusterSize);
-  const frequencies = entityTokenDocumentFrequency(memories);
-  const maxDf = Math.ceil(memories.length * ENTITY_TOKEN_MAX_DF_FRACTION);
-  const candidates = memories
+  const activeMemories = memories.filter((memory) => memory.status === "active");
+  const frequencies = entityTokenDocumentFrequency(activeMemories);
+  const maxDf = Math.ceil(activeMemories.length * ENTITY_TOKEN_MAX_DF_FRACTION);
+  const candidates = activeMemories
     .filter(memoryCanEnterConsolidation)
     .filter((memory) => !metadataHasConsolidationResidue(memory))
     .map((memory) => {

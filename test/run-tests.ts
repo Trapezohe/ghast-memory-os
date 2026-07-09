@@ -7934,6 +7934,18 @@ const entityClusterFixture = [
     { object: "archived gate two" },
     { status: "archived" },
   ),
+  entityClusterMemory(
+    "dormant-gate-1",
+    "Dormantprobe should not cluster from dormant memory.",
+    { object: "dormant gate one" },
+    { status: "dormant" },
+  ),
+  entityClusterMemory(
+    "dormant-gate-2",
+    "Dormantprobe should not cluster from dormant memory.",
+    { object: "dormant gate two" },
+    { status: "dormant" },
+  ),
   entityClusterMemory("missing-object", "lowercase note without object metadata."),
 ];
 const entityClusterConfig = resolveKernelMemoryConsolidationConfig({
@@ -7957,6 +7969,7 @@ assert.equal(entityClusters.some((cluster) => cluster.entityKey === "workshop"),
 assert.equal(entityClusters.some((cluster) => cluster.entityKey === "commonword"), false);
 assert.equal(entityClusters.some((cluster) => cluster.entityKey === "gateprobe"), false);
 assert.equal(entityClusters.some((cluster) => cluster.entityKey === "archiveprobe"), false);
+assert.equal(entityClusters.some((cluster) => cluster.entityKey === "dormantprobe"), false);
 assert.deepEqual(
   selectEntityConsolidationClusters(entityClusterFixture, entityClusterConfig).map((cluster) =>
     cluster.memories.map((memory) => memory.id)
@@ -8185,6 +8198,270 @@ const entityRuntimeReplay = await entityRuntimeMemory.maintain({
   phases: ["consolidate"],
 });
 assert.equal(entityRuntimeReplay.consolidation.summaryMemories.length, 0);
+const ingestEntityKinds = [
+  {
+    key: "b-29",
+    object: "1/72 scale B-29 bomber model kit",
+    label: "B-29",
+  },
+  {
+    key: "camaro",
+    object: "1969 Camaro Z/28 model kit",
+    label: "Camaro",
+  },
+  {
+    key: "spitfire",
+    object: "Tamiya Spitfire model kit",
+    label: "Spitfire",
+  },
+];
+const ingestEntityFragments = ingestEntityKinds.flatMap((entity) =>
+  ["paint", "decal", "wire", "display"].map((predicate, index) => ({
+    key: entity.key,
+    object: entity.object,
+    content: `Hangar note ${index}: ${entity.label} ${predicate} fragment.`,
+    predicate,
+  }))
+);
+const ingestEntityNoise = Array.from({ length: 24 }, (_, index) => ({
+  kind: "fact" as const,
+  content: `zzingest${String(index).padStart(4, "0")}`,
+  confidence: 0.7,
+  subject: "user",
+  predicate: `noise_${index}`,
+  object: `noise ${index}`,
+  cardinality: "single" as const,
+}));
+const ingestEntityExtractor: MemoryExtractor = {
+  name: "ingest-entity-extractor",
+  extract() {
+    return [
+      ...ingestEntityFragments.map((fragment) => ({
+        kind: "fact" as const,
+        content: fragment.content,
+        confidence: 0.87,
+        subject: "user",
+        predicate: `${fragment.key}_${fragment.predicate}`,
+        object: fragment.object,
+        cardinality: "single" as const,
+      })),
+      ...ingestEntityNoise,
+      {
+        kind: "fact" as const,
+        content: "Gateprobe secret fragment api key sk-ingestentitysecret1234567890.",
+        confidence: 0.9,
+        subject: "user",
+        predicate: "gateprobe_secret",
+        object: "Gateprobe secret",
+        cardinality: "single" as const,
+      },
+      {
+        kind: "person" as const,
+        content: "Gateprobe person fragment should not consolidate.",
+        confidence: 0.9,
+      },
+    ];
+  },
+};
+const ingestEntityConsolidatorCalls: Array<{
+  kind: string;
+  entityKey?: string | undefined;
+  sourceCount: number;
+}> = [];
+const ingestEntityStore = createSqliteMemoryStore({
+  path: path.join(tmp, "ingest-entity-consolidation.db"),
+});
+const ingestEntityMemory = createMemoryOS({
+  profileId: "ingest_entity",
+  store: ingestEntityStore,
+  extractor: ingestEntityExtractor,
+  sessionDistiller: {
+    distill() {
+      return [{
+        kind: "fact" as const,
+        content: "Session summary mentions B-29 but is outside entity ingest scope.",
+        confidence: 0.7,
+      }];
+    },
+  },
+  consolidator: {
+    name: "ingest-entity-consolidator",
+    consolidate(cluster) {
+      ingestEntityConsolidatorCalls.push({
+        kind: cluster.kind,
+        ...(cluster.entityKey ? { entityKey: cluster.entityKey } : {}),
+        sourceCount: cluster.memories.length,
+      });
+      return [{
+        kind: "fact" as const,
+        content: `Canonical ingest entity ${cluster.entityKey}: ${cluster.entityObject}.`,
+        confidence: 0.91,
+        subject: "user",
+        predicate: `canonical_ingest_entity_${cluster.entityKey}`,
+        object: cluster.entityObject ?? cluster.entityKey ?? "entity",
+      }];
+    },
+  },
+});
+const ingestEntityResult = await ingestEntityMemory.ingestConversation({
+  profileId: "ingest_entity",
+  messages: [{
+    role: "user",
+    content: "I have several fragmented model-kit updates.",
+    messageId: "ingest-entity-message-1",
+    createdAt: "2026-07-03T02:20:00.000Z",
+  }],
+  turnRetention: { enabled: true },
+  sessionDistillation: true,
+  consolidateEntities: { minClusterSize: 4 },
+});
+assert.deepEqual(ingestEntityResult.entityConsolidation, {
+  clustersFound: 3,
+  clustersMerged: 3,
+  consolidatorCallCount: 3,
+  consolidatorFailureCount: 0,
+});
+assert.deepEqual(
+  ingestEntityConsolidatorCalls,
+  ingestEntityKinds.map((entity) => ({ kind: "entity", entityKey: entity.key, sourceCount: 4 })),
+);
+const ingestEntityAfter = await ingestEntityMemory.list({
+  profileId: "ingest_entity",
+  status: "any",
+  includeSensitive: true,
+  includePerson: true,
+  limit: 100,
+});
+assert.deepEqual(
+  Object.fromEntries(ingestEntityKinds.map((entity) => [
+    entity.key,
+    {
+      activeFragments: ingestEntityAfter.filter((memory) =>
+        memory.status === "active" &&
+        String(memory.metadata.predicate ?? "").startsWith(`${entity.key}_`)
+      ).length,
+      dormantFragments: ingestEntityAfter.filter((memory) =>
+        memory.status === "dormant" &&
+        String(memory.metadata.predicate ?? "").startsWith(`${entity.key}_`) &&
+        typeof memory.metadata.consolidatedInto === "string"
+      ).length,
+      canonicals: ingestEntityAfter.filter((memory) =>
+        memory.status === "active" &&
+        memory.metadata.consolidationSummary === true &&
+        memory.content.includes(`Canonical ingest entity ${entity.key}:`)
+      ).length,
+    },
+  ])),
+  Object.fromEntries(ingestEntityKinds.map((entity) => [
+    entity.key,
+    { activeFragments: 0, dormantFragments: 4, canonicals: 1 },
+  ])),
+);
+assert.equal(ingestEntityAfter.some((memory) => memory.content.includes("Gateprobe")), false);
+const ingestEntityReplayCalls = ingestEntityConsolidatorCalls.length;
+const ingestEntityReplayResult = await ingestEntityMemory.ingestConversation({
+  profileId: "ingest_entity",
+  messages: [{
+    role: "user",
+    content: "I have several fragmented model-kit updates.",
+    messageId: "ingest-entity-message-1",
+    createdAt: "2026-07-03T02:20:00.000Z",
+  }],
+  consolidateEntities: { minClusterSize: 4 },
+});
+assert.deepEqual(ingestEntityReplayResult.entityConsolidation, {
+  clustersFound: 0,
+  clustersMerged: 0,
+  consolidatorCallCount: 0,
+  consolidatorFailureCount: 0,
+});
+assert.equal(ingestEntityConsolidatorCalls.length, ingestEntityReplayCalls);
+const ingestEntityAfterReplay = await ingestEntityMemory.list({
+  profileId: "ingest_entity",
+  status: "any",
+  includeSensitive: true,
+  limit: 100,
+});
+assert.equal(
+  ingestEntityAfterReplay.filter((memory) =>
+    memory.status === "active" && memory.metadata.consolidationSummary === true
+  ).length,
+  3,
+);
+const ingestEntityOffStore = createSqliteMemoryStore({
+  path: path.join(tmp, "ingest-entity-off.db"),
+});
+let ingestEntityOffConsolidatorCalls = 0;
+const ingestEntityOffMemory = createMemoryOS({
+  profileId: "ingest_entity_off",
+  store: ingestEntityOffStore,
+  extractor: ingestEntityExtractor,
+  consolidator: {
+    consolidate() {
+      ingestEntityOffConsolidatorCalls += 1;
+      return [];
+    },
+  },
+});
+const ingestEntityOffResult = await ingestEntityOffMemory.ingestConversation({
+  profileId: "ingest_entity_off",
+  messages: [{
+    role: "user",
+    content: "I have several fragmented model-kit updates.",
+    messageId: "ingest-entity-off-message-1",
+    createdAt: "2026-07-03T02:21:00.000Z",
+  }],
+});
+assert.equal(ingestEntityOffResult.entityConsolidation, undefined);
+assert.equal(ingestEntityOffConsolidatorCalls, 0);
+const ingestEntityNoHookStore = createSqliteMemoryStore({
+  path: path.join(tmp, "ingest-entity-no-hook.db"),
+});
+const ingestEntityNoHookMemory = createMemoryOS({
+  profileId: "ingest_entity_no_hook",
+  store: ingestEntityNoHookStore,
+  extractor: ingestEntityExtractor,
+});
+const ingestEntityNoHookResult = await ingestEntityNoHookMemory.ingestConversation({
+  profileId: "ingest_entity_no_hook",
+  messages: [{
+    role: "user",
+    content: "I have several fragmented model-kit updates.",
+    messageId: "ingest-entity-no-hook-message-1",
+    createdAt: "2026-07-03T02:22:00.000Z",
+  }],
+  consolidateEntities: { minClusterSize: 4 },
+});
+assert.equal(ingestEntityNoHookResult.entityConsolidation, undefined);
+const ingestEntityThrowingStore = createSqliteMemoryStore({
+  path: path.join(tmp, "ingest-entity-throwing.db"),
+});
+const ingestEntityThrowingMemory = createMemoryOS({
+  profileId: "ingest_entity_throwing",
+  store: ingestEntityThrowingStore,
+  extractor: ingestEntityExtractor,
+  consolidator: {
+    consolidate() {
+      throw new Error("expected ingest entity consolidator failure");
+    },
+  },
+});
+const ingestEntityThrowingResult = await ingestEntityThrowingMemory.ingestConversation({
+  profileId: "ingest_entity_throwing",
+  messages: [{
+    role: "user",
+    content: "I have several fragmented model-kit updates.",
+    messageId: "ingest-entity-throwing-message-1",
+    createdAt: "2026-07-03T02:23:00.000Z",
+  }],
+  consolidateEntities: { minClusterSize: 4 },
+});
+assert.deepEqual(ingestEntityThrowingResult.entityConsolidation, {
+  clustersFound: 3,
+  clustersMerged: 0,
+  consolidatorCallCount: 3,
+  consolidatorFailureCount: 3,
+});
 const entityDisabledStore = createSqliteMemoryStore({ path: path.join(tmp, "entity-consolidation-disabled.db") });
 const entityDisabledMemory = createMemoryOS({
   profileId: "entity_disabled",
@@ -28004,11 +28281,45 @@ assert.deepEqual(
     sourceCount: entity.predicates.length,
   })),
 );
-assert.deepEqual(entityAggregationOn.runManifest.runtimeIntelligence.maintainPhases, ["consolidate"]);
+assert.deepEqual(entityAggregationOn.runManifest.runtimeIntelligence.maintainPhases, []);
 assert.equal(entityAggregationOn.runManifest.runtimeIntelligence.consolidateEntities, true);
 assert.equal(entityAggregationOn.runManifest.options.consolidateEntities, true);
+assert.equal(entityAggregationOn.runManifest.runtimeIntelligence.entityConsolidationConsolidatorCallCount, 3);
+assert.equal(
+  entityAggregationOn.runManifest.runtimeIntelligence.ingestCaseGroups[0]?.entityConsolidationConsolidatorCallCount,
+  3,
+);
+assert.equal(
+  entityAggregationOn.runManifest.runtimeIntelligence.ingestCaseGroups[0]?.entityConsolidationClustersMerged,
+  3,
+);
 assert.equal(entityAggregationOn.runManifest.ingestCache.hits, 0);
 assert.equal(entityAggregationOn.runManifest.ingestCache.misses, 1);
+assert.equal(entityAggregationExtractorCalls, 3);
+entityAggregationConsolidatorCalls.length = 0;
+const entityAggregationCached = await runExternalMemoryBenchmark({
+  cases: [entityAggregationCase],
+  ingestMode: "message",
+  turnRetention: false,
+  consolidateEntities: true,
+  ingestCacheDir: entityAggregationCacheDir,
+  protocol: "official_protocol",
+  intelligence: {
+    extractor: entityAggregationExtractor,
+    consolidator: entityAggregationConsolidator,
+  },
+  answerer: entityAggregationAnswerer,
+  judge: entityAggregationJudge,
+});
+assert.equal(entityAggregationCached.pass, true);
+assert.deepEqual(entityAggregationConsolidatorCalls, []);
+assert.equal(entityAggregationCached.runManifest.ingestCache.hits, 1);
+assert.equal(entityAggregationCached.runManifest.ingestCache.misses, 0);
+assert.equal(
+  entityAggregationCached.runManifest.runtimeIntelligence.ingestCaseGroups[0]?.entityConsolidationConsolidatorCallCount,
+  0,
+);
+assert.equal(entityAggregationCached.runManifest.runtimeIntelligence.entityConsolidationConsolidatorCallCount, 0);
 assert.equal(entityAggregationExtractorCalls, 3);
 const externalSchemaGuardCacheDir = path.join(tmp, "external-ingest-cache-schema");
 externalIngestCacheExtractorCalls = 0;

@@ -61,7 +61,7 @@ Key write methods:
   does not run extraction or turn retention. Use it when a host already imported
   low-level memories but wants the same session-summary layer and idempotence as
   `ingestConversation()`.
-- `ingestConversation({ profileId?, messages, window?, extraction?, turnRetention?, sessionDistillation? })`:
+- `ingestConversation({ profileId?, messages, window?, extraction?, turnRetention?, sessionDistillation?, consolidateEntities? })`:
   records each message as its own evidence event, then calls the extractor once
   per eligible message window. `window.maxMessages` defaults to `12`; metadata
   `sessionId`, `sessionKey`, or generic `windowId` starts a new window when it
@@ -83,6 +83,16 @@ Key write methods:
   are truncated from the tail of that session input. Returned candidates are
   stored as ordinary evidence-linked memories with default `kind: "fact"`,
   default confidence `0.6`, and `metadata.sessionDistillation = true`.
+  `consolidateEntities` defaults to off. Pass `true` or
+  `{ minClusterSize?, maxClustersPerRun?, maxMembersPerCluster? }` to run
+  deterministic entity clustering after extraction, turn retention, and session
+  distillation, when a `consolidator` hook is configured. The ingest selector
+  only sees newly written extracted `fact` memories from this ingest call; it
+  does not cluster raw turn-retention memories or session-distillation summary
+  memories. Each entity cluster calls the host consolidator with `kind:
+  "entity"` and writes through the same consolidation summary path as
+  `maintain({ phases: ["consolidate"] })`, so source fragments are demoted to
+  dormant with `metadata.consolidatedInto` and consolidation evidence.
 
 Windowed extraction keeps evidence granularity. Accepted memories store
 `metadata.windowEvidenceIds` with every contributing evidence id and keep
@@ -101,6 +111,10 @@ Session distillation adds `distilledMemoryCount`, `distillationCallCount`,
 `distillationParseFailureCount`, `distillationTransportFailureCount`, and
 `distillationFailureCount`; `distillationTruncatedMessageCount` counts messages
 whose content was shortened or omitted by the per-session distiller input cap.
+When entity consolidation actually runs, the result also includes
+`entityConsolidation: { clustersFound, clustersMerged, consolidatorCallCount,
+consolidatorFailureCount }`. A throwing consolidator hook or empty hook result
+does not fail ingest; it increments `consolidatorFailureCount`.
 Turn-retention writes use the same secret-like, incognito, person-routing,
 trust-cap, and lower-trust policy gates as extracted memories. Re-running the
 same event-keyed ingest writes no new turn memories.
@@ -893,6 +907,11 @@ evidence has `sourceType: "consolidation"` and payload `sourceMemoryIds`; source
 memories are marked dormant with lifecycle evidence and `metadata.consolidatedInto`.
 If the candidate includes `subject`, `predicate`, and `object`, gmOS writes the
 corresponding world belief with the summary memory as source.
+
+`maintain({ phases: ["consolidate"] })` remains the periodic cross-batch
+consolidation path. `ingestConversation({ consolidateEntities })` uses the same
+host consolidator and summary/demotion write path, but only for the newly
+extracted `fact` memories in that ingest call.
 
 Host procedure distillation is optional:
 
