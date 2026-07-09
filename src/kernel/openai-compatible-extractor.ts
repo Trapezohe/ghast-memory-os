@@ -130,7 +130,45 @@ function contentFromStructuredFields(record: Record<string, unknown>): string | 
   return `${subject} ${predicate} ${object}`;
 }
 
-function normalizeCandidate(value: unknown): MemoryExtractionCandidate | null {
+function explicitlyEndsValidity(content: string): boolean {
+  return (
+    /\b(?:until|through|thru|expires?|expired|expiration|ends?|ended|ending|stops?|stopped|ceases?|ceased|no longer|last day)\b/iu.test(
+      content,
+    ) ||
+    /\bfrom\b[\s\S]{0,160}\b(?:to|until|through)\b|\bbetween\b[\s\S]{0,160}\band\b/iu.test(
+      content,
+    ) ||
+    /(?:直到|截止|有效期到|有效至|到期|失效|结束|终止|停止|不再|最后一天|(?:从|自)[\s\S]{0,80}(?:到|至))/u.test(content)
+  );
+}
+
+function candidateSource(
+  extractionInput: MemoryExtractionInput,
+  sourceIndex: number | undefined,
+): string {
+  const source = sourceIndex === undefined
+    ? undefined
+    : extractionInput.window?.messages[sourceIndex];
+  return source?.content ?? extractionInput.event.content;
+}
+
+function modelMetadata(
+  value: unknown,
+  allowValidityEnd: boolean,
+): Record<string, unknown> | undefined {
+  const metadata = metadataRecord(value);
+  if (!metadata || allowValidityEnd) return metadata;
+  const sanitized = { ...metadata };
+  for (const key of ["validTo", "valid_to", "expiresAt", "temporalValiditySource"]) {
+    delete sanitized[key];
+  }
+  return sanitized;
+}
+
+function normalizeCandidate(
+  value: unknown,
+  extractionInput: MemoryExtractionInput,
+): MemoryExtractionCandidate | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   if (record.kind !== undefined && !MEMORY_KINDS.has(record.kind as MemoryKind)) return null;
@@ -146,6 +184,8 @@ function normalizeCandidate(value: unknown): MemoryExtractionCandidate | null {
   const confidence = boundedNumber(Number(record.confidence), 0, 0, 1);
   const subjectAliases = optionalStringArray(record.subjectAliases);
   const sourceIndex = optionalSourceIndex(record.sourceIndex);
+  const allowValidityEnd = explicitlyEndsValidity(candidateSource(extractionInput, sourceIndex));
+  const validTo = allowValidityEnd ? optionalString(record.validTo) : undefined;
   return {
     kind,
     content,
@@ -159,14 +199,14 @@ function normalizeCandidate(value: unknown): MemoryExtractionCandidate | null {
     ...(optionalString(record.source) ? { source: optionalString(record.source) } : {}),
     ...(optionalString(record.eventTime) ? { eventTime: optionalString(record.eventTime) } : {}),
     ...(optionalString(record.validFrom) ? { validFrom: optionalString(record.validFrom) } : {}),
-    ...(optionalString(record.validTo) ? { validTo: optionalString(record.validTo) } : {}),
+    ...(validTo ? { validTo } : {}),
     ...(optionalCardinality(record.cardinality)
       ? { cardinality: optionalCardinality(record.cardinality) }
       : {}),
     ...(optionalActionPolicyKind(record.actionPolicyKind)
       ? { actionPolicyKind: optionalActionPolicyKind(record.actionPolicyKind) }
       : {}),
-    metadata: metadataRecord(record.metadata),
+    metadata: modelMetadata(record.metadata, allowValidityEnd),
   };
 }
 
@@ -184,7 +224,8 @@ function systemPrompt(maxCandidates: number): string {
     "Write candidate content in the same language as the source event. Preserve source wording where it carries meaning; do not translate non-English events into fixed English storage phrases.",
     "Use confidence from 0 to 1. Use cardinality='single' only for current-state beliefs.",
     "For windowed transcript input, include sourceIndex when one transcript line grounds the candidate.",
-    "Use subject, subjectAliases, predicate, and object for world-state facts; object should be the concise current value. Use speaker only when the fact belongs to a named human speaker and subject is not already explicit. Use source only for a concise public source label. Use eventTime, validFrom, and validTo as ISO dates or instants when the text gives time bounds.",
+    "Use subject, subjectAliases, predicate, and object for world-state facts; object should be the concise current value. Use speaker only when the fact belongs to a named human speaker and subject is not already explicit. Use source only for a concise public source label.",
+    "Use eventTime for when an event occurred. Use validFrom and validTo only for a fact's applicability window. validTo requires the source to explicitly say the fact expires, ends, stops, or is valid until a time. Never use the observation time or the endpoint of an ongoing duration as validTo; for phrases such as 'for three months now' or 'over the past two weeks', omit validTo.",
   ].join("\n");
 }
 
@@ -355,7 +396,7 @@ export function createOpenAICompatibleExtractor(
           completionText = completionJson.text;
           const rawCandidates = candidateArray(completionJson.parsed).slice(0, maxCandidates);
           return rawCandidates
-            .map(normalizeCandidate)
+            .map((candidate) => normalizeCandidate(candidate, input))
             .filter((candidate): candidate is MemoryExtractionCandidate => candidate !== null)
             .map((candidate) => ({
               ...candidate,

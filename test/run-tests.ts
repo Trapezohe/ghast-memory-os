@@ -6583,7 +6583,7 @@ const llmExtractionReport = await llmExtractorMemory.observeWithReport({
   type: "conversation.message",
   profileId: "llm_extractor",
   role: "user",
-  content: "我喜欢风险优先摘要；Mira 项目当前卡在 rollout audit。",
+  content: "我喜欢风险优先摘要；Mira 项目当前卡在 rollout audit，该状态有效期到 2999-07-01T10:30:00Z。",
   metadata: {
     speaker: "Mira User",
     speakerAliases: ["Mira Alias", { answer: "nested llm alias answer" }],
@@ -7068,6 +7068,93 @@ const windowCapInput: MemoryExtractionInput = {
     evidenceIds: ["evidence_window_cap_prompt"],
   },
 };
+const temporalGroundingRequestBodies: Array<{
+  messages?: Array<{ role?: string; content?: string }>;
+}> = [];
+const temporalGroundingExtractor = createOpenAICompatibleExtractor({
+  model: "fixture-temporal-grounding-model",
+  fetch: async (_url, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as {
+      messages?: Array<{ role?: string; content?: string }>;
+    };
+    temporalGroundingRequestBodies.push(body);
+    const explicitExpiry = body.messages?.[1]?.content?.includes("valid until") === true;
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify(openAICompletionResponse([{
+        kind: "fact",
+        content: explicitExpiry
+          ? "Access is valid until 2023-05-27."
+          : "user averaged 2 hours per day over the past two weeks",
+        confidence: 0.9,
+        sourceIndex: 0,
+        validFrom: "2023-05-13",
+        validTo: "2023-05-27",
+        metadata: {
+          valid_to: "2023-05-27",
+          expiresAt: "2023-05-27",
+          temporalValiditySource: "model",
+          fixtureMarker: "preserved",
+        },
+      }])),
+    };
+  },
+});
+const ongoingDurationInput: MemoryExtractionInput = {
+  ...openAICompatibleExtractorInput,
+  event: {
+    ...openAICompatibleExtractorInput.event,
+    createdAt: "2023-05-30T00:00:00.000Z",
+  },
+  evidence: {
+    ...openAICompatibleExtractorInput.evidence,
+    createdAt: "2023-05-30T00:00:00.000Z",
+  },
+  window: {
+    messages: [{
+      role: "user",
+      content: "I've been averaging 2 hours per day over the past two weeks.",
+      createdAt: "2023-05-27T04:20:00.000Z",
+    }, {
+      role: "assistant",
+      content: "Keep tracking the ongoing duration.",
+      createdAt: "2023-05-30T00:00:00.000Z",
+    }],
+    evidenceIds: ["evidence_ongoing_duration", "evidence_ongoing_duration_reply"],
+  },
+};
+const ongoingDurationCandidates = await runExtractorForTest(
+  temporalGroundingExtractor,
+  ongoingDurationInput,
+);
+assert.equal(ongoingDurationCandidates[0]?.validFrom, "2023-05-13");
+assert.equal(ongoingDurationCandidates[0]?.validTo, undefined);
+assert.equal(ongoingDurationCandidates[0]?.metadata?.valid_to, undefined);
+assert.equal(ongoingDurationCandidates[0]?.metadata?.expiresAt, undefined);
+assert.equal(ongoingDurationCandidates[0]?.metadata?.temporalValiditySource, undefined);
+assert.equal(ongoingDurationCandidates[0]?.metadata?.fixtureMarker, "preserved");
+const explicitExpiryCandidates = await runExtractorForTest(
+  temporalGroundingExtractor,
+  {
+    ...ongoingDurationInput,
+    window: {
+      messages: [{
+        role: "user",
+        content: "Access is valid until 2023-05-27.",
+        createdAt: "2023-05-27T04:20:00.000Z",
+      }],
+      evidenceIds: ["evidence_explicit_expiry"],
+    },
+  },
+);
+assert.equal(explicitExpiryCandidates[0]?.validTo, "2023-05-27");
+assert.equal(explicitExpiryCandidates[0]?.metadata?.valid_to, "2023-05-27");
+assert.match(
+  temporalGroundingRequestBodies[0]?.messages?.[0]?.content ?? "",
+  /Never use the observation time or the endpoint of an ongoing duration as validTo/u,
+);
 const windowCapCandidates = await runExtractorForTest(capExtractor, windowCapInput);
 assert.equal(windowCapCandidates.length, 12);
 const windowCapSystemPrompt = capRequestBodies[1]?.messages?.[0]?.content ?? "";
@@ -28934,6 +29021,7 @@ const externalOpenAICacheMeta = JSON.parse(
 ) as {
   keyFields?: {
     extraction?: {
+      contractVersion?: number | null;
       window?: number;
       maxChars?: number;
       extractorMaxCandidates?: number | null;
@@ -28941,6 +29029,7 @@ const externalOpenAICacheMeta = JSON.parse(
     };
   };
 };
+assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.contractVersion, 2);
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.window, 40);
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.maxChars, 30000);
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.extractorMaxCandidates, 48);

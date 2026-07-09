@@ -1081,6 +1081,7 @@ interface IngestCacheKeyFields {
     model: string | null;
   };
   extraction: {
+    contractVersion: number | null;
     window: number;
     maxChars: number;
     extractorMaxCandidates: number | null;
@@ -1101,6 +1102,8 @@ interface IngestCacheKeyFields {
     dimensions: number | null;
   };
 }
+
+const MESSAGE_EXTRACTION_CONTRACT_VERSION = 2;
 
 interface IngestCachePlan {
   key: string;
@@ -1190,6 +1193,9 @@ function ingestCacheKeyFields(input: {
       model: runtime.sessionDistillation.model,
     },
     extraction: {
+      contractVersion: runtime.hookNames.extractor
+        ? MESSAGE_EXTRACTION_CONTRACT_VERSION
+        : null,
       window: normalizedExtractionWindow(input.options.extractionWindow),
       maxChars: normalizedExtractionMaxChars(input.options.extractionMaxChars),
       extractorMaxCandidates: runtime.extractorMaxCandidates,
