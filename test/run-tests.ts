@@ -168,6 +168,8 @@ import {
   observedAtSegment,
   temporalContextLabel,
   temporalMetadataSegment,
+  temporalReferenceDateLabel,
+  utcCalendarDayDelta,
 } from "../src/kernel/temporal-format.js";
 import {
   explicitEventTimeMetadata,
@@ -5495,6 +5497,82 @@ assert.deepEqual(
     "valid_to_utc=18:45",
   ],
 );
+assert.deepEqual(
+  filterTemporalAnnotationSegments("fact; days_ago=9; days_ahead=2; confidence=0.90"),
+  ["days_ago=9", "days_ahead=2"],
+);
+assert.equal(temporalReferenceDateLabel("2023-04-20T23:30:00-02:00"), "2023-04-21");
+assert.equal(temporalReferenceDateLabel("not-a-date"), "");
+assert.equal(utcCalendarDayDelta("2023-04-20", "2023-04-11"), 9);
+assert.equal(utcCalendarDayDelta("2023-04-20", "2023-04-20"), 0);
+assert.equal(utcCalendarDayDelta("2023-05-01", "2023-04-30"), 1);
+assert.equal(utcCalendarDayDelta("2024-03-01", "2024-02-29"), 1);
+assert.equal(utcCalendarDayDelta("2024-01-01", "2023-12-31"), 1);
+assert.equal(utcCalendarDayDelta("2023-04-20", "2023-04-22"), -2);
+const relativeRenderingMemory = createMemoryOS({
+  profileId: "relative-rendering",
+  store: createSqliteMemoryStore({ path: path.join(tmp, "relative-rendering.db") }),
+});
+await relativeRenderingMemory.add({
+  profileId: "relative-rendering",
+  kind: "fact",
+  content: "The fern cutting was acquired.",
+  createdAt: "2023-04-11T20:30:00.000Z",
+});
+await relativeRenderingMemory.add({
+  profileId: "relative-rendering",
+  kind: "fact",
+  content: "The moss tray was checked.",
+  metadata: { eventDate: "2023-04-18" },
+  createdAt: "2023-04-01T00:00:00.000Z",
+});
+await relativeRenderingMemory.add({
+  profileId: "relative-rendering",
+  kind: "fact",
+  content: "The orchid shipment arrives later.",
+  metadata: { eventDate: "2023-04-22" },
+  createdAt: "2023-04-10T00:00:00.000Z",
+});
+const relativeRenderingRequest = {
+  profileId: "relative-rendering",
+  query: "fern cutting moss tray orchid shipment",
+  maxSteps: 6,
+  maxBranch: 10,
+  maxMemories: 6,
+};
+const relativeRenderingWithoutAsOf = await relativeRenderingMemory.reconstructContext(relativeRenderingRequest);
+const relativeRenderingInvalidAsOf = await relativeRenderingMemory.reconstructContext({
+  ...relativeRenderingRequest,
+  asOf: "not-a-date",
+});
+assert.equal(relativeRenderingInvalidAsOf.contextBlock, relativeRenderingWithoutAsOf.contextBlock);
+assert.doesNotMatch(relativeRenderingWithoutAsOf.contextBlock, /As of:|days_(?:ago|ahead)=/);
+const relativeRendering = await relativeRenderingMemory.reconstructContext({
+  ...relativeRenderingRequest,
+  asOf: "2023-04-20T00:00:00.000Z",
+});
+const relativeRenderingAgain = await relativeRenderingMemory.reconstructContext({
+  ...relativeRenderingRequest,
+  asOf: "2023-04-20T00:00:00.000Z",
+});
+assert.equal(relativeRenderingAgain.contextBlock, relativeRendering.contextBlock);
+assert.match(relativeRendering.contextBlock, /As of: 2023-04-20/);
+assert.match(relativeRendering.contextBlock, /The fern cutting was acquired/);
+assert.match(relativeRendering.contextBlock, /The moss tray was checked/);
+assert.match(relativeRendering.contextBlock, /The orchid shipment arrives later/);
+assert.match(relativeRendering.contextBlock, /\[fact; observed 2023-04-11; days_ago=9; confidence=/);
+assert.match(relativeRendering.contextBlock, /\[fact; 2023-04-18; days_ago=2; confidence=/);
+assert.match(relativeRendering.contextBlock, /\[fact; 2023-04-22; days_ahead=2; confidence=/);
+const relativeRenderingLines = relativeRendering.contextBlock.split("\n");
+const fernPathLine = relativeRenderingLines.find((line) =>
+  line.startsWith("- [step=") && line.includes("The fern cutting was acquired")
+);
+const fernMemoryLine = relativeRenderingLines.find((line) =>
+  line.startsWith("- [fact;") && line.includes("The fern cutting was acquired")
+);
+assert.match(fernPathLine ?? "", /observed 2023-04-11; days_ago=9/);
+assert.match(fernMemoryLine ?? "", /observed 2023-04-11; days_ago=9/);
+await relativeRenderingMemory.close();
 const nonTemporalReconstruction = await temporalMemory.reconstructContext({
   profileId: "temporal",
   query: "When was the Temporal window Atlas owner observed?",
@@ -25578,6 +25656,220 @@ assert.match(officialJudgeSystemPrompt, /unavailable or unanswerable/);
 assert.match(officialJudgeSystemPrompt, /appropriately declines or states the information is missing is CORRECT/);
 assert.match(officialJudgeSystemPrompt, /fabricated specific answer is INCORRECT/);
 assert.match(officialJudgeSystemPrompt, /Return JSON only: \{"correct":true\|false,"rationale":"\.\.\."\}/);
+const longMemEvalGeneralPrompt = (question: string, answer: string, response: string): string =>
+  `I will give you a question, a correct answer, and a response from a model. Please answer yes if the response contains the correct answer. Otherwise, answer no. If the response is equivalent to the correct answer or contains all the intermediate steps to get the correct answer, you should also answer yes. If the response only contains a subset of the information required by the answer, answer no. \n\nQuestion: ${question}\n\nCorrect Answer: ${answer}\n\nModel Response: ${response}\n\nIs the model response correct? Answer yes or no only.`;
+const longMemEvalTemporalPrompt = (question: string, answer: string, response: string): string =>
+  `I will give you a question, a correct answer, and a response from a model. Please answer yes if the response contains the correct answer. Otherwise, answer no. If the response is equivalent to the correct answer or contains all the intermediate steps to get the correct answer, you should also answer yes. If the response only contains a subset of the information required by the answer, answer no. In addition, do not penalize off-by-one errors for the number of days. If the question asks for the number of days/weeks/months, etc., and the model makes off-by-one errors (e.g., predicting 19 days when the answer is 18), the model's response is still correct.\n\nQuestion: ${question}\n\nCorrect Answer: ${answer}\n\nModel Response: ${response}\n\nIs the model response correct? Answer yes or no only.`;
+const longMemEvalKnowledgeUpdatePrompt = (question: string, answer: string, response: string): string =>
+  `I will give you a question, a correct answer, and a response from a model. Please answer yes if the response contains the correct answer. Otherwise, answer no. If the response contains some previous information along with an updated answer, the response should be considered as correct as long as the updated answer is the required answer.\n\nQuestion: ${question}\n\nCorrect Answer: ${answer}\n\nModel Response: ${response}\n\nIs the model response correct? Answer yes or no only.`;
+const longMemEvalPreferencePrompt = (question: string, answer: string, response: string): string =>
+  `I will give you a question, a rubric for desired personalized response, and a response from a model. Please answer yes if the response satisfies the desired response. Otherwise, answer no. The model does not need to reflect all the points in the rubric. The response is correct as long as it recalls and utilizes the user's personal information correctly.\n\nQuestion: ${question}\n\nRubric: ${answer}\n\nModel Response: ${response}\n\nIs the model response correct? Answer yes or no only.`;
+const longMemEvalAbstentionPrompt = (question: string, answer: string, response: string): string =>
+  `I will give you an unanswerable question, an explanation, and a response from a model. Please answer yes if the model correctly identifies the question as unanswerable. The model could say that the information is incomplete, or some other information is given but the asked information is not.\n\nQuestion: ${question}\n\nExplanation: ${answer}\n\nModel Response: ${response}\n\nDoes the model correctly identify the question as unanswerable? Answer yes or no only.`;
+const longMemEvalOfficialJudgeBodies: Array<{
+  max_tokens?: number;
+  response_format?: unknown;
+  messages?: Array<{ role?: string; content?: string }>;
+}> = [];
+let longMemEvalOfficialJudgeCalls = 0;
+const longMemEvalOfficialJudge = createOpenAICompatibleExternalBenchmarkJudge({
+  baseUrl: "https://judge.invalid/v1",
+  model: "longmemeval-official-judge",
+  profile: "longmemeval_official",
+  fetchImpl: async (_url, init) => {
+    longMemEvalOfficialJudgeCalls += 1;
+    longMemEvalOfficialJudgeBodies.push(JSON.parse(String(init?.body ?? "{}")) as {
+      max_tokens?: number;
+      response_format?: unknown;
+      messages?: Array<{ role?: string; content?: string }>;
+    });
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({
+        choices: [{ message: { content: longMemEvalOfficialJudgeCalls === 1 ? "Yes." : "no" } }],
+      }),
+    };
+  },
+});
+assert.equal(longMemEvalOfficialJudge.profile, "longmemeval_official");
+assert.deepEqual(await longMemEvalOfficialJudge.judge("Question?", "Expected", "Actual"), {
+  correct: true,
+  rationale: "upstream longmemeval yes/no: yes",
+});
+assert.deepEqual(await longMemEvalOfficialJudge.judge("Question?", "Expected", "Actual"), {
+  correct: false,
+  rationale: "upstream longmemeval yes/no: no",
+});
+assert.equal(longMemEvalOfficialJudgeBodies[0]?.max_tokens, 2048);
+assert.equal(longMemEvalOfficialJudgeBodies[0]?.response_format, undefined);
+assert.deepEqual(longMemEvalOfficialJudgeBodies[0]?.messages, [{
+  role: "user",
+  content: longMemEvalGeneralPrompt("Question?", "Expected", "Actual"),
+}]);
+let failingLongMemEvalJudgeCalls = 0;
+const failingLongMemEvalJudge = createOpenAICompatibleExternalBenchmarkJudge({
+  baseUrl: "https://judge.invalid/v1",
+  model: "failing-longmemeval-judge",
+  profile: "longmemeval_official",
+  fetchImpl: async () => {
+    failingLongMemEvalJudgeCalls += 1;
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({
+        choices: [{ message: { content: "maybe" } }],
+      }),
+    };
+  },
+});
+await assert.rejects(
+  () => failingLongMemEvalJudge.judge("Question?", "Expected", "Actual"),
+  /OpenAI-compatible benchmark LongMemEval judge returned no yes\/no answer/u,
+);
+assert.equal(failingLongMemEvalJudgeCalls, 3);
+assert.equal(failingLongMemEvalJudge.manifest?.judgeRetryCount, 2);
+assert.equal(failingLongMemEvalJudge.manifest?.judgeRecoveredCount, 0);
+const longMemEvalOfficialPromptBodies: Array<{
+  response_format?: unknown;
+  messages?: Array<{ role?: string; content?: string }>;
+}> = [];
+const longMemEvalOfficialPromptBenchmark = await runExternalMemoryBenchmark({
+  protocol: "official_protocol",
+  concurrency: 1,
+  cases: [
+    {
+      id: "lme-prompt-single-user",
+      events: [{ type: "memory" as const, kind: "fact" as const, content: "Single user answer is Ada." }],
+      question: "Who is the single user answer?",
+      questionType: "single-session-user",
+      expectedAny: ["Ada"],
+    },
+    {
+      id: "lme-prompt-single-assistant",
+      events: [{ type: "memory" as const, kind: "fact" as const, content: "Single assistant answer is Bert." }],
+      question: "Who is the single assistant answer?",
+      questionType: "single-session-assistant",
+      expectedAny: ["Bert"],
+    },
+    {
+      id: "lme-prompt-multi",
+      events: [{ type: "memory" as const, kind: "fact" as const, content: "Multi answer is Cedar." }],
+      question: "What is the multi answer?",
+      questionType: "multi-session",
+      expectedAny: ["Cedar"],
+    },
+    {
+      id: "lme-prompt-temporal",
+      events: [{ type: "memory" as const, kind: "fact" as const, content: "The gap is 18 days." }],
+      question: "How many days is the gap?",
+      questionType: "temporal-reasoning",
+      expectedAny: ["18 days"],
+    },
+    {
+      id: "lme-prompt-knowledge",
+      events: [{ type: "memory" as const, kind: "fact" as const, content: "Updated answer is Indigo." }],
+      question: "What is the updated answer?",
+      questionType: "knowledge-update",
+      expectedAny: ["Indigo"],
+    },
+    {
+      id: "lme-prompt-preference",
+      events: [{ type: "memory" as const, kind: "preference" as const, content: "The user prefers spicy food." }],
+      question: "What should the recommendation use?",
+      questionType: "single-session-preference",
+      expectedAny: ["Use the user's spicy food preference."],
+    },
+    {
+      id: "lme-prompt-fallback",
+      events: [{ type: "memory" as const, kind: "fact" as const, content: "Fallback answer is Fjord." }],
+      question: "What is the fallback answer?",
+      expectedAny: ["Fjord"],
+    },
+    {
+      id: "lme-prompt-abstention_abs",
+      events: [{ type: "memory" as const, kind: "fact" as const, content: "The asked information was never provided." }],
+      question: "What is the missing answer?",
+      questionType: "knowledge-update",
+      expectedAny: ["No source states the missing answer."],
+    },
+  ],
+  answerer: {
+    name: "longmemeval-prompt-answerer",
+    answer(question) {
+      if (question.includes("single user")) return "Ada";
+      if (question.includes("single assistant")) return "Bert";
+      if (question.includes("multi answer")) return "Cedar";
+      if (question.includes("days")) return "19 days";
+      if (question.includes("updated")) return "The previous answer changed; the updated answer is Indigo.";
+      if (question.includes("recommendation")) return "Recommend spicy food because that matches the user's preference.";
+      if (question.includes("fallback")) return "Fjord";
+      return "I do not have enough information to answer that question.";
+    },
+  },
+  judge: createOpenAICompatibleExternalBenchmarkJudge({
+    baseUrl: "https://judge.invalid/v1",
+    model: "longmemeval-prompt-judge",
+    profile: "longmemeval_official",
+    fetchImpl: async (_url, init) => {
+      longMemEvalOfficialPromptBodies.push(JSON.parse(String(init?.body ?? "{}")) as {
+        response_format?: unknown;
+        messages?: Array<{ role?: string; content?: string }>;
+      });
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () => JSON.stringify({
+          choices: [{ message: { content: "yes" } }],
+        }),
+      };
+    },
+  }),
+});
+assert.equal(longMemEvalOfficialPromptBenchmark.pass, true);
+assert.equal(longMemEvalOfficialPromptBenchmark.officialScore, 1);
+assert.equal(longMemEvalOfficialPromptBenchmark.runManifest.judgeProfile, "longmemeval_official");
+assert.equal(longMemEvalOfficialPromptBenchmark.runManifest.options.judgeProfile, "longmemeval_official");
+assert.equal(longMemEvalOfficialPromptBenchmark.runManifest.scoreSemantics.judgeProfile, "longmemeval_official");
+assert.equal(longMemEvalOfficialPromptBenchmark.runManifest.scoreSemantics.comparableToOfficialScore, true);
+assert.equal(longMemEvalOfficialPromptBenchmark.cases.find((entry) => entry.id === "lme-prompt-temporal")?.officialPass, true);
+assert.match(
+  renderExternalMemoryBenchmarkMarkdown(longMemEvalOfficialPromptBenchmark),
+  /Judge profile: longmemeval_official \(judge: upstream LongMemEval per-type\)/u,
+);
+assert.equal(longMemEvalOfficialPromptBodies.every((body) => body.response_format === undefined), true);
+assert.deepEqual(
+  longMemEvalOfficialPromptBodies.map((body) => body.messages?.[0]?.content),
+  [
+    longMemEvalGeneralPrompt("Who is the single user answer?", "Ada", "Ada"),
+    longMemEvalGeneralPrompt("Who is the single assistant answer?", "Bert", "Bert"),
+    longMemEvalGeneralPrompt("What is the multi answer?", "Cedar", "Cedar"),
+    longMemEvalTemporalPrompt("How many days is the gap?", "18 days", "19 days"),
+    longMemEvalKnowledgeUpdatePrompt(
+      "What is the updated answer?",
+      "Indigo",
+      "The previous answer changed; the updated answer is Indigo.",
+    ),
+    longMemEvalPreferencePrompt(
+      "What should the recommendation use?",
+      "Use the user's spicy food preference.",
+      "Recommend spicy food because that matches the user's preference.",
+    ),
+    longMemEvalGeneralPrompt("What is the fallback answer?", "Fjord", "Fjord"),
+    longMemEvalAbstentionPrompt(
+      "What is the missing answer?",
+      "No source states the missing answer.",
+      "I do not have enough information to answer that question.",
+    ),
+  ],
+);
+assert.match(
+  longMemEvalOfficialPromptBodies[3]?.messages?.[0]?.content ?? "",
+  /do not penalize off-by-one errors/u,
+);
 const reasoningAnswererBodies: Array<{ max_tokens?: number }> = [];
 const reasoningAnswerer = createOpenAICompatibleExternalBenchmarkAnswerer({
   baseUrl: "https://answerer.invalid/v1",
@@ -26017,7 +26309,7 @@ const parsedQuestionDateFixture = parseExternalMemoryBenchmarkDataset(questionDa
   adapter: "longmemeval",
 });
 assert.equal(parsedQuestionDateFixture.cases[0]?.answerAt, "2023-06-01T00:00:00.000Z");
-const answererQuestionThreadingCalls: string[] = [];
+const answererQuestionThreadingCalls: Array<{ question: string; context: string }> = [];
 const questionDateThreadingBenchmark = await runExternalMemoryBenchmark({
   cases: [
     parsedQuestionDateFixture.cases[0]!,
@@ -26031,8 +26323,8 @@ const questionDateThreadingBenchmark = await runExternalMemoryBenchmark({
   protocol: "official_protocol",
   answerer: {
     name: "question-date-recording-reader",
-    answer(question) {
-      answererQuestionThreadingCalls.push(question);
+    answer(question, context) {
+      answererQuestionThreadingCalls.push({ question, context });
       return question.includes("Question date:") ? "dated answer" : "undated answer";
     },
   },
@@ -26047,15 +26339,19 @@ const questionDateThreadingBenchmark = await runExternalMemoryBenchmark({
 assert.equal(questionDateThreadingBenchmark.pass, true);
 assert.equal(answererQuestionThreadingCalls.length, 2);
 const datedThreadingCall = answererQuestionThreadingCalls.find((call) =>
-  call.includes("What is the dated answer?"),
+  call.question.includes("What is the dated answer?"),
 );
 const undatedThreadingCall = answererQuestionThreadingCalls.find((call) =>
-  call.includes("What is the undated answer?"),
+  call.question.includes("What is the undated answer?"),
 );
 assert.ok(datedThreadingCall);
 assert.ok(undatedThreadingCall);
-assert.equal(datedThreadingCall.match(/Question date: 2023-06-01/gu)?.length, 1);
-assert.doesNotMatch(undatedThreadingCall, /Question date:/);
+assert.equal(datedThreadingCall.question.match(/Question date: 2023-06-01/gu)?.length, 1);
+assert.match(datedThreadingCall.context, /As of: 2023-06-01/);
+assert.match(datedThreadingCall.context, /days_ago=1/);
+assert.doesNotMatch(undatedThreadingCall.question, /Question date:/);
+assert.doesNotMatch(undatedThreadingCall.context, /As of:|days_ago=/);
+assert.equal(questionDateThreadingBenchmark.runManifest.options.relativeTimeRendering, true);
 const temporalArithmeticReaderBenchmark = await runExternalMemoryBenchmark({
   cases: [{
     id: "temporal-arithmetic-reader",
@@ -27626,6 +27922,7 @@ assert.equal(normalizeAdapterTimestamp("not a timestamp"), undefined);
 const longMemEvalCases = parseLongMemEvalBenchmarkDataset(longMemEvalFixture);
 assert.equal(longMemEvalCases.length, 1);
 assert.equal(longMemEvalCases[0]?.id, "lme-vega-next-step");
+assert.equal(longMemEvalCases[0]?.questionType, "current-state");
 assert.deepEqual(longMemEvalCases[0]?.slices, [
   "longmemeval:current_state",
   "longmemeval:multi_session",
@@ -31188,7 +31485,7 @@ const cliExternalInvalidJudgeProfile = spawnSync(
   { cwd: process.cwd(), encoding: "utf8" },
 );
 assert.notEqual(cliExternalInvalidJudgeProfile.status, 0);
-assert.match(cliExternalInvalidJudgeProfile.stderr, /--judge-profile must be strict or official/);
+assert.match(cliExternalInvalidJudgeProfile.stderr, /--judge-profile must be strict, official, or longmemeval_official/);
 const cliExternalInvalidFullContentTopRank = spawnSync(
   process.execPath,
   [

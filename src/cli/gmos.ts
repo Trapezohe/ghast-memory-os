@@ -642,8 +642,8 @@ function externalProtocolOption(): "deterministic_local" | "official_protocol" {
 function externalJudgeProfileOption(): ExternalMemoryBenchmarkJudgeProfile | undefined {
   const raw = value("--judge-profile");
   if (raw === undefined) return undefined;
-  if (raw === "strict" || raw === "official") return raw;
-  throw new Error("--judge-profile must be strict or official");
+  if (raw === "strict" || raw === "official" || raw === "longmemeval_official") return raw;
+  throw new Error("--judge-profile must be strict, official, or longmemeval_official");
 }
 
 function externalIngestModeOption(): "memory" | "message" {

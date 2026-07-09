@@ -139,6 +139,7 @@ export interface ExternalMemoryBenchmarkCase {
   question: string;
   answerAt?: string | undefined;
   temporalMode?: ExternalMemoryBenchmarkTemporalMode | undefined;
+  questionType?: string | undefined;
   reconstructionIntent?: ReconstructionIntentHint | undefined;
   expectedAny?: string[] | undefined;
   expectedAll?: string[] | undefined;
@@ -161,7 +162,7 @@ export interface ExternalMemoryBenchmarkJudgeResult {
   rationale?: string | undefined;
 }
 
-export type ExternalMemoryBenchmarkJudgeProfile = "strict" | "official";
+export type ExternalMemoryBenchmarkJudgeProfile = "strict" | "official" | "longmemeval_official";
 
 export interface ExternalMemoryBenchmarkJudge {
   name: string;
@@ -737,6 +738,7 @@ export interface ExternalMemoryBenchmarkRunManifest {
     layerPolicy?: ReconstructionLayerPolicy | null | undefined;
     readerProfile: ExternalMemoryBenchmarkReaderProfile;
     temporalMode: ExternalMemoryBenchmarkTemporalMode | null;
+    relativeTimeRendering: boolean;
     includeSensitive: boolean;
     includeTemporalMetadata: boolean;
     includeTemporalContext: boolean;
@@ -901,6 +903,12 @@ function redactBenchmarkBundleValue(value: unknown, seen = new WeakSet<object>()
   return null;
 }
 
+function judgeProfileLabel(profile: string): string {
+  return profile === "longmemeval_official"
+    ? `${profile} (judge: upstream LongMemEval per-type)`
+    : profile;
+}
+
 function reproductionReadme(input: {
   report: ExternalMemoryBenchmarkResult;
   command: string | null;
@@ -916,7 +924,7 @@ function reproductionReadme(input: {
     `Slice: ${input.report.partial ? "partial" : "full"} executed=${input.report.runManifest.slice.executedCases}/${input.report.runManifest.slice.totalDatasetCases} selected=${input.report.runManifest.slice.selectedCases} maxCases=${input.report.runManifest.slice.sliceSpec.maxCases ?? "none"} caseOffset=${input.report.runManifest.slice.sliceSpec.caseOffset} caseIds=${input.report.runManifest.slice.sliceSpec.caseIds.join(",") || "none"}`,
     `Protocol: ${input.report.runManifest.protocol}`,
     `Judge: ${input.report.runManifest.judgeProvenance.kind}:${input.report.runManifest.judgeProvenance.name ?? "none"}`,
-    `Judge profile: ${input.report.runManifest.judgeProfile}`,
+    `Judge profile: ${judgeProfileLabel(input.report.runManifest.judgeProfile)}`,
     "",
     "## Command",
     "",
@@ -1297,8 +1305,8 @@ function normalizeProtocol(value: unknown): ExternalMemoryBenchmarkProtocol {
 
 function normalizeJudgeProfile(value: unknown): ExternalMemoryBenchmarkJudgeProfile {
   if (value === undefined) return "strict";
-  if (value === "strict" || value === "official") return value;
-  throw new Error("External benchmark judgeProfile must be strict or official");
+  if (value === "strict" || value === "official" || value === "longmemeval_official") return value;
+  throw new Error("External benchmark judgeProfile must be strict, official, or longmemeval_official");
 }
 
 function normalizedJudge(
@@ -1315,12 +1323,20 @@ function normalizedJudge(
   if (typeof judge.judge !== "function") {
     throw new Error("External benchmark judge must provide a judge callback");
   }
-  return {
+  const normalized: ExternalMemoryBenchmarkJudge = {
     name: judge.name.trim(),
     ...(judge.profile !== undefined ? { profile: normalizeJudgeProfile(judge.profile) } : {}),
     ...(judge.manifest !== undefined ? { manifest: judge.manifest } : {}),
     judge: judge.judge,
   };
+  const openAICompatibleJudge = openAICompatibleExternalBenchmarkJudgeWithCase(judge);
+  if (openAICompatibleJudge) {
+    const normalizedWithCase = { ...normalized } as OpenAICompatibleExternalBenchmarkJudgeWithCase;
+    normalizedWithCase[OPENAI_COMPATIBLE_EXTERNAL_BENCHMARK_JUDGE_WITH_CASE] =
+      openAICompatibleJudge[OPENAI_COMPATIBLE_EXTERNAL_BENCHMARK_JUDGE_WITH_CASE].bind(openAICompatibleJudge);
+    return normalizedWithCase;
+  }
+  return normalized;
 }
 
 function effectiveJudgeProfile(input: {
@@ -1610,6 +1626,9 @@ function normalizeCase(
   const forbiddenAny = stringArray(row.forbiddenAny, `${id}.forbiddenAny`);
   const slices = stringArray(row.slices, `${id}.slices`);
   const temporalMode = normalizeTemporalMode(row.temporalMode, `${id}.temporalMode`);
+  const questionType = typeof row.questionType === "string" && row.questionType.trim()
+    ? row.questionType.trim()
+    : undefined;
   const answerAt = typeof row.answerAt === "string" && row.answerAt.trim()
     ? row.answerAt.trim()
     : undefined;
@@ -1639,6 +1658,7 @@ function normalizeCase(
     question: row.question,
     ...(answerAt ? { answerAt } : {}),
     ...(temporalMode ? { temporalMode } : {}),
+    ...(questionType ? { questionType } : {}),
     ...(reconstructionIntent ? { reconstructionIntent } : {}),
     ...(expectedAny ? { expectedAny } : {}),
     ...(expectedAll ? { expectedAll } : {}),
@@ -2025,10 +2045,12 @@ async function wideBudgetRunContainsTerm(input: {
     });
     return includesTerm(prepared.contextBlock, input.term) || memoriesContainTerm(prepared.memories, input.term);
   }
+  const asOf = answerAtDate(input.benchmarkCase.answerAt);
   const temporalMode = effectiveTemporalMode(input);
   const reconstructed = await input.memory.reconstructContext({
     profileId: input.profileId,
     query: input.benchmarkCase.question,
+    ...(asOf ? { asOf } : {}),
     reconstructionIntent: input.benchmarkCase.reconstructionIntent,
     maxSteps: input.options.maxSteps,
     maxBranch: input.options.maxBranch,
@@ -2328,6 +2350,24 @@ export type ExternalMemoryBenchmarkOpenAICompatibleJudgeOptions =
     profile?: ExternalMemoryBenchmarkJudgeProfile | undefined;
   };
 
+const OPENAI_COMPATIBLE_EXTERNAL_BENCHMARK_JUDGE_WITH_CASE = Symbol("openai-compatible-external-benchmark-judge-with-case");
+
+interface OpenAICompatibleExternalBenchmarkJudgeWithCase extends ExternalMemoryBenchmarkJudge {
+  [OPENAI_COMPATIBLE_EXTERNAL_BENCHMARK_JUDGE_WITH_CASE](input: {
+    benchmarkCase: ExternalMemoryBenchmarkCase;
+    actualAnswer: string;
+  }): Promise<ExternalMemoryBenchmarkJudgeResult>;
+}
+
+function openAICompatibleExternalBenchmarkJudgeWithCase(
+  judge: ExternalMemoryBenchmarkJudge,
+): OpenAICompatibleExternalBenchmarkJudgeWithCase | null {
+  const candidate = judge as Partial<OpenAICompatibleExternalBenchmarkJudgeWithCase>;
+  return typeof candidate[OPENAI_COMPATIBLE_EXTERNAL_BENCHMARK_JUDGE_WITH_CASE] === "function"
+    ? candidate as OpenAICompatibleExternalBenchmarkJudgeWithCase
+    : null;
+}
+
 const DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_MS = 20_000;
 const DEFAULT_OPENAI_COMPATIBLE_MAX_TOKENS = 2048;
 const DEFAULT_OPENAI_COMPATIBLE_ANSWERER_JUDGE_RETRIES = 2;
@@ -2348,9 +2388,47 @@ const OFFICIAL_JUDGE_SYSTEM_PROMPT = [
   "If the expected answer indicates the information is unavailable or unanswerable, an answer that appropriately declines or states the information is missing is CORRECT, and any fabricated specific answer is INCORRECT.",
   "Return JSON only: {\"correct\":true|false,\"rationale\":\"...\"}.",
 ].join("\n");
+const UPSTREAM_LONGMEMEVAL_GENERAL_JUDGE_PREFIX =
+  "I will give you a question, a correct answer, and a response from a model. Please answer yes if the response contains the correct answer. Otherwise, answer no. If the response is equivalent to the correct answer or contains all the intermediate steps to get the correct answer, you should also answer yes. If the response only contains a subset of the information required by the answer, answer no. ";
+const UPSTREAM_LONGMEMEVAL_TEMPORAL_JUDGE_SUFFIX =
+  "In addition, do not penalize off-by-one errors for the number of days. If the question asks for the number of days/weeks/months, etc., and the model makes off-by-one errors (e.g., predicting 19 days when the answer is 18), the model's response is still correct.";
+const UPSTREAM_LONGMEMEVAL_KNOWLEDGE_UPDATE_JUDGE_PREFIX =
+  "I will give you a question, a correct answer, and a response from a model. Please answer yes if the response contains the correct answer. Otherwise, answer no. If the response contains some previous information along with an updated answer, the response should be considered as correct as long as the updated answer is the required answer.";
+const UPSTREAM_LONGMEMEVAL_PREFERENCE_JUDGE_PREFIX =
+  "I will give you a question, a rubric for desired personalized response, and a response from a model. Please answer yes if the response satisfies the desired response. Otherwise, answer no. The model does not need to reflect all the points in the rubric. The response is correct as long as it recalls and utilizes the user's personal information correctly.";
+const UPSTREAM_LONGMEMEVAL_ABSTENTION_JUDGE_PREFIX =
+  "I will give you an unanswerable question, an explanation, and a response from a model. Please answer yes if the model correctly identifies the question as unanswerable. The model could say that the information is incomplete, or some other information is given but the asked information is not.";
 
 function judgeSystemPrompt(profile: ExternalMemoryBenchmarkJudgeProfile): string {
   return profile === "official" ? OFFICIAL_JUDGE_SYSTEM_PROMPT : STRICT_JUDGE_SYSTEM_PROMPT;
+}
+
+function upstreamLongMemEvalJudgePrompt(input: {
+  question: string;
+  expectedAnswer: string;
+  actualAnswer: string;
+  questionType?: string | undefined;
+  caseId?: string | undefined;
+}): string {
+  if (input.caseId?.endsWith("_abs")) {
+    return `${UPSTREAM_LONGMEMEVAL_ABSTENTION_JUDGE_PREFIX}\n\nQuestion: ${input.question}\n\nExplanation: ${input.expectedAnswer}\n\nModel Response: ${input.actualAnswer}\n\nDoes the model correctly identify the question as unanswerable? Answer yes or no only.`;
+  }
+  if (input.questionType === "temporal-reasoning") {
+    return `${UPSTREAM_LONGMEMEVAL_GENERAL_JUDGE_PREFIX}${UPSTREAM_LONGMEMEVAL_TEMPORAL_JUDGE_SUFFIX}\n\nQuestion: ${input.question}\n\nCorrect Answer: ${input.expectedAnswer}\n\nModel Response: ${input.actualAnswer}\n\nIs the model response correct? Answer yes or no only.`;
+  }
+  if (input.questionType === "knowledge-update") {
+    return `${UPSTREAM_LONGMEMEVAL_KNOWLEDGE_UPDATE_JUDGE_PREFIX}\n\nQuestion: ${input.question}\n\nCorrect Answer: ${input.expectedAnswer}\n\nModel Response: ${input.actualAnswer}\n\nIs the model response correct? Answer yes or no only.`;
+  }
+  if (input.questionType === "single-session-preference") {
+    return `${UPSTREAM_LONGMEMEVAL_PREFERENCE_JUDGE_PREFIX}\n\nQuestion: ${input.question}\n\nRubric: ${input.expectedAnswer}\n\nModel Response: ${input.actualAnswer}\n\nIs the model response correct? Answer yes or no only.`;
+  }
+  return `${UPSTREAM_LONGMEMEVAL_GENERAL_JUDGE_PREFIX}\n\nQuestion: ${input.question}\n\nCorrect Answer: ${input.expectedAnswer}\n\nModel Response: ${input.actualAnswer}\n\nIs the model response correct? Answer yes or no only.`;
+}
+
+function upstreamLongMemEvalJudgeDecision(text: string): "yes" | "no" | null {
+  if (/\byes\b/iu.test(text)) return "yes";
+  if (/\bno\b/iu.test(text)) return "no";
+  return null;
 }
 
 function openAICompatibleEndpoint(baseUrl: string): string {
@@ -2403,11 +2481,13 @@ async function fetchOpenAICompatibleJson(
   options: ExternalMemoryBenchmarkOpenAICompatibleHookOptions,
   messages: Array<{ role: "system" | "user"; content: string }>,
   validator?: OpenAICompatibleJsonValidator | undefined,
+  request?: { responseFormat?: "json" | "text" } | undefined,
 ): Promise<unknown> {
   const fetchImpl = openAICompatibleFetch(options);
   const timeoutMs = hookTimeoutMs(options.timeoutMs);
   const maxTokens = hookMaxTokens(options.maxTokens);
   const maxRetries = Math.max(0, Math.min(Math.trunc(options.maxRetries ?? validator?.defaultMaxRetries ?? 0), 3));
+  const responseFormat = request?.responseFormat ?? "json";
   let lastError: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     const controller = new AbortController();
@@ -2425,7 +2505,7 @@ async function fetchOpenAICompatibleJson(
           temperature: 0,
           max_tokens: maxTokens,
           ...(options.disableThinking ? { enable_thinking: false } : {}),
-          response_format: { type: "json_object" },
+          ...(responseFormat === "json" ? { response_format: { type: "json_object" } } : {}),
           messages,
         }),
       });
@@ -2588,22 +2668,24 @@ export function createOpenAICompatibleExternalBenchmarkJudge(
   const manifest = runtimeAnswererManifest({ ...options, name });
   manifest.judgeRetryCount = 0;
   manifest.judgeRecoveredCount = 0;
-  return {
-    name,
-    manifest,
-    profile,
-    async judge(question, expectedAnswer, actualAnswer) {
-      const parsed = parsedCompletionObject(await fetchOpenAICompatibleJson(options, [
+  const judgeOpenAICompatible = async (input: {
+    question: string;
+    expectedAnswer: string;
+    actualAnswer: string;
+    questionType?: string | undefined;
+    caseId?: string | undefined;
+  }): Promise<ExternalMemoryBenchmarkJudgeResult> => {
+    if (profile === "longmemeval_official") {
+      const payload = await fetchOpenAICompatibleJson(options, [
         {
-          role: "system",
-          content: judgeSystemPrompt(profile),
+          role: "user",
+          content: upstreamLongMemEvalJudgePrompt(input),
         },
-        { role: "user", content: JSON.stringify({ question, expectedAnswer, actualAnswer }) },
       ], {
         defaultMaxRetries: DEFAULT_OPENAI_COMPATIBLE_ANSWERER_JUDGE_RETRIES,
-        errorMessage: "OpenAI-compatible benchmark judge returned no boolean correct field",
-        validate(payload) {
-          return typeof parsedCompletionObject(payload).correct === "boolean";
+        errorMessage: "OpenAI-compatible benchmark LongMemEval judge returned no yes/no answer",
+        validate(response) {
+          return upstreamLongMemEvalJudgeDecision(completionText(response)) !== null;
         },
         onRetry() {
           manifest.judgeRetryCount = (manifest.judgeRetryCount ?? 0) + 1;
@@ -2611,18 +2693,70 @@ export function createOpenAICompatibleExternalBenchmarkJudge(
         onRecovered() {
           manifest.judgeRecoveredCount = (manifest.judgeRecoveredCount ?? 0) + 1;
         },
-      }));
-      if (typeof parsed.correct !== "boolean") {
-        throw new Error("OpenAI-compatible benchmark judge returned no boolean correct field");
+      }, { responseFormat: "text" });
+      const decision = upstreamLongMemEvalJudgeDecision(completionText(payload));
+      if (!decision) {
+        throw new Error("OpenAI-compatible benchmark LongMemEval judge returned no yes/no answer");
       }
       return {
-        correct: parsed.correct,
-        ...(typeof parsed.rationale === "string" && parsed.rationale.trim()
-          ? { rationale: parsed.rationale.trim() }
-          : {}),
+        correct: decision === "yes",
+        rationale: `upstream longmemeval yes/no: ${decision}`,
       };
+    }
+    const parsed = parsedCompletionObject(await fetchOpenAICompatibleJson(options, [
+      {
+        role: "system",
+        content: judgeSystemPrompt(profile),
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          question: input.question,
+          expectedAnswer: input.expectedAnswer,
+          actualAnswer: input.actualAnswer,
+        }),
+      },
+    ], {
+      defaultMaxRetries: DEFAULT_OPENAI_COMPATIBLE_ANSWERER_JUDGE_RETRIES,
+      errorMessage: "OpenAI-compatible benchmark judge returned no boolean correct field",
+      validate(payload) {
+        return typeof parsedCompletionObject(payload).correct === "boolean";
+      },
+      onRetry() {
+        manifest.judgeRetryCount = (manifest.judgeRetryCount ?? 0) + 1;
+      },
+      onRecovered() {
+        manifest.judgeRecoveredCount = (manifest.judgeRecoveredCount ?? 0) + 1;
+      },
+    }));
+    if (typeof parsed.correct !== "boolean") {
+      throw new Error("OpenAI-compatible benchmark judge returned no boolean correct field");
+    }
+    return {
+      correct: parsed.correct,
+      ...(typeof parsed.rationale === "string" && parsed.rationale.trim()
+        ? { rationale: parsed.rationale.trim() }
+        : {}),
+    };
+  };
+  const judgeWithCase: OpenAICompatibleExternalBenchmarkJudgeWithCase = {
+    name,
+    manifest,
+    profile,
+    async judge(question, expectedAnswer, actualAnswer) {
+      return judgeOpenAICompatible({ question, expectedAnswer, actualAnswer });
+    },
+    async [OPENAI_COMPATIBLE_EXTERNAL_BENCHMARK_JUDGE_WITH_CASE](input) {
+      return judgeOpenAICompatible({
+        question: input.benchmarkCase.question,
+        expectedAnswer: expectedAnswerForJudge(input.benchmarkCase),
+        actualAnswer: input.actualAnswer,
+        ...(input.benchmarkCase.questionType ? { questionType: input.benchmarkCase.questionType } : {}),
+        ...(input.benchmarkCase.id ? { caseId: input.benchmarkCase.id } : {}),
+      });
     },
   };
+  return judgeWithCase;
 }
 
 async function officialJudgeResult(input: {
@@ -2631,11 +2765,18 @@ async function officialJudgeResult(input: {
   actualAnswer: string;
 }): Promise<ExternalMemoryBenchmarkJudgeResult | null> {
   if (!input.judge) return null;
-  const result = await input.judge.judge(
-    input.benchmarkCase.question,
-    expectedAnswerForJudge(input.benchmarkCase),
-    judgeSafeAnswer(input.actualAnswer),
-  );
+  const actualAnswer = judgeSafeAnswer(input.actualAnswer);
+  const openAICompatibleJudge = openAICompatibleExternalBenchmarkJudgeWithCase(input.judge);
+  const result = openAICompatibleJudge
+    ? await openAICompatibleJudge[OPENAI_COMPATIBLE_EXTERNAL_BENCHMARK_JUDGE_WITH_CASE]({
+        benchmarkCase: input.benchmarkCase,
+        actualAnswer,
+      })
+    : await input.judge.judge(
+        input.benchmarkCase.question,
+        expectedAnswerForJudge(input.benchmarkCase),
+        actualAnswer,
+      );
   if (!result || typeof result.correct !== "boolean") {
     throw new Error("External benchmark judge result must include a boolean correct field");
   }
@@ -2961,6 +3102,9 @@ function createRunManifest(input: {
         : {}),
       readerProfile: input.options.readerProfile ?? "default",
       temporalMode: input.options.temporalMode ?? null,
+      relativeTimeRendering: input.options.cases.some((benchmarkCase) =>
+        answerAtDate(benchmarkCase.answerAt) !== ""
+      ),
       includeSensitive: input.options.includeSensitive ?? false,
       includeTemporalMetadata: input.options.includeTemporalMetadata ?? false,
       includeTemporalContext: input.options.includeTemporalContext !== false,
@@ -5058,6 +5202,7 @@ async function scoreCase(input: {
     mode,
     options: input.options,
   });
+  const asOf = answerAtDate(input.benchmarkCase.answerAt);
   const requireConvergence =
     input.benchmarkCase.requireConvergence ?? input.options.requireConvergence ?? false;
   const plannerPlan = mode === "reconstruct"
@@ -5094,6 +5239,7 @@ async function scoreCase(input: {
       ? await input.memory.reconstructContext({
           profileId,
           query: input.benchmarkCase.question,
+          ...(asOf ? { asOf } : {}),
           reconstructionIntent,
           maxSteps: input.options.maxSteps,
           maxBranch: input.options.maxBranch,

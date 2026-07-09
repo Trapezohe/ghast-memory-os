@@ -590,7 +590,10 @@ Primary methods:
   evidence-path content lines use the same compact temporal context segments as
   `prepareTurn()`. `includeTemporalMetadata` still controls verbose temporal
   metadata/object exposure; `includeTemporalContext: false` disables the compact
-  prompt-visible date segments.
+  prompt-visible date segments. Pass `asOf: "YYYY-MM-DD"` or an ISO instant to
+  render a prompt-visible `As of: YYYY-MM-DD` anchor and deterministic
+  `days_ago=N` / `days_ahead=N` annotations beside the existing absolute dates.
+  Unparseable `asOf` values are ignored.
 - `explainEvidencePath(input)`: explain why evidence was selected for a query.
 - `commitOutcome(input)`: record task outcome signals. Failed outcomes may pass
   `failureKind`; omitted values default to `task_failure`. Hosts should pass
@@ -1196,10 +1199,13 @@ Important report and option types include `MemoryGymResult`,
 `ExternalMemoryBenchmarkSuiteResult`, and
 `ExternalMemoryBenchmarkSuiteExecution`.
 
-External benchmark cases may carry `answerAt`, an ISO timestamp used only for
-host reader prompting. When present, gmOS prepends `Question date: YYYY-MM-DD`
-to the question sent to the answerer. Judge callbacks still receive the original
-question. `readerProfile: "expansive"` sets effective reader budgets to
+External benchmark cases may carry `answerAt`, an ISO timestamp used for host
+reader prompting and reconstruct relative-time rendering. When present, gmOS
+prepends `Question date: YYYY-MM-DD` to the question sent to the answerer and
+passes the same date as `reconstructContext({ asOf })`, so reader context
+includes `As of: YYYY-MM-DD` plus per-memory `days_ago` / `days_ahead`
+segments. Judge callbacks still receive the original question.
+`readerProfile: "expansive"` sets effective reader budgets to
 `maxSteps=8`, `maxBranch=10`, `maxMemories=24`, and
 `contextBudgetTokens=4000` unless those options are explicitly supplied.
 `readerProfile: "wide"` keeps `maxSteps=8` and `maxBranch=10`, sets

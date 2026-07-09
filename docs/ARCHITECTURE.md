@@ -108,6 +108,12 @@ Read paths are checked by gate tests and read-audit snapshots. They should not
 write to memory, evidence, failure, association, gap candidate, FTS, or vector
 tables.
 
+`reconstructContext({ asOf })` is still a pure read. The kernel validates the
+reference date deterministically, renders an `As of: YYYY-MM-DD` prompt anchor,
+and annotates memory/path temporal segments with UTC calendar-day
+`days_ago=N` or `days_ahead=N` deltas. Invalid `asOf` values are ignored, so
+callers that do not pass a reference date keep the previous context shape.
+
 ## Lifecycle Model
 
 Forgetting is a reversible lifecycle, not only explicit deletion. `active`

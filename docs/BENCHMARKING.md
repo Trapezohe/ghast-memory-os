@@ -143,7 +143,8 @@ Claim ladder: `deterministic_local` < `host_judge_context` <
 
 ### Judge profiles
 
-OpenAI-compatible CLI judges support `--judge-profile strict|official`.
+OpenAI-compatible CLI judges support
+`--judge-profile strict|official|longmemeval_official`.
 `strict` is the default and remains the internal regression profile. It uses the
 original strict gmOS judge prompt and is best for tracking whether a local change
 moves the gmOS baseline.
@@ -154,12 +155,21 @@ correct detail, but strict on factual correctness. If the expected answer is
 unavailable or unanswerable, an answer that declines or states the missing
 information is correct; a fabricated specific answer is incorrect.
 
+`longmemeval_official` reproduces the upstream per-question-type LongMemEval
+yes/no judge used for the published LongMemEval numbers. Use it when you want
+LongMemEval scores to be directly comparable to those published numbers; keep
+`strict` for gmOS internal regression tracking. The profile selects prompts from
+the case `questionType`, treats case ids ending in `_abs` as abstention cases,
+and falls back to the general multi-session-style prompt when a non-LongMemEval
+case has no question type.
+
 Reports and manifests record `judgeProfile` alongside protocol, judge
 provenance, and `comparableToOfficialScore`. Publish both the score and the
 judge profile. Internal regression tables should use `strict`; apples-to-apples
-external comparisons should use `official` only when the rest of the protocol,
-reader, judge model, and settings match. SDK host-provided judge objects must
-implement their own rubric; `judgeProfile` applies only to gmOS-created
+external comparisons should use `official` or `longmemeval_official` only when
+the rest of the protocol, reader, judge model, and settings match. SDK
+host-provided judge objects must implement their own rubric; `judgeProfile`
+applies only to gmOS-created
 OpenAI-compatible judges.
 
 Host SDK official-protocol sketch:
@@ -482,9 +492,12 @@ the observability signal for query fallback.
 Reader context sanitization removes internal ids and non-temporal diagnostics
 from bracket annotations, but preserves temporal segments emitted by the kernel,
 including `observed=YYYY-MM-DD`, `time=HH:MM UTC`, old `observed YYYY-MM-DD`
-labels, bare dates, and event/validity windows. This keeps official readers from
-losing dates needed for relative-time questions while still stripping kind,
-confidence, route, and sensitivity diagnostics.
+labels, bare dates, event/validity windows, and `days_ago=N` /
+`days_ahead=N`. This keeps official readers from losing dates needed for
+relative-time questions while still stripping kind, confidence, route, and
+sensitivity diagnostics. When a case has `answerAt`, reconstruct-mode benchmark
+runs pass the normalized question date as `reconstructContext({ asOf })`; run
+manifests record whether relative-time rendering was active.
 
 Query planning defaults OFF: a measured 30-case comparison showed
 model-derived required anchors regressing the reader score (0.30 -> 0.17)
@@ -728,8 +741,9 @@ Only reader+judge runs may be described as official-protocol comparable, and
 only when the manifest says `officialProtocol=host_reader_and_judge`. If query
 planning is enabled, it is part of the disclosed intelligence stack, not a hidden
 benchmark shortcut. Always state `judgeProfile`; use `strict` for gmOS internal
-regression tracking and `official` for published comparisons that need the
-lenient official-style rubric.
+regression tracking, `official` for published comparisons that need the
+lenient official-style rubric, and `longmemeval_official` for LongMemEval
+published-number comparability.
 
 Before scaling a paid reader+judge run, read the markdown attribution table.
 Official failures are bucketed deterministically:

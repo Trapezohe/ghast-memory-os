@@ -756,6 +756,7 @@ try {
           body: JSON.stringify({
             profileId: "consumer_http",
             text: "stable SDK boundaries",
+            asOf: "2026-01-02",
             temporalMode: "current",
           }),
         });
@@ -763,6 +764,7 @@ try {
         const httpReconstructBody = await httpReconstruct.json();
         assert.equal(httpReconstructBody.reconstructed.paths.length > 0, true);
         assert.match(JSON.stringify(httpReconstructBody), /stable SDK boundaries/);
+        assert.match(httpReconstructBody.reconstructed.contextBlock, /As of: 2026-01-02/);
         const httpExplainTurn = await fetch(httpAddress.url + "/explain-turn", {
           method: "POST",
           headers: {
@@ -923,6 +925,7 @@ try {
         type StateBenchResultsSummary,
         type StateBenchPreparedRunManifest,
         type ExternalMemoryBenchmarkAnswerer,
+        type ExternalMemoryBenchmarkCase,
         type ExternalMemoryBenchmarkCeilingMetrics,
         type ExternalMemoryBenchmarkDatasetAdapter,
         type ExternalMemoryBenchmarkDatasetFormat,
@@ -1300,10 +1303,22 @@ try {
         baseUrl: "https://consumer.invalid/v1",
         model: "consumer-judge",
         maxTokens: 4096,
-        profile: "official",
+        profile: "longmemeval_official",
+      };
+      const typedQuestionTypeCase: ExternalMemoryBenchmarkCase = {
+        id: "typed-question-type",
+        events: [{
+          type: "memory",
+          kind: "fact",
+          content: "Typed question type answer is available.",
+        }],
+        question: "What is available?",
+        questionType: "multi-session",
+        expectedAny: ["available"],
       };
       void typedOpenAIHookOptions;
       void typedOpenAIJudgeOptions;
+      void typedQuestionTypeCase;
       const typedCeilingMetrics: ExternalMemoryBenchmarkCeilingMetrics | null = externalResult.ceilingMetrics;
       if (typedCeilingMetrics?.reachableScore !== 1) {
         throw new Error("typed external ceiling metrics failed");

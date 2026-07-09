@@ -68,6 +68,12 @@ function scoreSemanticsLine(semantics: ExternalMemoryBenchmarkScoreSemantics): s
   ].join(" ");
 }
 
+function judgeProfileLabel(profile: string): string {
+  return profile === "longmemeval_official"
+    ? `${profile} (judge: upstream LongMemEval per-type)`
+    : profile;
+}
+
 function ceilingMetricLine(
   metrics: ExternalMemoryBenchmarkResult["ceilingMetrics"],
 ): string {
@@ -405,7 +411,7 @@ export function renderExternalMemoryBenchmarkMarkdown(
     `DatasetFormat: ${report.datasetFormat}`,
     `Protocol: ${report.runManifest.protocol}`,
     `Judge: ${report.runManifest.judgeProvenance.kind}:${report.runManifest.judgeProvenance.name ?? "none"}`,
-    `Judge profile: ${report.runManifest.judgeProfile}`,
+    `Judge profile: ${judgeProfileLabel(report.runManifest.judgeProfile)}`,
     `Cases: ${report.passedCount}/${report.caseCount}`,
     `Score: ${report.score.toFixed(4)}`,
     `Strict score: ${report.strictScore.toFixed(4)}`,
