@@ -1057,6 +1057,7 @@ export interface ReconstructContextInput {
   profileId?: string | undefined;
   query?: string | undefined;
   messages?: TurnMessage[] | undefined;
+  asOf?: string | undefined;
   dispositionPreset?: string | undefined;
   includeEvidence?: boolean | undefined;
   includeSensitive?: boolean | undefined;

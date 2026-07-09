@@ -1,5 +1,7 @@
 import { normalizeExplicitTemporalInstant } from "./temporal-validity.js";
 
+const MS_PER_UTC_DAY = 24 * 60 * 60 * 1000;
+
 const MONTH_NAMES = [
   "January",
   "February",
@@ -46,13 +48,68 @@ function dateFromCreatedAt(createdAt: string | undefined): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-function normalizedInstantDateLabel(value: unknown): string {
+function dateFromExplicitTemporalValue(value: unknown): Date | null {
   const raw = typeof value === "string" ? value.trim() : "";
-  if (!raw) return "";
+  if (!raw) return null;
   const normalized = normalizeExplicitTemporalInstant(raw);
-  if (!normalized) return "";
+  if (!normalized) return null;
   const parsed = new Date(normalized);
-  if (Number.isNaN(parsed.getTime())) return "";
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function utcCalendarDay(date: Date): number {
+  return Math.floor(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) / MS_PER_UTC_DAY,
+  );
+}
+
+export function temporalReferenceDateLabel(value: string | undefined): string {
+  const parsed = dateFromExplicitTemporalValue(value);
+  return parsed ? calendarDate(parsed) : "";
+}
+
+export function utcCalendarDayDelta(asOf: string, eventAt: string): number | undefined {
+  const referenceDate = dateFromExplicitTemporalValue(asOf);
+  const eventDate = dateFromExplicitTemporalValue(eventAt);
+  return referenceDate && eventDate
+    ? utcCalendarDay(referenceDate) - utcCalendarDay(eventDate)
+    : undefined;
+}
+
+function temporalContextDate(
+  createdAt: string | undefined,
+  metadata: Record<string, unknown> = {},
+): Date | null {
+  const eventTime = dateFromExplicitTemporalValue(metadata.eventTime);
+  if (eventTime) return eventTime;
+  const eventDate = typeof metadata.eventDate === "string" ? metadata.eventDate.trim() : "";
+  if (eventDate) {
+    const parsedEventDate = dateFromCalendarValue(eventDate);
+    if (parsedEventDate) return parsedEventDate;
+  }
+  const validFrom = dateFromExplicitTemporalValue(metadata.validFrom ?? metadata.valid_from);
+  const validTo = dateFromExplicitTemporalValue(metadata.validTo ?? metadata.valid_to ?? metadata.expiresAt);
+  if (validFrom || validTo) return validFrom ?? validTo;
+  return dateFromCreatedAt(createdAt);
+}
+
+function relativeTemporalSegment(
+  createdAt: string | undefined,
+  metadata: Record<string, unknown>,
+  asOf: string | undefined,
+): string {
+  const referenceDate = temporalReferenceDateLabel(asOf);
+  if (!referenceDate) return "";
+  const eventDate = temporalContextDate(createdAt, metadata);
+  if (!eventDate) return "";
+  const delta = utcCalendarDayDelta(referenceDate, calendarDate(eventDate));
+  if (delta === undefined) return "";
+  return delta < 0 ? `; days_ahead=${Math.abs(delta)}` : `; days_ago=${delta}`;
+}
+
+function normalizedInstantDateLabel(value: unknown): string {
+  const parsed = dateFromExplicitTemporalValue(value);
+  if (!parsed) return "";
   const date = calendarDate(parsed);
   const hours = parsed.getUTCHours();
   const minutes = parsed.getUTCMinutes();
@@ -187,9 +244,10 @@ export function temporalContextLabel(
 export function temporalContextSegment(
   createdAt: string | undefined,
   metadata: Record<string, unknown> = {},
+  asOf?: string | undefined,
 ): string {
   const label = temporalContextLabel(createdAt, metadata);
-  return label ? `; ${label}` : "";
+  return label ? `; ${label}${relativeTemporalSegment(createdAt, metadata, asOf)}` : "";
 }
 
 const CALENDAR_SEGMENT = "\\d{4}-\\d{2}-\\d{2}";
@@ -202,6 +260,8 @@ const TEMPORAL_ANNOTATION_SEGMENT_PATTERNS = [
   new RegExp(`^(?:observed\\s+)?${INSTANT_LABEL_SEGMENT}$`, "u"),
   new RegExp(`^${INTERVAL_LABEL_SEGMENT}$`, "u"),
   new RegExp(`^(?:observed|event_date|event_time|valid_from|valid_to)=${CALENDAR_SEGMENT}$`, "u"),
+  // Keep this recognizer in sync with relativeTemporalSegment().
+  /^days_(?:ago|ahead)=\d+$/u,
   new RegExp(`^time=${CLOCK_SEGMENT} UTC$`, "u"),
   new RegExp(`^(?:event_time_utc|valid_from_utc|valid_to_utc)=${CLOCK_SEGMENT}$`, "u"),
   new RegExp(

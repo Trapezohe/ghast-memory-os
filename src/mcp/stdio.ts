@@ -122,6 +122,7 @@ const explainTurnSchema = z.object({
 const reconstructContextSchema = z.object({
   profileId: z.string().optional(),
   text: z.string().optional(),
+  asOf: z.string().optional(),
   messages: z.array(messageSchema).optional(),
   dispositionPreset: z.enum(["focused", "balanced", "expansive"]).optional(),
   includeEvidence: z.boolean().optional(),
@@ -141,6 +142,7 @@ const reconstructContextSchema = z.object({
 const explainEvidencePathSchema = z.object({
   profileId: z.string().optional(),
   text: z.string().optional(),
+  asOf: z.string().optional(),
   messages: z.array(messageSchema).optional(),
   includeEvidence: z.boolean().optional(),
   includePlannerTrace: z.boolean().optional(),

@@ -12,7 +12,12 @@ import {
   safePublicLabel,
   sanitizeEvidenceForPublicOutput,
 } from "./safety.js";
-import { observedAtSegment, temporalContextLabel, temporalContextSegment } from "./temporal-format.js";
+import {
+  observedAtSegment,
+  temporalContextLabel,
+  temporalContextSegment,
+  temporalReferenceDateLabel,
+} from "./temporal-format.js";
 import { temporalCueValuesFromText } from "./temporal-validity.js";
 import type {
   EvidenceEvent,
@@ -247,16 +252,15 @@ function pathFromAssociation(
 
 function formatPathLine(
   path: ReconstructedEvidencePath,
-  temporalLabel: string,
+  temporalSegment: string,
   maxCharsPerMemory: number | undefined,
 ): string {
   const routeScore = path.routeScore !== undefined ? `; routeScore=${path.routeScore.toFixed(2)}` : "";
   const routeReason = path.routeReason ? `; reason=${path.routeReason}` : "";
   const informationGain =
     path.informationGain !== undefined ? `; gain=${path.informationGain.toFixed(2)}` : "";
-  const temporal = temporalLabel ? `; ${temporalLabel}` : "";
   const targetSummary = truncateMemoryContent(path.targetSummary, maxCharsPerMemory);
-  return `- [step=${path.step}; cue=${path.cue}; tag=${path.tag}; kind=${path.targetKind ?? path.targetType}${temporal}; confidence=${path.confidence.toFixed(2)}${routeScore}${informationGain}${routeReason}] ${targetSummary}`;
+  return `- [step=${path.step}; cue=${path.cue}; tag=${path.tag}; kind=${path.targetKind ?? path.targetType}${temporalSegment}; confidence=${path.confidence.toFixed(2)}${routeScore}${informationGain}${routeReason}] ${targetSummary}`;
 }
 
 function publicPath(
@@ -2542,6 +2546,7 @@ function composeReconstructedContext(input: {
   stopReason: ReconstructedContext["stats"]["stopReason"];
   includeTemporalMetadata: boolean;
   includeTemporalContext?: boolean | undefined;
+  asOf?: string | undefined;
   maxMemories: number;
   maxCharsPerMemory?: number | undefined;
   fullContentTopRank?: number | undefined;
@@ -2743,11 +2748,12 @@ function composeReconstructedContext(input: {
     const output = outputState();
     const memoryById = new Map(memories.map((memory) => [memory.id, memory]));
     const fullIds = fullContentMemoryIds();
-    const temporalLabelForPath = (path: ReconstructedEvidencePath): string => {
+    const asOf = temporalReferenceDateLabel(input.asOf);
+    const temporalSegmentForPath = (path: ReconstructedEvidencePath): string => {
       const memory = memoryById.get(path.targetId) ?? memoryById.get(path.sourceMemoryId ?? "");
       return memory
-        ? temporalContextLabel(memory.createdAt, memory.metadata)
-        : temporalContextLabel(path.createdAt, {});
+        ? temporalContextSegment(memory.createdAt, memory.metadata, asOf)
+        : temporalContextSegment(path.createdAt, {}, asOf);
     };
     const capForPath = (path: ReconstructedEvidencePath): number | undefined => {
       if (memoryById.has(path.targetId)) return capForMemoryId(path.targetId, fullIds);
@@ -2756,6 +2762,7 @@ function composeReconstructedContext(input: {
     const lines = [
       "<gmos-reconstructed-context>",
       `Query: ${publicQuery}`,
+      ...(asOf ? [`As of: ${asOf}`] : []),
       `Evidence coverage: ${output.coverage.coveredCueCount}/${output.coverage.queryCueCount} cues (${output.coverage.coverageRate.toFixed(2)}); uncovered=${output.coverage.uncoveredCues.join(", ") || "none"}`,
       ...(output.anchorCoverage
         ? [
@@ -2768,7 +2775,7 @@ function composeReconstructedContext(input: {
       ...output.paths.map((path) =>
         formatPathLine(
           path,
-          includeTemporalContext ? temporalLabelForPath(path) : "",
+          includeTemporalContext ? temporalSegmentForPath(path) : "",
           capForPath(path),
         )
       ),
@@ -2777,7 +2784,7 @@ function composeReconstructedContext(input: {
         publicMemory(memory, hideInternalRouteSignals, privateOutputSignalKeySet)
       ).map(
         (memory) =>
-          `- [${safePublicLabel(memory.kind)}${includeTemporalContext ? temporalContextSegment(memory.createdAt, memory.metadata) : ""}; confidence=${memory.confidence.toFixed(2)}] ${truncateMemoryContent(memory.content, capForMemoryId(memory.id, fullIds))}`,
+          `- [${safePublicLabel(memory.kind)}${includeTemporalContext ? temporalContextSegment(memory.createdAt, memory.metadata, asOf) : ""}; confidence=${memory.confidence.toFixed(2)}] ${truncateMemoryContent(memory.content, capForMemoryId(memory.id, fullIds))}`,
       ),
     ];
     if (input.includeEvidence) {
@@ -2905,6 +2912,7 @@ async function fallbackReconstruction(input: {
   targetMemoryCount: number;
   includeTemporalMetadata?: boolean | undefined;
   includeTemporalContext?: boolean | undefined;
+  asOf?: string | undefined;
   anchorCoverage?: boolean | undefined;
   cueExtractor?: MemoryCueExtractor | undefined;
   inferTemporalCuesFromText?: boolean | undefined;
@@ -3066,6 +3074,7 @@ async function fallbackReconstruction(input: {
     stopReason,
     includeTemporalMetadata: input.includeTemporalMetadata === true,
     includeTemporalContext: input.includeTemporalContext,
+    asOf: input.asOf,
     maxMemories: input.maxMemories,
     maxCharsPerMemory: input.maxCharsPerMemory,
     fullContentTopRank: input.fullContentTopRank,
@@ -3159,6 +3168,7 @@ export async function reconstructMemoryContext(input: {
       targetMemoryCount,
       includeTemporalMetadata,
       includeTemporalContext,
+      asOf: input.request.asOf,
       ...(input.request.anchorCoverage !== undefined ? { anchorCoverage: input.request.anchorCoverage } : {}),
       cueExtractor: input.cueExtractor,
       inferTemporalCuesFromText,
@@ -3602,6 +3612,7 @@ export async function reconstructMemoryContext(input: {
     stopReason,
     includeTemporalMetadata,
     includeTemporalContext,
+    asOf: input.request.asOf,
     maxMemories,
     maxCharsPerMemory,
     fullContentTopRank,

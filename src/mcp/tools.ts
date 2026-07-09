@@ -208,6 +208,7 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
         properties: {
           profileId: { type: "string" },
           text: { type: "string" },
+          asOf: { type: "string" },
           messages: {
             type: "array",
             items: {
@@ -245,6 +246,7 @@ export function listMemoryMcpTools(): MemoryMcpTool[] {
         properties: {
           profileId: { type: "string" },
           text: { type: "string" },
+          asOf: { type: "string" },
           messages: {
             type: "array",
             items: {

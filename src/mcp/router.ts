@@ -574,6 +574,7 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
       "profileId",
       "text",
       "messages",
+      "asOf",
       "dispositionPreset",
       "includeEvidence",
       "includeSensitive",
@@ -598,6 +599,7 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
     messages: messagesArg(args),
   };
   const profileId = optionalString(args, "profileId");
+  const asOf = optionalString(args, "asOf");
   const dispositionPreset = optionalString(args, "dispositionPreset");
   const includeEvidence = optionalBoolean(args, "includeEvidence");
   const contextBudgetTokens = optionalPositiveNumber(args, "contextBudgetTokens");
@@ -615,6 +617,7 @@ function reconstructInput(args: Record<string, unknown>): ReconstructContextInpu
     "evidenceConvergenceThreshold",
   );
   if (profileId !== undefined) input.profileId = profileId;
+  if (asOf !== undefined) input.asOf = asOf;
   if (dispositionPreset !== undefined) input.dispositionPreset = dispositionPreset;
   if (includeEvidence !== undefined) input.includeEvidence = includeEvidence;
   if (contextBudgetTokens !== undefined) input.contextBudgetTokens = contextBudgetTokens;
@@ -646,6 +649,7 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
       "profileId",
       "text",
       "messages",
+      "asOf",
       "dispositionPreset",
       "includeEvidence",
       "includeSensitive",
@@ -671,6 +675,7 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
     messages: messagesArg(args),
   };
   const profileId = optionalString(args, "profileId");
+  const asOf = optionalString(args, "asOf");
   const dispositionPreset = optionalString(args, "dispositionPreset");
   const includeEvidence = optionalBoolean(args, "includeEvidence");
   const includePlannerTrace = optionalBoolean(args, "includePlannerTrace");
@@ -689,6 +694,7 @@ function explainEvidencePathInput(args: Record<string, unknown>): ExplainEvidenc
     "evidenceConvergenceThreshold",
   );
   if (profileId !== undefined) input.profileId = profileId;
+  if (asOf !== undefined) input.asOf = asOf;
   if (dispositionPreset !== undefined) input.dispositionPreset = dispositionPreset;
   if (includeEvidence !== undefined) input.includeEvidence = includeEvidence;
   if (includePlannerTrace !== undefined) input.includePlannerTrace = includePlannerTrace;
