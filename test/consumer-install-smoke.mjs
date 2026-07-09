@@ -1252,10 +1252,12 @@ try {
       const typedIntelligenceConfig: ExternalMemoryBenchmarkIntelligenceConfig = {
         baseUrl: "https://typed-chat.invalid/v1",
         model: "typed-chat",
+        extractorMaxTokens: 4000,
         embedBaseUrl: "http://127.0.0.1:11434/v1",
         embedApiKeyEnv: "GMOS_TYPED_EMBED_KEY",
       };
       const typedEmbedBaseUrlHost: string | null | undefined = typedRuntimeIntelligence.embedBaseUrlHost;
+      const typedExtractorMaxTokens: number | null = typedRuntimeIntelligence.extractorMaxTokens;
       const typedAnswererRetryCount: number = typedRuntimeIntelligence.answererRetryCount;
       const typedJudgeRecoveredCount: number = typedRuntimeIntelligence.judgeRecoveredCount;
       const typedRuntimeAnswererManifest: ExternalMemoryBenchmarkRuntimeAnswererManifest =
@@ -1266,6 +1268,7 @@ try {
       const typedRuntimeJudgeRetryCount: number | undefined = typedRuntimeIntelligence.judge.judgeRetryCount;
       void typedAnswererRetryCount;
       void typedJudgeRecoveredCount;
+      void typedExtractorMaxTokens;
       void typedIntelligenceConfig;
       void typedEmbedBaseUrlHost;
       void typedRuntimeAnswererMaxTokens;

@@ -535,7 +535,11 @@ Primary methods:
   passes debug capture to the extractor, including bounded `ok_empty` samples.
   The OpenAI-compatible extractor keeps the single-message default cap at
   `maxCandidates=6`; windowed extraction defaults to `12` candidates unless
-  `maxCandidates` or `windowMaxCandidates` overrides it.
+  `maxCandidates` or `windowMaxCandidates` overrides it. `maxTokens` controls
+  the `/chat/completions` output budget and defaults to `1200` for direct host
+  use; benchmark intelligence wiring raises the extractor default to `4000` so
+  large transcript windows can emit all atomic facts. Scale `maxTokens` with
+  the ingest window character cap to avoid provider truncation.
   `createOpenAICompatibleSessionDistiller()` returns the optional write-side
   session hook. Its prompt is dataset-agnostic and asks the host model for
   compact, dated, user-centric factual notes, one fact per line, excluding

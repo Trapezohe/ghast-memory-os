@@ -6874,6 +6874,48 @@ await assert.rejects(
   () => runExtractorForTest(directReasoningWithoutJsonExtractor, openAICompatibleExtractorInput),
   /reasoning-only completion without JSON/u,
 );
+const truncatedExtractor = createOpenAICompatibleExtractor({
+  model: "fixture-parser-truncated",
+  fetch: async () => ({
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    text: async () =>
+      JSON.stringify({
+        choices: [{
+          finish_reason: "length",
+          message: { content: "{\"memories\":[{\"kind\":\"fact\"" },
+        }],
+      }),
+  }),
+});
+await assert.rejects(
+  () => runExtractorForTest(truncatedExtractor, openAICompatibleExtractorInput),
+  /response was truncated/u,
+);
+const truncatedStore = createSqliteMemoryStore({
+  path: path.join(tmp, "truncated-extractor.db"),
+});
+const truncatedMemory = createMemoryOS({
+  profileId: "truncated-extractor",
+  store: truncatedStore,
+  extractor: truncatedExtractor,
+});
+const truncatedIngest = await truncatedMemory.ingestConversation({
+  profileId: "truncated-extractor",
+  messages: [{
+    conversationId: "truncated-extractor",
+    messageId: "truncated-extractor-1",
+    role: "user",
+    content: "Truncated extractor source.",
+  }],
+  window: { maxMessages: 1 },
+  extraction: { replayAttempts: 0 },
+});
+assert.equal(truncatedIngest.extractionParseFailureCount, 1);
+assert.equal(truncatedIngest.extractionTransportFailureCount, 0);
+assert.deepEqual(truncatedIngest.extractionFailedWindowIndexes, [0]);
+await truncatedMemory.close();
 function openAICompletionResponse(memories: unknown[]) {
   return {
     choices: [{
@@ -6892,6 +6934,7 @@ const manyWindowCandidates = Array.from({ length: 15 }, (_entry, index) => ({
   object: `fact-${index + 1}`,
 }));
 const capRequestBodies: Array<{
+  max_tokens?: number;
   messages?: Array<{ role?: string; content?: string }>;
 }> = [];
 const capExtractor = createOpenAICompatibleExtractor({
@@ -6912,7 +6955,24 @@ const singleCapCandidates = await runExtractorForTest(
   openAICompatibleExtractorInput,
 );
 assert.equal(singleCapCandidates.length, 6);
+assert.equal(capRequestBodies[0]?.max_tokens, 1200);
 assert.match(capRequestBodies[0]?.messages?.[0]?.content ?? "", /Return at most 6 memory candidates/u);
+const configuredMaxTokenBodies: Array<{ max_tokens?: number }> = [];
+const configuredMaxTokenExtractor = createOpenAICompatibleExtractor({
+  model: "fixture-configured-max-token-model",
+  maxTokens: 6000,
+  fetch: async (_url, init) => {
+    configuredMaxTokenBodies.push(JSON.parse(String(init?.body ?? "{}")));
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify(openAICompletionResponse([])),
+    };
+  },
+});
+await runExtractorForTest(configuredMaxTokenExtractor, openAICompatibleExtractorInput);
+assert.equal(configuredMaxTokenBodies[0]?.max_tokens, 6000);
 const windowCapInput: MemoryExtractionInput = {
   ...openAICompatibleExtractorInput,
   window: {
@@ -7241,6 +7301,64 @@ assert.equal(mixedCharIngest.extractionTransportFailureCharCount, mixedFailConte
 assert.deepEqual(mixedCharIngest.extractionFailedWindowIndexes, [2]);
 assert.deepEqual(mixedCharIngest.extractionReports.map((report) => report.windowIndex), [0, 1, 2]);
 await mixedCharMemory.close();
+const largeWindowMessages = Array.from({ length: 40 }, (_entry, index) => ({
+  conversationId: "large-window",
+  messageId: `large-window-${index + 1}`,
+  role: "user" as const,
+  content: `Large window ordered source ${String(index + 1).padStart(2, "0")} ${"x".repeat(880)}`,
+}));
+async function collectLargeWindowIngest(maxChars?: number | undefined) {
+  const label = `large-window-${maxChars ?? "default"}`;
+  const windows: string[][] = [];
+  const store = createSqliteMemoryStore({ path: path.join(tmp, `${label}.db`) });
+  const memory = createMemoryOS({
+    profileId: label,
+    store,
+    extractor: {
+      name: `${label}-extractor`,
+      extract(input) {
+        const contents = (input.window?.messages ?? []).map((message) => message.content);
+        windows.push(contents);
+        return [];
+      },
+    },
+  });
+  try {
+    const ingested = await memory.ingestConversation({
+      profileId: label,
+      messages: largeWindowMessages,
+      window: {
+        maxMessages: 40,
+        overlapMessages: 0,
+        ...(maxChars !== undefined ? { maxChars } : {}),
+      },
+    });
+    return { ingested, windows };
+  } finally {
+    await memory.close();
+  }
+}
+const defaultLargeWindow = await collectLargeWindowIngest();
+const expandedLargeWindow = await collectLargeWindowIngest(30000);
+assert.equal(defaultLargeWindow.ingested.extractionWindowCount > expandedLargeWindow.ingested.extractionWindowCount, true);
+assert.equal(expandedLargeWindow.ingested.extractionWindowCount, 2);
+assert.equal(defaultLargeWindow.ingested.extractionWindowCount, defaultLargeWindow.windows.length);
+assert.equal(expandedLargeWindow.ingested.extractionWindowCount, expandedLargeWindow.windows.length);
+assert.equal(
+  defaultLargeWindow.windows.every((window) =>
+    window.length <= 40 && window.reduce((sum, content) => sum + content.length, 0) <= 7000
+  ),
+  true,
+);
+assert.equal(
+  expandedLargeWindow.windows.every((window) =>
+    window.length <= 40 && window.reduce((sum, content) => sum + content.length, 0) <= 30000
+  ),
+  true,
+);
+assert.deepEqual(expandedLargeWindow.windows.flat(), largeWindowMessages.map((message) => message.content));
+assert.deepEqual(expandedLargeWindow.ingested.extractionFailedWindowIndexes, []);
+assert.equal(expandedLargeWindow.ingested.replayedWindowCount, 0);
 const emptyDebugDir = path.join(tmp, "empty-window-debug");
 const emptyDebugStore = createSqliteMemoryStore({
   path: path.join(tmp, "empty-window-debug.db"),
@@ -27469,6 +27587,99 @@ assert.equal(externalIngestCacheTurnRetentionMiss.pass, true);
 assert.equal(externalIngestCacheExtractorCalls, 2);
 assert.equal(externalIngestCacheTurnRetentionMiss.runManifest.ingestCache.hits, 0);
 assert.equal(externalIngestCacheTurnRetentionMiss.runManifest.ingestCache.misses, 2);
+externalIngestCacheExtractorCalls = 0;
+const externalIngestCacheMaxCharsMiss = await runExternalMemoryBenchmark({
+  cases: externalIngestCacheCases,
+  ingestMode: "message",
+  turnRetention: false,
+  concurrency: 1,
+  extractionMaxChars: 8000,
+  ingestCacheDir: externalIngestCacheDir,
+  intelligence: { extractor: externalIngestCacheExtractor },
+});
+assert.equal(externalIngestCacheMaxCharsMiss.pass, true);
+assert.equal(externalIngestCacheExtractorCalls, 2);
+assert.equal(externalIngestCacheMaxCharsMiss.runManifest.options.extractionMaxChars, 8000);
+assert.equal(externalIngestCacheMaxCharsMiss.runManifest.ingestCache.hits, 0);
+assert.equal(externalIngestCacheMaxCharsMiss.runManifest.ingestCache.misses, 2);
+const externalOpenAICacheDir = path.join(tmp, "external-openai-cache");
+const externalOpenAICache = await runExternalMemoryBenchmark({
+  cases: [{
+    id: "external-openai-cache",
+    events: [{
+      type: "message",
+      role: "user",
+      content: "External OpenAI cache answer is lilac.",
+    }],
+    question: "What is the External OpenAI cache answer?",
+    expectedAny: ["lilac"],
+  }],
+  ingestMode: "message",
+  turnRetention: false,
+  extractionWindow: 40,
+  extractionMaxChars: 30000,
+  ingestCacheDir: externalOpenAICacheDir,
+  embedQuery: false,
+  intelligence: {
+    baseUrl: "https://cache-intelligence.invalid/v1",
+    model: "cache-chat",
+    extractorMaxTokens: 6000,
+    concurrency: 1,
+    fetchImpl: async (url, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        input?: string[];
+        messages?: Array<{ content?: string }>;
+      };
+      if (String(url).endsWith("/embeddings")) {
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          text: async () => JSON.stringify({
+            data: (body.input ?? []).map((_text, index) => ({
+              index,
+              embedding: [0.1, 0.2, 0.3],
+            })),
+          }),
+        };
+      }
+      const system = body.messages?.[0]?.content ?? "";
+      const content = system.includes("structured memory extractor")
+        ? JSON.stringify({
+            memories: [{
+              kind: "fact",
+              content: "External OpenAI cache answer is lilac.",
+              confidence: 0.9,
+            }],
+          })
+        : "{}";
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () => JSON.stringify({ choices: [{ message: { content } }] }),
+      };
+    },
+  },
+});
+assert.equal(externalOpenAICache.pass, true);
+const externalOpenAICacheMetaFiles = readdirSync(externalOpenAICacheDir)
+  .filter((entry) => entry.endsWith(".meta.json"));
+assert.equal(externalOpenAICacheMetaFiles.length, 1);
+const externalOpenAICacheMeta = JSON.parse(
+  readFileSync(path.join(externalOpenAICacheDir, externalOpenAICacheMetaFiles[0]!), "utf8"),
+) as {
+  keyFields?: {
+    extraction?: {
+      window?: number;
+      maxChars?: number;
+      extractorMaxTokens?: number | null;
+    };
+  };
+};
+assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.window, 40);
+assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.maxChars, 30000);
+assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.extractorMaxTokens, 6000);
 let entityAggregationExtractorCalls = 0;
 const entityAggregationEntities = [
   {
@@ -28372,6 +28583,11 @@ const previousExternalBenchKey = process.env.GMOS_BENCH_TEST_KEY;
 process.env.GMOS_BENCH_TEST_KEY = "sdk-bench-secret-1234567890";
 const externalIntelligenceAuthHeaders: Array<string | undefined> = [];
 const externalIntelligenceRequestUrls: string[] = [];
+const externalIntelligenceRequestBodies: Array<{
+  url: string;
+  max_tokens?: number | undefined;
+  system?: string | undefined;
+}> = [];
 try {
   const externalIntelligenceRun = await runExternalMemoryBenchmark({
     cases: externalIntelligenceMessageCases.cases,
@@ -28393,8 +28609,14 @@ try {
         externalIntelligenceAuthHeaders.push(headers?.authorization);
         const request = JSON.parse(String(init?.body ?? "{}")) as {
           input?: string[];
+          max_tokens?: number;
           messages?: Array<{ role?: string; content?: string }>;
         };
+        externalIntelligenceRequestBodies.push({
+          url: String(url),
+          max_tokens: request.max_tokens,
+          system: request.messages?.[0]?.content,
+        });
         if (String(url).endsWith("/embeddings")) {
           return {
             ok: true,
@@ -28459,6 +28681,9 @@ try {
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.timeoutMs, 5000);
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.retries, 2);
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.backoffMs, 250);
+  assert.equal(externalIntelligenceRun.runManifest.options.extractionMaxChars, 7000);
+  assert.equal(externalIntelligenceRun.runManifest.options.extractorMaxTokens, 4000);
+  assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.extractorMaxTokens, 4000);
   assert.deepEqual(externalIntelligenceRun.runManifest.runtimeIntelligence.maintainPhases, ["decay"]);
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.extractionRetryCount, 2);
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.extractionEmptyCount, 0);
@@ -28469,6 +28694,13 @@ try {
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.extractionEmptyCharCount, 0);
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.extractionTransportFailureCharCount > 0, true);
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.hookNames.extractor, "openai-compatible:bench-chat");
+  assert.equal(
+    externalIntelligenceRequestBodies.find((request) =>
+      request.url.endsWith("/chat/completions")
+      && request.system?.includes("structured memory extractor")
+    )?.max_tokens,
+    4000,
+  );
   assert.equal(
     externalIntelligenceAuthHeaders.includes("Bearer sdk-bench-secret-1234567890"),
     true,
@@ -30665,6 +30897,48 @@ const cliExternalInvalidFullContentTopRank = spawnSync(
 );
 assert.notEqual(cliExternalInvalidFullContentTopRank.status, 0);
 assert.match(cliExternalInvalidFullContentTopRank.stderr, /--full-content-top-rank must be an integer between 0 and 64/);
+const cliExternalInvalidExtractionMaxChars = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--extraction-max-chars",
+    "255",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalInvalidExtractionMaxChars.status, 0);
+assert.match(cliExternalInvalidExtractionMaxChars.stderr, /--extraction-max-chars must be an integer between 256 and 200000/);
+const cliExternalInvalidExtractorMaxTokens = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--intelligence-base-url",
+    "https://cli-intelligence.invalid/v1",
+    "--intelligence-model",
+    "cli-chat",
+    "--extractor-max-tokens",
+    "8193",
+    "--format",
+    "json",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalInvalidExtractorMaxTokens.status, 0);
+assert.match(cliExternalInvalidExtractorMaxTokens.stderr, /--extractor-max-tokens must be an integer between 256 and 8192/);
 const cliExternalReaderFixtureFile = path.join(tmp, "cli-external-reader.jsonl");
 writeFileSync(
   cliExternalReaderFixtureFile,
@@ -31275,6 +31549,7 @@ writeFileSync(
         url: String(url),
         authorization: headers.authorization,
         model: body.model,
+        max_tokens: body.max_tokens,
         enableThinking: body.enable_thinking,
       }) + "\\n");
       if (String(url).endsWith("/embeddings")) {
@@ -31365,6 +31640,10 @@ const cliExternalIntelligence = spawnSync(
     "1",
     "--intelligence-backoff-ms",
     "0",
+    "--extraction-max-chars",
+    "30000",
+    "--extractor-max-tokens",
+    "6000",
     "--intelligence-disable-thinking",
     "--intelligence-debug-dir",
     cliExternalIntelligenceDebugDir,
@@ -31407,6 +31686,7 @@ const cliExternalIntelligenceJson = JSON.parse(cliExternalIntelligence.stdout) a
       };
       model?: string | null;
       embedModel?: string | null;
+      extractorMaxTokens?: number | null;
       concurrency?: number | null;
       timeoutMs?: number | null;
       retries?: number | null;
@@ -31419,6 +31699,10 @@ const cliExternalIntelligenceJson = JSON.parse(cliExternalIntelligence.stdout) a
       extractionOkWithCandidatesCharCount?: number;
       extractionEmptyCharCount?: number;
       ingestCaseGroups?: Array<{ turnMemoryCount?: number; distilledMemoryCount?: number }>;
+    };
+    options?: {
+      extractionMaxChars?: number;
+      extractorMaxTokens?: number | null;
     };
   };
 };
@@ -31436,6 +31720,9 @@ assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.sessi
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.ingestCaseGroups?.[0]?.distilledMemoryCount, 1);
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.model, "cli-chat");
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.embedModel, "cli-embed");
+assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.extractorMaxTokens, 6000);
+assert.equal(cliExternalIntelligenceJson.runManifest?.options?.extractionMaxChars, 30000);
+assert.equal(cliExternalIntelligenceJson.runManifest?.options?.extractorMaxTokens, 6000);
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.concurrency, 1);
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.timeoutMs, 5000);
 assert.equal(cliExternalIntelligenceJson.runManifest?.runtimeIntelligence?.retries, 1);
@@ -31455,7 +31742,7 @@ const cliExternalIntelligenceFetchEntries = cliExternalIntelligenceFetchLog
   .trim()
   .split("\n")
   .filter(Boolean)
-  .map((line) => JSON.parse(line) as { url?: string; authorization?: string; model?: string });
+  .map((line) => JSON.parse(line) as { url?: string; authorization?: string; model?: string; max_tokens?: number });
 assert.equal(
   cliExternalIntelligenceFetchEntries.some((entry) =>
     entry.url === "https://cli-embed.invalid/v1/embeddings"
@@ -31471,6 +31758,13 @@ assert.equal(
     && entry.model === "cli-chat"
   ),
   true,
+);
+assert.equal(
+  cliExternalIntelligenceFetchEntries.find((entry) =>
+    entry.url === "https://user:pass@cli-intelligence.invalid/v1/chat/completions"
+    && entry.model === "cli-chat"
+  )?.max_tokens,
+  6000,
 );
 assert.match(cliExternalIntelligence.stderr, /\[gmos external\] ingest .*windows=1\/1 .*extractionParseFailures=0/u);
 assert.match(cliExternalIntelligence.stderr, /turnMemories=1/u);

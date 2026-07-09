@@ -329,8 +329,11 @@ Use `--ingest-mode memory` for the legacy deterministic direct-import path. Use
 extractor path; adapter turns become conversation observations, timestamps are
 preserved, and speaker metadata is carried where the dataset provides it. In
 message mode gmOS uses `ingestConversation()` with windowed extraction:
-extractor calls are `ceil(eligible_messages / --extraction-window)` per session
-boundary, not one call per message. The default window is `12` messages.
+windows flush at the configured message cap or character cap, whichever is hit
+first, within each session boundary. The default caps are `12` messages and
+`7000` source characters, so long messages can bind on characters before the
+message count is reached. Use `--extraction-window` for the message cap and
+`--extraction-max-chars` for the character cap.
 Message-mode benchmark ingest also enables turn retention by default: each
 eligible raw turn is retrievable as a low-confidence `fact` memory alongside
 the extracted atoms. This measures the layered storage bound for answerability,
@@ -391,6 +394,31 @@ extractor calls at window 12 instead of 150k calls. At
 `--intelligence-concurrency 16`, setup is bounded by model latency over windows,
 not by per-turn serial extraction. Use lower concurrency for small local models
 or providers with strict rate limits.
+
+Large-window extraction is the blessed cache-build line when the provider can
+handle long transcript prompts. Start with:
+
+```bash
+gmos gym external \
+  --input-file ./long-memory-cleaned.json \
+  --dataset-format longmemeval \
+  --ingest-mode message \
+  --extraction-window 1000 \
+  --extraction-max-chars 30000 \
+  --extractor-max-tokens 4000 \
+  --intelligence-base-url https://provider.example/v1 \
+  --intelligence-model provider-chat-model \
+  --intelligence-api-key-env GMOS_BENCH_API_KEY \
+  --ingest-cache-dir ./.gmos-ingest-cache \
+  --progress \
+  --format json
+```
+
+`--extractor-max-tokens` should scale with `--extraction-max-chars`: larger
+windows emit more atomic facts, and a too-small output cap turns into
+`extractionParseFailureCount` when the provider reports truncation or returns
+cut JSON. The cache build is a one-time paid setup cost; later runs reuse the
+pre-read SQLite cache as long as ingest-affecting settings stay unchanged.
 
 Intelligence calls retry transport failures by default: HTTP `429`, HTTP `5xx`,
 timeouts, and network errors get `--intelligence-retries 2` with exponential
@@ -551,9 +579,10 @@ The key is `sha256` over:
 - package version and SQLite schema version;
 - dataset format, group profile id, case count, event count, and a hash of the
   canonical JSON for the group's case ids, event times, and event payloads;
-- ingest mode, turn retention, entity-consolidation setting, extraction window, ingest replay attempts,
-  extraction concurrency, extractor name/model/host, and hook timeout/retry
-  settings;
+- ingest mode, turn retention, entity-consolidation setting, extraction
+  window, extraction character cap, extractor output token cap, ingest replay
+  attempts, extraction concurrency, extractor name/model/host, and hook
+  timeout/retry settings;
 - session-distillation enabled/name/model/host;
 - embedding provider name, embed model, host, and dimensions.
 

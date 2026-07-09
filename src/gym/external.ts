@@ -67,6 +67,7 @@ export interface ExternalMemoryBenchmarkIntelligenceConfig {
   baseUrl?: string | undefined;
   apiKeyEnv?: string | undefined;
   model?: string | undefined;
+  extractorMaxTokens?: number | undefined;
   embedBaseUrl?: string | undefined;
   embedApiKeyEnv?: string | undefined;
   embedModel?: string | undefined;
@@ -575,6 +576,7 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   timeoutMs: number | null;
   retries: number | null;
   backoffMs: number | null;
+  extractorMaxTokens: number | null;
   embedQuery: boolean;
   queryEmbeddingFailureCount: number;
   queryEmbeddingRetryCount: number;
@@ -729,6 +731,8 @@ export interface ExternalMemoryBenchmarkRunManifest {
     requireConvergence: boolean;
     concurrency: number;
     extractionWindow: number;
+    extractionMaxChars: number;
+    extractorMaxTokens: number | null;
     reuseProfiles: boolean;
     failureSampleLimit: number;
     diagnosticsLevel: ExternalMemoryBenchmarkDiagnosticsLevel;
@@ -809,6 +813,7 @@ export interface RunExternalMemoryBenchmarkOptions {
   turnRetention?: boolean | undefined;
   sessionDistillation?: boolean | undefined;
   extractionWindow?: number | undefined;
+  extractionMaxChars?: number | undefined;
   ingestReplayAttempts?: number | undefined;
   ingestCacheDir?: string | undefined;
   embedQuery?: boolean | undefined;
@@ -1053,6 +1058,8 @@ interface IngestCacheKeyFields {
   };
   extraction: {
     window: number;
+    maxChars: number;
+    extractorMaxTokens: number | null;
     replayAttempts: number;
     windowConcurrency: number | null;
     extractorName: string | null;
@@ -1154,6 +1161,8 @@ function ingestCacheKeyFields(input: {
     },
     extraction: {
       window: normalizedExtractionWindow(input.options.extractionWindow),
+      maxChars: normalizedExtractionMaxChars(input.options.extractionMaxChars),
+      extractorMaxTokens: runtime.extractorMaxTokens,
       replayAttempts: normalizedIngestReplayAttempts(input.options.ingestReplayAttempts),
       windowConcurrency: runtime.concurrency,
       extractorName: runtime.hookNames.extractor,
@@ -2945,6 +2954,8 @@ function createRunManifest(input: {
       requireConvergence: input.options.requireConvergence ?? false,
       concurrency: normalizedConcurrency(input.options.concurrency),
       extractionWindow: normalizedExtractionWindow(input.options.extractionWindow),
+      extractionMaxChars: normalizedExtractionMaxChars(input.options.extractionMaxChars),
+      extractorMaxTokens: input.runtimeIntelligence.manifest.extractorMaxTokens,
       ingestReplayAttempts: normalizedIngestReplayAttempts(input.options.ingestReplayAttempts),
       turnRetention: input.runtimeIntelligence.manifest.turnRetention,
       sessionDistillation: input.runtimeIntelligence.manifest.sessionDistillation.enabled,
@@ -3234,6 +3245,14 @@ function normalizedExtractionWindow(value: number | undefined): number {
   return Math.min(input, 1000);
 }
 
+function normalizedExtractionMaxChars(value: number | undefined): number {
+  const input = value ?? 7000;
+  if (!Number.isInteger(input) || input < 256 || input > 200000) {
+    throw new Error("External benchmark extractionMaxChars must be an integer between 256 and 200000");
+  }
+  return input;
+}
+
 function normalizedIngestReplayAttempts(value: number | undefined): number {
   const input = value ?? 1;
   if (!Number.isInteger(input) || input < 0) {
@@ -3388,6 +3407,18 @@ function normalizedIntelligenceTimeoutMs(value: number | undefined): number {
   return timeoutMs;
 }
 
+function normalizedExtractorMaxTokens(value: number | undefined): number {
+  const maxTokens = normalizedPositiveInteger(
+    value,
+    4000,
+    "External benchmark extractor maxTokens",
+  );
+  if (maxTokens < 256 || maxTokens > 8192) {
+    throw new Error("External benchmark extractor maxTokens must be between 256 and 8192");
+  }
+  return maxTokens;
+}
+
 function hookName(value: unknown): string | null {
   if (!value) return null;
   if (typeof value === "function") return value.name || "anonymous";
@@ -3527,6 +3558,7 @@ function isIntelligenceConfig(
   const hasDistillerModel = "distillerModel" in value && value.distillerModel !== undefined;
   const hasEmbedBaseUrl = "embedBaseUrl" in value && value.embedBaseUrl !== undefined;
   const hasEmbedApiKeyEnv = "embedApiKeyEnv" in value && value.embedApiKeyEnv !== undefined;
+  const hasExtractorMaxTokens = "extractorMaxTokens" in value && value.extractorMaxTokens !== undefined;
   if (hasBaseUrl && !hasModel) {
     throw new Error("External benchmark intelligence baseUrl requires model");
   }
@@ -3535,6 +3567,9 @@ function isIntelligenceConfig(
   }
   if (!hasBaseUrl && hasEmbedBaseUrl) {
     throw new Error("External benchmark intelligence embedBaseUrl requires baseUrl");
+  }
+  if (!hasBaseUrl && hasExtractorMaxTokens) {
+    throw new Error("External benchmark extractorMaxTokens requires baseUrl");
   }
   if (!hasBaseUrl && hasPlannerBaseUrl !== hasPlannerModel) {
     throw new Error("planner-only intelligence requires both --planner-base-url and --planner-model");
@@ -3807,6 +3842,7 @@ function disabledRuntimeIntelligence(
       timeoutMs: null,
       retries: null,
       backoffMs: null,
+      extractorMaxTokens: null,
       embedQuery: false,
       queryEmbeddingFailureCount: 0,
       queryEmbeddingRetryCount: 0,
@@ -3936,6 +3972,9 @@ function resolveRuntimeIntelligence(input: {
   const timeoutMs = normalizedIntelligenceTimeoutMs(
     input.intelligenceTimeoutMs ?? config?.timeoutMs,
   );
+  const extractorMaxTokens = config?.baseUrl
+    ? normalizedExtractorMaxTokens(config.extractorMaxTokens)
+    : null;
   const retries = normalizedNonNegativeInteger(config?.retries, 2, "External benchmark intelligence retries");
   if (retries > 5) throw new Error("External benchmark intelligence retries must be at most 5");
   const backoffMs = normalizedNonNegativeInteger(config?.backoffMs, 250, "External benchmark intelligence backoffMs");
@@ -3988,6 +4027,7 @@ function resolveRuntimeIntelligence(input: {
       timeoutMs,
       retries,
       backoffMs,
+      extractor: { maxTokens: extractorMaxTokens ?? undefined },
       ...(config.disableThinking ? { disableThinking: true } : {}),
       ...(config.debugDir ? { debugDir: config.debugDir } : {}),
       ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
@@ -4100,6 +4140,7 @@ function resolveRuntimeIntelligence(input: {
       timeoutMs,
       retries,
       backoffMs,
+      extractorMaxTokens,
       embedQuery: false,
       queryEmbeddingFailureCount: 0,
       queryEmbeddingRetryCount: 0,
@@ -4738,6 +4779,7 @@ async function applyBenchmarkEvents(input: {
   turnRetention: boolean;
   sessionDistillation: boolean;
   extractionWindow: number | undefined;
+  extractionMaxChars: number | undefined;
   ingestReplayAttempts: number | undefined;
   windowConcurrency?: number | undefined;
   countExtractionFailures?: boolean | undefined;
@@ -4836,6 +4878,7 @@ async function applyBenchmarkEvents(input: {
       })),
       window: {
         maxMessages: input.extractionWindow ?? 12,
+        maxChars: input.extractionMaxChars ?? 7000,
         ...(input.windowConcurrency !== undefined ? { concurrency: input.windowConcurrency } : {}),
       },
       extraction: {
@@ -5298,6 +5341,7 @@ async function runCaseGroup(input: {
         turnRetention: input.runtimeIntelligence.manifest.turnRetention,
         sessionDistillation: input.runtimeIntelligence.manifest.sessionDistillation.enabled,
         extractionWindow: input.options.extractionWindow,
+        extractionMaxChars: input.options.extractionMaxChars,
         ingestReplayAttempts: input.options.ingestReplayAttempts,
         windowConcurrency: input.runtimeIntelligence.manifest.concurrency ?? undefined,
         countExtractionFailures: input.runtimeIntelligence.hooks?.extractor !== undefined,
@@ -5576,6 +5620,7 @@ export async function runExternalMemoryBenchmark(
   const turnRetention = normalizedTurnRetention(options.turnRetention, ingestMode);
   const sessionDistillation = normalizedSessionDistillation(options.sessionDistillation);
   const extractionWindow = normalizedExtractionWindow(options.extractionWindow);
+  const extractionMaxChars = normalizedExtractionMaxChars(options.extractionMaxChars);
   const ingestReplayAttempts = normalizedIngestReplayAttempts(options.ingestReplayAttempts);
   const debugDumpMemories = normalizedDebugDumpMemories(options.debugDumpMemories);
   const debugContextFailureLimit = normalizedDebugContextFailureLimit(options.debugContextFailureLimit);
@@ -5662,6 +5707,7 @@ export async function runExternalMemoryBenchmark(
     sweepCues,
     ...(debugDir ? { debugDir } : {}),
     extractionWindow,
+    extractionMaxChars,
     ingestReplayAttempts,
     embedQuery,
     reuseProfiles: options.reuseProfiles ?? true,
