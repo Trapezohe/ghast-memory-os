@@ -249,6 +249,7 @@ const ENTITY_TOKEN_STOPWORDS = new Set([
   "could",
   "do",
   "does",
+  "fact",
   "for",
   "from",
   "had",
@@ -263,6 +264,8 @@ const ENTITY_TOKEN_STOPWORDS = new Set([
   "kits",
   "model",
   "models",
+  "mentions",
+  "note",
   "of",
   "on",
   "or",
@@ -281,6 +284,25 @@ const ENTITY_TOKEN_STOPWORDS = new Set([
   "you",
   "your",
 ]);
+
+function losslessCoverageSignature(value: string): string {
+  return value
+    .normalize("NFC")
+    .toLowerCase()
+    .replace(/\p{White_Space}+/gu, " ")
+    .trim();
+}
+
+export function consolidationCandidateCoveredSourceIds(input: {
+  candidate: ConsolidationCandidateDecision["normalized"];
+  sources: MemoryRecord[];
+}): string[] {
+  const candidateSignature = losslessCoverageSignature(input.candidate.content);
+  const sourceSignatures = input.sources.map((source) => losslessCoverageSignature(source.content));
+  if (sourceSignatures.some((signature) => signature.length === 0)) return [];
+  if (candidateSignature !== sourceSignatures.join(" ")) return [];
+  return input.sources.map((source) => source.id);
+}
 
 function uniqueEntityTokenCandidates(candidates: EntityTokenCandidate[]): EntityTokenCandidate[] {
   const byToken = new Map<string, EntityTokenCandidate>();

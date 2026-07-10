@@ -180,6 +180,7 @@ import {
 } from "../src/kernel/temporal-validity.js";
 import { OpenAICompatibleResponseError } from "../src/kernel/openai-compatible-response.js";
 import {
+  consolidationCandidateCoveredSourceIds,
   resolveMemoryConsolidationConfig as resolveKernelMemoryConsolidationConfig,
   selectEntityConsolidationClusters,
 } from "../src/kernel/consolidation.js";
@@ -8195,6 +8196,7 @@ assert.deepEqual(
   ["b-29"],
 );
 let entityPromptSawEntityMode = false;
+let entityPromptRequiresFullCoverage = false;
 let duplicatePromptSawEntityMode = false;
 const entityModeConsolidator = createOpenAICompatibleConsolidator({
   model: "entity-mode",
@@ -8206,7 +8208,12 @@ const entityModeConsolidator = createOpenAICompatibleConsolidator({
     const user = JSON.parse(request.messages?.[1]?.content ?? "{}") as {
       cluster?: { kind?: string; entityObject?: string };
     };
-    if (user.cluster?.kind === "entity") entityPromptSawEntityMode = system.includes("cluster.kind is \"entity\"");
+    if (user.cluster?.kind === "entity") {
+      entityPromptSawEntityMode = system.includes("cluster.kind is \"entity\"");
+      entityPromptRequiresFullCoverage =
+        system.includes("only the source memory fact texts concatenated in the supplied order") &&
+        system.includes("every other character must remain unchanged");
+    }
     if (user.cluster?.kind === "fact") duplicatePromptSawEntityMode = system.includes("cluster.kind is \"entity\"");
     return {
       ok: true,
@@ -8247,6 +8254,7 @@ assert.deepEqual(await entityModeConsolidator.consolidate({
   object: "1/72 scale B-29 bomber model kit",
 }]);
 assert.equal(entityPromptSawEntityMode, true);
+assert.equal(entityPromptRequiresFullCoverage, true);
 await entityModeConsolidator.consolidate({
   kind: "fact",
   sharedTags: [],
@@ -8310,11 +8318,8 @@ const entityRuntimeMemory = createMemoryOS({
       if (cluster.kind !== "entity") return [];
       return [{
         kind: "fact" as const,
-        content: `Canonical model kit entity: ${cluster.entityObject}.`,
+        content: cluster.memories.map((memory) => memory.content).join(" "),
         confidence: 0.92,
-        subject: "user",
-        predicate: "has_model_kit",
-        object: cluster.entityObject ?? cluster.entityKey ?? "model kit",
       }];
     },
   },
@@ -8394,6 +8399,265 @@ assert.equal(
   ),
   true,
 );
+const coverageStore = createSqliteMemoryStore({
+  path: path.join(tmp, "entity-consolidation-coverage.db"),
+});
+const coveredByCandidateContent = (
+  sourceContent: string,
+  candidateContent: string,
+  structured?: { subject: string; predicate: string; object: string },
+) => consolidationCandidateCoveredSourceIds({
+  candidate: {
+    kind: "fact",
+    content: candidateContent,
+    confidence: 0.9,
+    ...(structured ?? {}),
+  },
+  sources: [{ id: "coverage_source", content: sourceContent, metadata: {} } as MemoryRecord],
+});
+assert.deepEqual(
+  coveredByCandidateContent("User owns B29Model.", "user\nowns B29Model."),
+  ["coverage_source"],
+);
+for (const [sourceContent, candidateContent] of [
+  ["User owns B29Model.", "It is false that User owns B29Model."],
+  ["User packed red shirts.", "User packed blue shirts and wore red shirts."],
+  ["User wore blue shirts.", "User packed blue shirts and wore red shirts."],
+  ["User keeps all files before lunch.", "User keeps some files after lunch."],
+  ["Meet now here.", "Meet nowhere."],
+  ["User could travel from Paris to London.", "User will travel from London to Paris."],
+  ["User stores samples at -5 C.", "User stores samples at 5 C."],
+  ["User drinks 1.5 liters.", "User drinks 1/5 liters."],
+  ["Range is 5–10 days.", "Range is 5 10 days."],
+  ["Dose is 1,5 ml.", "Dose is 1 5 ml."],
+  ["User codes in C++.", "User codes in C."],
+  ["User works in R&D.", "User works in R D."],
+  ["Flag is !enabled.", "Flag is enabled."],
+  ["Endpoint is https://api.example.com.", "Endpoint is https//api.example.com."],
+  ["Value is [A].", "Value is A."],
+  ["Route A→B.", "Route A←B."],
+  ["Limit A≤B.", "Limit A≥B."],
+  ["Status ✅.", "Status ❌."],
+  ["Budget ₹5.", "Budget 5."],
+  ["Dose is 10² mg.", "Dose is 102 mg."],
+  ["Family is 👨‍👩‍👧.", "Family is 👨 👩 👧."],
+  ["User likes tea.", "User\u202Elikes tea."],
+  ["Flag is \u0000enabled.", "Flag is enabled."],
+  ["User traveled to Costa Rica in June 2024.", "User traveled to Costa Rica."],
+] as const) {
+  assert.deepEqual(coveredByCandidateContent(sourceContent, candidateContent), []);
+}
+assert.deepEqual(
+  coveredByCandidateContent(
+    "User packed 7 shirts.",
+    "A trip happened.",
+    { subject: "user", predicate: "packed", object: "7 shirts" },
+  ),
+  [],
+);
+assert.deepEqual(
+  coveredByCandidateContent(
+    "User packed 7 shirts.",
+    "Alice packed 7 shirts.",
+    { subject: "Alice", predicate: "packed", object: "7 shirts" },
+  ),
+  [],
+);
+assert.deepEqual(
+  consolidationCandidateCoveredSourceIds({
+    candidate: { kind: "fact", content: "notable", confidence: 0.9 },
+    sources: [
+      { id: "not_source", content: "not", metadata: {} } as MemoryRecord,
+      { id: "able_source", content: "able", metadata: {} } as MemoryRecord,
+    ],
+  }),
+  [],
+);
+let coverageMode: "incomplete" | "swapped_combined" | "multiple_complete" | "complete" = "incomplete";
+const coverageMemory = createMemoryOS({
+  profileId: "entity_consolidation_coverage",
+  store: coverageStore,
+  consolidator: {
+    consolidate(cluster) {
+      if (cluster.kind !== "entity") return [];
+      const candidate = (relation: string, object: string) => ({
+        kind: "fact" as const,
+        content: `Costa Rica trip ${relation} ${object}.`,
+        confidence: 0.91,
+        subject: "user",
+        predicate: "has",
+        object,
+      });
+      if (coverageMode === "incomplete") {
+        return [candidate("wore", "3 shirts and 2 pairs of shorts")];
+      }
+      if (coverageMode === "swapped_combined") {
+        return [{
+          kind: "fact" as const,
+          content: "Costa Rica trip destination Costa Rica. Costa Rica trip packed 3 shirts and 2 pairs of shorts; Costa Rica trip wore 7 shirts and 5 pairs of shorts.",
+          confidence: 0.91,
+          subject: "user",
+          predicate: "has",
+          object: "Costa Rica trip clothing",
+        }];
+      }
+      if (coverageMode === "multiple_complete") {
+        return [
+          candidate("destination", "Costa Rica"),
+          candidate("packed", "7 shirts and 5 pairs of shorts"),
+          candidate("wore", "3 shirts and 2 pairs of shorts"),
+        ];
+      }
+      return [{
+        kind: "fact" as const,
+        content: "Costa Rica trip destination Costa Rica. Costa Rica trip packed 7 shirts and 5 pairs of shorts. Costa Rica trip wore 3 shirts and 2 pairs of shorts.",
+        confidence: 0.91,
+        subject: "Alice",
+        predicate: "misleading_relation",
+        object: "misleading object",
+      }];
+    },
+  },
+  consolidation: {
+    hookMinClusterSize: 99,
+    entityConsolidation: { enabled: true, minClusterSize: 3 },
+  },
+});
+const coverageSources = await Promise.all([
+  ["destination", "Costa Rica"],
+  ["packed", "7 shirts and 5 pairs of shorts"],
+  ["wore", "3 shirts and 2 pairs of shorts"],
+].map(async ([predicate, object]) => coverageMemory.add({
+  profileId: "entity_consolidation_coverage",
+  kind: "fact",
+  content: `Costa Rica trip ${predicate} ${object}.`,
+  confidence: 0.88,
+  metadata: { subject: "user", predicate, object, cardinality: "single" },
+  createdAt: "2023-05-20T09:00:00.000Z",
+})));
+for (const index of Array.from({ length: 24 }, (_entry, value) => value)) {
+  await coverageMemory.add({
+    profileId: "entity_consolidation_coverage",
+    kind: "fact",
+    content: `zzcoverage${String(index).padStart(3, "0")}`,
+    confidence: 0.5,
+    createdAt: "2023-05-20T09:00:00.000Z",
+  });
+}
+const incompleteCoverageReport = await coverageMemory.maintain({
+  profileId: "entity_consolidation_coverage",
+  now: "2026-07-03T02:10:00.000Z",
+  phases: ["consolidate"],
+});
+assert.equal(incompleteCoverageReport.consolidation.summaryMemories.length, 0);
+assert.equal(
+  incompleteCoverageReport.consolidation.rejectedCandidates.some(
+    (candidate) => candidate.reason === "source_fact_coverage_incomplete",
+  ),
+  true,
+);
+coverageMode = "swapped_combined";
+const combinedSwappedCoverageReport = await coverageMemory.maintain({
+  profileId: "entity_consolidation_coverage",
+  now: "2026-07-03T02:10:30.000Z",
+  phases: ["consolidate"],
+});
+assert.equal(combinedSwappedCoverageReport.consolidation.summaryMemories.length, 0);
+assert.equal(
+  combinedSwappedCoverageReport.consolidation.rejectedCandidates.some(
+    (candidate) => candidate.reason === "source_fact_coverage_incomplete",
+  ),
+  true,
+);
+coverageMode = "multiple_complete";
+const multipleCoverageReport = await coverageMemory.maintain({
+  profileId: "entity_consolidation_coverage",
+  now: "2026-07-03T02:11:00.000Z",
+  phases: ["consolidate"],
+});
+assert.equal(multipleCoverageReport.consolidation.summaryMemories.length, 0);
+assert.equal(
+  multipleCoverageReport.consolidation.rejectedCandidates.some(
+    (candidate) => candidate.reason === "source_fact_coverage_incomplete",
+  ),
+  true,
+);
+const coverageAfterReject = await coverageMemory.list({
+  profileId: "entity_consolidation_coverage",
+  status: "any",
+  limit: 100,
+});
+assert.equal(
+  coverageSources.every((source) =>
+    coverageAfterReject.some((memory) =>
+      memory.id === source.id &&
+      memory.status === "active" &&
+      memory.metadata.consolidatedInto === undefined
+    )
+  ),
+  true,
+);
+coverageMode = "complete";
+const dryRunCoverageReport = await coverageMemory.maintain({
+  profileId: "entity_consolidation_coverage",
+  now: "2026-07-03T02:12:00.000Z",
+  phases: ["consolidate"],
+  dryRun: true,
+});
+assert.equal(dryRunCoverageReport.consolidation.summaryMemories.length, 1);
+assert.deepEqual(
+  dryRunCoverageReport.consolidation.summaryMemories[0]?.sourceMemoryIds,
+  coverageSources.map((source) => source.id),
+);
+const completeCoverageReport = await coverageMemory.maintain({
+  profileId: "entity_consolidation_coverage",
+  now: "2026-07-03T02:13:00.000Z",
+  phases: ["consolidate"],
+});
+assert.equal(completeCoverageReport.consolidation.summaryMemories.length, 1);
+assert.deepEqual(
+  completeCoverageReport.consolidation.summaryMemories[0]?.sourceMemoryIds,
+  coverageSources.map((source) => source.id),
+);
+const coverageAfterMerge = await coverageMemory.list({
+  profileId: "entity_consolidation_coverage",
+  status: "any",
+  limit: 100,
+});
+assert.equal(
+  coverageSources.every((source) =>
+    coverageAfterMerge.some((memory) =>
+      memory.id === source.id &&
+      memory.status === "dormant" &&
+      typeof memory.metadata.consolidatedInto === "string"
+    )
+  ),
+  true,
+);
+const coverageBeliefs = await coverageStore.listWorldBeliefs({
+  profileId: "entity_consolidation_coverage",
+  status: "any",
+  limit: 100,
+});
+assert.equal(
+  coverageBeliefs.length,
+  0,
+);
+const coverageContext = await coverageMemory.reconstructContext({
+  profileId: "entity_consolidation_coverage",
+  query: "What did the Costa Rica trip pack?",
+  maxMemories: 8,
+  contextBudgetTokens: 4000,
+  stopWhenEvidenceEnough: false,
+});
+assert.match(coverageContext.contextBlock, /packed 7 shirts and 5 pairs of shorts/u);
+const coverageReplay = await coverageMemory.maintain({
+  profileId: "entity_consolidation_coverage",
+  now: "2026-07-03T02:14:00.000Z",
+  phases: ["consolidate"],
+});
+assert.equal(coverageReplay.consolidation.summaryMemories.length, 0);
+await coverageMemory.close();
 const temporalConsolidationStore = createSqliteMemoryStore({
   path: path.join(tmp, "entity-consolidation-temporal-anchor.db"),
 });
@@ -8405,11 +8669,8 @@ const temporalConsolidationMemory = createMemoryOS({
       if (cluster.kind !== "entity") return [];
       return [{
         kind: "fact" as const,
-        content: "Canonical temporal Hummus preference.",
+        content: cluster.memories.map((memory) => memory.content).join(" "),
         confidence: 0.91,
-        subject: "user",
-        predicate: "canonical_hummus_preference",
-        object: cluster.entityObject ?? "Hummus",
       }];
     },
   },
@@ -8461,7 +8722,8 @@ const temporalConsolidationAfter = await temporalConsolidationMemory.list({
 const temporalCanonical = temporalConsolidationAfter.find((memoryRecord) =>
   memoryRecord.status === "active" &&
   memoryRecord.metadata.consolidationSummary === true &&
-  memoryRecord.content === "Canonical temporal Hummus preference."
+  memoryRecord.content.includes("Hummus source one says") &&
+  memoryRecord.content.includes("Hummus source two says")
 );
 assert.ok(temporalCanonical);
 assert.equal(temporalCanonical.createdAt, "2026-07-03T02:35:00.000Z");
@@ -8475,7 +8737,7 @@ const temporalCanonicalContext = await temporalConsolidationMemory.reconstructCo
   contextBudgetTokens: 4000,
   stopWhenEvidenceEnough: false,
 });
-assert.match(temporalCanonicalContext.contextBlock, /Canonical temporal Hummus preference/u);
+assert.match(temporalCanonicalContext.contextBlock, /Hummus source one says/u);
 assert.match(temporalCanonicalContext.contextBlock, /2023-05-25; days_ago=5/u);
 assert.equal(temporalCanonicalContext.contextBlock.includes("days_ahead"), false);
 await temporalConsolidationMemory.close();
@@ -8581,11 +8843,8 @@ const ingestEntityMemory = createMemoryOS({
       });
       return [{
         kind: "fact" as const,
-        content: `Canonical ingest entity ${cluster.entityKey}: ${cluster.entityObject}.`,
+        content: cluster.memories.map((memory) => memory.content).join(" "),
         confidence: 0.91,
-        subject: "user",
-        predicate: `canonical_ingest_entity_${cluster.entityKey}`,
-        object: cluster.entityObject ?? cluster.entityKey ?? "entity",
       }];
     },
   },
@@ -8635,7 +8894,7 @@ assert.deepEqual(
       canonicals: ingestEntityAfter.filter((memory) =>
         memory.status === "active" &&
         memory.metadata.consolidationSummary === true &&
-        memory.content.includes(`Canonical ingest entity ${entity.key}:`)
+        memory.content.includes(`${entity.label} paint fragment`)
       ).length,
     },
   ])),
@@ -8767,11 +9026,8 @@ async function runParallelEntityConsolidationFixture(input: {
           }
           return [{
             kind: "fact" as const,
-            content: `Concurrent canonical entity ${entityKey}: ${cluster.entityObject}.`,
+            content: cluster.memories.map((memory) => memory.content).join(" "),
             confidence: 0.91,
-            subject: "user",
-            predicate: `parallel_canonical_${entityKey}`,
-            object: cluster.entityObject ?? entityKey,
           }];
         } finally {
           active -= 1;
@@ -8879,7 +9135,7 @@ assert.deepEqual(
       ).length,
       canonicals: partialFailureEntityConsolidation.snapshot.filter((entry) =>
         entry.consolidationSummary &&
-        entry.content.includes(`Concurrent canonical entity ${entity.key}:`)
+        entry.content.includes(`${entity.label} color fragment`)
       ).length,
     },
   ])),
@@ -29187,7 +29443,7 @@ const entityAggregationConsolidator = {
     kind: string;
     entityObject?: string | undefined;
     entityKey?: string | undefined;
-    memories?: Array<unknown> | undefined;
+    memories?: Array<{ content: string }> | undefined;
   }) {
     entityAggregationConsolidatorCalls.push({
       kind: cluster.kind,
@@ -29196,14 +29452,10 @@ const entityAggregationConsolidator = {
       sourceCount: cluster.memories?.length ?? 0,
     });
     if (cluster.kind !== "entity") return [];
-    const entityKey = cluster.entityKey ?? "model-kit";
     return [{
       kind: "fact" as const,
-      content: `Canonical entity model kit ${entityKey}: ${cluster.entityObject ?? entityKey}.`,
+      content: (cluster.memories ?? []).map((memory) => memory.content).join(" "),
       confidence: 0.91,
-      subject: "user",
-      predicate: `canonical_model_kit_${entityKey}`,
-      object: cluster.entityObject ?? entityKey,
     }];
   },
 };
@@ -29279,7 +29531,7 @@ assert.deepEqual(
       canonicalMemories: entityAggregationAfterMaintain.filter((memory) =>
         memory.status === "active" &&
         memory.metadata.consolidationSummary === true &&
-        memory.content.includes(`Canonical entity model kit ${entity.key}:`)
+        memory.content.includes(entityAggregationContent(entity.label, entity.predicates[0]!, 0))
       ).length,
     },
   ])),
@@ -29304,10 +29556,9 @@ const entityAggregationCase = {
 const entityAggregationAnswerer = {
   name: "entity-aggregation-answerer",
   answer(_question: string, context: string) {
-    const entityKeys = new Set([
-      ...[...context.matchAll(/Canonical entity model kit ([a-z0-9-]+):/gu)].map((match) => match[1]),
-      ...[...context.matchAll(/\bcanonical_model_kit_([a-z0-9-]+)/gu)].map((match) => match[1]),
-    ]);
+    const entityKeys = new Set(entityAggregationEntities
+      .filter((entity) => [...context.matchAll(new RegExp(entity.label, "gu"))].length >= 4)
+      .map((entity) => entity.key));
     return String(entityKeys.size);
   },
 };

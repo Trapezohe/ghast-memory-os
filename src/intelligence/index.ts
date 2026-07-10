@@ -407,7 +407,8 @@ export function createOpenAICompatibleConsolidator(
               isEntityCluster
                 ? [
                     "If cluster.kind is \"entity\", the memories are different facts about the same object/entity.",
-                    "Return one concise canonical durable user-world fact for that entity, preserving distinguishing attributes such as scale, brand, name, or model number.",
+                    "Return exactly one lossless entity record. Its content must be only the source memory fact texts concatenated in the supplied order; whitespace and case may vary, but every other character must remain unchanged.",
+                    "Omit subject/predicate/object fields. If the concatenated facts do not fit safely within the content limit, return an empty summaries array so the runtime keeps the sources active.",
                     "Return {\"summaries\":[{\"content\":\"...\",\"kind\":\"fact|preference|procedure|project|task_trajectory\",\"confidence\":0.7,\"subject\":\"optional\",\"predicate\":\"optional\",\"object\":\"optional\"}]}",
                   ].join("\n")
                 : "Return {\"summaries\":[{\"content\":\"...\",\"kind\":\"fact|preference|procedure|project|task_trajectory\",\"confidence\":0.7,\"subject\":\"optional\",\"predicate\":\"optional\",\"object\":\"optional\"}]}",

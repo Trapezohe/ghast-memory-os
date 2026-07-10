@@ -23,6 +23,7 @@ import {
   openAICompatibleOutcomeForError,
 } from "../kernel/openai-compatible-response.js";
 import {
+  consolidationCandidateCoveredSourceIds,
   normalizeConsolidationCandidate,
   resolveMemoryConsolidationConfig,
   selectEntityConsolidationClusters,
@@ -3784,6 +3785,32 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         addConsolidationSkipped(input.report, "consolidator_returned_empty");
         continue;
       }
+      if (cluster.kind === "entity") {
+        const sourceMemories = sourceMemoryIds
+          .map((sourceMemoryId) => input.memoriesById.get(sourceMemoryId))
+          .filter((memory): memory is MemoryRecord => memory !== undefined);
+        const normalized = rawCandidates.length === 1
+          ? normalizeConsolidationCandidate(rawCandidates[0]!, cluster)
+          : { reason: "source_fact_coverage_incomplete" };
+        const coveredSourceIds = "reason" in normalized
+          ? []
+          : consolidationCandidateCoveredSourceIds({
+              candidate: normalized.normalized,
+              sources: sourceMemories,
+            });
+        if (
+          rawCandidates.length !== 1 ||
+          sourceMemories.length !== sourceMemoryIds.length ||
+          sourceMemoryIds.some((sourceMemoryId) => !coveredSourceIds.includes(sourceMemoryId))
+        ) {
+          input.report.rejectedCandidates.push({
+            kind: clusterMemoryKind,
+            sourceMemoryIds,
+            reason: "source_fact_coverage_incomplete",
+          });
+          continue;
+        }
+      }
       let clusterMerged = false;
       for (const candidate of rawCandidates) {
         if (cluster.kind === "entity" && clusterMerged) break;
@@ -3896,7 +3923,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
             ...(name ? { consolidatorName: name } : {}),
           },
           ...(embedding ? { embedding } : {}),
-          ...(normalized.normalized.subject &&
+          ...(cluster.kind !== "entity" &&
+          normalized.normalized.subject &&
           normalized.normalized.predicate &&
           normalized.normalized.object
             ? {
