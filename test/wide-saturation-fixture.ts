@@ -144,4 +144,10 @@ assert.equal(lexicalBaseline.context.memories.length >= 150, true);
 assert.equal(sourceLexical.context.memories.length, lexicalBaseline.context.memories.length);
 assert.equal(embedding.context.memories.length, lexicalBaseline.context.memories.length);
 assert.equal(embedding.broadCount > (embedding.context.plannerTrace?.maxBranch ?? 10), true);
+for (const context of [lexicalBaseline.context, sourceLexical.context, embedding.context]) {
+  const memoryIndex = context.contextBlock.indexOf("Memory content:");
+  const pathIndex = context.contextBlock.indexOf("Reconstructed evidence paths:");
+  assert.equal(memoryIndex >= 0 && memoryIndex < pathIndex, true);
+  assert.equal(context.contextBlock.slice(0, 4000).includes("Memory content:"), true);
+}
 rmSync(tmp, { recursive: true, force: true });

@@ -2813,6 +2813,13 @@ function composeReconstructedContext(input: {
         : []),
       `Evidence convergence: score=${output.evidenceConvergence.score.toFixed(2)}; reached=${output.evidenceConvergence.reached}; threshold=${output.evidenceConvergence.threshold.toFixed(2)}; pruned=${output.evidenceConvergence.prunedBranchCount}; frontier=${output.evidenceConvergence.frontierRemaining}; stopWhenEvidenceEnough=${output.evidenceConvergence.stopWhenEvidenceEnough}`,
       `Reconstruction uncertainty: ${output.uncertainty.level}${output.uncertainty.reasons.length ? ` (${output.uncertainty.reasons.join(", ")})` : ""}`,
+      "Memory content:",
+      ...memories.map((memory) =>
+        publicMemory(memory, hideInternalRouteSignals, privateOutputSignalKeySet)
+      ).map(
+        (memory) =>
+          `- [${safePublicLabel(memory.kind)}${includeTemporalContext ? temporalContextSegment(memory.createdAt, memory.metadata, asOf) : ""}; confidence=${memory.confidence.toFixed(2)}] ${truncateMemoryContent(memory.content, capForMemoryId(memory.id, fullIds))}`,
+      ),
       "Reconstructed evidence paths:",
       ...output.paths.map((path, index) =>
         formatPathLine(
@@ -2821,13 +2828,6 @@ function composeReconstructedContext(input: {
           capForPath(path),
           targetReferenceForPath(path, paths[index]),
         )
-      ),
-      "Memory content:",
-      ...memories.map((memory) =>
-        publicMemory(memory, hideInternalRouteSignals, privateOutputSignalKeySet)
-      ).map(
-        (memory) =>
-          `- [${safePublicLabel(memory.kind)}${includeTemporalContext ? temporalContextSegment(memory.createdAt, memory.metadata, asOf) : ""}; confidence=${memory.confidence.toFixed(2)}] ${truncateMemoryContent(memory.content, capForMemoryId(memory.id, fullIds))}`,
       ),
     ];
     if (input.includeEvidence) {

@@ -22984,7 +22984,11 @@ assert.equal(
 );
 const duplicateWidePathSection = duplicateWideContext.contextBlock.slice(
   duplicateWideContext.contextBlock.indexOf("Reconstructed evidence paths:"),
-  duplicateWideContext.contextBlock.indexOf("Memory content:"),
+);
+assert.equal(
+  duplicateWideContext.contextBlock.indexOf("Memory content:") <
+    duplicateWideContext.contextBlock.indexOf("Reconstructed evidence paths:"),
+  true,
 );
 assert.match(
   duplicateWidePathSection,
@@ -23123,7 +23127,6 @@ const firstWideSupplyMemory = wideSupplyContext.memories[0];
 assert.ok(firstWideSupplyMemory);
 const wideSupplyPathSection = wideSupplyContext.contextBlock.slice(
   wideSupplyContext.contextBlock.indexOf("Reconstructed evidence paths:"),
-  wideSupplyContext.contextBlock.indexOf("Memory content:"),
 );
 assert.match(
   wideSupplyPathSection,
@@ -23384,7 +23387,6 @@ assert.doesNotMatch(truncatedMemoryContext.contextBlock, new RegExp(`${"x".repea
 assert.match(truncatedMemoryContext.contextBlock, /observed 2026-01-02/u);
 const truncatedMemoryPathSection = truncatedMemoryContext.contextBlock.slice(
   truncatedMemoryContext.contextBlock.indexOf("Reconstructed evidence paths:"),
-  truncatedMemoryContext.contextBlock.indexOf("Memory content:"),
 );
 assert.match(
   truncatedMemoryPathSection,
@@ -23449,7 +23451,6 @@ assert.equal(pathOnlyInvalidAsOfContext.contextBlock, pathOnlyContext.contextBlo
 const pathOnlyTruncatedContent = `${[...pathOnlyContent].slice(0, 80).join("")}...`;
 const pathOnlyPathSection = pathOnlyContext.contextBlock.slice(
   pathOnlyContext.contextBlock.indexOf("Reconstructed evidence paths:"),
-  pathOnlyContext.contextBlock.indexOf("Memory content:"),
 );
 assert.match(
   pathOnlyPathSection,
@@ -23505,7 +23506,6 @@ assert.doesNotMatch(graduatedContext.contextBlock, /TOP_ONE_AFTER_900/u);
 assert.doesNotMatch(graduatedContext.contextBlock, /TAIL_THREE_AFTER_400/u);
 const graduatedPathSection = graduatedContext.contextBlock.slice(
   graduatedContext.contextBlock.indexOf("Reconstructed evidence paths:"),
-  graduatedContext.contextBlock.indexOf("Memory content:"),
 );
 assert.match(graduatedPathSection, /see Memory content item 1/u);
 assert.match(graduatedPathSection, /see Memory content item 2/u);
@@ -23515,6 +23515,7 @@ assert.doesNotMatch(graduatedPathSection, /TOP_ONE_AFTER_900/u);
 assert.doesNotMatch(graduatedPathSection, /TAIL_THREE_AFTER_400/u);
 const graduatedMemorySection = graduatedContext.contextBlock.slice(
   graduatedContext.contextBlock.indexOf("Memory content:"),
+  graduatedContext.contextBlock.indexOf("Reconstructed evidence paths:"),
 );
 assert.match(graduatedMemorySection, /TOP_ONE_AFTER_400/u);
 assert.match(graduatedMemorySection, /TOP_TWO_AFTER_400/u);
