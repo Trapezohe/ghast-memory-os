@@ -1270,6 +1270,11 @@ try {
         embedBaseUrl: "http://127.0.0.1:11434/v1",
         embedApiKeyEnv: "GMOS_TYPED_EMBED_KEY",
       };
+      const typedEmbeddingOffIntelligenceConfig: ExternalMemoryBenchmarkIntelligenceConfig = {
+        baseUrl: "https://typed-chat.invalid/v1",
+        model: "typed-chat",
+        embeddingProvider: false,
+      };
       const typedEmbedBaseUrlHost: string | null | undefined = typedRuntimeIntelligence.embedBaseUrlHost;
       const typedExtractorMaxTokens: number | null = typedRuntimeIntelligence.extractorMaxTokens;
       const typedAnswererRetryCount: number = typedRuntimeIntelligence.answererRetryCount;
@@ -1283,6 +1288,7 @@ try {
       void typedAnswererRetryCount;
       void typedJudgeRecoveredCount;
       void typedExtractorMaxTokens;
+      void typedEmbeddingOffIntelligenceConfig;
       void typedIntelligenceConfig;
       void typedEmbedBaseUrlHost;
       void typedRuntimeAnswererMaxTokens;

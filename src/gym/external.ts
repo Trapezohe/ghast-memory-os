@@ -142,6 +142,7 @@ export interface ExternalMemoryBenchmarkIntelligenceConfig {
   embedBaseUrl?: string | undefined;
   embedApiKeyEnv?: string | undefined;
   embedModel?: string | undefined;
+  embeddingProvider?: false | undefined;
   plannerBaseUrl?: string | undefined;
   plannerModel?: string | undefined;
   distillerBaseUrl?: string | undefined;
@@ -1925,9 +1926,9 @@ function ingestCacheKeyFields(input: {
     embedding: {
       providerNameHash: checkpointIdentityHash(runtime.hookNames.embeddingProvider),
       model: runtime.embedModel,
-      endpointIdentity: endpoint(
-        intelligenceConfig?.embedBaseUrl ?? intelligenceConfig?.baseUrl,
-      ),
+      endpointIdentity: input.runtimeIntelligence.hooks?.embeddingProvider
+        ? endpoint(intelligenceConfig?.embedBaseUrl ?? intelligenceConfig?.baseUrl)
+        : null,
       dimensions: embeddingDimensionsForCache(input.runtimeIntelligence.hooks),
     },
     customProviderIdentityHash: checkpointIdentityHash(input.options.checkpoint?.providerIdentity),
@@ -1964,9 +1965,8 @@ function sqliteCacheFileIsComplete(
     });
     const searchIndex = store.searchIndexStatus();
     return store.schemaVersion() === GMOS_SQLITE_SCHEMA_VERSION &&
-      searchIndex.status === "ok" &&
-      searchIndex.vectorIndex?.status === "ok" &&
-      searchIndex.vectorIndex.pendingEntryCount === 0;
+      searchIndexCompleteForCache(searchIndex, embeddingProvider) &&
+      (!embeddingProvider || searchIndex.vectorIndex?.pendingEntryCount === 0);
   } catch {
     return false;
   } finally {
@@ -2115,13 +2115,14 @@ function writeIngestCacheEntry(
 function ingestCacheIntegrity(
   applied: AppliedBenchmarkEvents,
   searchIndex: SearchIndexStatus,
+  embeddingProvider: EmbeddingProvider | undefined,
   requireEntityConsolidation: boolean,
 ): IngestCacheIntegrity {
   return {
     unresolvedExtractionWindowCount: applied.unresolvedExtractionWindowCount,
     embeddingFailureCount: applied.embeddingFailureCount,
-    pendingVectorCount: searchIndex.vectorIndex?.pendingEntryCount ?? 0,
-    searchIndexComplete: searchIndex.status === "ok" && searchIndex.vectorIndex?.status === "ok",
+    pendingVectorCount: embeddingProvider ? searchIndex.vectorIndex?.pendingEntryCount ?? 0 : 0,
+    searchIndexComplete: searchIndexCompleteForCache(searchIndex, embeddingProvider),
     distillationFailureCount: applied.distillationFailureCount,
     entityConsolidationFailureCount: applied.entityConsolidationConsolidatorFailureCount,
     entityConsolidationIncompleteClusterCount: requireEntityConsolidation
@@ -2132,6 +2133,21 @@ function ingestCacheIntegrity(
         )
       : 0,
   };
+}
+
+function searchIndexCompleteForCache(
+  searchIndex: SearchIndexStatus,
+  embeddingProvider: EmbeddingProvider | undefined,
+): boolean {
+  const lexicalIndexComplete = searchIndex.status !== "missing" &&
+    searchIndex.status !== "unsupported" &&
+    searchIndex.indexedMemoryCount === searchIndex.totalMemoryCount &&
+    searchIndex.missingEntryCount === 0 &&
+    searchIndex.staleEntryCount === 0 &&
+    searchIndex.orphanEntryCount === 0 &&
+    searchIndex.duplicateEntryCount === 0;
+  return lexicalIndexComplete &&
+    (!embeddingProvider || searchIndex.vectorIndex?.status === "ok");
 }
 
 function incompleteIngestCacheReasons(integrity: IngestCacheIntegrity): string[] {
@@ -4978,11 +4994,17 @@ function isIntelligenceConfig(
   const hasDistillerModel = "distillerModel" in value && value.distillerModel !== undefined;
   const hasEmbedBaseUrl = "embedBaseUrl" in value && value.embedBaseUrl !== undefined;
   const hasEmbedApiKeyEnv = "embedApiKeyEnv" in value && value.embedApiKeyEnv !== undefined;
+  const embeddingsDisabled = "embeddingProvider" in value && value.embeddingProvider === false;
+  const hasEmbedModel = "embedModel" in value && value.embedModel !== undefined;
+  const hasEmbedDimensions = "dimensions" in value && value.dimensions !== undefined;
   const hasExtractorMaxCandidates =
     "extractorMaxCandidates" in value && value.extractorMaxCandidates !== undefined;
   const hasExtractorMaxTokens = "extractorMaxTokens" in value && value.extractorMaxTokens !== undefined;
   if (hasBaseUrl && !hasModel) {
     throw new Error("External benchmark intelligence baseUrl requires model");
+  }
+  if (embeddingsDisabled && (hasEmbedBaseUrl || hasEmbedApiKeyEnv || hasEmbedModel || hasEmbedDimensions)) {
+    throw new Error("External benchmark disabled embedding provider cannot include embedding configuration");
   }
   if (hasEmbedApiKeyEnv && !hasEmbedBaseUrl) {
     throw new Error("External benchmark intelligence embedApiKeyEnv requires embedBaseUrl");
@@ -5461,6 +5483,7 @@ function resolveRuntimeIntelligence(input: {
     rawHooks = createDefaultIntelligence({
       baseUrl: config.baseUrl,
       model,
+      ...(config.embeddingProvider === false ? { embeddingProvider: false } : {}),
       ...(config.embedModel ? { embedModel: config.embedModel } : {}),
       ...(config.dimensions !== undefined ? { dimensions: config.dimensions } : {}),
       ...(config.embedBaseUrl
@@ -5607,7 +5630,7 @@ function resolveRuntimeIntelligence(input: {
       : {}),
   };
   const baseIntelligenceUrl = config?.baseUrl;
-  const embedIntelligenceUrl = config?.embedBaseUrl;
+  const embedIntelligenceUrl = hooks.embeddingProvider ? config?.embedBaseUrl : undefined;
   const plannerIntelligenceUrl = config?.plannerBaseUrl ?? config?.baseUrl;
   const distillerIntelligenceUrl = config?.distillerBaseUrl ?? config?.baseUrl;
   const sessionDistillationManifest: ExternalMemoryBenchmarkRuntimeSessionDistillationManifest = {
@@ -6103,7 +6126,9 @@ function checkpointProviderContract(input: {
       enabled: runtime.enabled,
       endpoints: {
         chat: endpoint(intelligenceConfig?.baseUrl),
-        embedding: endpoint(intelligenceConfig?.embedBaseUrl ?? intelligenceConfig?.baseUrl),
+        embedding: embeddingProvider
+          ? endpoint(intelligenceConfig?.embedBaseUrl ?? intelligenceConfig?.baseUrl)
+          : null,
         planner: endpoint(intelligenceConfig?.plannerBaseUrl ?? intelligenceConfig?.baseUrl),
         distiller: endpoint(intelligenceConfig?.distillerBaseUrl ?? intelligenceConfig?.baseUrl),
       },
@@ -7366,6 +7391,7 @@ async function runCaseGroup(input: {
         const integrity = ingestCacheIntegrity(
           applied,
           runtime.store.searchIndexStatus(),
+          input.runtimeIntelligence.hooks?.embeddingProvider,
           input.runtimeIntelligence.manifest.consolidateEntities,
         );
         const incompleteReasons = incompleteIngestCacheReasons(integrity);
@@ -7761,7 +7787,8 @@ async function runExternalMemoryBenchmarkWithCircuit(
   if (ingestCache.dir && !options.checkpoint) {
     runtimeIntelligence.checkpointArtifactIdentity = runtimeArtifactIdentity();
   }
-  const embedQuery = options.embedQuery ?? runtimeIntelligence.hooks?.embeddingProvider !== undefined;
+  const embedQuery = runtimeIntelligence.hooks?.embeddingProvider !== undefined &&
+    (options.embedQuery ?? true);
   runtimeIntelligence.manifest.embedQuery = embedQuery;
   // Measured regression on the 30-case reader benchmark (0.30 -> 0.17):
   // model-derived required anchors displaced whole-question-relevant memories

@@ -207,6 +207,7 @@ Usage:
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --max-cases 5 --results-jsonl ./paid-smoke.results.jsonl
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --resume-results-jsonl /outside/repo/longmemeval.results.jsonl
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --turn-retention on --session-distill on --consolidate-entities on --extraction-window 1000 --extraction-max-chars 30000 --extractor-max-candidates 32 --extractor-max-tokens 4000 --ingest-replay-attempts 1 --embed-query on --intelligence-base-url https://api.deepseek.com/v1 --intelligence-model deepseek-chat --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-embed-base-url http://127.0.0.1:11434/v1 --intelligence-embed-model nomic-embed-text --intelligence-embed-dimensions 768 --intelligence-disable-thinking
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --intelligence-base-url https://provider.example/v1 --intelligence-model provider-chat-model --intelligence-embed-model off --format json
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --session-distill on --distiller-base-url http://127.0.0.1:11434/v1 --distiller-model llama3.1 --intelligence-api-key-env GMOS_BENCH_API_KEY
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode memory --query-planner on --sweep-cues on --planner-base-url http://127.0.0.1:11434/v1 --planner-model llama3.1 --intelligence-api-key-env GMOS_BENCH_API_KEY
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --protocol official-protocol --answerer-base-url http://127.0.0.1:11434/v1 --answerer-model llama3.1 --answerer-timeout-ms 90000 --answerer-disable-thinking
@@ -1205,6 +1206,7 @@ function externalIntelligenceOption(debugDir: string | undefined): {
   embedBaseUrl?: string | undefined;
   embedApiKeyEnv?: string | undefined;
   embedModel?: string | undefined;
+  embeddingProvider?: false | undefined;
   plannerBaseUrl?: string | undefined;
   plannerModel?: string | undefined;
   distillerBaseUrl?: string | undefined;
@@ -1234,6 +1236,7 @@ function externalIntelligenceOption(debugDir: string | undefined): {
   const embedBaseUrl = value("--intelligence-embed-base-url");
   const embedApiKeyEnv = value("--intelligence-embed-api-key-env");
   const embedModel = value("--intelligence-embed-model");
+  const embeddingsDisabled = embedModel === "off";
   const plannerBaseUrl = value("--planner-base-url");
   const plannerModel = value("--planner-model");
   const distillerBaseUrl = value("--distiller-base-url");
@@ -1292,6 +1295,19 @@ function externalIntelligenceOption(debugDir: string | undefined): {
   if (!model) {
     throw new Error("gmos gym external --intelligence-base-url requires --intelligence-model");
   }
+  if (
+    embeddingsDisabled &&
+    (
+      value("--embed-query") === "on" ||
+      embedBaseUrl !== undefined ||
+      embedApiKeyEnv !== undefined ||
+      value("--intelligence-embed-dimensions") !== undefined
+    )
+  ) {
+    throw new Error(
+      "--intelligence-embed-model off cannot be combined with --embed-query on, --intelligence-embed-base-url, --intelligence-embed-api-key-env, or --intelligence-embed-dimensions",
+    );
+  }
   const apiKeyEnv = value("--intelligence-api-key-env");
   if (apiKeyEnv !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(apiKeyEnv)) {
     throw new Error("--intelligence-api-key-env must be an environment variable name");
@@ -1315,7 +1331,8 @@ function externalIntelligenceOption(debugDir: string | undefined): {
     model,
     ...(embedBaseUrl ? { embedBaseUrl } : {}),
     ...(embedApiKeyEnv ? { embedApiKeyEnv } : {}),
-    ...(embedModel ? { embedModel } : {}),
+    ...(embeddingsDisabled ? { embeddingProvider: false as const } : {}),
+    ...(embedModel && !embeddingsDisabled ? { embedModel } : {}),
     ...(plannerBaseUrl ? { plannerBaseUrl } : {}),
     ...(plannerModel ? { plannerModel } : {}),
     ...(distillerBaseUrl ? { distillerBaseUrl } : {}),

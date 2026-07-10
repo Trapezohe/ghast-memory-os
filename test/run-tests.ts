@@ -37981,6 +37981,155 @@ assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.extractorMaxCandidat
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.extractorMaxTokens, 6000);
 assert.equal(externalOpenAICache.runManifest.options.extractorMaxCandidates, 48);
 assert.equal(externalOpenAICache.runManifest.runtimeIntelligence.extractorMaxCandidates, 48);
+const externalEmbeddingOffCacheDir = path.join(tmp, "external-embedding-off-cache");
+let externalEmbeddingOffExtractorCalls = 0;
+let externalEmbeddingOffEndpointCalls = 0;
+let externalEmbeddingOnEndpointCalls = 0;
+let externalEmbeddingEndpointEnabled = false;
+const externalEmbeddingOffFetch = async (
+  url: string | URL | Request,
+  init?: RequestInit,
+) => {
+  const body = JSON.parse(String(init?.body ?? "{}")) as {
+    input?: string[];
+    messages?: Array<{ content?: string }>;
+  };
+  if (String(url).endsWith("/embeddings")) {
+    if (!externalEmbeddingEndpointEnabled) {
+      externalEmbeddingOffEndpointCalls += 1;
+      return {
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+        text: async () => "embedding endpoint must stay disabled",
+      };
+    }
+    externalEmbeddingOnEndpointCalls += 1;
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({
+        data: (body.input ?? []).map((_text, index) => ({
+          index,
+          embedding: [0.2, 0.3, 0.4],
+        })),
+      }),
+    };
+  }
+  const system = body.messages?.[0]?.content ?? "";
+  if (system.includes("structured memory extractor")) {
+    externalEmbeddingOffExtractorCalls += 1;
+  }
+  const content = system.includes("structured memory extractor")
+    ? JSON.stringify({
+        memories: [{
+          kind: "fact",
+          content: "Embedding off cache answer is ochre.",
+          confidence: 0.9,
+        }],
+      })
+    : "{}";
+  return {
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    text: async () => JSON.stringify({ choices: [{ message: { content } }] }),
+  };
+};
+const externalEmbeddingOffBase = {
+  cases: [{
+    id: "external-embedding-off-cache",
+    events: [{ content: "Embedding off cache answer is ochre." }],
+    question: "What is the embedding off cache answer?",
+    expectedAny: ["ochre"],
+  }],
+  ingestMode: "message" as const,
+  turnRetention: false,
+  ingestCacheDir: externalEmbeddingOffCacheDir,
+  intelligence: {
+    baseUrl: "https://embedding-off.invalid/v1",
+    model: "embedding-off-chat",
+    embeddingProvider: false as const,
+    retries: 0,
+    fetchImpl: externalEmbeddingOffFetch,
+  },
+};
+const externalEmbeddingOffFirst = await runExternalMemoryBenchmark(externalEmbeddingOffBase);
+assert.equal(externalEmbeddingOffFirst.pass, true);
+assert.equal(externalEmbeddingOffFirst.runManifest.execution.stopReason, "completed");
+assert.equal(externalEmbeddingOffFirst.runManifest.execution.stopStage, null);
+assert.equal(
+  externalEmbeddingOffFirst.runManifest.runtimeIntelligence.hookNames.embeddingProvider,
+  null,
+);
+assert.equal(externalEmbeddingOffFirst.runManifest.runtimeIntelligence.embedModel, null);
+assert.equal(externalEmbeddingOffFirst.runManifest.runtimeIntelligence.embedQuery, false);
+assert.equal(externalEmbeddingOffFirst.runManifest.runtimeIntelligence.embeddingCallCount, 0);
+assert.equal(externalEmbeddingOffFirst.runManifest.runtimeIntelligence.embeddedMemoryCount, 0);
+assert.equal(externalEmbeddingOffFirst.runManifest.runtimeIntelligence.embeddingFailureCount, 0);
+assert.equal(externalEmbeddingOffFirst.runManifest.runtimeIntelligence.queryEmbeddingFailureCount, 0);
+assert.equal(externalEmbeddingOffEndpointCalls, 0);
+assert.equal(externalEmbeddingOffFirst.runManifest.ingestCache.writes, 1);
+assert.equal(externalEmbeddingOffFirst.runManifest.ingestCache.writeSkips, 0);
+externalEmbeddingOffExtractorCalls = 0;
+const externalEmbeddingOffCached = await runExternalMemoryBenchmark(externalEmbeddingOffBase);
+assert.equal(externalEmbeddingOffCached.runManifest.ingestCache.hits, 1);
+assert.equal(externalEmbeddingOffCached.runManifest.ingestCache.misses, 0);
+assert.equal(externalEmbeddingOffCached.cases[0]?.cacheHit, true);
+assert.equal(externalEmbeddingOffExtractorCalls, 0);
+assert.equal(externalEmbeddingOffEndpointCalls, 0);
+externalEmbeddingEndpointEnabled = true;
+const externalEmbeddingOnRun = await runExternalMemoryBenchmark({
+  ...externalEmbeddingOffBase,
+  intelligence: {
+    baseUrl: "https://embedding-off.invalid/v1",
+    model: "embedding-off-chat",
+    dimensions: 3,
+    retries: 0,
+    fetchImpl: externalEmbeddingOffFetch,
+  },
+});
+assert.equal(externalEmbeddingOnRun.pass, true);
+assert.equal(externalEmbeddingOnRun.runManifest.ingestCache.hits, 0);
+assert.equal(externalEmbeddingOnRun.runManifest.ingestCache.misses, 1);
+assert.equal(externalEmbeddingOnRun.runManifest.ingestCache.writes, 1);
+assert.equal(externalEmbeddingOnEndpointCalls > 0, true);
+const externalEmbeddingCacheMeta = readdirSync(externalEmbeddingOffCacheDir)
+  .filter((entry) => entry.endsWith(".meta.json"))
+  .map((entry) => JSON.parse(
+    readFileSync(path.join(externalEmbeddingOffCacheDir, entry), "utf8"),
+  ) as {
+    key?: string;
+    keyFields?: {
+      embedding?: {
+        providerNameHash?: string | null;
+        model?: string | null;
+        endpointIdentity?: string | null;
+        dimensions?: number | null;
+      };
+    };
+  });
+assert.equal(externalEmbeddingCacheMeta.length, 2);
+assert.equal(new Set(externalEmbeddingCacheMeta.map((entry) => entry.key)).size, 2);
+assert.equal(
+  externalEmbeddingCacheMeta.some((entry) =>
+    entry.keyFields?.embedding?.providerNameHash === null &&
+    entry.keyFields.embedding.model === null &&
+    entry.keyFields.embedding.endpointIdentity === null &&
+    entry.keyFields.embedding.dimensions === null
+  ),
+  true,
+);
+assert.equal(
+  externalEmbeddingCacheMeta.some((entry) =>
+    typeof entry.keyFields?.embedding?.providerNameHash === "string" &&
+    entry.keyFields.embedding.model === null &&
+    entry.keyFields.embedding.endpointIdentity !== null &&
+    entry.keyFields.embedding.dimensions === 3
+  ),
+  true,
+);
 let entityAggregationExtractorCalls = 0;
 const entityAggregationEntities = [
   {
@@ -42643,6 +42792,40 @@ assert.match(
   cliExternalIntelligenceBadEmbedEnv.stderr,
   /--intelligence-embed-api-key-env must be an environment variable name/,
 );
+for (const conflictingEmbeddingOffArgs of [
+  ["--embed-query", "on"],
+  ["--intelligence-embed-base-url", "https://cli-embed.invalid/v1"],
+  ["--intelligence-embed-api-key-env", "GMOS_CLI_EMBED_SECRET"],
+  ["--intelligence-embed-dimensions", "3"],
+]) {
+  const cliExternalEmbeddingOffConflict = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "src/cli/gmos.ts",
+      "gym",
+      "external",
+      "--input-file",
+      externalBenchmarkFile,
+      "--intelligence-base-url",
+      "https://cli-intelligence.invalid/v1",
+      "--intelligence-model",
+      "bench-chat",
+      "--intelligence-embed-model",
+      "off",
+      ...conflictingEmbeddingOffArgs,
+      "--format",
+      "json",
+    ],
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  assert.notEqual(cliExternalEmbeddingOffConflict.status, 0);
+  assert.match(
+    cliExternalEmbeddingOffConflict.stderr,
+    /--intelligence-embed-model off cannot be combined with/u,
+  );
+}
 const cliExternalPlannerOnly = spawnSync(
   process.execPath,
   [
@@ -43003,6 +43186,85 @@ assert.equal(readFileSync(cliExternalIntelligenceMarkdownFile, "utf8").includes(
 assert.equal(cliExternalIntelligence.stdout.includes("user:pass"), false);
 assert.equal(cliExternalIntelligence.stdout.includes("cli-intelligence.invalid/v1"), false);
 assert.equal(cliExternalIntelligence.stdout.includes("cli-embed.invalid/v1"), false);
+const cliExternalEmbeddingOffFetchLogFile = path.join(tmp, "cli-embedding-off-fetch.log");
+const cliExternalEmbeddingOff = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "--import",
+    cliExternalIntelligenceMockFetchFile,
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    cliExternalIntelligenceFixtureFile,
+    "--dataset-format",
+    "longmemeval",
+    "--ingest-mode",
+    "message",
+    "--intelligence-base-url",
+    "https://cli-intelligence.invalid/v1",
+    "--intelligence-model",
+    "cli-chat",
+    "--intelligence-embed-model",
+    "off",
+    "--intelligence-retries",
+    "0",
+    "--format",
+    "json",
+  ],
+  {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GMOS_CLI_INTELLIGENCE_FETCH_LOG: cliExternalEmbeddingOffFetchLogFile,
+    },
+  },
+);
+assert.equal(cliExternalEmbeddingOff.status, 0, cliExternalEmbeddingOff.stderr);
+const cliExternalEmbeddingOffJson = JSON.parse(cliExternalEmbeddingOff.stdout) as {
+  pass?: boolean;
+  runManifest?: {
+    execution?: { stopReason?: string; stopStage?: string | null };
+    runtimeIntelligence?: {
+      embedModel?: string | null;
+      embedQuery?: boolean;
+      embeddingCallCount?: number;
+      embeddedMemoryCount?: number;
+      embeddingFailureCount?: number;
+      queryEmbeddingFailureCount?: number;
+      hookNames?: { embeddingProvider?: string | null };
+    };
+  };
+};
+assert.equal(cliExternalEmbeddingOffJson.pass, true);
+assert.equal(cliExternalEmbeddingOffJson.runManifest?.execution?.stopReason, "completed");
+assert.equal(cliExternalEmbeddingOffJson.runManifest?.execution?.stopStage, null);
+assert.equal(cliExternalEmbeddingOffJson.runManifest?.runtimeIntelligence?.embedModel, null);
+assert.equal(cliExternalEmbeddingOffJson.runManifest?.runtimeIntelligence?.embedQuery, false);
+assert.equal(
+  cliExternalEmbeddingOffJson.runManifest?.runtimeIntelligence?.hookNames?.embeddingProvider,
+  null,
+);
+assert.equal(cliExternalEmbeddingOffJson.runManifest?.runtimeIntelligence?.embeddingCallCount, 0);
+assert.equal(cliExternalEmbeddingOffJson.runManifest?.runtimeIntelligence?.embeddedMemoryCount, 0);
+assert.equal(cliExternalEmbeddingOffJson.runManifest?.runtimeIntelligence?.embeddingFailureCount, 0);
+assert.equal(
+  cliExternalEmbeddingOffJson.runManifest?.runtimeIntelligence?.queryEmbeddingFailureCount,
+  0,
+);
+const cliExternalEmbeddingOffFetchEntries = readFileSync(
+  cliExternalEmbeddingOffFetchLogFile,
+  "utf8",
+).trim().split("\n").filter(Boolean).map((line) =>
+  JSON.parse(line) as { url?: string }
+);
+assert.equal(
+  cliExternalEmbeddingOffFetchEntries.some((entry) => entry.url?.endsWith("/embeddings")),
+  false,
+);
 const cliExternalSuiteOutputDir = path.join(tmp, "cli-external-suite");
 const cliExternalSuiteJsonFile = path.join(tmp, "cli-external-suite-summary.json");
 const cliExternalSuiteMarkdownFile = path.join(tmp, "cli-external-suite-summary.md");

@@ -531,6 +531,12 @@ back to lexical retrieval. Manifests also record
 `queryEmbeddingRetryCount`, `queryEmbeddingRecoveredCount`, and failure reason
 counters for `timeout`, `http_status`, `transport`, and `parse`.
 
+Use `--intelligence-embed-model off` for the wide-supply lexical stack when
+embeddings are not part of the benchmark. This disables both bulk ingest and
+query embeddings; it cannot be combined with `--embed-query on` or any other
+`--intelligence-embed-*` option. The runtime manifest records a null embedding
+provider/model and `embedQuery=false`.
+
 In memory ingest mode, consecutive `type: "memory"` events in a case group are
 batched until a non-memory event forces a flush. The runtime `addMany()` path
 still applies per-item gates and skip reporting, but eligible rows share
@@ -664,6 +670,11 @@ The key is `sha256` over:
 - session-distillation enabled/name/model/host;
 - embedding provider name, embed model, host, and dimensions.
 
+Embedding-off and embedding-on runs have different cache fingerprints and
+cannot replay each other's ingest stores. With embeddings off, cache integrity
+requires the lexical search index to be complete but does not require vector
+rows that the run cannot produce.
+
 The sidecar `<key>.meta.json` records these non-secret fields plus created-at
 and package info. Event content is recorded only as hashes. Entries invalidate
 when any key field changes. Reader-only settings are not part of the key because
@@ -706,6 +717,18 @@ gmos gym external \
   --intelligence-embed-model provider-embedding-model \
   --intelligence-api-key-env GMOS_BENCH_API_KEY \
   --maintain-phases decay \
+  --format json
+```
+
+Lexical wide-supply run without embeddings:
+
+```bash
+gmos gym external \
+  --input-file ./long-memory-cleaned.json \
+  --dataset-format longmemeval \
+  --intelligence-base-url https://provider.example/v1 \
+  --intelligence-model provider-chat-model \
+  --intelligence-embed-model off \
   --format json
 ```
 
