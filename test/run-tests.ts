@@ -33858,12 +33858,15 @@ await assert.rejects(
     error instanceof OpenAICompatibleResponseError && error.status === 401,
 );
 assert.equal(unauthorizedAnswererCalls, 1);
-const providerOutageCases = ["amber", "cobalt", "violet"].map((answer, index) => ({
-  id: `provider-outage-${index + 1}`,
-  events: [{ type: "memory" as const, kind: "fact" as const, content: `Provider answer is ${answer}.` }],
-  question: "What is the provider answer?",
-  expectedAny: [answer],
-}));
+const providerOutageCases = Array.from({ length: 10 }, (_entry, index) => {
+  const answer = ["amber", "cobalt", "violet"][index % 3]!;
+  return {
+    id: `provider-outage-${index + 1}`,
+    events: [{ type: "memory" as const, kind: "fact" as const, content: `Provider answer is ${answer}.` }],
+    question: "What is the provider answer?",
+    expectedAny: [answer],
+  };
+});
 let customProviderAnswererCalls = 0;
 const customProviderAnswererRun = await runExternalMemoryBenchmark({
   cases: providerOutageCases,
@@ -33887,8 +33890,8 @@ const customProviderAnswererRun = await runExternalMemoryBenchmark({
     },
   },
 });
-assert.equal(customProviderAnswererCalls, 1);
-assert.equal(customProviderAnswererRun.caseCount, 0);
+assert.equal(customProviderAnswererCalls, 8);
+assert.equal(customProviderAnswererRun.caseCount, 7);
 assert.equal(customProviderAnswererRun.runManifest.execution.stopReason, "provider_outage");
 assert.equal(customProviderAnswererRun.runManifest.execution.stopStage, "answerer");
 assert.equal(customProviderAnswererRun.runManifest.execution.stopHttpStatus, 503);
@@ -33915,8 +33918,8 @@ const customProviderJudgeRun = await runExternalMemoryBenchmark({
     },
   },
 });
-assert.equal(customProviderJudgeCalls, 1);
-assert.equal(customProviderJudgeRun.caseCount, 0);
+assert.equal(customProviderJudgeCalls, 10);
+assert.equal(customProviderJudgeRun.caseCount, 9);
 assert.equal(customProviderJudgeRun.runManifest.execution.stopReason, "provider_outage");
 assert.equal(customProviderJudgeRun.runManifest.execution.stopStage, "judge");
 assert.equal(customProviderJudgeRun.runManifest.execution.stopHttpStatus, 429);
@@ -33951,9 +33954,9 @@ const providerOutageAnswererRun = await runExternalMemoryBenchmark({
     providerOutageCaseResults += 1;
   },
 });
-assert.equal(providerOutageAnswererCalls, 3);
-assert.equal(providerOutageCaseResults, 0);
-assert.equal(providerOutageAnswererRun.caseCount, 0);
+assert.equal(providerOutageAnswererCalls, 24);
+assert.equal(providerOutageCaseResults, 7);
+assert.equal(providerOutageAnswererRun.caseCount, 7);
 assert.equal(providerOutageAnswererRun.pass, false);
 assert.equal(providerOutageAnswererRun.partial, true);
 assert.equal(providerOutageAnswererRun.runManifest.execution.interrupted, false);
@@ -33961,7 +33964,7 @@ assert.equal(providerOutageAnswererRun.runManifest.execution.stopReason, "provid
 assert.equal(providerOutageAnswererRun.runManifest.execution.stopStage, "answerer");
 assert.equal(providerOutageAnswererRun.runManifest.execution.stopHttpStatus, 503);
 assert.equal(providerOutageAnswererRun.runManifest.execution.stopRetryCount, 2);
-assert.equal(providerOutageAnswererRun.runManifest.ingestCache.writes, 1);
+assert.equal(providerOutageAnswererRun.runManifest.ingestCache.writes, 8);
 assert.equal(providerOutageAnswererRun.runManifest.ingestCache.writeSkips, 0);
 let longRetryAfterAnswererCalls = 0;
 const longRetryAfterAnswererRun = await runExternalMemoryBenchmark({
@@ -33990,10 +33993,51 @@ const longRetryAfterAnswererRun = await runExternalMemoryBenchmark({
   },
 });
 assert.equal(longRetryAfterAnswererCalls, 1);
-assert.equal(longRetryAfterAnswererRun.caseCount, 0);
-assert.equal(longRetryAfterAnswererRun.runManifest.execution.stopReason, "provider_outage");
-assert.equal(longRetryAfterAnswererRun.runManifest.execution.stopRetryAfterMs, 60_000);
-assert.equal(longRetryAfterAnswererRun.runManifest.execution.stopRetryCount, 0);
+assert.equal(longRetryAfterAnswererRun.caseCount, 1);
+assert.equal(longRetryAfterAnswererRun.partial, false);
+assert.equal(longRetryAfterAnswererRun.runManifest.execution.stopReason, "completed");
+assert.equal(longRetryAfterAnswererRun.runManifest.execution.stopRetryAfterMs, null);
+assert.equal(longRetryAfterAnswererRun.runManifest.execution.stopRetryCount, null);
+let subThresholdCircuitCalls = 0;
+const subThresholdCircuitFailures = new Set([3, 13, 23]);
+const subThresholdCircuitRun = await runExternalMemoryBenchmark({
+  cases: Array.from({ length: 30 }, (_entry, index) => ({
+    id: `sub-threshold-provider-${index + 1}`,
+    events: [{ content: "Sub-threshold provider answer is cobalt." }],
+    question: "What is the sub-threshold provider answer?",
+    expectedAny: ["cobalt"],
+  })),
+  ingestMode: "message",
+  turnRetention: false,
+  concurrency: 1,
+  ingestReplayAttempts: 1,
+  intelligence: {
+    extractor: {
+      name: "sub-threshold-provider-extractor",
+      extract() {
+        subThresholdCircuitCalls += 1;
+        if (subThresholdCircuitFailures.has(subThresholdCircuitCalls)) {
+          throw new ExternalMemoryBenchmarkProviderError(
+            "planned isolated extractor failure",
+            { status: 503 },
+          );
+        }
+        return {
+          kind: "fact" as const,
+          content: "Sub-threshold provider answer is cobalt.",
+          confidence: 0.9,
+        };
+      },
+    },
+  },
+});
+assert.equal(subThresholdCircuitCalls, 33);
+assert.equal(subThresholdCircuitRun.pass, true);
+assert.equal(subThresholdCircuitRun.caseCount, 30);
+assert.equal(subThresholdCircuitRun.runManifest.execution.stopReason, "completed");
+assert.equal(subThresholdCircuitRun.runManifest.runtimeIntelligence.extractionFailureCount, 3);
+assert.equal(subThresholdCircuitRun.runManifest.runtimeIntelligence.replayedWindowCount, 3);
+assert.equal(subThresholdCircuitRun.runManifest.runtimeIntelligence.replayRecoveredCount, 3);
 const providerOutageRecoveryRun = await runExternalMemoryBenchmark({
   cases: providerOutageCases.slice(0, 1),
   concurrency: 1,
@@ -34136,6 +34180,76 @@ assert.equal(
   }).includes("sk-secret-must-not-persist"),
   false,
 );
+const executionKnobCheckpointCases = [{
+  id: "execution-knob-checkpoint",
+  events: [{ content: "Execution knob checkpoint answer is indigo." }],
+  question: "What is the execution knob checkpoint answer?",
+  expectedAny: ["indigo"],
+}];
+let executionKnobCheckpointManifest: ExternalMemoryBenchmarkCheckpointManifest | undefined;
+const executionKnobCheckpointEntries: ExternalMemoryBenchmarkCheckpointEntry[] = [];
+let executionKnobExtractorCalls = 0;
+const executionKnobExtractor = {
+  name: "execution-knob-checkpoint-extractor",
+  extract() {
+    executionKnobExtractorCalls += 1;
+    return {
+      kind: "fact" as const,
+      content: "Execution knob checkpoint answer is indigo.",
+      confidence: 0.9,
+    };
+  },
+};
+const executionKnobCheckpointFirst = await runExternalMemoryBenchmark({
+  cases: executionKnobCheckpointCases,
+  datasetHash: "sha256:execution-knob-checkpoint-v1",
+  ingestMode: "message",
+  turnRetention: false,
+  concurrency: 3,
+  intelligenceConcurrency: 8,
+  intelligenceTimeoutMs: 5_000,
+  ingestReplayAttempts: 0,
+  failureSampleLimit: 1,
+  diagnosticsLevel: "basic",
+  readerContextCharLimit: 1000,
+  intelligence: { extractor: executionKnobExtractor },
+  checkpoint: {
+    providerIdentity: "execution-knob-checkpoint-provider-v1",
+    onPrepared(manifest) {
+      executionKnobCheckpointManifest = manifest;
+    },
+    persistResult(entry) {
+      executionKnobCheckpointEntries.push(entry);
+    },
+  },
+});
+assert.equal(executionKnobCheckpointFirst.pass, true);
+assert.equal(executionKnobExtractorCalls, 1);
+const executionKnobCheckpointResume = await runExternalMemoryBenchmark({
+  cases: executionKnobCheckpointCases,
+  datasetHash: "sha256:execution-knob-checkpoint-v1",
+  ingestMode: "message",
+  turnRetention: false,
+  concurrency: 2,
+  intelligenceConcurrency: 6,
+  intelligenceTimeoutMs: 15_000,
+  ingestReplayAttempts: 3,
+  failureSampleLimit: 50,
+  diagnosticsLevel: "full",
+  readerContextCharLimit: 8000,
+  intelligence: { extractor: executionKnobExtractor },
+  checkpoint: {
+    providerIdentity: "execution-knob-checkpoint-provider-v1",
+    resume: {
+      manifest: executionKnobCheckpointManifest!,
+      entries: executionKnobCheckpointEntries,
+    },
+  },
+});
+assert.equal(executionKnobExtractorCalls, 1);
+assert.equal(executionKnobCheckpointResume.pass, true);
+assert.equal(executionKnobCheckpointResume.runManifest.execution.resumedCaseCount, 1);
+assert.equal(executionKnobCheckpointResume.runManifest.execution.newlyExecutedCaseCount, 0);
 const checkpointCacheDir = path.join(tmp, "external-checkpoint-ingest-cache");
 let checkpointManifest: ExternalMemoryBenchmarkCheckpointManifest | undefined;
 const checkpointEntries: ExternalMemoryBenchmarkCheckpointEntry[] = [];
@@ -34163,6 +34277,19 @@ const checkpointFirstRun = await runExternalMemoryBenchmark({
             choices: [{ message: { content: JSON.stringify({ answer: "amber" }) } }],
           }),
         };
+      }
+      for (let index = 0; index < 7; index += 1) {
+        try {
+          await runOpenAICompatibleRetry(async () => {
+            throw new OpenAICompatibleResponseError(
+              "planned checkpoint quota burst",
+              "transport_failure",
+              { status: 503, retryable: false },
+            );
+          }, { stage: "answerer", maxRetries: 0 });
+        } catch {
+          // The outer request supplies the eighth terminal failure and the reported outage.
+        }
       }
       return {
         ok: false,
@@ -34201,6 +34328,20 @@ assert.equal(checkpointSerialized.includes("/custom/v1"), false);
 assert.equal(checkpointSerialized.includes("https://answerer.invalid:8443/[route-sha256:"), true);
 assert.equal(checkpointSerialized.includes("checkpoint-answerer-fixture-v1"), false);
 assert.equal(checkpointSerialized.includes("checkpoint-judge-v1"), false);
+for (const executionField of [
+  "backoffMs",
+  "concurrency",
+  "diagnosticsLevel",
+  "failureSampleLimit",
+  "ingestReplayAttempts",
+  "intelligenceConcurrency",
+  "maxRetries",
+  "readerContextCharLimit",
+  "retries",
+  "timeoutMs",
+]) {
+  assert.equal(checkpointSerialized.includes(`\"${executionField}\"`), false);
+}
 assert.deepEqual(
   parseExternalMemoryBenchmarkCheckpoint(checkpointSerialized),
   checkpointManifest,
@@ -34265,7 +34406,7 @@ const checkpointResumeRun = await runExternalMemoryBenchmark({
   cases: checkpointCases,
   datasetHash: "sha256:checkpoint-fixture-v1",
   ingestCacheDir: checkpointCacheDir,
-  concurrency: 1,
+  concurrency: 2,
   protocol: "official_protocol",
   answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
     baseUrl: "https://answerer.invalid:8443/custom/v1",
@@ -34384,6 +34525,120 @@ assert.equal(fullyResumedRun.pass, true);
 assert.equal(fullyResumedRun.runManifest.execution.resumedCaseCount, 2);
 assert.equal(fullyResumedRun.runManifest.execution.newlyExecutedCaseCount, 0);
 assert.equal(fullyResumedRun.runManifest.execution.caseGroupCount, 0);
+const canonicalCheckpointFixtureValue: (value: unknown) => unknown = (value) => {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(canonicalCheckpointFixtureValue);
+  return Object.fromEntries(
+    Object.keys(value as Record<string, unknown>)
+      .sort()
+      .map((key) => [
+        key,
+        canonicalCheckpointFixtureValue((value as Record<string, unknown>)[key]),
+      ]),
+  );
+};
+const checkpointFixtureHash = (value: unknown): string =>
+  `sha256:${createHash("sha256")
+    .update(JSON.stringify(canonicalCheckpointFixtureValue(value)))
+    .digest("hex")}`;
+const oldCheckpointContract = structuredClone(checkpointManifest!.contract);
+oldCheckpointContract.run = {
+  ...oldCheckpointContract.run,
+  concurrency: 3,
+  diagnosticsLevel: "full",
+  failureSampleLimit: 25,
+  ingestReplayAttempts: 4,
+  intelligenceConcurrency: 8,
+  readerContextCharLimit: 9000,
+};
+const oldIntelligenceProvider = oldCheckpointContract.providers.intelligence as Record<string, unknown>;
+oldCheckpointContract.providers.intelligence = {
+  ...oldIntelligenceProvider,
+  concurrency: 8,
+  timeoutMs: 90_000,
+  retries: 4,
+  backoffMs: 2_000,
+};
+for (const providerName of ["answerer", "judge"]) {
+  const provider = oldCheckpointContract.providers[providerName] as Record<string, unknown>;
+  oldCheckpointContract.providers[providerName] = {
+    ...provider,
+    timeoutMs: 90_000,
+    maxRetries: 4,
+  };
+}
+const oldCheckpointFingerprint = checkpointFixtureHash(oldCheckpointContract);
+const oldCheckpointManifest: ExternalMemoryBenchmarkCheckpointManifest = {
+  schema: "gmos.external_benchmark_checkpoint.v1",
+  fingerprint: oldCheckpointFingerprint,
+  contract: oldCheckpointContract,
+};
+assert.deepEqual(
+  parseExternalMemoryBenchmarkCheckpoint(JSON.stringify(oldCheckpointManifest)),
+  oldCheckpointManifest,
+);
+const oldCheckpointEntries = checkpointResumeEntries.map((entry) => ({
+  ...entry,
+  fingerprint: oldCheckpointFingerprint,
+}));
+let oldCheckpointProviderCalls = 0;
+const oldCheckpointResumeRun = await runExternalMemoryBenchmark({
+  cases: checkpointCases,
+  datasetHash: "sha256:checkpoint-fixture-v1",
+  ingestCacheDir: checkpointCacheDir,
+  concurrency: 2,
+  protocol: "official_protocol",
+  answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
+    baseUrl: "https://answerer.invalid:8443/custom/v1",
+    model: "checkpoint-answerer",
+    checkpointIdentity: "checkpoint-answerer-fixture-v1",
+    timeoutMs: 30_000,
+    maxRetries: 3,
+    fetchImpl: async () => {
+      oldCheckpointProviderCalls += 1;
+      throw new Error("old checkpoint resume must skip completed cases");
+    },
+  }),
+  judge: checkpointJudge,
+  checkpoint: {
+    resume: { manifest: oldCheckpointManifest, entries: oldCheckpointEntries },
+    onPrepared(manifest) {
+      assert.equal(manifest.fingerprint, oldCheckpointFingerprint);
+    },
+  },
+});
+assert.equal(oldCheckpointProviderCalls, 0);
+assert.equal(oldCheckpointResumeRun.pass, true);
+assert.equal(oldCheckpointResumeRun.runManifest.execution.resumedCaseCount, 2);
+assert.equal(oldCheckpointResumeRun.runManifest.execution.newlyExecutedCaseCount, 0);
+const semanticOldCheckpointContract = structuredClone(oldCheckpointContract);
+semanticOldCheckpointContract.dataset.sourceHash = "sha256:checkpoint-fixture-v2";
+const semanticOldCheckpointManifest: ExternalMemoryBenchmarkCheckpointManifest = {
+  schema: "gmos.external_benchmark_checkpoint.v1",
+  fingerprint: checkpointFixtureHash(semanticOldCheckpointContract),
+  contract: semanticOldCheckpointContract,
+};
+await assert.rejects(
+  () => runExternalMemoryBenchmark({
+    cases: checkpointCases,
+    datasetHash: "sha256:checkpoint-fixture-v1",
+    ingestCacheDir: checkpointCacheDir,
+    protocol: "official_protocol",
+    answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
+      baseUrl: "https://answerer.invalid:8443/custom/v1",
+      model: "checkpoint-answerer",
+      checkpointIdentity: "checkpoint-answerer-fixture-v1",
+      fetchImpl: async () => {
+        oldCheckpointProviderCalls += 1;
+        throw new Error("semantic old checkpoint must fail before provider calls");
+      },
+    }),
+    judge: checkpointJudge,
+    checkpoint: { resume: { manifest: semanticOldCheckpointManifest, entries: [] } },
+  }),
+  /fingerprint does not match this run/u,
+);
+assert.equal(oldCheckpointProviderCalls, 0);
 let changedCheckpointIdentityProviderCalls = 0;
 await assert.rejects(
   () => runExternalMemoryBenchmark({
@@ -34411,6 +34666,46 @@ await assert.rejects(
 );
 assert.equal(changedCheckpointIdentityProviderCalls, 0);
 let checkpointMismatchProviderCalls = 0;
+await assert.rejects(
+  () => runExternalMemoryBenchmark({
+    cases: checkpointCases,
+    datasetHash: "sha256:checkpoint-fixture-v1",
+    ingestCacheDir: checkpointCacheDir,
+    protocol: "official_protocol",
+    answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
+      baseUrl: "https://answerer.invalid:8443/custom/v1",
+      model: "changed-checkpoint-model",
+      checkpointIdentity: "checkpoint-answerer-fixture-v1",
+      fetchImpl: async () => {
+        checkpointMismatchProviderCalls += 1;
+        throw new Error("changed checkpoint model must fail before provider calls");
+      },
+    }),
+    judge: checkpointJudge,
+    checkpoint: { resume: { manifest: checkpointManifest!, entries: [] } },
+  }),
+  /fingerprint does not match this run/u,
+);
+await assert.rejects(
+  () => runExternalMemoryBenchmark({
+    cases: checkpointCases,
+    datasetHash: "sha256:checkpoint-fixture-v2",
+    ingestCacheDir: checkpointCacheDir,
+    protocol: "official_protocol",
+    answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
+      baseUrl: "https://answerer.invalid:8443/custom/v1",
+      model: "checkpoint-answerer",
+      checkpointIdentity: "checkpoint-answerer-fixture-v1",
+      fetchImpl: async () => {
+        checkpointMismatchProviderCalls += 1;
+        throw new Error("changed checkpoint dataset must fail before provider calls");
+      },
+    }),
+    judge: checkpointJudge,
+    checkpoint: { resume: { manifest: checkpointManifest!, entries: [] } },
+  }),
+  /fingerprint does not match this run/u,
+);
 await assert.rejects(
   () => runExternalMemoryBenchmark({
     cases: checkpointCases,
@@ -34532,10 +34827,10 @@ const providerOutageBundleManifest = JSON.parse(
 };
 assert.equal(providerOutageBundleManifest.partial, true);
 assert.deepEqual(providerOutageBundleManifest.execution, {
-  caseGroupCount: 0,
-  plannedCaseGroupCount: 3,
+  caseGroupCount: 7,
+  plannedCaseGroupCount: 10,
   reusedProfileCaseCount: 0,
-  executedCases: 0,
+  executedCases: 7,
   partial: true,
   interrupted: false,
   stopReason: "provider_outage",
@@ -34587,14 +34882,17 @@ const preservedProgressRun = await runExternalMemoryBenchmark({
     preservedProgressCaseResults += 1;
   },
 });
-assert.equal(preservedProgressAnswererCalls, 4);
-assert.equal(preservedProgressCaseResults, 1);
-assert.equal(preservedProgressRun.caseCount, 1);
-assert.deepEqual(preservedProgressRun.cases.map((entry) => entry.id), ["provider-outage-1"]);
+assert.equal(preservedProgressAnswererCalls, 25);
+assert.equal(preservedProgressCaseResults, 8);
+assert.equal(preservedProgressRun.caseCount, 8);
+assert.deepEqual(
+  preservedProgressRun.cases.map((entry) => entry.id),
+  providerOutageCases.slice(0, 8).map((entry) => entry.id),
+);
 assert.equal(preservedProgressRun.pass, false);
 assert.equal(preservedProgressRun.partial, true);
 assert.equal(preservedProgressRun.runManifest.execution.stopReason, "provider_outage");
-const concurrentOutageCases = Array.from({ length: 6 }, (_entry, index) => ({
+const concurrentOutageCases = Array.from({ length: 12 }, (_entry, index) => ({
   id: `concurrent-provider-outage-${index + 1}`,
   events: [{
     type: "memory" as const,
@@ -34636,10 +34934,10 @@ const concurrentOutageRun = await runExternalMemoryBenchmark({
     },
   },
 });
-assert.equal(concurrentOutageAnswererCalls, 2);
-assert.equal(concurrentOutageRun.caseCount, 0);
+assert.equal(concurrentOutageAnswererCalls, 8);
+assert.equal(concurrentOutageRun.caseCount < 8, true);
 assert.equal(concurrentOutageRun.partial, true);
-assert.equal(concurrentOutageRun.runManifest.execution.plannedCaseGroupCount, 6);
+assert.equal(concurrentOutageRun.runManifest.execution.plannedCaseGroupCount, 12);
 assert.equal(concurrentOutageRun.runManifest.execution.stopReason, "provider_outage");
 const signalOutageController = new AbortController();
 const signalOutageRun = await runExternalMemoryBenchmark({
@@ -34678,7 +34976,7 @@ assert.equal(signalOutageRun.runManifest.execution.stopRetryAfterMs, null);
 assert.equal(signalOutageRun.runManifest.execution.stopRetryCount, null);
 let providerOutageJudgeCalls = 0;
 const providerOutageJudgeRun = await runExternalMemoryBenchmark({
-  cases: providerOutageCases.slice(0, 1),
+  cases: providerOutageCases,
   protocol: "official_protocol",
   answerer: {
     name: "provider-outage-reader",
@@ -34702,8 +35000,8 @@ const providerOutageJudgeRun = await runExternalMemoryBenchmark({
     },
   }),
 });
-assert.equal(providerOutageJudgeCalls, 1);
-assert.equal(providerOutageJudgeRun.caseCount, 0);
+assert.equal(providerOutageJudgeCalls, 10);
+assert.equal(providerOutageJudgeRun.caseCount, 8);
 assert.equal(providerOutageJudgeRun.runManifest.execution.stopReason, "provider_outage");
 assert.equal(providerOutageJudgeRun.runManifest.execution.stopStage, "judge");
 assert.equal(providerOutageJudgeRun.runManifest.execution.stopHttpStatus, 429);
@@ -36798,7 +37096,7 @@ assert.equal(externalSuiteGateExecution.result.pass, false);
 let providerOutageSuiteJudgeCalls = 0;
 const providerOutageSuiteExecution = await runExternalMemoryBenchmarkSuite({
   suite: {
-    defaults: { protocol: "official_protocol", maxCases: 1 },
+    defaults: { protocol: "official_protocol", maxCases: 8 },
     runs: [
       { id: "provider-outage-first", inputFile: path.basename(externalBenchmarkFile) },
       { id: "provider-outage-never-started", inputFile: path.basename(externalBenchmarkFile) },
@@ -36820,7 +37118,7 @@ const providerOutageSuiteExecution = await runExternalMemoryBenchmarkSuite({
     },
   }),
 });
-assert.equal(providerOutageSuiteJudgeCalls, 1);
+assert.equal(providerOutageSuiteJudgeCalls, 8);
 assert.equal(providerOutageSuiteExecution.result.pass, false);
 assert.equal(providerOutageSuiteExecution.result.benchmarkPass, false);
 assert.equal(providerOutageSuiteExecution.result.partial, true);
@@ -37187,6 +37485,56 @@ assert.equal(unresolvedIngestSecond.runManifest.ingestCache.hits, 0);
 assert.equal(unresolvedIngestSecond.runManifest.ingestCache.misses, 1);
 assert.equal(unresolvedIngestSecond.runManifest.ingestCache.writeSkips, 1);
 assert.equal(unresolvedIngestExtractorCalls, 4);
+const closedCircuitGuardCacheDir = path.join(tmp, "external-ingest-cache-closed-circuit-guard");
+let closedCircuitGuardExtractorCalls = 0;
+const closedCircuitGuardOptions = {
+  cases: [{
+    id: "closed-circuit-unrecovered-windows",
+    events: [
+      { content: "First closed-circuit extraction window." },
+      { content: "Second closed-circuit extraction window." },
+    ],
+    question: "What did the closed-circuit windows contain?",
+    expectedAny: ["unavailable"],
+  }],
+  ingestMode: "message" as const,
+  turnRetention: false,
+  extractionWindow: 1,
+  ingestReplayAttempts: 0,
+  ingestCacheDir: closedCircuitGuardCacheDir,
+  intelligence: {
+    extractor: {
+      name: "closed-circuit-guard-extractor",
+      extract() {
+        closedCircuitGuardExtractorCalls += 1;
+        throw new ExternalMemoryBenchmarkProviderError(
+          "planned unrecovered extraction window",
+          { status: 503 },
+        );
+      },
+    },
+  },
+};
+const closedCircuitGuardFirst = await runExternalMemoryBenchmark(closedCircuitGuardOptions);
+assert.equal(closedCircuitGuardExtractorCalls, 2);
+assert.equal(closedCircuitGuardFirst.caseCount, 1);
+assert.equal(closedCircuitGuardFirst.runManifest.execution.stopReason, "completed");
+assert.equal(
+  closedCircuitGuardFirst.runManifest.runtimeIntelligence.extractionFailureCount,
+  2,
+);
+assert.equal(closedCircuitGuardFirst.runManifest.ingestCache.writes, 0);
+assert.equal(closedCircuitGuardFirst.runManifest.ingestCache.writeSkips, 1);
+assert.deepEqual(closedCircuitGuardFirst.runManifest.ingestCache.writeSkipReasons, [{
+  name: "unresolved_extraction_windows",
+  count: 1,
+}]);
+const closedCircuitGuardSecond = await runExternalMemoryBenchmark(closedCircuitGuardOptions);
+assert.equal(closedCircuitGuardExtractorCalls, 4);
+assert.equal(closedCircuitGuardSecond.runManifest.execution.stopReason, "completed");
+assert.equal(closedCircuitGuardSecond.runManifest.ingestCache.hits, 0);
+assert.equal(closedCircuitGuardSecond.runManifest.ingestCache.misses, 1);
+assert.equal(closedCircuitGuardSecond.runManifest.ingestCache.writeSkips, 1);
 const providerOutageIngestCacheDir = path.join(tmp, "external-ingest-cache-provider-outage");
 let providerOutageExtractorCalls = 0;
 const providerOutageExtractorRun = await runExternalMemoryBenchmark({
@@ -37213,12 +37561,12 @@ const providerOutageExtractorRun = await runExternalMemoryBenchmark({
     },
   },
 });
-assert.equal(providerOutageExtractorCalls, 3);
-assert.equal(providerOutageExtractorRun.caseCount, 0);
-assert.equal(providerOutageExtractorRun.partial, true);
-assert.equal(providerOutageExtractorRun.runManifest.execution.stopReason, "provider_outage");
-assert.equal(providerOutageExtractorRun.runManifest.execution.stopStage, "extractor");
-assert.equal(providerOutageExtractorRun.runManifest.execution.stopHttpStatus, 503);
+assert.equal(providerOutageExtractorCalls, 10);
+assert.equal(providerOutageExtractorRun.caseCount, 1);
+assert.equal(providerOutageExtractorRun.partial, false);
+assert.equal(providerOutageExtractorRun.runManifest.execution.stopReason, "completed");
+assert.equal(providerOutageExtractorRun.runManifest.execution.stopStage, null);
+assert.equal(providerOutageExtractorRun.runManifest.execution.stopHttpStatus, null);
 assert.equal(providerOutageExtractorRun.runManifest.ingestCache.writes, 0);
 assert.equal(providerOutageExtractorRun.runManifest.ingestCache.writeSkips, 1);
 assert.deepEqual(providerOutageExtractorRun.runManifest.ingestCache.writeSkipReasons, [{
@@ -37260,6 +37608,19 @@ const checkpointIngestOutageRun = await runExternalMemoryBenchmark({
     retries: 0,
     fetchImpl: async () => {
       checkpointIngestOutageCalls += 1;
+      for (let index = 0; index < 7; index += 1) {
+        try {
+          await runOpenAICompatibleRetry(async () => {
+            throw new OpenAICompatibleResponseError(
+              "planned checkpoint ingest quota burst",
+              "transport_failure",
+              { status: 503, retryable: false },
+            );
+          }, { stage: "extractor", maxRetries: 0 });
+        } catch {
+          // The outer request supplies the eighth terminal failure and the reported outage.
+        }
+      }
       return {
         ok: false,
         status: 503,
@@ -37307,12 +37668,12 @@ const delayedProviderExtractorRun = await runExternalMemoryBenchmark({
     },
   },
 });
-assert.equal(delayedProviderExtractorCalls, 2);
-assert.equal(delayedProviderExtractorRun.caseCount, 0);
-assert.equal(delayedProviderExtractorRun.runManifest.execution.stopReason, "provider_outage");
+assert.equal(delayedProviderExtractorCalls, 8);
+assert.equal(delayedProviderExtractorRun.caseCount, 1);
+assert.equal(delayedProviderExtractorRun.runManifest.execution.stopReason, "completed");
 assert.equal(Date.now() - delayedProviderExtractorStartedMs >= 80, true);
 await new Promise((resolve) => setTimeout(resolve, 150));
-assert.equal(delayedProviderExtractorCalls, 2);
+assert.equal(delayedProviderExtractorCalls, 8);
 let preconstructedProviderExtractorCalls = 0;
 const preconstructedProviderExtractor = createOpenAICompatibleExtractor({
   baseUrl: "https://preconstructed-extractor.invalid/v1",
@@ -37339,22 +37700,27 @@ const preconstructedProviderExtractorRun = await runExternalMemoryBenchmark({
   intelligenceTimeoutMs: 25,
   intelligence: { extractor: preconstructedProviderExtractor },
 });
-assert.equal(preconstructedProviderExtractorCalls, 3);
-assert.equal(preconstructedProviderExtractorRun.caseCount, 0);
+assert.equal(preconstructedProviderExtractorCalls, 6);
+assert.equal(preconstructedProviderExtractorRun.caseCount, 1);
 assert.equal(
   preconstructedProviderExtractorRun.runManifest.execution.stopReason,
-  "provider_outage",
+  "completed",
 );
 assert.equal(Date.now() - preconstructedProviderExtractorStartedMs >= 80, true);
 await new Promise((resolve) => setTimeout(resolve, 150));
-assert.equal(preconstructedProviderExtractorCalls, 3);
+assert.equal(preconstructedProviderExtractorCalls, 6);
 let customProviderExtractorCalls = 0;
 const customProviderExtractorRun = await runExternalMemoryBenchmark({
-  cases: externalIngestCacheCases.slice(0, 1),
+  cases: Array.from({ length: 10 }, (_entry, index) => ({
+    id: `custom-provider-outage-extractor-${index + 1}`,
+    events: [{ content: `Custom provider outage source ${index + 1}.` }],
+    question: "What is the custom provider outage answer?",
+    expectedAny: ["unavailable"],
+  })),
   ingestMode: "message",
   turnRetention: false,
   concurrency: 1,
-  ingestReplayAttempts: 2,
+  ingestReplayAttempts: 0,
   intelligence: {
     extractor: {
       name: "custom-provider-outage-extractor",
@@ -37367,8 +37733,8 @@ const customProviderExtractorRun = await runExternalMemoryBenchmark({
     },
   },
 });
-assert.equal(customProviderExtractorCalls, 1);
-assert.equal(customProviderExtractorRun.caseCount, 0);
+assert.equal(customProviderExtractorCalls, 8);
+assert.equal(customProviderExtractorRun.caseCount, 7);
 assert.equal(customProviderExtractorRun.partial, true);
 assert.equal(customProviderExtractorRun.runManifest.execution.stopReason, "provider_outage");
 assert.equal(customProviderExtractorRun.runManifest.execution.stopStage, "extractor");
@@ -39264,7 +39630,7 @@ const externalMemoryModeOutageBarrierTimeout = setTimeout(
 const externalMemoryModeOutageRun = await runExternalMemoryBenchmark({
   cases: [{
     id: "external-memory-mode-distiller-provider-outage",
-    events: [1, 2, 3].map((index) => ({
+    events: [1, 2, 3, 4, 5, 6, 7, 8].map((index) => ({
       type: "memory" as const,
       kind: "fact" as const,
       content: `Memory-mode provider outage source ${index}.`,
@@ -39306,7 +39672,7 @@ const externalMemoryModeOutageRun = await runExternalMemoryBenchmark({
   },
 });
 clearTimeout(externalMemoryModeOutageBarrierTimeout);
-assert.equal(externalMemoryModeOutageFetchCalls, 2);
+assert.equal(externalMemoryModeOutageFetchCalls, 8);
 assert.equal(externalMemoryModeOutageMaxActive, 2);
 assert.equal(externalMemoryModeOutageRun.caseCount, 0);
 assert.equal(externalMemoryModeOutageRun.partial, true);
@@ -39653,7 +40019,10 @@ assert.deepEqual(
 );
 const persistentQueryCircuit = queryCircuitFetch(Number.POSITIVE_INFINITY);
 const persistentQueryCircuitRun = await runExternalMemoryBenchmark({
-  cases: queryCircuitCases,
+  cases: Array.from({ length: 7 }, (_entry, index) => ({
+    ...queryCircuitCases[0]!,
+    id: `external-persistent-query-circuit-${index + 1}`,
+  })),
   embedQuery: true,
   intelligence: {
     baseUrl: "https://query-circuit.invalid/v1",
@@ -39664,8 +40033,8 @@ const persistentQueryCircuitRun = await runExternalMemoryBenchmark({
     fetchImpl: persistentQueryCircuit.fetchImpl,
   },
 });
-assert.equal(persistentQueryCircuit.queryCalls(), 2);
-assert.equal(persistentQueryCircuitRun.caseCount, 0);
+assert.equal(persistentQueryCircuit.queryCalls(), 13);
+assert.equal(persistentQueryCircuitRun.caseCount, 5);
 assert.equal(persistentQueryCircuitRun.partial, true);
 assert.equal(persistentQueryCircuitRun.runManifest.execution.stopReason, "provider_outage");
 assert.equal(persistentQueryCircuitRun.runManifest.execution.stopStage, "embedding_query");
@@ -41611,7 +41980,7 @@ try {
       "--answerer-model",
       "provider-outage-fixture",
       "--max-cases",
-      "3",
+      "9",
       "--concurrency",
       "1",
       "--format",
@@ -41643,7 +42012,7 @@ const cliProviderOutageReport = JSON.parse(cliProviderOutage.stdout) as {
     execution?: { stopReason?: string; stopStage?: string | null; stopHttpStatus?: number | null };
   };
 };
-assert.equal(cliProviderOutageReport.caseCount, 1);
+assert.equal(cliProviderOutageReport.caseCount, 8);
 assert.equal(cliProviderOutageReport.partial, true);
 assert.equal(cliProviderOutageReport.runManifest?.execution?.stopReason, "provider_outage");
 assert.equal(cliProviderOutageReport.runManifest?.execution?.stopStage, "answerer");
@@ -41662,7 +42031,10 @@ const cliProviderOutageBundleReport = JSON.parse(
   cases?: Array<{ id?: string }>;
   runManifest?: { execution?: { stopReason?: string } };
 };
-assert.deepEqual(cliProviderOutageJsonlCases.map((entry) => entry.id), ["project-next-step"]);
+assert.deepEqual(
+  cliProviderOutageJsonlCases.map((entry) => entry.id),
+  cliProviderOutageReport.cases?.map((entry) => entry.id),
+);
 assert.deepEqual(
   cliProviderOutageBundleReport.cases?.map((entry) => entry.id),
   cliProviderOutageReport.cases?.map((entry) => entry.id),

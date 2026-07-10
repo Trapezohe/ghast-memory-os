@@ -343,14 +343,34 @@ the gmOS package checkout and use private permissions. If no
 journal. A checkout run must start from a clean Git commit; an installed npm
 package is bound to its built artifact and installed dependency digests.
 
-HTTP 429 or 503 opens the run-scoped provider circuit, stops dispatching new
-work, fsyncs every already completed case, writes a partial report, and exits
-75. Re-run the exact command after the provider recovers. Resume is accepted
-only when the code/dependency artifact, normalized dataset and slice, group
-plan, ingest state, provider identity, and scoring options match. API-key
-rotation is allowed because secret values are never stored. Code, endpoint
-route, model, or benchmark-option changes intentionally reject the old
-checkpoint rather than combining incomparable results.
+The run-scoped provider circuit records successful logical calls and terminal
+HTTP 429/503 outcomes after per-request retries. It opens when at least 10 of
+the last 20 observed calls failed (a 50% rolling failure rate), or after 8
+consecutive terminal failures, whichever happens first. An isolated terminal
+failure stays on the existing per-call failure path so extraction replay and
+failure accounting can recover or record it; `Retry-After` is still honored by
+that request and does not itself open the circuit. Once open, the circuit stops
+dispatching new work, fsyncs every already completed case, writes a partial
+report, and exits 75.
+
+Resume compatibility fingerprints the code/dependency artifact, normalized
+dataset and slice, group plan, semantic ingest/retrieval/scoring options,
+provider endpoint and model identities, sampling/token limits, hook identities,
+and protocol. Pure execution and diagnostic knobs are excluded: benchmark and
+intelligence concurrency, request timeouts, retry counts and backoff, ingest
+replay attempts, failure-sample and diagnostics levels, and reader-context
+output limits. Progress, cache/debug/report paths, and output destinations are
+also not fingerprinted. These fields may change how quickly or robustly the
+same semantic run completes, but not which run the checkpoint represents.
+API-key rotation is allowed because secret values are never stored.
+
+Legacy sidecars that stored execution knobs remain resumable. Their original
+full-contract fingerprint is first checked for integrity, then both the stored
+and current contracts are normalized by removing the execution fields before
+compatibility is compared. A compatible resume keeps using the immutable
+legacy manifest and fingerprint for its existing journal. Code, endpoint route,
+model, dataset, protocol, or other semantic changes still reject with the
+checkpoint fingerprint mismatch rather than combining incomparable results.
 
 SIGINT/SIGTERM on `gmos gym external` stops dispatching new work, lets the
 current in-flight case finish through the normal timeout path, then writes the

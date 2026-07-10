@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { AsyncLocalStorage } from "node:async_hooks";
 import { createRequire } from "node:module";
 import {
   chmodSync,
@@ -1385,6 +1384,67 @@ function checkpointHash(value: unknown): string {
   return `sha256:${sha256Hex(canonicalJson(value))}`;
 }
 
+const CHECKPOINT_RUN_EXECUTION_FIELDS = new Set([
+  "concurrency",
+  "diagnosticsLevel",
+  "failureSampleLimit",
+  "ingestReplayAttempts",
+  "intelligenceConcurrency",
+  "readerContextCharLimit",
+]);
+const CHECKPOINT_PROVIDER_EXECUTION_FIELDS = new Set([
+  "backoffMs",
+  "concurrency",
+  "maxRetries",
+  "retries",
+  "timeoutMs",
+]);
+
+function checkpointRecordWithoutFields(
+  value: unknown,
+  excludedFields: ReadonlySet<string>,
+): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => !excludedFields.has(key)),
+  );
+}
+
+function checkpointContractFingerprint(
+  contract: ExternalMemoryBenchmarkCheckpointContract,
+): string {
+  const providers = { ...contract.providers };
+  return checkpointHash({
+    ...contract,
+    run: checkpointRecordWithoutFields(
+      contract.run,
+      CHECKPOINT_RUN_EXECUTION_FIELDS,
+    ) as Record<string, unknown>,
+    providers: {
+      ...providers,
+      ...Object.fromEntries(
+        ["intelligence", "answerer", "judge"]
+          .filter((key) => key in providers)
+          .map((key) => [
+            key,
+            checkpointRecordWithoutFields(
+              providers[key],
+              CHECKPOINT_PROVIDER_EXECUTION_FIELDS,
+            ),
+          ]),
+      ),
+    },
+  });
+}
+
+function checkpointManifestFingerprintIsValid(
+  manifest: ExternalMemoryBenchmarkCheckpointManifest,
+): boolean {
+  return checkpointHash(manifest.contract) === manifest.fingerprint ||
+    checkpointContractFingerprint(manifest.contract) === manifest.fingerprint;
+}
+
 function checkpointIdentityHash(value: string | null | undefined): string | null {
   const normalized = value?.trim();
   return normalized ? `sha256:${sha256Hex(normalized)}` : null;
@@ -1460,7 +1520,11 @@ export function parseExternalMemoryBenchmarkCheckpoint(
   if (contract.schema !== "gmos.external_benchmark_checkpoint_contract.v1") {
     throw new Error("External benchmark checkpoint contract schema is unsupported");
   }
-  if (checkpointHash(contract) !== fingerprint) {
+  if (!checkpointManifestFingerprintIsValid({
+    schema: "gmos.external_benchmark_checkpoint.v1",
+    fingerprint,
+    contract,
+  })) {
     throw new Error("External benchmark checkpoint contract fingerprint does not match");
   }
   return {
@@ -3365,6 +3429,9 @@ function openAICompatibleExternalBenchmarkJudgeWithCase(
 const DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_MS = 20_000;
 const DEFAULT_OPENAI_COMPATIBLE_MAX_TOKENS = 2048;
 const DEFAULT_OPENAI_COMPATIBLE_ANSWERER_JUDGE_RETRIES = 2;
+const DEFAULT_PROVIDER_CIRCUIT_WINDOW_SIZE = 20;
+const DEFAULT_PROVIDER_CIRCUIT_FAILURE_RATE = 0.5;
+const DEFAULT_PROVIDER_CIRCUIT_FAILURE_BURST = 8;
 const MIN_OPENAI_COMPATIBLE_MAX_TOKENS = 64;
 const MAX_OPENAI_COMPATIBLE_MAX_TOKENS = 8192;
 const MAX_RECORDED_GENERATED_ANSWER_CHARS = 2000;
@@ -3382,21 +3449,37 @@ interface ExternalBenchmarkProviderCircuit {
   observer: OpenAICompatibleRequestObserver;
   throwIfOpen(): void;
   reportHookFailure(stage: OpenAICompatibleRequestStage, error: unknown): void;
-  withQueryScope<T>(scope: string, operation: () => Promise<T>): Promise<T>;
+  reportHookSuccess(stage: OpenAICompatibleRequestStage): void;
 }
 
 function createExternalBenchmarkProviderCircuit(): ExternalBenchmarkProviderCircuit {
-  const queryScope = new AsyncLocalStorage<string>();
-  const consecutiveQueryEmbeddingFailures = new Map<string, number>();
+  const recentOutcomes: boolean[] = [];
+  let consecutiveTerminalFailures = 0;
   let outage: ExternalBenchmarkProviderOutage | null = null;
+  const recordSuccess = (): void => {
+    if (outage) return;
+    recentOutcomes.push(true);
+    if (recentOutcomes.length > DEFAULT_PROVIDER_CIRCUIT_WINDOW_SIZE) {
+      recentOutcomes.shift();
+    }
+    consecutiveTerminalFailures = 0;
+  };
   const recordTerminalFailure = (failure: OpenAICompatibleTerminalFailure): void => {
     if (outage || (failure.status !== 429 && failure.status !== 503)) return;
-    if (failure.stage === "embedding_query") {
-      const scope = queryScope.getStore();
-      if (!scope) return;
-      const failureCount = (consecutiveQueryEmbeddingFailures.get(scope) ?? 0) + 1;
-      consecutiveQueryEmbeddingFailures.set(scope, failureCount);
-      if (failureCount < 2) return;
+    recentOutcomes.push(false);
+    if (recentOutcomes.length > DEFAULT_PROVIDER_CIRCUIT_WINDOW_SIZE) {
+      recentOutcomes.shift();
+    }
+    consecutiveTerminalFailures += 1;
+    const terminalFailureCount = recentOutcomes.filter((succeeded) => !succeeded).length;
+    const sustainedFailureRate =
+      recentOutcomes.length >= DEFAULT_PROVIDER_CIRCUIT_WINDOW_SIZE &&
+      terminalFailureCount / recentOutcomes.length >= DEFAULT_PROVIDER_CIRCUIT_FAILURE_RATE;
+    if (
+      !sustainedFailureRate &&
+      consecutiveTerminalFailures < DEFAULT_PROVIDER_CIRCUIT_FAILURE_BURST
+    ) {
+      return;
     }
     outage = {
       stage: failure.stage,
@@ -3425,10 +3508,8 @@ function createExternalBenchmarkProviderCircuit(): ExternalBenchmarkProviderCirc
     terminalFailure(failure: OpenAICompatibleTerminalFailure) {
       recordTerminalFailure(failure);
     },
-    succeeded(stage) {
-      if (stage !== "embedding_query") return;
-      const scope = queryScope.getStore();
-      if (scope) consecutiveQueryEmbeddingFailures.delete(scope);
+    succeeded() {
+      recordSuccess();
     },
   };
   return {
@@ -3447,14 +3528,8 @@ function createExternalBenchmarkProviderCircuit(): ExternalBenchmarkProviderCirc
         retryCount: error.retryCount,
       });
     },
-    withQueryScope(scope, operation) {
-      return queryScope.run(scope, async () => {
-        try {
-          return await operation();
-        } finally {
-          consecutiveQueryEmbeddingFailures.delete(scope);
-        }
-      });
+    reportHookSuccess() {
+      recordSuccess();
     },
   };
 }
@@ -3971,6 +4046,7 @@ async function officialScoringResult(input: {
   benchmarkCase: ExternalMemoryBenchmarkCase;
   readerContext: string;
   onProviderFailure: (stage: "answerer" | "judge", error: unknown) => void;
+  onProviderSuccess: (stage: "answerer" | "judge") => void;
 }): Promise<OfficialScoringResult> {
   if (!input.judge) return { judgeResult: null };
   let actualAnswer = input.readerContext;
@@ -3984,6 +4060,9 @@ async function officialScoringResult(input: {
       if (typeof answer !== "string" || answer.trim().length === 0) {
         throw new Error("External benchmark answerer result must be a non-empty string");
       }
+      if (!openAICompatibleBenchmarkHookBrand(input.answerer)) {
+        input.onProviderSuccess("answerer");
+      }
       const generated = answer.trim();
       actualAnswer = judgeSafeAnswer(generated);
       generatedAnswer = boundedReportString(generated, MAX_RECORDED_GENERATED_ANSWER_CHARS);
@@ -3993,12 +4072,16 @@ async function officialScoringResult(input: {
     }
   }
   try {
+    const judgeResult = await officialJudgeResult({
+      judge: input.judge,
+      benchmarkCase: input.benchmarkCase,
+      actualAnswer,
+    });
+    if (!openAICompatibleBenchmarkHookBrand(input.judge)) {
+      input.onProviderSuccess("judge");
+    }
     return {
-      judgeResult: await officialJudgeResult({
-        judge: input.judge,
-        benchmarkCase: input.benchmarkCase,
-        actualAnswer,
-      }),
+      judgeResult,
       ...(generatedAnswer !== undefined ? { generatedAnswer } : {}),
     };
   } catch (error) {
@@ -5487,9 +5570,12 @@ function resolveRuntimeIntelligence(input: {
       try {
         input.providerCircuit.throwIfOpen();
         const operation = Promise.resolve().then(task);
-        return config || lifecycleOwnedHookLabels.has(label)
+        const ownsRequestLifecycle = config || lifecycleOwnedHookLabels.has(label);
+        const result = ownsRequestLifecycle
           ? await operation
           : await withTimeout(operation, timeoutMs, label);
+        if (!ownsRequestLifecycle) input.providerCircuit.reportHookSuccess(stage);
+        return result;
       } catch (error) {
         input.providerCircuit.reportHookFailure(stage, error);
         throw error;
@@ -6008,9 +6094,7 @@ function checkpointProviderContract(input: {
     nameHash: checkpointIdentityHash(manifest.name),
     endpointIdentity: manifest.endpointIdentity ?? null,
     model: manifest.model,
-    timeoutMs: manifest.timeoutMs,
     maxTokens: manifest.maxTokens,
-    maxRetries: manifest.maxRetries ?? null,
     disableThinking: manifest.disableThinking === true,
     customCheckpointIdentityHash: checkpointIdentityHash(customCheckpointIdentity),
   });
@@ -6028,10 +6112,6 @@ function checkpointProviderContract(input: {
       plannerModel: runtime.queryPlanner.model,
       distillerModel: runtime.sessionDistillation.model,
       dimensions: embeddingDimensions,
-      concurrency: runtime.concurrency,
-      timeoutMs: runtime.timeoutMs,
-      retries: runtime.retries,
-      backoffMs: runtime.backoffMs,
       extractorMaxCandidates: runtime.extractorMaxCandidates,
       extractorMaxTokens: runtime.extractorMaxTokens,
       disableThinking: intelligenceConfig?.disableThinking === true,
@@ -6130,15 +6210,12 @@ function checkpointContractForRun(input: {
       includeTemporalMetadata: input.options.includeTemporalMetadata === true,
       includeTemporalContext: input.options.includeTemporalContext !== false,
       readerProfile: input.options.readerProfile ?? "default",
-      readerContextCharLimit: input.options.readerContextCharLimit ?? 4000,
       requireConvergence: input.options.requireConvergence === true,
-      concurrency: normalizedConcurrency(input.options.concurrency),
       ingestMode: input.options.ingestMode ?? "memory",
       turnRetention: runtime.turnRetention,
       sessionDistillation: runtime.sessionDistillation.enabled,
       extractionWindow: normalizedExtractionWindow(input.options.extractionWindow),
       extractionMaxChars: normalizedExtractionMaxChars(input.options.extractionMaxChars),
-      ingestReplayAttempts: normalizedIngestReplayAttempts(input.options.ingestReplayAttempts),
       maintainPhases: runtime.maintainPhases,
       consolidateEntities: runtime.consolidateEntities,
       embedQuery: runtime.embedQuery,
@@ -6146,14 +6223,11 @@ function checkpointContractForRun(input: {
       sweepCues: runtime.sweepCues.enabled,
       plannerMaxAnchors: runtime.queryPlanner.maxAnchors ?? 4,
       reuseProfiles: input.options.reuseProfiles !== false,
-      failureSampleLimit: normalizedFailureSampleLimit(input.options.failureSampleLimit),
-      diagnosticsLevel: normalizedDiagnosticsLevel(input.options.diagnosticsLevel),
       protocol: normalizeProtocol(input.options.protocol),
       judgeProfile: effectiveJudgeProfile({
         judge: input.judge,
         requested: input.options.judgeProfile,
       }),
-      intelligenceConcurrency: runtime.concurrency,
     },
     providers: checkpointProviderContract({
       options: input.options,
@@ -6198,22 +6272,26 @@ async function checkpointStateForRun(input: {
     judge: input.judge,
     requireCleanGit: input.checkpoint.requireCleanGit === true,
   });
-  const manifest: ExternalMemoryBenchmarkCheckpointManifest = {
+  let manifest: ExternalMemoryBenchmarkCheckpointManifest = {
     schema: "gmos.external_benchmark_checkpoint.v1",
-    fingerprint: checkpointHash(contract),
+    fingerprint: checkpointContractFingerprint(contract),
     contract,
   };
   const resume = input.checkpoint.resume;
   if (resume) {
     if (
       resume.manifest.schema !== "gmos.external_benchmark_checkpoint.v1" ||
-      checkpointHash(resume.manifest.contract) !== resume.manifest.fingerprint
+      !checkpointManifestFingerprintIsValid(resume.manifest)
     ) {
       throw new Error("External benchmark checkpoint sidecar is invalid");
     }
-    if (resume.manifest.fingerprint !== manifest.fingerprint) {
+    if (
+      checkpointContractFingerprint(resume.manifest.contract) !==
+      manifest.fingerprint
+    ) {
       throw new Error("External benchmark checkpoint fingerprint does not match this run");
     }
+    manifest = resume.manifest;
   }
   const groupByIndex = new Map<number, CaseGroup>();
   for (const group of input.groups) {
@@ -6785,6 +6863,7 @@ async function scoreCase(input: {
   plannerMaxAnchors: number;
   onPlannerFailure: () => void;
   onProviderFailure: (stage: "answerer" | "judge", error: unknown) => void;
+  onProviderSuccess: (stage: "answerer" | "judge") => void;
   shouldStop: () => boolean;
   writeDebugReaderContext?: ((caseId: string, context: string) => void) | undefined;
 }): Promise<ExternalMemoryBenchmarkCaseResult | null> {
@@ -6933,6 +7012,7 @@ async function scoreCase(input: {
     benchmarkCase: input.benchmarkCase,
     readerContext: contextSurfaces.reader,
     onProviderFailure: input.onProviderFailure,
+    onProviderSuccess: input.onProviderSuccess,
   });
   if (
     input.shouldStop() &&
@@ -7373,9 +7453,7 @@ async function runCaseGroup(input: {
     setupDurationMs = Math.max(0, Date.now() - groupStartedMs);
     for (const item of input.itemsToScore) {
       if (input.shouldStop()) break;
-      const result = await input.providerCircuit.withQueryScope(
-        `${input.group.key}:${item.index}`,
-        () => scoreCase({
+      const result = await scoreCase({
         memory: runtime.memory,
         profileId: input.group.profileId,
         caseGroupKey: input.group.key,
@@ -7431,10 +7509,12 @@ async function runCaseGroup(input: {
         onProviderFailure: (stage, error) => {
           input.providerCircuit.reportHookFailure(stage, error);
         },
+        onProviderSuccess: (stage) => {
+          input.providerCircuit.reportHookSuccess(stage);
+        },
         shouldStop: input.shouldStop,
         writeDebugReaderContext: input.writeDebugReaderContext,
-        }),
-      );
+      });
       if (result === null) break;
       results.push(result);
       await input.recordResult(
