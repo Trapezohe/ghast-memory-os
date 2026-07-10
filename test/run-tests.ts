@@ -29099,6 +29099,9 @@ assert.deepEqual(externalIngestCacheFirst.runManifest.ingestCache, {
   dir: path.resolve(process.cwd(), externalIngestCacheDir),
   hits: 0,
   misses: 2,
+  writes: 2,
+  writeSkips: 0,
+  writeSkipReasons: [],
 });
 assert.equal(readdirSync(externalIngestCacheDir).filter((entry) => entry.endsWith(".db")).length, 2);
 assert.equal(readdirSync(externalIngestCacheDir).filter((entry) => entry.endsWith(".meta.json")).length, 2);
@@ -29137,6 +29140,9 @@ assert.deepEqual(externalIngestCacheSecond.runManifest.ingestCache, {
   dir: path.resolve(process.cwd(), externalIngestCacheDir),
   hits: 2,
   misses: 0,
+  writes: 0,
+  writeSkips: 0,
+  writeSkipReasons: [],
 });
 assert.equal(externalIngestCacheSecond.cases.every((entry) => entry.cacheHit), true);
 assert.equal(
@@ -29145,6 +29151,95 @@ assert.equal(
   ),
   true,
 );
+const unresolvedIngestCacheDir = path.join(tmp, "external-ingest-cache-unresolved");
+let unresolvedIngestExtractorCalls = 0;
+const unresolvedIngestOptions = {
+  cases: externalIngestCacheCases.slice(0, 1),
+  ingestMode: "message" as const,
+  turnRetention: false,
+  concurrency: 1,
+  ingestReplayAttempts: 1,
+  ingestCacheDir: unresolvedIngestCacheDir,
+  intelligence: {
+    extractor: {
+      name: "external-unresolved-ingest-extractor",
+      extract() {
+        unresolvedIngestExtractorCalls += 1;
+        throw new Error("planned unresolved extraction failure");
+      },
+    },
+  },
+};
+const unresolvedIngestFirst = await runExternalMemoryBenchmark(unresolvedIngestOptions);
+assert.equal(unresolvedIngestFirst.runManifest.ingestCache.hits, 0);
+assert.equal(unresolvedIngestFirst.runManifest.ingestCache.misses, 1);
+assert.equal(unresolvedIngestFirst.runManifest.ingestCache.writes, 0);
+assert.equal(unresolvedIngestFirst.runManifest.ingestCache.writeSkips, 1);
+assert.deepEqual(unresolvedIngestFirst.runManifest.ingestCache.writeSkipReasons, [{
+  name: "unresolved_extraction_windows",
+  count: 1,
+}]);
+assert.equal(existsSync(unresolvedIngestCacheDir), false);
+const unresolvedIngestSecond = await runExternalMemoryBenchmark(unresolvedIngestOptions);
+assert.equal(unresolvedIngestSecond.runManifest.ingestCache.hits, 0);
+assert.equal(unresolvedIngestSecond.runManifest.ingestCache.misses, 1);
+assert.equal(unresolvedIngestSecond.runManifest.ingestCache.writeSkips, 1);
+assert.equal(unresolvedIngestExtractorCalls, 4);
+const embeddingFailureCacheRun = await runExternalMemoryBenchmark({
+  cases: externalIngestCacheCases.slice(0, 1),
+  ingestMode: "message",
+  turnRetention: false,
+  embedQuery: false,
+  ingestCacheDir: path.join(tmp, "external-ingest-cache-embedding-failure"),
+  intelligence: {
+    extractor: externalIngestCacheExtractor,
+    embeddingProvider: {
+      name: "external-cache-failing-embedding",
+      dimensions: 3,
+      embed() {
+        throw new Error("planned cache embedding failure");
+      },
+    },
+  },
+});
+assert.equal(embeddingFailureCacheRun.runManifest.ingestCache.writes, 0);
+assert.equal(embeddingFailureCacheRun.runManifest.ingestCache.writeSkips, 1);
+assert.deepEqual(embeddingFailureCacheRun.runManifest.ingestCache.writeSkipReasons, [{
+  name: "embedding_failures",
+  count: 1,
+}]);
+const rawMemoryEmbeddingFailureCacheRun = await runExternalMemoryBenchmark({
+  cases: [{
+    id: "external-raw-memory-cache-embedding-failure",
+    events: [{
+      type: "memory",
+      kind: "fact",
+      content: "Raw memory embedding cache answer is bronze.",
+    }],
+    question: "What is the raw memory embedding cache answer?",
+    expectedAny: ["bronze"],
+  }],
+  ingestMode: "memory",
+  embedQuery: false,
+  ingestCacheDir: path.join(tmp, "external-raw-memory-cache-embedding-failure"),
+  intelligence: {
+    embeddingProvider: {
+      name: "external-raw-cache-failing-embedding",
+      dimensions: 3,
+      embed() {
+        throw new Error("planned raw cache embedding failure");
+      },
+    },
+  },
+});
+assert.equal(rawMemoryEmbeddingFailureCacheRun.pass, true);
+assert.equal(rawMemoryEmbeddingFailureCacheRun.runManifest.runtimeIntelligence.embeddingFailureCount, 0);
+assert.equal(rawMemoryEmbeddingFailureCacheRun.runManifest.ingestCache.writes, 0);
+assert.equal(rawMemoryEmbeddingFailureCacheRun.runManifest.ingestCache.writeSkips, 1);
+assert.deepEqual(rawMemoryEmbeddingFailureCacheRun.runManifest.ingestCache.writeSkipReasons, [{
+  name: "embedding_failures",
+  count: 1,
+}]);
 externalIngestCacheExtractorCalls = 0;
 const externalIngestCacheTurnRetentionMiss = await runExternalMemoryBenchmark({
   cases: externalIngestCacheCases,
@@ -29240,6 +29335,7 @@ const externalOpenAICacheIntelligence = {
   model: "cache-chat",
   extractorMaxCandidates: 48,
   extractorMaxTokens: 6000,
+  dimensions: 3,
   concurrency: 1,
   fetchImpl: externalOpenAICacheFetch,
 };
@@ -29276,6 +29372,17 @@ const externalOpenAICacheMeta = JSON.parse(
     .map((entry) => readFileSync(path.join(externalOpenAICacheDir, entry), "utf8"))
     .find((content) => content.includes('"extractorMaxCandidates": 48')) ?? "{}",
 ) as {
+  schema?: string;
+  complete?: boolean;
+  integrity?: {
+    unresolvedExtractionWindowCount?: number;
+    embeddingFailureCount?: number;
+    pendingVectorCount?: number;
+    searchIndexComplete?: boolean;
+    distillationFailureCount?: number;
+    entityConsolidationFailureCount?: number;
+    entityConsolidationIncompleteClusterCount?: number;
+  };
   keyFields?: {
     extraction?: {
       contractVersion?: number | null;
@@ -29286,6 +29393,17 @@ const externalOpenAICacheMeta = JSON.parse(
     };
   };
 };
+assert.equal(externalOpenAICacheMeta.schema, "gmos.external_ingest_cache.meta.v2");
+assert.equal(externalOpenAICacheMeta.complete, true);
+assert.deepEqual(externalOpenAICacheMeta.integrity, {
+  unresolvedExtractionWindowCount: 0,
+  embeddingFailureCount: 0,
+  pendingVectorCount: 0,
+  searchIndexComplete: true,
+  distillationFailureCount: 0,
+  entityConsolidationFailureCount: 0,
+  entityConsolidationIncompleteClusterCount: 0,
+});
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.contractVersion, 2);
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.window, 40);
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.maxChars, 30000);
@@ -29587,6 +29705,32 @@ const entityAggregationOff = await runExternalMemoryBenchmark({
 assert.equal(entityAggregationOff.pass, false);
 assert.equal(entityAggregationOff.runManifest.runtimeIntelligence.consolidateEntities, false);
 assert.equal(entityAggregationOff.runManifest.ingestCache.misses, 1);
+const entityAggregationFailureRun = await runExternalMemoryBenchmark({
+  cases: [entityAggregationCase],
+  ingestMode: "message",
+  turnRetention: false,
+  consolidateEntities: true,
+  ingestCacheDir: path.join(tmp, "external-entity-aggregation-failure-cache"),
+  intelligence: {
+    extractor: entityAggregationExtractor,
+    consolidator: {
+      name: "entity-aggregation-failing-consolidator",
+      consolidate() {
+        throw new Error("planned entity aggregation cache failure");
+      },
+    },
+  },
+});
+assert.equal(
+  entityAggregationFailureRun.runManifest.runtimeIntelligence.entityConsolidationConsolidatorFailureCount,
+  3,
+);
+assert.equal(entityAggregationFailureRun.runManifest.ingestCache.writes, 0);
+assert.equal(entityAggregationFailureRun.runManifest.ingestCache.writeSkips, 1);
+assert.deepEqual(entityAggregationFailureRun.runManifest.ingestCache.writeSkipReasons, [{
+  name: "entity_consolidation_failures",
+  count: 1,
+}]);
 entityAggregationConsolidatorCalls.length = 0;
 const entityAggregationOn = await runExternalMemoryBenchmark({
   cases: [entityAggregationCase],
@@ -29633,12 +29777,16 @@ const entityAggregationCacheMeta = readdirSync(entityAggregationCacheDir)
   ) as {
     keyFields?: {
       consolidateEntities?: boolean;
-      entityConsolidation?: { contractVersion?: number };
+      entityConsolidation?: { contractVersion?: number; consolidatorName?: string | null };
     };
   })
   .find((meta) => meta.keyFields?.consolidateEntities === true);
 assert.equal(entityAggregationCacheMeta?.keyFields?.entityConsolidation?.contractVersion, 2);
-assert.equal(entityAggregationExtractorCalls, 3);
+assert.equal(
+  entityAggregationCacheMeta?.keyFields?.entityConsolidation?.consolidatorName,
+  "entity-aggregation-consolidator",
+);
+assert.equal(entityAggregationExtractorCalls, 4);
 entityAggregationConsolidatorCalls.length = 0;
 const entityAggregationCached = await runExternalMemoryBenchmark({
   cases: [entityAggregationCase],
@@ -29663,7 +29811,7 @@ assert.equal(
   0,
 );
 assert.equal(entityAggregationCached.runManifest.runtimeIntelligence.entityConsolidationConsolidatorCallCount, 0);
-assert.equal(entityAggregationExtractorCalls, 3);
+assert.equal(entityAggregationExtractorCalls, 4);
 const externalSchemaGuardCacheDir = path.join(tmp, "external-ingest-cache-schema");
 externalIngestCacheExtractorCalls = 0;
 await runExternalMemoryBenchmark({
@@ -29673,6 +29821,26 @@ await runExternalMemoryBenchmark({
   ingestCacheDir: externalSchemaGuardCacheDir,
   intelligence: { extractor: externalIngestCacheExtractor },
 });
+const schemaGuardMetaName = readdirSync(externalSchemaGuardCacheDir)
+  .find((entry) => entry.endsWith(".meta.json"));
+assert.ok(schemaGuardMetaName);
+const schemaGuardMetaFile = path.join(externalSchemaGuardCacheDir, schemaGuardMetaName);
+const legacyCacheMeta = JSON.parse(readFileSync(schemaGuardMetaFile, "utf8")) as Record<string, unknown>;
+legacyCacheMeta.schema = "gmos.external_ingest_cache.meta.v1";
+delete legacyCacheMeta.complete;
+writeFileSync(schemaGuardMetaFile, `${JSON.stringify(legacyCacheMeta, null, 2)}\n`);
+externalIngestCacheExtractorCalls = 0;
+const externalLegacyMetaRun = await runExternalMemoryBenchmark({
+  cases: externalIngestCacheCases.slice(0, 1),
+  ingestMode: "message",
+  turnRetention: false,
+  ingestCacheDir: externalSchemaGuardCacheDir,
+  intelligence: { extractor: externalIngestCacheExtractor },
+});
+assert.equal(externalLegacyMetaRun.runManifest.ingestCache.hits, 0);
+assert.equal(externalLegacyMetaRun.runManifest.ingestCache.misses, 1);
+assert.equal(externalLegacyMetaRun.runManifest.ingestCache.writes, 1);
+assert.equal(externalIngestCacheExtractorCalls, 1);
 const schemaGuardDbName = readdirSync(externalSchemaGuardCacheDir).find((entry) => entry.endsWith(".db"));
 assert.ok(schemaGuardDbName);
 const schemaGuardDbFile = path.join(externalSchemaGuardCacheDir, schemaGuardDbName);
@@ -29728,6 +29896,9 @@ assert.deepEqual(externalIngestCacheDisabled.runManifest.ingestCache, {
   enabled: false,
   hits: 0,
   misses: 0,
+  writes: 0,
+  writeSkips: 0,
+  writeSkipReasons: [],
 });
 assert.equal(existsSync(disabledExternalCacheDir), false);
 const longMemEvalJsonlCases = parseLongMemEvalBenchmarkDataset(
@@ -30751,6 +30922,7 @@ const externalMemoryModeFailureRun = await runExternalMemoryBenchmark({
   }],
   ingestMode: "memory",
   sessionDistillation: true,
+  ingestCacheDir: path.join(tmp, "external-memory-mode-failure-cache"),
   intelligence: {
     sessionDistiller: {
       name: "external-memory-mode-failing-session-distiller",
@@ -30771,6 +30943,12 @@ assert.equal(externalMemoryModeFailureRun.runManifest.runtimeIntelligence.sessio
 assert.equal(externalMemoryModeFailureRun.runManifest.runtimeIntelligence.sessionDistillation.transportFailureCount, 1);
 assert.equal(externalMemoryModeFailureRun.runManifest.runtimeIntelligence.sessionDistillation.failureCount, 1);
 assert.equal(externalMemoryModeFailureRun.runManifest.runtimeIntelligence.sessionDistillation.distilledMemoryCount, 2);
+assert.equal(externalMemoryModeFailureRun.runManifest.ingestCache.writes, 0);
+assert.equal(externalMemoryModeFailureRun.runManifest.ingestCache.writeSkips, 1);
+assert.deepEqual(externalMemoryModeFailureRun.runManifest.ingestCache.writeSkipReasons, [{
+  name: "distillation_failures",
+  count: 1,
+}]);
 let externalMemoryModeCacheDistillerCalls = 0;
 const externalMemoryModeCacheDistiller: MemorySessionDistiller = {
   name: "external-memory-mode-cache-distiller",
@@ -31057,14 +31235,16 @@ assert.equal(externalClassifiedQueryRun.runManifest.runtimeIntelligence.queryEmb
 assert.equal(externalClassifiedQueryRun.runManifest.runtimeIntelligence.queryEmbeddingParseFailureCount, 1);
 assert.equal(externalClassifiedQueryRun.runManifest.runtimeIntelligence.queryEmbeddingHttpStatusFailureCount, 1);
 let externalReplayExtractorCalls = 0;
-const externalReplayRun = await runExternalMemoryBenchmark({
+const externalReplayCacheDir = path.join(tmp, "external-replay-cache");
+const externalReplayOptions = {
   cases: [{
     id: "external-replay-recovered",
     events: [{ content: "Replay benchmark source." }],
     question: "What is the replay benchmark answer?",
     expectedAny: ["cobalt answer"],
   }],
-  ingestMode: "message",
+  ingestMode: "message" as const,
+  ingestCacheDir: externalReplayCacheDir,
   intelligence: {
     extractor: {
       name: "external-replay-extractor",
@@ -31081,12 +31261,20 @@ const externalReplayRun = await runExternalMemoryBenchmark({
       },
     },
   },
-});
+};
+const externalReplayRun = await runExternalMemoryBenchmark(externalReplayOptions);
 assert.equal(externalReplayRun.pass, true);
 assert.equal(externalReplayRun.runManifest.runtimeIntelligence.replayedWindowCount, 1);
 assert.equal(externalReplayRun.runManifest.runtimeIntelligence.replayRecoveredCount, 1);
 assert.equal(externalReplayRun.runManifest.runtimeIntelligence.ingestCaseGroups[0]?.replayedWindowCount, 1);
 assert.equal(externalReplayRun.runManifest.runtimeIntelligence.ingestCaseGroups[0]?.replayRecoveredCount, 1);
+assert.equal(externalReplayRun.runManifest.ingestCache.writes, 1);
+assert.equal(externalReplayRun.runManifest.ingestCache.writeSkips, 0);
+externalReplayExtractorCalls = 0;
+const externalReplayCachedRun = await runExternalMemoryBenchmark(externalReplayOptions);
+assert.equal(externalReplayCachedRun.pass, true);
+assert.equal(externalReplayCachedRun.runManifest.ingestCache.hits, 1);
+assert.equal(externalReplayExtractorCalls, 0);
 const sameProfileDifferentEventsBenchmark = await runExternalMemoryBenchmark({
   cases: [
     {

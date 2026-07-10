@@ -1,6 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -28,6 +37,7 @@ import type {
   MemoryRetrievalConfig,
   MemoryRetrievalReranker,
   MemorySessionDistiller,
+  SearchIndexStatus,
   Sensitivity,
   TurnMessage,
 } from "../kernel/types.js";
@@ -771,6 +781,9 @@ export interface ExternalMemoryBenchmarkRunManifest {
     dir?: string | undefined;
     hits: number;
     misses: number;
+    writes: number;
+    writeSkips: number;
+    writeSkipReasons: ExternalMemoryBenchmarkCounter[];
   };
   ceilingMetrics: ExternalMemoryBenchmarkCeilingMetrics | null;
   deterministicOnly: boolean;
@@ -1061,6 +1074,9 @@ interface IngestCacheCounters {
   dir?: string | undefined;
   hits: number;
   misses: number;
+  writes: number;
+  writeSkips: number;
+  writeSkipReasons: Map<string, number>;
 }
 
 interface IngestCacheKeyFields {
@@ -1076,6 +1092,7 @@ interface IngestCacheKeyFields {
   consolidateEntities: boolean;
   entityConsolidation?: {
     contractVersion: number;
+    consolidatorName: string | null;
   } | undefined;
   sessionDistillation: {
     enabled: boolean;
@@ -1114,6 +1131,16 @@ interface IngestCachePlan {
   fields: IngestCacheKeyFields;
   dbFile: string;
   metaFile: string;
+}
+
+interface IngestCacheIntegrity {
+  unresolvedExtractionWindowCount: number;
+  embeddingFailureCount: number;
+  pendingVectorCount: number;
+  searchIndexComplete: boolean;
+  distillationFailureCount: number;
+  entityConsolidationFailureCount: number;
+  entityConsolidationIncompleteClusterCount: number;
 }
 
 interface OpenedCaseGroupRuntime {
@@ -1191,7 +1218,12 @@ function ingestCacheKeyFields(input: {
     turnRetention: runtime.turnRetention,
     consolidateEntities: runtime.consolidateEntities,
     ...(runtime.consolidateEntities
-      ? { entityConsolidation: { contractVersion: ENTITY_CONSOLIDATION_CONTRACT_VERSION } }
+      ? {
+          entityConsolidation: {
+            contractVersion: ENTITY_CONSOLIDATION_CONTRACT_VERSION,
+            consolidatorName: runtime.hookNames.consolidator,
+          },
+        }
       : {}),
     sessionDistillation: {
       enabled: runtime.sessionDistillation.enabled,
@@ -1241,24 +1273,75 @@ function ingestCachePlan(input: {
   };
 }
 
-function sqliteFileSchemaVersion(dbPath: string): number | null {
+function sqliteCacheFileIsComplete(
+  dbPath: string,
+  embeddingProvider: EmbeddingProvider | undefined,
+): boolean {
   let store: ReturnType<typeof createSqliteMemoryStore> | null = null;
   try {
-    store = createSqliteMemoryStore({ path: dbPath, readonly: true, fileMustExist: true });
-    return store.schemaVersion();
+    store = createSqliteMemoryStore({
+      path: dbPath,
+      readonly: true,
+      fileMustExist: true,
+      ...(embeddingProvider ? { embeddingProvider } : {}),
+    });
+    const searchIndex = store.searchIndexStatus();
+    return store.schemaVersion() === GMOS_SQLITE_SCHEMA_VERSION &&
+      searchIndex.status === "ok" &&
+      searchIndex.vectorIndex?.status === "ok" &&
+      searchIndex.vectorIndex.pendingEntryCount === 0;
   } catch {
-    return null;
+    return false;
   } finally {
     store?.close();
   }
 }
 
-function copyCacheEntryToGroupDb(plan: IngestCachePlan, groupDbPath: string): boolean {
-  if (!existsSync(plan.dbFile) || !existsSync(plan.metaFile)) return false;
+function cacheMetaIsComplete(plan: IngestCachePlan): boolean {
+  try {
+    const parsed = JSON.parse(readFileSync(plan.metaFile, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    const meta = parsed as Record<string, unknown>;
+    if (
+      meta.schema !== "gmos.external_ingest_cache.meta.v2" ||
+      meta.key !== plan.key ||
+      meta.complete !== true ||
+      canonicalJson(meta.keyFields) !== canonicalJson(plan.fields)
+    ) {
+      return false;
+    }
+    const integrity = meta.integrity;
+    if (!integrity || typeof integrity !== "object" || Array.isArray(integrity)) return false;
+    const counts = integrity as Record<string, unknown>;
+    if (counts.searchIndexComplete !== true) return false;
+    return [
+      counts.unresolvedExtractionWindowCount,
+      counts.embeddingFailureCount,
+      counts.pendingVectorCount,
+      counts.distillationFailureCount,
+      counts.entityConsolidationFailureCount,
+      counts.entityConsolidationIncompleteClusterCount,
+    ].every((count) => count === 0);
+  } catch {
+    return false;
+  }
+}
+
+function copyCacheEntryToGroupDb(
+  plan: IngestCachePlan,
+  groupDbPath: string,
+  embeddingProvider: EmbeddingProvider | undefined,
+): boolean {
+  if (
+    !existsSync(plan.dbFile) ||
+    !existsSync(plan.metaFile) ||
+    !cacheMetaIsComplete(plan)
+  ) {
+    return false;
+  }
   try {
     copyFileSync(plan.dbFile, groupDbPath);
-    const schemaVersion = sqliteFileSchemaVersion(groupDbPath);
-    if (schemaVersion !== GMOS_SQLITE_SCHEMA_VERSION) {
+    if (!sqliteCacheFileIsComplete(groupDbPath, embeddingProvider)) {
       rmSync(groupDbPath, { force: true });
       return false;
     }
@@ -1269,7 +1352,11 @@ function copyCacheEntryToGroupDb(plan: IngestCachePlan, groupDbPath: string): bo
   }
 }
 
-function writeIngestCacheEntry(plan: IngestCachePlan, groupDbPath: string): void {
+function writeIngestCacheEntry(
+  plan: IngestCachePlan,
+  groupDbPath: string,
+  integrity: IngestCacheIntegrity,
+): void {
   mkdirSync(path.dirname(plan.dbFile), { recursive: true });
   const tempId = `${process.pid}-${randomUUID()}`;
   const tempDbFile = path.join(path.dirname(plan.dbFile), `${plan.key}.${tempId}.db.tmp`);
@@ -1279,9 +1366,11 @@ function writeIngestCacheEntry(plan: IngestCachePlan, groupDbPath: string): void
     writeFileSync(
       tempMetaFile,
       `${JSON.stringify({
-        schema: "gmos.external_ingest_cache.meta.v1",
+        schema: "gmos.external_ingest_cache.meta.v2",
         key: plan.key,
         keyFields: plan.fields,
+        complete: true,
+        integrity,
         createdAt: new Date().toISOString(),
         package: readGmosPackageInfo(),
       }, null, 2)}\n`,
@@ -1292,6 +1381,50 @@ function writeIngestCacheEntry(plan: IngestCachePlan, groupDbPath: string): void
     rmSync(tempDbFile, { force: true });
     rmSync(tempMetaFile, { force: true });
     throw error;
+  }
+}
+
+function ingestCacheIntegrity(
+  applied: AppliedBenchmarkEvents,
+  searchIndex: SearchIndexStatus,
+  requireEntityConsolidation: boolean,
+): IngestCacheIntegrity {
+  return {
+    unresolvedExtractionWindowCount: applied.unresolvedExtractionWindowCount,
+    embeddingFailureCount: applied.embeddingFailureCount,
+    pendingVectorCount: searchIndex.vectorIndex?.pendingEntryCount ?? 0,
+    searchIndexComplete: searchIndex.status === "ok" && searchIndex.vectorIndex?.status === "ok",
+    distillationFailureCount: applied.distillationFailureCount,
+    entityConsolidationFailureCount: applied.entityConsolidationConsolidatorFailureCount,
+    entityConsolidationIncompleteClusterCount: requireEntityConsolidation
+      ? Math.max(0, applied.entityConsolidationClustersFound - applied.entityConsolidationClustersMerged)
+      : 0,
+  };
+}
+
+function incompleteIngestCacheReasons(integrity: IngestCacheIntegrity): string[] {
+  return [
+    integrity.unresolvedExtractionWindowCount > 0 ? "unresolved_extraction_windows" : null,
+    integrity.embeddingFailureCount > 0 || integrity.pendingVectorCount > 0
+      ? "embedding_failures"
+      : null,
+    !integrity.searchIndexComplete &&
+      integrity.embeddingFailureCount === 0 &&
+      integrity.pendingVectorCount === 0
+      ? "search_index_incomplete"
+      : null,
+    integrity.distillationFailureCount > 0 ? "distillation_failures" : null,
+    integrity.entityConsolidationFailureCount > 0 ||
+      integrity.entityConsolidationIncompleteClusterCount > 0
+      ? "entity_consolidation_failures"
+      : null,
+  ].filter((reason): reason is string => reason !== null);
+}
+
+function recordIngestCacheWriteSkip(counters: IngestCacheCounters, reasons: string[]): void {
+  counters.writeSkips += 1;
+  for (const reason of reasons) {
+    counters.writeSkipReasons.set(reason, (counters.writeSkipReasons.get(reason) ?? 0) + 1);
   }
 }
 
@@ -3221,6 +3354,11 @@ function createRunManifest(input: {
       ...(input.ingestCache.dir ? { dir: input.ingestCache.dir } : {}),
       hits: input.ingestCache.hits,
       misses: input.ingestCache.misses,
+      writes: input.ingestCache.writes,
+      writeSkips: input.ingestCache.writeSkips,
+      writeSkipReasons: [...input.ingestCache.writeSkipReasons]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([name, count]) => ({ name, count })),
     },
     ceilingMetrics: input.ceilingMetrics,
     deterministicOnly: protocol === "deterministic_local",
@@ -4773,6 +4911,7 @@ interface AppliedBenchmarkEvent {
   extractionTransportFailureCharCount?: number | undefined;
   replayedWindowCount?: number | undefined;
   replayRecoveredCount?: number | undefined;
+  unresolvedExtractionWindowCount?: number | undefined;
 }
 
 interface AppliedBenchmarkEvents {
@@ -4790,6 +4929,7 @@ interface AppliedBenchmarkEvents {
   extractionTransportFailureCharCount: number;
   replayedWindowCount: number;
   replayRecoveredCount: number;
+  unresolvedExtractionWindowCount: number;
   entityConsolidationClustersFound: number;
   entityConsolidationClustersMerged: number;
   entityConsolidationConsolidatorCallCount: number;
@@ -5001,6 +5141,10 @@ async function applyBenchmarkEvent(
         countOutcome && outcome === "parse_failure" ? transcriptCharCount : 0,
       extractionTransportFailureCharCount:
         countOutcome && outcome === "transport_failure" ? transcriptCharCount : 0,
+      unresolvedExtractionWindowCount: countOutcome &&
+        (outcome === "parse_failure" || outcome === "transport_failure")
+          ? 1
+          : 0,
     };
   }
 }
@@ -5035,6 +5179,7 @@ async function applyBenchmarkEvents(input: {
     extractionTransportFailureCharCount: 0,
     replayedWindowCount: 0,
     replayRecoveredCount: 0,
+    unresolvedExtractionWindowCount: 0,
     entityConsolidationClustersFound: 0,
     entityConsolidationClustersMerged: 0,
     entityConsolidationConsolidatorCallCount: 0,
@@ -5146,6 +5291,7 @@ async function applyBenchmarkEvents(input: {
     }
     output.replayedWindowCount += ingested.replayedWindowCount;
     output.replayRecoveredCount += ingested.replayRecoveredCount;
+    output.unresolvedExtractionWindowCount += ingested.extractionFailedWindowIndexes.length;
     output.entityConsolidationClustersFound += ingested.entityConsolidation?.clustersFound ?? 0;
     output.entityConsolidationClustersMerged += ingested.entityConsolidation?.clustersMerged ?? 0;
     output.entityConsolidationConsolidatorCallCount +=
@@ -5193,6 +5339,7 @@ async function applyBenchmarkEvents(input: {
     output.extractionTransportFailureCharCount += applied.extractionTransportFailureCharCount ?? 0;
     output.replayedWindowCount += applied.replayedWindowCount ?? 0;
     output.replayRecoveredCount += applied.replayRecoveredCount ?? 0;
+    output.unresolvedExtractionWindowCount += applied.unresolvedExtractionWindowCount ?? 0;
   }
   await flushMemoryEvents();
   await flushMessages();
@@ -5550,7 +5697,9 @@ async function runCaseGroup(input: {
         runtimeIntelligence: input.runtimeIntelligence,
       })
     : null;
-  const cacheHit = cachePlan ? copyCacheEntryToGroupDb(cachePlan, groupDbPath) : false;
+  const cacheHit = cachePlan
+    ? copyCacheEntryToGroupDb(cachePlan, groupDbPath, hooks?.embeddingProvider)
+    : false;
   if (cachePlan) {
     if (cacheHit) input.ingestCache.hits += 1;
     else input.ingestCache.misses += 1;
@@ -5670,12 +5819,23 @@ async function runCaseGroup(input: {
       input.runtimeIntelligence.extractionWindowCount += extractionWindowCount;
       input.runtimeIntelligence.extractionCallCount += extractionCallCount;
       if (cachePlan) {
-        await runtime.memory.close();
-        runtimeClosed = true;
-        writeIngestCacheEntry(cachePlan, groupDbPath);
-        runtime = openRuntime();
-        runtimeClosed = false;
-        await runtime.store.initialize();
+        const integrity = ingestCacheIntegrity(
+          applied,
+          runtime.store.searchIndexStatus(),
+          input.runtimeIntelligence.manifest.consolidateEntities,
+        );
+        const incompleteReasons = incompleteIngestCacheReasons(integrity);
+        if (incompleteReasons.length > 0) {
+          recordIngestCacheWriteSkip(input.ingestCache, incompleteReasons);
+        } else {
+          await runtime.memory.close();
+          runtimeClosed = true;
+          writeIngestCacheEntry(cachePlan, groupDbPath, integrity);
+          input.ingestCache.writes += 1;
+          runtime = openRuntime();
+          runtimeClosed = false;
+          await runtime.store.initialize();
+        }
       }
     }
     caseGroupMemories = await runtime.memory.list({
@@ -5921,8 +6081,18 @@ export async function runExternalMemoryBenchmark(
         dir: path.resolve(process.cwd(), options.ingestCacheDir),
         hits: 0,
         misses: 0,
+        writes: 0,
+        writeSkips: 0,
+        writeSkipReasons: new Map(),
       }
-    : { enabled: false, hits: 0, misses: 0 };
+    : {
+        enabled: false,
+        hits: 0,
+        misses: 0,
+        writes: 0,
+        writeSkips: 0,
+        writeSkipReasons: new Map(),
+      };
   const runtimeIntelligence = resolveRuntimeIntelligence({
     intelligence: options.intelligence,
     ingestMode,
