@@ -147,6 +147,8 @@ try {
         renderExternalMemoryBenchmarkSuiteMarkdown,
         renderMemoryReleaseGateMarkdown,
         parseExternalMemoryBenchmarkDataset,
+        parseExternalMemoryBenchmarkCheckpoint,
+        parseExternalMemoryBenchmarkCheckpointJsonl,
         parseExternalMemoryBenchmarkSuite,
         parseLocomoBenchmarkDataset,
         parseLongMemEvalBenchmarkDataset,
@@ -155,6 +157,7 @@ try {
         runHostCompatibilityGym,
         runMemoryGym,
         runMemoryReleaseGate,
+        createExternalMemoryBenchmarkCheckpointEntry,
       } from "@ghast/memory/gym";
       import {
         createMemoryMcpServer,
@@ -170,6 +173,9 @@ try {
       } from "@ghast/memory/store/sqlite";
 
       const store = createSqliteMemoryStore({ path: path.join(process.cwd(), "consumer.db") });
+      assert.equal(typeof parseExternalMemoryBenchmarkCheckpoint, "function");
+      assert.equal(typeof parseExternalMemoryBenchmarkCheckpointJsonl, "function");
+      assert.equal(typeof createExternalMemoryBenchmarkCheckpointEntry, "function");
       const memory = createMemoryOS({ profileId: "consumer", store });
       const intelligence = createDefaultIntelligence({
         model: "consumer-chat",
@@ -926,6 +932,10 @@ try {
         type StateBenchPreparedRunManifest,
         type ExternalMemoryBenchmarkAnswerer,
         type ExternalMemoryBenchmarkCase,
+        type ExternalMemoryBenchmarkCheckpointContract,
+        type ExternalMemoryBenchmarkCheckpointEntry,
+        type ExternalMemoryBenchmarkCheckpointManifest,
+        type ExternalMemoryBenchmarkCheckpointOptions,
         type ExternalMemoryBenchmarkCeilingMetrics,
         type ExternalMemoryBenchmarkDatasetAdapter,
         type ExternalMemoryBenchmarkDatasetFormat,
@@ -937,6 +947,7 @@ try {
         type ExternalMemoryBenchmarkProtocol,
         type ExternalMemoryBenchmarkCaseMatched,
         type ExternalMemoryBenchmarkResult,
+        type ParsedExternalMemoryBenchmarkCheckpointJsonl,
         type ExternalMemoryBenchmarkRuntimeAnswererManifest,
         type ExternalMemoryBenchmarkRuntimeIntelligenceManifest,
         type ExternalMemoryBenchmarkSliceScore,
@@ -1618,6 +1629,40 @@ try {
   assert.equal(installedVersionJson.trustContract.encryptedByDefault, false);
   assert.equal(installedVersionJson.trustContract.encryptionSupported, "host_driver");
   assert.equal(installedVersionJson.trustContract.cloudRequired, false);
+  const installedCheckpointInput = path.join(consumerDir, "installed-checkpoint-input.jsonl");
+  const installedCheckpointJournal = path.join(consumerDir, "installed-checkpoint-results.jsonl");
+  writeFileSync(installedCheckpointInput, `${JSON.stringify({
+    id: "installed-checkpoint-case",
+    events: [{ type: "memory", kind: "fact", content: "Installed checkpoint answer is cedar." }],
+    question: "What is the installed checkpoint answer?",
+    expectedAny: ["cedar"],
+  })}\n`);
+  const installedCheckpointArgs = [
+    "gym",
+    "external",
+    "--input-file",
+    installedCheckpointInput,
+    "--resume-results-jsonl",
+    installedCheckpointJournal,
+    "--format",
+    "json",
+  ];
+  const installedCheckpointFirst = runInstalledCli(installedCheckpointArgs);
+  assert.equal(installedCheckpointFirst.status, 0, installedCheckpointFirst.stderr);
+  assert.equal(
+    JSON.parse(installedCheckpointFirst.stdout).runManifest.execution.newlyExecutedCaseCount,
+    1,
+  );
+  const installedCheckpointResume = runInstalledCli(installedCheckpointArgs);
+  assert.equal(installedCheckpointResume.status, 0, installedCheckpointResume.stderr);
+  assert.equal(
+    JSON.parse(installedCheckpointResume.stdout).runManifest.execution.resumedCaseCount,
+    1,
+  );
+  assert.equal(
+    JSON.parse(installedCheckpointResume.stdout).runManifest.execution.newlyExecutedCaseCount,
+    0,
+  );
   const installedAliasVersionBin = spawnCommand(ghastMemoryBin, ["version", "--format", "json"], {
     cwd: consumerDir,
     encoding: "utf8",

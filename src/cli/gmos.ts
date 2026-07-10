@@ -1,18 +1,28 @@
 #!/usr/bin/env node
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
+  constants as fsConstants,
   closeSync,
   existsSync,
+  fstatSync,
+  ftruncateSync,
   fsyncSync,
+  linkSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
+  realpathSync,
+  unlinkSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { createMemoryOS } from "../runtime/create-memory-os.js";
+import { readGmosPackageRoot } from "../kernel/package-info.js";
 import {
   ingestTranscript,
   runAutopilot,
@@ -56,6 +66,12 @@ import {
   stateBenchAgentPythonTemplate,
   writeExternalMemoryBenchmarkReproductionBundle,
 } from "../gym/index.js";
+import {
+  parseExternalMemoryBenchmarkCheckpoint,
+  parseExternalMemoryBenchmarkCheckpointJsonl,
+  type ExternalMemoryBenchmarkCheckpointEntry,
+  type ExternalMemoryBenchmarkCheckpointManifest,
+} from "../gym/external.js";
 import {
   createPresetHostAdapter,
   type HostCompatibilityReport,
@@ -183,6 +199,7 @@ Usage:
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --reader-profile expansive --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
   gmos gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --max-cases 5 --results-jsonl ./paid-smoke.results.jsonl
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --resume-results-jsonl /outside/repo/longmemeval.results.jsonl
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --turn-retention on --session-distill on --consolidate-entities on --extraction-window 1000 --extraction-max-chars 30000 --extractor-max-candidates 32 --extractor-max-tokens 4000 --ingest-replay-attempts 1 --embed-query on --intelligence-base-url https://api.deepseek.com/v1 --intelligence-model deepseek-chat --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-embed-base-url http://127.0.0.1:11434/v1 --intelligence-embed-model nomic-embed-text --intelligence-embed-dimensions 768 --intelligence-disable-thinking
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --session-distill on --distiller-base-url http://127.0.0.1:11434/v1 --distiller-model llama3.1 --intelligence-api-key-env GMOS_BENCH_API_KEY
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode memory --query-planner on --sweep-cues on --planner-base-url http://127.0.0.1:11434/v1 --planner-model llama3.1 --intelligence-api-key-env GMOS_BENCH_API_KEY
@@ -204,7 +221,7 @@ function writeReportIfRequested(content: string): void {
   if (!reportFile) return;
   const resolved = path.resolve(process.cwd(), reportFile);
   mkdirSync(path.dirname(resolved), { recursive: true });
-  writeFileSync(resolved, content);
+  writeFileSync(resolved, content, { mode: 0o600 });
 }
 
 function writeOutputFileIfRequested(optionName: string, content: string): void {
@@ -212,18 +229,487 @@ function writeOutputFileIfRequested(optionName: string, content: string): void {
   if (!outputFile) return;
   const resolved = path.resolve(process.cwd(), outputFile);
   mkdirSync(path.dirname(resolved), { recursive: true });
-  writeFileSync(resolved, content);
+  writeFileSync(resolved, content, { mode: 0o600 });
+}
+
+function writeAllSync(fd: number, content: string): void {
+  const buffer = Buffer.from(content, "utf8");
+  let offset = 0;
+  while (offset < buffer.length) {
+    const written = writeSync(fd, buffer, offset, buffer.length - offset);
+    if (written <= 0) throw new Error("Unable to complete checkpoint file write");
+    offset += written;
+  }
 }
 
 function appendJsonLine(filePath: string, value: unknown): void {
   const resolved = path.resolve(process.cwd(), filePath);
-  mkdirSync(path.dirname(resolved), { recursive: true });
-  const fd = openSync(resolved, "a");
+  mkdirSync(path.dirname(resolved), { recursive: true, mode: 0o700 });
+  const fd = openSync(resolved, "a", 0o600);
   try {
-    writeSync(fd, `${JSON.stringify(value)}\n`);
+    writeAllSync(fd, `${JSON.stringify(value)}\n`);
     fsyncSync(fd);
   } finally {
     closeSync(fd);
+  }
+}
+
+interface ExternalBenchmarkCheckpointSession {
+  resume?: {
+    manifest: ExternalMemoryBenchmarkCheckpointManifest;
+    entries: ExternalMemoryBenchmarkCheckpointEntry[];
+  } | undefined;
+  onPrepared(manifest: ExternalMemoryBenchmarkCheckpointManifest): void;
+  persistResult(entry: ExternalMemoryBenchmarkCheckpointEntry): void;
+  close(): void;
+}
+
+interface CheckpointConflictPath {
+  label: string;
+  filePath: string;
+}
+
+interface CheckpointLockRecord {
+  schema: "gmos.external_benchmark_checkpoint_lock.v1";
+  pid: number;
+  hostname: string;
+  startedAt: string;
+  token: string;
+}
+
+const NO_FOLLOW_FLAG = process.platform === "win32" ? 0 : fsConstants.O_NOFOLLOW;
+
+function pathIsInside(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== "..");
+}
+
+function projectedRealPath(filePath: string): string {
+  const resolved = path.resolve(filePath);
+  if (existsSync(resolved)) return realpathSync(resolved);
+  let ancestor = path.dirname(resolved);
+  while (!existsSync(ancestor)) {
+    const next = path.dirname(ancestor);
+    if (next === ancestor) break;
+    ancestor = next;
+  }
+  return path.resolve(realpathSync(ancestor), path.relative(ancestor, resolved));
+}
+
+function assertPathOutsidePackageRoot(filePath: string, label: string): void {
+  const detectedRoot = readGmosPackageRoot();
+  if (!detectedRoot) throw new Error("Unable to resolve the gmOS package checkout");
+  const packageRoot = path.resolve(detectedRoot);
+  if (pathIsInside(packageRoot, filePath)) {
+    throw new Error(`${label} must be outside the gmOS package checkout`);
+  }
+  const realPackageRoot = realpathSync(packageRoot);
+  if (pathIsInside(realPackageRoot, projectedRealPath(filePath))) {
+    throw new Error(`${label} must be outside the gmOS package checkout`);
+  }
+}
+
+function preparePrivateBenchmarkDirectory(directoryPath: string, label: string): string {
+  const resolved = path.resolve(process.cwd(), directoryPath);
+  assertPathOutsidePackageRoot(resolved, label);
+  if (existsSync(resolved)) {
+    const stat = lstatSync(resolved);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error(`${label} must be a regular directory and not a symbolic link`);
+    }
+    if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
+      throw new Error(`${label} must be private (mode 0700)`);
+    }
+  } else {
+    mkdirSync(resolved, { recursive: true, mode: 0o700 });
+  }
+  assertPathOutsidePackageRoot(resolved, label);
+  return resolved;
+}
+
+function assertPrivateBenchmarkOutputPath(filePath: string, label: string): string {
+  const resolved = path.resolve(process.cwd(), filePath);
+  assertPathOutsidePackageRoot(resolved, label);
+  if (existsSync(resolved)) {
+    const stat = lstatSync(resolved);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error(`${label} must be a regular file and not a symbolic link`);
+    }
+    if (process.platform !== "win32" && stat.nlink !== 1) {
+      throw new Error(`${label} must not have hard links`);
+    }
+    if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
+      throw new Error(`${label} must not be accessible by group or other users`);
+    }
+  }
+  return resolved;
+}
+
+function prepareCheckpointParentOutsidePackageRoot(filePath: string): void {
+  assertPathOutsidePackageRoot(filePath, "--resume-results-jsonl");
+  const parent = path.dirname(filePath);
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  assertPathOutsidePackageRoot(filePath, "--resume-results-jsonl");
+}
+
+function assertPrivateRegularCheckpointFd(fd: number, label: string): void {
+  const stat = fstatSync(fd);
+  if (!stat.isFile()) {
+    throw new Error(`${label} must be a regular file`);
+  }
+  if (process.platform !== "win32" && stat.nlink !== 1) {
+    throw new Error(`${label} must not have hard links`);
+  }
+  if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
+    throw new Error(`${label} must not be accessible by group or other users`);
+  }
+}
+
+function fsyncParentDirectory(filePath: string): void {
+  if (process.platform === "win32") return;
+  const fd = openSync(path.dirname(filePath), fsConstants.O_RDONLY);
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function writeCheckpointFileAtomicExclusive(filePath: string, value: unknown): void {
+  const tempPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
+  const fd = openSync(
+    tempPath,
+    fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | NO_FOLLOW_FLAG,
+    0o600,
+  );
+  let writeError: unknown;
+  let hasWriteError = false;
+  try {
+    writeAllSync(fd, `${JSON.stringify(value, null, 2)}\n`);
+    fsyncSync(fd);
+  } catch (error) {
+    hasWriteError = true;
+    writeError = error;
+  } finally {
+    closeSync(fd);
+  }
+  if (hasWriteError) {
+    unlinkSync(tempPath);
+    throw writeError;
+  }
+  try {
+    linkSync(tempPath, filePath);
+    unlinkSync(tempPath);
+    fsyncParentDirectory(filePath);
+  } catch (error) {
+    if (existsSync(tempPath)) {
+      try {
+        unlinkSync(tempPath);
+      } catch {
+        // Preserve the atomic checkpoint write error.
+      }
+    }
+    throw error;
+  }
+}
+
+function cleanupCheckpointTempArtifacts(finalPath: string): void {
+  const directory = path.dirname(finalPath);
+  const prefix = `${path.basename(finalPath)}.tmp-`;
+  let removed = false;
+  for (const name of readdirSync(directory)) {
+    if (!name.startsWith(prefix)) continue;
+    const candidate = path.join(directory, name);
+    const stat = lstatSync(candidate);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error("External benchmark checkpoint temp artifact is not a regular file");
+    }
+    unlinkSync(candidate);
+    removed = true;
+  }
+  if (removed) fsyncParentDirectory(finalPath);
+}
+
+function unlinkCheckpointTemp(filePath: string): void {
+  try {
+    unlinkSync(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+function openCheckpointJournal(filePath: string, create: boolean): number {
+  const flags = create
+    ? fsConstants.O_CREAT |
+      fsConstants.O_EXCL |
+      fsConstants.O_RDWR |
+      fsConstants.O_APPEND |
+      NO_FOLLOW_FLAG
+    : fsConstants.O_RDWR | fsConstants.O_APPEND | NO_FOLLOW_FLAG;
+  const fd = openSync(filePath, flags, 0o600);
+  try {
+    assertPrivateRegularCheckpointFd(fd, "External benchmark checkpoint journal");
+    if (create) {
+      fsyncSync(fd);
+      fsyncParentDirectory(filePath);
+    }
+    return fd;
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+}
+
+function readCheckpointSidecar(filePath: string): ExternalMemoryBenchmarkCheckpointManifest {
+  const fd = openSync(filePath, fsConstants.O_RDONLY | NO_FOLLOW_FLAG);
+  try {
+    assertPrivateRegularCheckpointFd(fd, "External benchmark checkpoint sidecar");
+    return parseExternalMemoryBenchmarkCheckpoint(readFileSync(fd, "utf8"));
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+function inspectCheckpointLock(filePath: string): { fd: number; record: CheckpointLockRecord } {
+  const fd = openSync(filePath, fsConstants.O_RDONLY | NO_FOLLOW_FLAG);
+  try {
+    assertPrivateRegularCheckpointFd(fd, "External benchmark checkpoint lock");
+    const parsed = JSON.parse(readFileSync(fd, "utf8")) as Partial<CheckpointLockRecord>;
+    if (
+      parsed.schema !== "gmos.external_benchmark_checkpoint_lock.v1" ||
+      !Number.isInteger(parsed.pid) ||
+      Number(parsed.pid) <= 0 ||
+      typeof parsed.hostname !== "string" ||
+      typeof parsed.startedAt !== "string" ||
+      typeof parsed.token !== "string" ||
+      parsed.token.length === 0
+    ) {
+      throw new Error("External benchmark checkpoint lock metadata is invalid");
+    }
+    return { fd, record: parsed as CheckpointLockRecord };
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+}
+
+function acquireCheckpointLock(lockPath: string): { fd: number; record: CheckpointLockRecord } {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const record: CheckpointLockRecord = {
+      schema: "gmos.external_benchmark_checkpoint_lock.v1",
+      pid: process.pid,
+      hostname: os.hostname(),
+      startedAt: new Date().toISOString(),
+      token: randomUUID(),
+    };
+    const tempPath = `${lockPath}.tmp-${process.pid}-${record.token}`;
+    let fd = openSync(
+      tempPath,
+      fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR | NO_FOLLOW_FLAG,
+      0o600,
+    );
+    try {
+      writeAllSync(fd, `${JSON.stringify(record)}\n`);
+      fsyncSync(fd);
+      try {
+        linkSync(tempPath, lockPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        closeSync(fd);
+        fd = -1;
+        unlinkCheckpointTemp(tempPath);
+        cleanupCheckpointTempArtifacts(lockPath);
+        const inspected = inspectCheckpointLock(lockPath);
+        try {
+          const existing = inspected.record;
+          const stale = existing.hostname === os.hostname() && !processIsAlive(existing.pid);
+          if (!stale) {
+            throw new Error(
+              `External benchmark checkpoint is locked by pid ${existing.pid} on ${existing.hostname}`,
+            );
+          }
+          const opened = fstatSync(inspected.fd);
+          const current = lstatSync(lockPath);
+          if (opened.dev !== current.dev || opened.ino !== current.ino) {
+            throw new Error("External benchmark checkpoint lock changed during stale-lock recovery");
+          }
+          if (process.platform === "win32") {
+            closeSync(inspected.fd);
+            inspected.fd = -1;
+          }
+          unlinkSync(lockPath);
+          fsyncParentDirectory(lockPath);
+        } finally {
+          if (inspected.fd >= 0) closeSync(inspected.fd);
+        }
+        continue;
+      }
+      if (process.platform === "win32") {
+        closeSync(fd);
+        fd = openSync(lockPath, fsConstants.O_RDWR | NO_FOLLOW_FLAG);
+      }
+      unlinkCheckpointTemp(tempPath);
+      fsyncParentDirectory(lockPath);
+      return { fd, record };
+    } catch (error) {
+      if (fd >= 0) {
+        try {
+          closeSync(fd);
+        } catch {
+          // Preserve the lock acquisition error.
+        }
+      }
+      if (existsSync(tempPath)) {
+        try {
+          unlinkSync(tempPath);
+        } catch {
+          // Preserve the lock acquisition error.
+        }
+      }
+      throw error;
+    }
+  }
+  throw new Error("Unable to recover the stale external benchmark checkpoint lock");
+}
+
+function releaseCheckpointLock(lockPath: string, lockFd: number): void {
+  if (process.platform === "win32") {
+    const owned = fstatSync(lockFd);
+    closeSync(lockFd);
+    const current = lstatSync(lockPath);
+    if (owned.dev !== current.dev || owned.ino !== current.ino) {
+      throw new Error("External benchmark checkpoint lock ownership changed before release");
+    }
+    unlinkSync(lockPath);
+  } else {
+    try {
+      const owned = fstatSync(lockFd);
+      const current = lstatSync(lockPath);
+      if (owned.dev !== current.dev || owned.ino !== current.ino) {
+        throw new Error("External benchmark checkpoint lock ownership changed before release");
+      }
+      unlinkSync(lockPath);
+      fsyncParentDirectory(lockPath);
+    } finally {
+      closeSync(lockFd);
+    }
+  }
+}
+
+function assertNoCheckpointPathConflicts(
+  artifacts: string[],
+  conflicts: CheckpointConflictPath[],
+): void {
+  const artifactPaths = new Set(artifacts.map(projectedRealPath));
+  for (const conflict of conflicts) {
+    if (artifactPaths.has(projectedRealPath(conflict.filePath))) {
+      throw new Error(`External benchmark checkpoint conflicts with ${conflict.label}`);
+    }
+  }
+}
+
+function openExternalBenchmarkCheckpointSession(input: {
+  resultsJsonl: string;
+  conflicts: CheckpointConflictPath[];
+}): ExternalBenchmarkCheckpointSession {
+  const resultsPath = path.resolve(process.cwd(), input.resultsJsonl);
+  const sidecarPath = `${resultsPath}.checkpoint.json`;
+  const lockPath = `${resultsPath}.lock`;
+  prepareCheckpointParentOutsidePackageRoot(resultsPath);
+  assertNoCheckpointPathConflicts(
+    [resultsPath, sidecarPath, lockPath],
+    input.conflicts,
+  );
+  let lockFd: number | null = null;
+  let journalFd: number | null = null;
+  try {
+    lockFd = acquireCheckpointLock(lockPath).fd;
+    cleanupCheckpointTempArtifacts(lockPath);
+    cleanupCheckpointTempArtifacts(sidecarPath);
+    const resultsExists = existsSync(resultsPath);
+    const sidecarExists = existsSync(sidecarPath);
+    if (resultsExists && !sidecarExists) {
+      throw new Error(
+        "External benchmark checkpoint journal exists without its sidecar",
+      );
+    }
+    const manifest = sidecarExists
+      ? readCheckpointSidecar(sidecarPath)
+      : undefined;
+    if (resultsExists) journalFd = openCheckpointJournal(resultsPath, false);
+    const parsedJournal = resultsExists
+      ? parseExternalMemoryBenchmarkCheckpointJsonl(readFileSync(journalFd!, "utf8"))
+      : { entries: [], validByteLength: 0, truncatedTailBytes: 0 };
+    let prepared = false;
+    let closed = false;
+    return {
+      ...(manifest ? { resume: { manifest, entries: parsedJournal.entries } } : {}),
+      onPrepared(nextManifest) {
+        if (closed) throw new Error("External benchmark checkpoint session is closed");
+        if (prepared) throw new Error("External benchmark checkpoint was prepared more than once");
+        if (manifest) {
+          if (manifest.fingerprint !== nextManifest.fingerprint) {
+            throw new Error("External benchmark checkpoint fingerprint does not match this run");
+          }
+          if (journalFd === null) {
+            journalFd = openCheckpointJournal(resultsPath, true);
+          } else if (parsedJournal.truncatedTailBytes > 0) {
+            ftruncateSync(journalFd, parsedJournal.validByteLength);
+            fsyncSync(journalFd);
+          }
+        } else {
+          writeCheckpointFileAtomicExclusive(sidecarPath, nextManifest);
+          journalFd = openCheckpointJournal(resultsPath, true);
+        }
+        prepared = true;
+      },
+      persistResult(entry) {
+        if (closed) throw new Error("External benchmark checkpoint session is closed");
+        if (!prepared) throw new Error("External benchmark checkpoint was not prepared");
+        if (journalFd === null) throw new Error("External benchmark checkpoint journal is not open");
+        writeAllSync(journalFd, `${JSON.stringify(entry)}\n`);
+        fsyncSync(journalFd);
+      },
+      close() {
+        if (closed) return;
+        closed = true;
+        const ownedJournalFd = journalFd;
+        journalFd = null;
+        if (ownedJournalFd !== null) closeSync(ownedJournalFd);
+        const ownedLockFd = lockFd;
+        lockFd = null;
+        if (ownedLockFd === null) return;
+        releaseCheckpointLock(lockPath, ownedLockFd);
+      },
+    };
+  } catch (error) {
+    const ownedLockFd = lockFd;
+    lockFd = null;
+    if (journalFd !== null) {
+      try {
+        closeSync(journalFd);
+      } catch {
+        // Preserve the checkpoint validation error.
+      }
+      journalFd = null;
+    }
+    if (ownedLockFd !== null) {
+      try {
+        releaseCheckpointLock(lockPath, ownedLockFd);
+      } catch {
+        // Preserve the original checkpoint validation error.
+      }
+    }
+    throw error;
   }
 }
 
@@ -2157,7 +2643,7 @@ async function main(): Promise<void> {
     const ingestMode = externalIngestModeOption();
     const debugDir = value("--intelligence-debug-dir");
     const resolvedDebugDir = debugDir ? path.resolve(process.cwd(), debugDir) : undefined;
-    const ingestCacheDir = value("--ingest-cache-dir");
+    const configuredIngestCacheDir = strictOptionValue("--ingest-cache-dir");
     const intelligence = externalIntelligenceOption(resolvedDebugDir);
     const maintainPhases = externalMaintainPhasesOption();
     const parsedDataset =
@@ -2195,6 +2681,10 @@ async function main(): Promise<void> {
       : undefined;
     const judge = externalOfficialJudgeOption(protocol, intelligence, answererConfig, judgeConfig, judgeProfile);
     const resultsJsonl = strictOptionValue("--results-jsonl");
+    const resumeResultsJsonl = strictOptionValue("--resume-results-jsonl");
+    if (resultsJsonl && resumeResultsJsonl) {
+      throw new Error("--results-jsonl and --resume-results-jsonl are mutually exclusive");
+    }
     const maxCases = positiveIntegerOptionValue("--max-cases");
     const caseOffset = nonNegativeIntegerOptionValue("--case-offset");
     const caseIds = commaSeparatedStringOption("--case-ids");
@@ -2215,9 +2705,104 @@ async function main(): Promise<void> {
     const turnRetention = turnRetentionOption();
     const sessionDistillation = sessionDistillOption();
     const consolidateEntities = consolidateEntitiesOption();
+    const temporalMode = temporalModeOption();
+    const concurrency = positiveIntegerOption("--concurrency", 4);
+    const extractionWindow = positiveIntegerOption("--extraction-window", 12);
+    const extractionMaxChars =
+      boundedIntegerOptionValue("--extraction-max-chars", 256, 200000) ?? 7000;
+    const failureSampleLimit = nonNegativeIntegerOption("--failure-sample-limit", 20);
+    const diagnosticsLevel = diagnosticsLevelOption();
+    const outputFormat = strictOptionValue("--format", "json") ?? "json";
+    if (outputFormat !== "json" && outputFormat !== "markdown") {
+      throw new Error("--format must be json or markdown");
+    }
+    const reportFile = strictOptionValue("--report-file");
+    const jsonFile = strictOptionValue("--json-file");
+    const markdownFile = strictOptionValue("--markdown-file");
+    const reproductionBundle = strictOptionValue("--reproduction-bundle");
+    const reproductionEnvVarNames = [
+      ...values("--intelligence-api-key-env"),
+      ...values("--intelligence-embed-api-key-env"),
+      ...values("--answerer-api-key-env"),
+    ];
+    const effectiveIngestCacheDir = configuredIngestCacheDir ??
+      (resumeResultsJsonl ? `${path.resolve(process.cwd(), resumeResultsJsonl)}.ingest-cache` : undefined);
     if (debugDumpMemories !== undefined && debugDumpMemories > 0 && !resolvedDebugDir) {
       throw new Error("--debug-dump-memories requires --intelligence-debug-dir");
     }
+    const benchmarkIngestCachePath = effectiveIngestCacheDir
+      ? path.resolve(process.cwd(), effectiveIngestCacheDir)
+      : undefined;
+    const benchmarkReproductionBundlePath = reproductionBundle
+      ? path.resolve(process.cwd(), reproductionBundle)
+      : undefined;
+    const checkpointOutputFiles: CheckpointConflictPath[] = [
+      { label: "--input-file", filePath: inputPath },
+      ...(benchmarkIngestCachePath
+        ? [{ label: "--ingest-cache-dir", filePath: benchmarkIngestCachePath }]
+        : []),
+      ...(resolvedDebugDir
+        ? [{ label: "--intelligence-debug-dir", filePath: resolvedDebugDir }]
+        : []),
+      ...(benchmarkReproductionBundlePath
+        ? [{ label: "--reproduction-bundle", filePath: benchmarkReproductionBundlePath }]
+        : []),
+      ...(reportFile
+        ? [{
+            label: "--report-file",
+            filePath: resumeResultsJsonl
+              ? assertPrivateBenchmarkOutputPath(reportFile, "--report-file")
+              : path.resolve(process.cwd(), reportFile),
+          }]
+        : []),
+      ...(jsonFile
+        ? [{
+            label: "--json-file",
+            filePath: resumeResultsJsonl
+              ? assertPrivateBenchmarkOutputPath(jsonFile, "--json-file")
+              : path.resolve(process.cwd(), jsonFile),
+          }]
+        : []),
+      ...(markdownFile
+        ? [{
+            label: "--markdown-file",
+            filePath: resumeResultsJsonl
+              ? assertPrivateBenchmarkOutputPath(markdownFile, "--markdown-file")
+              : path.resolve(process.cwd(), markdownFile),
+          }]
+        : []),
+      ...(benchmarkReproductionBundlePath
+        ? [
+            "manifest.json",
+            "results.json",
+            "results.md",
+            "failure-samples.json",
+            "REPRODUCE.md",
+          ].map((name) => ({
+            label: `--reproduction-bundle/${name}`,
+            filePath: path.join(benchmarkReproductionBundlePath, name),
+          }))
+        : []),
+    ];
+    if (resumeResultsJsonl) {
+      for (const output of checkpointOutputFiles.slice(1)) {
+        assertPathOutsidePackageRoot(output.filePath, output.label);
+      }
+      const checkpointPath = path.resolve(process.cwd(), resumeResultsJsonl);
+      assertNoCheckpointPathConflicts(
+        [checkpointPath, `${checkpointPath}.checkpoint.json`, `${checkpointPath}.lock`],
+        checkpointOutputFiles,
+      );
+    }
+    const benchmarkIngestCacheDir = resumeResultsJsonl && benchmarkIngestCachePath
+      ? preparePrivateBenchmarkDirectory(benchmarkIngestCachePath, "--ingest-cache-dir")
+      : benchmarkIngestCachePath;
+    const benchmarkDebugDir = resumeResultsJsonl && resolvedDebugDir
+      ? preparePrivateBenchmarkDirectory(resolvedDebugDir, "--intelligence-debug-dir")
+      : resolvedDebugDir;
+    const benchmarkReproductionBundle = resumeResultsJsonl && benchmarkReproductionBundlePath
+      ? preparePrivateBenchmarkDirectory(benchmarkReproductionBundlePath, "--reproduction-bundle")
+      : benchmarkReproductionBundlePath;
     const abortController = new AbortController();
     let interrupted = false;
     const handleInterrupt = (signal: NodeJS.Signals): void => {
@@ -2229,7 +2814,15 @@ async function main(): Promise<void> {
     };
     process.once("SIGINT", handleInterrupt);
     process.once("SIGTERM", handleInterrupt);
-    const report = await runExternalMemoryBenchmark({
+    let checkpointSession: ExternalBenchmarkCheckpointSession | null = null;
+    try {
+      checkpointSession = resumeResultsJsonl
+        ? openExternalBenchmarkCheckpointSession({
+            resultsJsonl: resumeResultsJsonl,
+            conflicts: checkpointOutputFiles,
+          })
+        : null;
+      const report = await runExternalMemoryBenchmark({
       cases: requireConvergence
         ? cases.map((benchmarkCase) => ({ ...benchmarkCase, requireConvergence: true }))
         : cases,
@@ -2246,27 +2839,37 @@ async function main(): Promise<void> {
       ...(fullContentMaxChars !== undefined ? { fullContentMaxChars } : {}),
       ...(has("--no-anchor-coverage") ? { anchorCoverage: false } : {}),
       readerProfile,
-      ...(resolvedDebugDir ? { debugDir: resolvedDebugDir } : {}),
+      ...(benchmarkDebugDir ? { debugDir: benchmarkDebugDir } : {}),
       ...(readerContextCharLimit !== undefined ? { readerContextCharLimit } : {}),
       ...(debugContextFailureLimit !== undefined ? { debugContextFailureLimit } : {}),
       ...(debugDumpMemories !== undefined ? { debugDumpMemories } : {}),
-      temporalMode: temporalModeOption(),
+      temporalMode,
       ...(has("--temporal-metadata") ? { includeTemporalMetadata: true } : {}),
       ...(has("--include-sensitive") ? { includeSensitive: true } : {}),
-      concurrency: positiveIntegerOption("--concurrency", 4),
-      extractionWindow: positiveIntegerOption("--extraction-window", 12),
-      extractionMaxChars: boundedIntegerOptionValue("--extraction-max-chars", 256, 200000) ?? 7000,
+      concurrency,
+      extractionWindow,
+      extractionMaxChars,
       ingestReplayAttempts,
-      ...(ingestCacheDir ? { ingestCacheDir } : {}),
+      ...(benchmarkIngestCacheDir ? { ingestCacheDir: benchmarkIngestCacheDir } : {}),
       reuseProfiles: !has("--no-reuse-profiles"),
-      failureSampleLimit: nonNegativeIntegerOption("--failure-sample-limit", 20),
-      diagnosticsLevel: diagnosticsLevelOption(),
+      failureSampleLimit,
+      diagnosticsLevel,
       protocol,
       ...(judgeProfile !== undefined ? { judgeProfile } : {}),
       ...(maxCases !== undefined ? { maxCases } : {}),
       ...(caseOffset !== undefined ? { caseOffset } : {}),
       ...(caseIds !== undefined ? { caseIds } : {}),
       abortSignal: abortController.signal,
+      ...(checkpointSession
+        ? {
+            checkpoint: {
+              ...(checkpointSession.resume ? { resume: checkpointSession.resume } : {}),
+              requireCleanGit: true,
+              onPrepared: checkpointSession.onPrepared,
+              persistResult: checkpointSession.persistResult,
+            },
+          }
+        : {}),
       ...(judge ? { judge } : {}),
       ...(answerer ? { answerer } : {}),
       ingestMode,
@@ -2304,32 +2907,29 @@ async function main(): Promise<void> {
           }
         : {}),
       ...(requireConvergence ? { requireConvergence: true } : {}),
-    }).finally(() => {
-      process.removeListener("SIGINT", handleInterrupt);
-      process.removeListener("SIGTERM", handleInterrupt);
-    });
-    const reproductionBundle = strictOptionValue("--reproduction-bundle");
-    if (reproductionBundle) {
-      writeExternalMemoryBenchmarkReproductionBundle({
-        outputDir: reproductionBundle,
+      });
+      if (benchmarkReproductionBundle) {
+        writeExternalMemoryBenchmarkReproductionBundle({
+        outputDir: benchmarkReproductionBundle,
         report,
         command: ["gmos", ...process.argv.slice(2)],
-        envVarNames: [
-          ...values("--intelligence-api-key-env"),
-          ...values("--intelligence-embed-api-key-env"),
-          ...values("--answerer-api-key-env"),
-        ],
+        envVarNames: reproductionEnvVarNames,
       });
+      }
+      printReport(report, renderExternalMemoryBenchmarkMarkdown(report));
+      if (interrupted || report.runManifest.execution.interrupted) {
+        process.exitCode = 130;
+      } else if (report.runManifest.execution.stopReason === "provider_outage") {
+        process.exitCode = 75;
+      } else if (!report.pass) {
+        process.exitCode = 1;
+      }
+      return;
+    } finally {
+      process.removeListener("SIGINT", handleInterrupt);
+      process.removeListener("SIGTERM", handleInterrupt);
+      checkpointSession?.close();
     }
-    printReport(report, renderExternalMemoryBenchmarkMarkdown(report));
-    if (interrupted || report.runManifest.execution.interrupted) {
-      process.exitCode = 130;
-    } else if (report.runManifest.execution.stopReason === "provider_outage") {
-      process.exitCode = 75;
-    } else if (!report.pass) {
-      process.exitCode = 1;
-    }
-    return;
   }
 
   if (command === "gym" && subcommand === "external-suite") {

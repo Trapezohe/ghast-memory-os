@@ -2,7 +2,9 @@ import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -10,6 +12,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { connect } from "node:net";
@@ -56,7 +59,14 @@ import { resolveWorldEntitySubject } from "../src/kernel/entities.js";
 import {
   extractRuleMemoryCandidates as extractLegacyRuleMemoryCandidates,
 } from "./helpers/legacy-linguistic-extractor.fixture.js";
-import { externalBenchmarkGitInfoForPackageRoot } from "../src/gym/external.js";
+import {
+  createExternalMemoryBenchmarkCheckpointEntry,
+  externalBenchmarkGitInfoForPackageRoot,
+  parseExternalMemoryBenchmarkCheckpoint,
+  parseExternalMemoryBenchmarkCheckpointJsonl,
+  type ExternalMemoryBenchmarkCheckpointEntry,
+  type ExternalMemoryBenchmarkCheckpointManifest,
+} from "../src/gym/external.js";
 import {
   DEFAULT_GMOS_CLI_BINARIES,
   publicCliBinariesFromManifest,
@@ -27388,6 +27398,510 @@ const providerOutageRecoveryRun = await runExternalMemoryBenchmark({
 });
 assert.equal(providerOutageRecoveryRun.pass, true);
 assert.equal(providerOutageRecoveryRun.runManifest.ingestCache.hits, 1);
+const checkpointSharedEvents = [{
+  type: "memory" as const,
+  kind: "fact" as const,
+  content: "Checkpoint first answer is amber. Checkpoint second answer is cobalt.",
+}];
+const checkpointCases = [
+  {
+    id: "checkpoint-first",
+    profileId: "checkpoint-shared-profile",
+    events: checkpointSharedEvents,
+    question: "What is the checkpoint first answer?",
+    expectedAny: ["amber"],
+  },
+  {
+    id: "checkpoint-second",
+    profileId: "checkpoint-shared-profile",
+    events: checkpointSharedEvents,
+    question: "What is the checkpoint second answer?",
+    expectedAny: ["cobalt"],
+  },
+];
+const checkpointJudge = {
+  name: "checkpoint-judge",
+  checkpointIdentity: "checkpoint-judge-v1",
+  judge(_question: string, expectedAnswer: string, actualAnswer: string) {
+    return { correct: actualAnswer.includes(expectedAnswer) };
+  },
+};
+let checkpointMissingCacheProviderCalls = 0;
+let checkpointMissingCachePreparedCalls = 0;
+await assert.rejects(
+  () => runExternalMemoryBenchmark({
+    cases: checkpointCases,
+    datasetHash: "sha256:checkpoint-fixture-v1",
+    concurrency: 2,
+    protocol: "official_protocol",
+    answerer: {
+      name: "checkpoint-missing-cache-answerer",
+      checkpointIdentity: "checkpoint-missing-cache-answerer-v1",
+      answer() {
+        checkpointMissingCacheProviderCalls += 1;
+        return "must not run";
+      },
+    },
+    judge: checkpointJudge,
+    checkpoint: {
+      onPrepared() {
+        checkpointMissingCachePreparedCalls += 1;
+      },
+    },
+  }),
+  /shared groups require an ingest cache directory/u,
+);
+assert.equal(checkpointMissingCacheProviderCalls, 0);
+assert.equal(checkpointMissingCachePreparedCalls, 0);
+let checkpointUnidentifiedIntelligenceCalls = 0;
+await assert.rejects(
+  () => runExternalMemoryBenchmark({
+    cases: checkpointCases.slice(0, 1),
+    intelligence: {
+      baseUrl: "https://checkpoint-intelligence.invalid/v1",
+      model: "checkpoint-intelligence",
+      fetchImpl: async () => {
+        checkpointUnidentifiedIntelligenceCalls += 1;
+        throw new Error("unidentified checkpoint intelligence must not be called");
+      },
+    },
+    checkpoint: {},
+  }),
+  /custom intelligence requires checkpoint.providerIdentity/u,
+);
+assert.equal(checkpointUnidentifiedIntelligenceCalls, 0);
+let checkpointSpoofedAnswererCalls = 0;
+await assert.rejects(
+  () => runExternalMemoryBenchmark({
+    cases: checkpointCases.slice(0, 1),
+    protocol: "official_protocol",
+    answerer: {
+      name: "spoofed-checkpoint-answerer",
+      manifest: {
+        endpointIdentity: "https://spoofed.invalid/[route-sha256:fake]",
+      },
+      answer() {
+        checkpointSpoofedAnswererCalls += 1;
+        return "must not run";
+      },
+    },
+    judge: checkpointJudge,
+    checkpoint: {},
+  }),
+  /custom answerer requires answerer.checkpointIdentity/u,
+);
+assert.equal(checkpointSpoofedAnswererCalls, 0);
+let checkpointCustomManifest: ExternalMemoryBenchmarkCheckpointManifest | undefined;
+const checkpointCustomManifestRun = await runExternalMemoryBenchmark({
+  cases: checkpointCases.slice(0, 1),
+  protocol: "official_protocol",
+  answerer: {
+    name: "custom-manifest-checkpoint-answerer",
+    checkpointIdentity: "custom-manifest-checkpoint-answerer-v1",
+    manifest: {
+      endpointIdentity: "https://custom.invalid/tenant/sk-secret-must-not-persist/v1",
+    },
+    answer() {
+      return "amber";
+    },
+  },
+  judge: checkpointJudge,
+  checkpoint: {
+    onPrepared(manifest) {
+      checkpointCustomManifest = manifest;
+    },
+  },
+});
+assert.equal(checkpointCustomManifestRun.pass, true);
+assert.equal(
+  JSON.stringify({
+    checkpoint: checkpointCustomManifest,
+    runManifest: checkpointCustomManifestRun.runManifest,
+  }).includes("sk-secret-must-not-persist"),
+  false,
+);
+const checkpointCacheDir = path.join(tmp, "external-checkpoint-ingest-cache");
+let checkpointManifest: ExternalMemoryBenchmarkCheckpointManifest | undefined;
+const checkpointEntries: ExternalMemoryBenchmarkCheckpointEntry[] = [];
+let checkpointFirstAnswererCalls = 0;
+const checkpointFirstRun = await runExternalMemoryBenchmark({
+  cases: checkpointCases,
+  datasetHash: "sha256:checkpoint-fixture-v1",
+  ingestCacheDir: checkpointCacheDir,
+  concurrency: 1,
+  protocol: "official_protocol",
+  answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
+    baseUrl: "https://gateway-user:gateway-password@answerer.invalid:8443/custom/v1/",
+    apiKey: "sk-checkpoint-first-secret-value",
+    model: "checkpoint-answerer",
+    checkpointIdentity: "checkpoint-answerer-fixture-v1",
+    maxRetries: 0,
+    fetchImpl: async () => {
+      checkpointFirstAnswererCalls += 1;
+      if (checkpointFirstAnswererCalls === 1) {
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          text: async () => JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({ answer: "amber" }) } }],
+          }),
+        };
+      }
+      return {
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+        text: async () => "checkpoint quota exhausted",
+      };
+    },
+  }),
+  judge: checkpointJudge,
+  checkpoint: {
+    onPrepared(manifest) {
+      checkpointManifest = manifest;
+    },
+    persistResult(entry) {
+      checkpointEntries.push(entry);
+    },
+  },
+});
+assert.equal(checkpointFirstAnswererCalls, 2);
+assert.equal(checkpointFirstRun.caseCount, 1);
+assert.equal(checkpointFirstRun.runManifest.execution.stopReason, "provider_outage");
+assert.equal(checkpointFirstRun.runManifest.execution.resumedCaseCount, 0);
+assert.equal(checkpointFirstRun.runManifest.execution.newlyExecutedCaseCount, 1);
+assert.equal(checkpointEntries.length, 1);
+assert.ok(checkpointManifest);
+assert.equal(
+  checkpointFirstRun.runManifest.execution.checkpointFingerprint,
+  checkpointManifest.fingerprint,
+);
+const checkpointSerialized = JSON.stringify(checkpointManifest);
+assert.equal(checkpointSerialized.includes("sk-checkpoint-first-secret-value"), false);
+assert.equal(checkpointSerialized.includes("gateway-password"), false);
+assert.equal(checkpointSerialized.includes("gateway-user"), false);
+assert.equal(checkpointSerialized.includes("/custom/v1"), false);
+assert.equal(checkpointSerialized.includes("https://answerer.invalid:8443/[route-sha256:"), true);
+assert.equal(checkpointSerialized.includes("checkpoint-answerer-fixture-v1"), false);
+assert.equal(checkpointSerialized.includes("checkpoint-judge-v1"), false);
+assert.deepEqual(
+  parseExternalMemoryBenchmarkCheckpoint(checkpointSerialized),
+  checkpointManifest,
+);
+const checkpointCacheDbFile = path.join(
+  checkpointCacheDir,
+  readdirSync(checkpointCacheDir).find((entry) => entry.endsWith(".db")) ?? "missing.db",
+);
+const checkpointCacheDbBytes = readFileSync(checkpointCacheDbFile);
+writeFileSync(
+  checkpointCacheDbFile,
+  Buffer.concat([checkpointCacheDbBytes, Buffer.from("checkpoint-cache-tamper")]),
+);
+let checkpointTamperProviderCalls = 0;
+await assert.rejects(
+  () => runExternalMemoryBenchmark({
+    cases: checkpointCases,
+    datasetHash: "sha256:checkpoint-fixture-v1",
+    ingestCacheDir: checkpointCacheDir,
+    concurrency: 1,
+    protocol: "official_protocol",
+    answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
+      baseUrl: "https://answerer.invalid:8443/custom/v1",
+      model: "checkpoint-answerer",
+      checkpointIdentity: "checkpoint-answerer-fixture-v1",
+      maxRetries: 0,
+      fetchImpl: async () => {
+        checkpointTamperProviderCalls += 1;
+        throw new Error("tampered checkpoint cache must fail before provider calls");
+      },
+    }),
+    judge: checkpointJudge,
+    checkpoint: {
+      resume: { manifest: checkpointManifest!, entries: checkpointEntries },
+    },
+  }),
+  /ingest state does not match|existing complete ingest cache/u,
+);
+assert.equal(checkpointTamperProviderCalls, 0);
+writeFileSync(checkpointCacheDbFile, checkpointCacheDbBytes, { mode: 0o600 });
+const parsedCheckpointJsonl = parseExternalMemoryBenchmarkCheckpointJsonl(
+  `${checkpointEntries.map((entry) => JSON.stringify(entry)).join("\n")}\n{"truncated"`,
+);
+assert.equal(parsedCheckpointJsonl.entries.length, 1);
+assert.equal(parsedCheckpointJsonl.truncatedTailBytes > 0, true);
+assert.throws(
+  () => parseExternalMemoryBenchmarkCheckpointJsonl(
+    `${JSON.stringify(checkpointFirstRun.cases[0])}\n`,
+  ),
+  /schema is unsupported/u,
+);
+assert.throws(
+  () => parseExternalMemoryBenchmarkCheckpointJsonl(
+    `${JSON.stringify({ ...checkpointEntries[0], resultHash: `sha256:${"0".repeat(64)}` })}\n`,
+  ),
+  /result hash does not match/u,
+);
+const checkpointResumeEntries = [...checkpointEntries];
+let checkpointResumeAnswererCalls = 0;
+const checkpointSetupProgress: Array<{ caseCount: number; cacheHit: boolean; groupKey: string }> = [];
+const checkpointResumeRun = await runExternalMemoryBenchmark({
+  cases: checkpointCases,
+  datasetHash: "sha256:checkpoint-fixture-v1",
+  ingestCacheDir: checkpointCacheDir,
+  concurrency: 1,
+  protocol: "official_protocol",
+  answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
+    baseUrl: "https://answerer.invalid:8443/custom/v1",
+    apiKey: "sk-checkpoint-rotated-secret-value",
+    model: "checkpoint-answerer",
+    checkpointIdentity: "checkpoint-answerer-fixture-v1",
+    maxRetries: 0,
+    fetchImpl: async () => {
+      checkpointResumeAnswererCalls += 1;
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () => JSON.stringify({
+          choices: [{ message: { content: JSON.stringify({ answer: "cobalt" }) } }],
+        }),
+      };
+    },
+  }),
+  judge: checkpointJudge,
+  checkpoint: {
+    resume: { manifest: checkpointManifest, entries: checkpointResumeEntries },
+    onPrepared(manifest) {
+      assert.equal(manifest.fingerprint, checkpointManifest?.fingerprint);
+    },
+    persistResult(entry) {
+      checkpointResumeEntries.push(entry);
+    },
+  },
+  onCaseGroupSetup(progress) {
+    checkpointSetupProgress.push({
+      caseCount: progress.caseCount,
+      cacheHit: progress.cacheHit,
+      groupKey: progress.groupKey,
+    });
+  },
+});
+assert.equal(checkpointResumeAnswererCalls, 1);
+assert.equal(checkpointResumeRun.pass, true);
+assert.equal(checkpointResumeRun.caseCount, 2);
+assert.deepEqual(checkpointResumeRun.cases.map((entry) => entry.id), [
+  "checkpoint-first",
+  "checkpoint-second",
+]);
+assert.equal(checkpointResumeRun.runManifest.execution.resumedCaseCount, 1);
+assert.equal(checkpointResumeRun.runManifest.execution.newlyExecutedCaseCount, 1);
+assert.equal(checkpointResumeRun.runManifest.execution.caseGroupCount, 1);
+assert.equal(checkpointResumeRun.runManifest.execution.plannedCaseGroupCount, 1);
+assert.equal(checkpointResumeRun.runManifest.ingestCache.hits, 1);
+assert.deepEqual(checkpointSetupProgress, [{
+  caseCount: 2,
+  cacheHit: true,
+  groupKey: checkpointFirstRun.cases[0]?.caseGroupKey ?? "",
+}]);
+assert.equal(checkpointResumeEntries.length, 2);
+const checkpointInconsistentStateEntry = createExternalMemoryBenchmarkCheckpointEntry({
+  manifest: checkpointManifest!,
+  caseIndex: 1,
+  ingestStateHash: `sha256:${"0".repeat(64)}`,
+  result: checkpointResumeEntries[1]!.result,
+});
+let checkpointInconsistentStateProviderCalls = 0;
+await assert.rejects(
+  () => runExternalMemoryBenchmark({
+    cases: checkpointCases,
+    datasetHash: "sha256:checkpoint-fixture-v1",
+    ingestCacheDir: checkpointCacheDir,
+    concurrency: 1,
+    protocol: "official_protocol",
+    answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
+      baseUrl: "https://answerer.invalid:8443/custom/v1",
+      model: "checkpoint-answerer",
+      checkpointIdentity: "checkpoint-answerer-fixture-v1",
+      maxRetries: 0,
+      fetchImpl: async () => {
+        checkpointInconsistentStateProviderCalls += 1;
+        throw new Error("inconsistent checkpoint state must fail before provider calls");
+      },
+    }),
+    judge: checkpointJudge,
+    checkpoint: {
+      resume: {
+        manifest: checkpointManifest!,
+        entries: [checkpointResumeEntries[0]!, checkpointInconsistentStateEntry],
+      },
+    },
+  }),
+  /shared group ingest state hashes do not match/u,
+);
+assert.equal(checkpointInconsistentStateProviderCalls, 0);
+let fullyResumedProviderCalls = 0;
+const fullyResumedRun = await runExternalMemoryBenchmark({
+  cases: checkpointCases,
+  datasetHash: "sha256:checkpoint-fixture-v1",
+  ingestCacheDir: checkpointCacheDir,
+  concurrency: 1,
+  protocol: "official_protocol",
+  answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
+    baseUrl: "https://answerer.invalid:8443/custom/v1",
+    apiKey: "sk-checkpoint-third-secret-value",
+    model: "checkpoint-answerer",
+    checkpointIdentity: "checkpoint-answerer-fixture-v1",
+    maxRetries: 0,
+    fetchImpl: async () => {
+      fullyResumedProviderCalls += 1;
+      throw new Error("fully resumed checkpoint must not call the provider");
+    },
+  }),
+  judge: checkpointJudge,
+  checkpoint: {
+    resume: { manifest: checkpointManifest, entries: checkpointResumeEntries },
+  },
+});
+assert.equal(fullyResumedProviderCalls, 0);
+assert.equal(fullyResumedRun.pass, true);
+assert.equal(fullyResumedRun.runManifest.execution.resumedCaseCount, 2);
+assert.equal(fullyResumedRun.runManifest.execution.newlyExecutedCaseCount, 0);
+assert.equal(fullyResumedRun.runManifest.execution.caseGroupCount, 0);
+let changedCheckpointIdentityProviderCalls = 0;
+await assert.rejects(
+  () => runExternalMemoryBenchmark({
+    cases: checkpointCases,
+    datasetHash: "sha256:checkpoint-fixture-v1",
+    ingestCacheDir: checkpointCacheDir,
+    concurrency: 1,
+    protocol: "official_protocol",
+    answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
+      baseUrl: "https://answerer.invalid:8443/custom/v1",
+      model: "checkpoint-answerer",
+      checkpointIdentity: "changed-checkpoint-answerer-fixture-v2",
+      maxRetries: 0,
+      fetchImpl: async () => {
+        changedCheckpointIdentityProviderCalls += 1;
+        throw new Error("changed checkpoint identity must fail before provider calls");
+      },
+    }),
+    judge: checkpointJudge,
+    checkpoint: {
+      resume: { manifest: checkpointManifest!, entries: checkpointResumeEntries },
+    },
+  }),
+  /fingerprint does not match this run/u,
+);
+assert.equal(changedCheckpointIdentityProviderCalls, 0);
+let checkpointMismatchProviderCalls = 0;
+await assert.rejects(
+  () => runExternalMemoryBenchmark({
+    cases: checkpointCases,
+    datasetHash: "sha256:checkpoint-fixture-v1",
+    maxMemories: 7,
+    protocol: "official_protocol",
+    answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
+      baseUrl: "https://answerer.invalid:8443/custom/v1",
+      model: "checkpoint-answerer",
+      checkpointIdentity: "checkpoint-answerer-fixture-v1",
+      maxRetries: 0,
+      fetchImpl: async () => {
+        checkpointMismatchProviderCalls += 1;
+        throw new Error("mismatched checkpoint must fail before provider calls");
+      },
+    }),
+    judge: checkpointJudge,
+    checkpoint: {
+      resume: { manifest: checkpointManifest!, entries: checkpointResumeEntries },
+    },
+  }),
+  /fingerprint does not match this run/u,
+);
+assert.equal(checkpointMismatchProviderCalls, 0);
+await assert.rejects(
+  () => runExternalMemoryBenchmark({
+    cases: checkpointCases,
+    datasetHash: "sha256:checkpoint-fixture-v1",
+    concurrency: 1,
+    protocol: "official_protocol",
+    answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
+      baseUrl: "https://answerer.invalid:8443/custom/v1",
+      model: "checkpoint-answerer",
+      checkpointIdentity: "checkpoint-answerer-fixture-v1",
+      maxRetries: 0,
+      fetchImpl: async () => {
+        checkpointMismatchProviderCalls += 1;
+        throw new Error("duplicate checkpoint must fail before provider calls");
+      },
+    }),
+    judge: checkpointJudge,
+    checkpoint: {
+      resume: {
+        manifest: checkpointManifest!,
+        entries: [checkpointResumeEntries[0]!, checkpointResumeEntries[0]!],
+      },
+    },
+  }),
+  /duplicate caseIndex/u,
+);
+assert.equal(checkpointMismatchProviderCalls, 0);
+let asyncCheckpointPrepared = false;
+let asyncCheckpointPersisted = false;
+const asyncCheckpointRun = await runExternalMemoryBenchmark({
+  cases: [{
+    id: "async-checkpoint-case",
+    events: [{ type: "memory", kind: "fact", content: "Async checkpoint answer is violet." }],
+    question: "What is the async checkpoint answer?",
+    expectedAny: ["violet"],
+  }],
+  checkpoint: {
+    async onPrepared() {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      asyncCheckpointPrepared = true;
+    },
+    async persistResult() {
+      assert.equal(asyncCheckpointPrepared, true);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      asyncCheckpointPersisted = true;
+    },
+  },
+});
+assert.equal(asyncCheckpointRun.pass, true);
+assert.equal(asyncCheckpointPrepared, true);
+assert.equal(asyncCheckpointPersisted, true);
+let nullPersistenceCalls = 0;
+let caughtNullPersistence = false;
+try {
+  await runExternalMemoryBenchmark({
+    cases: [
+      {
+        id: "null-persist-first",
+        events: [{ type: "memory", kind: "fact", content: "First null persistence answer is one." }],
+        question: "What is the first null persistence answer?",
+        expectedAny: ["one"],
+      },
+      {
+        id: "null-persist-second",
+        events: [{ type: "memory", kind: "fact", content: "Second null persistence answer is two." }],
+        question: "What is the second null persistence answer?",
+        expectedAny: ["two"],
+      },
+    ],
+    concurrency: 2,
+    checkpoint: {
+      async persistResult() {
+        nullPersistenceCalls += 1;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        throw null;
+      },
+    },
+  });
+} catch (error) {
+  caughtNullPersistence = error === null;
+}
+assert.equal(caughtNullPersistence, true);
+assert.equal(nullPersistenceCalls, 1);
 const providerOutageBundleDir = path.join(tmp, "provider-outage-reproduction-bundle");
 writeExternalMemoryBenchmarkReproductionBundle({
   outputDir: providerOutageBundleDir,
@@ -29699,6 +30213,12 @@ assert.deepEqual(externalIngestCacheFirst.runManifest.ingestCache, {
 });
 assert.equal(readdirSync(externalIngestCacheDir).filter((entry) => entry.endsWith(".db")).length, 2);
 assert.equal(readdirSync(externalIngestCacheDir).filter((entry) => entry.endsWith(".meta.json")).length, 2);
+if (process.platform !== "win32") {
+  assert.equal(statSync(externalIngestCacheDir).mode & 0o777, 0o700);
+  for (const entry of readdirSync(externalIngestCacheDir)) {
+    assert.equal(statSync(path.join(externalIngestCacheDir, entry)).mode & 0o777, 0o600);
+  }
+}
 externalIngestCacheExtractorCalls = 0;
 const externalIngestCacheSecond = await runExternalMemoryBenchmark({
   cases: externalIngestCacheCases,
@@ -29773,7 +30293,8 @@ assert.deepEqual(unresolvedIngestFirst.runManifest.ingestCache.writeSkipReasons,
   name: "unresolved_extraction_windows",
   count: 1,
 }]);
-assert.equal(existsSync(unresolvedIngestCacheDir), false);
+assert.equal(existsSync(unresolvedIngestCacheDir), true);
+assert.deepEqual(readdirSync(unresolvedIngestCacheDir), []);
 const unresolvedIngestSecond = await runExternalMemoryBenchmark(unresolvedIngestOptions);
 assert.equal(unresolvedIngestSecond.runManifest.ingestCache.hits, 0);
 assert.equal(unresolvedIngestSecond.runManifest.ingestCache.misses, 1);
@@ -29817,7 +30338,62 @@ assert.deepEqual(providerOutageExtractorRun.runManifest.ingestCache.writeSkipRea
   name: "unresolved_extraction_windows",
   count: 1,
 }]);
-assert.equal(existsSync(providerOutageIngestCacheDir), false);
+assert.equal(existsSync(providerOutageIngestCacheDir), true);
+assert.deepEqual(readdirSync(providerOutageIngestCacheDir), []);
+const checkpointIngestOutageEvents = [{
+  type: "message" as const,
+  role: "user" as const,
+  content: "Checkpoint ingest outage answers are amber and cobalt.",
+}];
+let checkpointIngestOutageCalls = 0;
+let checkpointIngestOutageEntries = 0;
+const checkpointIngestOutageRun = await runExternalMemoryBenchmark({
+  cases: [
+    {
+      id: "checkpoint-ingest-outage-first",
+      profileId: "checkpoint-ingest-outage-profile",
+      events: checkpointIngestOutageEvents,
+      question: "What is the first checkpoint ingest outage answer?",
+      expectedAny: ["amber"],
+    },
+    {
+      id: "checkpoint-ingest-outage-second",
+      profileId: "checkpoint-ingest-outage-profile",
+      events: checkpointIngestOutageEvents,
+      question: "What is the second checkpoint ingest outage answer?",
+      expectedAny: ["cobalt"],
+    },
+  ],
+  ingestMode: "message",
+  turnRetention: false,
+  ingestCacheDir: path.join(tmp, "checkpoint-ingest-outage-cache"),
+  intelligence: {
+    baseUrl: "https://extractor.invalid/v1",
+    model: "checkpoint-ingest-outage-extractor",
+    retries: 0,
+    fetchImpl: async () => {
+      checkpointIngestOutageCalls += 1;
+      return {
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+        text: async () => "quota exhausted",
+      };
+    },
+  },
+  checkpoint: {
+    providerIdentity: "checkpoint-ingest-outage-provider-v1",
+    persistResult() {
+      checkpointIngestOutageEntries += 1;
+    },
+  },
+});
+assert.equal(checkpointIngestOutageCalls, 1);
+assert.equal(checkpointIngestOutageEntries, 0);
+assert.equal(checkpointIngestOutageRun.caseCount, 0);
+assert.equal(checkpointIngestOutageRun.partial, true);
+assert.equal(checkpointIngestOutageRun.runManifest.execution.stopReason, "provider_outage");
+assert.equal(checkpointIngestOutageRun.runManifest.execution.stopStage, "extractor");
 let delayedProviderExtractorCalls = 0;
 const delayedProviderExtractorStartedMs = Date.now();
 const delayedProviderExtractorRun = await runExternalMemoryBenchmark({
@@ -30088,9 +30664,25 @@ const externalOpenAICacheChangedBudget = await runExternalMemoryBenchmark({
 assert.equal(externalOpenAICacheChangedBudget.runManifest.ingestCache.hits, 0);
 assert.equal(externalOpenAICacheChangedBudget.runManifest.ingestCache.misses, 1);
 assert.equal(externalOpenAICacheExtractorCalls > 0, true);
+externalOpenAICacheExtractorCalls = 0;
+const externalOpenAICacheChangedEndpoint = await runExternalMemoryBenchmark({
+  ...externalOpenAICacheBase,
+  intelligence: {
+    ...externalOpenAICacheIntelligence,
+    baseUrl: "https://cache-intelligence.invalid:8443/tenant/path-secret/v1?api-version=secret",
+  },
+});
+assert.equal(externalOpenAICacheChangedEndpoint.runManifest.ingestCache.hits, 0);
+assert.equal(externalOpenAICacheChangedEndpoint.runManifest.ingestCache.misses, 1);
+assert.equal(externalOpenAICacheExtractorCalls > 0, true);
 const externalOpenAICacheMetaFiles = readdirSync(externalOpenAICacheDir)
   .filter((entry) => entry.endsWith(".meta.json"));
-assert.equal(externalOpenAICacheMetaFiles.length, 2);
+assert.equal(externalOpenAICacheMetaFiles.length, 3);
+const externalOpenAICacheMetadataText = externalOpenAICacheMetaFiles
+  .map((entry) => readFileSync(path.join(externalOpenAICacheDir, entry), "utf8"))
+  .join("\n");
+assert.equal(externalOpenAICacheMetadataText.includes("path-secret"), false);
+assert.equal(externalOpenAICacheMetadataText.includes("api-version=secret"), false);
 const externalOpenAICacheMeta = JSON.parse(
   readdirSync(externalOpenAICacheDir)
     .filter((entry) => entry.endsWith(".meta.json"))
@@ -30502,14 +31094,14 @@ const entityAggregationCacheMeta = readdirSync(entityAggregationCacheDir)
   ) as {
     keyFields?: {
       consolidateEntities?: boolean;
-      entityConsolidation?: { contractVersion?: number; consolidatorName?: string | null };
+      entityConsolidation?: { contractVersion?: number; consolidatorNameHash?: string | null };
     };
   })
   .find((meta) => meta.keyFields?.consolidateEntities === true);
 assert.equal(entityAggregationCacheMeta?.keyFields?.entityConsolidation?.contractVersion, 2);
 assert.equal(
-  entityAggregationCacheMeta?.keyFields?.entityConsolidation?.consolidatorName,
-  "entity-aggregation-consolidator",
+  entityAggregationCacheMeta?.keyFields?.entityConsolidation?.consolidatorNameHash,
+  `sha256:${createHash("sha256").update("entity-aggregation-consolidator").digest("hex")}`,
 );
 assert.equal(entityAggregationExtractorCalls, 4);
 entityAggregationConsolidatorCalls.length = 0;
@@ -33579,6 +34171,297 @@ assert.equal(cliExternalJsonlLines[0]?.officialFailureAttribution, null);
 assert.equal(typeof cliExternalJsonlLines[0]?.readerContext, "string");
 assert.equal((cliExternalJsonlLines[0]?.readerContext?.length ?? 0) <= 4000, true);
 assert.equal(cliExternalJsonlLines[0]?.readerContext?.includes("memory_"), false);
+const cliExternalMutualCheckpoint = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--results-jsonl",
+    path.join(tmp, "cli-mutual-legacy.jsonl"),
+    "--resume-results-jsonl",
+    path.join(tmp, "cli-mutual-checkpoint.jsonl"),
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalMutualCheckpoint.status, 0);
+assert.match(cliExternalMutualCheckpoint.stderr, /mutually exclusive/u);
+const cliCheckpointInsideRepo = path.join(process.cwd(), "cli-checkpoint-inside-repo.jsonl");
+const cliExternalInsideCheckpoint = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--resume-results-jsonl",
+    cliCheckpointInsideRepo,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalInsideCheckpoint.status, 0);
+assert.match(cliExternalInsideCheckpoint.stderr, /outside the gmOS package checkout/u);
+assert.equal(existsSync(cliCheckpointInsideRepo), false);
+const cliExternalCheckpointFile = path.join(tmp, "cli-external-checkpoint.jsonl");
+const cliExternalCheckpointArgs = [
+  "--import",
+  "tsx",
+  "src/cli/gmos.ts",
+  "gym",
+  "external",
+  "--input-file",
+  externalBenchmarkFile,
+  "--format",
+  "json",
+  "--protocol",
+  "deterministic-local",
+  "--max-cases",
+  "1",
+  "--resume-results-jsonl",
+  cliExternalCheckpointFile,
+];
+const cliCheckpointSymlinkParent = path.join(tmp, "cli-checkpoint-symlink-parent");
+symlinkSync(path.join(process.cwd(), "test"), cliCheckpointSymlinkParent, "dir");
+const cliExternalCheckpointSymlinkEscape = spawnSync(
+  process.execPath,
+  [
+    ...cliExternalCheckpointArgs.slice(0, -1),
+    path.join(cliCheckpointSymlinkParent, "escaped-checkpoint.jsonl"),
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalCheckpointSymlinkEscape.status, 0);
+assert.match(cliExternalCheckpointSymlinkEscape.stderr, /outside the gmOS package checkout/u);
+assert.equal(existsSync(path.join(process.cwd(), "test", "escaped-checkpoint.jsonl")), false);
+rmSync(cliCheckpointSymlinkParent);
+if (process.platform !== "win32") {
+  writeFileSync(cliExternalCheckpointFile, "world-readable journal\n", { mode: 0o644 });
+  writeFileSync(`${cliExternalCheckpointFile}.checkpoint.json`, "{}\n", { mode: 0o644 });
+  chmodSync(cliExternalCheckpointFile, 0o644);
+  chmodSync(`${cliExternalCheckpointFile}.checkpoint.json`, 0o644);
+  const cliExternalCheckpointWorldReadable = spawnSync(
+    process.execPath,
+    cliExternalCheckpointArgs,
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  assert.notEqual(cliExternalCheckpointWorldReadable.status, 0);
+  assert.match(cliExternalCheckpointWorldReadable.stderr, /must not be accessible by group or other users/u);
+  assert.equal(existsSync(`${cliExternalCheckpointFile}.lock`), false);
+  rmSync(cliExternalCheckpointFile);
+  rmSync(`${cliExternalCheckpointFile}.checkpoint.json`);
+}
+const cliExternalCheckpointInvalidOption = spawnSync(
+  process.execPath,
+  [...cliExternalCheckpointArgs, "--concurrency", "0"],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalCheckpointInvalidOption.status, 0);
+assert.match(cliExternalCheckpointInvalidOption.stderr, /--concurrency must be a positive integer/u);
+assert.equal(existsSync(cliExternalCheckpointFile), false);
+assert.equal(existsSync(`${cliExternalCheckpointFile}.checkpoint.json`), false);
+assert.equal(existsSync(`${cliExternalCheckpointFile}.lock`), false);
+const cliExternalCheckpointReportConflict = spawnSync(
+  process.execPath,
+  [...cliExternalCheckpointArgs, "--json-file", cliExternalCheckpointFile],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalCheckpointReportConflict.status, 0);
+assert.match(cliExternalCheckpointReportConflict.stderr, /conflicts with --json-file/u);
+assert.equal(existsSync(cliExternalCheckpointFile), false);
+assert.equal(existsSync(`${cliExternalCheckpointFile}.checkpoint.json`), false);
+assert.equal(existsSync(`${cliExternalCheckpointFile}.lock`), false);
+const cliExternalCheckpointSidecarConflict = spawnSync(
+  process.execPath,
+  [
+    ...cliExternalCheckpointArgs,
+    "--report-file",
+    `${cliExternalCheckpointFile}.checkpoint.json`,
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalCheckpointSidecarConflict.status, 0);
+assert.match(cliExternalCheckpointSidecarConflict.stderr, /conflicts with --report-file/u);
+assert.equal(existsSync(cliExternalCheckpointFile), false);
+assert.equal(existsSync(`${cliExternalCheckpointFile}.checkpoint.json`), false);
+assert.equal(existsSync(`${cliExternalCheckpointFile}.lock`), false);
+const cliExternalCheckpointBundleConflict = spawnSync(
+  process.execPath,
+  [...cliExternalCheckpointArgs, "--reproduction-bundle", cliExternalCheckpointFile],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalCheckpointBundleConflict.status, 0);
+assert.match(cliExternalCheckpointBundleConflict.stderr, /conflicts with --reproduction-bundle/u);
+assert.equal(existsSync(cliExternalCheckpointFile), false);
+assert.equal(existsSync(`${cliExternalCheckpointFile}.checkpoint.json`), false);
+assert.equal(existsSync(`${cliExternalCheckpointFile}.lock`), false);
+writeFileSync(`${cliExternalCheckpointFile}.lock`, "existing-owner\n", { mode: 0o600 });
+const cliExternalCheckpointLocked = spawnSync(
+  process.execPath,
+  cliExternalCheckpointArgs,
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalCheckpointLocked.status, 0);
+assert.equal(
+  readFileSync(`${cliExternalCheckpointFile}.lock`, "utf8"),
+  "existing-owner\n",
+  "a failed lock acquisition must not remove another process's lock",
+);
+unlinkSync(`${cliExternalCheckpointFile}.lock`);
+const staleCheckpointPidProcess = spawnSync(
+  process.execPath,
+  ["-e", "process.stdout.write(String(process.pid))"],
+  { encoding: "utf8" },
+);
+assert.equal(staleCheckpointPidProcess.status, 0, staleCheckpointPidProcess.stderr);
+const staleCheckpointPid = Number(staleCheckpointPidProcess.stdout);
+assert.equal(Number.isInteger(staleCheckpointPid) && staleCheckpointPid > 0, true);
+writeFileSync(
+  `${cliExternalCheckpointFile}.lock`,
+  `${JSON.stringify({
+    schema: "gmos.external_benchmark_checkpoint_lock.v1",
+    pid: process.pid,
+    hostname: os.hostname(),
+    startedAt: new Date().toISOString(),
+    token: "active-owner-token",
+  })}\n`,
+  { mode: 0o600 },
+);
+const cliExternalCheckpointActiveLock = spawnSync(
+  process.execPath,
+  cliExternalCheckpointArgs,
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalCheckpointActiveLock.status, 0);
+assert.match(cliExternalCheckpointActiveLock.stderr, /is locked by pid/u);
+assert.equal(existsSync(`${cliExternalCheckpointFile}.lock`), true);
+unlinkSync(`${cliExternalCheckpointFile}.lock`);
+writeFileSync(
+  `${cliExternalCheckpointFile}.lock`,
+  `${JSON.stringify({
+    schema: "gmos.external_benchmark_checkpoint_lock.v1",
+    pid: staleCheckpointPid,
+    hostname: os.hostname(),
+    startedAt: new Date(0).toISOString(),
+    token: "stale-owner-token",
+  })}\n`,
+  { mode: 0o600 },
+);
+const cliCheckpointStaleLockTemp =
+  `${cliExternalCheckpointFile}.lock.tmp-crash-fixture`;
+linkSync(`${cliExternalCheckpointFile}.lock`, cliCheckpointStaleLockTemp);
+const cliExternalCheckpoint = spawnSync(
+  process.execPath,
+  cliExternalCheckpointArgs,
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+if (expectedGit.dirty === true) {
+  assert.notEqual(cliExternalCheckpoint.status, 0);
+  assert.match(cliExternalCheckpoint.stderr, /requires a clean Git checkout/u);
+  assert.equal(existsSync(cliExternalCheckpointFile), false);
+  assert.equal(existsSync(`${cliExternalCheckpointFile}.checkpoint.json`), false);
+} else {
+  assert.equal(cliExternalCheckpoint.status, 0, cliExternalCheckpoint.stderr);
+  const firstCheckpointReport = JSON.parse(cliExternalCheckpoint.stdout) as {
+    runManifest?: {
+      execution?: {
+        resumedCaseCount?: number;
+        newlyExecutedCaseCount?: number;
+        checkpointFingerprint?: string;
+      };
+    };
+  };
+  assert.equal(firstCheckpointReport.runManifest?.execution?.resumedCaseCount, 0);
+  assert.equal(firstCheckpointReport.runManifest?.execution?.newlyExecutedCaseCount, 1);
+  assert.match(
+    firstCheckpointReport.runManifest?.execution?.checkpointFingerprint ?? "",
+    /^sha256:[a-f0-9]{64}$/u,
+  );
+  assert.equal(existsSync(cliExternalCheckpointFile), true);
+  assert.equal(existsSync(`${cliExternalCheckpointFile}.checkpoint.json`), true);
+  if (process.platform !== "win32") {
+    assert.equal(statSync(cliExternalCheckpointFile).mode & 0o777, 0o600);
+    assert.equal(statSync(`${cliExternalCheckpointFile}.checkpoint.json`).mode & 0o777, 0o600);
+  }
+  const firstCheckpointJournal = readFileSync(cliExternalCheckpointFile, "utf8");
+  assert.equal(parseExternalMemoryBenchmarkCheckpointJsonl(firstCheckpointJournal).entries.length, 1);
+  const cliCheckpointOrphanTemp =
+    `${cliExternalCheckpointFile}.checkpoint.json.tmp-crash-fixture`;
+  linkSync(`${cliExternalCheckpointFile}.checkpoint.json`, cliCheckpointOrphanTemp);
+  const cliCheckpointOrphanTempRecovery = spawnSync(
+    process.execPath,
+    cliExternalCheckpointArgs,
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  assert.equal(
+    cliCheckpointOrphanTempRecovery.status,
+    0,
+    cliCheckpointOrphanTempRecovery.stderr,
+  );
+  assert.equal(existsSync(cliCheckpointOrphanTemp), false);
+  const cliSidecarOnlyCheckpointFile = path.join(tmp, "cli-sidecar-only-checkpoint.jsonl");
+  writeFileSync(
+    `${cliSidecarOnlyCheckpointFile}.checkpoint.json`,
+    readFileSync(`${cliExternalCheckpointFile}.checkpoint.json`),
+    { mode: 0o600 },
+  );
+  const cliSidecarOnlyCheckpointRecovery = spawnSync(
+    process.execPath,
+    [...cliExternalCheckpointArgs.slice(0, -1), cliSidecarOnlyCheckpointFile],
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  assert.equal(
+    cliSidecarOnlyCheckpointRecovery.status,
+    0,
+    cliSidecarOnlyCheckpointRecovery.stderr,
+  );
+  assert.equal(
+    parseExternalMemoryBenchmarkCheckpointJsonl(
+      readFileSync(cliSidecarOnlyCheckpointFile, "utf8"),
+    ).entries.length,
+    1,
+  );
+  const cliExternalCheckpointResume = spawnSync(
+    process.execPath,
+    cliExternalCheckpointArgs,
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  assert.equal(cliExternalCheckpointResume.status, 0, cliExternalCheckpointResume.stderr);
+  const resumedCheckpointReport = JSON.parse(cliExternalCheckpointResume.stdout) as {
+    runManifest?: { execution?: { resumedCaseCount?: number; newlyExecutedCaseCount?: number } };
+  };
+  assert.equal(resumedCheckpointReport.runManifest?.execution?.resumedCaseCount, 1);
+  assert.equal(resumedCheckpointReport.runManifest?.execution?.newlyExecutedCaseCount, 0);
+  assert.equal(readFileSync(cliExternalCheckpointFile, "utf8"), firstCheckpointJournal);
+  writeFileSync(cliExternalCheckpointFile, `${firstCheckpointJournal}{"truncated"`);
+  const cliExternalCheckpointTailRecovery = spawnSync(
+    process.execPath,
+    cliExternalCheckpointArgs,
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  assert.equal(
+    cliExternalCheckpointTailRecovery.status,
+    0,
+    cliExternalCheckpointTailRecovery.stderr,
+  );
+  assert.equal(readFileSync(cliExternalCheckpointFile, "utf8"), firstCheckpointJournal);
+  const cliExternalCheckpointMismatch = spawnSync(
+    process.execPath,
+    [...cliExternalCheckpointArgs, "--max-memories", "7"],
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  assert.notEqual(cliExternalCheckpointMismatch.status, 0);
+  assert.match(cliExternalCheckpointMismatch.stderr, /fingerprint does not match this run/u);
+  assert.equal(readFileSync(cliExternalCheckpointFile, "utf8"), firstCheckpointJournal);
+}
+assert.equal(existsSync(cliCheckpointStaleLockTemp), false);
+assert.equal(existsSync(`${cliExternalCheckpointFile}.lock`), false);
 const cliExternalOfficialProtocol = spawnSync(
   process.execPath,
   [

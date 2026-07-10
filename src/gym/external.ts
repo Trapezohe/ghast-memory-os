@@ -1,16 +1,26 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createRequire } from "node:module";
 import {
+  chmodSync,
+  closeSync,
   copyFileSync,
   existsSync,
+  fsyncSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
+  readSync,
+  readdirSync,
   readFileSync,
+  readlinkSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
 
@@ -224,6 +234,7 @@ export type ExternalMemoryBenchmarkJudgeProfile = "strict" | "official" | "longm
 
 export interface ExternalMemoryBenchmarkJudge {
   name: string;
+  checkpointIdentity?: string | undefined;
   profile?: ExternalMemoryBenchmarkJudgeProfile | undefined;
   manifest?: Partial<ExternalMemoryBenchmarkRuntimeAnswererManifest> | undefined;
   judge(
@@ -242,6 +253,7 @@ export type ExternalMemoryBenchmarkJudgeProvenance = ExternalMemoryBenchmarkHook
 
 export interface ExternalMemoryBenchmarkAnswerer {
   name: string;
+  checkpointIdentity?: string | undefined;
   manifest?: Partial<ExternalMemoryBenchmarkRuntimeAnswererManifest> | undefined;
   answer(question: string, context: string): Promise<string> | string;
 }
@@ -556,6 +568,9 @@ export interface ExternalMemoryBenchmarkRuntimeAnswererManifest {
   model: string | null;
   timeoutMs: number | null;
   maxTokens: number | null;
+  endpointIdentity?: string | null | undefined;
+  maxRetries?: number | null | undefined;
+  disableThinking?: boolean | undefined;
   answererRetryCount?: number | undefined;
   answererRecoveredCount?: number | undefined;
   judgeRetryCount?: number | undefined;
@@ -778,6 +793,9 @@ export interface ExternalMemoryBenchmarkRunManifest {
     stopHttpStatus?: number | null | undefined;
     stopRetryAfterMs?: number | null | undefined;
     stopRetryCount?: number | null | undefined;
+    resumedCaseCount?: number | undefined;
+    newlyExecutedCaseCount?: number | undefined;
+    checkpointFingerprint?: string | null | undefined;
   };
   slice: {
     sliceSpec: ExternalMemoryBenchmarkSliceSpec;
@@ -861,6 +879,74 @@ export interface ExternalMemoryBenchmarkResult {
   cases: ExternalMemoryBenchmarkCaseResult[];
 }
 
+export interface ExternalMemoryBenchmarkCheckpointContract {
+  schema: "gmos.external_benchmark_checkpoint_contract.v1";
+  package: {
+    name: string | null;
+    version: string | null;
+  };
+  source: {
+    gitSha: string | null;
+    gitDirty: boolean | null;
+    artifactKind: "src" | "dist" | "unknown";
+    artifactDigest: string;
+    packageLockDigest: string | null;
+    dependencyArtifactDigest: string;
+    dependencies: Record<string, string | null>;
+    node: string;
+    platform: string;
+  };
+  dataset: {
+    format: ExternalMemoryBenchmarkDatasetFormat;
+    sourceHash: string;
+    normalizedCasesHash: string;
+    totalCaseCount: number;
+  };
+  slice: {
+    sliceSpec: ExternalMemoryBenchmarkSliceSpec;
+    selectedCases: Array<{
+      caseIndex: number;
+      caseId: string;
+      caseHash: string;
+    }>;
+  };
+  groups: Array<{
+    groupKey: string;
+    profileId: string;
+    caseIndexes: number[];
+    eventPayloadHash: string;
+  }>;
+  run: Record<string, unknown>;
+  providers: Record<string, unknown>;
+}
+
+export interface ExternalMemoryBenchmarkCheckpointManifest {
+  schema: "gmos.external_benchmark_checkpoint.v1";
+  fingerprint: string;
+  contract: ExternalMemoryBenchmarkCheckpointContract;
+}
+
+export interface ExternalMemoryBenchmarkCheckpointEntry {
+  schema: "gmos.external_benchmark_checkpoint_case.v1";
+  fingerprint: string;
+  caseIndex: number;
+  caseId: string;
+  ingestStateHash: string | null;
+  resultHash: string;
+  result: ExternalMemoryBenchmarkCaseResult;
+}
+
+export interface ExternalMemoryBenchmarkCheckpointOptions {
+  resume?: {
+    manifest: ExternalMemoryBenchmarkCheckpointManifest;
+    entries: ExternalMemoryBenchmarkCheckpointEntry[];
+  } | undefined;
+  requireCleanGit?: boolean | undefined;
+  providerIdentity?: string | undefined;
+  onPrepared?: ((manifest: ExternalMemoryBenchmarkCheckpointManifest) => void | Promise<void>) | undefined;
+  persistResult?: ((entry: ExternalMemoryBenchmarkCheckpointEntry) => void | Promise<void>) | undefined;
+}
+
 export interface RunExternalMemoryBenchmarkOptions {
   cases: ExternalMemoryBenchmarkCase[];
   datasetFormat?: ExternalMemoryBenchmarkDatasetFormat | undefined;
@@ -915,6 +1001,7 @@ export interface RunExternalMemoryBenchmarkOptions {
   caseOffset?: number | undefined;
   caseIds?: string[] | undefined;
   abortSignal?: AbortSignal | undefined;
+  checkpoint?: ExternalMemoryBenchmarkCheckpointOptions | undefined;
   onCaseResult?: ((progress: ExternalMemoryBenchmarkProgress) => void) | undefined;
   onCaseGroupSetup?: ((progress: ExternalMemoryBenchmarkCaseGroupProgress) => void) | undefined;
   onCaseGroupIngestProgress?: ((progress: ExternalMemoryBenchmarkIngestProgress) => void) | undefined;
@@ -1022,7 +1109,17 @@ export function writeExternalMemoryBenchmarkReproductionBundle(
   input: ExternalMemoryBenchmarkReproductionBundleOptions,
 ): ExternalMemoryBenchmarkReproductionBundleResult {
   const outputDir = path.resolve(process.cwd(), input.outputDir);
-  mkdirSync(outputDir, { recursive: true });
+  if (existsSync(outputDir)) {
+    const stat = lstatSync(outputDir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error("External benchmark reproduction bundle path must be a regular directory");
+    }
+    if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
+      throw new Error("External benchmark reproduction bundle directory must be private (mode 0700)");
+    }
+  } else {
+    mkdirSync(outputDir, { recursive: true, mode: 0o700 });
+  }
   const command = redactedCommand(input.command);
   const envVarNames = uniqueEnvVarNames([
     ...(input.envVarNames ?? []),
@@ -1052,8 +1149,8 @@ export function writeExternalMemoryBenchmarkReproductionBundle(
       envVarValues: "never_recorded",
       apiKeyHandling: "env_var_names_only",
       failureSamples: "bounded_by_failureSampleLimit_and_sanitized_with_public_report_redaction",
-      intelligenceEndpoint: "run_manifest_records_hostname_only",
-      answererEndpoint: "run_manifest_records_hostname_only",
+      intelligenceEndpoint: "run_manifest_records_origin_and_route_hash_only",
+      answererEndpoint: "run_manifest_records_origin_and_route_hash_only",
     },
     files: [
       "manifest.json",
@@ -1068,14 +1165,40 @@ export function writeExternalMemoryBenchmarkReproductionBundle(
   const resultsMarkdownFile = path.join(outputDir, "results.md");
   const failureSamplesFile = path.join(outputDir, "failure-samples.json");
   const reproduceFile = path.join(outputDir, "REPRODUCE.md");
-  writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
-  writeFileSync(resultsJsonFile, `${JSON.stringify(redactBenchmarkBundleValue(input.report), null, 2)}\n`);
-  writeFileSync(resultsMarkdownFile, renderExternalMemoryBenchmarkMarkdown(input.report));
+  const assertPrivateOutput = (filePath: string): void => {
+    if (!existsSync(filePath)) return;
+    const stat = lstatSync(filePath);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error("External benchmark reproduction bundle output must be a regular file");
+    }
+    if (process.platform !== "win32" && (stat.nlink !== 1 || (stat.mode & 0o077) !== 0)) {
+      throw new Error("External benchmark reproduction bundle output must be private (mode 0600)");
+    }
+  };
+  for (const filePath of [
+    manifestFile,
+    resultsJsonFile,
+    resultsMarkdownFile,
+    failureSamplesFile,
+    reproduceFile,
+  ]) assertPrivateOutput(filePath);
+  writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+  writeFileSync(
+    resultsJsonFile,
+    `${JSON.stringify(redactBenchmarkBundleValue(input.report), null, 2)}\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(resultsMarkdownFile, renderExternalMemoryBenchmarkMarkdown(input.report), { mode: 0o600 });
   writeFileSync(
     failureSamplesFile,
     `${JSON.stringify(redactBenchmarkBundleValue(input.report.summary.failureSamples), null, 2)}\n`,
+    { mode: 0o600 },
   );
-  writeFileSync(reproduceFile, reproductionReadme({ report: input.report, command, envVarNames }));
+  writeFileSync(
+    reproduceFile,
+    reproductionReadme({ report: input.report, command, envVarNames }),
+    { mode: 0o600 },
+  );
   return {
     outputDir,
     manifestFile,
@@ -1136,6 +1259,9 @@ interface IngestCacheCounters {
 }
 
 interface IngestCacheKeyFields {
+  implementationVersion: number;
+  checkpointArtifactDigest: string | null;
+  checkpointDependencyArtifactDigest: string | null;
   schemaVersion: number;
   packageVersion: string | null;
   datasetFormat: ExternalMemoryBenchmarkDatasetFormat;
@@ -1148,13 +1274,14 @@ interface IngestCacheKeyFields {
   consolidateEntities: boolean;
   entityConsolidation?: {
     contractVersion: number;
-    consolidatorName: string | null;
+    consolidatorNameHash: string | null;
   } | undefined;
   sessionDistillation: {
     enabled: boolean;
-    name: string | null;
-    baseUrlHost: string | null;
+    nameHash: string | null;
+    endpointIdentity: string | null;
     model: string | null;
+    disableThinking: boolean;
   };
   extraction: {
     contractVersion: number | null;
@@ -1164,23 +1291,26 @@ interface IngestCacheKeyFields {
     extractorMaxTokens: number | null;
     replayAttempts: number;
     windowConcurrency: number | null;
-    extractorName: string | null;
+    extractorNameHash: string | null;
     model: string | null;
-    baseUrlHost: string | null;
+    endpointIdentity: string | null;
     timeoutMs: number | null;
     retries: number | null;
     backoffMs: number | null;
+    disableThinking: boolean;
   };
   embedding: {
-    providerName: string | null;
+    providerNameHash: string | null;
     model: string | null;
-    baseUrlHost: string | null;
+    endpointIdentity: string | null;
     dimensions: number | null;
   };
+  customProviderIdentityHash: string | null;
 }
 
 const MESSAGE_EXTRACTION_CONTRACT_VERSION = 2;
 const ENTITY_CONSOLIDATION_CONTRACT_VERSION = 2;
+const INGEST_CACHE_IMPLEMENTATION_VERSION = 3;
 
 interface IngestCachePlan {
   key: string;
@@ -1216,6 +1346,22 @@ function sha256Hex(input: string): string {
   return createHash("sha256").update(input, "utf8").digest("hex");
 }
 
+function fileSha256(filePath: string): string {
+  const digest = createHash("sha256");
+  const fd = openSync(filePath, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    while (true) {
+      const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      digest.update(buffer.subarray(0, bytesRead));
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return `sha256:${digest.digest("hex")}`;
+}
+
 function canonicalJsonValue(value: unknown): unknown {
   if (value === null || typeof value !== "object") return value;
   if (Array.isArray(value)) return value.map(canonicalJsonValue);
@@ -1229,6 +1375,395 @@ function canonicalJsonValue(value: unknown): unknown {
 
 function canonicalJson(value: unknown): string {
   return JSON.stringify(canonicalJsonValue(value));
+}
+
+function checkpointHash(value: unknown): string {
+  return `sha256:${sha256Hex(canonicalJson(value))}`;
+}
+
+function checkpointIdentityHash(value: string | null | undefined): string | null {
+  const normalized = value?.trim();
+  return normalized ? `sha256:${sha256Hex(normalized)}` : null;
+}
+
+function checkpointRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function checkpointFingerprint(value: unknown, label: string): string {
+  if (typeof value !== "string" || !/^sha256:[a-f0-9]{64}$/u.test(value)) {
+    throw new Error(`${label} must be a SHA-256 fingerprint`);
+  }
+  return value;
+}
+
+function checkpointCaseResult(value: unknown, label: string): ExternalMemoryBenchmarkCaseResult {
+  const result = checkpointRecord(value, label);
+  if (typeof result.id !== "string" || !result.id) throw new Error(`${label}.id must be a string`);
+  for (const field of ["pass", "strictPass", "normalizedEvidencePass"] as const) {
+    if (typeof result[field] !== "boolean") throw new Error(`${label}.${field} must be a boolean`);
+  }
+  if (result.officialPass !== null && typeof result.officialPass !== "boolean") {
+    throw new Error(`${label}.officialPass must be boolean or null`);
+  }
+  if (result.protocol !== "deterministic_local" && result.protocol !== "official_protocol") {
+    throw new Error(`${label}.protocol is invalid`);
+  }
+  for (const field of ["failureReasons", "warnings"] as const) {
+    if (!Array.isArray(result[field]) || result[field].some((entry) => typeof entry !== "string")) {
+      throw new Error(`${label}.${field} must be a string array`);
+    }
+  }
+  checkpointRecord(result.diagnostics, `${label}.diagnostics`);
+  for (const field of [
+    "durationMs",
+    "scoringRuntimeMs",
+    "taxonomyRuntimeMs",
+    "wideBudgetDiagnosticRuntimeMs",
+    "retrievedMemoryCount",
+  ] as const) {
+    if (typeof result[field] !== "number" || !Number.isFinite(result[field])) {
+      throw new Error(`${label}.${field} must be finite`);
+    }
+  }
+  return result as unknown as ExternalMemoryBenchmarkCaseResult;
+}
+
+export function parseExternalMemoryBenchmarkCheckpoint(
+  input: string,
+): ExternalMemoryBenchmarkCheckpointManifest {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input) as unknown;
+  } catch {
+    throw new Error("External benchmark checkpoint sidecar is malformed JSON");
+  }
+  const manifest = checkpointRecord(parsed, "External benchmark checkpoint");
+  if (manifest.schema !== "gmos.external_benchmark_checkpoint.v1") {
+    throw new Error("External benchmark checkpoint schema is unsupported");
+  }
+  const fingerprint = checkpointFingerprint(
+    manifest.fingerprint,
+    "External benchmark checkpoint fingerprint",
+  );
+  const contract = checkpointRecord(
+    manifest.contract,
+    "External benchmark checkpoint contract",
+  ) as unknown as ExternalMemoryBenchmarkCheckpointContract;
+  if (contract.schema !== "gmos.external_benchmark_checkpoint_contract.v1") {
+    throw new Error("External benchmark checkpoint contract schema is unsupported");
+  }
+  if (checkpointHash(contract) !== fingerprint) {
+    throw new Error("External benchmark checkpoint contract fingerprint does not match");
+  }
+  return {
+    schema: "gmos.external_benchmark_checkpoint.v1",
+    fingerprint,
+    contract,
+  };
+}
+
+export interface ParsedExternalMemoryBenchmarkCheckpointJsonl {
+  entries: ExternalMemoryBenchmarkCheckpointEntry[];
+  validByteLength: number;
+  truncatedTailBytes: number;
+}
+
+export function parseExternalMemoryBenchmarkCheckpointJsonl(
+  input: string,
+): ParsedExternalMemoryBenchmarkCheckpointJsonl {
+  const lastNewline = input.lastIndexOf("\n");
+  const validText = lastNewline >= 0 ? input.slice(0, lastNewline + 1) : "";
+  const trailingText = input.slice(validText.length);
+  const lines = validText.split(/\r?\n/u).slice(0, -1);
+  const entries = lines.map((line, index) => {
+    if (!line.trim()) throw new Error(`External benchmark checkpoint JSONL line ${index + 1} is empty`);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line) as unknown;
+    } catch {
+      throw new Error(`External benchmark checkpoint JSONL line ${index + 1} is malformed`);
+    }
+    const envelope = checkpointRecord(
+      parsed,
+      `External benchmark checkpoint JSONL line ${index + 1}`,
+    );
+    if (envelope.schema !== "gmos.external_benchmark_checkpoint_case.v1") {
+      throw new Error(`External benchmark checkpoint JSONL line ${index + 1} schema is unsupported`);
+    }
+    const fingerprint = checkpointFingerprint(
+      envelope.fingerprint,
+      `External benchmark checkpoint JSONL line ${index + 1} fingerprint`,
+    );
+    if (!Number.isInteger(envelope.caseIndex) || Number(envelope.caseIndex) < 0) {
+      throw new Error(`External benchmark checkpoint JSONL line ${index + 1} caseIndex is invalid`);
+    }
+    if (typeof envelope.caseId !== "string" || !envelope.caseId) {
+      throw new Error(`External benchmark checkpoint JSONL line ${index + 1} caseId is invalid`);
+    }
+    const ingestStateHash = envelope.ingestStateHash === null
+      ? null
+      : checkpointFingerprint(
+          envelope.ingestStateHash,
+          `External benchmark checkpoint JSONL line ${index + 1} ingestStateHash`,
+        );
+    const resultHash = checkpointFingerprint(
+      envelope.resultHash,
+      `External benchmark checkpoint JSONL line ${index + 1} resultHash`,
+    );
+    const result = checkpointCaseResult(
+      envelope.result,
+      `External benchmark checkpoint JSONL line ${index + 1} result`,
+    );
+    if (checkpointHash({ ingestStateHash, result }) !== resultHash) {
+      throw new Error(`External benchmark checkpoint JSONL line ${index + 1} result hash does not match`);
+    }
+    return {
+      schema: "gmos.external_benchmark_checkpoint_case.v1" as const,
+      fingerprint,
+      caseIndex: Number(envelope.caseIndex),
+      caseId: envelope.caseId,
+      ingestStateHash,
+      resultHash,
+      result,
+    };
+  });
+  return {
+    entries,
+    validByteLength: Buffer.byteLength(validText),
+    truncatedTailBytes: Buffer.byteLength(trailingText),
+  };
+}
+
+export function createExternalMemoryBenchmarkCheckpointEntry(input: {
+  manifest: ExternalMemoryBenchmarkCheckpointManifest;
+  caseIndex: number;
+  ingestStateHash: string | null;
+  result: ExternalMemoryBenchmarkCaseResult;
+}): ExternalMemoryBenchmarkCheckpointEntry {
+  const selected = input.manifest.contract.slice.selectedCases[input.caseIndex];
+  if (!selected || selected.caseId !== input.result.id) {
+    throw new Error("External benchmark checkpoint result does not match its selected case");
+  }
+  return {
+    schema: "gmos.external_benchmark_checkpoint_case.v1",
+    fingerprint: input.manifest.fingerprint,
+    caseIndex: input.caseIndex,
+    caseId: selected.caseId,
+    ingestStateHash: input.ingestStateHash,
+    resultHash: checkpointHash({ ingestStateHash: input.ingestStateHash, result: input.result }),
+    result: input.result,
+  };
+}
+
+function artifactFiles(root: string, extension: ".ts" | ".js"): string[] {
+  const output: string[] = [];
+  const visit = (directory: string): void => {
+    for (const name of readdirSync(directory).sort()) {
+      const absolute = path.join(directory, name);
+      const stat = lstatSync(absolute);
+      if (stat.isDirectory()) {
+        visit(absolute);
+      } else if (stat.isFile() && name.endsWith(extension)) {
+        output.push(absolute);
+      }
+    }
+  };
+  visit(root);
+  return output;
+}
+
+function resolvedDependencyPackageJson(fromFile: string, dependencyName: string): string | null {
+  const require = createRequire(fromFile);
+  try {
+    return require.resolve(`${dependencyName}/package.json`);
+  } catch {
+    try {
+      let directory = path.dirname(require.resolve(dependencyName));
+      while (true) {
+        const candidate = path.join(directory, "package.json");
+        if (existsSync(candidate)) {
+          const document = JSON.parse(readFileSync(candidate, "utf8")) as { name?: unknown };
+          if (document.name === dependencyName) return candidate;
+        }
+        const parent = path.dirname(directory);
+        if (parent === directory) return null;
+        directory = parent;
+      }
+    } catch {
+      return null;
+    }
+  }
+}
+
+function dependencyPackageArtifactDigest(packageRoot: string): string {
+  const digest = createHash("sha256");
+  const visit = (directory: string): void => {
+    for (const name of readdirSync(directory).sort()) {
+      if (name === "node_modules") continue;
+      const absolute = path.join(directory, name);
+      const relative = path.relative(packageRoot, absolute);
+      const stat = lstatSync(absolute);
+      digest.update(relative);
+      digest.update("\0");
+      if (stat.isDirectory()) {
+        digest.update("directory\0");
+        visit(absolute);
+      } else if (stat.isSymbolicLink()) {
+        digest.update("symlink\0");
+        digest.update(readlinkSync(absolute));
+        digest.update("\0");
+      } else if (stat.isFile()) {
+        digest.update("file\0");
+        digest.update(readFileSync(absolute));
+        digest.update("\0");
+      }
+    }
+  };
+  visit(packageRoot);
+  return `sha256:${digest.digest("hex")}`;
+}
+
+function installedDependencyIdentity(input: {
+  packageRoot: string;
+  packageDocument: { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+  includeDevDependencies: boolean;
+}): {
+  digest: string;
+  directVersions: Record<string, string | null>;
+} {
+  const rootPackageJson = path.join(input.packageRoot, "package.json");
+  const directNames = new Set([
+    ...Object.keys(input.packageDocument.dependencies ?? {}),
+    ...(input.includeDevDependencies ? Object.keys(input.packageDocument.devDependencies ?? {}) : []),
+  ]);
+  const directVersions: Record<string, string | null> = {};
+  const queue = [...directNames].sort().map((name) => ({
+    name,
+    fromFile: rootPackageJson,
+    isDirect: true,
+  }));
+  const seenPackageJson = new Set<string>();
+  const packages: Array<{
+    name: string;
+    version: string | null;
+    artifactDigest: string;
+  }> = [];
+  while (queue.length > 0) {
+    const next = queue.shift();
+    if (!next) break;
+    const packageJson = resolvedDependencyPackageJson(next.fromFile, next.name);
+    if (!packageJson) {
+      if (next.isDirect) directVersions[next.name] = null;
+      continue;
+    }
+    if (seenPackageJson.has(packageJson)) continue;
+    seenPackageJson.add(packageJson);
+    const document = JSON.parse(readFileSync(packageJson, "utf8")) as {
+      name?: unknown;
+      version?: unknown;
+      dependencies?: Record<string, string>;
+      optionalDependencies?: Record<string, string>;
+      peerDependencies?: Record<string, string>;
+    };
+    const packageName = typeof document.name === "string" ? document.name : next.name;
+    const version = typeof document.version === "string" ? document.version : null;
+    if (next.isDirect) directVersions[next.name] = version;
+    packages.push({
+      name: packageName,
+      version,
+      artifactDigest: dependencyPackageArtifactDigest(path.dirname(packageJson)),
+    });
+    const childNames = new Set([
+      ...Object.keys(document.dependencies ?? {}),
+      ...Object.keys(document.optionalDependencies ?? {}),
+      ...Object.keys(document.peerDependencies ?? {}),
+    ]);
+    for (const name of [...childNames].sort()) {
+      queue.push({ name, fromFile: packageJson, isDirect: false });
+    }
+  }
+  packages.sort((left, right) =>
+    left.name.localeCompare(right.name) ||
+    (left.version ?? "").localeCompare(right.version ?? "") ||
+    left.artifactDigest.localeCompare(right.artifactDigest)
+  );
+  return {
+    digest: checkpointHash(packages),
+    directVersions,
+  };
+}
+
+function installedLockFile(packageRoot: string): string | null {
+  const committed = path.join(packageRoot, "package-lock.json");
+  if (existsSync(committed)) return committed;
+  let directory = packageRoot;
+  while (true) {
+    const candidate = path.join(directory, "node_modules", ".package-lock.json");
+    if (existsSync(candidate)) return candidate;
+    const parent = path.dirname(directory);
+    if (parent === directory) return null;
+    directory = parent;
+  }
+}
+
+interface RuntimeArtifactIdentity {
+  artifactKind: "src" | "dist" | "unknown";
+  artifactDigest: string;
+  packageLockDigest: string | null;
+  dependencyArtifactDigest: string;
+  dependencies: Record<string, string | null>;
+}
+
+let cachedRuntimeArtifactIdentity: RuntimeArtifactIdentity | undefined;
+
+function runtimeArtifactIdentity(): RuntimeArtifactIdentity {
+  if (cachedRuntimeArtifactIdentity) return cachedRuntimeArtifactIdentity;
+  const currentFile = fileURLToPath(import.meta.url);
+  const artifactRoot = path.resolve(path.dirname(currentFile), "..");
+  const rootName = path.basename(artifactRoot);
+  const artifactKind = rootName === "src" || rootName === "dist" ? rootName : "unknown";
+  const extension = artifactKind === "dist" ? ".js" : ".ts";
+  const digest = createHash("sha256");
+  for (const file of artifactFiles(artifactRoot, extension)) {
+    digest.update(path.relative(artifactRoot, file));
+    digest.update("\0");
+    digest.update(readFileSync(file));
+    digest.update("\0");
+  }
+  const packageRoot = readGmosPackageRoot() ?? path.resolve(artifactRoot, "..");
+  for (const name of ["package.json", "tsconfig.json"]) {
+    const file = path.join(packageRoot, name);
+    if (!existsSync(file)) continue;
+    digest.update(name);
+    digest.update("\0");
+    digest.update(readFileSync(file));
+    digest.update("\0");
+  }
+  const lockFile = installedLockFile(packageRoot);
+  const packageLockDigest = lockFile
+    ? `sha256:${createHash("sha256").update(readFileSync(lockFile)).digest("hex")}`
+    : null;
+  const packageDocument = JSON.parse(
+    readFileSync(path.join(packageRoot, "package.json"), "utf8"),
+  ) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+  const dependencyIdentity = installedDependencyIdentity({
+    packageRoot,
+    packageDocument,
+    includeDevDependencies: artifactKind === "src",
+  });
+  const identity: RuntimeArtifactIdentity = {
+    artifactKind,
+    artifactDigest: `sha256:${digest.digest("hex")}`,
+    packageLockDigest,
+    dependencyArtifactDigest: dependencyIdentity.digest,
+    dependencies: dependencyIdentity.directVersions,
+  };
+  cachedRuntimeArtifactIdentity = identity;
+  return identity;
 }
 
 function embeddingDimensionsForCache(hooks: DefaultIntelligence | undefined): number | null {
@@ -1262,7 +1797,18 @@ function ingestCacheKeyFields(input: {
   runtimeIntelligence: RuntimeIntelligenceState;
 }): IngestCacheKeyFields {
   const runtime = input.runtimeIntelligence.manifest;
+  const intelligenceConfig = input.options.intelligence &&
+      isIntelligenceConfig(input.options.intelligence)
+    ? input.options.intelligence
+    : null;
+  const endpoint = (value: string | undefined): string | null =>
+    value ? sanitizedEndpointIdentity(value) : null;
   return {
+    implementationVersion: INGEST_CACHE_IMPLEMENTATION_VERSION,
+    checkpointArtifactDigest:
+      input.runtimeIntelligence.checkpointArtifactIdentity?.artifactDigest ?? null,
+    checkpointDependencyArtifactDigest:
+      input.runtimeIntelligence.checkpointArtifactIdentity?.dependencyArtifactDigest ?? null,
     schemaVersion: GMOS_SQLITE_SCHEMA_VERSION,
     packageVersion: readGmosPackageInfo().version,
     datasetFormat: input.options.datasetFormat ?? "gmos.external_long_memory_qa.jsonl",
@@ -1277,15 +1823,18 @@ function ingestCacheKeyFields(input: {
       ? {
           entityConsolidation: {
             contractVersion: ENTITY_CONSOLIDATION_CONTRACT_VERSION,
-            consolidatorName: runtime.hookNames.consolidator,
+            consolidatorNameHash: checkpointIdentityHash(runtime.hookNames.consolidator),
           },
         }
       : {}),
     sessionDistillation: {
       enabled: runtime.sessionDistillation.enabled,
-      name: runtime.sessionDistillation.name,
-      baseUrlHost: runtime.sessionDistillation.baseUrlHost,
+      nameHash: checkpointIdentityHash(runtime.sessionDistillation.name),
+      endpointIdentity: endpoint(
+        intelligenceConfig?.distillerBaseUrl ?? intelligenceConfig?.baseUrl,
+      ),
       model: runtime.sessionDistillation.model,
+      disableThinking: intelligenceConfig?.disableThinking === true,
     },
     extraction: {
       contractVersion: runtime.hookNames.extractor
@@ -1297,19 +1846,23 @@ function ingestCacheKeyFields(input: {
       extractorMaxTokens: runtime.extractorMaxTokens,
       replayAttempts: normalizedIngestReplayAttempts(input.options.ingestReplayAttempts),
       windowConcurrency: runtime.concurrency,
-      extractorName: runtime.hookNames.extractor,
+      extractorNameHash: checkpointIdentityHash(runtime.hookNames.extractor),
       model: runtime.model,
-      baseUrlHost: runtime.baseUrlHost,
+      endpointIdentity: endpoint(intelligenceConfig?.baseUrl),
       timeoutMs: runtime.timeoutMs,
       retries: runtime.retries,
       backoffMs: runtime.backoffMs,
+      disableThinking: intelligenceConfig?.disableThinking === true,
     },
     embedding: {
-      providerName: runtime.hookNames.embeddingProvider,
+      providerNameHash: checkpointIdentityHash(runtime.hookNames.embeddingProvider),
       model: runtime.embedModel,
-      baseUrlHost: runtime.embedBaseUrlHost ?? runtime.baseUrlHost,
+      endpointIdentity: endpoint(
+        intelligenceConfig?.embedBaseUrl ?? intelligenceConfig?.baseUrl,
+      ),
       dimensions: embeddingDimensionsForCache(input.runtimeIntelligence.hooks),
     },
+    customProviderIdentityHash: checkpointIdentityHash(input.options.checkpoint?.providerIdentity),
   };
 }
 
@@ -1388,9 +1941,21 @@ function copyCacheEntryToGroupDb(
   groupDbPath: string,
   embeddingProvider: EmbeddingProvider | undefined,
 ): boolean {
+  const privateRegularCacheFile = (filePath: string): boolean => {
+    try {
+      const stat = lstatSync(filePath);
+      return stat.isFile() &&
+        !stat.isSymbolicLink() &&
+        (process.platform === "win32" || (stat.nlink === 1 && (stat.mode & 0o077) === 0));
+    } catch {
+      return false;
+    }
+  };
   if (
     !existsSync(plan.dbFile) ||
     !existsSync(plan.metaFile) ||
+    !privateRegularCacheFile(plan.dbFile) ||
+    !privateRegularCacheFile(plan.metaFile) ||
     !cacheMetaIsComplete(plan)
   ) {
     return false;
@@ -1408,17 +1973,47 @@ function copyCacheEntryToGroupDb(
   }
 }
 
+function ensurePrivateIngestCacheDirectory(cacheDir: string): void {
+  if (existsSync(cacheDir)) {
+    const stat = lstatSync(cacheDir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error("External benchmark ingest cache path must be a regular directory");
+    }
+    if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
+      throw new Error("External benchmark ingest cache directory must be private (mode 0700)");
+    }
+    return;
+  }
+  mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+}
+
+function fsyncPath(filePath: string): void {
+  const fd = openSync(filePath, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function fsyncDirectory(directoryPath: string): void {
+  if (process.platform === "win32") return;
+  fsyncPath(directoryPath);
+}
+
 function writeIngestCacheEntry(
   plan: IngestCachePlan,
   groupDbPath: string,
   integrity: IngestCacheIntegrity,
 ): void {
-  mkdirSync(path.dirname(plan.dbFile), { recursive: true });
+  const cacheDir = path.dirname(plan.dbFile);
+  ensurePrivateIngestCacheDirectory(cacheDir);
   const tempId = `${process.pid}-${randomUUID()}`;
   const tempDbFile = path.join(path.dirname(plan.dbFile), `${plan.key}.${tempId}.db.tmp`);
   const tempMetaFile = path.join(path.dirname(plan.metaFile), `${plan.key}.${tempId}.meta.json.tmp`);
   try {
     copyFileSync(groupDbPath, tempDbFile);
+    if (process.platform !== "win32") chmodSync(tempDbFile, 0o600);
     writeFileSync(
       tempMetaFile,
       `${JSON.stringify({
@@ -1430,9 +2025,18 @@ function writeIngestCacheEntry(
         createdAt: new Date().toISOString(),
         package: readGmosPackageInfo(),
       }, null, 2)}\n`,
+      { mode: 0o600 },
     );
+    if (process.platform !== "win32") chmodSync(tempMetaFile, 0o600);
+    fsyncPath(tempDbFile);
+    fsyncPath(tempMetaFile);
     renameSync(tempDbFile, plan.dbFile);
     renameSync(tempMetaFile, plan.metaFile);
+    fsyncDirectory(cacheDir);
+    if (process.platform !== "win32") {
+      chmodSync(plan.dbFile, 0o600);
+      chmodSync(plan.metaFile, 0o600);
+    }
   } catch (error) {
     rmSync(tempDbFile, { force: true });
     rmSync(tempMetaFile, { force: true });
@@ -1537,10 +2141,18 @@ function normalizedJudge(
   }
   const normalized: ExternalMemoryBenchmarkJudge = {
     name: judge.name.trim(),
+    ...(judge.checkpointIdentity !== undefined
+      ? { checkpointIdentity: judge.checkpointIdentity }
+      : {}),
     ...(judge.profile !== undefined ? { profile: normalizeJudgeProfile(judge.profile) } : {}),
     ...(judge.manifest !== undefined ? { manifest: judge.manifest } : {}),
     judge: judge.judge,
   };
+  const hookBrand = openAICompatibleBenchmarkHookBrand(judge);
+  if (hookBrand) {
+    (normalized as unknown as BrandedOpenAICompatibleBenchmarkHook)[OPENAI_COMPATIBLE_BENCHMARK_HOOK] =
+      hookBrand;
+  }
   const openAICompatibleJudge = openAICompatibleExternalBenchmarkJudgeWithCase(judge);
   if (openAICompatibleJudge) {
     const normalizedWithCase = { ...normalized } as OpenAICompatibleExternalBenchmarkJudgeWithCase;
@@ -1572,7 +2184,20 @@ function normalizedAnswerer(
   if (typeof answerer.answer !== "function") {
     throw new Error("External benchmark answerer must provide an answer callback");
   }
-  return { name: answerer.name.trim(), answer: answerer.answer, manifest: answerer.manifest };
+  const normalized: ExternalMemoryBenchmarkAnswerer = {
+    name: answerer.name.trim(),
+    ...(answerer.checkpointIdentity !== undefined
+      ? { checkpointIdentity: answerer.checkpointIdentity }
+      : {}),
+    answer: answerer.answer,
+    manifest: answerer.manifest,
+  };
+  const hookBrand = openAICompatibleBenchmarkHookBrand(answerer);
+  if (hookBrand) {
+    (normalized as unknown as BrandedOpenAICompatibleBenchmarkHook)[OPENAI_COMPATIBLE_BENCHMARK_HOOK] =
+      hookBrand;
+  }
+  return normalized;
 }
 
 function normalizeTemporalMode(value: unknown, field: string): ExternalMemoryBenchmarkTemporalMode | undefined {
@@ -2555,6 +3180,7 @@ export interface ExternalMemoryBenchmarkOpenAICompatibleHookOptions {
   maxRetries?: number | undefined;
   fetchImpl?: OpenAICompatibleFetch | undefined;
   disableThinking?: boolean | undefined;
+  checkpointIdentity?: string | undefined;
 }
 
 export type ExternalMemoryBenchmarkOpenAICompatibleJudgeOptions =
@@ -2563,6 +3189,22 @@ export type ExternalMemoryBenchmarkOpenAICompatibleJudgeOptions =
   };
 
 const OPENAI_COMPATIBLE_EXTERNAL_BENCHMARK_JUDGE_WITH_CASE = Symbol("openai-compatible-external-benchmark-judge-with-case");
+const OPENAI_COMPATIBLE_BENCHMARK_HOOK = Symbol("openai-compatible-external-benchmark-hook");
+
+interface OpenAICompatibleBenchmarkHookBrand {
+  customFetch: boolean;
+}
+
+interface BrandedOpenAICompatibleBenchmarkHook {
+  [OPENAI_COMPATIBLE_BENCHMARK_HOOK]: OpenAICompatibleBenchmarkHookBrand;
+}
+
+function openAICompatibleBenchmarkHookBrand(
+  hook: ExternalMemoryBenchmarkAnswerer | ExternalMemoryBenchmarkJudge,
+): OpenAICompatibleBenchmarkHookBrand | null {
+  const candidate = hook as Partial<BrandedOpenAICompatibleBenchmarkHook>;
+  return candidate[OPENAI_COMPATIBLE_BENCHMARK_HOOK] ?? null;
+}
 
 interface OpenAICompatibleExternalBenchmarkJudgeWithCase extends ExternalMemoryBenchmarkJudge {
   [OPENAI_COMPATIBLE_EXTERNAL_BENCHMARK_JUDGE_WITH_CASE](input: {
@@ -2733,6 +3375,15 @@ function upstreamLongMemEvalJudgeDecision(text: string): "yes" | "no" | null {
 
 function openAICompatibleEndpoint(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/u, "")}/chat/completions`;
+}
+
+function sanitizedEndpointIdentity(baseUrl: string): string {
+  const parsed = new URL(baseUrl);
+  const normalizedPath = parsed.pathname.replace(/\/+$/u, "") || "/";
+  const routeHash = createHash("sha256")
+    .update(`${normalizedPath}${parsed.search}`)
+    .digest("hex");
+  return `${parsed.origin}/[route-sha256:${routeHash}]`;
 }
 
 function openAICompatibleFetch(
@@ -2935,6 +3586,12 @@ function runtimeAnswererManifest(
     model: options.model,
     timeoutMs: hookTimeoutMs(options.timeoutMs),
     maxTokens: hookMaxTokens(options.maxTokens),
+    endpointIdentity: sanitizedEndpointIdentity(options.baseUrl),
+    maxRetries: Math.max(
+      0,
+      Math.min(Math.trunc(options.maxRetries ?? DEFAULT_OPENAI_COMPATIBLE_ANSWERER_JUDGE_RETRIES), 3),
+    ),
+    disableThinking: options.disableThinking === true,
   };
 }
 
@@ -2945,9 +3602,11 @@ export function createOpenAICompatibleExternalBenchmarkAnswerer(
   const manifest = runtimeAnswererManifest({ ...options, name });
   manifest.answererRetryCount = 0;
   manifest.answererRecoveredCount = 0;
-  return {
+  const answerer: ExternalMemoryBenchmarkAnswerer & BrandedOpenAICompatibleBenchmarkHook = {
     name,
+    ...(options.checkpointIdentity ? { checkpointIdentity: options.checkpointIdentity } : {}),
     manifest,
+    [OPENAI_COMPATIBLE_BENCHMARK_HOOK]: { customFetch: options.fetchImpl !== undefined },
     async answer(question, context) {
       const parsed = parsedCompletionObject(await fetchOpenAICompatibleJson(options, [
         {
@@ -2981,6 +3640,7 @@ export function createOpenAICompatibleExternalBenchmarkAnswerer(
       return answer.trim();
     },
   };
+  return answerer;
 }
 
 export function createOpenAICompatibleExternalBenchmarkJudge(
@@ -3062,10 +3722,13 @@ export function createOpenAICompatibleExternalBenchmarkJudge(
         : {}),
     };
   };
-  const judgeWithCase: OpenAICompatibleExternalBenchmarkJudgeWithCase = {
+  const judgeWithCase: OpenAICompatibleExternalBenchmarkJudgeWithCase &
+    BrandedOpenAICompatibleBenchmarkHook = {
     name,
+    ...(options.checkpointIdentity ? { checkpointIdentity: options.checkpointIdentity } : {}),
     manifest,
     profile,
+    [OPENAI_COMPATIBLE_BENCHMARK_HOOK]: { customFetch: options.fetchImpl !== undefined },
     async judge(question, expectedAnswer, actualAnswer) {
       return judgeOpenAICompatible({ question, expectedAnswer, actualAnswer });
     },
@@ -3323,11 +3986,13 @@ function runtimeAnswererForManifest(
   answerer: ExternalMemoryBenchmarkAnswerer | undefined,
 ): ExternalMemoryBenchmarkRuntimeAnswererManifest {
   if (!answerer) return disabledRuntimeAnswerer();
+  const builtIn = openAICompatibleBenchmarkHookBrand(answerer) !== null;
   return {
     ...disabledRuntimeAnswerer(),
     enabled: true,
     name: answerer.name,
     ...(answerer.manifest ?? {}),
+    endpointIdentity: builtIn ? answerer.manifest?.endpointIdentity ?? null : null,
   };
 }
 
@@ -3335,11 +4000,13 @@ function runtimeJudgeForManifest(
   judge: ExternalMemoryBenchmarkJudge | undefined,
 ): ExternalMemoryBenchmarkRuntimeAnswererManifest {
   if (!judge) return disabledRuntimeAnswerer();
+  const builtIn = openAICompatibleBenchmarkHookBrand(judge) !== null;
   return {
     ...disabledRuntimeAnswerer(),
     enabled: true,
     name: judge.name,
     ...(judge.manifest ?? {}),
+    endpointIdentity: builtIn ? judge.manifest?.endpointIdentity ?? null : null,
   };
 }
 
@@ -3349,6 +4016,9 @@ function createRunManifest(input: {
   totalDatasetCases: number;
   selectedCases: number;
   executedCases: number;
+  resumedCaseCount: number;
+  newlyExecutedCaseCount: number;
+  checkpointFingerprint: string | null;
   caseGroupCount: number;
   plannedCaseGroupCount: number;
   options: RunExternalMemoryBenchmarkOptions;
@@ -3391,8 +4061,15 @@ function createRunManifest(input: {
     execution: {
       caseGroupCount: input.caseGroupCount,
       plannedCaseGroupCount: input.plannedCaseGroupCount,
-      reusedProfileCaseCount: Math.max(0, input.executedCases - input.caseGroupCount),
+      reusedProfileCaseCount: Math.max(0, input.newlyExecutedCaseCount - input.caseGroupCount),
       executedCases: input.executedCases,
+      ...(input.checkpointFingerprint !== null
+        ? {
+            resumedCaseCount: input.resumedCaseCount,
+            newlyExecutedCaseCount: input.newlyExecutedCaseCount,
+            checkpointFingerprint: input.checkpointFingerprint,
+          }
+        : {}),
       partial: input.partial,
       interrupted: input.interrupted,
       stopReason: input.interrupted
@@ -4331,6 +5008,7 @@ function hookNamesFor(hooks: DefaultIntelligence): ExternalMemoryBenchmarkRuntim
 }
 
 interface RuntimeIntelligenceState {
+  checkpointArtifactIdentity?: ReturnType<typeof runtimeArtifactIdentity> | undefined;
   hooks?: DefaultIntelligence | undefined;
   manifest: ExternalMemoryBenchmarkRuntimeIntelligenceManifest;
   extractionEmptyCount: number;
@@ -5128,6 +5806,342 @@ function groupCases(
   return [...groupsByKey.values()];
 }
 
+function checkpointProviderContract(input: {
+  options: RunExternalMemoryBenchmarkOptions;
+  runtimeIntelligence: RuntimeIntelligenceState;
+  answerer: ExternalMemoryBenchmarkAnswerer | undefined;
+  judge: ExternalMemoryBenchmarkJudge | undefined;
+}): Record<string, unknown> {
+  const runtime = input.runtimeIntelligence.manifest;
+  const intelligenceConfig = input.options.intelligence &&
+      isIntelligenceConfig(input.options.intelligence)
+    ? input.options.intelligence
+    : null;
+  const endpoint = (value: string | undefined): string | null =>
+    value ? sanitizedEndpointIdentity(value) : null;
+  const embeddingProvider = input.runtimeIntelligence.hooks?.embeddingProvider;
+  const embeddingDimensions = embeddingProvider && typeof embeddingProvider !== "function"
+    ? embeddingProvider.dimensions
+    : null;
+  const answererManifest = runtimeAnswererForManifest(input.answerer);
+  const judgeManifest = runtimeJudgeForManifest(input.judge);
+  const answererBrand = input.answerer
+    ? openAICompatibleBenchmarkHookBrand(input.answerer)
+    : null;
+  const judgeBrand = input.judge
+    ? openAICompatibleBenchmarkHookBrand(input.judge)
+    : null;
+  if (
+    input.options.intelligence &&
+    (!intelligenceConfig || intelligenceConfig.fetchImpl !== undefined) &&
+    !input.options.checkpoint?.providerIdentity?.trim()
+  ) {
+    throw new Error(
+      "External benchmark checkpoint with custom intelligence requires checkpoint.providerIdentity",
+    );
+  }
+  if (
+    input.answerer &&
+    (!answererBrand || answererBrand.customFetch) &&
+    !input.answerer.checkpointIdentity?.trim()
+  ) {
+    throw new Error(
+      "External benchmark checkpoint with a custom answerer requires answerer.checkpointIdentity",
+    );
+  }
+  if (
+    input.judge &&
+    (!judgeBrand || judgeBrand.customFetch) &&
+    !input.judge.checkpointIdentity?.trim()
+  ) {
+    throw new Error(
+      "External benchmark checkpoint with a custom judge requires judge.checkpointIdentity",
+    );
+  }
+  const checkpointHook = (
+    manifest: ExternalMemoryBenchmarkRuntimeAnswererManifest,
+    customCheckpointIdentity: string | undefined,
+  ): Record<string, unknown> => ({
+    enabled: manifest.enabled,
+    nameHash: checkpointIdentityHash(manifest.name),
+    endpointIdentity: manifest.endpointIdentity ?? null,
+    model: manifest.model,
+    timeoutMs: manifest.timeoutMs,
+    maxTokens: manifest.maxTokens,
+    maxRetries: manifest.maxRetries ?? null,
+    disableThinking: manifest.disableThinking === true,
+    customCheckpointIdentityHash: checkpointIdentityHash(customCheckpointIdentity),
+  });
+  return {
+    intelligence: {
+      enabled: runtime.enabled,
+      endpoints: {
+        chat: endpoint(intelligenceConfig?.baseUrl),
+        embedding: endpoint(intelligenceConfig?.embedBaseUrl ?? intelligenceConfig?.baseUrl),
+        planner: endpoint(intelligenceConfig?.plannerBaseUrl ?? intelligenceConfig?.baseUrl),
+        distiller: endpoint(intelligenceConfig?.distillerBaseUrl ?? intelligenceConfig?.baseUrl),
+      },
+      model: runtime.model,
+      embedModel: runtime.embedModel,
+      plannerModel: runtime.queryPlanner.model,
+      distillerModel: runtime.sessionDistillation.model,
+      dimensions: embeddingDimensions,
+      concurrency: runtime.concurrency,
+      timeoutMs: runtime.timeoutMs,
+      retries: runtime.retries,
+      backoffMs: runtime.backoffMs,
+      extractorMaxCandidates: runtime.extractorMaxCandidates,
+      extractorMaxTokens: runtime.extractorMaxTokens,
+      disableThinking: intelligenceConfig?.disableThinking === true,
+      hookNameHashes: Object.fromEntries(
+        Object.entries(runtime.hookNames).map(([key, value]) => [key, checkpointIdentityHash(value)]),
+      ),
+      customProviderIdentityHash: checkpointIdentityHash(input.options.checkpoint?.providerIdentity),
+    },
+    answerer: checkpointHook(answererManifest, input.answerer?.checkpointIdentity),
+    judge: checkpointHook(judgeManifest, input.judge?.checkpointIdentity),
+  };
+}
+
+function checkpointContractForRun(input: {
+  normalizedCases: ExternalMemoryBenchmarkCase[];
+  selectedCases: ExternalMemoryBenchmarkCase[];
+  groups: CaseGroup[];
+  sliceSpec: ExternalMemoryBenchmarkSliceSpec;
+  options: RunExternalMemoryBenchmarkOptions;
+  runtimeIntelligence: RuntimeIntelligenceState;
+  answerer: ExternalMemoryBenchmarkAnswerer | undefined;
+  judge: ExternalMemoryBenchmarkJudge | undefined;
+  requireCleanGit: boolean;
+}): ExternalMemoryBenchmarkCheckpointContract {
+  const packageInfo = readGmosPackageInfo();
+  const git = externalBenchmarkGitInfoForPackageRoot();
+  if (
+    input.requireCleanGit &&
+    (git.dirty === true || (git.sha !== null && git.dirty !== false))
+  ) {
+    throw new Error(
+      "External benchmark checkpoint requires a clean Git checkout or a verifiable packaged build",
+    );
+  }
+  const artifact = input.runtimeIntelligence.checkpointArtifactIdentity ?? runtimeArtifactIdentity();
+  input.runtimeIntelligence.checkpointArtifactIdentity = artifact;
+  const verifiedCheckout = git.sha !== null && git.dirty === false;
+  const verifiedPackagedBuild =
+    git.sha === null && git.dirty === null && artifact.artifactKind === "dist";
+  if (input.requireCleanGit && !verifiedCheckout && !verifiedPackagedBuild) {
+    throw new Error(
+      "External benchmark checkpoint requires a clean Git checkout or a verifiable packaged build",
+    );
+  }
+  const runtime = input.runtimeIntelligence.manifest;
+  return {
+    schema: "gmos.external_benchmark_checkpoint_contract.v1",
+    package: {
+      name: packageInfo.name,
+      version: packageInfo.version,
+    },
+    source: {
+      gitSha: git.sha,
+      gitDirty: git.dirty,
+      artifactKind: artifact.artifactKind,
+      artifactDigest: artifact.artifactDigest,
+      packageLockDigest: artifact.packageLockDigest,
+      dependencyArtifactDigest: artifact.dependencyArtifactDigest,
+      dependencies: artifact.dependencies,
+      node: process.version,
+      platform: `${process.platform}/${process.arch}`,
+    },
+    dataset: {
+      format: input.options.datasetFormat ?? "gmos.external_long_memory_qa.jsonl",
+      sourceHash: input.options.datasetHash ?? checkpointHash(input.normalizedCases),
+      normalizedCasesHash: checkpointHash(input.normalizedCases),
+      totalCaseCount: input.normalizedCases.length,
+    },
+    slice: {
+      sliceSpec: input.sliceSpec,
+      selectedCases: input.selectedCases.map((benchmarkCase, caseIndex) => ({
+        caseIndex,
+        caseId: benchmarkCase.id ?? `case-${caseIndex + 1}`,
+        caseHash: checkpointHash(benchmarkCase),
+      })),
+    },
+    groups: input.groups.map((group) => ({
+      groupKey: group.key,
+      profileId: group.profileId,
+      caseIndexes: group.items.map((item) => item.index),
+      eventPayloadHash: eventPayloadHashForCache(group),
+    })),
+    run: {
+      mode: input.options.mode ?? null,
+      maxSteps: input.options.maxSteps ?? null,
+      maxBranch: input.options.maxBranch ?? null,
+      maxMemories: input.options.maxMemories ?? null,
+      anchorCoverage: input.options.anchorCoverage !== false,
+      contextBudgetTokens: input.options.contextBudgetTokens ?? null,
+      maxCharsPerMemory: input.options.maxCharsPerMemory ?? null,
+      fullContentTopRank: input.options.fullContentTopRank ?? null,
+      fullContentMaxChars: input.options.fullContentMaxChars ?? null,
+      layerPolicy: input.options.layerPolicy ?? null,
+      temporalMode: input.options.temporalMode ?? null,
+      includeSensitive: input.options.includeSensitive === true,
+      includeTemporalMetadata: input.options.includeTemporalMetadata === true,
+      includeTemporalContext: input.options.includeTemporalContext !== false,
+      readerProfile: input.options.readerProfile ?? "default",
+      readerContextCharLimit: input.options.readerContextCharLimit ?? 4000,
+      requireConvergence: input.options.requireConvergence === true,
+      concurrency: normalizedConcurrency(input.options.concurrency),
+      ingestMode: input.options.ingestMode ?? "memory",
+      turnRetention: runtime.turnRetention,
+      sessionDistillation: runtime.sessionDistillation.enabled,
+      extractionWindow: normalizedExtractionWindow(input.options.extractionWindow),
+      extractionMaxChars: normalizedExtractionMaxChars(input.options.extractionMaxChars),
+      ingestReplayAttempts: normalizedIngestReplayAttempts(input.options.ingestReplayAttempts),
+      maintainPhases: runtime.maintainPhases,
+      consolidateEntities: runtime.consolidateEntities,
+      embedQuery: runtime.embedQuery,
+      queryPlanner: runtime.queryPlanner.enabled,
+      sweepCues: runtime.sweepCues.enabled,
+      plannerMaxAnchors: runtime.queryPlanner.maxAnchors ?? 4,
+      reuseProfiles: input.options.reuseProfiles !== false,
+      failureSampleLimit: normalizedFailureSampleLimit(input.options.failureSampleLimit),
+      diagnosticsLevel: normalizedDiagnosticsLevel(input.options.diagnosticsLevel),
+      protocol: normalizeProtocol(input.options.protocol),
+      judgeProfile: effectiveJudgeProfile({
+        judge: input.judge,
+        requested: input.options.judgeProfile,
+      }),
+      intelligenceConcurrency: runtime.concurrency,
+    },
+    providers: checkpointProviderContract({
+      options: input.options,
+      runtimeIntelligence: input.runtimeIntelligence,
+      answerer: input.answerer,
+      judge: input.judge,
+    }),
+  };
+}
+
+async function checkpointStateForRun(input: {
+  checkpoint: ExternalMemoryBenchmarkCheckpointOptions;
+  normalizedCases: ExternalMemoryBenchmarkCase[];
+  selectedCases: ExternalMemoryBenchmarkCase[];
+  groups: CaseGroup[];
+  sliceSpec: ExternalMemoryBenchmarkSliceSpec;
+  options: RunExternalMemoryBenchmarkOptions;
+  runtimeIntelligence: RuntimeIntelligenceState;
+  answerer: ExternalMemoryBenchmarkAnswerer | undefined;
+  judge: ExternalMemoryBenchmarkJudge | undefined;
+}): Promise<{
+  manifest: ExternalMemoryBenchmarkCheckpointManifest;
+  resumedResults: Map<number, ExternalMemoryBenchmarkCaseResult>;
+  ingestStateHashByGroup: Map<string, string>;
+}> {
+  if (
+    input.groups.some((group) => group.items.length > 1) &&
+    input.runtimeIntelligence.manifest.maintainPhases.length > 0
+  ) {
+    throw new Error(
+      "External benchmark checkpoint shared groups do not support post-ingest maintain phases",
+    );
+  }
+  const contract = checkpointContractForRun({
+    normalizedCases: input.normalizedCases,
+    selectedCases: input.selectedCases,
+    groups: input.groups,
+    sliceSpec: input.sliceSpec,
+    options: input.options,
+    runtimeIntelligence: input.runtimeIntelligence,
+    answerer: input.answerer,
+    judge: input.judge,
+    requireCleanGit: input.checkpoint.requireCleanGit === true,
+  });
+  const manifest: ExternalMemoryBenchmarkCheckpointManifest = {
+    schema: "gmos.external_benchmark_checkpoint.v1",
+    fingerprint: checkpointHash(contract),
+    contract,
+  };
+  const resume = input.checkpoint.resume;
+  if (resume) {
+    if (
+      resume.manifest.schema !== "gmos.external_benchmark_checkpoint.v1" ||
+      checkpointHash(resume.manifest.contract) !== resume.manifest.fingerprint
+    ) {
+      throw new Error("External benchmark checkpoint sidecar is invalid");
+    }
+    if (resume.manifest.fingerprint !== manifest.fingerprint) {
+      throw new Error("External benchmark checkpoint fingerprint does not match this run");
+    }
+  }
+  const groupByIndex = new Map<number, CaseGroup>();
+  for (const group of input.groups) {
+    for (const item of group.items) groupByIndex.set(item.index, group);
+  }
+  const resumedResults = new Map<number, ExternalMemoryBenchmarkCaseResult>();
+  const ingestStateHashByGroup = new Map<string, string>();
+  for (const entry of resume?.entries ?? []) {
+    if (entry.schema !== "gmos.external_benchmark_checkpoint_case.v1") {
+      throw new Error("External benchmark checkpoint result schema is unsupported");
+    }
+    if (entry.fingerprint !== manifest.fingerprint) {
+      throw new Error("External benchmark checkpoint result fingerprint does not match");
+    }
+    if (resumedResults.has(entry.caseIndex)) {
+      throw new Error(`External benchmark checkpoint contains duplicate caseIndex: ${entry.caseIndex}`);
+    }
+    const selected = contract.slice.selectedCases[entry.caseIndex];
+    if (!selected) {
+      throw new Error(`External benchmark checkpoint caseIndex is out of range: ${entry.caseIndex}`);
+    }
+    if (entry.caseId !== selected.caseId || entry.result.id !== selected.caseId) {
+      throw new Error(`External benchmark checkpoint case identity does not match index ${entry.caseIndex}`);
+    }
+    if (entry.resultHash !== checkpointHash({
+      ingestStateHash: entry.ingestStateHash,
+      result: entry.result,
+    })) {
+      throw new Error(`External benchmark checkpoint result hash does not match index ${entry.caseIndex}`);
+    }
+    if (entry.result.protocol !== normalizeProtocol(input.options.protocol)) {
+      throw new Error(`External benchmark checkpoint protocol does not match index ${entry.caseIndex}`);
+    }
+    const group = groupByIndex.get(entry.caseIndex);
+    if (!group || entry.result.caseGroupKey !== group.key) {
+      throw new Error(`External benchmark checkpoint group does not match index ${entry.caseIndex}`);
+    }
+    const ingestStateHash = entry.ingestStateHash === null
+      ? null
+      : checkpointFingerprint(
+          entry.ingestStateHash,
+          `External benchmark checkpoint ingest state hash at index ${entry.caseIndex}`,
+        );
+    if (group.items.length > 1 && ingestStateHash === null) {
+      throw new Error(
+        `External benchmark checkpoint shared group is missing ingest state hash at index ${entry.caseIndex}`,
+      );
+    }
+    if (ingestStateHash) {
+      const existingHash = ingestStateHashByGroup.get(group.key);
+      if (existingHash && existingHash !== ingestStateHash) {
+        throw new Error(`External benchmark checkpoint shared group ingest state hashes do not match: ${group.key}`);
+      }
+      ingestStateHashByGroup.set(group.key, ingestStateHash);
+    }
+    resumedResults.set(entry.caseIndex, entry.result);
+  }
+  const hasRunnableSharedGroup = input.groups.some((group) =>
+    group.items.length > 1 &&
+    group.items.some((item) => !resumedResults.has(item.index))
+  );
+  if (hasRunnableSharedGroup && !input.options.ingestCacheDir) {
+    throw new Error(
+      "External benchmark checkpoint shared groups require an ingest cache directory",
+    );
+  }
+  await input.checkpoint.onPrepared?.(manifest);
+  return { manifest, resumedResults, ingestStateHashByGroup };
+}
+
 interface AppliedBenchmarkEvent {
   warning?: string | undefined;
   extractionRetryCount?: number | undefined;
@@ -5885,11 +6899,18 @@ function latestEventTimestamp(events: ExternalMemoryBenchmarkEvent[]): string {
 
 async function runCaseGroup(input: {
   group: CaseGroup;
+  itemsToScore: NormalizedCaseInput[];
+  checkpointCacheMode: "none" | "write_before_scoring" | "require_hit";
+  expectedIngestStateHash?: string | undefined;
   options: RunExternalMemoryBenchmarkOptions;
   runtimeIntelligence: RuntimeIntelligenceState;
   providerCircuit: ExternalBenchmarkProviderCircuit;
   ingestCache: IngestCacheCounters;
-  recordResult: (index: number, result: ExternalMemoryBenchmarkCaseResult) => void;
+  recordResult: (
+    index: number,
+    result: ExternalMemoryBenchmarkCaseResult,
+    ingestStateHash: string | null,
+  ) => Promise<void>;
   shouldStop: () => boolean;
   writeDebugReaderContext?: ((caseId: string, context: string) => void) | undefined;
 }): Promise<ExternalMemoryBenchmarkGroupTiming> {
@@ -5938,12 +6959,32 @@ async function runCaseGroup(input: {
         runtimeIntelligence: input.runtimeIntelligence,
       })
     : null;
+  if (input.checkpointCacheMode !== "none" && !cachePlan) {
+    throw new Error(
+      "External benchmark checkpoint shared groups require an ingest cache directory",
+    );
+  }
   const cacheHit = cachePlan
     ? copyCacheEntryToGroupDb(cachePlan, groupDbPath, hooks?.embeddingProvider)
     : false;
   if (cachePlan) {
     if (cacheHit) input.ingestCache.hits += 1;
     else input.ingestCache.misses += 1;
+  }
+  let ingestStateHash = input.checkpointCacheMode !== "none" && cacheHit
+    ? fileSha256(groupDbPath)
+    : null;
+  if (input.checkpointCacheMode === "require_hit") {
+    if (!cacheHit || !ingestStateHash) {
+      throw new Error(
+        `External benchmark checkpoint shared group requires an existing complete ingest cache: ${input.group.key}`,
+      );
+    }
+    if (ingestStateHash !== input.expectedIngestStateHash) {
+      throw new Error(
+        `External benchmark checkpoint shared group ingest state does not match: ${input.group.key}`,
+      );
+    }
   }
   let runtime = openRuntime();
   let runtimeClosed = false;
@@ -6073,11 +7114,23 @@ async function runCaseGroup(input: {
           runtimeClosed = true;
           writeIngestCacheEntry(cachePlan, groupDbPath, integrity);
           input.ingestCache.writes += 1;
+          if (input.checkpointCacheMode !== "none") {
+            ingestStateHash = fileSha256(cachePlan.dbFile);
+          }
           runtime = openRuntime();
           runtimeClosed = false;
           await runtime.store.initialize();
         }
       }
+    }
+    if (
+      input.checkpointCacheMode === "write_before_scoring" &&
+      !ingestStateHash &&
+      !input.shouldStop()
+    ) {
+      throw new Error(
+        `External benchmark checkpoint shared group could not persist a complete ingest cache: ${input.group.key}`,
+      );
     }
     caseGroupMemories = await runtime.memory.list({
       profileId: input.group.profileId,
@@ -6124,7 +7177,11 @@ async function runCaseGroup(input: {
     };
     input.runtimeIntelligence.ingestCaseGroups.push(ingestCaseGroup);
     input.options.onCaseGroupSetup?.(ingestCaseGroup);
-    if (input.options.maintainPhases && input.options.maintainPhases.length > 0) {
+    if (
+      !input.shouldStop() &&
+      input.options.maintainPhases &&
+      input.options.maintainPhases.length > 0
+    ) {
       await runtime.memory.maintain({
         profileId: input.group.profileId,
         phases: input.options.maintainPhases,
@@ -6132,7 +7189,7 @@ async function runCaseGroup(input: {
       });
     }
     setupDurationMs = Math.max(0, Date.now() - groupStartedMs);
-    for (const item of input.group.items) {
+    for (const item of input.itemsToScore) {
       if (input.shouldStop()) break;
       const result = await input.providerCircuit.withQueryScope(
         `${input.group.key}:${item.index}`,
@@ -6198,7 +7255,11 @@ async function runCaseGroup(input: {
       );
       if (result === null) break;
       results.push(result);
-      input.recordResult(item.index, result);
+      await input.recordResult(
+        item.index,
+        result,
+        input.checkpointCacheMode === "none" ? null : ingestStateHash,
+      );
     }
     const durationMs = Math.max(0, Date.now() - groupStartedMs);
     const scoringRuntimeMs = results.reduce((sum, result) => sum + result.scoringRuntimeMs, 0);
@@ -6256,23 +7317,93 @@ async function runCaseGroup(input: {
 async function runGroupsWithConcurrency(
   groups: CaseGroup[],
   concurrency: number,
-  worker: (group: CaseGroup) => Promise<ExternalMemoryBenchmarkGroupTiming>,
+  worker: (
+    group: CaseGroup,
+    shouldStop: () => boolean,
+  ) => Promise<ExternalMemoryBenchmarkGroupTiming>,
   shouldStop: () => boolean,
 ): Promise<ExternalMemoryBenchmarkGroupTiming[]> {
   let next = 0;
   const results: ExternalMemoryBenchmarkGroupTiming[] = [];
+  let firstError: unknown;
+  let hasFirstError = false;
+  const combinedShouldStop = (): boolean => hasFirstError || shouldStop();
   const workerCount = Math.min(concurrency, groups.length);
   await Promise.all(
     Array.from({ length: workerCount }, async () => {
       while (next < groups.length) {
-        if (shouldStop()) break;
+        if (combinedShouldStop()) break;
         const group = groups[next];
         next += 1;
-        if (group) results.push(await worker(group));
+        if (!group) continue;
+        try {
+          results.push(await worker(group, combinedShouldStop));
+        } catch (error) {
+          if (!hasFirstError) {
+            hasFirstError = true;
+            firstError = error;
+          }
+          break;
+        }
       }
     }),
   );
+  if (hasFirstError) throw firstError;
   return results;
+}
+
+function preflightCheckpointPartialGroupCaches(input: {
+  groups: CaseGroup[];
+  resumedResults: Map<number, ExternalMemoryBenchmarkCaseResult>;
+  ingestStateHashByGroup: Map<string, string>;
+  ingestCache: IngestCacheCounters;
+  options: RunExternalMemoryBenchmarkOptions;
+  runtimeIntelligence: RuntimeIntelligenceState;
+}): void {
+  const partialGroups = input.groups.filter((group) => {
+    const resumedCount = group.items.filter((item) => input.resumedResults.has(item.index)).length;
+    return resumedCount > 0 && resumedCount < group.items.length;
+  });
+  if (partialGroups.length === 0) return;
+  if (!input.ingestCache.dir) {
+    throw new Error(
+      "External benchmark checkpoint partial shared groups require an ingest cache directory",
+    );
+  }
+  for (const group of partialGroups) {
+    const expectedHash = input.ingestStateHashByGroup.get(group.key);
+    if (!expectedHash) {
+      throw new Error(
+        `External benchmark checkpoint partial shared group is missing an ingest state hash: ${group.key}`,
+      );
+    }
+    const plan = ingestCachePlan({
+      dir: input.ingestCache.dir,
+      group,
+      options: input.options,
+      runtimeIntelligence: input.runtimeIntelligence,
+    });
+    const tmp = mkdtempSync(path.join(os.tmpdir(), "gmos-checkpoint-cache-preflight-"));
+    const dbPath = path.join(tmp, "group.db");
+    try {
+      if (!copyCacheEntryToGroupDb(
+        plan,
+        dbPath,
+        input.runtimeIntelligence.hooks?.embeddingProvider,
+      )) {
+        throw new Error(
+          `External benchmark checkpoint shared group requires an existing complete ingest cache: ${group.key}`,
+        );
+      }
+      if (fileSha256(dbPath) !== expectedHash) {
+        throw new Error(
+          `External benchmark checkpoint shared group ingest state does not match: ${group.key}`,
+        );
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }
 }
 
 export function runExternalMemoryBenchmark(
@@ -6353,6 +7484,7 @@ async function runExternalMemoryBenchmarkWithCircuit(
         writeSkips: 0,
         writeSkipReasons: new Map(),
       };
+  if (ingestCache.dir) ensurePrivateIngestCacheDirectory(ingestCache.dir);
   const runtimeIntelligence = resolveRuntimeIntelligence({
     intelligence: options.intelligence,
     ingestMode,
@@ -6364,6 +7496,9 @@ async function runExternalMemoryBenchmarkWithCircuit(
     intelligenceConcurrency: options.intelligenceConcurrency,
     providerCircuit,
   });
+  if (ingestCache.dir && !options.checkpoint) {
+    runtimeIntelligence.checkpointArtifactIdentity = runtimeArtifactIdentity();
+  }
   const embedQuery = options.embedQuery ?? runtimeIntelligence.hooks?.embeddingProvider !== undefined;
   runtimeIntelligence.manifest.embedQuery = embedQuery;
   // Measured regression on the 30-case reader benchmark (0.30 -> 0.17):
@@ -6435,14 +7570,57 @@ async function runExternalMemoryBenchmarkWithCircuit(
     ...(answerer ? { answerer } : {}),
   };
   const groups = groupCases(selectedCases, normalizedOptions);
+  const checkpointState = options.checkpoint
+    ? await checkpointStateForRun({
+        checkpoint: options.checkpoint,
+        normalizedCases,
+        selectedCases,
+        groups,
+        sliceSpec,
+        options: normalizedOptions,
+        runtimeIntelligence,
+        answerer,
+        judge,
+      })
+    : null;
+  if (checkpointState) {
+    const hasRunnableSharedGroup = groups.some((group) =>
+      group.items.length > 1 &&
+      group.items.some((item) => !checkpointState.resumedResults.has(item.index))
+    );
+    if (hasRunnableSharedGroup && !ingestCache.dir) {
+      throw new Error(
+        "External benchmark checkpoint shared groups require an ingest cache directory",
+      );
+    }
+    preflightCheckpointPartialGroupCaches({
+      groups,
+      resumedResults: checkpointState.resumedResults,
+      ingestStateHashByGroup: checkpointState.ingestStateHashByGroup,
+      ingestCache,
+      options: normalizedOptions,
+      runtimeIntelligence,
+    });
+  }
   const cases: Array<ExternalMemoryBenchmarkCaseResult | undefined> = new Array(
     selectedCases.length,
   );
-  let completedCount = 0;
-  let passedCount = 0;
+  for (const [caseIndex, result] of checkpointState?.resumedResults ?? []) {
+    cases[caseIndex] = result;
+  }
+  const resumedCaseCount = checkpointState?.resumedResults.size ?? 0;
+  let newlyExecutedCaseCount = 0;
+  let completedCount = resumedCaseCount;
+  let passedCount = [...(checkpointState?.resumedResults.values() ?? [])]
+    .filter((result) => result.pass).length;
   let debugContextFilesWritten = 0;
+  let checkpointPersistenceFailure: unknown;
+  let hasCheckpointPersistenceFailure = false;
+  let checkpointPersistenceQueue: Promise<void> = Promise.resolve();
   const shouldStop = (): boolean =>
-    normalizedOptions.abortSignal?.aborted === true || providerCircuit.outage !== null;
+    normalizedOptions.abortSignal?.aborted === true ||
+    providerCircuit.outage !== null ||
+    hasCheckpointPersistenceFailure;
   const writeDebugReaderContext = (caseId: string, context: string): void => {
     if (
       !normalizedOptions.debugDir ||
@@ -6461,9 +7639,37 @@ async function runExternalMemoryBenchmarkWithCircuit(
       `${context}\n`,
     );
   };
-  const recordResult = (index: number, result: ExternalMemoryBenchmarkCaseResult): void => {
+  const recordResult = async (
+    index: number,
+    result: ExternalMemoryBenchmarkCaseResult,
+    ingestStateHash: string | null,
+  ): Promise<void> => {
+    if (checkpointState) {
+      const entry = createExternalMemoryBenchmarkCheckpointEntry({
+        manifest: checkpointState.manifest,
+        caseIndex: index,
+        ingestStateHash,
+        result,
+      });
+      const persist = normalizedOptions.checkpoint?.persistResult;
+      if (persist) {
+        const operation = checkpointPersistenceQueue.then(async () => {
+          if (hasCheckpointPersistenceFailure) throw checkpointPersistenceFailure;
+          try {
+            await persist(entry);
+          } catch (error) {
+            hasCheckpointPersistenceFailure = true;
+            checkpointPersistenceFailure = error;
+            throw error;
+          }
+        });
+        checkpointPersistenceQueue = operation.catch(() => undefined);
+        await operation;
+      }
+    }
     cases[index] = result;
     completedCount += 1;
+    newlyExecutedCaseCount += 1;
     if (result.pass) passedCount += 1;
     normalizedOptions.onCaseResult?.({
       completedCount,
@@ -6481,17 +7687,36 @@ async function runExternalMemoryBenchmarkWithCircuit(
       result,
     });
   };
-  const groupTimings = await runGroupsWithConcurrency(groups, concurrency, (group) =>
-    runCaseGroup({
+  const runnableGroups = groups.filter((group) =>
+    group.items.some((item) => !checkpointState?.resumedResults.has(item.index))
+  );
+  const groupTimings = await runGroupsWithConcurrency(runnableGroups, concurrency, (group, groupShouldStop) => {
+    const resumedInGroup = group.items.filter(
+      (item) => checkpointState?.resumedResults.has(item.index),
+    ).length;
+    const checkpointCacheMode = checkpointState && group.items.length > 1
+      ? resumedInGroup > 0
+        ? "require_hit" as const
+        : "write_before_scoring" as const
+      : "none" as const;
+    return runCaseGroup({
       group,
+      itemsToScore: group.items.filter(
+        (item) => !checkpointState?.resumedResults.has(item.index),
+      ),
+      checkpointCacheMode,
+      ...(checkpointCacheMode === "require_hit"
+        ? { expectedIngestStateHash: checkpointState?.ingestStateHashByGroup.get(group.key) }
+        : {}),
       options: normalizedOptions,
       runtimeIntelligence,
       providerCircuit,
       ingestCache,
       recordResult,
-      shouldStop,
+      shouldStop: groupShouldStop,
       writeDebugReaderContext,
-    }),
+    });
+  },
     shouldStop,
   );
   const completedCases = cases.filter((entry): entry is ExternalMemoryBenchmarkCaseResult => entry !== undefined);
@@ -6552,6 +7777,9 @@ async function runExternalMemoryBenchmarkWithCircuit(
       totalDatasetCases,
       selectedCases: selectedCases.length,
       executedCases: completedCases.length,
+      resumedCaseCount,
+      newlyExecutedCaseCount,
+      checkpointFingerprint: checkpointState?.manifest.fingerprint ?? null,
       caseGroupCount: groupTimings.filter((group) => group.caseCount > 0).length,
       plannedCaseGroupCount: groups.length,
       options: normalizedOptions,

@@ -321,6 +321,37 @@ to the answerer, capped by `--reader-context-char-limit` (default `4000`; `0`
 disables). If the process is interrupted after case 16, the first 16 case
 artifacts are still on disk.
 
+`--results-jsonl` is a diagnostic stream, not a resumable checkpoint. For a
+paid run that must survive provider quota exhaustion, use
+`--resume-results-jsonl` instead:
+
+```bash
+mkdir -p -m 700 /tmp/gmos-benchmark
+gmos gym external \
+  --input-file ./long-memory-cleaned.json \
+  --dataset-format longmemeval \
+  --protocol official-protocol \
+  --ingest-mode message \
+  --resume-results-jsonl /tmp/gmos-benchmark/longmemeval.results.jsonl \
+  --progress
+```
+
+The resumable journal, immutable `.checkpoint.json` sidecar, lock, ingest
+cache, debug output, report files, and reproduction bundle must live outside
+the gmOS package checkout and use private permissions. If no
+`--ingest-cache-dir` is supplied, the CLI creates a private cache next to the
+journal. A checkout run must start from a clean Git commit; an installed npm
+package is bound to its built artifact and installed dependency digests.
+
+HTTP 429 or 503 opens the run-scoped provider circuit, stops dispatching new
+work, fsyncs every already completed case, writes a partial report, and exits
+75. Re-run the exact command after the provider recovers. Resume is accepted
+only when the code/dependency artifact, normalized dataset and slice, group
+plan, ingest state, provider identity, and scoring options match. API-key
+rotation is allowed because secret values are never stored. Code, endpoint
+route, model, or benchmark-option changes intentionally reject the old
+checkpoint rather than combining incomparable results.
+
 SIGINT/SIGTERM on `gmos gym external` stops dispatching new work, lets the
 current in-flight case finish through the normal timeout path, then writes the
 same JSON, markdown, and reproduction-bundle artifacts with `partial: true`.
@@ -424,7 +455,7 @@ gmos gym external \
   --intelligence-base-url https://provider.example/v1 \
   --intelligence-model provider-chat-model \
   --intelligence-api-key-env GMOS_BENCH_API_KEY \
-  --ingest-cache-dir ./.gmos-ingest-cache \
+  --ingest-cache-dir /tmp/gmos-benchmark/longmemeval-cache \
   --progress \
   --format json
 ```
@@ -579,7 +610,7 @@ gmos gym external \
   --ingest-mode message \
   --intelligence-base-url http://127.0.0.1:11434/v1 \
   --intelligence-model llama3.1 \
-  --ingest-cache-dir ./.gmos-ingest-cache \
+  --ingest-cache-dir /tmp/gmos-benchmark/longmemeval-cache \
   --progress
 ```
 
