@@ -1165,6 +1165,11 @@ export interface ReconstructedContext {
   query: string;
   contextBlock: string;
   memories: MemoryRecord[];
+  contentSurfaces?: {
+    plain: string;
+    temporal: string;
+    referenceDate?: string | undefined;
+  } | undefined;
   evidence: EvidenceEvent[];
   paths: ReconstructedEvidencePath[];
   plannerTrace?: ReconstructedPlannerTrace | undefined;

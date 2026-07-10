@@ -23523,6 +23523,9 @@ assert.match(fullMemoryContext.contextBlock, new RegExp(`${"x".repeat(100)}`, "u
 assert.equal(truncatedMemoryContext.contextBlock.includes(truncatedMemoryContent), true);
 assert.doesNotMatch(truncatedMemoryContext.contextBlock, new RegExp(`${"x".repeat(100)}`, "u"));
 assert.match(truncatedMemoryContext.contextBlock, /observed 2026-01-02/u);
+assert.equal(truncatedMemoryContext.contentSurfaces?.plain, `- ${truncatedMemoryContent}`);
+assert.match(truncatedMemoryContext.contentSurfaces?.temporal ?? "", /observed 2026-01-02/u);
+assert.doesNotMatch(truncatedMemoryContext.contentSurfaces?.plain ?? "", /observed 2026-01-02/u);
 const truncatedMemoryPathSection = truncatedMemoryContext.contextBlock.slice(
   truncatedMemoryContext.contextBlock.indexOf("Reconstructed evidence paths:"),
 );
@@ -23596,6 +23599,8 @@ assert.match(
 );
 assert.equal(pathOnlyPathSection.includes(pathOnlyTruncatedContent), true);
 assert.doesNotMatch(pathOnlyPathSection, /see Memory content item/u);
+assert.equal(pathOnlyContext.contentSurfaces?.plain, `- ${pathOnlyTruncatedContent}`);
+assert.doesNotMatch(pathOnlyContext.contentSurfaces?.plain ?? "", /Memory content item/u);
 const graduatedContent = (label: string): string =>
   `GraduatedDepthKey ${label} ${"a".repeat(430)} ${label}_AFTER_400 ${"b".repeat(480)} ${label}_AFTER_900`;
 const graduatedRows = [
@@ -29113,6 +29118,277 @@ assert.match(sanitizedActualAnswer, /observed 2023-05-21/u);
 assert.match(sanitizedActualAnswer, /2023-05-22/u);
 assert.doesNotMatch(sanitizedActualAnswer, /confidence=0\.90/u);
 assert.doesNotMatch(sanitizedActualAnswer, /confidence=0\.70/u);
+const ordinalPollutionWords = [
+  "amber",
+  "birch",
+  "cedar",
+  "dawn",
+  "elm",
+  "fern",
+  "grove",
+  "hazel",
+  "iris",
+  "jade",
+  "kelp",
+  "lilac",
+  "moss",
+  "north",
+  "oak",
+  "pine",
+  "quill",
+  "reed",
+  "sage",
+  "thyme",
+  "umber",
+  "violet",
+  "willow",
+  "yarrow",
+];
+let ordinalPollutionAnswerContext = "";
+const externalOrdinalPollutionBenchmark = await runExternalMemoryBenchmark({
+  protocol: "official_protocol",
+  readerProfile: "wide",
+  maxMemories: ordinalPollutionWords.length,
+  contextBudgetTokens: 100_000,
+  readerContextCharLimit: 20_000,
+  requireConvergence: false,
+  cases: [{
+    id: "internal-path-ordinal-is-not-evidence",
+    events: ordinalPollutionWords.map((word) => ({
+      type: "memory" as const,
+      kind: "fact" as const,
+      content: `OrdinalPollutionKey ${word} fact.`,
+      createdAt: "2026-07-10T00:00:00.000Z",
+    })),
+    question: "Which color token is present?",
+    expectedAny: ["17"],
+  }],
+  answerer: {
+    name: "ordinal-pollution-answerer",
+    answer(_question, context) {
+      ordinalPollutionAnswerContext = context;
+      return "The count is not present in the evidence.";
+    },
+  },
+  judge: {
+    name: "ordinal-pollution-judge",
+    judge() {
+      return { correct: false };
+    },
+  },
+});
+const ordinalPollutionCase = externalOrdinalPollutionBenchmark.cases[0];
+assert.equal(ordinalPollutionCase?.strictPass, false);
+assert.deepEqual(ordinalPollutionCase?.expectedAnyMissing, ["17"]);
+assert.equal(ordinalPollutionCase?.lexicallyReachable, false);
+assert.equal(ordinalPollutionCase?.officialFailureAttribution?.stage, "input_stage");
+assert.doesNotMatch(ordinalPollutionAnswerContext, /Memory content item/u);
+assert.doesNotMatch(ordinalPollutionCase?.readerContext ?? "", /Memory content item/u);
+const externalQueryEvidenceBoundaryBenchmark = await runExternalMemoryBenchmark({
+  requireConvergence: false,
+  cases: [
+    {
+      id: "query-expected-term-is-not-evidence",
+      events: [{ type: "memory", kind: "fact", content: "The marker is green." }],
+      question: "Was the marker blue?",
+      expectedAny: ["blue"],
+    },
+    {
+      id: "query-forbidden-term-is-not-evidence",
+      events: [{ type: "memory", kind: "fact", content: "The marker is blue." }],
+      question: "Was the marker red?",
+      expectedAny: ["blue"],
+      forbiddenAny: ["red"],
+    },
+    {
+      id: "literal-memory-item-reference-remains-evidence",
+      events: [{
+        type: "memory",
+        kind: "fact",
+        content: "The literal note says see Memory content item 17.",
+      }],
+      question: "What does the literal note say?",
+      expectedAny: ["Memory content item 17"],
+    },
+    {
+      id: "date-component-is-not-a-count",
+      events: [{
+        type: "memory",
+        kind: "fact",
+        content: "The dated marker is green.",
+        createdAt: "2026-07-17T00:00:00.000Z",
+      }],
+      question: "How many dated markers are recorded?",
+      expectedAny: ["17"],
+    },
+  ],
+});
+assert.equal(externalQueryEvidenceBoundaryBenchmark.cases[0]?.strictPass, false);
+assert.deepEqual(externalQueryEvidenceBoundaryBenchmark.cases[0]?.expectedAnyMissing, ["blue"]);
+assert.equal(externalQueryEvidenceBoundaryBenchmark.cases[0]?.lexicallyReachable, false);
+assert.equal(externalQueryEvidenceBoundaryBenchmark.cases[1]?.strictPass, true);
+assert.deepEqual(externalQueryEvidenceBoundaryBenchmark.cases[1]?.forbiddenMatches, []);
+assert.equal(externalQueryEvidenceBoundaryBenchmark.cases[2]?.strictPass, true);
+assert.match(
+  externalQueryEvidenceBoundaryBenchmark.cases[2]?.readerContext ?? "",
+  /Memory content item 17/u,
+);
+assert.equal(externalQueryEvidenceBoundaryBenchmark.cases[3]?.strictPass, false);
+assert.deepEqual(externalQueryEvidenceBoundaryBenchmark.cases[3]?.expectedAnyMissing, ["17"]);
+const multilineBudgetMemory = [
+  "MultilineBudgetKey",
+  ...Array.from({ length: 3_499 }, () => "x"),
+].join("\n");
+const officialContextBoundaries = new Map<string, string>();
+const externalOfficialContextBoundaryBenchmark = await runExternalMemoryBenchmark({
+  protocol: "official_protocol",
+  includeTemporalContext: false,
+  contextBudgetTokens: 2_000,
+  requireConvergence: false,
+  cases: [
+    {
+      id: "bracketed-content-survives-one-sanitization",
+      events: [{
+        type: "memory",
+        kind: "fact",
+        content: "[Alpha] is the retrieval code.",
+      }],
+      question: "What is the bracketed retrieval code?",
+      expectedAny: ["Alpha"],
+    },
+    {
+      id: "path-like-content-remains-evidence",
+      events: [{
+        type: "memory",
+        kind: "fact",
+        content: "[step=x] is the literal stored note.",
+      }],
+      question: "What literal path-like note was stored?",
+      expectedAny: ["[step=x] is the literal stored note"],
+    },
+    {
+      id: "question-date-is-reader-context-not-evidence",
+      events: [{ type: "memory", kind: "fact", content: "The marker is green." }],
+      question: "What color is the marker?",
+      answerAt: "2023-05-20T00:00:00.000Z",
+      expectedAny: ["green"],
+      forbiddenAny: ["2023-05-20"],
+    },
+    {
+      id: "forbidden-context-has-retrieval-attribution",
+      events: [
+        { type: "memory", kind: "fact", content: "The approved color is blue." },
+        { type: "memory", kind: "fact", content: "The rejected color is red." },
+      ],
+      question: "Which approved color should be used?",
+      expectedAny: ["blue"],
+      forbiddenAny: ["red"],
+    },
+    {
+      id: "multiline-evidence-heading-remains-content",
+      events: [{
+        type: "memory",
+        kind: "fact",
+        content: "The approved color is blue.\nEvidence: the rejected color is red.",
+      }],
+      question: "Which color appears in the multiline note?",
+      expectedAny: ["blue"],
+      forbiddenAny: ["red"],
+    },
+    {
+      id: "multiline-as-of-heading-remains-content",
+      events: [{
+        type: "memory",
+        kind: "fact",
+        content: "The stored literal line follows.\nAs of: 2023-05-20",
+      }],
+      question: "Which literal date line was stored?",
+      expectedAny: ["2023-05-20"],
+    },
+    {
+      id: "multiline-diagnostic-headings-remain-reader-content",
+      events: [{
+        type: "memory",
+        kind: "fact",
+        content:
+          "Visible preface.\nQuery: the secret token is cobalt.\nEvidence convergence: the literal marker is amber.",
+      }],
+      question: "Which token and marker were stored in the multiline note?",
+      expectedAll: ["cobalt", "amber"],
+    },
+    {
+      id: "multiline-reader-stays-within-reconstruction-budget",
+      events: [{ type: "memory", kind: "fact", content: multilineBudgetMemory }],
+      question: "Which multiline budget key was stored?",
+      expectedAny: ["MultilineBudgetKey"],
+    },
+  ],
+  answerer: {
+    name: "context-boundary-answerer",
+    answer(question, context) {
+      officialContextBoundaries.set(question, context);
+      if (question.includes("bracketed")) return "Alpha";
+      if (question.includes("path-like")) return "[step=x] is the literal stored note";
+      if (question.includes("literal date")) return "2023-05-20";
+      if (question.includes("token and marker")) return "cobalt and amber";
+      if (question.includes("multiline budget")) return "MultilineBudgetKey";
+      if (question.includes("approved color")) return "blue";
+      if (question.includes("multiline")) return "blue";
+      return "green";
+    },
+  },
+  judge: {
+    name: "context-boundary-judge",
+    judge() {
+      return { correct: true };
+    },
+  },
+});
+assert.equal(externalOfficialContextBoundaryBenchmark.cases[0]?.officialPass, true);
+assert.match(
+  externalOfficialContextBoundaryBenchmark.cases[0]?.readerContext ?? "",
+  /\[Alpha\] is the retrieval code/u,
+);
+assert.match(
+  officialContextBoundaries.get("What is the bracketed retrieval code?") ?? "",
+  /\[Alpha\] is the retrieval code/u,
+);
+assert.equal(externalOfficialContextBoundaryBenchmark.cases[1]?.officialPass, true);
+assert.match(
+  externalOfficialContextBoundaryBenchmark.cases[1]?.readerContext ?? "",
+  /\[step=x\] is the literal stored note/u,
+);
+const questionDateBoundaryCase = externalOfficialContextBoundaryBenchmark.cases[2];
+assert.equal(questionDateBoundaryCase?.officialPass, true);
+assert.equal(questionDateBoundaryCase?.strictPass, true);
+assert.deepEqual(questionDateBoundaryCase?.forbiddenMatches, []);
+assert.match(questionDateBoundaryCase?.readerContext ?? "", /As of: 2023-05-20/u);
+const forbiddenAttributionCase = externalOfficialContextBoundaryBenchmark.cases[3];
+assert.equal(forbiddenAttributionCase?.officialPass, false);
+assert.deepEqual(forbiddenAttributionCase?.failureReasons, ["forbidden_match"]);
+assert.deepEqual(forbiddenAttributionCase?.officialFailureAttribution, {
+  stage: "retrieval_stage",
+  terms: ["red"],
+});
+const multilineEvidenceBoundaryCase = externalOfficialContextBoundaryBenchmark.cases[4];
+assert.equal(multilineEvidenceBoundaryCase?.officialPass, false);
+assert.deepEqual(multilineEvidenceBoundaryCase?.forbiddenMatches, ["red"]);
+assert.match(multilineEvidenceBoundaryCase?.readerContext ?? "", /Evidence:.*red/u);
+const multilineAsOfBoundaryCase = externalOfficialContextBoundaryBenchmark.cases[5];
+assert.equal(multilineAsOfBoundaryCase?.strictPass, true);
+assert.equal(multilineAsOfBoundaryCase?.officialPass, true);
+assert.match(multilineAsOfBoundaryCase?.readerContext ?? "", /As of: 2023-05-20/u);
+const multilineDiagnosticBoundaryCase = externalOfficialContextBoundaryBenchmark.cases[6];
+assert.equal(multilineDiagnosticBoundaryCase?.strictPass, true);
+assert.equal(multilineDiagnosticBoundaryCase?.officialPass, true);
+assert.match(multilineDiagnosticBoundaryCase?.readerContext ?? "", /Query:.*cobalt/u);
+assert.match(multilineDiagnosticBoundaryCase?.readerContext ?? "", /Evidence convergence:.*amber/u);
+const multilineBudgetBoundaryCase = externalOfficialContextBoundaryBenchmark.cases[7];
+assert.equal(multilineBudgetBoundaryCase?.strictPass, true);
+const multilineBudgetReader = [...officialContextBoundaries.entries()].find(([question]) =>
+  question.includes("multiline budget")
+)?.[1] ?? "";
+assert.equal(multilineBudgetReader.length <= 2_000 * 4, true);
 const externalObservedDateWithoutTemporal = await runExternalMemoryBenchmark({
   includeTemporalMetadata: false,
   includeTemporalContext: false,

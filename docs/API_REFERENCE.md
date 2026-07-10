@@ -1312,7 +1312,10 @@ visibility gates as ordinary reads. Defaults are a hard cap of 40 matches per
 cue, 80 matches globally, and a sweep-only token slice of 35% of
 `contextBudgetTokens`; the slice extends the effective prompt budget instead of
 stealing from ordinary content. Stats appear as `stats.sweeps` with per-cue
-`matched`, `included`, and `truncated` counts.
+`matched`, `included`, and `truncated` counts. `contentSurfaces.plain` and
+`contentSurfaces.temporal` expose the exact post-budget answer-bearing text,
+including surviving sweep rows, without query or explainability diagnostics;
+`contentSurfaces.referenceDate` carries a validated `asOf` date separately.
 
 External benchmark runners can enable planner-derived sweep cues with
 `sweepCues: true` or CLI `--sweep-cues on`. This calls the query planner even

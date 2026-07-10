@@ -25,7 +25,9 @@ import os from "node:os";
 import path from "node:path";
 
 import type {
+  ActionPolicy,
   EmbeddingProvider,
+  EvidenceEvent,
   IngestConversationProgress,
   MaintenancePhase,
   MemoryConsolidator,
@@ -40,7 +42,9 @@ import type {
   MemoryProcedureDistiller,
   QueryEmbeddingFailureReason,
   PrivacyMode,
+  PreparedTurn,
   ReconstructedContext,
+  ReconstructedEvidencePath,
   ReconstructionIntentHint,
   ReconstructionLayerCounts,
   ReconstructionLayerPolicy,
@@ -2815,10 +2819,6 @@ function memoriesContainTermOrNormalizedAnswer(memories: MemoryRecord[], term: s
   );
 }
 
-function reconstructedPathsContainTerm(reconstructed: ReconstructedContext | null, term: string): boolean {
-  return reconstructed?.paths.some((pathEntry) => includesTerm(pathEntry.targetSummary, term)) ?? false;
-}
-
 function addTaxonomyEntry(
   entries: ExternalMemoryBenchmarkFailureTaxonomyEntry[],
   stage: ExternalMemoryBenchmarkFailureStage,
@@ -2838,13 +2838,20 @@ function diagnosticContextBudgetTokens(value: number | undefined): number {
   return Math.max(20_000, (value ?? 1800) * 10);
 }
 
-function reconstructedContainsTerm(reconstructed: ReconstructedContext | null, term: string): boolean {
+function reconstructedContainsTerm(
+  reconstructed: ReconstructedContext | null,
+  term: string,
+  options: {
+    includeTemporalContext?: boolean | undefined;
+    includeTemporalMetadata?: boolean | undefined;
+  } = {},
+): boolean {
   if (!reconstructed) return false;
-  return (
-    includesTerm(reconstructed.contextBlock, term) ||
-    memoriesContainTerm(reconstructed.memories, term) ||
-    reconstructedPathsContainTerm(reconstructed, term)
-  );
+  return benchmarkContextContainsTerm(benchmarkContextSurfaces({
+    source: reconstructedBenchmarkContextSource(reconstructed),
+    includeTemporalContext: options.includeTemporalContext,
+    includeTemporalMetadata: options.includeTemporalMetadata,
+  }), term);
 }
 
 function contextContainsTermOrNormalizedAnswer(context: string, term: string): boolean {
@@ -2880,7 +2887,13 @@ async function wideBudgetRunContainsTerm(input: {
       ...(input.options.includeSensitive === true ? { includeSensitive: true } : {}),
       ...(input.readRetrieval ? { retrieval: input.readRetrieval } : {}),
     });
-    return includesTerm(prepared.contextBlock, input.term) || memoriesContainTerm(prepared.memories, input.term);
+    return (
+      benchmarkContextContainsTerm(benchmarkContextSurfaces({
+        source: preparedBenchmarkContextSource(prepared),
+        includeTemporalContext: input.options.includeTemporalContext,
+      }), input.term) ||
+      memoriesContainTerm(prepared.memories, input.term)
+    );
   }
   const asOf = answerAtDate(input.benchmarkCase.answerAt);
   const temporalMode = effectiveTemporalMode(input);
@@ -2904,7 +2917,10 @@ async function wideBudgetRunContainsTerm(input: {
     ...(input.options.includeSensitive === true ? { includeSensitive: true } : {}),
     ...(input.readRetrieval ? { retrieval: input.readRetrieval } : {}),
   });
-  return reconstructedContainsTerm(reconstructed, input.term);
+  return reconstructedContainsTerm(reconstructed, input.term, {
+    includeTemporalContext: input.options.includeTemporalContext,
+    includeTemporalMetadata: input.options.includeTemporalMetadata,
+  });
 }
 
 function reconstructionDiagnostics(
@@ -3011,8 +3027,19 @@ async function failureTaxonomyForCase(input: {
       continue;
     }
     const retrievedTermPresent =
-      includesTerm(input.prepared?.contextBlock ?? "", term) ||
-      reconstructedContainsTerm(input.reconstructed, term) ||
+      benchmarkContextContainsTerm(
+        input.prepared
+          ? benchmarkContextSurfaces({
+              source: preparedBenchmarkContextSource(input.prepared),
+              includeTemporalContext: input.options.includeTemporalContext,
+            })
+          : { reader: "", content: "", temporal: "" },
+        term,
+      ) ||
+      reconstructedContainsTerm(input.reconstructed, term, {
+        includeTemporalContext: input.options.includeTemporalContext,
+        includeTemporalMetadata: input.options.includeTemporalMetadata,
+      }) ||
       memoriesContainTerm(input.prepared?.memories ?? [], term) ||
       memoriesContainTerm(input.reconstructed?.memories ?? [], term);
     if (retrievedTermPresent) {
@@ -3093,39 +3120,25 @@ function questionForAnswerer(benchmarkCase: ExternalMemoryBenchmarkCase): string
   return date ? `Question date: ${date}\n${benchmarkCase.question}` : benchmarkCase.question;
 }
 
-function attributionMissingTerms(
-  benchmarkCase: ExternalMemoryBenchmarkCase,
-  context: string,
-): string[] {
-  const missing: string[] = [];
-  const expectedAny = benchmarkCase.expectedAny ?? [];
-  if (
-    expectedAny.length > 0 &&
-    !expectedAny.some((term) => contextContainsTermOrNormalizedAnswer(context, term))
-  ) {
-    missing.push(...expectedAny);
-  }
-  for (const term of benchmarkCase.expectedAll ?? []) {
-    if (!contextContainsTermOrNormalizedAnswer(context, term)) missing.push(term);
-  }
-  return uniqueTerms(missing);
-}
-
 function officialFailureAttributionForCase(input: {
   protocol: ExternalMemoryBenchmarkProtocol;
   officialPass: boolean | null;
   benchmarkCase: ExternalMemoryBenchmarkCase;
-  context: string;
+  missingExpectedTerms: string[];
+  forbiddenMatches: string[];
   memories: MemoryRecord[];
   ingestMode: ExternalMemoryBenchmarkIngestMode;
 }): ExternalMemoryBenchmarkOfficialFailureAttribution | null {
   if (input.protocol !== "official_protocol" || input.officialPass !== false) return null;
+  if (input.forbiddenMatches.length > 0) {
+    return { stage: "retrieval_stage", terms: uniqueTerms(input.forbiddenMatches) };
+  }
   const terms = uniqueTerms([
     ...(input.benchmarkCase.expectedAll ?? []),
     ...(input.benchmarkCase.expectedAny ?? []),
   ]);
   if (terms.length === 0) return null;
-  const missingFromContext = attributionMissingTerms(input.benchmarkCase, input.context);
+  const missingFromContext = uniqueTerms(input.missingExpectedTerms);
   if (missingFromContext.length === 0) {
     return { stage: "answerer_or_judge_stage", terms };
   }
@@ -3152,6 +3165,12 @@ const CONTEXT_LINE_ANNOTATION_PATTERN = /^(\s*-\s*)\[([^\]]*)\]\s*/gmu;
 const CONTEXT_DIAGNOSTIC_LINE_PATTERN =
   /^(?:Query|Evidence coverage|Evidence convergence|Anchor coverage|Reconstruction uncertainty|Reconstructed evidence paths):.*$/gmu;
 
+const REDUNDANT_MEMORY_PATH_REFERENCE_PATTERN =
+  /^\s*-\s*\[step=[^\]\r\n]*\]\s*see Memory content item [1-9]\d*\s*$/gimu;
+
+const TEMPORAL_EVIDENCE_TERM_PATTERN =
+  /\b(?:observed|event[_ ]?time|valid[_ ]?(?:from|to)|expires?|days?[_ ]?(?:ago|ahead)|utc)\b/iu;
+
 // Sanitization strips kind/confidence/route diagnostics and internal ids from
 // context annotations, but preserves temporal anchors (dates and validity
 // ranges) because the reader needs them for time reasoning.
@@ -3162,11 +3181,128 @@ function judgeSafeContextAnnotation(dash: string, bracketContent: string): strin
 
 function judgeSafeAnswer(actualAnswer: string): string {
   return actualAnswer
+    .replace(REDUNDANT_MEMORY_PATH_REFERENCE_PATTERN, "")
     .replace(CONTEXT_LINE_ANNOTATION_PATTERN, (_match, dash: string, bracket: string) =>
       judgeSafeContextAnnotation(dash, bracket),
     )
     .replace(CONTEXT_DIAGNOSTIC_LINE_PATTERN, "")
     .replace(INTERNAL_RECORD_ID_PATTERN, "[internal-id]");
+}
+
+interface BenchmarkContextSurfaces {
+  reader: string;
+  content: string;
+  temporal: string;
+}
+
+interface BenchmarkContextSource {
+  memories: MemoryRecord[];
+  contentSurfaces?: ReconstructedContext["contentSurfaces"] | undefined;
+  actionPolicies?: ActionPolicy[] | undefined;
+  evidence: EvidenceEvent[];
+  paths?: ReconstructedEvidencePath[] | undefined;
+}
+
+function preparedBenchmarkContextSource(prepared: PreparedTurn): BenchmarkContextSource {
+  return {
+    memories: prepared.memories,
+    actionPolicies: prepared.actionPolicies,
+    evidence: prepared.evidence,
+  };
+}
+
+function reconstructedBenchmarkContextSource(
+  reconstructed: ReconstructedContext,
+): BenchmarkContextSource {
+  return {
+    memories: reconstructed.memories,
+    contentSurfaces: reconstructed.contentSurfaces,
+    evidence: reconstructed.evidence,
+    paths: reconstructed.paths,
+  };
+}
+
+function benchmarkTemporalEvidenceLine(input: {
+  content: string;
+  createdAt?: string | undefined;
+  metadata?: Record<string, unknown> | undefined;
+  includeTemporal: boolean;
+}): string {
+  if (!input.includeTemporal) return input.content;
+  const label = temporalContextLabel(input.createdAt, input.metadata ?? {});
+  return label ? `[${label}] ${input.content}` : input.content;
+}
+
+function benchmarkContextSurfaces(input: {
+  source: BenchmarkContextSource;
+  includeTemporalContext?: boolean | undefined;
+  includeTemporalMetadata?: boolean | undefined;
+}): BenchmarkContextSurfaces {
+  const records = input.source.memories;
+  const contentLines = [
+    ...records.map((memory) => memory.content),
+    ...(input.source.actionPolicies ?? []).map((policy) => policy.text),
+    ...input.source.evidence.map((event) => event.content),
+    ...(input.source.paths ?? []).map((pathEntry) => pathEntry.targetSummary),
+  ];
+  const temporalLines = [
+    ...records.map((memory) =>
+      benchmarkTemporalEvidenceLine({
+        content: memory.content,
+        createdAt: memory.createdAt,
+        metadata: memory.metadata,
+        includeTemporal: input.includeTemporalContext !== false,
+      })
+    ),
+    ...(input.source.actionPolicies ?? []).map((policy) => policy.text),
+    ...input.source.evidence.map((event) =>
+      benchmarkTemporalEvidenceLine({
+        content: event.content,
+        createdAt: event.createdAt,
+        includeTemporal: input.includeTemporalMetadata === true,
+      })
+    ),
+    ...(input.source.paths ?? []).map((pathEntry) =>
+      benchmarkTemporalEvidenceLine({
+        content: pathEntry.targetSummary,
+        createdAt: pathEntry.createdAt,
+        includeTemporal: input.includeTemporalContext !== false,
+      })
+    ),
+  ];
+  const content = input.source.contentSurfaces?.plain ??
+    contentLines.map((line) => `- ${line}`).join("\n");
+  const temporal = input.source.contentSurfaces?.temporal ??
+    temporalLines.map((line) => `- ${line}`).join("\n");
+  const referenceDate = input.source.contentSurfaces?.referenceDate;
+  return {
+    reader: [referenceDate ? `As of: ${referenceDate}` : "", temporal]
+      .filter(Boolean)
+      .join("\n"),
+    content,
+    temporal,
+  };
+}
+
+function temporalEvidenceTerm(term: string): boolean {
+  return dateAnswerMatches(term).length > 0 ||
+    TEMPORAL_EVIDENCE_TERM_PATTERN.test(term) ||
+    /(?:^|\s)\d{1,2}:\d{2}(?::\d{2})?(?:\s|$)/u.test(term);
+}
+
+function benchmarkContextForTerm(surfaces: BenchmarkContextSurfaces, term: string): string {
+  return temporalEvidenceTerm(term) ? surfaces.temporal : surfaces.content;
+}
+
+function benchmarkContextContainsTerm(surfaces: BenchmarkContextSurfaces, term: string): boolean {
+  return includesTerm(benchmarkContextForTerm(surfaces, term), term);
+}
+
+function benchmarkContextContainsNormalizedAnswer(
+  surfaces: BenchmarkContextSurfaces,
+  term: string,
+): boolean {
+  return contextContainsTermOrNormalizedAnswer(benchmarkContextForTerm(surfaces, term), term);
 }
 
 export interface ExternalMemoryBenchmarkOpenAICompatibleHookOptions {
@@ -3751,17 +3887,16 @@ async function officialJudgeResult(input: {
   actualAnswer: string;
 }): Promise<ExternalMemoryBenchmarkJudgeResult | null> {
   if (!input.judge) return null;
-  const actualAnswer = judgeSafeAnswer(input.actualAnswer);
   const openAICompatibleJudge = openAICompatibleExternalBenchmarkJudgeWithCase(input.judge);
   const result = openAICompatibleJudge
     ? await openAICompatibleJudge[OPENAI_COMPATIBLE_EXTERNAL_BENCHMARK_JUDGE_WITH_CASE]({
         benchmarkCase: input.benchmarkCase,
-        actualAnswer,
+        actualAnswer: input.actualAnswer,
       })
     : await input.judge.judge(
         input.benchmarkCase.question,
         expectedAnswerForJudge(input.benchmarkCase),
-        actualAnswer,
+        input.actualAnswer,
       );
   if (!result || typeof result.correct !== "boolean") {
     throw new Error("External benchmark judge result must include a boolean correct field");
@@ -3787,7 +3922,7 @@ function safeDebugFilePart(value: string): string {
 function readerContextForReport(context: string, maxChars: number | undefined): string | undefined {
   const limit = normalizedReaderContextCharLimit(maxChars);
   if (limit === 0) return undefined;
-  const redacted = redactForReport(judgeSafeAnswer(context)).trim();
+  const redacted = redactForReport(context).trim();
   if (redacted.length <= limit) return redacted;
   const suffix = " [truncated]";
   if (limit <= suffix.length) return redacted.slice(0, limit);
@@ -3830,21 +3965,24 @@ async function officialScoringResult(input: {
   judge: ExternalMemoryBenchmarkJudge | undefined;
   answerer: ExternalMemoryBenchmarkAnswerer | undefined;
   benchmarkCase: ExternalMemoryBenchmarkCase;
-  context: string;
+  readerContext: string;
   onProviderFailure: (stage: "answerer" | "judge", error: unknown) => void;
 }): Promise<OfficialScoringResult> {
   if (!input.judge) return { judgeResult: null };
-  const safeContext = judgeSafeAnswer(input.context);
-  let actualAnswer = safeContext;
+  let actualAnswer = input.readerContext;
   let generatedAnswer: string | undefined;
   if (input.answerer) {
     try {
-      const answer = await input.answerer.answer(questionForAnswerer(input.benchmarkCase), safeContext);
+      const answer = await input.answerer.answer(
+        questionForAnswerer(input.benchmarkCase),
+        input.readerContext,
+      );
       if (typeof answer !== "string" || answer.trim().length === 0) {
         throw new Error("External benchmark answerer result must be a non-empty string");
       }
-      actualAnswer = answer.trim();
-      generatedAnswer = boundedReportString(actualAnswer, MAX_RECORDED_GENERATED_ANSWER_CHARS);
+      const generated = answer.trim();
+      actualAnswer = judgeSafeAnswer(generated);
+      generatedAnswer = boundedReportString(generated, MAX_RECORDED_GENERATED_ANSWER_CHARS);
     } catch (error) {
       input.onProviderFailure("answerer", error);
       return { judgeResult: null, answererError: errorForReport(error) };
@@ -6696,25 +6834,45 @@ async function scoreCase(input: {
           ...(input.readRetrieval ? { retrieval: input.readRetrieval } : {}),
         })
       : null;
-  const context = prepared?.contextBlock ?? reconstructed?.contextBlock ?? "";
   if (input.shouldStop()) return null;
-  const readerContext = readerContextForReport(context, input.options.readerContextCharLimit);
+  const contextSource = prepared
+    ? preparedBenchmarkContextSource(prepared)
+    : reconstructed
+      ? reconstructedBenchmarkContextSource(reconstructed)
+      : { memories: [], evidence: [] };
+  const contextSurfaces = benchmarkContextSurfaces({
+    source: contextSource,
+    includeTemporalContext: input.options.includeTemporalContext,
+    includeTemporalMetadata: reconstructed ? input.options.includeTemporalMetadata : false,
+  });
+  const readerContext = readerContextForReport(
+    contextSurfaces.reader,
+    input.options.readerContextCharLimit,
+  );
   const expectedAny = input.benchmarkCase.expectedAny ?? [];
   const expectedAll = input.benchmarkCase.expectedAll ?? [];
   const forbiddenAny = input.benchmarkCase.forbiddenAny ?? [];
-  const expectedAnyMatched = expectedAny.filter((term) => includesTerm(context, term));
+  const expectedAnyMatched = expectedAny.filter((term) =>
+    benchmarkContextContainsTerm(contextSurfaces, term)
+  );
   const expectedAnyNormalizedMatched = expectedAny.filter((term) =>
-    contextContainsTermOrNormalizedAnswer(context, term),
+    benchmarkContextContainsNormalizedAnswer(contextSurfaces, term),
   );
-  const expectedAllMatched = expectedAll.filter((term) => includesTerm(context, term));
+  const expectedAllMatched = expectedAll.filter((term) =>
+    benchmarkContextContainsTerm(contextSurfaces, term)
+  );
   const expectedAllNormalizedMatched = expectedAll.filter((term) =>
-    contextContainsTermOrNormalizedAnswer(context, term),
+    benchmarkContextContainsNormalizedAnswer(contextSurfaces, term),
   );
-  const expectedAllMissing = expectedAll.filter((term) => !includesTerm(context, term));
+  const expectedAllMissing = expectedAll.filter((term) =>
+    !benchmarkContextContainsTerm(contextSurfaces, term)
+  );
   const expectedAllNormalizedMissing = expectedAll.filter(
-    (term) => !contextContainsTermOrNormalizedAnswer(context, term),
+    (term) => !benchmarkContextContainsNormalizedAnswer(contextSurfaces, term),
   );
-  const forbiddenMatches = forbiddenAny.filter((term) => includesTerm(context, term));
+  const forbiddenMatches = forbiddenAny.filter((term) =>
+    benchmarkContextContainsTerm(contextSurfaces, term)
+  );
   const matched: ExternalMemoryBenchmarkCaseMatched = {
     expectedAny: expectedAnyMatched,
     expectedAnyNormalized: expectedAnyNormalizedMatched,
@@ -6750,7 +6908,7 @@ async function scoreCase(input: {
     judge,
     answerer,
     benchmarkCase: input.benchmarkCase,
-    context,
+    readerContext: contextSurfaces.reader,
     onProviderFailure: input.onProviderFailure,
   });
   if (
@@ -6791,7 +6949,8 @@ async function scoreCase(input: {
     protocol,
     officialPass,
     benchmarkCase: input.benchmarkCase,
-    context: judgeSafeAnswer(context),
+    missingExpectedTerms: expectedAnyNormalizedMissing.concat(expectedAllNormalizedMissing),
+    forbiddenMatches,
     memories: input.caseGroupMemories,
     ingestMode: normalizedIngestMode(input.options.ingestMode),
   });

@@ -2744,6 +2744,7 @@ function composeReconstructedContext(input: {
     ];
     return lines.join("\n");
   };
+  let contentSurfaces = { plain: "", temporal: "" };
   const render = (includeSweeps: boolean): string => {
     coverage = evidenceCoverageForPaths(
       publicQuery,
@@ -2801,6 +2802,69 @@ function composeReconstructedContext(input: {
       const printedIndex = printedMemoryIndexForPath(path, rawPath);
       return printedIndex === undefined ? undefined : `see Memory content item ${printedIndex}`;
     };
+    const publicMemories = memories.map((memory) =>
+      publicMemory(memory, hideInternalRouteSignals, privateOutputSignalKeySet)
+    );
+    const surfaceLine = (content: string, temporalSegment: string): string => {
+      const temporal = temporalSegment.replace(/^;\s*/u, "");
+      return temporal ? `${temporal} ${content}` : content;
+    };
+    const memorySurfaceEntries = publicMemories.map((memory) => {
+      const content = truncateMemoryContent(memory.content, capForMemoryId(memory.id, fullIds));
+      return {
+        plain: content,
+        temporal: surfaceLine(
+          content,
+          includeTemporalContext ? temporalContextSegment(memory.createdAt, memory.metadata, asOf) : "",
+        ),
+      };
+    });
+    const pathSurfaceEntries = output.paths.flatMap((path, index) => {
+      if (targetReferenceForPath(path, paths[index]) !== undefined) return [];
+      const content = truncateMemoryContent(path.targetSummary, capForPath(path));
+      return [{
+        plain: content,
+        temporal: surfaceLine(
+          content,
+          includeTemporalContext ? temporalSegmentForPath(path) : "",
+        ),
+      }];
+    });
+    const evidenceSurfaceEntries = evidence.map((event) => ({
+      plain: event.content,
+      temporal: surfaceLine(
+        event.content,
+        input.includeTemporalMetadata ? observedAtSegment(event.createdAt) : "",
+      ),
+    }));
+    const sweepSurfaceEntries = includeSweeps
+      ? sweepCandidates.map((candidate) => {
+          const memory = publicMemory(
+            candidate.memory,
+            hideInternalRouteSignals,
+            privateOutputSignalKeySet,
+          );
+          const content = truncateMemoryContent(memory.content, capForMemoryId(memory.id, fullIds));
+          const temporal = includeTemporalContext
+            ? temporalContextLabel(memory.createdAt, memory.metadata)
+            : "";
+          return {
+            plain: content,
+            temporal: temporal ? `${temporal} ${content}` : content,
+          };
+        })
+      : [];
+    const surfaceEntries = [
+      ...memorySurfaceEntries,
+      ...pathSurfaceEntries,
+      ...evidenceSurfaceEntries,
+      ...sweepSurfaceEntries,
+    ];
+    contentSurfaces = {
+      plain: surfaceEntries.map((entry) => `- ${entry.plain}`).join("\n"),
+      temporal: surfaceEntries.map((entry) => `- ${entry.temporal}`).join("\n"),
+      ...(asOf ? { referenceDate: asOf } : {}),
+    };
     const lines = [
       "<gmos-reconstructed-context>",
       `Query: ${publicQuery}`,
@@ -2814,9 +2878,7 @@ function composeReconstructedContext(input: {
       `Evidence convergence: score=${output.evidenceConvergence.score.toFixed(2)}; reached=${output.evidenceConvergence.reached}; threshold=${output.evidenceConvergence.threshold.toFixed(2)}; pruned=${output.evidenceConvergence.prunedBranchCount}; frontier=${output.evidenceConvergence.frontierRemaining}; stopWhenEvidenceEnough=${output.evidenceConvergence.stopWhenEvidenceEnough}`,
       `Reconstruction uncertainty: ${output.uncertainty.level}${output.uncertainty.reasons.length ? ` (${output.uncertainty.reasons.join(", ")})` : ""}`,
       "Memory content:",
-      ...memories.map((memory) =>
-        publicMemory(memory, hideInternalRouteSignals, privateOutputSignalKeySet)
-      ).map(
+      ...publicMemories.map(
         (memory) =>
           `- [${safePublicLabel(memory.kind)}${includeTemporalContext ? temporalContextSegment(memory.createdAt, memory.metadata, asOf) : ""}; confidence=${memory.confidence.toFixed(2)}] ${truncateMemoryContent(memory.content, capForMemoryId(memory.id, fullIds))}`,
       ),
@@ -2893,6 +2955,7 @@ function composeReconstructedContext(input: {
     query: input.displayQuery ?? input.query,
     contextBlock,
     memories: outputMemories,
+    contentSurfaces,
     evidence,
     paths: output.paths,
     plannerTrace: output.plannerTrace,
