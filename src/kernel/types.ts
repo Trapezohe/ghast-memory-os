@@ -551,8 +551,8 @@ export interface IngestConversationInput {
      */
     overlapMessages?: number | undefined;
     /**
-     * Number of extractor windows to run concurrently.
-     * Results are always persisted in source-window order.
+     * Number of extractor windows and session-distillation groups to run concurrently.
+     * Results are always persisted in source/session order.
      */
     concurrency?: number | undefined;
   } | undefined;
@@ -649,6 +649,11 @@ export interface IngestConversationResult {
 export interface DistillAndAddInput {
   profileId?: string | undefined;
   messages: IngestConversationInput["messages"];
+  /**
+   * Number of session-distillation groups to run concurrently.
+   * Results are always persisted in session order.
+   */
+  concurrency?: number | undefined;
 }
 
 export interface DistillAndAddResult {

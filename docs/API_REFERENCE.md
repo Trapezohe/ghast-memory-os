@@ -56,18 +56,21 @@ Key write methods:
   eligible items through the configured provider's batch size. Ineligible items
   are skipped instead of failing the batch; the result is
   `{ memories, skipped }`, where `skipped` reports each input index and reason.
-- `distillAndAdd({ profileId?, messages })`: records evidence for message-shaped
-  inputs and runs only the configured `sessionDistiller` summary write path. It
-  does not run extraction or turn retention. Use it when a host already imported
-  low-level memories but wants the same session-summary layer and idempotence as
-  `ingestConversation()`.
+- `distillAndAdd({ profileId?, messages, concurrency? })`: records evidence for
+  message-shaped inputs and runs only the configured `sessionDistiller` summary
+  write path. It does not run extraction or turn retention. Use it when a host
+  already imported low-level memories but wants the same session-summary layer
+  and idempotence as `ingestConversation()`. `concurrency` defaults to `1` and
+  bounds provider calls while summary writes remain in deterministic session
+  order.
 - `ingestConversation({ profileId?, messages, window?, extraction?, turnRetention?, sessionDistillation?, consolidateEntities? })`:
   records each message as its own evidence event, then calls the extractor once
   per eligible message window. `window.maxMessages` defaults to `12`; metadata
   `sessionId`, `sessionKey`, or generic `windowId` starts a new window when it
-  changes. `window.concurrency` runs bounded extractor windows in parallel
-  while applying results in window order; the default is `1` unless a caller
-  wires a higher concurrency. `extraction.extractFromRoles` overrides the
+  changes. `window.concurrency` runs bounded extractor windows and
+  session-distillation groups in parallel while applying results in source
+  window/session order; the default is `1` unless a caller wires a higher
+  concurrency. `extraction.extractFromRoles` overrides the
   runtime default for that ingest call. `extraction.replayAttempts` replays
   failed windows once by default; `0` disables replay. `turnRetention` defaults
   to disabled; when `{ enabled: true }`, each eligible message also writes one
@@ -1335,7 +1338,9 @@ whole-call fallback group. Memory ingest first direct-imports eligible memory
 events, then distills consecutive memory batches grouped by metadata session
 identity (`sessionId`, `sessionKey`, `windowId`, `conversationId`, or `sourceId`)
 or, when absent, by the UTC calendar day of `createdAt`. Both modes use the same
-24,000 character per-session input cap as SDK ingest. Per-case results record
+24,000 character per-session input cap as SDK ingest. Session provider calls use
+the configured intelligence concurrency, but persistence remains in stable
+session order. Per-case results record
 `distilledMemoryCount`; manifests record
 `runtimeIntelligence.sessionDistillation` with hook provenance, model/host when
 available, call counts, candidate outcome counts, and total

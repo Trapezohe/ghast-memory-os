@@ -1314,7 +1314,7 @@ interface IngestCacheKeyFields {
 
 const MESSAGE_EXTRACTION_CONTRACT_VERSION = 2;
 const ENTITY_CONSOLIDATION_CONTRACT_VERSION = 2;
-const INGEST_CACHE_IMPLEMENTATION_VERSION = 3;
+const INGEST_CACHE_IMPLEMENTATION_VERSION = 4;
 
 interface IngestCachePlan {
   key: string;
@@ -6604,17 +6604,24 @@ async function applyBenchmarkEvents(input: {
     }
     if (inputs.length > 0) await input.memory.addMany(inputs);
     if (input.sessionDistillation && distillationEvents.length > 0) {
-      for (const group of groupedMemorySessions(distillationEvents)) {
+      const groups = groupedMemorySessions(distillationEvents);
+      const applyDistillationBatch = async (batch: MemorySessionGroup[]): Promise<void> => {
+        if (batch.length === 0) return;
         const distilled = await input.memory.distillAndAdd({
           profileId: input.profileId,
-          messages: group.events.map((event, index) => ({
-            role: "user",
-            content: event.content,
-            conversationId: group.conversationId,
-            messageId: memoryDistillationMessageId(event, group, index),
-            ...(event.createdAt !== undefined ? { createdAt: event.createdAt } : {}),
-            metadata: memoryDistillationMetadata(event, group),
-          })),
+          messages: batch.flatMap((group) =>
+            group.events.map((event, index) => ({
+              role: "user",
+              content: event.content,
+              conversationId: group.conversationId,
+              messageId: memoryDistillationMessageId(event, group, index),
+              ...(event.createdAt !== undefined ? { createdAt: event.createdAt } : {}),
+              metadata: memoryDistillationMetadata(event, group),
+            }))
+          ),
+          ...(input.windowConcurrency !== undefined
+            ? { concurrency: input.windowConcurrency }
+            : {}),
         });
         output.distilledMemoryCount += distilled.distilledMemoryCount;
         output.embeddingCallCount += distilled.embeddingCallCount;
@@ -6626,7 +6633,19 @@ async function applyBenchmarkEvents(input: {
         output.distillationParseFailureCount += distilled.distillationParseFailureCount;
         output.distillationTransportFailureCount += distilled.distillationTransportFailureCount;
         output.distillationFailureCount += distilled.distillationFailureCount;
+      };
+      let batch: MemorySessionGroup[] = [];
+      let sessionIds = new Set<string>();
+      for (const group of groups) {
+        if (sessionIds.has(group.sessionId)) {
+          await applyDistillationBatch(batch);
+          batch = [];
+          sessionIds = new Set<string>();
+        }
+        batch.push(group);
+        sessionIds.add(group.sessionId);
       }
+      await applyDistillationBatch(batch);
     }
   }
 

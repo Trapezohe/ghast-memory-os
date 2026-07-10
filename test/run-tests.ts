@@ -2836,6 +2836,154 @@ assert.equal(
 );
 await perSessionDistillationMemory.close();
 
+async function runSessionDistillationConcurrencyFixture(concurrency: number) {
+  const store = createSqliteMemoryStore({
+    path: path.join(tmp, `session-distillation-concurrency-${concurrency}.db`),
+  });
+  const appliedSessionIds: string[] = [];
+  const recordEvidence = store.recordEvidence.bind(store);
+  store.recordEvidence = (input) => {
+    if (input.sourceType === "conversation.session_distillation") {
+      const sessionId = input.payload?.sessionId;
+      if (typeof sessionId === "string") appliedSessionIds.push(sessionId);
+    }
+    return recordEvidence(input);
+  };
+  let active = 0;
+  let maxActive = 0;
+  const completionOrder: string[] = [];
+  const messages = [1, 2, 3].map((index) => ({
+    conversationId: "session-distillation-concurrency",
+    messageId: `session-distillation-concurrency-${index}`,
+    role: "user" as const,
+    content: `Concurrency session ${index} source.`,
+    createdAt: `2026-07-0${index}T09:00:00.000Z`,
+    metadata: { sessionId: `concurrency-session-${index}` },
+  }));
+  const memory = createMemoryOS({
+    profileId: "session-distillation-concurrency",
+    store,
+    extractor: () => [],
+    sessionDistiller: {
+      name: "reverse-completion-session-distiller",
+      async distill(input) {
+        const sessionId = input.context.sessionId ?? "unknown";
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        try {
+          const delayMs = sessionId === "concurrency-session-1" ? 60 : 5;
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        } finally {
+          active -= 1;
+        }
+        completionOrder.push(sessionId);
+        return [
+          { content: `${input.eventTime}: Summary for ${sessionId}.` },
+          { content: "Shared concurrency summary winner." },
+        ];
+      },
+    },
+  });
+  const ingested = await memory.ingestConversation({
+    profileId: "session-distillation-concurrency",
+    messages,
+    window: { maxMessages: 1, concurrency },
+    extraction: { replayAttempts: 0 },
+    sessionDistillation: true,
+  });
+  const summaries = (await memory.list({
+    profileId: "session-distillation-concurrency",
+    status: "any",
+    includeSensitive: true,
+    limit: 20,
+  }))
+    .filter((memoryRecord) => memoryRecord.metadata.sessionDistillation === true)
+    .map((memoryRecord) => ({
+      content: memoryRecord.content,
+      createdAt: memoryRecord.createdAt,
+      eventTime: memoryRecord.metadata.eventTime,
+      evidenceCount: Array.isArray(memoryRecord.metadata.sessionEvidenceIds)
+        ? memoryRecord.metadata.sessionEvidenceIds.length
+        : 0,
+    }));
+  const countsBeforeReplay = await store.rowCounts();
+  const completionsBeforeReplay = completionOrder.length;
+  const replay = await memory.ingestConversation({
+    profileId: "session-distillation-concurrency",
+    messages,
+    window: { maxMessages: 1, concurrency },
+    extraction: { replayAttempts: 0 },
+    sessionDistillation: true,
+  });
+  const countsAfterReplay = await store.rowCounts();
+  await memory.close();
+  return {
+    maxActive,
+    completionOrder,
+    appliedSessionIds,
+    summaries,
+    replay: {
+      distillationCallCount: replay.distillationCallCount,
+      distilledMemoryCount: replay.distilledMemoryCount,
+      newCompletionCount: completionOrder.length - completionsBeforeReplay,
+      rowCountsUnchanged: JSON.stringify(countsAfterReplay) === JSON.stringify(countsBeforeReplay),
+    },
+    stats: {
+      distillationCallCount: ingested.distillationCallCount,
+      distillationOkWithCandidatesCount: ingested.distillationOkWithCandidatesCount,
+      distillationEmptyCount: ingested.distillationEmptyCount,
+      distillationParseFailureCount: ingested.distillationParseFailureCount,
+      distillationTransportFailureCount: ingested.distillationTransportFailureCount,
+      distillationFailureCount: ingested.distillationFailureCount,
+      distilledMemoryCount: ingested.distilledMemoryCount,
+    },
+  };
+}
+const serialSessionDistillation = await runSessionDistillationConcurrencyFixture(1);
+const parallelSessionDistillation = await runSessionDistillationConcurrencyFixture(2);
+assert.equal(serialSessionDistillation.maxActive, 1);
+assert.equal(parallelSessionDistillation.maxActive, 2);
+assert.deepEqual(serialSessionDistillation.completionOrder, [
+  "concurrency-session-1",
+  "concurrency-session-2",
+  "concurrency-session-3",
+]);
+assert.deepEqual(parallelSessionDistillation.completionOrder, [
+  "concurrency-session-2",
+  "concurrency-session-3",
+  "concurrency-session-1",
+]);
+assert.deepEqual(parallelSessionDistillation.appliedSessionIds, [
+  "concurrency-session-1",
+  "concurrency-session-2",
+  "concurrency-session-3",
+]);
+assert.deepEqual(
+  parallelSessionDistillation.appliedSessionIds,
+  serialSessionDistillation.appliedSessionIds,
+);
+assert.deepEqual(parallelSessionDistillation.summaries, serialSessionDistillation.summaries);
+assert.deepEqual(parallelSessionDistillation.stats, serialSessionDistillation.stats);
+assert.deepEqual(parallelSessionDistillation.replay, {
+  distillationCallCount: 0,
+  distilledMemoryCount: 0,
+  newCompletionCount: 0,
+  rowCountsUnchanged: true,
+});
+const sharedParallelSummary = parallelSessionDistillation.summaries.filter((entry) =>
+  entry.content === "Shared concurrency summary winner."
+);
+assert.equal(sharedParallelSummary.length, 3);
+assert.deepEqual(
+  sharedParallelSummary.map((entry) => entry.createdAt).sort(),
+  [
+    "2026-07-01T09:00:00.000Z",
+    "2026-07-02T09:00:00.000Z",
+    "2026-07-03T09:00:00.000Z",
+  ],
+);
+assert.equal(sharedParallelSummary.every((entry) => entry.evidenceCount === 1), true);
+
 const distillAndAddStore = createSqliteMemoryStore({
   path: path.join(tmp, "session-distillation-distill-and-add.db"),
 });
@@ -2915,6 +3063,7 @@ const failingSessionIngest = await failingSessionDistillationMemory.ingestConver
     createdAt: `2026-07-04T1${index}:00:00.000Z`,
     metadata: { sessionId: `failure-session-${index}` },
   })),
+  window: { concurrency: 2 },
   sessionDistillation: true,
 });
 assert.equal(failingSessionIngest.distillationCallCount, 3);
@@ -32596,6 +32745,9 @@ const externalMemoryModeDistillerInputs: Array<{
   roles: string[];
   createdAts: Array<string | undefined>;
 }> = [];
+let externalMemoryModeDistillerActive = 0;
+let externalMemoryModeDistillerMaxActive = 0;
+const externalMemoryModeDistillerCompletionOrder: string[] = [];
 let externalMemoryModeContext = "";
 const externalMemoryModeDistillationRun = await runExternalMemoryBenchmark({
   cases: [{
@@ -32621,12 +32773,20 @@ const externalMemoryModeDistillationRun = await runExternalMemoryBenchmark({
         createdAt: "2026-07-03T11:00:00.000Z",
         metadata: { windowId: 3 },
       },
+      {
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "Memory-mode raw delta collision session source.",
+        createdAt: "2026-07-04T12:00:00.000Z",
+        metadata: { sessionId: "3" },
+      },
     ],
     question: "Which memory-mode summary marker should be recalled?",
     expectedAny: ["prism summary"],
   }],
   ingestMode: "memory",
   sessionDistillation: true,
+  intelligenceConcurrency: 2,
   readerProfile: "wide",
   protocol: "official_protocol",
   answerer: {
@@ -32645,7 +32805,12 @@ const externalMemoryModeDistillationRun = await runExternalMemoryBenchmark({
   intelligence: {
     sessionDistiller: {
       name: "external-memory-mode-session-distiller",
-      distill(input) {
+      async distill(input) {
+        externalMemoryModeDistillerActive += 1;
+        externalMemoryModeDistillerMaxActive = Math.max(
+          externalMemoryModeDistillerMaxActive,
+          externalMemoryModeDistillerActive,
+        );
         externalMemoryModeDistillerInputs.push({
           eventTime: input.eventTime,
           sessionId: input.context.sessionId,
@@ -32654,13 +32819,27 @@ const externalMemoryModeDistillationRun = await runExternalMemoryBenchmark({
           createdAts: input.messages.map((message) => message.createdAt),
         });
         const text = input.messages.map((message) => message.content).join("\n");
-        const label = text.includes("alpha") ? "alpha" : text.includes("beta") ? "beta" : "gamma";
+        const label = text.includes("alpha")
+          ? "alpha"
+          : text.includes("beta")
+            ? "beta"
+            : text.includes("gamma")
+              ? "gamma"
+              : "delta";
+        try {
+          await new Promise((resolve) => setTimeout(resolve, label === "alpha" ? 60 : 5));
+        } finally {
+          externalMemoryModeDistillerActive -= 1;
+        }
+        externalMemoryModeDistillerCompletionOrder.push(label);
         return [{ content: `${input.eventTime}: Memory-mode prism summary ${label}.` }];
       },
     },
   },
 });
 assert.equal(externalMemoryModeDistillationRun.pass, true);
+assert.equal(externalMemoryModeDistillerMaxActive, 2);
+assert.deepEqual(externalMemoryModeDistillerCompletionOrder, ["beta", "gamma", "alpha", "delta"]);
 assert.deepEqual(externalMemoryModeDistillerInputs, [
   {
     eventTime: "2026-07-01T09:00:00.000Z",
@@ -32683,23 +32862,31 @@ assert.deepEqual(externalMemoryModeDistillerInputs, [
     roles: ["user"],
     createdAts: ["2026-07-03T11:00:00.000Z"],
   },
+  {
+    eventTime: "2026-07-04T12:00:00.000Z",
+    sessionId: "3",
+    messages: ["Memory-mode raw delta collision session source."],
+    roles: ["user"],
+    createdAts: ["2026-07-04T12:00:00.000Z"],
+  },
 ]);
 assert.match(externalMemoryModeContext, /Memory-mode prism summary alpha/u);
 assert.match(externalMemoryModeContext, /Memory-mode prism summary beta/u);
 assert.match(externalMemoryModeContext, /Memory-mode prism summary gamma/u);
-assert.equal(externalMemoryModeDistillationRun.cases[0]?.distilledMemoryCount, 3);
+assert.match(externalMemoryModeContext, /Memory-mode prism summary delta/u);
+assert.equal(externalMemoryModeDistillationRun.cases[0]?.distilledMemoryCount, 4);
 assert.equal(
-  (externalMemoryModeDistillationRun.cases[0]?.reconstructedLayerIncludedCounts?.summary ?? 0) >= 3,
+  (externalMemoryModeDistillationRun.cases[0]?.reconstructedLayerIncludedCounts?.summary ?? 0) >= 4,
   true,
 );
-assert.equal(externalMemoryModeDistillationRun.runManifest.runtimeIntelligence.sessionDistillation.callCount, 3);
+assert.equal(externalMemoryModeDistillationRun.runManifest.runtimeIntelligence.sessionDistillation.callCount, 4);
 assert.equal(
   externalMemoryModeDistillationRun.runManifest.runtimeIntelligence.sessionDistillation.distilledMemoryCount,
-  3,
+  4,
 );
 assert.equal(
   externalMemoryModeDistillationRun.runManifest.runtimeIntelligence.ingestCaseGroups[0]?.distilledMemoryCount,
-  3,
+  4,
 );
 const externalMemoryModeFailureRun = await runExternalMemoryBenchmark({
   cases: [{
@@ -32743,6 +32930,80 @@ assert.deepEqual(externalMemoryModeFailureRun.runManifest.ingestCache.writeSkipR
   name: "distillation_failures",
   count: 1,
 }]);
+const externalMemoryModeOutageCacheDir = path.join(
+  tmp,
+  "external-memory-mode-distillation-provider-outage-cache",
+);
+let externalMemoryModeOutageFetchCalls = 0;
+let externalMemoryModeOutageActive = 0;
+let externalMemoryModeOutageMaxActive = 0;
+let releaseExternalMemoryModeOutageFetches: (() => void) | undefined;
+const externalMemoryModeOutageFetchesReady = new Promise<void>((resolve) => {
+  releaseExternalMemoryModeOutageFetches = resolve;
+});
+const externalMemoryModeOutageBarrierTimeout = setTimeout(
+  () => releaseExternalMemoryModeOutageFetches?.(),
+  250,
+);
+const externalMemoryModeOutageRun = await runExternalMemoryBenchmark({
+  cases: [{
+    id: "external-memory-mode-distiller-provider-outage",
+    events: [1, 2, 3].map((index) => ({
+      type: "memory" as const,
+      kind: "fact" as const,
+      content: `Memory-mode provider outage source ${index}.`,
+      createdAt: `2026-07-0${index}T08:00:00.000Z`,
+      metadata: { sessionId: `memory-mode-outage-${index}` },
+    })),
+    question: "Which provider outage marker survived?",
+    expectedAny: ["none"],
+  }],
+  ingestMode: "memory",
+  sessionDistillation: true,
+  intelligenceConcurrency: 2,
+  ingestCacheDir: externalMemoryModeOutageCacheDir,
+  intelligence: {
+    distillerBaseUrl: "https://distiller-outage.invalid/v1",
+    distillerModel: "distiller-outage-model",
+    retries: 0,
+    fetchImpl: async () => {
+      externalMemoryModeOutageFetchCalls += 1;
+      externalMemoryModeOutageActive += 1;
+      externalMemoryModeOutageMaxActive = Math.max(
+        externalMemoryModeOutageMaxActive,
+        externalMemoryModeOutageActive,
+      );
+      if (externalMemoryModeOutageFetchCalls === 2) {
+        clearTimeout(externalMemoryModeOutageBarrierTimeout);
+        releaseExternalMemoryModeOutageFetches?.();
+      }
+      await externalMemoryModeOutageFetchesReady;
+      externalMemoryModeOutageActive -= 1;
+      return {
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+        headers: { get: () => null },
+        text: async () => "distiller quota exhausted",
+      };
+    },
+  },
+});
+clearTimeout(externalMemoryModeOutageBarrierTimeout);
+assert.equal(externalMemoryModeOutageFetchCalls, 2);
+assert.equal(externalMemoryModeOutageMaxActive, 2);
+assert.equal(externalMemoryModeOutageRun.caseCount, 0);
+assert.equal(externalMemoryModeOutageRun.partial, true);
+assert.equal(externalMemoryModeOutageRun.runManifest.execution.stopReason, "provider_outage");
+assert.equal(externalMemoryModeOutageRun.runManifest.execution.stopStage, "session_distiller");
+assert.equal(externalMemoryModeOutageRun.runManifest.execution.stopHttpStatus, 503);
+assert.equal(externalMemoryModeOutageRun.runManifest.ingestCache.writes, 0);
+assert.equal(externalMemoryModeOutageRun.runManifest.ingestCache.writeSkips, 1);
+assert.deepEqual(externalMemoryModeOutageRun.runManifest.ingestCache.writeSkipReasons, [{
+  name: "distillation_failures",
+  count: 1,
+}]);
+assert.deepEqual(readdirSync(externalMemoryModeOutageCacheDir), []);
 let externalMemoryModeCacheDistillerCalls = 0;
 const externalMemoryModeCacheDistiller: MemorySessionDistiller = {
   name: "external-memory-mode-cache-distiller",

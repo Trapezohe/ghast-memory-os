@@ -127,6 +127,7 @@ import type {
   MemoryOSOptions,
   ResolvedMemoryConsolidationConfig,
   MemorySessionDistillationCandidate,
+  MemorySessionDistillationInput,
   MemorySessionDistillationResult,
   ObserveResult,
   PrepareTurnInput,
@@ -2046,6 +2047,18 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     distillationTruncatedMessageCount: number;
   }
 
+  interface SessionDistillationPlan {
+    group: SessionDistillationGroup;
+    sourceUri: string | null;
+    distillerInput: MemorySessionDistillationInput;
+  }
+
+  interface SessionDistillationCallResult {
+    plan: SessionDistillationPlan;
+    outcome: "ok_with_candidates" | "ok_empty" | "parse_failure" | "transport_failure";
+    candidates: MemoryExtractionCandidate[];
+  }
+
   function emptySessionDistillationStats(): SessionDistillationStats {
     return {
       distilledMemoryCount: 0,
@@ -2168,17 +2181,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     return { messages, truncatedMessageCount };
   }
 
-  async function applySessionDistillationGroup(input: {
+  async function planSessionDistillationGroup(input: {
     profileId: string;
     group: SessionDistillationGroup;
     observedAt: string;
     stats: SessionDistillationStats;
-    embeddingStats: RuntimeEmbeddingStats;
-    dedupeKeys: Set<string>;
-  }): Promise<void> {
-    const distiller = options.sessionDistiller;
+  }): Promise<SessionDistillationPlan | null> {
     const members = input.group.members;
-    if (!distiller || members.length === 0) return;
+    if (members.length === 0) return null;
     const events = members.map((member) => member.event);
     const distillationEventKey = sessionDistillationEventKey({
       profileId: input.profileId,
@@ -2188,7 +2198,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const existingSessionEvidence = store.getEvidenceByEventKey
       ? await store.getEvidenceByEventKey(distillationEventKey)
       : null;
-    if (existingSessionEvidence) return;
+    if (existingSessionEvidence) return null;
     const eventTime = sessionEventTime(members, input.observedAt);
     const conversationId = commonSessionString(members, (member) => member.event.conversationId);
     const sessionId = commonSessionString(members, (member) => windowSessionKey(member.event) ?? undefined);
@@ -2198,7 +2208,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const sessionEvidenceIds = members.map((member) => member.evidence.id);
     const { messages, truncatedMessageCount } = sessionDistillationMessages(members);
     input.stats.distillationTruncatedMessageCount += truncatedMessageCount;
-    const distillerInput = {
+    const distillerInput: MemorySessionDistillationInput = {
       profileId: input.profileId,
       eventTime,
       context: {
@@ -2210,27 +2220,60 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       },
       messages,
     };
-    input.stats.distillationCallCount += 1;
+    return {
+      group: input.group,
+      sourceUri,
+      distillerInput,
+    };
+  }
+
+  async function callSessionDistillationPlan(
+    plan: SessionDistillationPlan,
+    distiller: NonNullable<MemoryOSOptions["sessionDistiller"]>,
+  ): Promise<SessionDistillationCallResult> {
     let rawCandidates: MemorySessionDistillationCandidate[] | null;
     try {
       const result = typeof distiller === "function"
-        ? await distiller(distillerInput)
-        : await distiller.distill(distillerInput);
+        ? await distiller(plan.distillerInput)
+        : await distiller.distill(plan.distillerInput);
       rawCandidates = asSessionDistillationCandidateArray(result);
     } catch (error) {
       const outcome = openAICompatibleOutcomeForError(error);
-      if (outcome === "parse_failure") input.stats.distillationParseFailureCount += 1;
-      else input.stats.distillationTransportFailureCount += 1;
-      return;
+      return { plan, outcome, candidates: [] };
     }
     const candidates = (rawCandidates ?? [])
       .map(normalizeSessionDistillationCandidate)
       .filter((candidate): candidate is MemoryExtractionCandidate => candidate !== null);
-    if (candidates.length === 0) {
+    return {
+      plan,
+      outcome: candidates.length > 0 ? "ok_with_candidates" : "ok_empty",
+      candidates,
+    };
+  }
+
+  async function applySessionDistillationCall(input: {
+    profileId: string;
+    result: SessionDistillationCallResult;
+    stats: SessionDistillationStats;
+    embeddingStats: RuntimeEmbeddingStats;
+  }): Promise<void> {
+    const { plan, outcome, candidates } = input.result;
+    const { context, eventTime } = plan.distillerInput;
+    input.stats.distillationCallCount += 1;
+    if (outcome === "parse_failure") {
+      input.stats.distillationParseFailureCount += 1;
+      return;
+    }
+    if (outcome === "transport_failure") {
+      input.stats.distillationTransportFailureCount += 1;
+      return;
+    }
+    if (outcome === "ok_empty") {
       input.stats.distillationEmptyCount += 1;
       return;
     }
     input.stats.distillationOkWithCandidatesCount += 1;
+    const members = plan.group.members;
     const sessionSourceTrust = members.reduce<SourceTrust>(
       (sourceTrust, member) => lowerTrust(sourceTrust, member.sourceTrust),
       "user",
@@ -2244,18 +2287,18 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     );
     const sessionEvidence = await store.recordEvidence({
       profileId: input.profileId,
-      eventKey: distillationEventKey,
+      eventKey: context.eventKey,
       sourceType: "conversation.session_distillation",
-      sourceUri,
+      sourceUri: plan.sourceUri,
       content: sessionDistillationEvidenceContent(members),
       sensitivity: sessionSensitivity,
       eligibleForLongTermMemory: true,
       payload: {
         purpose: "session_distillation",
         eventTime,
-        evidenceIds: sessionEvidenceIds,
-        conversationId,
-        sessionId,
+        evidenceIds: context.evidenceIds,
+        conversationId: context.conversationId,
+        sessionId: context.sessionId,
       },
       createdAt: eventTime,
     });
@@ -2285,7 +2328,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         sessionDistillationKey: key,
         sessionDistillationEvidenceId: sessionEvidence.id,
         sourceEvidenceId: sessionEvidence.id,
-        sessionEvidenceIds,
+        sessionEvidenceIds: context.evidenceIds,
         eventTime,
       });
     }
@@ -2301,7 +2344,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       sourceTrust: sessionSourceTrust,
       allowLowerTrustPolicyWrites: sessionAllowLowerTrustPolicyWrites,
       sourceEventId: sessionEvidence.id,
-      dedupeKeys: input.dedupeKeys,
+      dedupeKeys: new Set<string>(),
       embeddingStats: input.embeddingStats,
       contextForCandidate: (candidate) => ({
         result: sessionResult,
@@ -2325,11 +2368,40 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     skip: boolean;
     stats: SessionDistillationStats;
     embeddingStats: RuntimeEmbeddingStats;
-    dedupeKeys: Set<string>;
+    concurrency: number;
   }): Promise<void> {
-    if (input.skip || input.members.length === 0) return;
+    const distiller = options.sessionDistiller;
+    if (!distiller || input.skip || input.members.length === 0) return;
+    const plans: SessionDistillationPlan[] = [];
     for (const group of sessionDistillationGroups(input.members, input.observedAt)) {
-      await applySessionDistillationGroup({ ...input, group });
+      const plan = await planSessionDistillationGroup({
+        profileId: input.profileId,
+        group,
+        observedAt: input.observedAt,
+        stats: input.stats,
+      });
+      if (plan) plans.push(plan);
+    }
+    const callResults: Array<SessionDistillationCallResult | undefined> = new Array(plans.length);
+    let next = 0;
+    const workerCount = Math.min(input.concurrency, plans.length);
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (next < plans.length) {
+        const index = next;
+        next += 1;
+        callResults[index] = await callSessionDistillationPlan(plans[index]!, distiller);
+      }
+    }));
+    for (const [index, result] of callResults.entries()) {
+      if (!result) {
+        throw new Error(`gmOS session distillation worker did not produce result ${index}`);
+      }
+      await applySessionDistillationCall({
+        profileId: input.profileId,
+        result,
+        stats: input.stats,
+        embeddingStats: input.embeddingStats,
+      });
     }
   }
 
@@ -3032,7 +3104,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         skip: input.messages.some((message) => message.privacyMode === "incognito"),
         stats: sessionDistillationStats,
         embeddingStats,
-        dedupeKeys,
+        concurrency: windowConcurrency,
       });
     }
     const recordConsolidationSummary = store.recordConsolidationSummary;
@@ -3095,7 +3167,6 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const members: WindowMember[] = [];
     const embeddingStats = emptyRuntimeEmbeddingStats();
     const sessionDistillationStats = emptySessionDistillationStats();
-    const dedupeKeys = new Set<string>();
     for (const message of input.messages) {
       const eventProfileId = profileIdFor(profileId, message.profileId);
       const event: ConversationEvent = {
@@ -3125,7 +3196,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       skip: input.messages.some((message) => message.privacyMode === "incognito"),
       stats: sessionDistillationStats,
       embeddingStats,
-      dedupeKeys,
+      concurrency: boundedPositiveInteger(input.concurrency, 1, 1, 32),
     });
     return {
       profileId,
