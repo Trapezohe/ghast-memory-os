@@ -29625,6 +29625,18 @@ assert.equal(
 );
 assert.equal(entityAggregationOn.runManifest.ingestCache.hits, 0);
 assert.equal(entityAggregationOn.runManifest.ingestCache.misses, 1);
+const entityAggregationCacheMeta = readdirSync(entityAggregationCacheDir)
+  .filter((entry) => entry.endsWith(".meta.json"))
+  .map((entry) => JSON.parse(
+    readFileSync(path.join(entityAggregationCacheDir, entry), "utf8"),
+  ) as {
+    keyFields?: {
+      consolidateEntities?: boolean;
+      entityConsolidation?: { contractVersion?: number };
+    };
+  })
+  .find((meta) => meta.keyFields?.consolidateEntities === true);
+assert.equal(entityAggregationCacheMeta?.keyFields?.entityConsolidation?.contractVersion, 2);
 assert.equal(entityAggregationExtractorCalls, 3);
 entityAggregationConsolidatorCalls.length = 0;
 const entityAggregationCached = await runExternalMemoryBenchmark({

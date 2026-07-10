@@ -1074,6 +1074,9 @@ interface IngestCacheKeyFields {
   ingestMode: ExternalMemoryBenchmarkIngestMode;
   turnRetention: boolean;
   consolidateEntities: boolean;
+  entityConsolidation?: {
+    contractVersion: number;
+  } | undefined;
   sessionDistillation: {
     enabled: boolean;
     name: string | null;
@@ -1104,6 +1107,7 @@ interface IngestCacheKeyFields {
 }
 
 const MESSAGE_EXTRACTION_CONTRACT_VERSION = 2;
+const ENTITY_CONSOLIDATION_CONTRACT_VERSION = 2;
 
 interface IngestCachePlan {
   key: string;
@@ -1186,6 +1190,9 @@ function ingestCacheKeyFields(input: {
     ingestMode: input.options.ingestMode ?? "memory",
     turnRetention: runtime.turnRetention,
     consolidateEntities: runtime.consolidateEntities,
+    ...(runtime.consolidateEntities
+      ? { entityConsolidation: { contractVersion: ENTITY_CONSOLIDATION_CONTRACT_VERSION } }
+      : {}),
     sessionDistillation: {
       enabled: runtime.sessionDistillation.enabled,
       name: runtime.sessionDistillation.name,
