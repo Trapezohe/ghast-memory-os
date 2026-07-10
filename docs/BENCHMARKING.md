@@ -385,10 +385,10 @@ option off so production hosts consciously trade storage for recall.
 
 Session distillation is a separate opt-in with `--session-distill on`. It
 requires either the intelligence config path or hooks that provide
-`sessionDistiller`. In message mode, the hook is called once per session key
-inside each ingest batch, using the same `sessionId`/`sessionKey`/`windowId`
-boundary as extraction windows. Messages without a session key share one
-whole-call fallback group. In memory mode, gmOS direct-imports the raw
+`sessionDistiller`. In message mode, the hook uses the same profile-bound route
+as extraction windows: `sessionId`/`sessionKey`/`windowId` first,
+`conversationId` second, and the current ingest batch only when neither is
+present. In memory mode, gmOS direct-imports the raw
 `type: "memory"` events first, then distills consecutive memory batches grouped
 by metadata session identity (`sessionId`, `sessionKey`, `windowId`,
 `conversationId`, or `sourceId`). If no identity exists, memory mode falls back
@@ -401,6 +401,12 @@ enumerations instead of many scattered raw turns. The cost is one extra model
 call per session. Use it for multi-session totals, counts, purchases, durations,
 and other questions where every instance matters. Leave it off for cheap
 deterministic baselines.
+
+Routing happens before the provider call. The session-distiller hook receives
+the grouped messages, event time, a `[current_session]` marker, and call-local
+evidence aliases; it does not receive the raw session/conversation identifier or
+source URI. Benchmark hooks must derive summaries from message content rather
+than branch on dataset route identities.
 
 Entity consolidation is another message-mode opt-in for aggregation questions
 where extraction emits many facts about the same object. Use

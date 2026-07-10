@@ -1,3 +1,7 @@
+import {
+  GMOS_METADATA_REFERENCE_SCHEMAS,
+  hasGmosMetadataReferenceSchema,
+} from "./metadata-schema.js";
 import type {
   MemoryKind,
   MemoryLifecycleConfig,
@@ -132,7 +136,12 @@ export function retentionScore(
     0,
     1,
   );
-  const annealing = memory.metadata.annealing;
+  const annealing = hasGmosMetadataReferenceSchema(
+    memory.metadata,
+    GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+  )
+    ? memory.metadata.annealing
+    : undefined;
   const annealingCap =
     annealing &&
     typeof annealing === "object" &&

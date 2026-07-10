@@ -5,6 +5,7 @@ import {
   randomBytes,
   scryptSync,
 } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import type Database from "better-sqlite3";
 
@@ -19,7 +20,21 @@ import type {
 } from "../../kernel/types.js";
 import { readGmosPackageInfo, type GmosPackageInfo } from "../../kernel/package-info.js";
 import {
-  classifyPayloadSensitivity,
+  GMOS_EVIDENCE_REFERENCE_SHAPES,
+  GMOS_EVIDENCE_PAYLOAD_SCHEMAS,
+  type GmosEvidenceReferenceShape,
+  type GmosEvidencePayloadSchema,
+} from "../../kernel/evidence-schema.js";
+import {
+  GMOS_METADATA_REFERENCE_SCHEMAS,
+  GMOS_METADATA_REFERENCE_SHAPES,
+  gmosMetadataReferenceSchemas,
+  type GmosMetadataReferenceShape,
+} from "../../kernel/metadata-schema.js";
+import {
+  canonicalEvidenceEventKeyForProfile,
+  classifyEvidenceSensitivity,
+  classifyMemorySensitivity,
   classifySensitivity,
   payloadContainsRestrictedValue,
 } from "../../kernel/safety.js";
@@ -359,10 +374,58 @@ function rowsByIds(
   table: string,
   ids: string[],
 ): Record<string, unknown>[] {
-  if (ids.length === 0) return [];
-  return db
-    .prepare(`SELECT * FROM ${table} WHERE id IN (${ids.map(() => "?").join(", ")})`)
-    .all(...ids) as Record<string, unknown>[];
+  const rows: Record<string, unknown>[] = [];
+  for (let start = 0; start < ids.length; start += 400) {
+    const batch = ids.slice(start, start + 400);
+    rows.push(...db
+      .prepare(`SELECT * FROM ${table} WHERE id IN (${batch.map(() => "?").join(", ")})`)
+      .all(...batch) as Record<string, unknown>[]);
+  }
+  return rows;
+}
+
+function idOwnerRowsByIds(
+  db: Database.Database,
+  table: string,
+  ids: string[],
+): Array<{ id: string; profile_id: string }> {
+  const rows: Array<{ id: string; profile_id: string }> = [];
+  for (let start = 0; start < ids.length; start += 400) {
+    const batch = ids.slice(start, start + 400);
+    rows.push(...db
+      .prepare(
+        `SELECT id, profile_id FROM ${table} WHERE id IN (${batch.map(() => "?").join(", ")})`,
+      )
+      .all(...batch) as Array<{ id: string; profile_id: string }>);
+  }
+  return rows;
+}
+
+function evidenceIdentityRowsByEventKeys(
+  db: Database.Database,
+  eventKeys: string[],
+): Array<Record<string, unknown> & { id: string; event_key: string; profile_id: string }> {
+  const rows: Array<Record<string, unknown> & {
+    id: string;
+    event_key: string;
+    profile_id: string;
+  }> = [];
+  const uniqueKeys = [...new Set(eventKeys)];
+  for (let start = 0; start < uniqueKeys.length; start += 400) {
+    const batch = uniqueKeys.slice(start, start + 400);
+    rows.push(...db
+      .prepare(
+        `SELECT *
+         FROM gmos_evidence_events
+         WHERE event_key IN (${batch.map(() => "?").join(", ")})`,
+      )
+      .all(...batch) as Array<Record<string, unknown> & {
+        id: string;
+        event_key: string;
+        profile_id: string;
+      }>);
+  }
+  return rows;
 }
 
 function memoryRowsForBackup(
@@ -385,8 +448,8 @@ function memoryRowsForBackup(
       .all(...params) as Record<string, unknown>[]
   )
     .map(normalizeMemory)
-    .map(withInferredMemorySensitivity)
-    .filter((memory) => memoryAllowedBySensitivity(memory, options));
+    .map((memory) => withInferredMemorySensitivity(memory, !options.includeSensitive))
+    .filter((memory) => options.includeSensitive || memory.sensitivity === "normal");
 }
 
 function evidenceRowsForBackup(
@@ -407,17 +470,27 @@ function evidenceRowsForBackup(
         .all(profileId) as Record<string, unknown>[]
     )
       .map(normalizeEvidence)
-      .map(withInferredEvidenceSensitivity)
-      .filter((event) => evidenceAllowedBySensitivity(event, options));
+      .map((event) => withInferredEvidenceSensitivity(event, !options.includeSensitive))
+      .filter((event) => options.includeSensitive || event.sensitivity === "normal");
   }
-  const sourceEventIds = [
-    ...new Set(memories.flatMap(memoryEvidenceIds).filter((id): id is string => !!id)),
-  ];
-  return rowsByIds(db, "gmos_evidence_events", sourceEventIds)
-    .map(normalizeEvidence)
-    .map(withInferredEvidenceSensitivity)
-    .filter((event) => event.profileId === profileId && evidenceAllowedBySensitivity(event, options))
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  let pendingIds = [...new Set(memories.flatMap(backupMemoryEvidenceReferenceIds))];
+  const visitedIds = new Set<string>();
+  const events: EvidenceEvent[] = [];
+  while (pendingIds.length > 0) {
+    const batch = [...new Set(pendingIds.filter((id) => !visitedIds.has(id)))];
+    pendingIds = [];
+    batch.forEach((id) => visitedIds.add(id));
+    for (const event of rowsByIds(db, "gmos_evidence_events", batch)
+      .map(normalizeEvidence)
+      .map((event) => withInferredEvidenceSensitivity(event, !options.includeSensitive))) {
+      if (event.profileId !== profileId || (!options.includeSensitive && event.sensitivity !== "normal")) {
+        continue;
+      }
+      events.push(event);
+      pendingIds.push(...evidencePayloadReferenceIds(event));
+    }
+  }
+  return events.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
 }
 
 function worldBeliefRowsForBackup(
@@ -483,54 +556,21 @@ function sensitivityRank(sensitivity: Sensitivity): number {
   return 0;
 }
 
-function maxSensitivity(left: Sensitivity, right: Sensitivity): Sensitivity {
-  return sensitivityRank(left) >= sensitivityRank(right) ? left : right;
-}
-
-function combinedContentSensitivity(values: Array<string | null | undefined>): Sensitivity {
-  return values.reduce<Sensitivity>(
-    (current, value) =>
-      value == null ? current : maxSensitivity(current, classifySensitivity(value)),
-    "normal",
-  );
-}
-
-function memoryInferredSensitivity(memory: MemoryRecord): Sensitivity {
-  return maxSensitivity(
-    combinedContentSensitivity([
-      memory.id,
-      memory.profileId,
-      memory.scope,
-      memory.content,
-      memory.sourceEventId,
-    ]),
-    classifyPayloadSensitivity(memory.metadata),
-  );
-}
-
-function evidenceInferredSensitivity(event: EvidenceEvent): Sensitivity {
-  return maxSensitivity(
-    combinedContentSensitivity([
-      event.id,
-      event.eventKey,
-      event.profileId,
-      event.sourceType,
-      event.sourceUri,
-      event.content,
-    ]),
-    classifyPayloadSensitivity(event.payload),
-  );
-}
-
-function withInferredMemorySensitivity(memory: MemoryRecord): MemoryRecord {
-  const inferred = memoryInferredSensitivity(memory);
+function withInferredMemorySensitivity(
+  memory: MemoryRecord,
+  strictIdentityKeys: boolean,
+): MemoryRecord {
+  const inferred = classifyMemorySensitivity(memory, { strictIdentityKeys });
   return sensitivityRank(inferred) > sensitivityRank(memory.sensitivity)
     ? { ...memory, sensitivity: inferred }
     : memory;
 }
 
-function withInferredEvidenceSensitivity(event: EvidenceEvent): EvidenceEvent {
-  const inferred = evidenceInferredSensitivity(event);
+function withInferredEvidenceSensitivity(
+  event: EvidenceEvent,
+  strictIdentityKeys: boolean,
+): EvidenceEvent {
+  const inferred = classifyEvidenceSensitivity(event, { strictIdentityKeys });
   return sensitivityRank(inferred) > sensitivityRank(event.sensitivity)
     ? { ...event, sensitivity: inferred }
     : event;
@@ -541,13 +581,6 @@ function contentAllowedBySensitivity(
   options: { includeSensitive: boolean },
 ): boolean {
   return options.includeSensitive || classifySensitivity(content) === "normal";
-}
-
-function optionalContentAllowedBySensitivity(
-  content: string | null | undefined,
-  options: { includeSensitive: boolean },
-): boolean {
-  return content == null || contentAllowedBySensitivity(content, options);
 }
 
 function payloadAllowedBySensitivity(
@@ -561,30 +594,16 @@ function memoryAllowedBySensitivity(
   memory: MemoryRecord,
   options: { includeSensitive: boolean },
 ): boolean {
-  return (
-    contentAllowedBySensitivity(memory.id, options) &&
-    contentAllowedBySensitivity(memory.profileId, options) &&
-    contentAllowedBySensitivity(memory.scope, options) &&
-    contentAllowedBySensitivity(memory.content, options) &&
-    optionalContentAllowedBySensitivity(memory.sourceEventId, options) &&
-    payloadAllowedBySensitivity(memory.metadata, options)
-  );
+  return options.includeSensitive ||
+    classifyMemorySensitivity(memory, { strictIdentityKeys: true }) === "normal";
 }
 
 function evidenceAllowedBySensitivity(
   event: EvidenceEvent,
   options: { includeSensitive: boolean },
 ): boolean {
-  return (
-    (options.includeSensitive || event.sensitivity === "normal") &&
-    contentAllowedBySensitivity(event.id, options) &&
-    contentAllowedBySensitivity(event.eventKey, options) &&
-    contentAllowedBySensitivity(event.profileId, options) &&
-    contentAllowedBySensitivity(event.sourceType, options) &&
-    optionalContentAllowedBySensitivity(event.sourceUri, options) &&
-    contentAllowedBySensitivity(event.content, options) &&
-    payloadAllowedBySensitivity(event.payload, options)
-  );
+  return options.includeSensitive ||
+    classifyEvidenceSensitivity(event, { strictIdentityKeys: true }) === "normal";
 }
 
 function beliefAllowedBySensitivity(
@@ -622,13 +641,22 @@ function taskAllowedBySensitivity(
 function withExportedEvidenceClosure(
   memories: MemoryRecord[],
   evidenceEvents: EvidenceEvent[],
+  beliefIds: ReadonlySet<string>,
+  trajectoryIds: ReadonlySet<string>,
 ): MemoryRecord[] {
   const evidenceIds = new Set(evidenceEvents.map((event) => event.id));
+  const memoryIds = new Set(memories.map((memory) => memory.id));
   return memories.map((memory) => ({
     ...memory,
     sourceEventId:
       memory.sourceEventId && evidenceIds.has(memory.sourceEventId) ? memory.sourceEventId : null,
-    metadata: evidenceMetadataWithClosure(memory.metadata, evidenceIds),
+    metadata: mapMemoryMetadataReferences({
+      metadata: memory.metadata,
+      evidence: (id) => evidenceIds.has(id) ? id : null,
+      memory: (id) => memoryIds.has(id) ? id : null,
+      belief: (id) => beliefIds.has(id) ? id : null,
+      trajectory: (id) => trajectoryIds.has(id) ? id : null,
+    }),
   }));
 }
 
@@ -638,41 +666,600 @@ function stringArray(value: unknown): string[] {
     : [];
 }
 
-function memoryEvidenceIds(memory: Pick<MemoryRecord, "sourceEventId" | "metadata">): string[] {
-  return [
-    memory.sourceEventId,
-    ...stringArray(memory.metadata.windowEvidenceIds),
-    typeof memory.metadata.sourceEvidenceId === "string" ? memory.metadata.sourceEvidenceId : null,
-  ].filter((id): id is string => typeof id === "string" && id.length > 0);
+const KNOWN_GMOS_EVIDENCE_PAYLOAD_SCHEMAS = new Set<GmosEvidencePayloadSchema>(
+  Object.values(GMOS_EVIDENCE_PAYLOAD_SCHEMAS),
+);
+
+interface ProvenanceReferenceResolvers {
+  memory(id: string): string | null;
+  belief(id: string): string | null;
+  trajectory(id: string): string | null;
 }
 
-function evidenceMetadataWithClosure(
+function gmosEvidencePayloadSchema(event: EvidenceEvent): GmosEvidencePayloadSchema | null {
+  const marker = event.payload._gmosSchema;
+  if (typeof marker === "string") {
+    return KNOWN_GMOS_EVIDENCE_PAYLOAD_SCHEMAS.has(marker as GmosEvidencePayloadSchema)
+      ? marker as GmosEvidencePayloadSchema
+      : null;
+  }
+  return null;
+}
+
+function gmosEvidenceReferenceShape(event: EvidenceEvent): GmosEvidenceReferenceShape | null {
+  const schema = gmosEvidencePayloadSchema(event);
+  return schema ? GMOS_EVIDENCE_REFERENCE_SHAPES[schema] : null;
+}
+
+function metadataReferenceShapes(
   metadata: Record<string, unknown>,
+): GmosMetadataReferenceShape[] {
+  return gmosMetadataReferenceSchemas(metadata)
+    .map((schema) => GMOS_METADATA_REFERENCE_SHAPES[schema]);
+}
+
+function metadataReferenceKeys(
+  shapes: GmosMetadataReferenceShape[],
+  select: (shape: GmosMetadataReferenceShape) => readonly string[] | undefined,
+): string[] {
+  return [...new Set(shapes.flatMap((shape) => select(shape) ?? []))];
+}
+
+function metadataReferenceIds(
+  metadata: Record<string, unknown>,
+  fieldKeys: string[],
+  arrayKeys: string[],
+): string[] {
+  return [...new Set([
+    ...fieldKeys.flatMap((key) => typeof metadata[key] === "string" ? [metadata[key]] : []),
+    ...arrayKeys.flatMap((key) => stringArray(metadata[key])),
+  ])];
+}
+
+function mapMetadataIdReferences(
+  metadata: Record<string, unknown>,
+  fieldKeys: string[],
+  arrayKeys: string[],
+  resolve: (id: string) => string | null,
+): void {
+  for (const key of fieldKeys) {
+    if (typeof metadata[key] !== "string") continue;
+    const mapped = resolve(metadata[key]);
+    if (mapped) metadata[key] = mapped;
+    else delete metadata[key];
+  }
+  for (const key of arrayKeys) {
+    if (Array.isArray(metadata[key])) metadata[key] = mapIdArray(metadata[key], resolve);
+  }
+}
+
+function backupMemoryEvidenceReferenceIds(
+  memory: Pick<MemoryRecord, "sourceEventId" | "metadata">,
+): string[] {
+  const ids = typeof memory.sourceEventId === "string" && memory.sourceEventId.length > 0
+    ? [memory.sourceEventId]
+    : [];
+  if (
+    !gmosMetadataReferenceSchemas(memory.metadata).includes(
+      GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+    )
+  ) {
+    return ids;
+  }
+  const shape = GMOS_METADATA_REFERENCE_SHAPES[GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage];
+  ids.push(...metadataReferenceIds(
+    memory.metadata,
+    [...(shape.evidenceIdFields ?? [])],
+    [...(shape.evidenceIdArrays ?? [])],
+  ));
+  const annealing = shape.annealingSourceEventId ? memory.metadata.annealing : null;
+  if (
+    isRecord(annealing) &&
+    typeof annealing.sourceEventId === "string" &&
+    annealing.sourceEventId.length > 0
+  ) {
+    ids.push(annealing.sourceEventId);
+  }
+  return [...new Set(ids)];
+}
+
+function evidencePayloadReferenceIds(event: EvidenceEvent): string[] {
+  const shape = gmosEvidenceReferenceShape(event);
+  if (!shape) return [];
+  const payload = event.payload;
+  const ids: string[] = [];
+  for (const key of shape.evidenceIdArrays ?? []) ids.push(...stringArray(payload[key]));
+  for (const key of shape.evidenceIdFields ?? []) {
+    if (typeof payload[key] === "string") ids.push(payload[key]);
+  }
+  for (const key of shape.snapshotArrays ?? []) {
+    if (!Array.isArray(payload[key])) continue;
+    for (const value of payload[key]) {
+      if (!isRecord(value)) continue;
+      ids.push(...backupMemoryEvidenceReferenceIds({
+        sourceEventId: typeof value.sourceEventId === "string" ? value.sourceEventId : null,
+        metadata: isRecord(value.metadata) ? value.metadata : {},
+      }));
+    }
+  }
+  return [...new Set(ids)];
+}
+
+function evidencePayloadMemoryReferenceIds(event: EvidenceEvent): string[] {
+  const shape = gmosEvidenceReferenceShape(event);
+  if (!shape) return [];
+  const payload = event.payload;
+  const ids: string[] = [];
+  for (const key of shape.memoryIdFields ?? []) {
+    if (typeof payload[key] === "string") ids.push(payload[key]);
+  }
+  for (const key of shape.memoryIdArrays ?? []) ids.push(...stringArray(payload[key]));
+  for (const key of [
+    ...(shape.actionArrays ?? []),
+    ...(shape.snapshotArrays ?? []),
+  ]) {
+    if (!Array.isArray(payload[key])) continue;
+    for (const entry of payload[key]) {
+      if (!isRecord(entry)) continue;
+      if (typeof entry.memoryId === "string") ids.push(entry.memoryId);
+      if (isRecord(entry.metadata)) {
+        ids.push(...memoryMetadataMemoryReferenceIds(entry.metadata));
+      }
+    }
+  }
+  const provenanceCredit = shape.provenanceCredit ? payload.provenanceCredit : null;
+  if (isRecord(provenanceCredit) && Array.isArray(provenanceCredit.creditedMemories)) {
+    for (const entry of provenanceCredit.creditedMemories) {
+      if (!isRecord(entry)) continue;
+      for (const key of ["id", "viaMemoryId", "derivedFromMemoryId"] as const) {
+        if (typeof entry[key] === "string") ids.push(entry[key]);
+      }
+      ids.push(...stringArray(entry.path));
+    }
+  }
+  return [...new Set(ids)];
+}
+
+function evidencePayloadBeliefReferenceIds(event: EvidenceEvent): string[] {
+  const shape = gmosEvidenceReferenceShape(event);
+  if (!shape) return [];
+  const ids: string[] = [];
+  for (const key of shape.beliefIdArrays ?? []) ids.push(...stringArray(event.payload[key]));
+  for (const key of shape.snapshotArrays ?? []) {
+    if (!Array.isArray(event.payload[key])) continue;
+    for (const entry of event.payload[key]) {
+      if (isRecord(entry) && isRecord(entry.metadata)) {
+        ids.push(...memoryMetadataBeliefReferenceIds(entry.metadata));
+      }
+    }
+  }
+  return [...new Set(ids)];
+}
+
+function evidencePayloadTrajectoryReferenceIds(event: EvidenceEvent): string[] {
+  const shape = gmosEvidenceReferenceShape(event);
+  if (!shape) return [];
+  const ids: string[] = [];
+  for (const key of shape.trajectoryIdArrays ?? []) ids.push(...stringArray(event.payload[key]));
+  for (const key of shape.snapshotArrays ?? []) {
+    if (!Array.isArray(event.payload[key])) continue;
+    for (const entry of event.payload[key]) {
+      if (isRecord(entry) && isRecord(entry.metadata)) {
+        ids.push(...memoryMetadataTrajectoryReferenceIds(entry.metadata));
+      }
+    }
+  }
+  return [...new Set(ids)];
+}
+
+function mapEvidencePayloadMemoryReferences(
+  value: Record<string, unknown>,
+  shape: GmosEvidenceReferenceShape,
+  resolve: (id: string) => string | null,
+  targetProfileId?: string,
+): Record<string, unknown> {
+  const next = { ...value };
+  for (const key of shape.memoryIdFields ?? []) {
+    if (typeof next[key] !== "string") continue;
+    const mapped = resolve(next[key]);
+    if (mapped) next[key] = mapped;
+    else delete next[key];
+  }
+  for (const key of shape.memoryIdArrays ?? []) {
+    if (!Array.isArray(next[key])) continue;
+    next[key] = stringArray(next[key]).flatMap((id) => {
+      const mapped = resolve(id);
+      return mapped ? [mapped] : [];
+    });
+  }
+  for (const key of shape.actionArrays ?? []) {
+    if (!Array.isArray(next[key])) continue;
+    next[key] = next[key].flatMap((entry) => {
+      if (!isRecord(entry)) return [entry];
+      const mapped = typeof entry.memoryId === "string" ? resolve(entry.memoryId) : null;
+      if (typeof entry.memoryId === "string" && !mapped) return [];
+      return [{ ...entry, ...(mapped ? { memoryId: mapped } : {}) }];
+    });
+  }
+  for (const key of shape.snapshotArrays ?? []) {
+    if (!Array.isArray(next[key])) continue;
+    next[key] = next[key].flatMap((entry) => {
+      if (!isRecord(entry)) return [entry];
+      const mapped = typeof entry.memoryId === "string" ? resolve(entry.memoryId) : null;
+      if (typeof entry.memoryId === "string" && !mapped) return [];
+      return [{
+        ...entry,
+        ...(mapped ? { memoryId: mapped } : {}),
+        ...(targetProfileId && typeof entry.profileId === "string"
+          ? { profileId: targetProfileId }
+          : {}),
+      }];
+    });
+  }
+  if (
+    shape.provenanceCredit && isRecord(next.provenanceCredit) &&
+    Array.isArray(next.provenanceCredit.creditedMemories)
+  ) {
+    next.provenanceCredit = {
+      ...next.provenanceCredit,
+      creditedMemories: next.provenanceCredit.creditedMemories.flatMap((entry) => {
+        if (!isRecord(entry) || typeof entry.id !== "string") return [entry];
+        const id = resolve(entry.id);
+        if (!id) return [];
+        const mappedEntry: Record<string, unknown> = { ...entry, id };
+        for (const key of ["viaMemoryId", "derivedFromMemoryId"] as const) {
+          if (typeof mappedEntry[key] !== "string") continue;
+          const mapped = resolve(mappedEntry[key]);
+          if (mapped) mappedEntry[key] = mapped;
+          else delete mappedEntry[key];
+        }
+        if (Array.isArray(mappedEntry.path)) {
+          mappedEntry.path = stringArray(mappedEntry.path).flatMap((memoryId) => {
+            const mapped = resolve(memoryId);
+            return mapped ? [mapped] : [];
+          });
+        }
+        return [mappedEntry];
+      }),
+    };
+  }
+  return next;
+}
+
+function mapEvidencePayloadProvenanceReferences(
+  value: Record<string, unknown>,
+  shape: GmosEvidenceReferenceShape,
+  resolve: ProvenanceReferenceResolvers,
+): Record<string, unknown> {
+  const next = { ...value };
+  for (const [keys, resolver] of [
+    [shape.beliefIdArrays ?? [], resolve.belief],
+    [shape.trajectoryIdArrays ?? [], resolve.trajectory],
+  ] as const) {
+    for (const key of keys) {
+      if (!Array.isArray(next[key])) continue;
+      next[key] = stringArray(next[key]).flatMap((id) => {
+        const mapped = resolver(id);
+        return mapped ? [mapped] : [];
+      });
+    }
+  }
+  if (
+    shape.provenanceCredit && isRecord(next.provenanceCredit) &&
+    Array.isArray(next.provenanceCredit.creditedProvenance)
+  ) {
+    next.provenanceCredit = {
+      ...next.provenanceCredit,
+      creditedProvenance: next.provenanceCredit.creditedProvenance.flatMap((entry) => {
+        if (!isRecord(entry) || typeof entry.id !== "string") return [entry];
+        const sourceResolver = entry.sourceType === "world_belief"
+          ? resolve.belief
+          : entry.sourceType === "task_trajectory" ? resolve.trajectory : null;
+        if (!sourceResolver) return [entry];
+        const id = sourceResolver(entry.id);
+        if (!id) return [];
+        const mappedEntry: Record<string, unknown> = { ...entry, id };
+        for (const key of ["viaMemoryId", "derivedFromMemoryId"] as const) {
+          if (typeof mappedEntry[key] !== "string") continue;
+          const mapped = resolve.memory(mappedEntry[key]);
+          if (mapped) mappedEntry[key] = mapped;
+          else delete mappedEntry[key];
+        }
+        if (Array.isArray(mappedEntry.path)) {
+          mappedEntry.path = stringArray(mappedEntry.path).flatMap((sourceId) => {
+            const mapped = resolve.memory(sourceId) ?? sourceResolver(sourceId);
+            return mapped ? [mapped] : [];
+          });
+        }
+        return [mappedEntry];
+      }),
+    };
+  }
+  return next;
+}
+
+function mapIdArray(
+  value: unknown,
+  resolve: (id: string) => string | null,
+): string[] {
+  return stringArray(value).flatMap((id) => {
+    const mapped = resolve(id);
+    return mapped ? [mapped] : [];
+  });
+}
+
+function archiveReason(metadata: Record<string, unknown>): string | null {
+  return isRecord(metadata.archive) && typeof metadata.archive.reason === "string"
+    ? metadata.archive.reason
+    : null;
+}
+
+function mapMemoryMetadataReferences(input: {
+  metadata: Record<string, unknown>;
+  evidence: (id: string) => string | null;
+  memory: (id: string) => string | null;
+  belief: (id: string) => string | null;
+  trajectory: (id: string) => string | null;
+}): Record<string, unknown> {
+  const shapes = metadataReferenceShapes(input.metadata);
+  const keys = (
+    select: (shape: GmosMetadataReferenceShape) => readonly string[] | undefined,
+  ): string[] => metadataReferenceKeys(shapes, select);
+  const next = { ...input.metadata };
+  mapMetadataIdReferences(
+    next,
+    keys((shape) => shape.evidenceIdFields),
+    keys((shape) => shape.evidenceIdArrays),
+    input.evidence,
+  );
+  mapMetadataIdReferences(
+    next,
+    keys((shape) => shape.memoryIdFields),
+    keys((shape) => shape.memoryIdArrays),
+    input.memory,
+  );
+  mapMetadataIdReferences(next, [], keys((shape) => shape.beliefIdArrays), input.belief);
+  mapMetadataIdReferences(next, [], keys((shape) => shape.trajectoryIdArrays), input.trajectory);
+
+  if (shapes.some((shape) => shape.annealingSourceEventId) && isRecord(input.metadata.annealing)) {
+    const annealing = { ...input.metadata.annealing };
+    if (typeof annealing.sourceEventId === "string") {
+      const mapped = input.evidence(annealing.sourceEventId);
+      if (mapped) annealing.sourceEventId = mapped;
+      else delete annealing.sourceEventId;
+    }
+    next.annealing = annealing;
+  }
+  for (const field of new Set(shapes.flatMap((shape) =>
+    shape.sourceIndexEvidenceField ? [shape.sourceIndexEvidenceField] : []
+  ))) {
+    const id = typeof input.metadata[field] === "string" ? input.metadata[field] : null;
+    if (Object.hasOwn(input.metadata, "sourceIndex") && (!id || !input.evidence(id))) {
+      delete next.sourceIndex;
+    }
+  }
+  for (const field of new Set(shapes.flatMap((shape) =>
+    shape.sessionKeyEvidenceField ? [shape.sessionKeyEvidenceField] : []
+  ))) {
+    const id = typeof input.metadata[field] === "string" ? input.metadata[field] : null;
+    const mapped = id ? input.evidence(id) : null;
+    if (id && mapped && typeof input.metadata.sessionDistillationKey === "string" &&
+      input.metadata.sessionDistillationKey.startsWith(`${id}:`)) {
+      next.sessionDistillationKey = `${mapped}:${input.metadata.sessionDistillationKey.slice(id.length + 1)}`;
+    } else if (!mapped) delete next.sessionDistillationKey;
+  }
+  const reason = archiveReason(input.metadata);
+  for (const prefix of keys((shape) => shape.archiveReasonMemoryPrefixes)) {
+    if (!reason?.startsWith(prefix) || !isRecord(input.metadata.archive)) continue;
+    const mapped = input.memory(reason.slice(prefix.length));
+    next.archive = {
+      ...input.metadata.archive,
+      reason: mapped ? `${prefix}${mapped}` : prefix.replace(/_by:$/u, ""),
+    };
+    break;
+  }
+  return next;
+}
+
+function mapFailureMetadataReferences(
+  metadata: Record<string, unknown>,
+  resolveMemory: (id: string) => string | null,
+): Record<string, unknown> {
+  const next = { ...metadata };
+  if (!gmosMetadataReferenceSchemas(metadata).includes(
+    GMOS_METADATA_REFERENCE_SCHEMAS.failureMemoryLinks,
+  )) return next;
+  const shape = GMOS_METADATA_REFERENCE_SHAPES[GMOS_METADATA_REFERENCE_SCHEMAS.failureMemoryLinks];
+  mapMetadataIdReferences(
+    next,
+    [...(shape.memoryIdFields ?? [])],
+    [...(shape.memoryIdArrays ?? [])],
+    resolveMemory,
+  );
+  return next;
+}
+
+function memoryMetadataMemoryReferenceIds(
+  metadata: Record<string, unknown>,
+): string[] {
+  const shapes = metadataReferenceShapes(metadata);
+  const ids = metadataReferenceIds(
+    metadata,
+    metadataReferenceKeys(shapes, (shape) => shape.memoryIdFields),
+    metadataReferenceKeys(shapes, (shape) => shape.memoryIdArrays),
+  );
+  const reason = archiveReason(metadata);
+  for (const prefix of metadataReferenceKeys(shapes, (shape) => shape.archiveReasonMemoryPrefixes)) {
+    if (reason?.startsWith(prefix)) ids.push(reason.slice(prefix.length));
+  }
+  return [...new Set(ids)];
+}
+
+function memoryMetadataBeliefReferenceIds(metadata: Record<string, unknown>): string[] {
+  const shapes = metadataReferenceShapes(metadata);
+  return metadataReferenceIds(
+    metadata,
+    [],
+    metadataReferenceKeys(shapes, (shape) => shape.beliefIdArrays),
+  );
+}
+
+function memoryMetadataTrajectoryReferenceIds(metadata: Record<string, unknown>): string[] {
+  const shapes = metadataReferenceShapes(metadata);
+  return metadataReferenceIds(
+    metadata,
+    [],
+    metadataReferenceKeys(shapes, (shape) => shape.trajectoryIdArrays),
+  );
+}
+
+function failureMetadataMemoryReferenceIds(metadata: Record<string, unknown>): string[] {
+  if (!gmosMetadataReferenceSchemas(metadata).includes(
+    GMOS_METADATA_REFERENCE_SCHEMAS.failureMemoryLinks,
+  )) return [];
+  const shape = GMOS_METADATA_REFERENCE_SHAPES[GMOS_METADATA_REFERENCE_SCHEMAS.failureMemoryLinks];
+  return metadataReferenceIds(
+    metadata,
+    [...(shape.memoryIdFields ?? [])],
+    [...(shape.memoryIdArrays ?? [])],
+  );
+}
+
+function evidencePayloadWithClosure(
+  event: EvidenceEvent,
   evidenceIds: ReadonlySet<string>,
-): Record<string, unknown> {
-  const next = { ...metadata };
-  const windowEvidenceIds = stringArray(next.windowEvidenceIds).filter((id) => evidenceIds.has(id));
-  if (windowEvidenceIds.length > 0) next.windowEvidenceIds = windowEvidenceIds;
-  else delete next.windowEvidenceIds;
-  if (typeof next.sourceEvidenceId === "string" && !evidenceIds.has(next.sourceEvidenceId)) {
-    delete next.sourceEvidenceId;
-    delete next.sourceIndex;
+  memoryIds: ReadonlySet<string>,
+  beliefIds: ReadonlySet<string>,
+  trajectoryIds: ReadonlySet<string>,
+): EvidenceEvent {
+  const schema = gmosEvidencePayloadSchema(event);
+  if (!schema) return event;
+  const shape = GMOS_EVIDENCE_REFERENCE_SHAPES[schema];
+  const payload = { ...event.payload };
+  for (const key of shape.evidenceIdArrays ?? []) {
+    if (Array.isArray(payload[key])) {
+      payload[key] = stringArray(payload[key]).filter((id) => evidenceIds.has(id));
+    }
   }
-  return next;
+  for (const key of shape.evidenceIdFields ?? []) {
+    if (typeof payload[key] === "string" && !evidenceIds.has(payload[key])) delete payload[key];
+  }
+  for (const key of shape.snapshotArrays ?? []) {
+    if (!Array.isArray(payload[key])) continue;
+    payload[key] = payload[key].flatMap((value) => {
+      if (!isRecord(value)) return value;
+      return {
+        ...value,
+        sourceEventId: typeof value.sourceEventId === "string" && evidenceIds.has(value.sourceEventId)
+          ? value.sourceEventId
+          : null,
+        ...(isRecord(value.metadata)
+          ? {
+              metadata: mapMemoryMetadataReferences({
+                metadata: value.metadata,
+                evidence: (id) => evidenceIds.has(id) ? id : null,
+                memory: (id) => memoryIds.has(id) ? id : null,
+                belief: (id) => beliefIds.has(id) ? id : null,
+                trajectory: (id) => trajectoryIds.has(id) ? id : null,
+              }),
+            }
+          : {}),
+      };
+    });
+  }
+  return {
+    ...event,
+    payload: {
+      ...mapEvidencePayloadProvenanceReferences(
+        mapEvidencePayloadMemoryReferences(
+          payload,
+          shape,
+          (id) => memoryIds.has(id) ? id : null,
+        ),
+        shape,
+        {
+          memory: (id) => memoryIds.has(id) ? id : null,
+          belief: (id) => beliefIds.has(id) ? id : null,
+          trajectory: (id) => trajectoryIds.has(id) ? id : null,
+        },
+      ),
+      _gmosSchema: schema,
+    },
+  };
 }
 
-function remapEvidenceMetadata(
-  metadata: Record<string, unknown>,
+function remapEvidenceIdArray(value: unknown, evidenceIdMap: ReadonlyMap<string, string>): string[] {
+  return stringArray(value).flatMap((id) => {
+    const mapped = evidenceIdMap.get(id);
+    return mapped ? [mapped] : [];
+  });
+}
+
+function remapEvidencePayload(
+  event: EvidenceEvent,
   evidenceIdMap: ReadonlyMap<string, string>,
+  memoryIdMap: ReadonlyMap<string, string>,
+  beliefIdMap: ReadonlyMap<string, string>,
+  trajectoryIdMap: ReadonlyMap<string, string>,
+  targetProfileId: string,
 ): Record<string, unknown> {
-  const next = { ...metadata };
-  const windowEvidenceIds = stringArray(next.windowEvidenceIds)
-    .map((id) => evidenceIdMap.get(id) ?? id);
-  if (windowEvidenceIds.length > 0) next.windowEvidenceIds = windowEvidenceIds;
-  if (typeof next.sourceEvidenceId === "string") {
-    next.sourceEvidenceId = evidenceIdMap.get(next.sourceEvidenceId) ?? next.sourceEvidenceId;
+  const schema = gmosEvidencePayloadSchema(event);
+  if (!schema) return event.payload;
+  const shape = GMOS_EVIDENCE_REFERENCE_SHAPES[schema];
+  const payload = event.payload;
+  const next = { ...payload };
+  for (const key of shape.evidenceIdArrays ?? []) {
+    if (Array.isArray(next[key])) {
+      next[key] = remapEvidenceIdArray(next[key], evidenceIdMap);
+    }
   }
-  return next;
+  for (const key of shape.evidenceIdFields ?? []) {
+    if (typeof next[key] !== "string") continue;
+    const mapped = evidenceIdMap.get(next[key]);
+    if (mapped) next[key] = mapped;
+    else delete next[key];
+  }
+  const memoryMapped = mapEvidencePayloadMemoryReferences(
+    next,
+    shape,
+    (id) => memoryIdMap.get(id) ?? null,
+    targetProfileId,
+  );
+  for (const key of shape.snapshotArrays ?? []) {
+    if (!Array.isArray(memoryMapped[key])) continue;
+    memoryMapped[key] = memoryMapped[key].map((value) => {
+      if (!isRecord(value)) return value;
+      return {
+        ...value,
+        ...(typeof value.sourceEventId === "string"
+          ? { sourceEventId: evidenceIdMap.get(value.sourceEventId) ?? null }
+          : {}),
+        ...(isRecord(value.metadata)
+          ? {
+              metadata: mapMemoryMetadataReferences({
+                metadata: value.metadata,
+                evidence: (id) => evidenceIdMap.get(id) ?? null,
+                memory: (id) => memoryIdMap.get(id) ?? null,
+                belief: (id) => beliefIdMap.get(id) ?? null,
+                trajectory: (id) => trajectoryIdMap.get(id) ?? null,
+              }),
+            }
+          : {}),
+      };
+    });
+  }
+  return {
+    ...mapEvidencePayloadProvenanceReferences(
+      memoryMapped,
+      shape,
+      {
+        memory: (id) => memoryIdMap.get(id) ?? null,
+        belief: (id) => beliefIdMap.get(id) ?? null,
+        trajectory: (id) => trajectoryIdMap.get(id) ?? null,
+      },
+    ),
+    _gmosSchema: schema,
+  };
 }
 
 export function exportSqliteProfileBackup(
@@ -685,17 +1272,43 @@ export function exportSqliteProfileBackup(
     throw new Error("gmOS profile backup profileId requires includeSensitive=true");
   }
   const memoryRows = memoryRowsForBackup(db, profileId, options);
-  const evidenceEvents = evidenceRowsForBackup(db, profileId, memoryRows, options);
-  const memories = withExportedEvidenceClosure(memoryRows, evidenceEvents);
-  const worldBeliefs = worldBeliefRowsForBackup(db, profileId, memories, options).filter((belief) =>
-    beliefAllowedBySensitivity(belief, options),
+  const evidenceRows = evidenceRowsForBackup(db, profileId, memoryRows, options);
+  const evidenceIds = new Set(evidenceRows.map((event) => event.id));
+  const memoryIds = new Set(memoryRows.map((memory) => memory.id));
+  const rawWorldBeliefs = worldBeliefRowsForBackup(db, profileId, memoryRows, options)
+    .filter((belief) => beliefAllowedBySensitivity(belief, options));
+  const taskTrajectories = taskRowsForBackup(db, profileId, options)
+    .filter((trajectory) => taskAllowedBySensitivity(trajectory, options));
+  const beliefIds = new Set(rawWorldBeliefs.map((belief) => belief.id));
+  const trajectoryIds = new Set(taskTrajectories.map((trajectory) => trajectory.id));
+  const worldBeliefs = rawWorldBeliefs.map((belief) => ({
+    ...belief,
+    metadata: mapMemoryMetadataReferences({
+      metadata: belief.metadata ?? {},
+      evidence: (id) => evidenceIds.has(id) ? id : null,
+      memory: (id) => memoryIds.has(id) ? id : null,
+      belief: (id) => beliefIds.has(id) ? id : null,
+      trajectory: (id) => trajectoryIds.has(id) ? id : null,
+    }),
+  }));
+  const evidenceEvents = evidenceRows.map((event) =>
+    evidencePayloadWithClosure(event, evidenceIds, memoryIds, beliefIds, trajectoryIds)
   );
-  const failureEvents = failureRowsForBackup(db, profileId, options).filter((failure) =>
-    failureAllowedBySensitivity(failure, options),
+  const memories = withExportedEvidenceClosure(
+    memoryRows,
+    evidenceEvents,
+    beliefIds,
+    trajectoryIds,
   );
-  const taskTrajectories = taskRowsForBackup(db, profileId, options).filter((trajectory) =>
-    taskAllowedBySensitivity(trajectory, options),
-  );
+  const failureEvents = failureRowsForBackup(db, profileId, options)
+    .filter((failure) => failureAllowedBySensitivity(failure, options))
+    .map((failure) => ({
+      ...failure,
+      metadata: mapFailureMetadataReferences(
+        failure.metadata,
+        (id) => memoryIds.has(id) ? id : null,
+      ),
+    }));
   return {
     schema: PROFILE_BUNDLE_SCHEMA,
     exportedAt: nowIso(),
@@ -949,6 +1562,39 @@ function assertTaskTrajectoryRecord(
   assertString(value.createdAt, `${path}.createdAt`);
 }
 
+function assertKnownCreditedProvenanceReferences(input: {
+  event: EvidenceEvent;
+  index: number;
+  memoryIds: ReadonlySet<string>;
+  beliefIds: ReadonlySet<string>;
+  trajectoryIds: ReadonlySet<string>;
+}): void {
+  const shape = gmosEvidenceReferenceShape(input.event);
+  if (!shape?.provenanceCredit) return;
+  const provenanceCredit = input.event.payload.provenanceCredit;
+  if (!isRecord(provenanceCredit) || !Array.isArray(provenanceCredit.creditedProvenance)) return;
+  for (const [creditIndex, entry] of provenanceCredit.creditedProvenance.entries()) {
+    if (!isRecord(entry) || typeof entry.id !== "string") continue;
+    const sourceIds = entry.sourceType === "world_belief"
+      ? input.beliefIds
+      : entry.sourceType === "task_trajectory" ? input.trajectoryIds : null;
+    if (!sourceIds) continue;
+    const path = `evidenceEvents[${input.index}].payload.provenanceCredit.creditedProvenance[${creditIndex}]`;
+    if (!sourceIds.has(entry.id)) {
+      throw backupError(`${path}.id`, `references missing ${String(entry.sourceType)} ${entry.id}`);
+    }
+    for (const key of ["viaMemoryId", "derivedFromMemoryId"] as const) {
+      if (typeof entry[key] === "string" && !input.memoryIds.has(entry[key])) {
+        throw backupError(`${path}.${key}`, `references missing memory ${entry[key]}`);
+      }
+    }
+    for (const [pathIndex, id] of stringArray(entry.path).entries()) {
+      if (input.memoryIds.has(id) || sourceIds.has(id)) continue;
+      throw backupError(`${path}.path[${pathIndex}]`, `references missing provenance node ${id}`);
+    }
+  }
+}
+
 function assertBackupRows(backup: SqliteProfileBackupDocument): void {
   backup.evidenceEvents.forEach((event, index) =>
     assertEvidenceEvent(event, backup.profileId, index),
@@ -992,10 +1638,35 @@ function assertBackupRows(backup: SqliteProfileBackupDocument): void {
   );
 
   const evidenceIds = new Set(backup.evidenceEvents.map((event) => event.id));
+  const memoryIds = new Set(backup.memories.map((memory) => memory.id));
+  const beliefIds = new Set(backup.worldBeliefs.map((belief) => belief.id));
+  const trajectoryIds = new Set(backup.taskTrajectories.map((trajectory) => trajectory.id));
+  for (const [index, memory] of backup.memories.entries()) {
+    for (const memoryId of memoryMetadataMemoryReferenceIds(memory.metadata)) {
+      if (memoryIds.has(memoryId)) continue;
+      throw backupError(
+        `memories[${index}].metadata`,
+        `references missing memory ${memoryId}`,
+      );
+    }
+    for (const beliefId of memoryMetadataBeliefReferenceIds(memory.metadata)) {
+      if (beliefIds.has(beliefId)) continue;
+      throw backupError(
+        `memories[${index}].metadata.sourceBeliefIds`,
+        `references missing world belief ${beliefId}`,
+      );
+    }
+    for (const trajectoryId of memoryMetadataTrajectoryReferenceIds(memory.metadata)) {
+      if (trajectoryIds.has(trajectoryId)) continue;
+      throw backupError(
+        `memories[${index}].metadata.sourceTrajectoryIds`,
+        `references missing task trajectory ${trajectoryId}`,
+      );
+    }
+  }
   if (backup.options.includeEvidence) {
-    const referencedEvidenceIds = new Set(backup.memories.flatMap(memoryEvidenceIds));
     for (const [index, memory] of backup.memories.entries()) {
-      for (const evidenceId of memoryEvidenceIds(memory)) {
+      for (const evidenceId of backupMemoryEvidenceReferenceIds(memory)) {
         if (evidenceIds.has(evidenceId)) continue;
         throw backupError(
           `memories[${index}].sourceEventId`,
@@ -1003,19 +1674,67 @@ function assertBackupRows(backup: SqliteProfileBackupDocument): void {
         );
       }
     }
+    for (const [index, event] of backup.evidenceEvents.entries()) {
+      for (const evidenceId of evidencePayloadReferenceIds(event)) {
+        if (evidenceIds.has(evidenceId)) continue;
+        throw backupError(
+          `evidenceEvents[${index}].payload.evidenceIds`,
+          `references missing evidence event ${evidenceId}`,
+        );
+      }
+      for (const memoryId of evidencePayloadMemoryReferenceIds(event)) {
+        if (memoryIds.has(memoryId)) continue;
+        throw backupError(
+          `evidenceEvents[${index}].payload`,
+          `references missing memory ${memoryId}`,
+        );
+      }
+      for (const beliefId of evidencePayloadBeliefReferenceIds(event)) {
+        if (beliefIds.has(beliefId)) continue;
+        throw backupError(
+          `evidenceEvents[${index}].payload.sourceBeliefIds`,
+          `references missing world belief ${beliefId}`,
+        );
+      }
+      for (const trajectoryId of evidencePayloadTrajectoryReferenceIds(event)) {
+        if (trajectoryIds.has(trajectoryId)) continue;
+        throw backupError(
+          `evidenceEvents[${index}].payload.sourceTrajectoryIds`,
+          `references missing task trajectory ${trajectoryId}`,
+        );
+      }
+      assertKnownCreditedProvenanceReferences({
+        event,
+        index,
+        memoryIds,
+        beliefIds,
+        trajectoryIds,
+      });
+    }
     if (backup.mode === "safe") {
+      const byId = new Map(backup.evidenceEvents.map((event) => [event.id, event]));
+      const reachable = new Set(backup.memories.flatMap(backupMemoryEvidenceReferenceIds));
+      const pending = [...reachable];
+      for (let index = 0; index < pending.length; index += 1) {
+        const event = byId.get(pending[index]!);
+        if (!event) continue;
+        for (const evidenceId of evidencePayloadReferenceIds(event)) {
+          if (reachable.has(evidenceId)) continue;
+          reachable.add(evidenceId);
+          pending.push(evidenceId);
+        }
+      }
       for (const [index, event] of backup.evidenceEvents.entries()) {
-        if (!referencedEvidenceIds.has(event.id)) {
+        if (!reachable.has(event.id)) {
           throw backupError(
             `evidenceEvents[${index}].id`,
-            "is not referenced by any exported memory sourceEventId",
+            "is not reachable from any exported memory evidence reference",
           );
         }
       }
     }
   }
 
-  const memoryIds = new Set(backup.memories.map((memory) => memory.id));
   if (backup.options.includeWorldBeliefs) {
     for (const [index, belief] of backup.worldBeliefs.entries()) {
       if (belief.sourceMemoryId && !memoryIds.has(belief.sourceMemoryId)) {
@@ -1024,13 +1743,55 @@ function assertBackupRows(backup: SqliteProfileBackupDocument): void {
           `references missing memory ${belief.sourceMemoryId}`,
         );
       }
+      for (const memoryId of memoryMetadataMemoryReferenceIds(belief.metadata ?? {})) {
+        if (memoryIds.has(memoryId)) continue;
+        throw backupError(
+          `worldBeliefs[${index}].metadata`,
+          `references missing memory ${memoryId}`,
+        );
+      }
+      for (const evidenceId of backupMemoryEvidenceReferenceIds({
+        sourceEventId: null,
+        metadata: belief.metadata ?? {},
+      })) {
+        if (evidenceIds.has(evidenceId)) continue;
+        throw backupError(
+          `worldBeliefs[${index}].metadata`,
+          `references missing evidence event ${evidenceId}`,
+        );
+      }
+      for (const beliefId of memoryMetadataBeliefReferenceIds(belief.metadata ?? {})) {
+        if (beliefIds.has(beliefId)) continue;
+        throw backupError(
+          `worldBeliefs[${index}].metadata.sourceBeliefIds`,
+          `references missing world belief ${beliefId}`,
+        );
+      }
+      for (const trajectoryId of memoryMetadataTrajectoryReferenceIds(belief.metadata ?? {})) {
+        if (trajectoryIds.has(trajectoryId)) continue;
+        throw backupError(
+          `worldBeliefs[${index}].metadata.sourceTrajectoryIds`,
+          `references missing task trajectory ${trajectoryId}`,
+        );
+      }
+    }
+  }
+  for (const [index, failure] of backup.failureEvents.entries()) {
+    for (const memoryId of failureMetadataMemoryReferenceIds(failure.metadata)) {
+      if (memoryIds.has(memoryId)) continue;
+      throw backupError(
+        `failureEvents[${index}].metadata`,
+        `references missing memory ${memoryId}`,
+      );
     }
   }
 }
 
 function assertBackupOptionSemantics(backup: SqliteProfileBackupDocument): void {
   for (const [index, memory] of backup.memories.entries()) {
-    const inferred = memoryInferredSensitivity(memory);
+    const inferred = classifyMemorySensitivity(memory, {
+      strictIdentityKeys: !backup.options.includeSensitive,
+    });
     if (sensitivityRank(inferred) > sensitivityRank(memory.sensitivity)) {
       throw backupError(
         `memories[${index}].sensitivity`,
@@ -1039,7 +1800,9 @@ function assertBackupOptionSemantics(backup: SqliteProfileBackupDocument): void 
     }
   }
   for (const [index, event] of backup.evidenceEvents.entries()) {
-    const inferred = evidenceInferredSensitivity(event);
+    const inferred = classifyEvidenceSensitivity(event, {
+      strictIdentityKeys: !backup.options.includeSensitive,
+    });
     if (sensitivityRank(inferred) > sensitivityRank(event.sensitivity)) {
       throw backupError(
         `evidenceEvents[${index}].sensitivity`,
@@ -1053,10 +1816,12 @@ function assertBackupOptionSemantics(backup: SqliteProfileBackupDocument): void 
   }
   if (!backup.options.includeEvidence) {
     for (const [index, memory] of backup.memories.entries()) {
-      if (memory.sourceEventId) {
+      if (backupMemoryEvidenceReferenceIds(memory).length > 0) {
         throw backupError(
-          `memories[${index}].sourceEventId`,
-          "must be null when options.includeEvidence is false",
+          memory.sourceEventId
+            ? `memories[${index}].sourceEventId`
+            : `memories[${index}].metadata`,
+          "must not reference evidence when options.includeEvidence is false",
         );
       }
     }
@@ -1404,11 +2169,24 @@ function assertNoConflicts(
   table: string,
   rows: Array<{ id: string }>,
 ): void {
-  const statement = db.prepare(`SELECT id FROM ${table} WHERE id = ? LIMIT 1`);
-  for (const row of rows) {
-    if (statement.get(row.id)) {
-      throw new Error(`gmOS profile backup restore conflict in ${table}: ${row.id}`);
-    }
+  const existing = idOwnerRowsByIds(db, table, rows.map((row) => row.id));
+  if (existing[0]) {
+    throw new Error(`gmOS profile backup restore conflict in ${table}: ${String(existing[0].id)}`);
+  }
+}
+
+function assertIdsOwnedByProfile(
+  db: Database.Database,
+  table: string,
+  rows: Array<{ id: string }>,
+  targetProfileId: string,
+): void {
+  const foreign = idOwnerRowsByIds(db, table, rows.map((row) => row.id))
+    .find((row) => String(row.profile_id) !== targetProfileId);
+  if (foreign) {
+    throw new Error(
+      `gmOS profile backup restore ${table} id belongs to another profile: ${String(foreign.id)}`,
+    );
   }
 }
 
@@ -1416,14 +2194,200 @@ function assertNoEvidenceConflicts(
   db: Database.Database,
   rows: Array<{ id: string; eventKey: string }>,
 ): void {
-  const statement = db.prepare(
-    "SELECT id FROM gmos_evidence_events WHERE id = ? OR event_key = ? LIMIT 1",
+  const existingById = idOwnerRowsByIds(
+    db,
+    "gmos_evidence_events",
+    rows.map((row) => row.id),
   );
-  for (const row of rows) {
-    if (statement.get(row.id, row.eventKey)) {
-      throw new Error(`gmOS profile backup restore conflict in gmos_evidence_events: ${row.id}`);
+  const existingByEventKey = evidenceIdentityRowsByEventKeys(
+    db,
+    rows.map((row) => row.eventKey),
+  );
+  const existing = existingById[0] ?? existingByEventKey[0];
+  if (existing) {
+    throw new Error(
+      `gmOS profile backup restore conflict in gmos_evidence_events: ${String(existing.id)}`,
+    );
+  }
+}
+
+function restoredEvidenceEvent(input: {
+  event: EvidenceEvent;
+  evidenceIdMap: ReadonlyMap<string, string>;
+  memoryIdMap: ReadonlyMap<string, string>;
+  beliefIdMap: ReadonlyMap<string, string>;
+  trajectoryIdMap: ReadonlyMap<string, string>;
+  sourceProfileId: string;
+  targetProfileId: string;
+}): EvidenceEvent {
+  const payloadSchema = gmosEvidencePayloadSchema(input.event);
+  const remapped: EvidenceEvent = {
+    ...input.event,
+    id: input.evidenceIdMap.get(input.event.id) ?? input.event.id,
+    profileId: input.targetProfileId,
+    payload: remapEvidencePayload(
+      input.event,
+      input.evidenceIdMap,
+      input.memoryIdMap,
+      input.beliefIdMap,
+      input.trajectoryIdMap,
+      input.targetProfileId,
+    ),
+  };
+  const canonicalEventKey =
+    payloadSchema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.conversationMessage ||
+      payloadSchema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.sessionDistillation
+      ? canonicalEvidenceEventKeyForProfile(remapped, input.targetProfileId)
+      : null;
+  return {
+    ...remapped,
+    eventKey: canonicalEventKey ??
+      stableRestoreEventKey({
+        eventKey: input.event.eventKey,
+        sourceProfileId: input.sourceProfileId,
+        targetProfileId: input.targetProfileId,
+      }),
+  };
+}
+
+function resolveExistingEvidenceIds(input: {
+  db: Database.Database;
+  events: EvidenceEvent[];
+  evidenceIdMap: Map<string, string>;
+  memoryIdMap: ReadonlyMap<string, string>;
+  beliefIdMap: ReadonlyMap<string, string>;
+  trajectoryIdMap: ReadonlyMap<string, string>;
+  sourceProfileId: string;
+  targetProfileId: string;
+  reuseExisting: boolean;
+  requireExistingBodyMatch: boolean;
+}): void {
+  const incomingByEventKey = new Map<string, {
+    event: EvidenceEvent;
+    targetId: string;
+  }>();
+  const reuseExisting = input.reuseExisting && input.db
+    .prepare("SELECT 1 FROM gmos_evidence_events LIMIT 1")
+    .get() !== undefined;
+
+  function processGroup(sourceEvents: EvidenceEvent[]): void {
+    if (sourceEvents.length === 0) return;
+    const restored = sourceEvents.map((sourceEvent) => ({
+      sourceEvent,
+      event: restoredEvidenceEvent({
+        event: sourceEvent,
+        evidenceIdMap: input.evidenceIdMap,
+        memoryIdMap: input.memoryIdMap,
+        beliefIdMap: input.beliefIdMap,
+        trajectoryIdMap: input.trajectoryIdMap,
+        sourceProfileId: input.sourceProfileId,
+        targetProfileId: input.targetProfileId,
+      }),
+    }));
+    const existingByEventKey = new Map(
+      reuseExisting
+        ? evidenceIdentityRowsByEventKeys(
+            input.db,
+            restored.map(({ event }) => event.eventKey),
+          ).map((row) => [row.event_key, row] as const)
+        : [],
+    );
+    for (const { sourceEvent, event } of restored) {
+      const incoming = incomingByEventKey.get(event.eventKey);
+      if (incoming) {
+        const { id: _leftId, eventKey: _leftKey, ...left } = incoming.event;
+        const { id: _rightId, eventKey: _rightKey, ...right } = event;
+        if (!isDeepStrictEqual(left, right)) {
+          throw new Error(
+            "gmOS profile backup contains conflicting evidence for a canonical event key",
+          );
+        }
+        input.evidenceIdMap.set(sourceEvent.id, incoming.targetId);
+        continue;
+      }
+      let targetId = event.id;
+      const existing = existingByEventKey.get(event.eventKey);
+      if (existing) {
+        if (existing.profile_id !== input.targetProfileId) {
+          throw new Error(
+            "gmOS profile backup restore event key belongs to another profile",
+          );
+        }
+        const existingEvent = normalizeEvidence(existing);
+        const { id: _incomingId, ...incomingBody } = event;
+        const { id: _existingId, ...existingBody } = existingEvent;
+        if (
+          input.requireExistingBodyMatch &&
+          !isDeepStrictEqual(existingBody, incomingBody)
+        ) {
+          throw new Error(
+            "gmOS profile backup restore event key has incompatible existing evidence",
+          );
+        }
+        targetId = existing.id;
+        input.evidenceIdMap.set(sourceEvent.id, existing.id);
+      }
+      incomingByEventKey.set(event.eventKey, { event, targetId });
     }
   }
+
+  const sessionEvents = input.events.filter(
+    (event) =>
+      gmosEvidencePayloadSchema(event) === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.sessionDistillation,
+  );
+  const sessionEventIds = new Set(sessionEvents.map((event) => event.id));
+  const sessionById = new Map(sessionEvents.map((event) => [event.id, event]));
+  const dependents = new Map<string, EvidenceEvent[]>();
+  const indegree = new Map<string, number>();
+  for (const event of sessionEvents) {
+    const dependencies = [...new Set(stringArray(event.payload.evidenceIds))]
+      .filter((id) => sessionById.has(id));
+    indegree.set(event.id, dependencies.length);
+    for (const dependencyId of dependencies) {
+      const current = dependents.get(dependencyId) ?? [];
+      current.push(event);
+      dependents.set(dependencyId, current);
+    }
+  }
+
+  processGroup(input.events.filter((event) => !sessionEventIds.has(event.id)));
+  let ready = sessionEvents.filter((event) => indegree.get(event.id) === 0);
+  let processed = 0;
+  while (ready.length > 0) {
+    processGroup(ready);
+    processed += ready.length;
+    const next: EvidenceEvent[] = [];
+    for (const event of ready) {
+      for (const dependent of dependents.get(event.id) ?? []) {
+        const remaining = (indegree.get(dependent.id) ?? 0) - 1;
+        indegree.set(dependent.id, remaining);
+        if (remaining === 0) next.push(dependent);
+      }
+    }
+    ready = next;
+  }
+  if (processed !== sessionEvents.length) {
+    throw new Error("gmOS profile backup contains cyclic session evidence identity dependencies");
+  }
+}
+
+function uniqueRestoredEvidenceEvents(events: EvidenceEvent[]): EvidenceEvent[] {
+  const byId = new Map<string, EvidenceEvent>();
+  const byEventKey = new Map<string, EvidenceEvent>();
+  for (const event of events) {
+    const existing = byId.get(event.id) ?? byEventKey.get(event.eventKey);
+    if (existing) {
+      if (!isDeepStrictEqual(existing, event)) {
+        throw new Error(
+          "gmOS profile backup restore evidence identity collision",
+        );
+      }
+      continue;
+    }
+    byId.set(event.id, event);
+    byEventKey.set(event.eventKey, event);
+  }
+  return [...byId.values()];
 }
 
 function syncRestoredMemoryVector(db: Database.Database, memoryId: string): void {
@@ -1490,7 +2454,12 @@ function applyChangeCount(
 export function restoreSqliteProfileBackup(
   db: Database.Database,
   input: RestoreSqliteProfileBackupInput,
+  afterWrite?: ((targetProfileId: string) => void) | undefined,
+  beforeWrite?: ((targetProfileId: string) => void) | undefined,
 ): SqliteProfileBackupRestoreResult {
+  if (db.inTransaction) {
+    throw new Error("gmOS profile backup restore cannot run inside an existing SQLite transaction");
+  }
   const backup = parseSqliteProfileBackup(input.backup);
   const targetProfileId = requireNonEmptyProfile(input.profileId ?? backup.profileId);
   const onConflict = input.onConflict ?? "skip";
@@ -1520,70 +2489,131 @@ export function restoreSqliteProfileBackup(
       }),
     ]),
   );
-  const evidenceEvents = backup.evidenceEvents.map((event) => ({
-    ...event,
-    id: evidenceIdMap.get(event.id) ?? event.id,
-    eventKey: stableRestoreEventKey({
-      eventKey: event.eventKey,
-      sourceProfileId: backup.profileId,
-      targetProfileId,
-    }),
-    profileId: targetProfileId,
-  }));
-  const memories = backup.memories.map((memory) => ({
-    ...memory,
-    id: memoryIdMap.get(memory.id) ?? memory.id,
-    profileId: targetProfileId,
-    sourceEventId: memory.sourceEventId ? (evidenceIdMap.get(memory.sourceEventId) ?? null) : null,
-    metadata: remapEvidenceMetadata(memory.metadata ?? {}, evidenceIdMap),
-  }));
-  const worldBeliefs = backup.worldBeliefs.map((belief) => ({
-    ...belief,
-    id: stableRestoreId({
-      fallbackPrefix: "belief",
-      originalId: belief.id,
-      sourceProfileId: backup.profileId,
-      targetProfileId,
-    }),
-    profileId: targetProfileId,
-    metadata: belief.metadata ?? {},
-    sourceMemoryId: belief.sourceMemoryId ? (memoryIdMap.get(belief.sourceMemoryId) ?? null) : null,
-  }));
-  const failureEvents = backup.failureEvents.map((failure) => ({
-    ...failure,
-    id: stableRestoreId({
-      fallbackPrefix: "failure",
-      originalId: failure.id,
-      sourceProfileId: backup.profileId,
-      targetProfileId,
-    }),
-    profileId: targetProfileId,
-  }));
-  const taskTrajectories = backup.taskTrajectories.map((trajectory) => ({
-    ...trajectory,
-    id: stableRestoreId({
-      fallbackPrefix: "trajectory",
-      originalId: trajectory.id,
-      sourceProfileId: backup.profileId,
-      targetProfileId,
-    }),
-    profileId: targetProfileId,
-  }));
-
-  if (onConflict === "fail") {
-    assertNoEvidenceConflicts(db, evidenceEvents);
-    assertNoConflicts(db, "gmos_memories", memories);
-    assertNoConflicts(db, "gmos_world_beliefs", worldBeliefs);
-    assertNoConflicts(db, "gmos_failure_events", failureEvents);
-    assertNoConflicts(db, "gmos_task_trajectories", taskTrajectories);
-  }
-
+  const beliefIdMap = new Map(
+    backup.worldBeliefs.map((belief) => [
+      belief.id,
+      stableRestoreId({
+        fallbackPrefix: "belief",
+        originalId: belief.id,
+        sourceProfileId: backup.profileId,
+        targetProfileId,
+      }),
+    ]),
+  );
+  const trajectoryIdMap = new Map(
+    backup.taskTrajectories.map((trajectory) => [
+      trajectory.id,
+      stableRestoreId({
+        fallbackPrefix: "trajectory",
+        originalId: trajectory.id,
+        sourceProfileId: backup.profileId,
+        targetProfileId,
+      }),
+    ]),
+  );
   const tx = db.transaction(() => {
+    beforeWrite?.(targetProfileId);
+    resolveExistingEvidenceIds({
+      db,
+      events: backup.evidenceEvents,
+      evidenceIdMap,
+      memoryIdMap,
+      beliefIdMap,
+      trajectoryIdMap,
+      sourceProfileId: backup.profileId,
+      targetProfileId,
+      reuseExisting: onConflict !== "fail",
+      requireExistingBodyMatch: onConflict === "skip",
+    });
+    const evidenceEvents = uniqueRestoredEvidenceEvents(
+      backup.evidenceEvents.map((event) => restoredEvidenceEvent({
+        event,
+        evidenceIdMap,
+        memoryIdMap,
+        beliefIdMap,
+        trajectoryIdMap,
+        sourceProfileId: backup.profileId,
+        targetProfileId,
+      })),
+    );
+    const memories = backup.memories.map((memory) => ({
+      ...memory,
+      id: memoryIdMap.get(memory.id) ?? memory.id,
+      profileId: targetProfileId,
+      sourceEventId: memory.sourceEventId ? (evidenceIdMap.get(memory.sourceEventId) ?? null) : null,
+      metadata: mapMemoryMetadataReferences({
+        metadata: memory.metadata ?? {},
+        evidence: (id) => evidenceIdMap.get(id) ?? null,
+        memory: (id) => memoryIdMap.get(id) ?? null,
+        belief: (id) => beliefIdMap.get(id) ?? null,
+        trajectory: (id) => trajectoryIdMap.get(id) ?? null,
+      }),
+    }));
+    const worldBeliefs = backup.worldBeliefs.map((belief) => ({
+      ...belief,
+      id: beliefIdMap.get(belief.id) ?? belief.id,
+      profileId: targetProfileId,
+      metadata: mapMemoryMetadataReferences({
+        metadata: belief.metadata ?? {},
+        evidence: (id) => evidenceIdMap.get(id) ?? null,
+        memory: (id) => memoryIdMap.get(id) ?? null,
+        belief: (id) => beliefIdMap.get(id) ?? null,
+        trajectory: (id) => trajectoryIdMap.get(id) ?? null,
+      }),
+      sourceMemoryId: belief.sourceMemoryId ? (memoryIdMap.get(belief.sourceMemoryId) ?? null) : null,
+    }));
+    const failureEvents = backup.failureEvents.map((failure) => ({
+      ...failure,
+      id: stableRestoreId({
+        fallbackPrefix: "failure",
+        originalId: failure.id,
+        sourceProfileId: backup.profileId,
+        targetProfileId,
+      }),
+      profileId: targetProfileId,
+      metadata: mapFailureMetadataReferences(
+        failure.metadata ?? {},
+        (id) => memoryIdMap.get(id) ?? null,
+      ),
+    }));
+    const taskTrajectories = backup.taskTrajectories.map((trajectory) => ({
+      ...trajectory,
+      id: trajectoryIdMap.get(trajectory.id) ?? trajectory.id,
+      profileId: targetProfileId,
+    }));
+
+    assertIdsOwnedByProfile(db, "gmos_evidence_events", evidenceEvents, targetProfileId);
+    assertIdsOwnedByProfile(db, "gmos_memories", memories, targetProfileId);
+    assertIdsOwnedByProfile(db, "gmos_world_beliefs", worldBeliefs, targetProfileId);
+    assertIdsOwnedByProfile(db, "gmos_failure_events", failureEvents, targetProfileId);
+    assertIdsOwnedByProfile(db, "gmos_task_trajectories", taskTrajectories, targetProfileId);
+
+    if (onConflict === "fail") {
+      assertNoEvidenceConflicts(db, evidenceEvents);
+      assertNoConflicts(db, "gmos_memories", memories);
+      assertNoConflicts(db, "gmos_world_beliefs", worldBeliefs);
+      assertNoConflicts(db, "gmos_failure_events", failureEvents);
+      assertNoConflicts(db, "gmos_task_trajectories", taskTrajectories);
+    }
+
+    const evidenceVerb = onConflict === "skip" ? "INSERT OR IGNORE" : "INSERT";
+    const evidenceConflict = onConflict === "replace"
+      ? ` ON CONFLICT(id) DO UPDATE SET
+          event_key = excluded.event_key,
+          profile_id = excluded.profile_id,
+          source_type = excluded.source_type,
+          source_uri = excluded.source_uri,
+          content = excluded.content,
+          sensitivity = excluded.sensitivity,
+          eligible_for_long_term_memory = excluded.eligible_for_long_term_memory,
+          payload_json = excluded.payload_json,
+          created_at = excluded.created_at`
+      : "";
     const evidenceStmt = db.prepare(
-      `${verb} INTO gmos_evidence_events (
+      `${evidenceVerb} INTO gmos_evidence_events (
         id, event_key, profile_id, source_type, source_uri, content, sensitivity,
         eligible_for_long_term_memory, payload_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)${evidenceConflict}`,
     );
     for (const event of evidenceEvents) {
       applyChangeCount(
@@ -1705,8 +2735,9 @@ export function restoreSqliteProfileBackup(
         "taskTrajectories",
       );
     }
+    afterWrite?.(targetProfileId);
   });
-  tx();
+  tx.immediate();
 
   return {
     schema: "gmos.profile_backup_restore_result.v1",

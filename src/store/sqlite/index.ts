@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
 import Database from "better-sqlite3";
 
@@ -10,6 +10,9 @@ import type {
   ArchiveMemoriesInput,
   ArchiveMemoryInput,
   ArchiveStaleHostImportsInput,
+  AtomicHostSnapshotRecord,
+  AtomicImportedMemoryResult,
+  AtomicMem0ImportRecord,
   CommitOutcomeStoreInput,
   EvidenceEvent,
   EvolutionAction,
@@ -24,6 +27,9 @@ import type {
   FailureKind,
   ForgetInput,
   ForgetResult,
+  ImportHostSnapshotsAtomicallyInput,
+  ImportHostSnapshotsAtomicallyResult,
+  ImportMem0RecordsAtomicallyInput,
   EmbeddingProvider,
   EmbeddingProviderConfig,
   ListFailuresInput,
@@ -105,12 +111,36 @@ import {
   resolveWorldEntitySubject,
 } from "../../kernel/entities.js";
 import {
+  classifyEvidenceSensitivity,
+  classifyPayloadSensitivity,
   classifySensitivity,
   isPersonRoutedMemory,
+  memoryEvidenceReferenceIds,
   sanitizePublicPayloadRecord,
   shouldHideFromOrdinaryContext,
+  stripGmosOwnedMetadataFields,
 } from "../../kernel/safety.js";
 import { normalizeExplicitTemporalInstant } from "../../kernel/temporal-validity.js";
+import {
+  GMOS_EVIDENCE_PAYLOAD_SCHEMAS,
+  gmosEvidencePayloadSchemaOf,
+  gmosEvidenceReferenceShapeOf,
+  isCurrentHostSnapshotImportEvidence,
+  isCurrentMem0ImportEvidence,
+  isLegacyHostSnapshotImportEvidence,
+  isLegacyMem0ImportEvidence,
+  markedGmosEvidencePayload,
+  type GmosEvidencePayloadSchema,
+} from "../../kernel/evidence-schema.js";
+import {
+  GMOS_METADATA_REFERENCE_MARKER,
+  GMOS_METADATA_REFERENCE_SHAPES,
+  GMOS_METADATA_REFERENCE_SCHEMAS,
+  gmosMetadataReferenceSchemas,
+  hasGmosMetadataReferenceSchema,
+  markedGmosMetadata,
+  withoutGmosMetadataReferenceSchemas,
+} from "../../kernel/metadata-schema.js";
 import {
   cosineSimilarity,
   LOCAL_TEXT_VECTOR_DIMENSIONS,
@@ -132,6 +162,7 @@ import {
 } from "../../kernel/embeddings.js";
 import {
   exportSqliteProfileBackup,
+  parseSqliteProfileBackup,
   restoreSqliteProfileBackup,
   type ExportSqliteProfileBackupInput,
   type RestoreSqliteProfileBackupInput,
@@ -257,6 +288,12 @@ export type SqliteForgetTargetParser =
     };
 
 export interface SqliteMemoryStore extends MemoryStore {
+  importMem0RecordsAtomically(
+    input: ImportMem0RecordsAtomicallyInput,
+  ): Promise<AtomicImportedMemoryResult[]>;
+  importHostSnapshotsAtomically(
+    input: ImportHostSnapshotsAtomicallyInput,
+  ): Promise<ImportHostSnapshotsAtomicallyResult>;
   listFailures(input: ListFailuresInput): FailureEventRecord[];
   encryptionStatus(): SqliteMemoryStoreEncryptionStatus;
   schemaVersion(): number;
@@ -316,6 +353,65 @@ const READ_AUDIT_FTS_TABLES = [
 ] as const;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const IMPORT_IDENTITY_SECRET_NAME = "import_identity_hmac_v1";
+const IMPORTER_MEM0_SCHEMA = "gmos.mem0.v2" as const;
+const IMPORTER_HOST_SCHEMA = "gmos.host_snapshot.v2" as const;
+const IMPORT_MEMORY_KINDS = new Set<MemoryKind>([
+  "fact",
+  "preference",
+  "boundary",
+  "procedure",
+  "project",
+  "person",
+  "task_trajectory",
+]);
+const IMPORT_SENSITIVITIES = new Set<Sensitivity>(["normal", "sensitive", "secret_like"]);
+
+type ImporterSchema = typeof IMPORTER_MEM0_SCHEMA | typeof IMPORTER_HOST_SCHEMA;
+type ImportDisposition = "active" | "dormant" | "host_stale" | "blocked";
+
+interface PreparedAtomicImport {
+  sourceIndex: number;
+  importerSchema: ImporterSchema;
+  sourceIdentityDigest: string;
+  sourceGroupDigest: string | null;
+  revisionDigest: string;
+  bindingDigest: string;
+  evidence: RecordEvidenceInput & { createdAt: string };
+  memory: AddMemoryInput & { createdAt: string };
+}
+
+interface ImportIdentityRow {
+  profile_id: string;
+  importer_schema: ImporterSchema;
+  source_identity_digest: string;
+  source_group_digest: string | null;
+  revision_digest: string;
+  binding_digest: string;
+  memory_id: string;
+  evidence_id: string;
+  disposition: ImportDisposition;
+  created_at: string;
+  updated_at: string;
+}
+
+interface AtomicImportPlan {
+  prepared: PreparedAtomicImport;
+  action: "insert" | "reuse" | "restore" | "replace" | "adopt" | "complete_evidence";
+  claim?: ImportIdentityRow | undefined;
+  memory?: MemoryRecord | undefined;
+  evidence?: EvidenceEvent | undefined;
+  rebuiltCandidate?: RebuiltImportCandidate | undefined;
+}
+
+interface RebuiltImportCandidate {
+  prepared: PreparedAtomicImport;
+  memory: MemoryRecord;
+  evidence: EvidenceEvent;
+  disposition: ImportDisposition;
+  sourceRevisionOrder: number;
+  redactedBlockedBinding: boolean;
+}
 
 interface RawGapCandidate {
   kind: MemoryGapKind;
@@ -336,6 +432,56 @@ function contextSearchReference(asOf: string | undefined): string {
 
 function id(prefix: string): string {
   return `${prefix}_${randomUUID()}`;
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "string" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("gmOS import identity contains a non-finite number");
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => canonicalJson(entry)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record)
+      .filter((key) => record[key] !== undefined)
+      .sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+  }
+  throw new Error("gmOS import identity contains an unsupported value");
+}
+
+function importDigest(secret: Buffer, domain: string, value: unknown): string {
+  return createHmac("sha256", secret)
+    .update(domain, "utf8")
+    .update("\0", "utf8")
+    .update(canonicalJson(value), "utf8")
+    .digest("hex");
+}
+
+function normalizedImportString(value: string): string {
+  return value.normalize("NFC");
+}
+
+function importMemoryMetadataForBinding(metadata: Record<string, unknown>): Record<string, unknown> {
+  const next = withoutGmosMetadataReferenceSchemas(
+    metadata,
+    GMOS_METADATA_REFERENCE_SCHEMAS.lifecycleArchive,
+    GMOS_METADATA_REFERENCE_SCHEMAS.dossierSupersession,
+    GMOS_METADATA_REFERENCE_SCHEMAS.consolidationTarget,
+    GMOS_METADATA_REFERENCE_SCHEMAS.duplicateSupersession,
+  );
+  delete next.archive;
+  delete next.restore;
+  delete next.consolidatedInto;
+  delete next.supersededBy;
+  delete next.annealing;
+  return next;
 }
 
 function parseJsonObject(value: unknown): Record<string, unknown> {
@@ -363,18 +509,24 @@ function metadataWithArchiveMarker(input: {
   archivedAt: string;
   reason?: string | undefined;
 }): Record<string, unknown> {
-  return {
-    ...input.metadata,
-    archive: {
-      ...(typeof input.metadata.archive === "object" &&
-      input.metadata.archive !== null &&
-      !Array.isArray(input.metadata.archive)
-        ? input.metadata.archive
-        : {}),
-      archivedAt: input.archivedAt,
-      ...(input.reason ? { reason: input.reason } : {}),
+  return markedGmosMetadata(
+    {
+      ...input.metadata,
+      archive: {
+        ...(typeof input.metadata.archive === "object" &&
+        input.metadata.archive !== null &&
+        !Array.isArray(input.metadata.archive)
+          ? input.metadata.archive
+          : {}),
+        archivedAt: input.archivedAt,
+        ...(input.reason ? { reason: input.reason } : {}),
+      },
     },
-  };
+    GMOS_METADATA_REFERENCE_SCHEMAS.lifecycleArchive,
+    ...(input.reason?.startsWith("dossier_superseded_by:")
+      ? [GMOS_METADATA_REFERENCE_SCHEMAS.dossierSupersession]
+      : []),
+  );
 }
 
 function metadataWithRestoreMarker(input: {
@@ -382,7 +534,24 @@ function metadataWithRestoreMarker(input: {
   restoredAt: string;
   reason?: string | undefined;
 }): Record<string, unknown> {
-  const { archive: _archive, ...metadata } = input.metadata;
+  const ownsConsolidationTarget = hasGmosMetadataReferenceSchema(
+    input.metadata,
+    GMOS_METADATA_REFERENCE_SCHEMAS.consolidationTarget,
+  );
+  const ownsDuplicateSupersession = hasGmosMetadataReferenceSchema(
+    input.metadata,
+    GMOS_METADATA_REFERENCE_SCHEMAS.duplicateSupersession,
+  );
+  const { archive: _archive, ...archivedMetadata } = input.metadata;
+  const metadata = withoutGmosMetadataReferenceSchemas(
+    archivedMetadata,
+    GMOS_METADATA_REFERENCE_SCHEMAS.lifecycleArchive,
+    GMOS_METADATA_REFERENCE_SCHEMAS.dossierSupersession,
+    GMOS_METADATA_REFERENCE_SCHEMAS.consolidationTarget,
+    GMOS_METADATA_REFERENCE_SCHEMAS.duplicateSupersession,
+  );
+  if (ownsConsolidationTarget) delete metadata.consolidatedInto;
+  if (ownsDuplicateSupersession) delete metadata.supersededBy;
   return {
     ...metadata,
     restore: {
@@ -531,6 +700,18 @@ function memoryVersionSnapshotFromPayload(value: unknown): MemoryVersionSnapshot
     typeof record.reinforcement !== "number" ||
     typeof record.createdAt !== "string" ||
     typeof record.updatedAt !== "string" ||
+    !Number.isFinite(record.confidence) ||
+    record.confidence < 0 ||
+    record.confidence > 1 ||
+    !Number.isInteger(record.recallCount) ||
+    record.recallCount < 0 ||
+    !Number.isFinite(record.reinforcement) ||
+    record.reinforcement < -1 ||
+    record.reinforcement > 1 ||
+    (record.lastRecalledAt !== undefined && record.lastRecalledAt !== null &&
+      typeof record.lastRecalledAt !== "string") ||
+    (record.sourceEventId !== undefined && record.sourceEventId !== null &&
+      typeof record.sourceEventId !== "string") ||
     !metadata ||
     typeof metadata !== "object" ||
     Array.isArray(metadata)
@@ -588,6 +769,8 @@ function memoryVersionSnapshotFromPayload(value: unknown): MemoryVersionSnapshot
 }
 
 function previousValuesFromPayload(payload: Record<string, unknown>): MemoryVersionSnapshot[] {
+  const shape = gmosEvidenceReferenceShapeOf(payload);
+  if (!shape?.snapshotArrays?.includes("previousValues")) return [];
   const raw = payload.previousValues;
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((entry) => {
@@ -608,6 +791,14 @@ function sourceTrustRank(value: SourceTrust | undefined): number {
 }
 
 function sourceTrustFromMetadata(metadata: Record<string, unknown>): SourceTrust | undefined {
+  if (
+    !hasGmosMetadataReferenceSchema(
+      metadata,
+      GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+    )
+  ) {
+    return undefined;
+  }
   if (isSourceTrust(metadata.sourceTrust)) return metadata.sourceTrust;
   const sourceMetadata = metadata.sourceMetadata;
   if (sourceMetadata && typeof sourceMetadata === "object" && !Array.isArray(sourceMetadata)) {
@@ -618,6 +809,14 @@ function sourceTrustFromMetadata(metadata: Record<string, unknown>): SourceTrust
 }
 
 function memoryAnnealingRecord(memory: MemoryRecord): Record<string, unknown> | null {
+  if (
+    !hasGmosMetadataReferenceSchema(
+      memory.metadata,
+      GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+    )
+  ) {
+    return null;
+  }
   const annealing = memory.metadata.annealing;
   return annealing && typeof annealing === "object" && !Array.isArray(annealing)
     ? annealing as Record<string, unknown>
@@ -653,16 +852,7 @@ function memoryContentRedactionStub(content: string, redactedAt: string): Record
 }
 
 function evidenceIsRedacted(event: EvidenceEvent): boolean {
-  const redaction = event.payload.redaction;
-  return (
-    event.content === "[redacted_evidence_content]" ||
-    Boolean(
-      redaction &&
-      typeof redaction === "object" &&
-      !Array.isArray(redaction) &&
-      (redaction as Record<string, unknown>).marker === "redacted_evidence_content",
-    )
-  );
+  return event.content === "[redacted_evidence_content]";
 }
 
 function normalizeFailure(row: Record<string, unknown>): FailureEventRecord {
@@ -866,12 +1056,29 @@ function memorySearchTags(memory: MemoryRecord): string[] {
 
 function memorySearchAssociations(memory: MemoryRecord): string[] {
   const associations = [];
-  const sourceMemoryIds = memory.metadata.sourceMemoryIds;
+  const ownsSources =
+    hasGmosMetadataReferenceSchema(
+      memory.metadata,
+      GMOS_METADATA_REFERENCE_SCHEMAS.consolidationSummary,
+    ) ||
+    hasGmosMetadataReferenceSchema(memory.metadata, GMOS_METADATA_REFERENCE_SCHEMAS.dossier);
+  const sourceMemoryIds = ownsSources ? memory.metadata.sourceMemoryIds : undefined;
   if (Array.isArray(sourceMemoryIds) && sourceMemoryIds.length > 0) {
     associations.push("consolidation_sources");
   }
-  if (memory.metadata.consolidatedInto) associations.push("consolidated_into");
-  if (memory.metadata.supersededBy) associations.push("superseded_by");
+  if (
+    hasGmosMetadataReferenceSchema(
+      memory.metadata,
+      GMOS_METADATA_REFERENCE_SCHEMAS.consolidationTarget,
+    ) ||
+    hasGmosMetadataReferenceSchema(
+      memory.metadata,
+      GMOS_METADATA_REFERENCE_SCHEMAS.duplicateSupersession,
+    )
+  ) {
+    if (memory.metadata.consolidatedInto) associations.push("consolidated_into");
+    if (memory.metadata.supersededBy) associations.push("superseded_by");
+  }
   if (memory.sourceEventId) associations.push("source_evidence");
   return associations;
 }
@@ -1012,29 +1219,19 @@ function maxSensitivity(left: Sensitivity, right: Sensitivity): Sensitivity {
 }
 
 function effectiveMemorySensitivity(memory: MemoryRecord): Sensitivity {
+  if (
+    memory.sensitivity !== "normal" && memory.sensitivity !== "sensitive" &&
+    memory.sensitivity !== "secret_like"
+  ) {
+    return "secret_like";
+  }
   return maxSensitivity(
     memory.sensitivity,
-    classifySensitivity([memory.content, memory.sourceEventId ?? ""].join(" ")),
-  );
-}
-
-function effectiveEvidenceSensitivity(event: EvidenceEvent): Sensitivity {
-  const sourceTypeSensitivity =
-    classifySensitivity(event.sourceType) === "secret_like" ? "secret_like" : "normal";
-  return maxSensitivity(
-    maxSensitivity(event.sensitivity, sourceTypeSensitivity),
-    classifySensitivity(
-      [
-        event.id,
-        event.eventKey,
-        event.profileId,
-        event.sourceUri ?? "",
-        event.content,
-        event.sensitivity,
-        JSON.stringify(event.payload),
-        event.createdAt,
-      ].join(" "),
-    ),
+    classifySensitivity([
+      memory.scope,
+      memory.content,
+      memory.sourceEventId ?? "",
+    ].join(" ")),
   );
 }
 
@@ -1246,7 +1443,22 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   let initialized = false;
   let ftsAvailableCache: boolean | null = null;
   let vectorIndexAvailableCache: boolean | null = null;
+  let evidenceRestoreGeneration = 0;
+  const legacyEvidenceMutationGenerations = new Map<string, number>();
   const statementCache = new Map<string, Database.Statement>();
+
+  function legacyEvidenceMutationKey(profileId: string, sourceType: string): string {
+    return JSON.stringify([profileId, sourceType]);
+  }
+
+  function noteLegacyEvidenceMutation(input: RecordEvidenceInput): void {
+    if (input.eventKey.startsWith(`${input.sourceType}:v2:`)) return;
+    const key = legacyEvidenceMutationKey(input.profileId, input.sourceType);
+    legacyEvidenceMutationGenerations.set(
+      key,
+      (legacyEvidenceMutationGenerations.get(key) ?? 0) + 1,
+    );
+  }
 
   function statement(sql: string): Database.Statement {
     const cached = statementCache.get(sql);
@@ -1279,6 +1491,38 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     ftsAvailableCache = tableExists("gmos_memories_fts");
     vectorIndexAvailableCache = tableExists("gmos_memory_vectors");
     initialized = true;
+    try {
+      db.transaction(() => {
+        if (schemaMigrationApplied(15)) {
+          const secretRow = db
+            .prepare("SELECT secret_value FROM gmos_store_secrets WHERE secret_name = ?")
+            .get(IMPORT_IDENTITY_SECRET_NAME) as
+            | { secret_value?: Buffer | Uint8Array }
+            | undefined;
+          const claimCount = Number(
+            (db.prepare("SELECT COUNT(*) AS count FROM gmos_import_identities").get() as {
+              count: number;
+            }).count,
+          );
+          if (!secretRow?.secret_value && claimCount > 0) {
+            throw new Error(
+              "gmOS atomic import identity secret is missing while import claims exist",
+            );
+          }
+        }
+        ensureImportIdentitySecretLocked();
+        if (!schemaMigrationApplied(15)) {
+          rebuildImportIdentitiesLocked();
+          db.prepare(
+            `INSERT INTO gmos_schema_migrations(version, name, applied_at)
+             VALUES (15, 'atomic_import_identities', ?)`,
+          ).run(nowIso());
+        }
+      }).immediate();
+    } catch (error) {
+      initialized = false;
+      throw error;
+    }
     if (shouldRebuildAssociations) {
       rebuildAssociations();
     }
@@ -1298,6 +1542,766 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     const row = statement("SELECT version FROM gmos_schema_migrations WHERE version = ?")
       .get(version) as { version?: number } | undefined;
     return row?.version === version;
+  }
+
+  function ensureImportIdentitySecretLocked(): Buffer {
+    const row = db
+      .prepare("SELECT secret_value FROM gmos_store_secrets WHERE secret_name = ?")
+      .get(IMPORT_IDENTITY_SECRET_NAME) as { secret_value?: Buffer | Uint8Array } | undefined;
+    if (row?.secret_value) {
+      const secret = Buffer.from(row.secret_value);
+      if (secret.length !== 32) {
+        throw new Error("gmOS atomic import identity secret has an invalid length");
+      }
+      return secret;
+    }
+    if (db.readonly) {
+      throw new Error("gmOS atomic import identity secret is unavailable in readonly mode");
+    }
+    const secret = randomBytes(32);
+    db.prepare(
+      `INSERT OR IGNORE INTO gmos_store_secrets(secret_name, secret_value, created_at)
+       VALUES (?, ?, ?)`,
+    ).run(IMPORT_IDENTITY_SECRET_NAME, secret, nowIso());
+    const inserted = db
+      .prepare("SELECT secret_value FROM gmos_store_secrets WHERE secret_name = ?")
+      .get(IMPORT_IDENTITY_SECRET_NAME) as { secret_value?: Buffer | Uint8Array } | undefined;
+    if (!inserted?.secret_value) throw new Error("gmOS atomic import identity secret creation failed");
+    return Buffer.from(inserted.secret_value);
+  }
+
+  function importIdentitySecret(): Buffer {
+    initialize();
+    return ensureImportIdentitySecretLocked();
+  }
+
+  function rebuildImportIdentitiesLocked(
+    profileId?: string,
+    options: { allowForeignV2Digests?: boolean | undefined } = {},
+  ): void {
+    const secret = ensureImportIdentitySecretLocked();
+    const rows = db
+      .prepare(
+        `SELECT * FROM gmos_memories
+         WHERE ${profileId ? "profile_id = ? AND" : ""} (
+           json_extract(metadata_json, '$.importSource') = 'mem0'
+           OR json_extract(metadata_json, '$.hostSnapshotImport') = 1
+         )
+         ORDER BY profile_id, created_at, id`,
+      )
+      .all(...(profileId ? [profileId] : [])) as Record<string, unknown>[];
+    const candidates = rows
+      .filter(importRowClaimsMigrationAuthority)
+      .map((row) =>
+        rebuiltImportCandidateLocked(row, secret, options.allowForeignV2Digests === true)
+      );
+    const groups = new Map<string, RebuiltImportCandidate[]>();
+    for (const candidate of candidates) {
+      const key = canonicalJson([
+        candidate.memory.profileId,
+        candidate.prepared.importerSchema,
+        candidate.prepared.sourceIdentityDigest,
+      ]);
+      const group = groups.get(key) ?? [];
+      group.push(candidate);
+      groups.set(key, group);
+    }
+
+    const winners: RebuiltImportCandidate[] = [];
+    const duplicates: RebuiltImportCandidate[] = [];
+    for (const group of groups.values()) {
+      const sameRevision = new Map<string, string>();
+      for (const candidate of group) {
+        const existing = sameRevision.get(candidate.prepared.revisionDigest);
+        if (existing && existing !== candidate.prepared.bindingDigest) {
+          throw new Error(
+            `gmOS import identity migration found conflicting bindings in profile ${candidate.memory.profileId}`,
+          );
+        }
+        sameRevision.set(candidate.prepared.revisionDigest, candidate.prepared.bindingDigest);
+      }
+      if (
+        group[0]?.prepared.importerSchema === IMPORTER_MEM0_SCHEMA &&
+        sameRevision.size > 1 &&
+        !group.some((candidate) => candidate.disposition === "blocked")
+      ) {
+        throw new Error(
+          `gmOS import identity migration found ambiguous mem0 revisions in profile ${group[0].memory.profileId}`,
+        );
+      }
+      group.sort((left, right) => {
+        const blockedRank = (value: RebuiltImportCandidate): number =>
+          value.disposition === "blocked"
+            ? 3
+            : value.disposition === "active" || value.disposition === "dormant"
+              ? 2
+              : 1;
+        const blocked = blockedRank(right) - blockedRank(left);
+        if (blocked !== 0) return blocked;
+        const canonical = Number(
+          right.evidence.eventKey === right.prepared.evidence.eventKey,
+        ) - Number(left.evidence.eventKey === left.prepared.evidence.eventKey);
+        if (canonical !== 0) return canonical;
+        if (left.prepared.revisionDigest !== right.prepared.revisionDigest) {
+          const revisionOrder = right.sourceRevisionOrder - left.sourceRevisionOrder;
+          if (revisionOrder !== 0) return revisionOrder;
+        }
+        const created = left.memory.createdAt.localeCompare(right.memory.createdAt);
+        return created !== 0 ? created : left.memory.id.localeCompare(right.memory.id);
+      });
+      const winner = group[0];
+      if (!winner) continue;
+      winners.push(winner);
+      duplicates.push(...group.slice(1));
+    }
+
+    db.prepare(
+      profileId
+        ? "DELETE FROM gmos_import_identities WHERE profile_id = ?"
+        : "DELETE FROM gmos_import_identities",
+    ).run(...(profileId ? [profileId] : []));
+    for (const duplicate of duplicates) archiveImportBackfillDuplicateLocked(duplicate);
+    for (const winner of winners) canonicalizeImportBackfillWinnerLocked(winner);
+  }
+
+  function importRowClaimsMigrationAuthority(row: Record<string, unknown>): boolean {
+    const metadata = parseJsonObject(row.metadata_json);
+    const schemas = gmosMetadataReferenceSchemas(metadata);
+    if (
+      schemas.includes(GMOS_METADATA_REFERENCE_SCHEMAS.mem0Import) ||
+      schemas.includes(GMOS_METADATA_REFERENCE_SCHEMAS.hostSnapshotImport)
+    ) {
+      return true;
+    }
+    if (metadata.importSource === "mem0") {
+      return typeof row.source_event_id === "string" &&
+        typeof metadata.importSourceOriginalId === "string" &&
+        typeof metadata.importKey === "string" &&
+        typeof metadata.sourceFileHash === "string" &&
+        /^[a-f0-9]{64}$/u.test(metadata.sourceFileHash) &&
+        typeof metadata.recordIndex === "number" &&
+        Number.isSafeInteger(metadata.recordIndex) &&
+        metadata.recordIndex >= 0 &&
+        metadata.provenance === "low_level_import" &&
+        metadata.sourceTrust === "external";
+    }
+    return metadata.hostSnapshotImport === true &&
+      typeof row.source_event_id === "string" &&
+      typeof metadata.hostImportKey === "string" &&
+      typeof metadata.hostImportSourceType === "string" &&
+      typeof metadata.hostMemoryId === "string" &&
+      typeof metadata.hostMemoryKind === "string" &&
+      typeof metadata.hostContentHash === "string" &&
+      metadata.sourceTrust === "external";
+  }
+
+  function stripUnclaimedSafeImportAuthorityLocked(profileId: string): void {
+    const rows = db
+      .prepare(
+        `SELECT memory.id, memory.source_event_id, memory.metadata_json
+         FROM gmos_memories AS memory
+         WHERE memory.profile_id = ?
+           AND (
+             json_extract(memory.metadata_json, '$.importSource') = 'mem0'
+             OR json_extract(memory.metadata_json, '$.hostSnapshotImport') = 1
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM gmos_import_identities AS identity
+             WHERE identity.profile_id = memory.profile_id AND identity.memory_id = memory.id
+           )`,
+      )
+      .all(profileId) as Array<{
+        id: string;
+        source_event_id: string | null;
+        metadata_json: string;
+      }>;
+    const update = db.prepare(
+      "UPDATE gmos_memories SET metadata_json = ? WHERE profile_id = ? AND id = ?",
+    );
+    for (const row of rows) {
+      update.run(
+        JSON.stringify(stripGmosOwnedMetadataFields(parseJsonObject(row.metadata_json))),
+        profileId,
+        row.id,
+      );
+      if (!row.source_event_id) continue;
+      const claimedEvidence = db
+        .prepare(
+          `SELECT 1 FROM gmos_import_identities
+           WHERE profile_id = ? AND evidence_id = ? LIMIT 1`,
+        )
+        .get(profileId, row.source_event_id);
+      if (claimedEvidence) continue;
+      const evidenceRow = db
+        .prepare("SELECT payload_json FROM gmos_evidence_events WHERE profile_id = ? AND id = ?")
+        .get(profileId, row.source_event_id) as { payload_json?: string } | undefined;
+      if (!evidenceRow) continue;
+      const payload = parseJsonObject(evidenceRow.payload_json);
+      delete payload._gmosSchema;
+      delete payload.provenance;
+      delete payload.sourceTrust;
+      db.prepare(
+        "UPDATE gmos_evidence_events SET payload_json = ? WHERE profile_id = ? AND id = ?",
+      ).run(JSON.stringify(payload), profileId, row.source_event_id);
+    }
+    const evidenceRows = db
+      .prepare(
+        `SELECT evidence.id, evidence.payload_json
+         FROM gmos_evidence_events AS evidence
+         WHERE evidence.profile_id = ?
+           AND json_extract(evidence.payload_json, '$._gmosSchema') IN (?, ?)
+           AND NOT EXISTS (
+             SELECT 1 FROM gmos_import_identities AS identity
+             WHERE identity.profile_id = evidence.profile_id AND identity.evidence_id = evidence.id
+           )`,
+      )
+      .all(
+        profileId,
+        GMOS_EVIDENCE_PAYLOAD_SCHEMAS.mem0Import,
+        GMOS_EVIDENCE_PAYLOAD_SCHEMAS.hostSnapshotImport,
+      ) as Array<{ id: string; payload_json: string }>;
+    const stripEvidence = db.prepare(
+      "UPDATE gmos_evidence_events SET payload_json = ? WHERE profile_id = ? AND id = ?",
+    );
+    for (const row of evidenceRows) {
+      const payload = parseJsonObject(row.payload_json);
+      delete payload._gmosSchema;
+      delete payload.provenance;
+      delete payload.sourceTrust;
+      stripEvidence.run(JSON.stringify(payload), profileId, row.id);
+    }
+  }
+
+  function assertRestoreImportClaimPolicy(
+    input: RestoreSqliteProfileBackupInput,
+    normalizedTargetProfileId: string,
+  ): void {
+    if ((input.onConflict ?? "skip") !== "replace") return;
+    const backup = parseSqliteProfileBackup(input.backup);
+    const hasImportAuthority = backup.memories.some((memory) =>
+      hasGmosMetadataReferenceSchema(
+        memory.metadata,
+        GMOS_METADATA_REFERENCE_SCHEMAS.mem0Import,
+      ) ||
+      hasGmosMetadataReferenceSchema(
+        memory.metadata,
+        GMOS_METADATA_REFERENCE_SCHEMAS.hostSnapshotImport,
+      ) ||
+      memory.metadata.importSource === "mem0" ||
+      memory.metadata.hostSnapshotImport === true
+    ) || backup.evidenceEvents.some((event) => {
+      const schema = gmosEvidencePayloadSchemaOf(event.payload);
+      return schema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.mem0Import ||
+        schema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.hostSnapshotImport;
+    });
+    if (!hasImportAuthority) return;
+    const protectedClaim = db
+      .prepare(
+        `SELECT 1 FROM gmos_import_identities
+         WHERE profile_id = ? AND disposition IN ('blocked', 'host_stale')
+         LIMIT 1`,
+      )
+      .get(normalizedTargetProfileId);
+    if (protectedClaim) {
+      throw new Error(
+        "gmOS profile backup replace cannot overwrite a blocked import identity",
+      );
+    }
+  }
+
+  function importArchiveReason(memory: MemoryRecord): string | null {
+    const archive = memory.metadata.archive;
+    return archive && typeof archive === "object" && !Array.isArray(archive) &&
+        typeof (archive as Record<string, unknown>).reason === "string"
+      ? String((archive as Record<string, unknown>).reason)
+      : null;
+  }
+
+  function rebuiltImportDisposition(
+    memory: MemoryRecord,
+    importerSchema: ImporterSchema,
+  ): ImportDisposition {
+    if (memory.status === "active") return "active";
+    if (memory.status === "dormant") return "dormant";
+    return importerSchema === IMPORTER_HOST_SCHEMA && importArchiveReason(memory) === "host_import_stale"
+      ? "host_stale"
+      : "blocked";
+  }
+
+  function exactCurrentOrLegacyImportMarker(
+    memory: MemoryRecord,
+    schema: typeof GMOS_METADATA_REFERENCE_SCHEMAS.mem0Import |
+      typeof GMOS_METADATA_REFERENCE_SCHEMAS.hostSnapshotImport,
+  ): "current" | "legacy" {
+    const schemas = gmosMetadataReferenceSchemas(memory.metadata);
+    const current = schemas.includes(schema) &&
+      schemas.includes(GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage);
+    const allowed = new Set<string>([
+      schema,
+      GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+      GMOS_METADATA_REFERENCE_SCHEMAS.lifecycleArchive,
+    ]);
+    if (current && schemas.every((entry) => allowed.has(entry))) return "current";
+    const legacyAllowed = new Set<string>([GMOS_METADATA_REFERENCE_SCHEMAS.lifecycleArchive]);
+    if (
+      !schemas.includes(schema) &&
+      !schemas.includes(GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage) &&
+      schemas.every((entry) => legacyAllowed.has(entry))
+    ) {
+      return "legacy";
+    }
+    throw new Error(
+      `gmOS import identity migration found an invalid authority marker in profile ${memory.profileId}`,
+    );
+  }
+
+  function assertSanitizedImportExtension(
+    memory: MemoryRecord,
+    extension: Record<string, unknown>,
+  ): void {
+    if (
+      canonicalJson(extension) !==
+        canonicalJson(sanitizePublicPayloadRecord(extension))
+    ) {
+      throw new Error(
+        `gmOS import identity migration found unsafe extension metadata in profile ${memory.profileId}`,
+      );
+    }
+  }
+
+  function rebuiltImportCandidateLocked(
+    row: Record<string, unknown>,
+    secret: Buffer,
+    allowForeignV2Digests: boolean,
+  ): RebuiltImportCandidate {
+    const memory = normalizeMemory(row);
+    if (!memory.sourceEventId) {
+      throw new Error(
+        `gmOS import identity migration found a memory without evidence in profile ${memory.profileId}`,
+      );
+    }
+    const evidenceRow = db
+      .prepare("SELECT * FROM gmos_evidence_events WHERE profile_id = ? AND id = ?")
+      .get(memory.profileId, memory.sourceEventId) as Record<string, unknown> | undefined;
+    if (!evidenceRow) {
+      throw new Error(
+        `gmOS import identity migration found a cross-owner or missing evidence binding in profile ${memory.profileId}`,
+      );
+    }
+    const evidence = normalizeEvidence(evidenceRow);
+    return memory.metadata.importSource === "mem0"
+      ? rebuiltMem0ImportCandidate(memory, evidence, secret, allowForeignV2Digests)
+      : rebuiltHostImportCandidate(memory, evidence, secret, allowForeignV2Digests);
+  }
+
+  function rebuiltMem0ImportCandidate(
+    memory: MemoryRecord,
+    evidence: EvidenceEvent,
+    secret: Buffer,
+    allowForeignV2Digests: boolean,
+  ): RebuiltImportCandidate {
+    const markerMode = exactCurrentOrLegacyImportMarker(
+      memory,
+      GMOS_METADATA_REFERENCE_SCHEMAS.mem0Import,
+    );
+    const originalId = memory.metadata.importSourceOriginalId;
+    const sourceFileHash = memory.metadata.sourceFileHash;
+    const recordIndex = memory.metadata.recordIndex;
+    if (
+      memory.metadata.importSource !== "mem0" ||
+      memory.metadata.provenance !== "low_level_import" ||
+      memory.metadata.sourceTrust !== "external" ||
+      typeof originalId !== "string" || !originalId.trim() ||
+      typeof sourceFileHash !== "string" || !/^[a-f0-9]{64}$/u.test(sourceFileHash) ||
+      typeof recordIndex !== "number" || !Number.isSafeInteger(recordIndex) || recordIndex < 0
+    ) {
+      throw new Error(
+        `gmOS import identity migration found invalid mem0 metadata in profile ${memory.profileId}`,
+      );
+    }
+    const extension = stripGmosOwnedMetadataFields(memory.metadata);
+    delete extension.provenance;
+    delete extension.recordIndex;
+    assertSanitizedImportExtension(memory, extension);
+    const prepared = prepareMem0AtomicImport(
+      {
+        profileId: memory.profileId,
+        sourceFileHash,
+        occurredAt: evidence.createdAt,
+        records: [],
+      },
+      {
+        sourceIndex: recordIndex,
+        originalId,
+        content: memory.content,
+        kind: memory.kind,
+        scope: memory.scope,
+        sensitivity: memory.sensitivity,
+        metadata: extension,
+        createdAt: evidence.createdAt,
+      },
+      secret,
+    );
+    const oldImportKey = [memory.profileId, "mem0", sourceFileHash, String(recordIndex)].join("|");
+    if (
+      memory.metadata.importKey === oldImportKey &&
+      originalId === String(recordIndex)
+    ) {
+      throw new Error(
+        `gmOS import identity migration found an ambiguous legacy mem0 id in profile ${memory.profileId}`,
+      );
+    }
+    const oldEventKey = ["mem0.import", memory.profileId, sourceFileHash, String(recordIndex)].join(":");
+    const disposition = rebuiltImportDisposition(memory, IMPORTER_MEM0_SCHEMA);
+    const redactedBlockedBinding = disposition === "blocked" && evidenceIsRedacted(evidence);
+    const exactPayload = hasExactMetadataKeys(
+      evidence.payload,
+      markerMode === "current"
+        ? [
+            "_gmosSchema",
+            "importSource",
+            "importSourceOriginalId",
+            "provenance",
+            "recordIndex",
+            "sourceFileHash",
+            "sourceTrust",
+          ]
+        : [
+            "importSource",
+            "importSourceOriginalId",
+            "provenance",
+            "recordIndex",
+            "sourceFileHash",
+            "sourceTrust",
+          ],
+    );
+    const expectedCurrentMem0 = {
+          profileId: memory.profileId,
+          eventKey: prepared.evidence.eventKey,
+          sourceUri: String(prepared.evidence.sourceUri),
+          content: memory.content,
+          sensitivity: memory.sensitivity,
+          originalId,
+          sourceFileHash,
+          recordIndex,
+        } as const;
+    const foreignV2 =
+      allowForeignV2Digests &&
+      (/^mem0\.import:v2:[a-f0-9]{64}:[a-f0-9]{64}$/u.test(evidence.eventKey) ||
+        /^gmos\.restore:[a-f0-9]{32}$/u.test(evidence.eventKey)) &&
+      /^gmos\.mem0\.v2:[a-f0-9]{64}$/u.test(String(memory.metadata.importKey));
+    const compatibleEvidence = markerMode === "current"
+      ? isCurrentMem0ImportEvidence(
+          evidence.eventKey === prepared.evidence.eventKey
+            ? evidence
+            : foreignV2
+              ? { ...evidence, eventKey: prepared.evidence.eventKey }
+              : evidence,
+          expectedCurrentMem0,
+        )
+      : isLegacyMem0ImportEvidence(evidence, {
+          profileId: memory.profileId,
+          eventKey: oldEventKey,
+          sourceUri: String(prepared.evidence.sourceUri),
+          content: memory.content,
+          sensitivity: memory.sensitivity,
+          originalId,
+          sourceFileHash,
+          recordIndex,
+        });
+    if (
+      memory.sourceEventId !== evidence.id ||
+      (memory.metadata.importKey !== oldImportKey &&
+        memory.metadata.importKey !== prepared.memory.metadata?.importKey &&
+        !foreignV2) ||
+      (!redactedBlockedBinding && (!exactPayload || !compatibleEvidence)) ||
+      (redactedBlockedBinding &&
+        gmosEvidencePayloadSchemaOf(evidence.payload) !== GMOS_EVIDENCE_PAYLOAD_SCHEMAS.mem0Import)
+    ) {
+      throw new Error(
+        `gmOS import identity migration found an incompatible mem0 binding in profile ${memory.profileId}`,
+      );
+    }
+    return {
+      prepared,
+      memory,
+      evidence,
+      disposition,
+      sourceRevisionOrder: Date.parse(memory.createdAt) || 0,
+      redactedBlockedBinding,
+    };
+  }
+
+  function rebuiltHostImportCandidate(
+    memory: MemoryRecord,
+    evidence: EvidenceEvent,
+    secret: Buffer,
+    allowForeignV2Digests: boolean,
+  ): RebuiltImportCandidate {
+    const markerMode = exactCurrentOrLegacyImportMarker(
+      memory,
+      GMOS_METADATA_REFERENCE_SCHEMAS.hostSnapshotImport,
+    );
+    const sourceType = memory.metadata.hostImportSourceType;
+    const hostMemoryId = memory.metadata.hostMemoryId;
+    const hostImportKey = memory.metadata.hostImportKey;
+    const expectedContentHash = createHash("sha256")
+      .update(memory.content, "utf8")
+      .digest("hex")
+      .slice(0, 16);
+    if (
+      memory.metadata.hostSnapshotImport !== true ||
+      memory.metadata.sourceTrust !== "external" ||
+      typeof sourceType !== "string" || !sourceType.trim() ||
+      typeof hostMemoryId !== "string" || !hostMemoryId.trim() ||
+      typeof hostImportKey !== "string" || !hostImportKey.trim() ||
+      memory.metadata.hostMemoryKind !== memory.kind ||
+      memory.metadata.hostContentHash !== expectedContentHash ||
+      typeof evidence.sourceUri !== "string" || !evidence.sourceUri.trim()
+    ) {
+      throw new Error(
+        `gmOS import identity migration found invalid host metadata in profile ${memory.profileId}`,
+      );
+    }
+    const oldPrefix = [
+      memory.profileId,
+      sourceType,
+      evidence.sourceUri,
+      hostMemoryId,
+    ].join("|");
+    let sourceUpdatedAt: string | null;
+    if (hostImportKey.startsWith(`${oldPrefix}|`)) {
+      const revision = hostImportKey.slice(oldPrefix.length + 1);
+      if (!revision) {
+        throw new Error(
+          `gmOS import identity migration found an empty host revision in profile ${memory.profileId}`,
+        );
+      }
+      sourceUpdatedAt = revision === expectedContentHash ? null : revision;
+    } else if (hostImportKey.startsWith("gmos.host_snapshot.v2:")) {
+      const stored = memory.metadata.hostSourceUpdatedAt;
+      if (stored !== null && stored !== undefined && typeof stored !== "string") {
+        throw new Error(
+          `gmOS import identity migration found an invalid host timestamp in profile ${memory.profileId}`,
+        );
+      }
+      sourceUpdatedAt = typeof stored === "string" ? stored : null;
+    } else {
+      throw new Error(
+        `gmOS import identity migration found an ambiguous host identity in profile ${memory.profileId}`,
+      );
+    }
+    const extension = stripGmosOwnedMetadataFields(memory.metadata);
+    assertSanitizedImportExtension(memory, extension);
+    const prepared = prepareHostAtomicImport(
+      {
+        profileId: memory.profileId,
+        sourceType,
+        records: [],
+        sync: false,
+        allowSecretLike: false,
+        occurredAt: evidence.createdAt,
+      },
+      {
+        sourceIndex: 0,
+        hostMemoryId,
+        content: memory.content,
+        kind: memory.kind,
+        scope: memory.scope,
+        sensitivity: memory.sensitivity,
+        confidence: memory.confidence,
+        sourceUri: evidence.sourceUri,
+        metadata: extension,
+        createdAt: evidence.createdAt,
+        updatedAt: sourceUpdatedAt,
+      },
+      secret,
+    );
+    const oldRevision = sourceUpdatedAt ?? expectedContentHash;
+    const oldEventKey = [
+      "host-memory",
+      memory.profileId,
+      sourceType,
+      evidence.sourceUri,
+      hostMemoryId,
+      oldRevision,
+    ].join(":");
+    const disposition = rebuiltImportDisposition(memory, IMPORTER_HOST_SCHEMA);
+    const redactedBlockedBinding = disposition === "blocked" && evidenceIsRedacted(evidence);
+    const exactPayload = hasExactMetadataKeys(
+      evidence.payload,
+      markerMode === "current"
+        ? ["_gmosSchema", "hostMemoryId", "hostMemoryKind", "sourceTrust"]
+        : ["hostMemoryId", "hostMemoryKind", "sourceTrust"],
+    );
+    const expectedCurrentHost = {
+          profileId: memory.profileId,
+          eventKey: prepared.evidence.eventKey,
+          sourceType,
+          sourceUri: evidence.sourceUri,
+          content: memory.content,
+          sensitivity: memory.sensitivity,
+          hostMemoryId,
+          hostMemoryKind: memory.kind,
+        } as const;
+    const foreignV2 =
+      allowForeignV2Digests &&
+      (/^host-memory:v2:[a-f0-9]{64}:[a-f0-9]{64}$/u.test(evidence.eventKey) ||
+        /^gmos\.restore:[a-f0-9]{32}$/u.test(evidence.eventKey)) &&
+      /^gmos\.host_snapshot\.v2:[a-f0-9]{64}:[a-f0-9]{64}$/u.test(hostImportKey);
+    const compatibleEvidence = markerMode === "current"
+      ? isCurrentHostSnapshotImportEvidence(
+          evidence.eventKey === prepared.evidence.eventKey
+            ? evidence
+            : foreignV2
+              ? { ...evidence, eventKey: prepared.evidence.eventKey }
+              : evidence,
+          expectedCurrentHost,
+        )
+      : isLegacyHostSnapshotImportEvidence(evidence, {
+          profileId: memory.profileId,
+          eventKey: oldEventKey,
+          sourceType,
+          sourceUri: evidence.sourceUri,
+          content: memory.content,
+          sensitivity: memory.sensitivity,
+          hostMemoryId,
+          hostMemoryKind: memory.kind,
+        });
+    if (
+      memory.sourceEventId !== evidence.id ||
+      (hostImportKey !== `${oldPrefix}|${oldRevision}` &&
+        hostImportKey !== prepared.memory.metadata?.hostImportKey &&
+        !foreignV2) ||
+      (!redactedBlockedBinding && (!exactPayload || !compatibleEvidence)) ||
+      (redactedBlockedBinding &&
+        gmosEvidencePayloadSchemaOf(evidence.payload) !==
+          GMOS_EVIDENCE_PAYLOAD_SCHEMAS.hostSnapshotImport)
+    ) {
+      throw new Error(
+        `gmOS import identity migration found an incompatible host binding in profile ${memory.profileId}`,
+      );
+    }
+    return {
+      prepared,
+      memory,
+      evidence,
+      disposition,
+      sourceRevisionOrder: sourceUpdatedAt
+        ? (Date.parse(sourceUpdatedAt) || Date.parse(memory.createdAt) || 0)
+        : (Date.parse(memory.createdAt) || 0),
+      redactedBlockedBinding,
+    };
+  }
+
+  function archiveImportBackfillDuplicateLocked(candidate: RebuiltImportCandidate): void {
+    if (candidate.memory.status !== "archived") {
+      const archivedAt = nowIso();
+      const previousValues = [memoryVersionSnapshot(candidate.memory)];
+      const metadata = metadataWithArchiveMarker({
+        metadata: stripGmosOwnedMetadataFields(candidate.memory.metadata),
+        archivedAt,
+        reason: "import_identity_duplicate_backfill",
+      });
+      db.prepare(
+        `UPDATE gmos_memories
+         SET status = 'archived', updated_at = ?, metadata_json = ?
+         WHERE profile_id = ? AND id = ?`,
+      ).run(
+        archivedAt,
+        JSON.stringify(metadata),
+        candidate.memory.profileId,
+        candidate.memory.id,
+      );
+      syncMemoryVector(candidate.memory.id);
+      deleteAssociationsForMemory(candidate.memory.id);
+      rejectBeliefsForMemory(candidate.memory.id, archivedAt);
+      insertLifecycleEvidence({
+        profileId: candidate.memory.profileId,
+        sourceType: "memory.lifecycle",
+        memoryId: candidate.memory.id,
+        from: candidate.memory.status,
+        to: "archived",
+        createdAt: archivedAt,
+        reasons: ["import_identity_duplicate_backfill"],
+        previousValues,
+      });
+      return;
+    }
+    const metadata = metadataWithArchiveMarker({
+      metadata: stripGmosOwnedMetadataFields(candidate.memory.metadata),
+      archivedAt: candidate.memory.updatedAt,
+      reason: importArchiveReason(candidate.memory) ?? "import_identity_duplicate_backfill",
+    });
+    db.prepare("UPDATE gmos_memories SET metadata_json = ? WHERE profile_id = ? AND id = ?")
+      .run(JSON.stringify(metadata), candidate.memory.profileId, candidate.memory.id);
+  }
+
+  function canonicalizeImportBackfillWinnerLocked(candidate: RebuiltImportCandidate): void {
+    const prepared = candidate.prepared;
+    let evidenceId = candidate.evidence.id;
+    if (!candidate.redactedBlockedBinding) {
+      const collision = db
+        .prepare("SELECT * FROM gmos_evidence_events WHERE event_key = ? AND id <> ?")
+        .get(prepared.evidence.eventKey, evidenceId) as Record<string, unknown> | undefined;
+      if (collision) {
+        throw new Error(
+          `gmOS import identity migration found a canonical event collision in profile ${candidate.memory.profileId}`,
+        );
+      }
+      db.prepare(
+        `UPDATE gmos_evidence_events
+         SET event_key = ?, source_type = ?, source_uri = ?, content = ?, sensitivity = ?,
+             eligible_for_long_term_memory = ?, payload_json = ?
+         WHERE profile_id = ? AND id = ?`,
+      ).run(
+        prepared.evidence.eventKey,
+        prepared.evidence.sourceType,
+        prepared.evidence.sourceUri ?? null,
+        prepared.evidence.content,
+        prepared.evidence.sensitivity,
+        prepared.evidence.eligibleForLongTermMemory ? 1 : 0,
+        JSON.stringify(prepared.evidence.payload ?? {}),
+        candidate.memory.profileId,
+        evidenceId,
+      );
+    }
+    const lifecycleMetadata = candidate.memory.status === "archived"
+      ? metadataWithArchiveMarker({
+          metadata: prepared.memory.metadata ?? {},
+          archivedAt: candidate.memory.updatedAt,
+          reason: importArchiveReason(candidate.memory) ?? "manual_archive",
+        })
+      : prepared.memory.metadata ?? {};
+    db.prepare(
+      `UPDATE gmos_memories
+       SET source_event_id = ?, metadata_json = ?
+       WHERE profile_id = ? AND id = ?`,
+    ).run(
+      evidenceId,
+      JSON.stringify(lifecycleMetadata),
+      candidate.memory.profileId,
+      candidate.memory.id,
+    );
+    db.prepare(
+      `INSERT INTO gmos_import_identities(
+        profile_id, importer_schema, source_identity_digest, source_group_digest,
+        revision_digest, binding_digest, memory_id, evidence_id, disposition,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      candidate.memory.profileId,
+      prepared.importerSchema,
+      prepared.sourceIdentityDigest,
+      prepared.sourceGroupDigest,
+      prepared.revisionDigest,
+      prepared.bindingDigest,
+      candidate.memory.id,
+      evidenceId,
+      candidate.disposition,
+      candidate.memory.createdAt,
+      candidate.memory.updatedAt,
+    );
   }
 
   function ftsAvailable(): boolean {
@@ -1744,14 +2748,17 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       input.sourceType,
       null,
       `Memory lifecycle transition ${input.from} -> ${input.to}`,
-      JSON.stringify({
+      JSON.stringify(markedGmosEvidencePayload(
+        GMOS_EVIDENCE_PAYLOAD_SCHEMAS.lifecycleTransition,
+        {
         memoryId: input.memoryId,
         from: input.from,
         to: input.to,
         ...(input.retention !== undefined ? { retention: input.retention } : {}),
         reasons: input.reasons,
         ...(input.previousValues?.length ? { previousValues: input.previousValues } : {}),
-      }),
+        },
+      )),
       input.createdAt,
     );
   }
@@ -1784,13 +2791,16 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       input.profileId,
       null,
       "Memory duplicate consolidation",
-      JSON.stringify({
+      JSON.stringify(markedGmosEvidencePayload(
+        GMOS_EVIDENCE_PAYLOAD_SCHEMAS.consolidationDuplicate,
+        {
         survivorId: input.survivorId,
         memberIds: input.memberIds,
         archivedMemberId: input.archivedMemberId,
         reasons: input.reasons,
         ...(input.previousValues?.length ? { previousValues: input.previousValues } : {}),
-      }),
+        },
+      )),
       input.createdAt,
     );
   }
@@ -1813,6 +2823,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .get(evidenceId) as { payload_json?: string } | undefined;
     if (!row) return;
     const payload = parseJsonObject(row.payload_json);
+    if (!gmosEvidenceReferenceShapeOf(payload)?.snapshotArrays?.includes("previousValues")) return;
     const existing = previousValuesFromPayload(payload);
     const byMemoryId = new Map(existing.map((entry) => [entry.memoryId, entry]));
     for (const previous of previousValues) byMemoryId.set(previous.memoryId, previous);
@@ -1830,6 +2841,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   function insertMutationEvidence(input: {
     profileId: string;
     sourceType: string;
+    payloadSchema: GmosEvidencePayloadSchema;
     content: string;
     createdAt: string;
     payload: Record<string, unknown>;
@@ -1853,10 +2865,10 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       input.sourceType,
       null,
       input.content,
-      JSON.stringify({
-        ...input.payload,
-        previousValues: input.previousValues,
-      }),
+      JSON.stringify(markedGmosEvidencePayload(input.payloadSchema, {
+          ...input.payload,
+          previousValues: input.previousValues,
+        })),
       input.createdAt,
     );
     return evidenceId;
@@ -1914,17 +2926,18 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   }
 
   function payloadReferencesMemory(payload: Record<string, unknown>, memoryId: string): boolean {
-    if (payload.memoryId === memoryId) return true;
-    if (payload.archivedMemberId === memoryId) return true;
-    if (payload.survivorId === memoryId) return true;
-    if (payload.supersededMemoryId === memoryId) return true;
-    if (payloadStringArray(payload.memoryIds).includes(memoryId)) return true;
-    if (payloadStringArray(payload.propagatedMemoryIds).includes(memoryId)) return true;
-    if (payloadStringArray(payload.usedMemoryIds).includes(memoryId)) return true;
-    if (payloadStringArray(payload.relatedMemoryIds).includes(memoryId)) return true;
-    if (payloadStringArray(payload.sourceMemoryIds).includes(memoryId)) return true;
-    if (payloadStringArray(payload.memberIds).includes(memoryId)) return true;
-    for (const key of ["actions", "previousValues", "restoredValues"]) {
+    const shape = gmosEvidenceReferenceShapeOf(payload);
+    if (!shape) return false;
+    for (const key of shape.memoryIdFields ?? []) {
+      if (payload[key] === memoryId) return true;
+    }
+    for (const key of shape.memoryIdArrays ?? []) {
+      if (payloadStringArray(payload[key]).includes(memoryId)) return true;
+    }
+    for (const key of [
+      ...(shape.actionArrays ?? []),
+      ...(shape.snapshotArrays ?? []),
+    ]) {
       const values = payload[key];
       if (!Array.isArray(values)) continue;
       if (
@@ -1937,6 +2950,23 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         )
       ) {
         return true;
+      }
+    }
+    if (shape.provenanceCredit) {
+      const provenanceCredit = payload.provenanceCredit;
+      if (provenanceCredit && typeof provenanceCredit === "object" && !Array.isArray(provenanceCredit)) {
+        const creditedMemories = (provenanceCredit as Record<string, unknown>).creditedMemories;
+        if (
+          Array.isArray(creditedMemories) &&
+          creditedMemories.some((entry) => {
+            if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+            const record = entry as Record<string, unknown>;
+            return [record.id, record.viaMemoryId, record.derivedFromMemoryId].includes(memoryId) ||
+              payloadStringArray(record.path).includes(memoryId);
+          })
+        ) {
+          return true;
+        }
       }
     }
     return false;
@@ -1955,13 +2985,153 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   }
 
   function derivedSourceMemoryIds(metadata: Record<string, unknown>): string[] {
+    if (
+      !hasGmosMetadataReferenceSchema(
+        metadata,
+        GMOS_METADATA_REFERENCE_SCHEMAS.consolidationSummary,
+      ) &&
+      !hasGmosMetadataReferenceSchema(metadata, GMOS_METADATA_REFERENCE_SCHEMAS.dossier)
+    ) {
+      return [];
+    }
     const sourceMemoryIds = metadata.sourceMemoryIds;
     return Array.isArray(sourceMemoryIds)
       ? sourceMemoryIds.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
       : [];
   }
 
-  function derivedSummaryIdsForForgottenSources(
+  function producerEvidenceIdsForMemory(memory: MemoryRecord): string[] {
+    const ids = memory.sourceEventId ? [memory.sourceEventId] : [];
+    if (
+      !hasGmosMetadataReferenceSchema(
+        memory.metadata,
+        GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+      )
+    ) {
+      return ids;
+    }
+    for (const key of [
+      "sourceEvidenceId",
+      "turnEvidenceId",
+      "sessionDistillationEvidenceId",
+    ] as const) {
+      const value = memory.metadata[key];
+      if (typeof value === "string" && value.length > 0) ids.push(value);
+    }
+    return [...new Set(ids)];
+  }
+
+  function forgetEvidenceReferenceIds(
+    memory: Pick<MemoryRecord, "sourceEventId" | "metadata">,
+  ): string[] {
+    const ids = memoryEvidenceReferenceIds(memory);
+    if (
+      !hasGmosMetadataReferenceSchema(
+        memory.metadata,
+        GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+      )
+    ) {
+      return ids;
+    }
+    const annealing = memory.metadata.annealing;
+    if (annealing && typeof annealing === "object" && !Array.isArray(annealing)) {
+      const sourceEventId = (annealing as Record<string, unknown>).sourceEventId;
+      if (typeof sourceEventId === "string" && sourceEventId.length > 0) {
+        ids.push(sourceEventId);
+      }
+    }
+    return [...new Set(ids)];
+  }
+
+  function evidencePayloadEvidenceReferenceIds(event: EvidenceEvent): string[] {
+    const shape = gmosEvidenceReferenceShapeOf(event.payload);
+    if (!shape) return [];
+    const ids: string[] = [];
+    for (const key of shape.evidenceIdFields ?? []) {
+      const value = event.payload[key];
+      if (typeof value === "string" && value.length > 0) ids.push(value);
+    }
+    for (const key of shape.evidenceIdArrays ?? []) {
+      const values = event.payload[key];
+      if (!Array.isArray(values)) continue;
+      for (const value of values) {
+        if (typeof value === "string" && value.length > 0) ids.push(value);
+      }
+    }
+    for (const key of shape.snapshotArrays ?? []) {
+      const values = event.payload[key];
+      if (!Array.isArray(values)) continue;
+      for (const value of values) {
+        if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+        const snapshot = value as Record<string, unknown>;
+        const metadata = snapshot.metadata;
+        ids.push(...forgetEvidenceReferenceIds({
+          sourceEventId: typeof snapshot.sourceEventId === "string"
+            ? snapshot.sourceEventId
+            : null,
+          metadata: metadata && typeof metadata === "object" && !Array.isArray(metadata)
+            ? metadata as Record<string, unknown>
+            : {},
+        }));
+      }
+    }
+    return [...new Set(ids)];
+  }
+
+  function evidenceReferenceGraphForProfile(
+    profileId: string,
+    seedIds: Iterable<string>,
+  ): Map<string, string[]> {
+    const graph = new Map<string, string[]>();
+    const queued = new Set<string>();
+    const pending: string[] = [];
+    let pendingHead = 0;
+    for (const id of seedIds) {
+      if (!id || queued.has(id)) continue;
+      queued.add(id);
+      pending.push(id);
+    }
+    while (pendingHead < pending.length) {
+      const batch = pending.slice(pendingHead, pendingHead + 400);
+      pendingHead += batch.length;
+      const rows = db
+        .prepare(
+          `SELECT * FROM gmos_evidence_events
+           WHERE profile_id = ? AND id IN (${batch.map(() => "?").join(", ")})`,
+        )
+        .all(profileId, ...batch) as Record<string, unknown>[];
+      for (const row of rows) {
+        const event = normalizeEvidence(row);
+        const references = evidencePayloadEvidenceReferenceIds(event);
+        graph.set(event.id, references);
+        for (const reference of references) {
+          if (queued.has(reference)) continue;
+          queued.add(reference);
+          pending.push(reference);
+        }
+      }
+    }
+    return graph;
+  }
+
+  function reachableEvidenceIds(
+    seedIds: Iterable<string>,
+    graph: ReadonlyMap<string, string[]>,
+  ): Set<string> {
+    const reachable = new Set<string>();
+    const pending = [...new Set(seedIds)].filter((id) => graph.has(id));
+    while (pending.length > 0) {
+      const id = pending.pop()!;
+      if (reachable.has(id)) continue;
+      reachable.add(id);
+      for (const reference of graph.get(id) ?? []) {
+        if (graph.has(reference) && !reachable.has(reference)) pending.push(reference);
+      }
+    }
+    return reachable;
+  }
+
+  function derivedMemoryIdsForForgottenSources(
     profileId: string,
     sourceMemoryIds: string[],
   ): string[] {
@@ -1970,23 +3140,100 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     const derivedIds = new Set<string>();
     const rows = db
       .prepare(
-        `SELECT id, metadata_json
+        `SELECT *
          FROM gmos_memories
          WHERE profile_id = ? AND status IN ('active', 'dormant')`,
       )
-      .all(profileId) as Array<{ id: string; metadata_json: string }>;
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const row of rows) {
-        if (sourceClosure.has(row.id) || derivedIds.has(row.id)) continue;
-        const metadata = parseJsonObject(row.metadata_json);
-        if (metadata.consolidationSummary !== true && metadata.dossier !== true) continue;
-        const summarySourceIds = derivedSourceMemoryIds(metadata);
-        if (!summarySourceIds.some((sourceId) => sourceClosure.has(sourceId))) continue;
-        derivedIds.add(row.id);
-        sourceClosure.add(row.id);
-        changed = true;
+      .all(profileId) as Record<string, unknown>[];
+    const memories = rows.map(normalizeMemory);
+    const evidenceIdsByMemory = new Map(
+      memories.map((memory) => [memory.id, forgetEvidenceReferenceIds(memory)]),
+    );
+    const evidenceGraph = evidenceReferenceGraphForProfile(
+      profileId,
+      memories.flatMap((memory) => evidenceIdsByMemory.get(memory.id) ?? []),
+    );
+    const memoryById = new Map(memories.map((memory) => [memory.id, memory]));
+    const memoryDependents = new Map<string, string[]>();
+    const evidenceDependents = new Map<string, string[]>();
+    const evidenceMemoryDependents = new Map<string, string[]>();
+    const addDependent = (
+      dependents: Map<string, string[]>,
+      sourceId: string,
+      dependentId: string,
+    ): void => {
+      const entries = dependents.get(sourceId) ?? [];
+      entries.push(dependentId);
+      dependents.set(sourceId, entries);
+    };
+    for (const memory of memories) {
+      for (const sourceId of derivedSourceMemoryIds(memory.metadata)) {
+        addDependent(memoryDependents, sourceId, memory.id);
+      }
+      if (
+        hasGmosMetadataReferenceSchema(
+          memory.metadata,
+          GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+        )
+      ) {
+        for (const evidenceId of evidenceIdsByMemory.get(memory.id) ?? []) {
+          addDependent(evidenceMemoryDependents, evidenceId, memory.id);
+        }
+      }
+    }
+    for (const [evidenceId, references] of evidenceGraph) {
+      for (const reference of references) {
+        addDependent(evidenceDependents, reference, evidenceId);
+      }
+    }
+    const pendingMemoryIds: string[] = [];
+    const queuedMemoryIds = new Set<string>();
+    const pendingEvidenceIds: string[] = [];
+    const taintedEvidenceIds = new Set<string>();
+    const enqueueMemory = (memoryId: string): void => {
+      if (sourceClosure.has(memoryId) || queuedMemoryIds.has(memoryId)) return;
+      queuedMemoryIds.add(memoryId);
+      pendingMemoryIds.push(memoryId);
+    };
+    const enqueueEvidence = (evidenceId: string): void => {
+      if (!evidenceGraph.has(evidenceId) || taintedEvidenceIds.has(evidenceId)) return;
+      taintedEvidenceIds.add(evidenceId);
+      pendingEvidenceIds.push(evidenceId);
+    };
+    const sourceEvidenceIds: string[] = [];
+    for (const sourceId of sourceClosure) {
+      for (const dependentId of memoryDependents.get(sourceId) ?? []) enqueueMemory(dependentId);
+      const sourceMemory = memoryById.get(sourceId);
+      if (!sourceMemory) continue;
+      sourceEvidenceIds.push(...(evidenceIdsByMemory.get(sourceMemory.id) ?? []));
+    }
+    for (const evidenceId of reachableEvidenceIds(sourceEvidenceIds, evidenceGraph)) {
+      enqueueEvidence(evidenceId);
+    }
+    while (pendingEvidenceIds.length > 0 || pendingMemoryIds.length > 0) {
+      const evidenceId = pendingEvidenceIds.pop();
+      if (evidenceId !== undefined) {
+        for (const dependentId of evidenceDependents.get(evidenceId) ?? []) {
+          enqueueEvidence(dependentId);
+        }
+        for (const dependentId of evidenceMemoryDependents.get(evidenceId) ?? []) {
+          enqueueMemory(dependentId);
+        }
+        continue;
+      }
+      const memoryId = pendingMemoryIds.pop();
+      if (memoryId === undefined) continue;
+      if (sourceClosure.has(memoryId)) continue;
+      const memory = memoryById.get(memoryId);
+      if (!memory) continue;
+      derivedIds.add(memoryId);
+      sourceClosure.add(memoryId);
+      for (const dependentId of memoryDependents.get(memoryId) ?? []) enqueueMemory(dependentId);
+      // Only the newly-derived memory's producer evidence becomes tainted.
+      // Its other lineage references may be shared with unrelated surviving
+      // memories and are protected unless they were already in the closure.
+      for (const producerEvidenceId of producerEvidenceIdsForMemory(memory)) {
+        enqueueEvidence(producerEvidenceId);
       }
     }
     return [...derivedIds].sort((left, right) => left.localeCompare(right));
@@ -1998,12 +3245,12 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     derivedMemoryIds: string[];
     archivedAt: string;
   }): string[] {
+    const directIds = new Set(input.memoryIds);
     const orderedIds = [
       ...input.memoryIds,
-      ...input.derivedMemoryIds.filter((memoryId) => !input.memoryIds.includes(memoryId)),
+      ...input.derivedMemoryIds.filter((memoryId) => !directIds.has(memoryId)),
     ];
     if (orderedIds.length === 0) return [];
-    const directIds = new Set(input.memoryIds);
     const rowStmt = db.prepare(
       `SELECT id, status, metadata_json
        FROM gmos_memories
@@ -2015,46 +3262,49 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
        WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
     );
     const archivedIds: string[] = [];
-    const tx = db.transaction((memoryIds: string[]) => {
-      for (const memoryId of memoryIds) {
-        const row = rowStmt.get(input.profileId, memoryId) as
-          | { id: string; status: MemoryRecord["status"]; metadata_json: string }
-          | undefined;
-        if (!row) continue;
-        const fullRow = memoryRowById(input.profileId, memoryId);
-        const previousValues = fullRow ? [memorySnapshotFromRow(fullRow)] : [];
-        const reason = directIds.has(memoryId)
-          ? "user_forget"
-          : "derived_from_forgotten_source";
-        const metadata = metadataWithArchiveMarker({
-          metadata: parseJsonObject(row.metadata_json),
-          archivedAt: input.archivedAt,
-          reason,
-        });
-        const result = updateStmt.run(
-          input.archivedAt,
-          JSON.stringify(metadata),
-          input.profileId,
-          memoryId,
-        );
-        if (result.changes === 0) continue;
-        archivedIds.push(memoryId);
-        syncMemoryVector(memoryId);
-        deleteAssociationsForMemory(memoryId);
-        rejectBeliefsForMemory(memoryId, input.archivedAt);
-        insertLifecycleEvidence({
-          profileId: input.profileId,
-          sourceType: "memory.lifecycle",
-          memoryId,
-          from: row.status,
-          to: "archived",
-          createdAt: input.archivedAt,
-          reasons: [reason],
-          previousValues,
-        });
-      }
-    });
-    tx(orderedIds);
+    for (const memoryId of orderedIds) {
+      const row = rowStmt.get(input.profileId, memoryId) as
+        | { id: string; status: MemoryRecord["status"]; metadata_json: string }
+        | undefined;
+      if (!row) continue;
+      const fullRow = memoryRowById(input.profileId, memoryId);
+      const previousValues = fullRow ? [memorySnapshotFromRow(fullRow)] : [];
+      const reason = directIds.has(memoryId)
+        ? "user_forget"
+        : "derived_from_forgotten_source";
+      const metadata = metadataWithArchiveMarker({
+        metadata: parseJsonObject(row.metadata_json),
+        archivedAt: input.archivedAt,
+        reason,
+      });
+      const result = updateStmt.run(
+        input.archivedAt,
+        JSON.stringify(metadata),
+        input.profileId,
+        memoryId,
+      );
+      if (result.changes === 0) continue;
+      archivedIds.push(memoryId);
+      setImportClaimDispositionForMemoryLocked({
+        profileId: input.profileId,
+        memoryId,
+        disposition: "blocked",
+        updatedAt: input.archivedAt,
+      });
+      syncMemoryVector(memoryId);
+      deleteAssociationsForMemory(memoryId);
+      rejectBeliefsForMemory(memoryId, input.archivedAt);
+      insertLifecycleEvidence({
+        profileId: input.profileId,
+        sourceType: "memory.lifecycle",
+        memoryId,
+        from: row.status,
+        to: "archived",
+        createdAt: input.archivedAt,
+        reasons: [reason],
+        previousValues,
+      });
+    }
     return archivedIds;
   }
 
@@ -2064,45 +3314,58 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     redactedAt: string;
   }): number {
     if (input.archivedMemoryIds.length === 0) return 0;
-    const evidenceRows = db
-      .prepare(
-        `SELECT DISTINCT e.*
-         FROM gmos_memories m
-         JOIN gmos_evidence_events e ON e.id = m.source_event_id
-         WHERE m.profile_id = ?
-           AND m.id IN (${input.archivedMemoryIds.map(() => "?").join(", ")})`,
-      )
-      .all(input.profileId, ...input.archivedMemoryIds) as Record<string, unknown>[];
+    const archivedMemoryIds = new Set(input.archivedMemoryIds);
+    const profileMemories = (db
+      .prepare("SELECT * FROM gmos_memories WHERE profile_id = ?")
+      .all(input.profileId) as Record<string, unknown>[])
+      .map(normalizeMemory);
+    const evidenceIds = new Set<string>();
+    const protectedSeedIds = new Set<string>();
+    for (const memory of profileMemories) {
+      const references = forgetEvidenceReferenceIds(memory);
+      if (archivedMemoryIds.has(memory.id)) {
+        for (const evidenceId of references) evidenceIds.add(evidenceId);
+      } else if (memory.status === "active" || memory.status === "dormant") {
+        for (const evidenceId of references) protectedSeedIds.add(evidenceId);
+      }
+    }
+    const evidenceGraph = evidenceReferenceGraphForProfile(
+      input.profileId,
+      [...evidenceIds, ...protectedSeedIds],
+    );
+    const forgottenEvidenceIds = reachableEvidenceIds(evidenceIds, evidenceGraph);
+    const protectedEvidenceIds = reachableEvidenceIds(protectedSeedIds, evidenceGraph);
+    const evidenceRows: Record<string, unknown>[] = [];
+    const orderedEvidenceIds = [...forgottenEvidenceIds]
+      .sort((left, right) => left.localeCompare(right));
+    for (let start = 0; start < orderedEvidenceIds.length; start += 400) {
+      const batch = orderedEvidenceIds.slice(start, start + 400);
+      evidenceRows.push(...db
+        .prepare(
+          `SELECT * FROM gmos_evidence_events
+           WHERE profile_id = ? AND id IN (${batch.map(() => "?").join(", ")})`,
+        )
+        .all(input.profileId, ...batch) as Record<string, unknown>[]);
+    }
     let redacted = 0;
     for (const row of evidenceRows) {
       const event = normalizeEvidence(row);
-      if (evidenceIsRedacted(event)) continue;
-      const surviving = db
-        .prepare(
-          `SELECT id
-           FROM gmos_memories
-           WHERE profile_id = ?
-             AND source_event_id = ?
-             AND status IN ('active', 'dormant')
-           LIMIT 1`,
-        )
-        .get(input.profileId, event.id) as { id?: string } | undefined;
-      if (surviving) continue;
+      if (evidenceIsRedacted(event) || protectedEvidenceIds.has(event.id)) continue;
       db.prepare(
         `UPDATE gmos_evidence_events
          SET content = ?, payload_json = ?
-         WHERE id = ?`,
+         WHERE profile_id = ? AND id = ?`,
       ).run(
         "[redacted_evidence_content]",
         JSON.stringify({
           ...event.payload,
           redaction: evidenceRedactionStub(event.content, input.redactedAt),
         }),
+        input.profileId,
         event.id,
       );
       redacted += 1;
     }
-    const archivedIds = new Set(input.archivedMemoryIds);
     const payloadRows = db
       .prepare(
         `SELECT id, payload_json
@@ -2116,15 +3379,17 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .all(input.profileId) as Array<{ id: string; payload_json: string }>;
     for (const row of payloadRows) {
       const payload = parseJsonObject(row.payload_json);
+      const shape = gmosEvidenceReferenceShapeOf(payload);
+      if (!shape) continue;
       let changed = false;
       const nextPayload = { ...payload };
-      for (const key of ["previousValues", "restoredValues"]) {
+      for (const key of shape.snapshotArrays ?? []) {
         const values = payload[key];
         if (!Array.isArray(values)) continue;
         const nextValues = values.map((entry) => {
           if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
           const record = entry as Record<string, unknown>;
-          if (!archivedIds.has(String(record.memoryId))) return entry;
+          if (!archivedMemoryIds.has(String(record.memoryId))) return entry;
           if (record.content === "[redacted_memory_content]") return entry;
           const content = typeof record.content === "string" ? record.content : "";
           changed = true;
@@ -2179,6 +3444,12 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       const previousValue = memorySnapshotFromRow(row);
       previousValues.push(previousValue);
       updateStmt.run(input.usedAt, input.usedAt, input.profileId, memoryId);
+      setImportClaimDispositionForMemoryLocked({
+        profileId: input.profileId,
+        memoryId,
+        disposition: "active",
+        updatedAt: input.usedAt,
+      });
       syncMemoryVector(memoryId);
       if (row.status === "dormant") {
         activateMemoryProjections(memoryId, input.profileId);
@@ -2198,6 +3469,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       insertMutationEvidence({
         profileId: input.profileId,
         sourceType: "memory.usage",
+        payloadSchema: GMOS_EVIDENCE_PAYLOAD_SCHEMAS.memoryUsage,
         content: "Memory usage signal",
         createdAt: input.usedAt,
         payload: { memoryIds: uniqueIds },
@@ -2272,6 +3544,11 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         evidenceId = insertMutationEvidence({
           profileId: input.profileId,
           sourceType: input.sourceType ?? "memory.reinforcement",
+          payloadSchema: input.sourceType === "feedback"
+            ? GMOS_EVIDENCE_PAYLOAD_SCHEMAS.feedbackReinforcement
+            : input.sourceType === "outcome"
+              ? GMOS_EVIDENCE_PAYLOAD_SCHEMAS.outcomeReinforcement
+              : GMOS_EVIDENCE_PAYLOAD_SCHEMAS.memoryReinforcement,
           content: "Memory reinforcement adjustment",
           createdAt: input.updatedAt,
           payload: {
@@ -2320,13 +3597,26 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     let recentBoosts = 1;
     for (const row of rows) {
       const payload = parseJsonObject(row.payload_json);
+      const schema = gmosEvidencePayloadSchemaOf(payload);
+      if (
+        schema !== GMOS_EVIDENCE_PAYLOAD_SCHEMAS.outcomeReinforcement &&
+        schema !== GMOS_EVIDENCE_PAYLOAD_SCHEMAS.feedbackReinforcement &&
+        schema !== GMOS_EVIDENCE_PAYLOAD_SCHEMAS.memoryReinforcement
+      ) {
+        continue;
+      }
       if (Number(payload.delta) <= 0) continue;
       if (!payloadStringArray(payload.memoryIds).includes(input.memoryId)) continue;
       recentBoosts += 1;
     }
     if (recentBoosts < config.boostThreshold) return;
     const metadata = parseJsonObject(input.previousRow.metadata_json);
-    const existing = metadata.annealing;
+    const ownsRuntimeLineage = hasGmosMetadataReferenceSchema(
+      metadata,
+      GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+    );
+    if (!ownsRuntimeLineage && Object.hasOwn(metadata, "annealing")) return;
+    const existing = ownsRuntimeLineage ? metadata.annealing : undefined;
     if (
       existing &&
       typeof existing === "object" &&
@@ -2340,17 +3630,23 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
        SET metadata_json = ?
        WHERE profile_id = ? AND id = ?`,
     ).run(
-      JSON.stringify({
-        ...metadata,
-        annealing: {
-          active: true,
-          reason: "rapid_non_independent_boost",
-          sourceEventId,
-          capConfidence: Math.min(Number(input.previousRow.confidence ?? 0.5), config.confidenceCap),
-          retentionCap: config.retentionCap,
-          startedAt: input.boostedAt,
+      JSON.stringify(markedGmosMetadata(
+        {
+          ...metadata,
+          annealing: {
+            active: true,
+            reason: "rapid_non_independent_boost",
+            sourceEventId,
+            capConfidence: Math.min(
+              Number(input.previousRow.confidence ?? 0.5),
+              config.confidenceCap,
+            ),
+            retentionCap: config.retentionCap,
+            startedAt: input.boostedAt,
+          },
         },
-      }),
+        GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+      )),
       input.profileId,
       input.memoryId,
     );
@@ -2461,6 +3757,14 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
 
   function memoryArchivedByForget(memory: MemoryRecord): boolean {
     if (memory.status !== "archived") return false;
+    if (
+      !hasGmosMetadataReferenceSchema(
+        memory.metadata,
+        GMOS_METADATA_REFERENCE_SCHEMAS.lifecycleArchive,
+      )
+    ) {
+      return false;
+    }
     const archive = memory.metadata.archive;
     if (!archive || typeof archive !== "object" || Array.isArray(archive)) return false;
     const reason = (archive as Record<string, unknown>).reason;
@@ -2480,9 +3784,29 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     payloadKey: string;
   }): string[] {
     const event = memorySourceEvidence(input.memory);
+    const metadataOwnsKey = gmosMetadataReferenceSchemas(input.memory.metadata).some((schema) => {
+      const shape = GMOS_METADATA_REFERENCE_SHAPES[schema];
+      return [
+        ...(shape.memoryIdArrays ?? []),
+        ...(shape.beliefIdArrays ?? []),
+        ...(shape.trajectoryIdArrays ?? []),
+      ].includes(input.metadataKey);
+    });
+    const evidenceShape = event ? gmosEvidenceReferenceShapeOf(event.payload) : null;
+    const evidenceOwnsKey = evidenceShape
+      ? [
+          ...(evidenceShape.memoryIdArrays ?? []),
+          ...(evidenceShape.beliefIdArrays ?? []),
+          ...(evidenceShape.trajectoryIdArrays ?? []),
+        ].includes(input.payloadKey)
+      : false;
     return uniqueStrings([
-      ...stringArrayFromUnknown(input.memory.metadata[input.metadataKey]),
-      ...stringArrayFromUnknown(event ? event.payload[input.payloadKey] : undefined),
+      ...stringArrayFromUnknown(
+        metadataOwnsKey ? input.memory.metadata[input.metadataKey] : undefined,
+      ),
+      ...stringArrayFromUnknown(
+        evidenceOwnsKey && event ? event.payload[input.payloadKey] : undefined,
+      ),
     ]).sort((left, right) => left.localeCompare(right));
   }
 
@@ -2493,13 +3817,20 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   } | null {
     const event = memorySourceEvidence(memory);
     if (event && evidenceIsRedacted(event)) return null;
+    const evidenceSchema = event ? gmosEvidencePayloadSchemaOf(event.payload) : null;
     const derived =
-      memory.metadata.consolidationSummary === true ||
-      memory.metadata.dossier === true ||
-      memory.metadata.procedureDistillation === true ||
-      event?.sourceType === "consolidation" ||
-      event?.sourceType === "dossier" ||
-      event?.sourceType === "distillation";
+      hasGmosMetadataReferenceSchema(
+        memory.metadata,
+        GMOS_METADATA_REFERENCE_SCHEMAS.consolidationSummary,
+      ) ||
+      hasGmosMetadataReferenceSchema(memory.metadata, GMOS_METADATA_REFERENCE_SCHEMAS.dossier) ||
+      hasGmosMetadataReferenceSchema(
+        memory.metadata,
+        GMOS_METADATA_REFERENCE_SCHEMAS.procedureDistillation,
+      ) ||
+      evidenceSchema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.consolidationSummary ||
+      evidenceSchema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.dossier ||
+      evidenceSchema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.procedureDistillation;
     if (!derived) return null;
     const provenance = {
       sourceMemoryIds: sourceIdsFromMetadataAndEvidence({
@@ -2745,6 +4076,12 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .get(input.evidenceId) as { payload_json?: string } | undefined;
     if (!row) return;
     const payload = parseJsonObject(row.payload_json);
+    if (
+      gmosEvidencePayloadSchemaOf(payload) !==
+      GMOS_EVIDENCE_PAYLOAD_SCHEMAS.outcomeReinforcement
+    ) {
+      return;
+    }
     const previousByMemoryId = new Map(
       previousValuesFromPayload(payload).map((entry) => [entry.memoryId, entry]),
     );
@@ -2817,6 +4154,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       insertMutationEvidence({
         profileId: input.profileId,
         sourceType: "feedback",
+        payloadSchema: GMOS_EVIDENCE_PAYLOAD_SCHEMAS.feedbackConfidencePenalty,
         content: "Memory confidence penalty",
         createdAt: input.updatedAt,
         payload: {
@@ -2836,6 +4174,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         `SELECT created_at
          FROM gmos_evidence_events
          WHERE source_type = 'maintenance'
+           AND json_extract(payload_json, '$._gmosSchema') = '${GMOS_EVIDENCE_PAYLOAD_SCHEMAS.lifecycleTransition}'
            AND json_extract(payload_json, '$.memoryId') = ?
            AND json_extract(payload_json, '$.to') = 'dormant'
          ORDER BY created_at DESC, id DESC
@@ -2861,15 +4200,24 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       if (!row || row.status === "archived") continue;
       const previousValues = [memorySnapshotFromRow(row)];
       const metadata = metadataWithArchiveMarker({
-        metadata: {
-          ...parseJsonObject(row.metadata_json),
-          supersededBy: cluster.survivor.id,
-        },
+        metadata: markedGmosMetadata(
+          {
+            ...parseJsonObject(row.metadata_json),
+            supersededBy: cluster.survivor.id,
+          },
+          GMOS_METADATA_REFERENCE_SCHEMAS.duplicateSupersession,
+        ),
         archivedAt: now,
         reason: "consolidation:duplicate",
       });
       const result = updateStmt.run(now, JSON.stringify(metadata), profileId, member.id);
       if (result.changes === 0) continue;
+      setImportClaimDispositionForMemoryLocked({
+        profileId,
+        memoryId: member.id,
+        disposition: "blocked",
+        updatedAt: now,
+      });
       syncMemoryVector(member.id);
       deactivateMemoryProjections(member.id);
       rejectBeliefsForMemory(member.id, now);
@@ -2952,7 +4300,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
             reason: "maintenance:retention",
           })
         : existingMetadata;
-    db.prepare(
+    const result = db.prepare(
       `UPDATE gmos_memories
        SET status = ?, updated_at = ?, metadata_json = ?
        WHERE profile_id = ? AND id = ? AND status = ?`,
@@ -2964,6 +4312,17 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       transition.memoryId,
       transition.from,
     );
+    if (result.changes === 0) return;
+    setImportClaimDispositionForMemoryLocked({
+      profileId,
+      memoryId: transition.memoryId,
+      disposition: transition.to === "archived"
+        ? "blocked"
+        : transition.to === "dormant"
+          ? "dormant"
+          : "active",
+      updatedAt: now,
+    });
     syncMemoryVector(transition.memoryId);
     if (transition.to === "active") {
       activateMemoryProjections(transition.memoryId, profileId);
@@ -3912,6 +5271,315 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .all(input.profileId, ...params, candidateLimit) as Record<string, unknown>[];
   }
 
+  function assertAtomicImportRecord(input: {
+    profileId: string;
+    sourceIndex: number;
+    content: string;
+    kind: MemoryKind;
+    scope: string;
+    sensitivity: Sensitivity;
+    confidence: number;
+  }): void {
+    if (!input.profileId.trim()) throw new Error("gmOS atomic import requires a profile id");
+    if (!Number.isSafeInteger(input.sourceIndex) || input.sourceIndex < 0) {
+      throw new Error("gmOS atomic import source index must be a non-negative safe integer");
+    }
+    if (!input.content.trim()) throw new Error("gmOS atomic import content must not be empty");
+    if (!IMPORT_MEMORY_KINDS.has(input.kind)) throw new Error("gmOS atomic import kind is invalid");
+    if (!input.scope.trim()) throw new Error("gmOS atomic import scope must not be empty");
+    if (!IMPORT_SENSITIVITIES.has(input.sensitivity)) {
+      throw new Error("gmOS atomic import sensitivity is invalid");
+    }
+    if (!Number.isFinite(input.confidence) || input.confidence < 0 || input.confidence > 1) {
+      throw new Error("gmOS atomic import confidence must be between 0 and 1");
+    }
+    const detected = classifySensitivity(`${input.scope}\n${input.content}`);
+    const rank = { normal: 0, sensitive: 1, secret_like: 2 } as const;
+    if (rank[detected] > rank[input.sensitivity]) {
+      throw new Error("gmOS atomic import sensitivity is lower than the content classification");
+    }
+  }
+
+  function bindingProjection(input: {
+    evidence: RecordEvidenceInput;
+    memory: AddMemoryInput;
+  }): Record<string, unknown> {
+    return {
+      evidence: {
+        profileId: input.evidence.profileId,
+        eventKey: input.evidence.eventKey,
+        sourceType: input.evidence.sourceType,
+        sourceUri: input.evidence.sourceUri ?? null,
+        content: input.evidence.content,
+        sensitivity: input.evidence.sensitivity,
+        eligibleForLongTermMemory: input.evidence.eligibleForLongTermMemory,
+        payload: input.evidence.payload ?? {},
+      },
+      memory: {
+        profileId: input.memory.profileId,
+        kind: input.memory.kind,
+        scope: input.memory.scope ?? "global",
+        content: input.memory.content,
+        sensitivity: input.memory.sensitivity ?? "normal",
+        metadata: importMemoryMetadataForBinding(input.memory.metadata ?? {}),
+      },
+    };
+  }
+
+  function prepareMem0AtomicImport(
+    input: ImportMem0RecordsAtomicallyInput,
+    record: AtomicMem0ImportRecord,
+    secret: Buffer,
+  ): PreparedAtomicImport {
+    assertAtomicImportRecord({
+      profileId: input.profileId,
+      sourceIndex: record.sourceIndex,
+      content: record.content,
+      kind: record.kind,
+      scope: record.scope,
+      sensitivity: record.sensitivity,
+      confidence: 0.7,
+    });
+    if (!/^[a-f0-9]{64}$/u.test(input.sourceFileHash)) {
+      throw new Error("gmOS mem0 atomic import source hash is invalid");
+    }
+    if (!record.originalId.trim()) throw new Error("gmOS mem0 atomic import original id is empty");
+    const envelopeSensitivity = classifyPayloadSensitivity({
+      profileId: input.profileId,
+      sourceFileHash: input.sourceFileHash,
+      originalId: record.originalId,
+      recordIndex: record.sourceIndex,
+      content: record.content,
+      kind: record.kind,
+      scope: record.scope,
+      sensitivity: record.sensitivity,
+      metadata: record.metadata,
+      ...(record.createdAt !== undefined ? { createdAt: record.createdAt } : {}),
+      occurredAt: input.occurredAt,
+    });
+    const sensitivityRank = { normal: 0, sensitive: 1, secret_like: 2 } as const;
+    if (sensitivityRank[envelopeSensitivity] > sensitivityRank[record.sensitivity]) {
+      throw new Error("gmOS mem0 atomic import sensitivity is lower than its source envelope");
+    }
+    if (envelopeSensitivity === "secret_like") {
+      throw new Error("gmOS mem0 atomic import refuses a secret-like source envelope");
+    }
+    const profileId = normalizedImportString(input.profileId);
+    const sourceFileHash = input.sourceFileHash;
+    const sourceIdentityDigest = importDigest(secret, "gmos.import.mem0.identity.v2", {
+      profileId,
+      originalId: normalizedImportString(record.originalId),
+    });
+    const sourceGroupDigest = importDigest(secret, "gmos.import.mem0.group.v2", {
+      profileId,
+      sourceFileHash,
+    });
+    const cleanMetadata = stripGmosOwnedMetadataFields(
+      sanitizePublicPayloadRecord(record.metadata),
+    );
+    const revisionDigest = importDigest(secret, "gmos.import.mem0.revision.v2", {
+      originalId: normalizedImportString(record.originalId),
+      sourceFileHash,
+      recordIndex: record.sourceIndex,
+      content: record.content,
+      kind: record.kind,
+      scope: record.scope,
+      sensitivity: record.sensitivity,
+      metadata: cleanMetadata,
+    });
+    const eventKey = `mem0.import:v2:${sourceIdentityDigest}:${revisionDigest}`;
+    const sourceUri = `mem0://${sourceFileHash}/${record.sourceIndex}`;
+    const createdAt = record.createdAt ?? input.occurredAt;
+    const evidence: RecordEvidenceInput & { createdAt: string } = {
+      profileId,
+      eventKey,
+      sourceType: "mem0.import",
+      sourceUri,
+      content: record.content,
+      sensitivity: record.sensitivity,
+      eligibleForLongTermMemory: true,
+      payload: markedGmosEvidencePayload(
+        GMOS_EVIDENCE_PAYLOAD_SCHEMAS.mem0Import,
+        {
+          importSource: "mem0",
+          importSourceOriginalId: record.originalId,
+          sourceFileHash,
+          recordIndex: record.sourceIndex,
+          provenance: "low_level_import",
+          sourceTrust: "external",
+        },
+      ),
+      createdAt,
+    };
+    const memory: AddMemoryInput & { createdAt: string } = {
+      profileId,
+      kind: record.kind,
+      scope: record.scope,
+      content: record.content,
+      sensitivity: record.sensitivity,
+      confidence: 0.7,
+      metadata: markedGmosMetadata(
+        {
+          ...cleanMetadata,
+          importSource: "mem0",
+          importSourceOriginalId: record.originalId,
+          importKey: `gmos.mem0.v2:${sourceIdentityDigest}`,
+          sourceFileHash,
+          recordIndex: record.sourceIndex,
+          provenance: "low_level_import",
+          sourceTrust: "external",
+        },
+        GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+        GMOS_METADATA_REFERENCE_SCHEMAS.mem0Import,
+      ),
+      createdAt,
+    };
+    const bindingDigest = importDigest(
+      secret,
+      "gmos.import.binding.v2",
+      bindingProjection({ evidence, memory }),
+    );
+    return {
+      sourceIndex: record.sourceIndex,
+      importerSchema: IMPORTER_MEM0_SCHEMA,
+      sourceIdentityDigest,
+      sourceGroupDigest,
+      revisionDigest,
+      bindingDigest,
+      evidence,
+      memory,
+    };
+  }
+
+  function prepareHostAtomicImport(
+    input: ImportHostSnapshotsAtomicallyInput,
+    record: AtomicHostSnapshotRecord,
+    secret: Buffer,
+  ): PreparedAtomicImport {
+    assertAtomicImportRecord({
+      profileId: input.profileId,
+      sourceIndex: record.sourceIndex,
+      content: record.content,
+      kind: record.kind,
+      scope: record.scope,
+      sensitivity: record.sensitivity,
+      confidence: record.confidence,
+    });
+    if (!input.sourceType.trim()) throw new Error("gmOS host atomic import source type is empty");
+    if (!record.hostMemoryId.trim()) throw new Error("gmOS host atomic import memory id is empty");
+    if (!record.sourceUri.trim()) throw new Error("gmOS host atomic import source URI is empty");
+    const envelopeSensitivity = classifyPayloadSensitivity({
+      profileId: input.profileId,
+      sourceType: input.sourceType,
+      hostMemoryId: record.hostMemoryId,
+      sourceUri: record.sourceUri,
+      metadata: record.metadata,
+      ...(record.createdAt !== undefined ? { createdAt: record.createdAt } : {}),
+      ...(record.updatedAt !== undefined ? { updatedAt: record.updatedAt } : {}),
+      content: record.content,
+      kind: record.kind,
+      scope: record.scope,
+      sensitivity: record.sensitivity,
+      confidence: record.confidence,
+      occurredAt: input.occurredAt,
+    });
+    const sensitivityRank = { normal: 0, sensitive: 1, secret_like: 2 } as const;
+    if (sensitivityRank[envelopeSensitivity] > sensitivityRank[record.sensitivity]) {
+      throw new Error("gmOS host atomic import sensitivity is lower than its source envelope");
+    }
+    if (envelopeSensitivity === "secret_like" && !input.allowSecretLike) {
+      throw new Error("gmOS host atomic import refuses a secret-like source envelope");
+    }
+    const profileId = normalizedImportString(input.profileId);
+    const sourceType = normalizedImportString(input.sourceType);
+    const sourceUri = normalizedImportString(record.sourceUri);
+    const hostMemoryId = normalizedImportString(record.hostMemoryId);
+    const sourceIdentityDigest = importDigest(secret, "gmos.import.host.identity.v2", {
+      profileId,
+      sourceType,
+      sourceUri,
+      hostMemoryId,
+    });
+    const sourceGroupDigest = importDigest(secret, "gmos.import.host.group.v2", {
+      profileId,
+      sourceType,
+    });
+    const cleanMetadata = stripGmosOwnedMetadataFields(
+      sanitizePublicPayloadRecord(record.metadata),
+    );
+    const revisionDigest = importDigest(secret, "gmos.import.host.revision.v2", {
+      updatedAt: record.updatedAt ?? null,
+      content: record.content,
+      kind: record.kind,
+      scope: record.scope,
+      sensitivity: record.sensitivity,
+      metadata: cleanMetadata,
+    });
+    const eventKey = `host-memory:v2:${sourceIdentityDigest}:${revisionDigest}`;
+    const createdAt = record.createdAt ?? input.occurredAt;
+    const hostContentHash = createHash("sha256")
+      .update(record.content, "utf8")
+      .digest("hex")
+      .slice(0, 16);
+    const evidence: RecordEvidenceInput & { createdAt: string } = {
+      profileId,
+      eventKey,
+      sourceType,
+      sourceUri,
+      content: record.content,
+      sensitivity: record.sensitivity,
+      eligibleForLongTermMemory: record.sensitivity !== "secret_like",
+      payload: markedGmosEvidencePayload(
+        GMOS_EVIDENCE_PAYLOAD_SCHEMAS.hostSnapshotImport,
+        {
+          hostMemoryId: record.hostMemoryId,
+          hostMemoryKind: record.kind,
+          sourceTrust: "external",
+        },
+      ),
+      createdAt,
+    };
+    const memory: AddMemoryInput & { createdAt: string } = {
+      profileId,
+      kind: record.kind,
+      scope: record.scope,
+      content: record.content,
+      sensitivity: record.sensitivity,
+      confidence: record.confidence,
+      metadata: markedGmosMetadata(
+        {
+          ...cleanMetadata,
+          hostImportKey: `gmos.host_snapshot.v2:${sourceIdentityDigest}:${revisionDigest}`,
+          hostImportSourceType: sourceType,
+          hostMemoryId: record.hostMemoryId,
+          hostMemoryKind: record.kind,
+          hostContentHash,
+          hostSnapshotImport: true,
+          hostSourceUpdatedAt: record.updatedAt ?? null,
+          sourceTrust: "external",
+        },
+        GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+        GMOS_METADATA_REFERENCE_SCHEMAS.hostSnapshotImport,
+      ),
+      createdAt,
+    };
+    const bindingDigest = importDigest(
+      secret,
+      "gmos.import.binding.v2",
+      bindingProjection({ evidence, memory }),
+    );
+    return {
+      sourceIndex: record.sourceIndex,
+      importerSchema: IMPORTER_HOST_SCHEMA,
+      sourceIdentityDigest,
+      sourceGroupDigest,
+      revisionDigest,
+      bindingDigest,
+      evidence,
+      memory,
+    };
+  }
+
   function claimEvidence(input: RecordEvidenceInput): {
     evidence: EvidenceEvent;
     inserted: boolean;
@@ -3937,6 +5605,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       JSON.stringify(input.payload ?? {}),
       createdAt,
     ).changes > 0;
+    if (inserted) noteLegacyEvidenceMutation(input);
     const row = db
       .prepare("SELECT * FROM gmos_evidence_events WHERE event_key = ?")
       .get(input.eventKey) as Record<string, unknown>;
@@ -3957,6 +5626,32 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .prepare("SELECT * FROM gmos_evidence_events WHERE event_key = ?")
       .get(eventKey) as Record<string, unknown> | undefined;
     return row ? normalizeEvidence(row) : null;
+  }
+
+  function hasLegacyEvidenceKeys(profileId: string, sourceType: string): boolean {
+    initialize();
+    return db
+      .prepare(
+        `SELECT 1
+         FROM gmos_evidence_events
+         WHERE profile_id = ?
+           AND source_type = ?
+           AND event_key NOT GLOB ?
+         LIMIT 1`,
+      )
+      .get(profileId, sourceType, `${sourceType}:v2:*`) !== undefined;
+  }
+
+  function evidenceMutationVersion(profileId: string, sourceType: string): string {
+    initialize();
+    const dataVersion = Number(db.pragma("data_version", { simple: true }));
+    return JSON.stringify([
+      evidenceRestoreGeneration,
+      legacyEvidenceMutationGenerations.get(
+        legacyEvidenceMutationKey(profileId, sourceType),
+      ) ?? 0,
+      Number.isFinite(dataVersion) ? dataVersion : 0,
+    ]);
   }
 
   async function addMemory(input: AddMemoryInput): Promise<MemoryRecord> {
@@ -4009,8 +5704,881 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     return memory;
   }
 
+  function importIdentityRowLocked(prepared: PreparedAtomicImport): ImportIdentityRow | null {
+    const row = db
+      .prepare(
+        `SELECT * FROM gmos_import_identities
+         WHERE profile_id = ? AND importer_schema = ? AND source_identity_digest = ?`,
+      )
+      .get(
+        prepared.memory.profileId,
+        prepared.importerSchema,
+        prepared.sourceIdentityDigest,
+      ) as ImportIdentityRow | undefined;
+    return row ?? null;
+  }
+
+  function setImportClaimDispositionForMemoryLocked(input: {
+    profileId: string;
+    memoryId: string;
+    disposition: ImportDisposition;
+    updatedAt: string;
+  }): void {
+    db.prepare(
+      `UPDATE gmos_import_identities
+       SET disposition = ?, updated_at = ?
+       WHERE profile_id = ? AND memory_id = ?`,
+    ).run(input.disposition, input.updatedAt, input.profileId, input.memoryId);
+  }
+
+  function persistedImportBindingDigest(
+    secret: Buffer,
+    evidence: EvidenceEvent,
+    memory: MemoryRecord,
+  ): string {
+    return importDigest(
+      secret,
+      "gmos.import.binding.v2",
+      bindingProjection({
+        evidence,
+        memory: {
+          profileId: memory.profileId,
+          kind: memory.kind,
+          scope: memory.scope,
+          content: memory.content,
+          sensitivity: memory.sensitivity,
+          confidence: memory.confidence,
+          sourceEventId: memory.sourceEventId,
+          metadata: importMemoryMetadataForBinding(memory.metadata),
+        },
+      }),
+    );
+  }
+
+  function claimBindingLocked(
+    claim: ImportIdentityRow,
+    secret: Buffer,
+  ): { memory: MemoryRecord; evidence: EvidenceEvent } {
+    const memoryRow = db
+      .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ?")
+      .get(claim.profile_id, claim.memory_id) as Record<string, unknown> | undefined;
+    if (!memoryRow) throw new Error("gmOS atomic import identity binding is incomplete");
+    const memory = normalizeMemory(memoryRow);
+    if (memory.status === "archived" && claim.disposition !== "host_stale") {
+      throw new Error("gmOS atomic import identity is blocked by an archived memory");
+    }
+    if (claim.disposition === "blocked") {
+      throw new Error("gmOS atomic import identity is blocked by memory lifecycle policy");
+    }
+    const evidenceRow = db
+      .prepare("SELECT * FROM gmos_evidence_events WHERE profile_id = ? AND id = ?")
+      .get(claim.profile_id, claim.evidence_id) as Record<string, unknown> | undefined;
+    if (!evidenceRow) throw new Error("gmOS atomic import identity binding is incomplete");
+    const evidence = normalizeEvidence(evidenceRow);
+    if (
+      memory.profileId !== claim.profile_id ||
+      evidence.profileId !== claim.profile_id ||
+      memory.sourceEventId !== evidence.id ||
+      claim.evidence_id !== evidence.id
+    ) {
+      throw new Error("gmOS atomic import identity binding owner mismatch");
+    }
+    const expectedEvidenceSchema = claim.importer_schema === IMPORTER_MEM0_SCHEMA
+      ? GMOS_EVIDENCE_PAYLOAD_SCHEMAS.mem0Import
+      : GMOS_EVIDENCE_PAYLOAD_SCHEMAS.hostSnapshotImport;
+    const expectedMetadataSchema = claim.importer_schema === IMPORTER_MEM0_SCHEMA
+      ? GMOS_METADATA_REFERENCE_SCHEMAS.mem0Import
+      : GMOS_METADATA_REFERENCE_SCHEMAS.hostSnapshotImport;
+    if (
+      gmosEvidencePayloadSchemaOf(evidence.payload) !== expectedEvidenceSchema ||
+      !hasGmosMetadataReferenceSchema(memory.metadata, expectedMetadataSchema) ||
+      !hasGmosMetadataReferenceSchema(
+        memory.metadata,
+        GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+      )
+    ) {
+      throw new Error("gmOS atomic import identity authority marker mismatch");
+    }
+    if (persistedImportBindingDigest(secret, evidence, memory) !== claim.binding_digest) {
+      throw new Error("gmOS atomic import identity binding digest mismatch");
+    }
+    return { memory, evidence };
+  }
+
+  function unclaimedImportAuthorityExistsLocked(
+    prepared: PreparedAtomicImport,
+    allowedMemoryId?: string | undefined,
+  ): boolean {
+    const evidenceCollision = db
+      .prepare("SELECT 1 FROM gmos_evidence_events WHERE event_key = ? LIMIT 1")
+      .get(prepared.evidence.eventKey);
+    if (evidenceCollision) return true;
+    if (prepared.importerSchema === IMPORTER_MEM0_SCHEMA) {
+      const originalId = prepared.memory.metadata?.importSourceOriginalId;
+      return db
+        .prepare(
+          `SELECT 1 FROM gmos_memories
+           WHERE profile_id = ?
+             AND (? IS NULL OR id <> ?)
+             AND json_extract(metadata_json, '$.importSource') = 'mem0'
+             AND json_extract(metadata_json, '$.importSourceOriginalId') = ?
+             AND EXISTS (
+               SELECT 1 FROM json_each(metadata_json, '$.${GMOS_METADATA_REFERENCE_MARKER}')
+               WHERE value = ?
+             )
+           LIMIT 1`,
+        )
+        .get(
+          prepared.memory.profileId,
+          allowedMemoryId ?? null,
+          allowedMemoryId ?? null,
+          originalId,
+          GMOS_METADATA_REFERENCE_SCHEMAS.mem0Import,
+        ) !== undefined;
+    }
+    const hostMemoryId = prepared.memory.metadata?.hostMemoryId;
+    const sourceType = prepared.memory.metadata?.hostImportSourceType;
+    return db
+      .prepare(
+        `SELECT 1
+         FROM gmos_memories AS memory
+         JOIN gmos_evidence_events AS evidence ON evidence.id = memory.source_event_id
+         WHERE memory.profile_id = ?
+           AND (? IS NULL OR memory.id <> ?)
+           AND evidence.profile_id = memory.profile_id
+           AND evidence.source_uri = ?
+           AND json_extract(memory.metadata_json, '$.hostMemoryId') = ?
+           AND json_extract(memory.metadata_json, '$.hostImportSourceType') = ?
+           AND EXISTS (
+             SELECT 1 FROM json_each(memory.metadata_json, '$.${GMOS_METADATA_REFERENCE_MARKER}')
+             WHERE value = ?
+           )
+         LIMIT 1`,
+      )
+      .get(
+        prepared.memory.profileId,
+        allowedMemoryId ?? null,
+        allowedMemoryId ?? null,
+        prepared.evidence.sourceUri,
+        hostMemoryId,
+        sourceType,
+        GMOS_METADATA_REFERENCE_SCHEMAS.hostSnapshotImport,
+      ) !== undefined;
+  }
+
+  function unclaimedCompleteImportCandidateLocked(
+    prepared: PreparedAtomicImport,
+    secret: Buffer,
+  ): RebuiltImportCandidate | null {
+    const rows = prepared.importerSchema === IMPORTER_MEM0_SCHEMA
+      ? db
+          .prepare(
+            `SELECT * FROM gmos_memories
+             WHERE profile_id = ?
+               AND json_extract(metadata_json, '$.importSource') = 'mem0'
+               AND json_extract(metadata_json, '$.importSourceOriginalId') = ?
+             ORDER BY created_at, id`,
+          )
+          .all(
+            prepared.memory.profileId,
+            prepared.memory.metadata?.importSourceOriginalId,
+          ) as Record<string, unknown>[]
+      : db
+          .prepare(
+            `SELECT * FROM gmos_memories
+             WHERE profile_id = ?
+               AND json_extract(metadata_json, '$.hostSnapshotImport') = 1
+               AND json_extract(metadata_json, '$.hostImportSourceType') = ?
+               AND json_extract(metadata_json, '$.hostMemoryId') = ?
+             ORDER BY created_at, id`,
+          )
+          .all(
+            prepared.memory.profileId,
+            prepared.memory.metadata?.hostImportSourceType,
+            prepared.memory.metadata?.hostMemoryId,
+          ) as Record<string, unknown>[];
+    if (rows.length === 0) return null;
+    const candidates: RebuiltImportCandidate[] = [];
+    for (const row of rows) {
+      try {
+        candidates.push(rebuiltImportCandidateLocked(row, secret, false));
+      } catch {
+        throw new Error(
+          prepared.importerSchema === IMPORTER_MEM0_SCHEMA
+            ? "gmOS mem0 import memory is not bound to compatible evidence"
+            : "gmOS host snapshot import memory is not bound to compatible evidence",
+        );
+      }
+    }
+    const matching = candidates.filter((candidate) =>
+      candidate.prepared.sourceIdentityDigest === prepared.sourceIdentityDigest
+    );
+    if (matching.length !== 1) {
+      throw new Error(
+        prepared.importerSchema === IMPORTER_MEM0_SCHEMA
+          ? "gmOS mem0 import memory is not bound to compatible evidence"
+          : "gmOS host snapshot import memory is not bound to compatible evidence",
+      );
+    }
+    const candidate = matching[0]!;
+    if (candidate.disposition === "blocked" || candidate.disposition === "host_stale") {
+      throw new Error("gmOS atomic import identity is blocked by an archived memory");
+    }
+    if (
+      candidate.prepared.revisionDigest !== prepared.revisionDigest ||
+      candidate.prepared.bindingDigest !== prepared.bindingDigest
+    ) {
+      throw new Error(
+        prepared.importerSchema === IMPORTER_MEM0_SCHEMA
+          ? "gmOS mem0 import memory is not bound to compatible evidence"
+          : "gmOS host snapshot import memory is not bound to compatible evidence",
+      );
+    }
+    return candidate;
+  }
+
+  function unclaimedCurrentEvidenceLocked(
+    prepared: PreparedAtomicImport,
+  ): EvidenceEvent | null {
+    let legacyEventKey: string;
+    let compatibleCurrent: (event: EvidenceEvent) => boolean;
+    let compatibleLegacy: (event: EvidenceEvent) => boolean;
+    if (prepared.importerSchema === IMPORTER_MEM0_SCHEMA) {
+      const sourceFileHash = String(prepared.memory.metadata?.sourceFileHash);
+      const recordIndex = Number(prepared.memory.metadata?.recordIndex);
+      const originalId = String(prepared.memory.metadata?.importSourceOriginalId);
+      legacyEventKey = [
+        "mem0.import",
+        prepared.memory.profileId,
+        sourceFileHash,
+        String(recordIndex),
+      ].join(":");
+      const expected = {
+        profileId: prepared.memory.profileId,
+        eventKey: legacyEventKey,
+        sourceUri: String(prepared.evidence.sourceUri),
+        content: prepared.memory.content,
+        sensitivity: prepared.memory.sensitivity ?? "normal",
+        originalId,
+        sourceFileHash,
+        recordIndex,
+      } as const;
+      compatibleCurrent = (event) =>
+        hasExactMetadataKeys(event.payload, [
+          "_gmosSchema",
+          "importSource",
+          "importSourceOriginalId",
+          "provenance",
+          "recordIndex",
+          "sourceFileHash",
+          "sourceTrust",
+        ]) && isCurrentMem0ImportEvidence(event, expected);
+      compatibleLegacy = (event) => isLegacyMem0ImportEvidence(event, expected);
+    } else {
+      const sourceType = String(prepared.memory.metadata?.hostImportSourceType);
+      const hostMemoryId = String(prepared.memory.metadata?.hostMemoryId);
+      const sourceUpdatedAt = prepared.memory.metadata?.hostSourceUpdatedAt;
+      const revision = typeof sourceUpdatedAt === "string"
+        ? sourceUpdatedAt
+        : String(prepared.memory.metadata?.hostContentHash);
+      legacyEventKey = [
+        "host-memory",
+        prepared.memory.profileId,
+        sourceType,
+        prepared.evidence.sourceUri,
+        hostMemoryId,
+        revision,
+      ].join(":");
+      const expected = {
+        profileId: prepared.memory.profileId,
+        eventKey: legacyEventKey,
+        sourceType,
+        sourceUri: String(prepared.evidence.sourceUri),
+        content: prepared.memory.content,
+        sensitivity: prepared.memory.sensitivity ?? "normal",
+        hostMemoryId,
+        hostMemoryKind: prepared.memory.kind,
+      } as const;
+      compatibleCurrent = (event) =>
+        hasExactMetadataKeys(event.payload, [
+          "_gmosSchema",
+          "hostMemoryId",
+          "hostMemoryKind",
+          "sourceTrust",
+        ]) && isCurrentHostSnapshotImportEvidence(event, expected);
+      compatibleLegacy = (event) => isLegacyHostSnapshotImportEvidence(event, expected);
+    }
+    const row = db
+      .prepare("SELECT * FROM gmos_evidence_events WHERE event_key IN (?, ?)")
+      .get(legacyEventKey, prepared.evidence.eventKey) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    const evidence = normalizeEvidence(row);
+    if (evidence.eventKey === prepared.evidence.eventKey) {
+      const canonical = normalizeEvidence({
+        ...row,
+        event_key: legacyEventKey,
+      });
+      if (!compatibleCurrent(canonical)) {
+        throw new Error(
+          prepared.importerSchema === IMPORTER_MEM0_SCHEMA
+            ? "gmOS mem0 import event key is owned by incompatible evidence"
+            : "gmOS host snapshot import event key is owned by incompatible evidence",
+        );
+      }
+      return evidence;
+    }
+    if (compatibleCurrent(evidence)) return evidence;
+    if (compatibleLegacy(evidence)) {
+      throw new Error(
+        prepared.importerSchema === IMPORTER_MEM0_SCHEMA
+          ? "gmOS mem0 legacy evidence-only partial import requires store-level atomic canonicalization"
+          : "gmOS host snapshot legacy evidence-only partial import requires store-level atomic canonicalization",
+      );
+    }
+    throw new Error(
+      prepared.importerSchema === IMPORTER_MEM0_SCHEMA
+        ? "gmOS mem0 import event key is owned by incompatible evidence"
+        : "gmOS host snapshot import event key is owned by incompatible evidence",
+    );
+  }
+
+  function planAtomicImportLocked(
+    prepared: PreparedAtomicImport,
+    secret: Buffer,
+  ): AtomicImportPlan {
+    const claim = importIdentityRowLocked(prepared);
+    if (!claim) {
+      const complete = unclaimedCompleteImportCandidateLocked(prepared, secret);
+      if (complete) {
+        return {
+          prepared,
+          action: "adopt",
+          memory: complete.memory,
+          evidence: complete.evidence,
+          rebuiltCandidate: complete,
+        };
+      }
+      const partialEvidence = unclaimedCurrentEvidenceLocked(prepared);
+      if (partialEvidence) {
+        return {
+          prepared,
+          action: "complete_evidence",
+          evidence: partialEvidence,
+        };
+      }
+      if (unclaimedImportAuthorityExistsLocked(prepared)) {
+        throw new Error("gmOS atomic import found unclaimed or conflicting import authority");
+      }
+      return { prepared, action: "insert" };
+    }
+    const { memory, evidence } = claimBindingLocked(claim, secret);
+    const exact =
+      claim.revision_digest === prepared.revisionDigest &&
+      claim.binding_digest === prepared.bindingDigest;
+    if (exact) {
+      if (memory.status === "archived") {
+        if (
+          prepared.importerSchema !== IMPORTER_HOST_SCHEMA ||
+          claim.disposition !== "host_stale" ||
+          !hasGmosMetadataReferenceSchema(
+            memory.metadata,
+            GMOS_METADATA_REFERENCE_SCHEMAS.lifecycleArchive,
+          ) ||
+          !memory.metadata.archive ||
+          typeof memory.metadata.archive !== "object" ||
+          Array.isArray(memory.metadata.archive) ||
+          (memory.metadata.archive as Record<string, unknown>).reason !== "host_import_stale"
+        ) {
+          throw new Error("gmOS atomic import identity is blocked by an archived memory");
+        }
+        return { prepared, action: "restore", claim, memory, evidence };
+      }
+      if (memory.status !== "active" && memory.status !== "dormant") {
+        throw new Error("gmOS atomic import identity has an invalid lifecycle state");
+      }
+      return { prepared, action: "reuse", claim, memory, evidence };
+    }
+    if (memory.status === "archived") {
+      throw new Error("gmOS atomic import identity is blocked by an archived memory");
+    }
+    if (claim.revision_digest === prepared.revisionDigest) {
+      throw new Error("gmOS atomic import revision has a conflicting binding");
+    }
+    if (unclaimedImportAuthorityExistsLocked(prepared, claim.memory_id)) {
+      throw new Error("gmOS atomic import revision event key is already owned");
+    }
+    return { prepared, action: "replace", claim, memory, evidence };
+  }
+
+  function archiveImportedMemoryLocked(input: {
+    claim: ImportIdentityRow;
+    memory: MemoryRecord;
+    archivedAt: string;
+    reason: "host_import_stale" | "host_import_superseded" | "mem0_import_superseded";
+    disposition: ImportDisposition;
+  }): void {
+    const previousValues = [memoryVersionSnapshot(input.memory)];
+    const metadata = metadataWithArchiveMarker({
+      metadata: input.reason.endsWith("_superseded")
+        ? stripGmosOwnedMetadataFields(input.memory.metadata)
+        : input.memory.metadata,
+      archivedAt: input.archivedAt,
+      reason: input.reason,
+    });
+    const result = db
+      .prepare(
+        `UPDATE gmos_memories
+         SET status = 'archived', updated_at = ?, metadata_json = ?
+         WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
+      )
+      .run(
+        input.archivedAt,
+        JSON.stringify(metadata),
+        input.claim.profile_id,
+        input.claim.memory_id,
+      );
+    if (result.changes !== 1) throw new Error("gmOS atomic import archive lost its lifecycle race");
+    syncMemoryVector(input.claim.memory_id);
+    deleteAssociationsForMemory(input.claim.memory_id);
+    rejectBeliefsForMemory(input.claim.memory_id, input.archivedAt);
+    insertLifecycleEvidence({
+      profileId: input.claim.profile_id,
+      sourceType: "memory.lifecycle",
+      memoryId: input.claim.memory_id,
+      from: input.memory.status,
+      to: "archived",
+      createdAt: input.archivedAt,
+      reasons: [input.reason],
+      previousValues,
+    });
+    db.prepare(
+      `UPDATE gmos_import_identities
+       SET disposition = ?, updated_at = ?
+       WHERE profile_id = ? AND importer_schema = ? AND source_identity_digest = ?`,
+    ).run(
+      input.disposition,
+      input.archivedAt,
+      input.claim.profile_id,
+      input.claim.importer_schema,
+      input.claim.source_identity_digest,
+    );
+  }
+
+  function restoreStaleImportedMemoryLocked(
+    plan: AtomicImportPlan,
+    restoredAt: string,
+  ): MemoryRecord {
+    if (!plan.claim || !plan.memory) throw new Error("gmOS atomic import restore plan is incomplete");
+    const previousValues = [memoryVersionSnapshot(plan.memory)];
+    const metadata = metadataWithRestoreMarker({
+      metadata: plan.memory.metadata,
+      restoredAt,
+      reason: "host_import_stale_returned",
+    });
+    const result = db
+      .prepare(
+        `UPDATE gmos_memories
+         SET status = 'active', updated_at = ?, metadata_json = ?
+         WHERE profile_id = ? AND id = ? AND status = 'archived'`,
+      )
+      .run(restoredAt, JSON.stringify(metadata), plan.claim.profile_id, plan.claim.memory_id);
+    if (result.changes !== 1) throw new Error("gmOS atomic import restore lost its lifecycle race");
+    db.prepare(
+      `UPDATE gmos_import_identities
+       SET disposition = 'active', updated_at = ?
+       WHERE profile_id = ? AND importer_schema = ? AND source_identity_digest = ?`,
+    ).run(
+      restoredAt,
+      plan.claim.profile_id,
+      plan.claim.importer_schema,
+      plan.claim.source_identity_digest,
+    );
+    syncMemoryVector(plan.claim.memory_id);
+    const restored = normalizeMemory(
+      db.prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ?")
+        .get(plan.claim.profile_id, plan.claim.memory_id) as Record<string, unknown>,
+    );
+    projectMemoryAssociations(restored);
+    syncBeliefsForMemory(restored);
+    insertLifecycleEvidence({
+      profileId: plan.claim.profile_id,
+      sourceType: "memory.lifecycle",
+      memoryId: plan.claim.memory_id,
+      from: "archived",
+      to: "active",
+      createdAt: restoredAt,
+      reasons: ["host_import_stale_returned"],
+      previousValues,
+    });
+    return restored;
+  }
+
+  function insertPreparedEvidenceLocked(prepared: PreparedAtomicImport): EvidenceEvent {
+    const evidenceId = id("evidence");
+    db.prepare(
+      `INSERT INTO gmos_evidence_events (
+        id, event_key, profile_id, source_type, source_uri, content, sensitivity,
+        eligible_for_long_term_memory, payload_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      evidenceId,
+      prepared.evidence.eventKey,
+      prepared.evidence.profileId,
+      prepared.evidence.sourceType,
+      prepared.evidence.sourceUri ?? null,
+      prepared.evidence.content,
+      prepared.evidence.sensitivity,
+      prepared.evidence.eligibleForLongTermMemory ? 1 : 0,
+      JSON.stringify(prepared.evidence.payload ?? {}),
+      prepared.evidence.createdAt,
+    );
+    return normalizeEvidence(
+      db.prepare("SELECT * FROM gmos_evidence_events WHERE id = ?")
+        .get(evidenceId) as Record<string, unknown>,
+    );
+  }
+
+  function insertImportClaimLocked(input: {
+    prepared: PreparedAtomicImport;
+    memory: MemoryRecord;
+    evidence: EvidenceEvent;
+    occurredAt: string;
+    replace: boolean;
+  }): void {
+    const verb = input.replace ? "INSERT OR REPLACE" : "INSERT";
+    db.prepare(
+      `${verb} INTO gmos_import_identities(
+        profile_id, importer_schema, source_identity_digest, source_group_digest,
+        revision_digest, binding_digest, memory_id, evidence_id, disposition,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+    ).run(
+      input.prepared.memory.profileId,
+      input.prepared.importerSchema,
+      input.prepared.sourceIdentityDigest,
+      input.prepared.sourceGroupDigest,
+      input.prepared.revisionDigest,
+      input.prepared.bindingDigest,
+      input.memory.id,
+      input.evidence.id,
+      input.occurredAt,
+      input.occurredAt,
+    );
+  }
+
+  function staleHostImportPlansLocked(input: {
+    profileId: string;
+    sourceGroupDigest: string;
+    activeSourceIdentityDigests: ReadonlySet<string>;
+    secret: Buffer;
+  }): AtomicImportPlan[] {
+    const rows = db
+      .prepare(
+        `SELECT * FROM gmos_import_identities
+         WHERE profile_id = ?
+           AND importer_schema = ?
+           AND source_group_digest = ?
+           AND disposition IN ('active', 'dormant')
+         ORDER BY source_identity_digest`,
+      )
+      .all(
+        input.profileId,
+        IMPORTER_HOST_SCHEMA,
+        input.sourceGroupDigest,
+      ) as ImportIdentityRow[];
+    const plans: AtomicImportPlan[] = [];
+    for (const claim of rows) {
+      if (input.activeSourceIdentityDigests.has(claim.source_identity_digest)) continue;
+      const { memory, evidence } = claimBindingLocked(claim, input.secret);
+      plans.push({
+        prepared: {
+          sourceIndex: -1,
+          importerSchema: IMPORTER_HOST_SCHEMA,
+          sourceIdentityDigest: claim.source_identity_digest,
+          sourceGroupDigest: claim.source_group_digest,
+          revisionDigest: claim.revision_digest,
+          bindingDigest: claim.binding_digest,
+          evidence: { ...evidence, createdAt: evidence.createdAt },
+          memory: {
+            profileId: memory.profileId,
+            kind: memory.kind,
+            scope: memory.scope,
+            content: memory.content,
+            sensitivity: memory.sensitivity,
+            confidence: memory.confidence,
+            sourceEventId: memory.sourceEventId,
+            metadata: memory.metadata,
+            createdAt: memory.createdAt,
+          },
+        },
+        action: "reuse",
+        claim,
+        memory,
+        evidence,
+      });
+    }
+    return plans;
+  }
+
+  async function commitAtomicImports(input: {
+    profileId: string;
+    prepared: PreparedAtomicImport[];
+    occurredAt: string;
+    syncHost: boolean;
+    hostSourceGroupDigest?: string | undefined;
+  }): Promise<{ memories: AtomicImportedMemoryResult[]; archivedMemoryIds: string[] }> {
+    if (db.readonly) throw new Error("gmOS atomic import is unavailable in readonly mode");
+    const bySourceIndex = new Set<number>();
+    for (const prepared of input.prepared) {
+      if (bySourceIndex.has(prepared.sourceIndex)) {
+        throw new Error("gmOS atomic import source indexes must be unique");
+      }
+      bySourceIndex.add(prepared.sourceIndex);
+    }
+    const unique = new Map<string, PreparedAtomicImport>();
+    for (const prepared of input.prepared) {
+      const key = `${prepared.importerSchema}:${prepared.sourceIdentityDigest}`;
+      const existing = unique.get(key);
+      if (
+        existing &&
+        (existing.revisionDigest !== prepared.revisionDigest ||
+          existing.bindingDigest !== prepared.bindingDigest)
+      ) {
+        throw new Error("gmOS atomic import batch contains conflicting source identities");
+      }
+      if (!existing) unique.set(key, prepared);
+    }
+    const embeddings = await embeddingsForWriteBatch([...unique.values()].map((prepared) => ({
+      kind: prepared.memory.kind,
+      sensitivity: prepared.memory.sensitivity,
+      content: prepared.memory.content,
+      embedding: prepared.memory.embedding,
+    })));
+    const secret = importIdentitySecret();
+    const tx = db.transaction(() => {
+      const plans = [...unique.values()].map((prepared) =>
+        planAtomicImportLocked(prepared, secret)
+      );
+      const activeSourceIdentityDigests = new Set(
+        plans.map((plan) => plan.prepared.sourceIdentityDigest),
+      );
+      const stalePlans = input.syncHost && input.hostSourceGroupDigest
+        ? staleHostImportPlansLocked({
+            profileId: input.profileId,
+            sourceGroupDigest: input.hostSourceGroupDigest,
+            activeSourceIdentityDigests,
+            secret,
+          })
+        : [];
+
+      const archivedMemoryIds: string[] = [];
+      for (const plan of stalePlans) {
+        if (!plan.claim || !plan.memory) throw new Error("gmOS stale import plan is incomplete");
+        archiveImportedMemoryLocked({
+          claim: plan.claim,
+          memory: plan.memory,
+          archivedAt: input.occurredAt,
+          reason: "host_import_stale",
+          disposition: "host_stale",
+        });
+        archivedMemoryIds.push(plan.memory.id);
+      }
+
+      const resultByIdentity = new Map<string, AtomicImportedMemoryResult>();
+      for (const [index, plan] of plans.entries()) {
+        const key = `${plan.prepared.importerSchema}:${plan.prepared.sourceIdentityDigest}`;
+        if (plan.action === "adopt") {
+          if (!plan.rebuiltCandidate) throw new Error("gmOS atomic adoption plan is incomplete");
+          canonicalizeImportBackfillWinnerLocked(plan.rebuiltCandidate);
+          const claim = importIdentityRowLocked(plan.prepared);
+          if (!claim) throw new Error("gmOS atomic adoption did not create an identity binding");
+          const { memory } = claimBindingLocked(claim, secret);
+          resultByIdentity.set(key, {
+            sourceIndex: plan.prepared.sourceIndex,
+            memory,
+            disposition: "reused",
+          });
+          continue;
+        }
+        if (plan.action === "complete_evidence") {
+          if (!plan.evidence) throw new Error("gmOS atomic evidence completion plan is incomplete");
+          const collision = db
+            .prepare("SELECT 1 FROM gmos_evidence_events WHERE event_key = ? AND id <> ?")
+            .get(plan.prepared.evidence.eventKey, plan.evidence.id);
+          if (collision) {
+            throw new Error("gmOS atomic evidence completion found an event-key collision");
+          }
+          db.prepare(
+            `UPDATE gmos_evidence_events
+             SET event_key = ?, source_type = ?, source_uri = ?, content = ?, sensitivity = ?,
+                 eligible_for_long_term_memory = ?, payload_json = ?
+             WHERE profile_id = ? AND id = ?`,
+          ).run(
+            plan.prepared.evidence.eventKey,
+            plan.prepared.evidence.sourceType,
+            plan.prepared.evidence.sourceUri ?? null,
+            plan.prepared.evidence.content,
+            plan.prepared.evidence.sensitivity,
+            plan.prepared.evidence.eligibleForLongTermMemory ? 1 : 0,
+            JSON.stringify(plan.prepared.evidence.payload ?? {}),
+            plan.prepared.evidence.profileId,
+            plan.evidence.id,
+          );
+          const memory = insertMemory(
+            { ...plan.prepared.memory, sourceEventId: plan.evidence.id },
+            embeddings[index]!,
+          );
+          const canonicalEvidence = normalizeEvidence(
+            db.prepare("SELECT * FROM gmos_evidence_events WHERE id = ?")
+              .get(plan.evidence.id) as Record<string, unknown>,
+          );
+          insertImportClaimLocked({
+            prepared: plan.prepared,
+            memory,
+            evidence: canonicalEvidence,
+            occurredAt: input.occurredAt,
+            replace: false,
+          });
+          resultByIdentity.set(key, {
+            sourceIndex: plan.prepared.sourceIndex,
+            memory,
+            disposition: "inserted",
+          });
+          continue;
+        }
+        if (plan.action === "reuse") {
+          if (!plan.memory || !plan.claim) throw new Error("gmOS atomic reuse plan is incomplete");
+          const disposition = plan.memory.status === "dormant" ? "dormant" : "active";
+          db.prepare(
+            `UPDATE gmos_import_identities SET disposition = ?, updated_at = ?
+             WHERE profile_id = ? AND importer_schema = ? AND source_identity_digest = ?`,
+          ).run(
+            disposition,
+            input.occurredAt,
+            plan.claim.profile_id,
+            plan.claim.importer_schema,
+            plan.claim.source_identity_digest,
+          );
+          resultByIdentity.set(key, {
+            sourceIndex: plan.prepared.sourceIndex,
+            memory: plan.memory,
+            disposition: "reused",
+          });
+          continue;
+        }
+        if (plan.action === "restore") {
+          const memory = restoreStaleImportedMemoryLocked(plan, input.occurredAt);
+          resultByIdentity.set(key, {
+            sourceIndex: plan.prepared.sourceIndex,
+            memory,
+            disposition: "restored",
+          });
+          continue;
+        }
+        if (plan.action === "replace") {
+          if (!plan.claim || !plan.memory) throw new Error("gmOS atomic replace plan is incomplete");
+          archiveImportedMemoryLocked({
+            claim: plan.claim,
+            memory: plan.memory,
+            archivedAt: input.occurredAt,
+            reason: plan.prepared.importerSchema === IMPORTER_HOST_SCHEMA
+              ? "host_import_superseded"
+              : "mem0_import_superseded",
+            disposition: "blocked",
+          });
+          archivedMemoryIds.push(plan.memory.id);
+        }
+        const evidence = insertPreparedEvidenceLocked(plan.prepared);
+        const memory = insertMemory(
+          { ...plan.prepared.memory, sourceEventId: evidence.id },
+          embeddings[index]!,
+        );
+        insertImportClaimLocked({
+          prepared: plan.prepared,
+          memory,
+          evidence,
+          occurredAt: input.occurredAt,
+          replace: plan.action === "replace",
+        });
+        resultByIdentity.set(key, {
+          sourceIndex: plan.prepared.sourceIndex,
+          memory,
+          disposition: "inserted",
+        });
+      }
+      return {
+        memories: (() => {
+          const emitted = new Set<string>();
+          return input.prepared.map((prepared) => {
+          const result = resultByIdentity.get(
+            `${prepared.importerSchema}:${prepared.sourceIdentityDigest}`,
+          );
+          if (!result) throw new Error("gmOS atomic import result mapping is incomplete");
+          const identityKey = `${prepared.importerSchema}:${prepared.sourceIdentityDigest}`;
+          const duplicate = emitted.has(identityKey);
+          emitted.add(identityKey);
+          return {
+            ...result,
+            sourceIndex: prepared.sourceIndex,
+            ...(duplicate ? { disposition: "reused" as const } : {}),
+          };
+        });
+        })(),
+        archivedMemoryIds,
+      };
+    });
+    return tx.immediate();
+  }
+
+  async function importMem0RecordsAtomically(
+    input: ImportMem0RecordsAtomicallyInput,
+  ): Promise<AtomicImportedMemoryResult[]> {
+    initialize();
+    if (db.readonly) throw new Error("gmOS atomic import is unavailable in readonly mode");
+    const secret = importIdentitySecret();
+    const prepared = input.records.map((record) =>
+      prepareMem0AtomicImport(input, record, secret)
+    );
+    return (await commitAtomicImports({
+      profileId: input.profileId,
+      prepared,
+      occurredAt: input.occurredAt,
+      syncHost: false,
+    })).memories;
+  }
+
+  async function importHostSnapshotsAtomically(
+    input: ImportHostSnapshotsAtomicallyInput,
+  ): Promise<ImportHostSnapshotsAtomicallyResult> {
+    initialize();
+    if (db.readonly) throw new Error("gmOS atomic import is unavailable in readonly mode");
+    const secret = importIdentitySecret();
+    const prepared = input.records.map((record) =>
+      prepareHostAtomicImport(input, record, secret)
+    );
+    const hostSourceGroupDigest = importDigest(secret, "gmos.import.host.group.v2", {
+      profileId: normalizedImportString(input.profileId),
+      sourceType: normalizedImportString(input.sourceType),
+    });
+    return commitAtomicImports({
+      profileId: input.profileId,
+      prepared,
+      occurredAt: input.occurredAt,
+      syncHost: input.sync,
+      hostSourceGroupDigest,
+    });
+  }
+
   async function updateMemory(input: UpdateMemoryInput): Promise<MemoryRecord | null> {
     initialize();
+    const importClaim = db
+      .prepare("SELECT 1 FROM gmos_import_identities WHERE profile_id = ? AND memory_id = ? LIMIT 1")
+      .get(input.profileId, input.id);
+    if (importClaim) {
+      throw new Error(
+        "gmOS claim-bound imported memories cannot be changed through generic updateMemory",
+      );
+    }
     const existing = db
       .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ? AND status = 'active'")
       .get(input.profileId, input.id) as Record<string, unknown> | undefined;
@@ -4064,6 +6632,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       const evidenceId = insertMutationEvidence({
         profileId: input.profileId,
         sourceType: "memory.update",
+        payloadSchema: GMOS_EVIDENCE_PAYLOAD_SCHEMAS.memoryUpdate,
         content: "Memory update",
         createdAt: updatedAt,
         payload: { memoryId: input.id },
@@ -4090,79 +6659,123 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
 
   function archiveMemoryById(input: ArchiveMemoryInput): boolean {
     initialize();
-    const archivedAt = input.archivedAt ?? nowIso();
-    const existing = db
-      .prepare(
-        `SELECT * FROM gmos_memories
-         WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
-      )
-      .get(input.profileId, input.id) as Record<string, unknown> | undefined;
-    if (!existing) return false;
-    const previousValues = [memorySnapshotFromRow(existing)];
-    const metadata = metadataWithArchiveMarker({
-      metadata: parseJsonObject(existing.metadata_json),
-      archivedAt,
-      reason: input.reason,
+    const tx = db.transaction((): boolean => {
+      const archivedAt = input.archivedAt ?? nowIso();
+      const existing = db
+        .prepare(
+          `SELECT * FROM gmos_memories
+           WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
+        )
+        .get(input.profileId, input.id) as Record<string, unknown> | undefined;
+      if (!existing) return false;
+      const previousValues = [memorySnapshotFromRow(existing)];
+      const metadata = metadataWithArchiveMarker({
+        metadata: parseJsonObject(existing.metadata_json),
+        archivedAt,
+        reason: input.reason,
+      });
+      const result = db
+        .prepare(
+          `UPDATE gmos_memories
+           SET status = 'archived', updated_at = ?, metadata_json = ?
+           WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
+        )
+        .run(archivedAt, JSON.stringify(metadata), input.profileId, input.id);
+      setImportClaimDispositionForMemoryLocked({
+        profileId: input.profileId,
+        memoryId: input.id,
+        disposition: "blocked",
+        updatedAt: archivedAt,
+      });
+      syncMemoryVector(input.id);
+      deleteAssociationsForMemory(input.id);
+      rejectBeliefsForMemory(input.id, archivedAt);
+      insertLifecycleEvidence({
+        profileId: input.profileId,
+        sourceType: "memory.lifecycle",
+        memoryId: input.id,
+        from: String(existing.status) as MemoryRecord["status"],
+        to: "archived",
+        createdAt: archivedAt,
+        reasons: [input.reason ?? "manual_archive"],
+        previousValues,
+      });
+      return result.changes > 0;
     });
-    const result = db
-      .prepare(
-        `UPDATE gmos_memories
-         SET status = 'archived', updated_at = ?, metadata_json = ?
-         WHERE profile_id = ? AND id = ? AND status IN ('active', 'dormant')`,
-      )
-      .run(archivedAt, JSON.stringify(metadata), input.profileId, input.id);
-    syncMemoryVector(input.id);
-    deleteAssociationsForMemory(input.id);
-    rejectBeliefsForMemory(input.id, archivedAt);
-    insertLifecycleEvidence({
-      profileId: input.profileId,
-      sourceType: "memory.lifecycle",
-      memoryId: input.id,
-      from: String(existing.status) as MemoryRecord["status"],
-      to: "archived",
-      createdAt: archivedAt,
-      reasons: [input.reason ?? "manual_archive"],
-      previousValues,
-    });
-    return result.changes > 0;
+    return tx.immediate();
   }
 
   function restoreArchivedMemory(input: RestoreArchivedMemoryInput): boolean {
     initialize();
-    const restoredAt = input.restoredAt ?? nowIso();
-    const existing = db
-      .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ? AND status = 'archived'")
-      .get(input.profileId, input.id) as Record<string, unknown> | undefined;
-    if (!existing) return false;
-    const previousValues = [memorySnapshotFromRow(existing)];
-    const metadata = metadataWithRestoreMarker({
-      metadata: parseJsonObject(existing.metadata_json),
-      restoredAt,
-      reason: input.reason,
+    const tx = db.transaction((): boolean => {
+      const restoredAt = input.restoredAt ?? nowIso();
+      const existing = db
+        .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ? AND status = 'archived'")
+        .get(input.profileId, input.id) as Record<string, unknown> | undefined;
+      if (!existing) return false;
+      const memory = normalizeMemory(existing);
+      const claim = db
+        .prepare("SELECT * FROM gmos_import_identities WHERE profile_id = ? AND memory_id = ?")
+        .get(input.profileId, input.id) as ImportIdentityRow | undefined;
+      if (claim) {
+        const evidenceRow = db
+          .prepare("SELECT * FROM gmos_evidence_events WHERE profile_id = ? AND id = ?")
+          .get(input.profileId, claim.evidence_id) as Record<string, unknown> | undefined;
+        if (!evidenceRow || memory.sourceEventId !== claim.evidence_id) {
+          throw new Error("gmOS archived import identity cannot be explicitly restored: binding missing");
+        }
+        const evidence = normalizeEvidence(evidenceRow);
+        if (
+          evidenceIsRedacted(evidence) ||
+          persistedImportBindingDigest(ensureImportIdentitySecretLocked(), evidence, memory) !==
+            claim.binding_digest
+        ) {
+          throw new Error("gmOS archived import identity cannot be explicitly restored: binding changed");
+        }
+      }
+      const previousValues = [memorySnapshotFromRow(existing)];
+      const metadata = metadataWithRestoreMarker({
+        metadata: memory.metadata,
+        restoredAt,
+        reason: input.reason,
+      });
+      const result = db
+        .prepare(
+          `UPDATE gmos_memories
+           SET status = 'active', updated_at = ?, metadata_json = ?
+           WHERE profile_id = ? AND id = ? AND status = 'archived'`,
+        )
+        .run(restoredAt, JSON.stringify(metadata), input.profileId, input.id);
+      if (claim && result.changes > 0) {
+        setImportClaimDispositionForMemoryLocked({
+          profileId: input.profileId,
+          memoryId: input.id,
+          disposition: "active",
+          updatedAt: restoredAt,
+        });
+      }
+      syncMemoryVector(input.id);
+      const restored = db
+        .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ?")
+        .get(input.profileId, input.id) as Record<string, unknown> | undefined;
+      if (restored) {
+        const restoredMemory = normalizeMemory(restored);
+        projectMemoryAssociations(restoredMemory);
+        syncBeliefsForMemory(restoredMemory);
+      }
+      insertLifecycleEvidence({
+        profileId: input.profileId,
+        sourceType: "memory.lifecycle",
+        memoryId: input.id,
+        from: "archived",
+        to: "active",
+        createdAt: restoredAt,
+        reasons: [input.reason ?? "manual_restore"],
+        previousValues,
+      });
+      return result.changes > 0;
     });
-    const result = db
-      .prepare(
-        `UPDATE gmos_memories
-         SET status = 'active', updated_at = ?, metadata_json = ?
-         WHERE profile_id = ? AND id = ? AND status = 'archived'`,
-      )
-      .run(restoredAt, JSON.stringify(metadata), input.profileId, input.id);
-    syncMemoryVector(input.id);
-    const restored = db
-      .prepare("SELECT * FROM gmos_memories WHERE profile_id = ? AND id = ?")
-      .get(input.profileId, input.id) as Record<string, unknown> | undefined;
-    if (restored) projectMemoryAssociations(normalizeMemory(restored));
-    insertLifecycleEvidence({
-      profileId: input.profileId,
-      sourceType: "memory.lifecycle",
-      memoryId: input.id,
-      from: "archived",
-      to: "active",
-      createdAt: restoredAt,
-      reasons: [input.reason ?? "manual_restore"],
-      previousValues,
-    });
-    return result.changes > 0;
+    return tx.immediate();
   }
 
   function archiveMemories(input: ArchiveMemoriesInput): string[] {
@@ -4202,6 +6815,12 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           reason: input.reason,
         });
         stmt.run(archivedAt, JSON.stringify(metadata), input.profileId, memoryId);
+        setImportClaimDispositionForMemoryLocked({
+          profileId: input.profileId,
+          memoryId,
+          disposition: "blocked",
+          updatedAt: archivedAt,
+        });
         syncMemoryVector(memoryId);
         deleteAssociationsForMemory(memoryId);
         rejectBeliefsForMemory(memoryId, archivedAt);
@@ -4217,7 +6836,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         });
       }
     });
-    tx(rows);
+    tx.immediate(rows);
     return ids;
   }
 
@@ -4450,6 +7069,19 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         sourceMemoryIds.join(","),
         input.createdAt,
       ].join(":");
+      const existingEvidence = db
+        .prepare("SELECT profile_id, payload_json FROM gmos_evidence_events WHERE event_key = ?")
+        .get(evidenceKey) as { profile_id?: string; payload_json?: string } | undefined;
+      if (
+        existingEvidence &&
+        (
+          existingEvidence.profile_id !== input.profileId ||
+          gmosEvidencePayloadSchemaOf(parseJsonObject(existingEvidence.payload_json)) !==
+            GMOS_EVIDENCE_PAYLOAD_SCHEMAS.consolidationSummary
+        )
+      ) {
+        throw new Error("gmOS consolidation summary event key is owned by incompatible evidence");
+      }
       db.prepare(
         `INSERT INTO gmos_evidence_events (
           id, event_key, profile_id, source_type, source_uri, content, sensitivity,
@@ -4463,11 +7095,14 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         input.profileId,
         null,
         "Memory consolidation summary",
-        JSON.stringify({
+        JSON.stringify(markedGmosEvidencePayload(
+          GMOS_EVIDENCE_PAYLOAD_SCHEMAS.consolidationSummary,
+          {
           sourceMemoryIds,
           sharedTags: input.sharedTags,
           kind: input.kind,
-        }),
+          },
+        )),
         input.createdAt,
       );
       const sourceEvidence = normalizeEvidence(
@@ -4476,12 +7111,16 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           .get(evidenceKey) as Record<string, unknown>,
       );
       const memoryId = id("memory");
-      const metadata = {
-        ...(input.metadata ?? {}),
-        consolidationSummary: true,
-        sourceMemoryIds,
-        sharedTags: input.sharedTags,
-      };
+      const metadata = markedGmosMetadata(
+        {
+          ...(input.metadata ?? {}),
+          consolidationSummary: true,
+          sourceMemoryIds,
+          sharedTags: input.sharedTags,
+        },
+        GMOS_METADATA_REFERENCE_SCHEMAS.consolidationSummary,
+        GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+      );
       db.prepare(
         `INSERT INTO gmos_memories (
           id, profile_id, kind, scope, content, sensitivity, status, confidence,
@@ -4526,10 +7165,13 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         if (!row) continue;
         const previousValues = [memorySnapshotFromRow(row)];
         const previousStatus = String(row.status) as MemoryRecord["status"];
-        const sourceMetadata = {
-          ...parseJsonObject(row.metadata_json),
-          consolidatedInto: memory.id,
-        };
+        const sourceMetadata = markedGmosMetadata(
+          {
+            ...parseJsonObject(row.metadata_json),
+            consolidatedInto: memory.id,
+          },
+          GMOS_METADATA_REFERENCE_SCHEMAS.consolidationTarget,
+        );
         const result = sourceUpdate.run(
           input.createdAt,
           JSON.stringify(sourceMetadata),
@@ -4538,6 +7180,12 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         );
         if (result.changes === 0) continue;
         dormantSourceIds.push(sourceMemoryId);
+        setImportClaimDispositionForMemoryLocked({
+          profileId: input.profileId,
+          memoryId: sourceMemoryId,
+          disposition: "dormant",
+          updatedAt: input.createdAt,
+        });
         syncMemoryVector(sourceMemoryId);
         if (previousStatus === "active") {
           deactivateMemoryProjections(sourceMemoryId);
@@ -4573,7 +7221,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         dormantSourceIds,
       };
     });
-    return tx();
+    return tx.immediate();
   }
 
   function distillationEventKey(profileId: string, clusterKey: string): string {
@@ -4600,11 +7248,24 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         .prepare("SELECT * FROM gmos_evidence_events WHERE event_key = ?")
         .get(eventKey) as Record<string, unknown> | undefined;
       if (existingEvidenceRow) {
+        const existingEvidence = normalizeEvidence(existingEvidenceRow);
+        if (
+          existingEvidence.profileId !== input.profileId ||
+          gmosEvidencePayloadSchemaOf(existingEvidence.payload) !==
+            GMOS_EVIDENCE_PAYLOAD_SCHEMAS.procedureDistillation
+        ) {
+          throw new Error("gmOS procedure distillation event key is owned by incompatible evidence");
+        }
         const existingMemoryRow = db
           .prepare(
             `SELECT *
              FROM gmos_memories
              WHERE profile_id = ? AND source_event_id = ? AND kind = 'procedure'
+               AND EXISTS (
+                 SELECT 1
+                 FROM json_each(metadata_json, '$.${GMOS_METADATA_REFERENCE_MARKER}')
+                 WHERE value = '${GMOS_METADATA_REFERENCE_SCHEMAS.procedureDistillation}'
+               )
              ORDER BY created_at ASC, id ASC
              LIMIT 1`,
           )
@@ -4612,10 +7273,18 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           | Record<string, unknown>
           | undefined;
         if (existingMemoryRow) {
-          return {
-            memory: normalizeMemory(existingMemoryRow),
-            alreadyExists: true,
-          };
+          const existingMemory = normalizeMemory(existingMemoryRow);
+          if (
+            hasGmosMetadataReferenceSchema(
+              existingMemory.metadata,
+              GMOS_METADATA_REFERENCE_SCHEMAS.procedureDistillation,
+            )
+          ) {
+            return {
+              memory: existingMemory,
+              alreadyExists: true,
+            };
+          }
         }
       }
 
@@ -4632,26 +7301,32 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           input.profileId,
           null,
           "Procedure distillation",
-          JSON.stringify({
+          JSON.stringify(markedGmosEvidencePayload(
+            GMOS_EVIDENCE_PAYLOAD_SCHEMAS.procedureDistillation,
+            {
             kind: "procedure",
             objective: input.objective,
             sourceTrajectoryIds,
             sharedTags: input.sharedTags,
             clusterKey: input.clusterKey,
-          }),
+            },
+          )),
           input.createdAt,
         );
       }
 
       const memoryId = id("memory");
-      const metadata = {
-        ...(input.metadata ?? {}),
-        procedureDistillation: true,
-        objective: input.objective,
-        sourceTrajectoryIds,
-        sharedTags: input.sharedTags,
-        clusterKey: input.clusterKey,
-      };
+      const metadata = markedGmosMetadata(
+        {
+          ...(input.metadata ?? {}),
+          procedureDistillation: true,
+          objective: input.objective,
+          sourceTrajectoryIds,
+          sharedTags: input.sharedTags,
+          clusterKey: input.clusterKey,
+        },
+        GMOS_METADATA_REFERENCE_SCHEMAS.procedureDistillation,
+      );
       db.prepare(
         `INSERT INTO gmos_memories (
           id, profile_id, kind, scope, content, sensitivity, status, confidence,
@@ -4681,7 +7356,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         alreadyExists: false,
       };
     });
-    return tx();
+    return tx.immediate();
   }
 
   function supersededSourceMemoryIds(profileId: string): Set<string> {
@@ -4703,19 +7378,19 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
          UNION
          SELECT DISTINCT memory.id AS memoryId
          FROM gmos_world_beliefs superseded
-         JOIN gmos_memories memory ON memory.profile_id = superseded.profile_id
+         JOIN gmos_memories memory
+           ON memory.profile_id = superseded.profile_id
+          AND memory.status = 'active'
          WHERE superseded.profile_id = ?
            AND superseded.status = 'superseded'
-           AND memory.status = 'active'
-           AND memory.content = superseded.object
-           AND json_extract(memory.metadata_json, '$.predicate') = superseded.predicate
-           AND NOT EXISTS (
+           AND EXISTS (
              SELECT 1
-             FROM gmos_world_beliefs active_source
-             WHERE active_source.profile_id = memory.profile_id
-               AND active_source.status = 'active'
-               AND active_source.source_memory_id = memory.id
+             FROM json_each(memory.metadata_json, '$.${GMOS_METADATA_REFERENCE_MARKER}')
+             WHERE value = '${GMOS_METADATA_REFERENCE_SCHEMAS.worldBeliefProjection}'
            )
+           AND json_extract(memory.metadata_json, '$.worldBeliefSubject') = superseded.subject
+           AND json_extract(memory.metadata_json, '$.worldBeliefPredicate') = superseded.predicate
+           AND json_extract(memory.metadata_json, '$.worldBeliefObject') = superseded.object
            AND NOT EXISTS (
              SELECT 1
              FROM gmos_world_beliefs active
@@ -4837,7 +7512,29 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     | "below_score_threshold";
 
   function archivedMemoryExplanationReason(memory: MemoryRecord): MemorySearchTraceDecisionReason {
-    if (memory.metadata.supersededBy || memory.metadata.consolidatedInto) return "superseded";
+    if (
+      (
+        hasGmosMetadataReferenceSchema(
+          memory.metadata,
+          GMOS_METADATA_REFERENCE_SCHEMAS.duplicateSupersession,
+        ) ||
+        hasGmosMetadataReferenceSchema(
+          memory.metadata,
+          GMOS_METADATA_REFERENCE_SCHEMAS.consolidationTarget,
+        )
+      ) &&
+      (memory.metadata.supersededBy || memory.metadata.consolidatedInto)
+    ) {
+      return "superseded";
+    }
+    if (
+      !hasGmosMetadataReferenceSchema(
+        memory.metadata,
+        GMOS_METADATA_REFERENCE_SCHEMAS.lifecycleArchive,
+      )
+    ) {
+      return "archived";
+    }
     const archive = memory.metadata.archive;
     if (!archive || typeof archive !== "object" || Array.isArray(archive)) return "forget_residue";
     const reason = (archive as Record<string, unknown>).reason;
@@ -5069,21 +7766,69 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       : null;
   }
 
+  function hasExactMetadataKeys(
+    metadata: Record<string, unknown>,
+    keys: readonly string[],
+  ): boolean {
+    const actual = Object.keys(metadata).sort();
+    const expected = [...keys].sort();
+    return actual.length === expected.length &&
+      actual.every((key, index) => key === expected[index]);
+  }
+
   function findActiveMemoryByMetadata(
     profileId: string,
     key: string,
     value: string,
   ): MemoryRecord | null {
     initialize();
+    if (key === "importKey" || key === "hostImportKey") {
+      const importerSchema = key === "importKey" ? IMPORTER_MEM0_SCHEMA : IMPORTER_HOST_SCHEMA;
+      const row = db
+        .prepare(
+          `SELECT memory.*
+           FROM gmos_memories AS memory
+           JOIN gmos_import_identities AS identity
+             ON identity.profile_id = memory.profile_id AND identity.memory_id = memory.id
+           WHERE memory.profile_id = ?
+             AND memory.status IN ('active', 'dormant')
+             AND identity.importer_schema = ?
+             AND identity.disposition IN ('active', 'dormant')
+             AND json_extract(memory.metadata_json, ?) = ?
+           ORDER BY memory.updated_at DESC, memory.id
+           LIMIT 1`,
+        )
+        .get(profileId, importerSchema, `$.${key}`, value) as
+        | Record<string, unknown>
+        | undefined;
+      return row ? normalizeMemory(row) : null;
+    }
+    const requiredSchema = key === "turnEvidenceId" || key === "sessionDistillationKey"
+      ? GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage
+      : key === "dossierFor"
+        ? GMOS_METADATA_REFERENCE_SCHEMAS.dossier
+        : null;
     const row = db
       .prepare(
         `SELECT * FROM gmos_memories
          WHERE profile_id = ? AND status IN ('active', 'dormant')
            AND json_extract(metadata_json, ?) = ?
+           ${requiredSchema
+             ? `AND EXISTS (
+                  SELECT 1
+                  FROM json_each(metadata_json, '$.${GMOS_METADATA_REFERENCE_MARKER}')
+                  WHERE value = ?
+                )`
+             : ""}
          ORDER BY updated_at DESC
          LIMIT 1`,
       )
-      .get(profileId, `$.${key}`, value) as Record<string, unknown> | undefined;
+      .get(
+        profileId,
+        `$.${key}`,
+        value,
+        ...(requiredSchema ? [requiredSchema] : []),
+      ) as Record<string, unknown> | undefined;
     return row ? normalizeMemory(row) : null;
   }
 
@@ -5093,44 +7838,42 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     const activeKeys = [...new Set(input.activeImportKeys)];
     const activeKeyClause =
       activeKeys.length > 0
-        ? `AND json_extract(metadata_json, '$.hostImportKey') NOT IN (${activeKeys.map(() => "?").join(", ")})`
+        ? `AND json_extract(memory.metadata_json, '$.hostImportKey') NOT IN (${activeKeys.map(() => "?").join(", ")})`
         : "";
     const candidates = db
       .prepare(
-        `SELECT * FROM gmos_memories
-         WHERE profile_id = ?
-           AND status IN ('active', 'dormant')
-           AND json_extract(metadata_json, '$.hostSnapshotImport') = 1
-           AND json_extract(metadata_json, '$.hostImportSourceType') = ?
+        `SELECT identity.*
+         FROM gmos_import_identities AS identity
+         JOIN gmos_memories AS memory
+           ON memory.profile_id = identity.profile_id AND memory.id = identity.memory_id
+         WHERE identity.profile_id = ?
+           AND identity.importer_schema = '${IMPORTER_HOST_SCHEMA}'
+           AND identity.disposition IN ('active', 'dormant')
+           AND memory.status IN ('active', 'dormant')
+           AND json_extract(memory.metadata_json, '$.hostImportSourceType') = ?
            ${activeKeyClause}`,
       )
       .all(input.profileId, input.sourceType, ...activeKeys) as Array<Record<string, unknown>>;
-    const ids = candidates.map((row) => String(row.id));
+    const claims = candidates as unknown as ImportIdentityRow[];
+    const ids = claims.map((claim) => claim.memory_id);
     if (ids.length === 0) return [];
-    const stmt = db.prepare(
-      "UPDATE gmos_memories SET status = 'archived', updated_at = ? WHERE id = ?",
-    );
-    const tx = db.transaction((memoryRows: Array<Record<string, unknown>>) => {
-      for (const row of memoryRows) {
-        const memoryId = String(row.id);
-        const previousValues = [memorySnapshotFromRow(row)];
-        stmt.run(archivedAt, memoryId);
-        syncMemoryVector(memoryId);
-        deleteAssociationsForMemory(memoryId);
-        rejectBeliefsForMemory(memoryId, archivedAt);
-        insertLifecycleEvidence({
-          profileId: input.profileId,
-          sourceType: "memory.lifecycle",
-          memoryId,
-          from: String(row.status) as MemoryRecord["status"],
-          to: "archived",
-          createdAt: archivedAt,
-          reasons: ["host_import_stale"],
-          previousValues,
+    const secret = importIdentitySecret();
+    const tx = db.transaction((identityRows: ImportIdentityRow[]) => {
+      const bound = identityRows.map((claim) => ({
+        claim,
+        ...claimBindingLocked(claim, secret),
+      }));
+      for (const { claim, memory } of bound) {
+        archiveImportedMemoryLocked({
+          claim,
+          memory,
+          archivedAt,
+          reason: "host_import_stale",
+          disposition: "host_stale",
         });
       }
     });
-    tx(candidates);
+    tx.immediate(claims);
     return ids;
   }
 
@@ -5149,6 +7892,10 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       if (input.failure) {
         recordFailure({
           ...input.failure,
+          metadata: markedGmosMetadata(
+            input.failure.metadata ?? {},
+            GMOS_METADATA_REFERENCE_SCHEMAS.failureMemoryLinks,
+          ),
           createdAt: input.failure.createdAt ?? occurredAt,
         });
       }
@@ -5196,10 +7943,15 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         failureKind: input.failureKind,
         content: input.content,
         createdAt: recordedAt,
-        metadata: {
-          ...(input.metadata ?? {}),
-          ...(input.relatedMemoryIds ? { relatedMemoryIds: uniqueMemoryIds(input.relatedMemoryIds) } : {}),
-        },
+        metadata: markedGmosMetadata(
+          {
+            ...(input.metadata ?? {}),
+            ...(input.relatedMemoryIds
+              ? { relatedMemoryIds: uniqueMemoryIds(input.relatedMemoryIds) }
+              : {}),
+          },
+          GMOS_METADATA_REFERENCE_SCHEMAS.failureMemoryLinks,
+        ),
       });
       adjustMemoryReinforcement({
         profileId: input.profileId,
@@ -5570,6 +8322,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           `SELECT id, payload_json, created_at
            FROM gmos_evidence_events
            WHERE profile_id = ? AND source_type = 'outcome'
+             AND json_extract(payload_json, '$._gmosSchema') = '${GMOS_EVIDENCE_PAYLOAD_SCHEMAS.outcomeReinforcement}'
            ORDER BY created_at DESC, id DESC
            LIMIT 200`,
         )
@@ -5917,6 +8670,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         `SELECT created_at
          FROM gmos_evidence_events
          WHERE source_type = 'maintenance'
+           AND json_extract(payload_json, '$._gmosSchema') = '${GMOS_EVIDENCE_PAYLOAD_SCHEMAS.lifecycleTransition}'
            ${input.profileId ? "AND profile_id = ?" : ""}
          ORDER BY created_at DESC, id DESC
          LIMIT 1`,
@@ -5929,6 +8683,10 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
             `SELECT COUNT(*) AS count
              FROM gmos_evidence_events
              WHERE source_type = 'consolidation'
+               AND json_extract(payload_json, '$._gmosSchema') IN (
+                 '${GMOS_EVIDENCE_PAYLOAD_SCHEMAS.consolidationDuplicate}',
+                 '${GMOS_EVIDENCE_PAYLOAD_SCHEMAS.consolidationSummary}'
+               )
                ${input.profileId ? "AND profile_id = ?" : ""}`,
           )
           .get(...params) as { count: number }
@@ -5939,6 +8697,10 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         `SELECT created_at
          FROM gmos_evidence_events
          WHERE source_type = 'consolidation'
+           AND json_extract(payload_json, '$._gmosSchema') IN (
+             '${GMOS_EVIDENCE_PAYLOAD_SCHEMAS.consolidationDuplicate}',
+             '${GMOS_EVIDENCE_PAYLOAD_SCHEMAS.consolidationSummary}'
+           )
            ${input.profileId ? "AND profile_id = ?" : ""}
          ORDER BY created_at DESC, id DESC
          LIMIT 1`,
@@ -6031,7 +8793,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       .filter(
         (event) =>
           !shouldHideFromOrdinaryContext({
-            sensitivity: effectiveEvidenceSensitivity(event),
+            sensitivity: classifyEvidenceSensitivity(event),
             includeSensitive: input.includeSensitive,
           }),
       )
@@ -6042,26 +8804,87 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     initialize();
     if (!tableExists("gmos_memories") || !tableExists("gmos_evidence_events")) return [];
     const row = db
-      .prepare("SELECT source_event_id, metadata_json FROM gmos_memories WHERE id = ?")
-      .get(memoryId) as { source_event_id?: string | null; metadata_json?: string | null } | undefined;
-    if (!row?.source_event_id) return [];
+      .prepare("SELECT profile_id, source_event_id, metadata_json FROM gmos_memories WHERE id = ?")
+      .get(memoryId) as {
+        profile_id: string;
+        source_event_id?: string | null;
+        metadata_json?: string | null;
+      } | undefined;
+    if (!row) return [];
     const metadata = parseJsonObject(row.metadata_json);
-    const windowEvidenceIds = Array.isArray(metadata.windowEvidenceIds)
-      ? metadata.windowEvidenceIds.filter((entry): entry is string => typeof entry === "string")
-      : [];
-    const ids = [...new Set([row.source_event_id, ...windowEvidenceIds])];
+    const maxReferences = 100;
+    const ids: string[] = [];
+    const selected = new Set<string>();
+    const add = (value: unknown): void => {
+      if (
+        ids.length < maxReferences && typeof value === "string" && value.length > 0 &&
+        !selected.has(value)
+      ) {
+        selected.add(value);
+        ids.push(value);
+      }
+    };
+    add(row.source_event_id);
+    const lineageShape = hasGmosMetadataReferenceSchema(
+      metadata,
+      GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+    )
+      ? GMOS_METADATA_REFERENCE_SHAPES[GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage]
+      : null;
+    for (const key of lineageShape?.evidenceIdFields ?? []) add(metadata[key]);
+    let referenceCount = ids.length;
+    for (const key of lineageShape?.evidenceIdArrays ?? []) {
+      const values = metadata[key];
+      if (!Array.isArray(values)) continue;
+      referenceCount += values.length;
+      for (const value of values) add(value);
+    }
+    if (ids.length === 0) return [];
     const placeholders = ids.map(() => "?").join(", ");
     const rows = db
-      .prepare(`SELECT * FROM gmos_evidence_events WHERE id IN (${placeholders})`)
-      .all(...ids) as Record<string, unknown>[];
+      .prepare(
+        `SELECT
+           id, event_key, profile_id, source_type, source_uri, content, sensitivity,
+           eligible_for_long_term_memory, payload_json,
+           created_at
+         FROM gmos_evidence_events
+         WHERE profile_id = ? AND id IN (${placeholders})`,
+      )
+      .all(row.profile_id, ...ids) as Record<string, unknown>[];
     const byId = new Map(rows.map((evidenceRow) => [String(evidenceRow.id), evidenceRow]));
-    return ids
+    const evidence = ids
       .flatMap((id) => {
         const evidenceRow = byId.get(id);
         return evidenceRow ? [evidenceRow] : [];
       })
       .map(normalizeEvidence)
-      .filter((event) => effectiveEvidenceSensitivity(event) !== "secret_like");
+      .map((event) =>
+        gmosEvidencePayloadSchemaOf(event.payload) ===
+          GMOS_EVIDENCE_PAYLOAD_SCHEMAS.sessionDistillation
+        ? {
+            ...event,
+            payload: {
+              purpose: "session_distillation",
+              evidenceCount: Array.isArray(event.payload.evidenceIds)
+                ? event.payload.evidenceIds.length
+                : 0,
+              provenanceTruncated: true,
+            },
+          }
+        : event)
+      .filter((event) => classifyEvidenceSensitivity(event) !== "secret_like");
+    const omittedCount = Math.max(0, referenceCount - evidence.length);
+    if (omittedCount > 0 && evidence[0]) {
+      evidence[0] = {
+        ...evidence[0],
+        payload: {
+          ...evidence[0].payload,
+          provenanceReturnedCount: evidence.length,
+          provenanceOmittedCount: omittedCount,
+        },
+      };
+    }
+    return evidence;
   }
 
   function clampNumber(value: number, min: number, max: number): number {
@@ -6071,6 +8894,40 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
 
   function evolutionActionMemoryId(action: EvolutionAction): string {
     return action.memoryId;
+  }
+
+  function assertValidEvolutionApplyInput(input: EvolutionApplyStoreInput): void {
+    if (typeof input.proposalId !== "string" || input.proposalId.trim().length === 0) {
+      throw new Error("gmOS evolution apply requires a non-empty proposalId");
+    }
+    if (typeof input.approvedBy !== "string" || input.approvedBy.trim().length === 0) {
+      throw new Error("gmOS evolution apply requires approvedBy");
+    }
+    if (!Array.isArray(input.actions) || input.actions.length === 0) {
+      throw new Error("gmOS evolution apply requires at least one action");
+    }
+    for (const value of input.actions as unknown[]) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("gmOS evolution apply action must be an object");
+      }
+      const action = value as Record<string, unknown>;
+      if (typeof action.memoryId !== "string" || action.memoryId.trim().length === 0) {
+        throw new Error("gmOS evolution apply action requires a non-empty memoryId");
+      }
+      const adjustsValue = action.type === "adjust_confidence" ||
+        action.type === "adjust_reinforcement";
+      const changesStatus = action.type === "demote_to_dormant" ||
+        action.type === "reactivate";
+      if (!adjustsValue && !changesStatus) {
+        throw new Error("gmOS evolution apply action has an invalid type");
+      }
+      if (
+        adjustsValue &&
+        (typeof action.delta !== "number" || !Number.isFinite(action.delta))
+      ) {
+        throw new Error("gmOS evolution apply adjustment requires a finite delta");
+      }
+    }
   }
 
   function memoryEvolutionPreviousValue(memory: MemoryRecord): EvolutionPreviousMemoryValue {
@@ -6125,6 +8982,12 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       input.profileId,
       input.memoryId,
     );
+    setImportClaimDispositionForMemoryLocked({
+      profileId: input.profileId,
+      memoryId: input.memoryId,
+      disposition: input.status === "dormant" ? "dormant" : "active",
+      updatedAt: input.updatedAt,
+    });
     syncEvolutionMemoryChange({
       profileId: input.profileId,
       memoryId: input.memoryId,
@@ -6135,10 +8998,8 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
 
   function applyEvolutionActions(input: EvolutionApplyStoreInput): EvolutionApplyStoreResult {
     initialize();
+    assertValidEvolutionApplyInput(input);
     const tx = db.transaction((): EvolutionApplyStoreResult => {
-      if (input.actions.length === 0) {
-        throw new Error("gmOS evolution apply requires at least one action");
-      }
       const memories = new Map<string, MemoryRecord>();
       for (const memoryId of uniqueMemoryIds(input.actions.map(evolutionActionMemoryId))) {
         const row = memoryRowById(input.profileId, memoryId);
@@ -6196,12 +9057,15 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         input.profileId,
         null,
         "Evolution proposal application",
-        JSON.stringify({
+        JSON.stringify(markedGmosEvidencePayload(
+          GMOS_EVIDENCE_PAYLOAD_SCHEMAS.evolutionApply,
+          {
           proposalId: input.proposalId,
           approvedBy: input.approvedBy,
           actions: input.actions,
           previousValues: rollbackPreviousValues,
-        }),
+          },
+        )),
         input.appliedAt,
       );
       return {
@@ -6212,41 +9076,66 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         appliedAt: input.appliedAt,
       };
     });
-    return tx();
+    return tx.immediate();
   }
 
   function previousValuesFromEvolutionPayload(
     payload: Record<string, unknown>,
+    profileId: string,
   ): EvolutionPreviousMemoryValue[] {
-    const raw = payload.previousValues;
-    if (!Array.isArray(raw)) return [];
-    return raw.flatMap((entry) => {
-      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
-      const record = entry as Record<string, unknown>;
+    if (gmosEvidencePayloadSchemaOf(payload) !== GMOS_EVIDENCE_PAYLOAD_SCHEMAS.evolutionApply) {
+      return [];
+    }
+    if (
+      typeof payload.proposalId !== "string" || payload.proposalId.trim().length === 0 ||
+      typeof payload.approvedBy !== "string" || payload.approvedBy.trim().length === 0 ||
+      !Array.isArray(payload.actions) || payload.actions.length === 0 ||
+      !Array.isArray(payload.previousValues) || payload.previousValues.length === 0
+    ) {
+      return [];
+    }
+    const actionMemoryIds = new Set<string>();
+    for (const value of payload.actions) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+      const action = value as Record<string, unknown>;
+      if (typeof action.memoryId !== "string" || action.memoryId.length === 0) return [];
+      const adjustsValue = action.type === "adjust_confidence" || action.type === "adjust_reinforcement";
+      const changesStatus = action.type === "demote_to_dormant" || action.type === "reactivate";
       if (
-        typeof record.memoryId !== "string" ||
-        typeof record.confidence !== "number" ||
-        typeof record.reinforcement !== "number" ||
-        typeof record.status !== "string" ||
-        typeof record.updatedAt !== "string"
+        (!adjustsValue && !changesStatus) ||
+        (adjustsValue && (typeof action.delta !== "number" || !Number.isFinite(action.delta)))
+      ) return [];
+      actionMemoryIds.add(action.memoryId);
+    }
+    const snapshots: MemoryVersionSnapshot[] = [];
+    const snapshotMemoryIds = new Set<string>();
+    for (const value of payload.previousValues) {
+      const snapshot = memoryVersionSnapshotFromPayload(value);
+      if (
+        !snapshot ||
+        snapshot.profileId !== profileId ||
+        snapshot.memoryId.length === 0 ||
+        snapshot.status === "archived" ||
+        snapshotMemoryIds.has(snapshot.memoryId)
       ) {
         return [];
       }
-      if (
-        record.status !== "active" &&
-        record.status !== "dormant" &&
-        record.status !== "archived"
-      ) {
-        return [];
-      }
-      return [{
-        memoryId: record.memoryId,
-        confidence: record.confidence,
-        reinforcement: record.reinforcement,
-        status: record.status,
-        updatedAt: record.updatedAt,
-      }];
-    });
+      snapshots.push(snapshot);
+      snapshotMemoryIds.add(snapshot.memoryId);
+    }
+    if (
+      actionMemoryIds.size !== snapshotMemoryIds.size ||
+      [...actionMemoryIds].some((memoryId) => !snapshotMemoryIds.has(memoryId))
+    ) {
+      return [];
+    }
+    return snapshots.map((snapshot) => ({
+      memoryId: snapshot.memoryId,
+      confidence: snapshot.confidence,
+      reinforcement: snapshot.reinforcement,
+      status: snapshot.status,
+      updatedAt: snapshot.updatedAt,
+    }));
   }
 
   function revertEvolutionApplication(
@@ -6259,6 +9148,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           `SELECT *
            FROM gmos_evidence_events
            WHERE id = ? AND source_type = 'evolution'
+             AND json_extract(payload_json, '$._gmosSchema') = '${GMOS_EVIDENCE_PAYLOAD_SCHEMAS.evolutionApply}'
              ${input.profileId ? "AND profile_id = ?" : ""}
            LIMIT 1`,
         )
@@ -6269,30 +9159,41 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       if (!applicationRow) {
         throw new Error("gmOS evolution application evidence not found");
       }
+      const application = normalizeEvidence(applicationRow);
       const alreadyReverted = db
         .prepare(
           `SELECT id
            FROM gmos_evidence_events
-           WHERE source_type = 'evolution'
+           WHERE profile_id = ?
+             AND source_type = 'evolution'
+             AND json_extract(payload_json, '$._gmosSchema') = '${GMOS_EVIDENCE_PAYLOAD_SCHEMAS.evolutionRevert}'
              AND json_extract(payload_json, '$.revertedApplicationEventId') = ?
            LIMIT 1`,
         )
-        .get(input.applicationEventId) as { id?: string } | undefined;
+        .get(application.profileId, input.applicationEventId) as { id?: string } | undefined;
       if (alreadyReverted) {
         throw new Error("gmOS evolution application already reverted");
       }
-      const application = normalizeEvidence(applicationRow);
-      const previousValues = previousValuesFromEvolutionPayload(application.payload);
+      const previousValues = previousValuesFromEvolutionPayload(
+        application.payload,
+        application.profileId,
+      );
       if (previousValues.length === 0) {
         throw new Error("gmOS evolution application evidence has no previousValues");
       }
-      const rollbackPreviousValues: MemoryVersionSnapshot[] = [];
+      const targets: Array<{
+        previous: EvolutionPreviousMemoryValue;
+        row: Record<string, unknown>;
+      }> = [];
       for (const previous of previousValues) {
         const row = memoryRowById(application.profileId, previous.memoryId);
         if (!row || row.status === "archived") {
           throw new Error(`gmOS evolution revert target memory not found or archived: ${previous.memoryId}`);
         }
-        rollbackPreviousValues.push(memorySnapshotFromRow(row));
+        targets.push({ previous, row });
+      }
+      const rollbackPreviousValues = targets.map(({ row }) => memorySnapshotFromRow(row));
+      for (const { previous, row } of targets) {
         updateEvolutionMemoryValue({
           profileId: application.profileId,
           memoryId: previous.memoryId,
@@ -6321,13 +9222,16 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         application.profileId,
         null,
         "Evolution proposal application revert",
-        JSON.stringify({
+        JSON.stringify(markedGmosEvidencePayload(
+          GMOS_EVIDENCE_PAYLOAD_SCHEMAS.evolutionRevert,
+          {
           revertedApplicationEventId: input.applicationEventId,
           proposalId: application.payload.proposalId,
           actions: application.payload.actions,
           previousValues: rollbackPreviousValues,
           restoredValues: previousValues,
-        }),
+          },
+        )),
         input.revertedAt,
       );
       return {
@@ -6337,7 +9241,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         revertedAt: input.revertedAt,
       };
     });
-    return tx();
+    return tx.immediate();
   }
 
   function rollbackMemory(
@@ -6389,7 +9293,11 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       for (const row of rows) {
         const event = normalizeEvidence(row);
         for (const previous of previousValuesFromPayload(event.payload)) {
-          if (previous.memoryId === input.memoryId && previous.sourceEventId) {
+          if (
+            previous.profileId === input.profileId &&
+            previous.memoryId === input.memoryId &&
+            previous.sourceEventId
+          ) {
             historicalSourceEventIds.add(previous.sourceEventId);
           }
         }
@@ -6415,7 +9323,9 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
           continue;
         }
         const previous = previousValuesFromPayload(event.payload)
-          .find((value) => value.memoryId === input.memoryId);
+          .find((value) =>
+            value.profileId === input.profileId && value.memoryId === input.memoryId
+          );
         if (!previous) {
           throw new MemoryRollbackError(
             "missing_previous_values",
@@ -6429,6 +9339,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       const rollbackEventId = insertMutationEvidence({
         profileId: input.profileId,
         sourceType: "memory.rollback",
+        payloadSchema: GMOS_EVIDENCE_PAYLOAD_SCHEMAS.memoryRollback,
         content: "Memory forensic rollback",
         createdAt: rolledBackAt,
         payload: {
@@ -6450,7 +9361,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         rolledBackAt,
       };
     });
-    return tx();
+    return tx.immediate();
   }
 
   function forget(input: ForgetInput & { profileId: string }): ForgetResult {
@@ -6470,34 +9381,73 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     if (terms.length === 0) {
       return { archivedMemoryIds: [] };
     }
-    const searchQuery = terms.length > 0 ? terms.join(" ") : input.query;
-    const matches = searchMemories({
-      profileId: input.profileId,
-      query: searchQuery,
-      purpose: "delete",
-      includeSensitive: true,
-      includeSecretLike: true,
-      includePerson: true,
-      limit: 100,
-    }).filter((memory) => memoryMatchesForgetQuery(memory, terms));
-    const matchedMemoryIds = matches.map((memory) => memory.id);
-    const derivedMemoryIds = derivedSummaryIdsForForgottenSources(
-      input.profileId,
-      matchedMemoryIds,
-    );
-    const forgottenAt = nowIso();
-    const archivedMemoryIds = archiveForgetMemoryIds({
-      profileId: input.profileId,
-      memoryIds: matchedMemoryIds,
-      derivedMemoryIds,
-      archivedAt: forgottenAt,
+    const tx = db.transaction((): ForgetResult => {
+      const matches = (db
+        .prepare(
+          `SELECT * FROM gmos_memories
+           WHERE profile_id = ?
+             AND status IN ('active', 'dormant')
+           ORDER BY updated_at DESC, id ASC`,
+        )
+        .all(input.profileId) as Record<string, unknown>[])
+        .map(normalizeMemory)
+        .filter((memory) => memoryMatchesForgetQuery(memory, terms));
+      const archivedImportMatches = (db
+        .prepare(
+          `SELECT memory.*
+           FROM gmos_memories AS memory
+           JOIN gmos_import_identities AS identity
+             ON identity.profile_id = memory.profile_id AND identity.memory_id = memory.id
+           WHERE memory.profile_id = ?
+             AND memory.status = 'archived'
+             AND identity.disposition = 'host_stale'
+           ORDER BY memory.updated_at DESC, memory.id`,
+        )
+        .all(input.profileId) as Record<string, unknown>[])
+        .map(normalizeMemory)
+        .filter((memory) => memoryMatchesForgetQuery(memory, terms));
+      const matchedMemoryIds = [
+        ...matches.map((memory) => memory.id),
+        ...archivedImportMatches.map((memory) => memory.id),
+      ];
+      const derivedMemoryIds = derivedMemoryIdsForForgottenSources(
+        input.profileId,
+        matchedMemoryIds,
+      );
+      const forgottenAt = nowIso();
+      const archivedMemoryIds = archiveForgetMemoryIds({
+        profileId: input.profileId,
+        memoryIds: matchedMemoryIds,
+        derivedMemoryIds,
+        archivedAt: forgottenAt,
+      });
+      for (const memory of archivedImportMatches) {
+        const metadata = metadataWithArchiveMarker({
+          metadata: memory.metadata,
+          archivedAt: forgottenAt,
+          reason: "user_forget",
+        });
+        db.prepare(
+          `UPDATE gmos_memories
+           SET updated_at = ?, metadata_json = ?
+           WHERE profile_id = ? AND id = ? AND status = 'archived'`,
+        ).run(forgottenAt, JSON.stringify(metadata), input.profileId, memory.id);
+        setImportClaimDispositionForMemoryLocked({
+          profileId: input.profileId,
+          memoryId: memory.id,
+          disposition: "blocked",
+          updatedAt: forgottenAt,
+        });
+        archivedMemoryIds.push(memory.id);
+      }
+      redactEvidenceForForgottenMemories({
+        profileId: input.profileId,
+        archivedMemoryIds,
+        redactedAt: forgottenAt,
+      });
+      return { archivedMemoryIds };
     });
-    redactEvidenceForForgottenMemories({
-      profileId: input.profileId,
-      archivedMemoryIds,
-      redactedAt: forgottenAt,
-    });
-    return { archivedMemoryIds };
+    return tx.immediate();
   }
 
   function recordFailure(input: RecordFailureInput): void {
@@ -6637,54 +9587,57 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   function rebuildAssociations(input: RebuildAssociationsInput = {}): RebuildAssociationsResult {
     initialize();
     if (db.readonly) throw new Error("gmOS SQLite store is readonly");
-    const profileParams = input.profileId ? [input.profileId] : [];
-    db.prepare(
-      input.profileId
-        ? "DELETE FROM gmos_associations WHERE profile_id = ?"
-        : "DELETE FROM gmos_associations",
-    ).run(...profileParams);
+    const rebuild = (): RebuildAssociationsResult => {
+      const profileParams = input.profileId ? [input.profileId] : [];
+      db.prepare(
+        input.profileId
+          ? "DELETE FROM gmos_associations WHERE profile_id = ?"
+          : "DELETE FROM gmos_associations",
+      ).run(...profileParams);
 
-    const memoryRows = db
-      .prepare(
-        `SELECT * FROM gmos_memories
-         ${input.profileId ? "WHERE profile_id = ? AND status = 'active'" : "WHERE status = 'active'"}`,
-      )
-      .all(...profileParams) as Record<string, unknown>[];
-    for (const memory of memoryRows.map(normalizeMemory)) {
-      projectMemoryAssociations(memory, { replaceExisting: false });
-    }
+      const memoryRows = db
+        .prepare(
+          `SELECT * FROM gmos_memories
+           ${input.profileId ? "WHERE profile_id = ? AND status = 'active'" : "WHERE status = 'active'"}`,
+        )
+        .all(...profileParams) as Record<string, unknown>[];
+      for (const memory of memoryRows.map(normalizeMemory)) {
+        projectMemoryAssociations(memory, { replaceExisting: false });
+      }
 
-    const beliefRows = db
-      .prepare(
-        `SELECT * FROM gmos_world_beliefs
-         ${input.profileId ? "WHERE profile_id = ? AND status = 'active'" : "WHERE status = 'active'"}`,
-      )
-      .all(...profileParams) as Record<string, unknown>[];
-    for (const belief of beliefRows.map(normalizeWorldBelief)) {
-      projectBeliefAssociations(belief);
-    }
+      const beliefRows = db
+        .prepare(
+          `SELECT * FROM gmos_world_beliefs
+           ${input.profileId ? "WHERE profile_id = ? AND status = 'active'" : "WHERE status = 'active'"}`,
+        )
+        .all(...profileParams) as Record<string, unknown>[];
+      for (const belief of beliefRows.map(normalizeWorldBelief)) {
+        projectBeliefAssociations(belief);
+      }
 
-    const trajectoryRows = db
-      .prepare(
-        `SELECT * FROM gmos_task_trajectories
-         ${input.profileId ? "WHERE profile_id = ?" : ""}`,
-      )
-      .all(...profileParams) as Record<string, unknown>[];
-    for (const trajectory of trajectoryRows.map(normalizeTaskTrajectory)) {
-      projectTaskTrajectoryAssociations(trajectory);
-    }
+      const trajectoryRows = db
+        .prepare(
+          `SELECT * FROM gmos_task_trajectories
+           ${input.profileId ? "WHERE profile_id = ?" : ""}`,
+        )
+        .all(...profileParams) as Record<string, unknown>[];
+      for (const trajectory of trajectoryRows.map(normalizeTaskTrajectory)) {
+        projectTaskTrajectoryAssociations(trajectory);
+      }
 
-    const count = Number(
-      (
-        db
-          .prepare(
-            `SELECT COUNT(*) AS count FROM gmos_associations
-             ${input.profileId ? "WHERE profile_id = ?" : ""}`,
-          )
-          .get(...profileParams) as { count: number }
-      ).count,
-    );
-    return { rebuiltAssociationCount: count };
+      const count = Number(
+        (
+          db
+            .prepare(
+              `SELECT COUNT(*) AS count FROM gmos_associations
+               ${input.profileId ? "WHERE profile_id = ?" : ""}`,
+            )
+            .get(...profileParams) as { count: number }
+        ).count,
+      );
+      return { rebuiltAssociationCount: count };
+    };
+    return db.inTransaction ? rebuild() : db.transaction(rebuild).immediate();
   }
 
   function rowCounts(): Record<string, number> {
@@ -6913,8 +9866,12 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     claimEvidence,
     recordEvidence,
     getEvidenceByEventKey,
+    hasLegacyEvidenceKeys,
+    evidenceMutationVersion,
     addMemory,
     addMemories,
+    importMem0RecordsAtomically,
+    importHostSnapshotsAtomically,
     updateMemory,
     archiveMemoryById,
     restoreArchivedMemory,
@@ -6971,8 +9928,20 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     },
     restoreProfileBackup(input) {
       initialize();
-      const report = restoreSqliteProfileBackup(db, input);
-      rebuildAssociations({ profileId: report.targetProfileId });
+      const report = restoreSqliteProfileBackup(
+        db,
+        input,
+        (targetProfileId) => {
+          if (input.backup.mode === "full") {
+            rebuildImportIdentitiesLocked(targetProfileId, { allowForeignV2Digests: true });
+          } else {
+            stripUnclaimedSafeImportAuthorityLocked(targetProfileId);
+          }
+          rebuildAssociations({ profileId: targetProfileId });
+        },
+        (targetProfileId) => assertRestoreImportClaimPolicy(input, targetProfileId),
+      );
+      evidenceRestoreGeneration += 1;
       return report;
     },
     exportProfileBundle(input) {
@@ -6981,8 +9950,20 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     },
     importProfileBundle(input) {
       initialize();
-      const report = restoreSqliteProfileBackup(db, input);
-      rebuildAssociations({ profileId: report.targetProfileId });
+      const report = restoreSqliteProfileBackup(
+        db,
+        input,
+        (targetProfileId) => {
+          if (input.backup.mode === "full") {
+            rebuildImportIdentitiesLocked(targetProfileId, { allowForeignV2Digests: true });
+          } else {
+            stripUnclaimedSafeImportAuthorityLocked(targetProfileId);
+          }
+          rebuildAssociations({ profileId: targetProfileId });
+        },
+        (targetProfileId) => assertRestoreImportClaimPolicy(input, targetProfileId),
+      );
+      evidenceRestoreGeneration += 1;
       return report;
     },
   };

@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
 
+import { GMOS_EVIDENCE_PAYLOAD_SCHEMAS } from "../kernel/evidence-schema.js";
+import {
+  GMOS_METADATA_REFERENCE_SCHEMAS,
+  hasGmosMetadataReferenceSchema,
+} from "../kernel/metadata-schema.js";
 import { classifySensitivity, redactForReport } from "../kernel/safety.js";
 import { DEFAULT_MEMORY_HALF_LIVES_DAYS } from "../kernel/retention.js";
 import type {
@@ -194,10 +199,17 @@ function uniqueSorted(values: string[]): string[] {
 }
 
 function targetMemoryIdsForFailure(event: FailureEventRecord): string[] {
+  if (
+    !hasGmosMetadataReferenceSchema(
+      event.metadata,
+      GMOS_METADATA_REFERENCE_SCHEMAS.failureMemoryLinks,
+    )
+  ) {
+    return [];
+  }
   return uniqueSorted([
     ...stringArray(event.metadata.relatedMemoryIds),
     ...stringArray(event.metadata.usedMemoryIds),
-    ...stringArray(event.metadata.memoryIds),
   ]);
 }
 
@@ -463,7 +475,9 @@ async function parameterProposalsFor(input: {
     limit: 100,
   });
   const duplicateConsolidationEvidence = consolidationEvidence.filter(
-    (event) => typeof event.payload.archivedMemberId === "string",
+    (event) =>
+      event.payload._gmosSchema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.consolidationDuplicate &&
+      typeof event.payload.archivedMemberId === "string",
   );
   if (duplicateConsolidationEvidence.length >= 2) {
     proposals.push(parameterProposal({

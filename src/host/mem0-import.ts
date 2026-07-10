@@ -3,16 +3,16 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import type {
-  AddMemoryInput,
   MemoryKind,
-  MemoryRecord,
   MemoryStore,
   Sensitivity,
 } from "../kernel/types.js";
 import {
-  classifySensitivity,
+  classifyPayloadSensitivity,
   isPersonRoutedMemory,
+  redactForReport,
   sanitizePublicPayloadRecord,
+  stripGmosOwnedMetadataFields,
 } from "../kernel/safety.js";
 
 export interface Mem0ImportInput {
@@ -112,11 +112,12 @@ function stringField(record: Record<string, unknown>, key: string): string | und
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function parseMem0Record(entry: unknown, index: number): ParsedMem0Record | null {
+function parseMem0Record(entry: unknown): ParsedMem0Record | null {
   if (!isRecord(entry)) return null;
   const content = stringField(entry, "memory") ?? stringField(entry, "text") ?? "";
   const metadata = isRecord(entry.metadata) ? entry.metadata : {};
-  const id = stringField(entry, "id") ?? String(index);
+  const id = stringField(entry, "id");
+  if (!id) return null;
   const kind = isPersonRoutedMemory(content) ? "person" : kindFromMetadata(metadata);
   const scope = typeof metadata.scope === "string" && metadata.scope.trim()
     ? metadata.scope.trim()
@@ -126,7 +127,7 @@ function parseMem0Record(entry: unknown, index: number): ParsedMem0Record | null
     content,
     kind,
     scope,
-    sensitivity: classifySensitivity(`${scope}\n${content}`),
+    sensitivity: classifyPayloadSensitivity(entry),
     metadata,
     ...(optionalIso(entry.created_at ?? entry.createdAt ?? entry.updated_at ?? entry.updatedAt)
       ? { createdAt: optionalIso(entry.created_at ?? entry.createdAt ?? entry.updated_at ?? entry.updatedAt) }
@@ -134,19 +135,13 @@ function parseMem0Record(entry: unknown, index: number): ParsedMem0Record | null
   };
 }
 
-function importKey(input: { profileId: string; sourceFileHash: string; index: number }): string {
-  return [input.profileId, "mem0", input.sourceFileHash, String(input.index)].join("|");
-}
-
-function eventKey(input: { profileId: string; sourceFileHash: string; index: number }): string {
-  return ["mem0.import", input.profileId, input.sourceFileHash, String(input.index)].join(":");
-}
-
 export async function loadMem0ExportIntoStore(input: Mem0ImportInput): Promise<Mem0ImportReport> {
-  await input.store.initialize();
-  if (!input.store.findActiveMemoryByMetadata) {
-    throw new Error("mem0 import requires MemoryStore.findActiveMemoryByMetadata");
+  if (!input.store.importMem0RecordsAtomically) {
+    throw new Error(
+      "mem0 import requires MemoryStore.importMem0RecordsAtomically",
+    );
   }
+  await input.store.initialize();
   const text = input.text ?? readFileSync(String(input.inputFile), "utf8");
   const sourceFileHash = sha256(text);
   const rows = parseMem0Export(text);
@@ -156,7 +151,7 @@ export async function loadMem0ExportIntoStore(input: Mem0ImportInput): Promise<M
     profileId,
     sourceFileHash,
     ...((input.fileName ?? input.inputFile)
-      ? { fileName: path.basename(input.fileName ?? input.inputFile!) }
+      ? { fileName: redactForReport(path.basename(input.fileName ?? input.inputFile!)) }
       : {}),
     inputCount: rows.length,
     loadedCount: 0,
@@ -165,98 +160,51 @@ export async function loadMem0ExportIntoStore(input: Mem0ImportInput): Promise<M
     loadedMemoryIds: [],
     skipped: [],
   };
-  const loadedMemoryIdsByIndex = new Map<number, string>();
-  const pendingAdds: Array<{ index: number; input: AddMemoryInput }> = [];
+  const records = [];
 
   for (let index = 0; index < rows.length; index += 1) {
-    const parsed = parseMem0Record(rows[index], index);
+    const parsed = parseMem0Record(rows[index]);
     if (!parsed) {
-      report.skipped.push({ index, id: String(index), reason: "invalid_record" });
+      report.skipped.push({ index, id: redactForReport(String(index)), reason: "invalid_record" });
       continue;
     }
     const content = parsed.content.trim();
     if (!content) {
-      report.skipped.push({ index, id: parsed.id, reason: "empty_content" });
+      report.skipped.push({ index, id: redactForReport(parsed.id), reason: "empty_content" });
       continue;
     }
     if (parsed.kind === "person" && input.allowPerson !== true) {
-      report.skipped.push({ index, id: parsed.id, reason: "person_memory" });
+      report.skipped.push({ index, id: redactForReport(parsed.id), reason: "person_memory" });
       continue;
     }
     if (parsed.sensitivity === "secret_like") {
-      report.skipped.push({ index, id: parsed.id, reason: "secret_like" });
+      report.skipped.push({ index, id: redactForReport(parsed.id), reason: "secret_like" });
       continue;
     }
-    const key = importKey({ profileId, sourceFileHash, index });
-    const existing = await input.store.findActiveMemoryByMetadata(profileId, "importKey", key);
-    const existingEvidence = input.store.getEvidenceByEventKey
-      ? await input.store.getEvidenceByEventKey(eventKey({ profileId, sourceFileHash, index }))
-      : null;
-    if (existing || existingEvidence) {
-      if (existing) loadedMemoryIdsByIndex.set(index, existing.id);
-      report.reusedCount += 1;
-      continue;
-    }
-    const createdAt = parsed.createdAt ?? input.nowIso ?? nowIso();
-    const evidence = await input.store.recordEvidence({
-      profileId,
-      eventKey: eventKey({ profileId, sourceFileHash, index }),
-      sourceType: "mem0.import",
-      sourceUri: `mem0://${sourceFileHash}/${index}`,
+    records.push({
+      sourceIndex: index,
+      originalId: parsed.id,
       content,
+      kind: parsed.kind,
+      scope: parsed.scope,
       sensitivity: parsed.sensitivity,
-      eligibleForLongTermMemory: true,
-      payload: {
-        importSource: "mem0",
-        importSourceOriginalId: parsed.id,
-        sourceFileHash,
-        recordIndex: index,
-        provenance: "low_level_import",
-        sourceTrust: "external",
-      },
-      createdAt,
-    });
-    pendingAdds.push({
-      index,
-      input: {
-        profileId,
-        kind: parsed.kind,
-        scope: parsed.scope,
-        content,
-        sensitivity: parsed.sensitivity,
-        confidence: 0.7,
-        sourceEventId: evidence.id,
-        metadata: {
-          ...sanitizePublicPayloadRecord(parsed.metadata),
-          importSource: "mem0",
-          importSourceOriginalId: parsed.id,
-          importKey: key,
-          sourceFileHash,
-          recordIndex: index,
-          provenance: "low_level_import",
-          sourceTrust: "external",
-        },
-        createdAt,
-      },
+      metadata: stripGmosOwnedMetadataFields(
+        sanitizePublicPayloadRecord(parsed.metadata),
+      ),
+      ...(parsed.createdAt ? { createdAt: parsed.createdAt } : {}),
     });
   }
-  const memories = input.store.addMemories
-    ? await input.store.addMemories(pendingAdds.map((pending) => pending.input))
-    : [];
-  if (!input.store.addMemories) {
-    for (const pending of pendingAdds) {
-      memories.push(await input.store.addMemory(pending.input) as MemoryRecord);
-    }
-  }
-  for (const [offset, memory] of memories.entries()) {
-    const pending = pendingAdds[offset];
-    if (!pending) continue;
-    loadedMemoryIdsByIndex.set(pending.index, (memory as MemoryRecord).id);
-    report.loadedCount += 1;
-  }
-  report.loadedMemoryIds = [...loadedMemoryIdsByIndex.entries()]
-    .sort((left, right) => left[0] - right[0])
-    .map((entry) => entry[1]);
+  const results = await input.store.importMem0RecordsAtomically({
+    profileId,
+    sourceFileHash,
+    records,
+    occurredAt: input.nowIso ?? nowIso(),
+  });
+  report.loadedCount = results.filter((result) => result.disposition === "inserted").length;
+  report.reusedCount = results.length - report.loadedCount;
+  report.loadedMemoryIds = [...results]
+    .sort((left, right) => left.sourceIndex - right.sourceIndex)
+    .map((result) => result.memory.id);
   report.skippedCount = report.skipped.length;
   return report;
 }

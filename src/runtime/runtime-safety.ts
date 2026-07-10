@@ -6,6 +6,7 @@ import {
   sanitizePublicSourceMetadata,
   stripGmosOwnedMetadataFields,
 } from "../kernel/safety.js";
+import { GMOS_METADATA_REFERENCE_MARKER } from "../kernel/metadata-schema.js";
 import type {
   EvidenceEvent,
   MemoryExtractionCandidateSnapshot,
@@ -52,9 +53,12 @@ export function runtimeSensitivityClassifier(
         typeof classifier === "function"
           ? classifier({ value, surface })
           : classifier.classify({ value, surface });
-      return validSensitivity(classified) ? maxSensitivity(builtin, classified) : builtin;
+      if (classified === null || classified === undefined) return builtin;
+      return validSensitivity(classified)
+        ? maxSensitivity(builtin, classified)
+        : "secret_like";
     } catch {
-      return builtin;
+      return "secret_like";
     }
   };
 }
@@ -239,6 +243,9 @@ export function sanitizeRuntimeEvidenceForPublicOutput(
 ): EvidenceEvent {
   const publicEvidence = sanitizeEvidenceForPublicOutput(evidence);
   const contentSensitivity = classifyRuntimeSensitivity(evidence.content, "content");
+  const content = publicEvidence.content !== evidence.content
+    ? publicEvidence.content
+    : redactRuntimeString(evidence.content, classifyRuntimeSensitivity, "content");
   return {
     ...publicEvidence,
     id: redactRuntimePayloadString(publicEvidence.id, classifyRuntimeSensitivity, "metadata"),
@@ -264,7 +271,7 @@ export function sanitizeRuntimeEvidenceForPublicOutput(
           classifyRuntimeSensitivity,
           "metadata",
         ),
-    content: redactRuntimeString(evidence.content, classifyRuntimeSensitivity, "content"),
+    content,
     sensitivity: maxSensitivity(publicEvidence.sensitivity, contentSensitivity),
     payload: redactRuntimePayloadRecord(publicEvidence.payload, classifyRuntimeSensitivity),
   };
@@ -417,7 +424,9 @@ export function sanitizeRuntimeExternalMemoryMetadata(
   metadata: Record<string, unknown> | undefined,
   classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
 ): Record<string, unknown> {
-  return stripGmosOwnedMetadataFields(
+  const sanitized = stripGmosOwnedMetadataFields(
     sanitizeRuntimePayloadRecord(metadata, classifyRuntimeSensitivity),
   );
+  delete sanitized[GMOS_METADATA_REFERENCE_MARKER];
+  return sanitized;
 }

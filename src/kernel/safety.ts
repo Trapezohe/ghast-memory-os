@@ -1,4 +1,19 @@
-import type { EvidenceEvent, PrivacyMode, Sensitivity } from "./types.js";
+import { createHash } from "node:crypto";
+
+import { gmosEvidenceReferenceShapeOf } from "./evidence-schema.js";
+import {
+  GMOS_METADATA_REFERENCE_MARKER,
+  GMOS_METADATA_REFERENCE_SCHEMAS,
+  GMOS_METADATA_REFERENCE_SHAPES,
+  hasGmosMetadataReferenceSchema,
+} from "./metadata-schema.js";
+import type {
+  EvidenceEvent,
+  MemoryRecord,
+  MemoryVersionSnapshot,
+  PrivacyMode,
+  Sensitivity,
+} from "./types.js";
 
 const SECRET_PATTERNS = [
   /(^|[^A-Za-z0-9])sk-[A-Za-z0-9_-]{16,}(?=$|[^A-Za-z0-9])/u,
@@ -23,14 +38,63 @@ const SENSITIVE_PATTERNS = [
 
 const SENSITIVE_METADATA_KEYS =
   /(^|[\s_.-])(api[\s_.-]?key|access[\s_.-]?token|refresh[\s_.-]?token|token|password|secret|authorization|authentication|auth(?:entication)?(?:[\s_.-]?token)?|cookie|credential(?:[\s_.-]?id)?|session(?:[\s_.-]?id)?|ssn|social[\s_.-]?security)($|[\s_.-])/iu;
+const IDENTITY_CREDENTIAL_LABEL =
+  /(^|[-_.:/\s])(api[-_.\s]*key|access[-_.\s]*token|refresh[-_.\s]*token|token|password|secret|auth(?:entication)?|credential)(?=$|[-_.:/\s])/iu;
 
 const REDACTED_METADATA = "[redacted_sensitive_metadata]";
 const GMOS_OWNED_METADATA_KEYS = [
+  GMOS_METADATA_REFERENCE_MARKER,
   "actionPolicyKind",
+  "annealing",
+  "archive",
+  "clusterKey",
+  "consolidatedInto",
+  "consolidationSummary",
+  "dossier",
+  "dossierFor",
+  "dossierInputKey",
+  "dossierKind",
+  "dossierSource",
   "entityMentions",
   "entityResolution",
+  "hostContentHash",
+  "hostImportKey",
+  "hostImportSourceType",
+  "hostMemoryId",
+  "hostMemoryKind",
+  "hostSnapshotImport",
+  "hostSourceUpdatedAt",
+  "importKey",
+  "importSource",
+  "importSourceOriginalId",
+  "lowLevelApi",
+  "lowLevelUpdatedAt",
+  "procedureDistillation",
+  "relatedMemoryIds",
+  "restore",
+  "sessionDistillation",
+  "sessionDistillationEvidenceId",
+  "sessionDistillationKey",
+  "sessionEvidenceCount",
+  "sessionEvidenceIds",
+  "sourceBeliefIds",
+  "sourceEvidenceId",
+  "sourceFileHash",
+  "sourceIndex",
+  "sourceMemoryIds",
   "sourceMetadata",
+  "sourceRole",
+  "sourceTrajectoryIds",
+  "sourceTrust",
+  "supersededBy",
   "subjectAliases",
+  "turnEvidenceId",
+  "turnMemory",
+  "usedMemoryIds",
+  "windowEvidenceIds",
+  "worldBeliefObject",
+  "worldBeliefPredicate",
+  "worldBeliefSubject",
 ] as const;
 const CREDENTIAL_KEY_PATTERN =
   "api[\\s_.-]?key|access[\\s_.-]?token|refresh[\\s_.-]?token|id[\\s_.-]?token|client[\\s_.-]?secret|token|password|secret|auth(?:entication)?(?:[\\s_.-]?token)?|authorization|cookies?|credentials?(?:[\\s_.-]?id)?|session(?:[\\s_.-]?(?:id|token))?";
@@ -199,17 +263,615 @@ export function classifyPayloadSensitivity(value: unknown): Sensitivity {
   return classifyPayloadValue(value, undefined, new WeakSet());
 }
 
+function classifyEvidenceValues(values: unknown[]): Sensitivity {
+  return values.reduce<Sensitivity>(
+    (sensitivity, value) =>
+      maxSensitivity(sensitivity, classifyPayloadSensitivity(value)),
+    "normal",
+  );
+}
+
+function identityValueSensitivity(value: unknown): Sensitivity {
+  if (value === undefined || value === null) return "normal";
+  if (typeof value !== "string") return classifyPayloadSensitivity(value);
+  if (IDENTITY_CREDENTIAL_LABEL.test(value)) return "secret_like";
+  return classifySensitivity(value);
+}
+
+function identityFieldSensitivity(
+  key: string,
+  value: unknown,
+  strictIdentityKeys: boolean,
+): Sensitivity {
+  if (value === undefined) return "normal";
+  const valueSensitivity = identityValueSensitivity(value);
+  return strictIdentityKeys
+    ? maxSensitivity(classifyMetadataKeySensitivity(key), valueSensitivity)
+    : valueSensitivity;
+}
+
+function internalReferenceSensitivity(value: unknown): Sensitivity {
+  if (value === undefined || value === null) return "normal";
+  if (typeof value !== "string") return classifyPayloadSensitivity(value);
+  const redacted = redactForReport(value);
+  if (redacted !== value) return classifySensitivity(value);
+  return IDENTITY_CREDENTIAL_LABEL.test(value) ? "secret_like" : "normal";
+}
+
+function evidenceIdentityHash(kind: string, values: unknown[]): string {
+  return createHash("sha256")
+    .update(JSON.stringify(["gmos.evidence_identity.v2", kind, ...values]), "utf8")
+    .digest("hex");
+}
+
+export function conversationMessageEvidenceEventKey(input: {
+  profileId: string;
+  conversationId?: string | null | undefined;
+  messageId: string;
+  createdAt: string;
+}): string {
+  return `conversation.message:v2:${evidenceIdentityHash("conversation.message", [
+    input.profileId,
+    input.conversationId ?? null,
+    input.messageId,
+    input.createdAt,
+  ])}`;
+}
+
+export function sessionDistillationEvidenceEventKey(input: {
+  profileId: string;
+  eventTime: string;
+  evidenceIds: readonly string[];
+  sessionId?: string | null | undefined;
+  conversationId?: string | null | undefined;
+}): string {
+  return `conversation.session_distillation:v2:${evidenceIdentityHash(
+    "conversation.session_distillation",
+    [
+      input.profileId,
+      input.sessionId ?? null,
+      input.conversationId ?? null,
+      input.eventTime,
+      input.evidenceIds,
+    ],
+  )}`;
+}
+
+interface CanonicalEvidenceIdentity {
+  kind: "conversation.message" | "conversation.session_distillation";
+  sensitivity: Sensitivity;
+}
+
+function canonicalConversationEvidenceKind(
+  event: EvidenceEvent,
+): CanonicalEvidenceIdentity["kind"] | null {
+  const payload = event.payload;
+  const conversationMetadata = payload.metadata;
+  const isConversationMessage =
+    event.sourceType === "conversation.message" &&
+    ["system", "user", "assistant", "tool"].includes(String(payload.role)) &&
+    (payload.privacyMode === "normal" || payload.privacyMode === "incognito") &&
+    ["user", "agent", "external"].includes(String(payload.sourceTrust)) &&
+    (conversationMetadata === undefined ||
+      (!!conversationMetadata && typeof conversationMetadata === "object" &&
+        !Array.isArray(conversationMetadata)));
+  if (isConversationMessage && typeof payload.messageId === "string") {
+    return "conversation.message";
+  }
+  const isSessionDistillation =
+    event.sourceType === "conversation.session_distillation" &&
+    payload.purpose === "session_distillation" &&
+    payload.eventTime === event.createdAt &&
+    Array.isArray(payload.evidenceIds) && payload.evidenceIds.every((id) => typeof id === "string") &&
+    (payload.sessionId === undefined || typeof payload.sessionId === "string") &&
+    (payload.conversationId === undefined || typeof payload.conversationId === "string");
+  return isSessionDistillation ? "conversation.session_distillation" : null;
+}
+
+function publicConversationEvidenceKind(
+  event: EvidenceEvent,
+): CanonicalEvidenceIdentity["kind"] | null {
+  if (
+    event.sourceType.startsWith("conversation.session_distillation") ||
+    event.eventKey.startsWith("conversation.session_distillation:")
+  ) {
+    return "conversation.session_distillation";
+  }
+  if (
+    event.sourceType.startsWith("conversation.") ||
+    event.eventKey.startsWith("conversation.message:") ||
+    event.sourceUri?.startsWith("conversation:")
+  ) {
+    return "conversation.message";
+  }
+  return null;
+}
+
+function conversationIdForEvidence(event: EvidenceEvent): string | null {
+  return event.sourceUri?.startsWith("conversation:")
+    ? event.sourceUri.slice("conversation:".length)
+    : null;
+}
+
+export function canonicalEvidenceEventKeyForProfile(
+  event: EvidenceEvent,
+  profileId: string,
+): string | null {
+  const kind = canonicalConversationEvidenceKind(event);
+  if (kind === "conversation.message") {
+    return conversationMessageEvidenceEventKey({
+      profileId,
+      conversationId: conversationIdForEvidence(event),
+      messageId: String(event.payload.messageId),
+      createdAt: event.createdAt,
+    });
+  }
+  if (kind === "conversation.session_distillation") {
+    return sessionDistillationEvidenceEventKey({
+      profileId,
+      eventTime: String(event.payload.eventTime),
+      evidenceIds: event.payload.evidenceIds as string[],
+      sessionId: typeof event.payload.sessionId === "string" ? event.payload.sessionId : null,
+      conversationId: typeof event.payload.conversationId === "string"
+        ? event.payload.conversationId
+        : null,
+    });
+  }
+  return null;
+}
+
+function legacyCanonicalEvidenceEventKey(event: EvidenceEvent): string | null {
+  const kind = canonicalConversationEvidenceKind(event);
+  if (kind === "conversation.message") {
+    return [
+      "conversation.message",
+      event.profileId,
+      conversationIdForEvidence(event) ?? "conversation",
+      event.payload.messageId,
+      event.createdAt,
+    ].join(":");
+  }
+  if (kind !== "conversation.session_distillation") return null;
+  const payload = event.payload;
+  const sessionIdentity = typeof payload.sessionId === "string" && payload.sessionId.length > 0
+    ? payload.sessionId
+    : typeof payload.conversationId === "string" && payload.conversationId.length > 0
+      ? payload.conversationId
+      : "conversation";
+  const prefix = `conversation.session_distillation:${event.profileId}:${sessionIdentity}:`;
+  const suffix = event.eventKey.startsWith(prefix) ? event.eventKey.slice(prefix.length) : "";
+  return /^[a-f0-9]{24}$/u.test(suffix) ? `${prefix}${suffix}` : null;
+}
+
+function canonicalEvidenceIdentity(
+  event: EvidenceEvent,
+  strictIdentityKeys: boolean,
+): CanonicalEvidenceIdentity | null {
+  const kind = canonicalConversationEvidenceKind(event);
+  if (!kind) return null;
+  const canonicalKey = canonicalEvidenceEventKeyForProfile(event, event.profileId);
+  const legacyKey = legacyCanonicalEvidenceEventKey(event);
+  const legacyDefaultProfileKey = kind === "conversation.message"
+    ? [
+        "conversation.message",
+        "default",
+        conversationIdForEvidence(event) ?? "conversation",
+        event.payload.messageId,
+        event.createdAt,
+      ].join(":")
+    : null;
+  if (
+    event.eventKey !== canonicalKey && event.eventKey !== legacyKey &&
+    event.eventKey !== legacyDefaultProfileKey
+  ) {
+    return null;
+  }
+  const identityFields = kind === "conversation.message"
+    ? [
+        ["profileId", event.profileId],
+        ["conversationId", conversationIdForEvidence(event)],
+        ["messageId", event.payload.messageId],
+      ]
+    : [
+        ["profileId", event.profileId],
+        ["sourceUri", event.sourceUri],
+        ["sessionId", event.payload.sessionId],
+        ["conversationId", event.payload.conversationId],
+        ["evidenceIds", event.payload.evidenceIds],
+      ];
+  return {
+    kind,
+    sensitivity: identityFields.reduce<Sensitivity>(
+      (sensitivity, [key, value]) =>
+        maxSensitivity(
+          sensitivity,
+          identityFieldSensitivity(String(key), value, strictIdentityKeys),
+        ),
+      "normal",
+    ),
+  };
+}
+
+const MEMORY_VERSION_SNAPSHOT_KINDS: ReadonlySet<string> = new Set([
+  "fact",
+  "preference",
+  "boundary",
+  "procedure",
+  "project",
+  "person",
+  "task_trajectory",
+]);
+const MEMORY_VERSION_SNAPSHOT_STATUSES: ReadonlySet<string> = new Set([
+  "active",
+  "dormant",
+  "archived",
+]);
+
+function isMemoryVersionSnapshot(value: unknown): value is MemoryVersionSnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const snapshot = value as Record<string, unknown>;
+  return (
+    typeof snapshot.memoryId === "string" &&
+    typeof snapshot.profileId === "string" &&
+    typeof snapshot.kind === "string" && MEMORY_VERSION_SNAPSHOT_KINDS.has(snapshot.kind) &&
+    typeof snapshot.scope === "string" &&
+    typeof snapshot.content === "string" &&
+    (snapshot.sensitivity === "normal" || snapshot.sensitivity === "sensitive" ||
+      snapshot.sensitivity === "secret_like") &&
+    typeof snapshot.status === "string" && MEMORY_VERSION_SNAPSHOT_STATUSES.has(snapshot.status) &&
+    typeof snapshot.confidence === "number" && Number.isFinite(snapshot.confidence) &&
+    typeof snapshot.recallCount === "number" && Number.isFinite(snapshot.recallCount) &&
+    (snapshot.lastRecalledAt === undefined || snapshot.lastRecalledAt === null ||
+      typeof snapshot.lastRecalledAt === "string") &&
+    typeof snapshot.reinforcement === "number" && Number.isFinite(snapshot.reinforcement) &&
+    (snapshot.sourceEventId === undefined || snapshot.sourceEventId === null ||
+      typeof snapshot.sourceEventId === "string") &&
+    !!snapshot.metadata && typeof snapshot.metadata === "object" && !Array.isArray(snapshot.metadata) &&
+    typeof snapshot.createdAt === "string" &&
+    typeof snapshot.updatedAt === "string"
+  );
+}
+
+function memoryVersionSnapshotSensitivity(
+  value: unknown,
+  strictIdentityKeys: boolean,
+): Sensitivity | null {
+  if (!isMemoryVersionSnapshot(value)) return null;
+  const snapshot = value as MemoryVersionSnapshot & Record<string, unknown>;
+  const knownSensitivity = classifyMemoryLikeSensitivity({
+    id: snapshot.memoryId,
+    profileId: snapshot.profileId,
+    kind: snapshot.kind,
+    scope: snapshot.scope,
+    content: snapshot.content,
+    sensitivity: snapshot.sensitivity,
+    sourceEventId: snapshot.sourceEventId,
+    metadata: snapshot.metadata,
+    createdAt: snapshot.createdAt,
+    updatedAt: snapshot.updatedAt,
+  }, strictIdentityKeys);
+  const {
+    memoryId: _memoryId,
+    profileId: _profileId,
+    kind: _kind,
+    scope: _scope,
+    content: _content,
+    sensitivity: _sensitivity,
+    status,
+    confidence,
+    recallCount,
+    lastRecalledAt,
+    reinforcement,
+    sourceEventId: _sourceEventId,
+    metadata: _metadata,
+    createdAt: _createdAt,
+    updatedAt: _updatedAt,
+    ...unclassifiedFields
+  } = snapshot;
+  return maxSensitivity(
+    maxSensitivity(
+      knownSensitivity,
+      classifyEvidenceValues([status, confidence, recallCount, lastRecalledAt, reinforcement]),
+    ),
+    classifyPayloadSensitivity(unclassifiedFields),
+  );
+}
+
+function classifyStructuredMemorySnapshots(
+  input: Record<string, unknown>,
+  strictIdentityKeys: boolean,
+): {
+  payload: Record<string, unknown>;
+  sensitivity: Sensitivity;
+} {
+  const payload = { ...input };
+  let sensitivity: Sensitivity = "normal";
+  const snapshotArrays = gmosEvidenceReferenceShapeOf(input)?.snapshotArrays ?? [];
+  for (const key of snapshotArrays) {
+    if (!Array.isArray(input[key])) continue;
+    const unstructured: unknown[] = [];
+    for (const value of input[key]) {
+      const snapshotSensitivity = memoryVersionSnapshotSensitivity(value, strictIdentityKeys);
+      if (snapshotSensitivity === null) unstructured.push(value);
+      else sensitivity = maxSensitivity(sensitivity, snapshotSensitivity);
+    }
+    if (unstructured.length > 0) payload[key] = unstructured;
+    else delete payload[key];
+  }
+  return { payload, sensitivity };
+}
+
+export function classifyEvidenceSensitivity(
+  event: EvidenceEvent,
+  options: { strictIdentityKeys?: boolean | undefined } = {},
+): Sensitivity {
+  const strictIdentityKeys = options.strictIdentityKeys === true;
+  const canonicalIdentity = canonicalEvidenceIdentity(event, strictIdentityKeys);
+  let identitySensitivity = canonicalIdentity?.sensitivity ?? classifySensitivity(event.eventKey);
+  let classifiedPayload = event.payload;
+  if (canonicalIdentity?.kind === "conversation.message") {
+    const metadata = event.payload.metadata;
+    if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+      const { sessionId, sessionKey, ...remainingMetadata } = metadata as Record<string, unknown>;
+      const { messageId: _messageId, ...remainingPayload } = event.payload;
+      classifiedPayload = { ...remainingPayload, metadata: remainingMetadata };
+      identitySensitivity = [["sessionId", sessionId], ["sessionKey", sessionKey]].reduce<Sensitivity>(
+        (sensitivity, [key, value]) => value === undefined
+          ? sensitivity
+          : maxSensitivity(
+              sensitivity,
+              identityFieldSensitivity(String(key), value, strictIdentityKeys),
+            ),
+        identitySensitivity,
+      );
+    }
+  } else if (canonicalIdentity?.kind === "conversation.session_distillation") {
+    const {
+      sessionId: _sessionId,
+      conversationId: _conversationId,
+      evidenceIds: _evidenceIds,
+      ...remainingPayload
+    } = event.payload;
+    classifiedPayload = remainingPayload;
+  }
+  const structuredSnapshots = classifyStructuredMemorySnapshots(
+    classifiedPayload,
+    strictIdentityKeys,
+  );
+  classifiedPayload = structuredSnapshots.payload;
+  const declaredSensitivity = event.sensitivity === "normal" || event.sensitivity === "sensitive" ||
+      event.sensitivity === "secret_like"
+    ? event.sensitivity
+    : "secret_like";
+  const fieldSensitivity = classifyEvidenceValues(
+    canonicalIdentity
+      ? [event.sensitivity, event.id, event.content, event.createdAt]
+      : [
+          event.sensitivity, event.id, event.profileId, event.eventKey,
+          event.sourceUri, event.content, event.createdAt,
+        ],
+  );
+  const sensitivities: Sensitivity[] = [
+    declaredSensitivity,
+    event.payload.privacyMode === "incognito" ? "secret_like" : "normal",
+    fieldSensitivity,
+    classifySensitivity(event.sourceType),
+    identitySensitivity,
+    structuredSnapshots.sensitivity,
+    classifyPayloadSensitivity(classifiedPayload),
+  ];
+  return sensitivities.reduce(maxSensitivity, "normal");
+}
+
+interface MemorySensitivityFields {
+  id: string;
+  profileId: string;
+  kind: string;
+  scope: string;
+  content: string;
+  sensitivity: unknown;
+  sourceEventId?: string | null | undefined;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function classifyMemoryLikeSensitivity(
+  memory: MemorySensitivityFields,
+  strictIdentityKeys = false,
+): Sensitivity {
+  const declaredSensitivity = memory.sensitivity === "normal" || memory.sensitivity === "sensitive" ||
+      memory.sensitivity === "secret_like"
+    ? memory.sensitivity
+    : "secret_like";
+  let sessionSensitivity: Sensitivity = "normal";
+  let metadata = memory.metadata;
+  const referenceValues: unknown[] = [memory.id, memory.sourceEventId];
+  let referenceFieldSensitivity: Sensitivity = "normal";
+  const addReferenceValue = (
+    key: string,
+    value: unknown,
+    includeKeySensitivity = true,
+  ): void => {
+    referenceValues.push(value);
+    if (strictIdentityKeys && includeKeySensitivity && value !== undefined) {
+      referenceFieldSensitivity = maxSensitivity(
+        referenceFieldSensitivity,
+        classifyMetadataKeySensitivity(key),
+      );
+    }
+  };
+  if (
+    hasGmosMetadataReferenceSchema(
+      metadata,
+      GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+    )
+  ) {
+    const sourceMetadata = metadata.sourceMetadata;
+    if (sourceMetadata && typeof sourceMetadata === "object" && !Array.isArray(sourceMetadata)) {
+      const { sessionId, sessionKey, ...remainingSourceMetadata } =
+        sourceMetadata as Record<string, unknown>;
+      for (const [key, value] of [["sessionId", sessionId], ["sessionKey", sessionKey]] as const) {
+        if (value === undefined) continue;
+        sessionSensitivity = maxSensitivity(
+          sessionSensitivity,
+          identityFieldSensitivity(key, value, strictIdentityKeys),
+        );
+      }
+      metadata = { ...metadata, sourceMetadata: remainingSourceMetadata };
+    }
+    const sessionDistillationIsScalar = typeof metadata.sessionDistillation === "boolean";
+    const sessionEvidenceCountIsValid =
+      typeof metadata.sessionEvidenceCount === "number" &&
+      Number.isInteger(metadata.sessionEvidenceCount) &&
+      metadata.sessionEvidenceCount >= 0;
+    addReferenceValue("sessionDistillation", metadata.sessionDistillation, false);
+    addReferenceValue("sessionEvidenceCount", metadata.sessionEvidenceCount, false);
+    if (sessionDistillationIsScalar || sessionEvidenceCountIsValid) {
+      const scalarSessionMetadata = { ...metadata };
+      if (sessionDistillationIsScalar) delete scalarSessionMetadata.sessionDistillation;
+      if (sessionEvidenceCountIsValid) delete scalarSessionMetadata.sessionEvidenceCount;
+      metadata = scalarSessionMetadata;
+    }
+    const {
+      sourceEvidenceId,
+      turnEvidenceId,
+      windowEvidenceIds,
+      sessionDistillationKey,
+      sessionDistillationEvidenceId,
+      sessionEvidenceIds,
+      ...metadataWithoutEvidenceReferences
+    } = metadata;
+    addReferenceValue("sourceEvidenceId", sourceEvidenceId);
+    addReferenceValue("turnEvidenceId", turnEvidenceId);
+    addReferenceValue("windowEvidenceIds", windowEvidenceIds);
+    addReferenceValue("sessionDistillationKey", sessionDistillationKey);
+    addReferenceValue("sessionDistillationEvidenceId", sessionDistillationEvidenceId);
+    addReferenceValue("sessionEvidenceIds", sessionEvidenceIds);
+    metadata = metadataWithoutEvidenceReferences;
+    if (
+      metadata.annealing && typeof metadata.annealing === "object" &&
+      !Array.isArray(metadata.annealing)
+    ) {
+      const { sourceEventId, ...annealing } = metadata.annealing as Record<string, unknown>;
+      addReferenceValue("sourceEventId", sourceEventId);
+      metadata = { ...metadata, annealing };
+    }
+  }
+  const referenceSensitivity = referenceValues.reduce<Sensitivity>(
+    (sensitivity, value) => maxSensitivity(sensitivity, internalReferenceSensitivity(value)),
+    referenceFieldSensitivity,
+  );
+  const sensitivities: Sensitivity[] = [
+    declaredSensitivity,
+    classifyEvidenceValues([
+      memory.sensitivity, memory.profileId, memory.kind, memory.scope,
+      memory.content, memory.createdAt, memory.updatedAt,
+    ]),
+    classifyPayloadSensitivity(metadata),
+    sessionSensitivity,
+    referenceSensitivity,
+  ];
+  return sensitivities.reduce(maxSensitivity, "normal");
+}
+
+export function classifyMemorySensitivity(
+  memory: MemoryRecord,
+  options: { strictIdentityKeys?: boolean | undefined } = {},
+): Sensitivity {
+  return classifyMemoryLikeSensitivity(memory, options.strictIdentityKeys === true);
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+    : [];
+}
+
+export function memoryEvidenceReferenceIds(
+  memory: Pick<MemoryRecord, "sourceEventId" | "metadata">,
+): string[] {
+  const metadata = memory.metadata;
+  const ids = memory.sourceEventId ? [memory.sourceEventId] : [];
+  if (
+    !hasGmosMetadataReferenceSchema(
+      metadata,
+      GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+    )
+  ) {
+    return ids;
+  }
+  const shape = GMOS_METADATA_REFERENCE_SHAPES[GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage];
+  for (const key of shape.evidenceIdFields ?? []) {
+    const value = metadata[key];
+    if (typeof value === "string" && value.length > 0) ids.push(value);
+  }
+  for (const key of shape.evidenceIdArrays ?? []) {
+    for (const id of stringArray(metadata[key])) ids.push(id);
+  }
+  return [...new Set(ids)];
+}
+
+function publicEvidenceEventKey(
+  event: EvidenceEvent,
+  kind: CanonicalEvidenceIdentity["kind"],
+): string {
+  const suffix = evidenceIdentityHash("public", [event.id, event.eventKey]).slice(0, 24);
+  return `${kind}:[redacted_identity]:${suffix}`;
+}
+
 export function sanitizeEvidenceForPublicOutput(evidence: EvidenceEvent): EvidenceEvent {
+  const conversationKind = publicConversationEvidenceKind(evidence);
+  const payload = sanitizePublicPayloadRecord(evidence.payload);
+  const sensitivity = classifyEvidenceSensitivity(evidence);
+  const validDeclaredSensitivity = evidence.sensitivity === "normal" ||
+    evidence.sensitivity === "sensitive" || evidence.sensitivity === "secret_like";
+  if (!validDeclaredSensitivity) {
+    return {
+      ...evidence,
+      id: "[redacted_secret]",
+      eventKey: "[redacted_secret]",
+      profileId: "[redacted_secret]",
+      sourceType: "other",
+      sourceUri: null,
+      content: "[redacted_secret]",
+      sensitivity: "secret_like",
+      eligibleForLongTermMemory: false,
+      payload: {},
+      createdAt: redactForReport(evidence.createdAt),
+    };
+  }
+  const redactedContent = redactForReport(evidence.content);
+  if (conversationKind === "conversation.message") delete payload.messageId;
+  if (conversationKind === "conversation.session_distillation") {
+    delete payload.conversationId;
+    delete payload.sessionId;
+    const evidenceCount = Array.isArray(payload.evidenceIds)
+      ? payload.evidenceIds.length
+      : typeof payload.evidenceCount === "number"
+        ? payload.evidenceCount
+        : undefined;
+    delete payload.evidenceIds;
+    if (evidenceCount !== undefined) payload.evidenceCount = evidenceCount;
+  }
   return {
     ...evidence,
     id: redactForReport(evidence.id),
-    eventKey: redactForReport(evidence.eventKey),
+    eventKey: conversationKind
+      ? publicEvidenceEventKey(evidence, conversationKind)
+      : redactForReport(evidence.eventKey),
     profileId: redactForReport(evidence.profileId),
     sourceType: safePublicLabel(evidence.sourceType),
-    sensitivity: safePublicSensitivity(evidence.sensitivity),
-    sourceUri: evidence.sourceUri == null ? evidence.sourceUri : redactForReport(evidence.sourceUri),
-    content: redactForReport(evidence.content),
-    payload: sanitizePublicPayloadRecord(evidence.payload),
+    sensitivity,
+    sourceUri: conversationKind
+      ? "conversation:[redacted_identity]"
+      : evidence.sourceUri == null ? evidence.sourceUri : redactForReport(evidence.sourceUri),
+    content: evidence.payload.privacyMode === "incognito"
+      ? "[redacted_secret]"
+      : redactedContent !== evidence.content
+        ? redactedContent
+        : evidence.sensitivity === "secret_like" ? "[redacted_secret]" : evidence.content,
+    payload: evidence.payload.privacyMode === "incognito" ? {} : payload,
   };
 }
 

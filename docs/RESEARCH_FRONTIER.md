@@ -70,30 +70,25 @@ parameter proposals are gym-gated without schema changes.
 
 ## Signal 4 — Memory security becomes architecture: mnemonic sovereignty
 
-The security survey (arXiv:2604.16548) maps a six-phase attack lifecycle
+The security survey (arXiv:2604.16548, v2) maps a six-phase attack lifecycle
 (write injection, store/compress toxin amplification, retrieval reactivation,
 execute-time control hijack, cross-agent propagation, unrecoverable
 forgetting) and defines mnemonic sovereignty: verifiable, recoverable
 governance over what may be written, who may read, when updates are
-authorized, what must remain auditable, and what may be forgotten. It
-enumerates nine governance primitives and finds that NO published
-architecture covers all nine; write-gate validation and post-deletion
-verification are called universal blind spots. SSGM (arXiv:2603.11768) and
-MemGuard (arXiv:2605.28009) reinforce the same direction.
+authorized, what must remain auditable, and what may be forgotten. Its
+Verifiable Memory Governance framework has five criteria: Write
+Authorization, Provenance Visibility, Principal-Scoped Retrieval,
+Rollbackability, and Verified Forgetting. SSGM (arXiv:2603.11768) and MemGuard
+(arXiv:2605.28009) reinforce the same direction.
 
-gmOS position: the two "universal blind spots" are things gmOS already ships
-(observe-time safety gates; forget-residue verification across derived
-indexes, strengthened in M6a). Against the nine primitives: typed writes with
-provenance (yes), compression lineage (yes — consolidation/dossier evidence),
-metadata-bearing storage (yes), cross-substrate deletion verification (yes),
-audit/deletable-state separation (partial), principal-scoped retrieval
-(planned, M8 scoped keys), harness-level governance (partial — host
-boundary), snapshot/versioning for forensic rollback (partial — backups, no
-per-write rollback), confidence annealing against promoted toxins (partial —
-bounded reinforcement, no anneal). Response: Horizon 3 includes a Mnemonic
-Sovereignty milestone that closes the partials and publishes a
-primitive-by-primitive compliance matrix backed by gym gates — the goal is to
-be the first architecture that can check all nine boxes verifiably.
+gmOS position against those five criteria: provenance visibility and verified
+forgetting have strong local substrate support; write authorization is partial
+because source trust and safety gates are not principal authentication;
+principal-scoped retrieval remains partly host-owned; rollbackability covers
+per-memory forensic rollback and profile bundles but not arbitrary complete
+store snapshots at every instant. Response: Horizon 3 publishes a five-criterion
+VMG compliance matrix backed by gym gates, marking each criterion full,
+partial, or host-owned instead of claiming blanket compliance.
 
 ## Signal 5 — Temporal semantics beyond dialogue time
 
@@ -127,8 +122,8 @@ story.
 The field is converging on exactly the properties gmOS chose as invariants —
 provenance, governed writes, verifiable forgetting, white-box evaluation,
 temporal validity. The differentiated next-generation position is not a new
-retrieval trick; it is: (1) the first verifiably sovereign memory
-architecture (all nine governance primitives, gym-gated), (2) experience
-learning with provenance-weighted, approval-gated credit instead of black-box
-RL, and (3) proactive user-model gap exploration for the digital-twin goal.
-Horizon 3 in the roadmap encodes these three bets.
+retrieval trick; it is: (1) verifiable memory governance measured against the
+five VMG criteria, (2) experience learning with provenance-weighted,
+approval-gated credit instead of black-box RL, and (3) proactive user-model gap
+exploration for the digital-twin goal. Horizon 3 in the roadmap encodes these
+three bets.

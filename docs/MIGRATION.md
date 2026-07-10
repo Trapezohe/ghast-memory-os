@@ -24,13 +24,22 @@ import { loadHostMemorySnapshotsIntoStore } from "@ghast/memory/host";
 await loadHostMemorySnapshotsIntoStore({
   store,
   profileId: "local-user",
-  snapshots,
+  memories: snapshots,
 });
 ```
 
 The importer skips person and secret-like snapshots by default before they enter
-the gmOS store. Repeated imports are idempotent when the host provides stable
-metadata keys.
+the gmOS store. Sensitivity is inferred from both `scope` and `content`; an
+explicit sensitivity may raise that result but cannot downgrade it. Read paths
+repeat the scope check so rows written by older alpha builds fail closed.
+Imported rows are explicitly marked as external-trust runtime lineage and
+host-snapshot imports. Repeated imports and stale-import archival use only that
+marker-owned identity; an unrelated memory with matching `hostImportKey` or
+`hostSnapshotImport` fields cannot block or be archived by a sync. Existing
+current-schema evidence is reusable only when its owner, deterministic event key,
+source, content, sensitivity, eligibility, and schema-owned payload identity all
+match the snapshot. Caller metadata is preserved after public sanitization,
+except for reserved gmOS control fields.
 
 ## Profile Bundles, Backup, And Restore
 
@@ -52,6 +61,62 @@ move because safe mode intentionally omits archived, sensitive, and person
 records. Use `--mode full` only for explicit trusted migrations with appropriate
 handling of local files.
 
+When `includeSensitive` is false, bundle export and parsing use a stricter
+identity-key check than public evidence inspection. Canonical session identities
+such as `sessionId`, `sessionKey`, and `sessionDistillationKey` cannot enter a
+SAFE document merely because their surrounding evidence or metadata has a
+recognized gmOS marker. Public evidence APIs keep their separate contract: they
+may return otherwise-safe evidence after redacting canonical identity fields.
+
+New gmOS-owned evidence payloads receive a versioned `_gmosSchema` marker when
+they are created. Only a recognized marker grants gmOS ownership of payload
+references. Unmarked payloads, payloads that merely reuse a gmOS source-type or
+old producer-shaped envelope, and unknown future marker versions are preserved as
+opaque host data. This marker-only boundary avoids an impossible and destructive
+guess between old internal rows and host events that happen to share the same
+shape. Restore batch-resolves evidence identities, topologically orders only
+owned session dependencies, rejects owned cycles, and rejects any incoming ID
+already owned by another profile before writing.
+
+Evidence payloads created by builds before this marker contract remain readable
+and byte-structurally portable, but their internal IDs are not rewritten during a
+cross-profile restore. Keep the original source database or restore to the same
+profile when forensic rollback/provenance references from those alpha builds must
+remain operational. There is intentionally no general implicit legacy heuristic:
+an automatic guess would risk silently corrupting host-owned payloads. The only
+narrow upgrade adapters are the package's own historical mem0 import, host
+snapshot import, and CLI profile-snapshot envelopes. Those adapters require the
+complete old envelope, exact profile/source/event identity, exact linked evidence,
+and the absence of any marker before atomically backfilling the current markers.
+Missing, extra, mismatched, or cross-profile fields remain opaque.
+
+Within a known marker version, remapping is field-specific. gmOS rewrites only
+the reference fields declared by that schema and preserves unrelated extension
+fields, even when an extension happens to be named `memoryId` or `actions` under
+a schema that does not own those fields.
+
+Reference-bearing memory, world-belief, snapshot, and failure metadata now uses
+the composable `_gmosMetadataSchemas` marker. Each recognized capability owns
+only the fields in its registry shape. Unmarked metadata, unknown capabilities,
+and unrelated fields on a marked record remain opaque host data: backup/restore
+preserves them but does not remap, validate, or use them as lifecycle, retention,
+provenance, deduplication, or failure-control signals. Runtime `add()`/`update()`
+strips this reserved marker from caller metadata; hosts using the lower-level
+`MemoryStore` API may opt into a known capability explicitly.
+
+Runtime and host-import boundaries also remove known gmOS control fields from
+caller metadata before adding their own capabilities. A caller cannot inherit an
+existing marker and replace annealing, source trust, provenance links, lifecycle
+state, distillation identity, or import ownership during `add()`, `update()`, or
+extractor writes. Structured temporal fields such as `eventTime` remain ordinary
+validated memory metadata.
+
+The same authority check applies outside backup. Forget redaction, rollback,
+evolution revert, provenance credit, maintenance statistics, distillation
+deduplication, and lifecycle explanation interpret only recognized evidence and
+metadata schemas. Pre-marker alpha fields stay readable and portable, but are
+not executable history or control-plane state.
+
 Portable bundle encryption is file-level, not SQLite encryption:
 
 ```bash
@@ -68,6 +133,51 @@ gmos import --db ./new-gmos.db --profile local \
 itself. Encrypted bundle envelopes use AES-256-GCM with a random 16-byte salt,
 12-byte nonce, and a 32-byte key derived by scrypt (`N=16384`, `r=8`, `p=1`).
 Wrong passphrases and tampering fail closed before restore.
+
+## Evidence Identity V2
+
+New conversation-message and session-distillation evidence keys use a
+profile-bound SHA-256 structured identity. This removes delimiter ambiguity and
+prevents identical message identifiers in different profiles from colliding.
+Existing legacy keys remain readable and are reused when a profile actually
+contains them; version-aware negative caching avoids repeated legacy table probes
+while invalidating on same-store restores, legacy inserts, and commits from other
+SQLite connections, including changes between messages in one ingest call.
+For recognized marker-bearing conversation and session rows, cross-profile
+restores canonicalize both legacy and v2 keys and merge semantically identical
+incoming evidence before memory references are written. Unmarked pre-contract
+rows remain opaque and receive stable restore identities instead.
+
+Restore obtains an immediate SQLite write lock before reading target identities
+or owner rows. Identity resolution, five-table owner/conflict checks, core rows,
+derived vectors, and association rebuild commit atomically. Calling restore from
+inside an existing SQLite transaction fails closed because a nested savepoint
+cannot upgrade an outer deferred transaction to this guarantee.
+If vector or association reconstruction fails, the complete profile restore is
+rolled back. Restoring an archived memory also removes stale lifecycle and
+supersession capabilities instead of leaving active memory marked as archived or
+superseded.
+
+For conversation messages, a blank or missing `messageId` now receives a fresh
+identifier and a blank or missing `createdAt` uses observation time. A non-empty
+invalid timestamp fails immediately. Hosts do not need to rewrite old databases
+or bundles before upgrading.
+
+Public session-summary memory metadata now reports `sessionEvidenceCount`
+instead of exposing `sessionEvidenceIds`, `sessionDistillationEvidenceId`, or the
+internal deduplication key. Full provenance remains available to trusted profile
+backup/restore through the session evidence event.
+
+Custom extractor and session-distiller hooks no longer receive raw conversation
+route identifiers. Extractor events omit `conversationId` and `messageId`,
+route metadata including `sourceId` is removed, and the evidence
+`eventKey`/`sourceUri` are replaced
+with a call-local marker and `null`. Session-distiller context similarly omits
+`conversationId`, `sessionId`, and `sourceUri` and uses call-local evidence
+aliases. If a hook previously used these fields to branch, move that grouping
+logic to the host before ingest or derive the distinction from message content;
+gmOS still performs profile/session grouping internally before invoking the
+hook.
 
 ## mem0 Import
 
@@ -86,15 +196,47 @@ Mapping is structural only:
 | no explicit supported kind | `fact` |
 | `metadata.scope` | scope |
 | `id` | `metadata.importSourceOriginalId` |
-| source file bytes | `sourceFileHash` used in evidence payload and stable event keys |
+| source file bytes | `sourceFileHash` used in evidence payload and the import revision |
 
 mem0 extraction provenance is not gmOS evidence. Imported records are labeled
 `metadata.importSource = "mem0"` and `provenance = "low_level_import"`. The
 evidence event records that the import happened and links the source file hash;
 it does not claim the original mem0 extraction was observed by gmOS. Re-imports
-are idempotent by `sourceFileHash + recordIndex`. Secret-like records are
-rejected, and person-routed records require the same explicit person opt-in as
-low-level `add()`.
+use the normalized source record `id` as the stable identity; source-file hash
+and record index belong to the revision. Records without a non-empty explicit
+`id` are skipped as `invalid_record`: synthesizing an id from array position
+would either merge unrelated exports or let reordered files bypass an archived
+identity. A v14 database whose legacy original id equals its record index is
+rejected during upgrade because the old alpha format cannot prove whether that
+id was explicit or synthesized; re-export those records with stable ids before
+retrying. Import
+metadata cannot supply `_gmosMetadataSchemas`, provenance links, annealing, or
+other gmOS control fields; the importer assigns external source trust itself.
+An incompatible host event occupying a deterministic import key fails closed,
+while a compatible current-marker evidence-only partial import resumes by
+writing the missing memory. A legacy evidence-only partial cannot be upgraded
+atomically through the generic store contract, so it fails before any memory
+write instead of creating a mixed current-memory/legacy-evidence state. Matching
+the schema marker alone is insufficient: the importer also
+checks the evidence owner, event key, source, content, sensitivity, eligibility,
+and schema-owned import identity before reuse. Secret-like records are rejected,
+and person-routed records require the same explicit person opt-in as low-level
+`add()`.
+
+SQLite imports are batch-atomic and require a store implementation of the narrow
+atomic import capability. Evidence, memory, vector/association projections, and
+the local identity claim either commit together or all roll back. A custom store
+without that capability receives a capability error; gmOS does not fall back to
+separate `recordEvidence()` and `addMemory()` calls.
+
+Databases produced by pre-v15 alpha importers are upgraded on the first writable
+open. gmOS accepts only a complete, owner-bound historical memory/evidence pair,
+rewrites its event and metadata identity to the canonical v2 form, and builds the
+local HMAC claim in the same immediate transaction. Compatible duplicate or old
+host revisions are deterministically archived through the full lifecycle path;
+conflicting or ambiguous bindings fail the migration before its v15 marker or
+identity secret is committed. A look-alike host row never becomes executable
+import state.
 
 ## Conversation Log Import
 
@@ -246,6 +388,28 @@ include the table only as rebuildable derived data; hosts should treat it like
 associations or FTS/vector indexes and prefer an `explore` run after restore.
 Read-audit snapshots include the table so `prepareTurn()` curiosity emission
 stays read-pure.
+
+## SQLite Schema v15
+
+Schema v15 adds the local-only `gmos_import_identities` ledger and
+`gmos_store_secrets` identity key. The ledger binds one stable host or mem0
+source identity to its current revision, evidence, memory, binding digest, and
+lifecycle disposition. It contains only domain-separated HMAC digests, never raw
+source URIs, source ids, or memory content. Composite foreign keys prevent a
+claim from crossing profile ownership.
+
+The migration and import writers use `BEGIN IMMEDIATE`, so separate processes
+cannot create two memories for the same identity. Active and dormant bindings
+are reused. Host snapshot disappearance records `host_import_stale` and can
+restore the same id when the exact revision returns. Manual, safety, retention,
+consolidation, and forget transitions set a blocking disposition; changing the
+source file or revision does not create a replacement for a blocked stable
+identity.
+
+Profile backups do not serialize either operational table. FULL trusted restore
+revalidates complete import pairs and derives new target-local HMAC values inside
+the restore transaction. SAFE restore strips host/mem0 authority markers from
+both memory metadata and evidence payloads and creates no import claim.
 
 ## M3 Experience Learning
 

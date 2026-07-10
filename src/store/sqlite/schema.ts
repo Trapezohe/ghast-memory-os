@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-export const GMOS_SQLITE_SCHEMA_VERSION = 14;
+export const GMOS_SQLITE_SCHEMA_VERSION = 15;
 
 const READ_AUDIT_REVISION_TABLES = [
   "gmos_evidence_events",
@@ -334,6 +334,40 @@ export function ensureSqliteSchema(db: Database.Database): void {
       ON gmos_memories(profile_id, kind, status, updated_at);
     CREATE INDEX IF NOT EXISTS idx_gmos_memories_profile_status_time
       ON gmos_memories(profile_id, status, updated_at);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_gmos_memories_profile_id
+      ON gmos_memories(profile_id, id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_gmos_evidence_profile_id
+      ON gmos_evidence_events(profile_id, id);
+
+    CREATE TABLE IF NOT EXISTS gmos_store_secrets (
+      secret_name TEXT PRIMARY KEY,
+      secret_value BLOB NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS gmos_import_identities (
+      profile_id TEXT NOT NULL,
+      importer_schema TEXT NOT NULL CHECK(importer_schema IN ('gmos.mem0.v2', 'gmos.host_snapshot.v2')),
+      source_identity_digest TEXT NOT NULL,
+      source_group_digest TEXT,
+      revision_digest TEXT NOT NULL,
+      binding_digest TEXT NOT NULL,
+      memory_id TEXT NOT NULL,
+      evidence_id TEXT NOT NULL,
+      disposition TEXT NOT NULL CHECK(disposition IN ('active', 'dormant', 'host_stale', 'blocked')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(profile_id, importer_schema, source_identity_digest),
+      UNIQUE(profile_id, memory_id),
+      UNIQUE(profile_id, evidence_id),
+      FOREIGN KEY(profile_id, memory_id)
+        REFERENCES gmos_memories(profile_id, id) ON DELETE CASCADE,
+      FOREIGN KEY(profile_id, evidence_id)
+        REFERENCES gmos_evidence_events(profile_id, id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_gmos_import_identities_group
+      ON gmos_import_identities(profile_id, importer_schema, source_group_digest, disposition);
 
     CREATE TABLE IF NOT EXISTS gmos_world_beliefs (
       id TEXT PRIMARY KEY,

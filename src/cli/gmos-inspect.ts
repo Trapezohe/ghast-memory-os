@@ -557,7 +557,11 @@ async function main(): Promise<void> {
         }
         return;
       }
-      const evidence = await memory.listEvidence({ profileId, limit: evidenceLimit });
+      const evidence = await memory.listEvidence({
+        profileId,
+        limit: evidenceLimit,
+        includeSensitive: true,
+      });
       const activeMemories = await memory.list({ profileId, status: "active" });
       const dormantMemories = await memory.list({ profileId, status: "dormant" });
       const archivedMemories = await memory.list({ profileId, status: "archived" });

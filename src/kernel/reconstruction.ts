@@ -7,6 +7,11 @@ import {
 } from "./associations.js";
 import type { AssociationCue } from "./associations.js";
 import {
+  GMOS_METADATA_REFERENCE_MARKER,
+  GMOS_METADATA_REFERENCE_SCHEMAS,
+  hasGmosMetadataReferenceSchema,
+} from "./metadata-schema.js";
+import {
   classifySensitivity,
   safePublicInlineField,
   safePublicLabel,
@@ -98,6 +103,14 @@ function normalizedLayerPolicy(
 }
 
 function memoryLayer(memory: MemoryRecord): ReconstructionMemoryLayer {
+  if (
+    !hasGmosMetadataReferenceSchema(
+      memory.metadata,
+      GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+    )
+  ) {
+    return "atom";
+  }
   if (memory.metadata.sessionDistillation === true) return "summary";
   if (memory.metadata.turnMemory === true) return "turn";
   return "atom";
@@ -330,9 +343,14 @@ function publicMemory(
   hideRouteSignals: boolean,
   privateOutputSignalKeys = new Set<string>(),
 ): MemoryRecord {
+  const {
+    [GMOS_METADATA_REFERENCE_MARKER]: _authorityMarker,
+    ...publicMetadata
+  } = memory.metadata;
   const publicRecord = {
     ...memory,
     kind: safePublicLabel(memory.kind) as MemoryRecord["kind"],
+    metadata: publicMetadata,
   };
   if (!hideRouteSignals) return publicRecord;
   return {

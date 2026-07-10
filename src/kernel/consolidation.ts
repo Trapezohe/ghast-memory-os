@@ -3,6 +3,10 @@ import {
   associationCuesForMemory,
   associationTagsForMemory,
 } from "./associations.js";
+import {
+  GMOS_METADATA_REFERENCE_SCHEMAS,
+  hasGmosMetadataReferenceSchema,
+} from "./metadata-schema.js";
 import { classifySensitivity, isPersonRoutedMemory } from "./safety.js";
 import type {
   MemoryConsolidationCandidate,
@@ -167,7 +171,20 @@ function uniqueSorted(values: string[]): string[] {
 }
 
 function metadataHasConsolidationResidue(memory: MemoryRecord): boolean {
-  return Boolean(memory.metadata.consolidationSummary || memory.metadata.consolidatedInto);
+  return (
+    hasGmosMetadataReferenceSchema(
+      memory.metadata,
+      GMOS_METADATA_REFERENCE_SCHEMAS.consolidationSummary,
+    ) ||
+    hasGmosMetadataReferenceSchema(
+      memory.metadata,
+      GMOS_METADATA_REFERENCE_SCHEMAS.consolidationTarget,
+    ) ||
+    hasGmosMetadataReferenceSchema(
+      memory.metadata,
+      GMOS_METADATA_REFERENCE_SCHEMAS.duplicateSupersession,
+    )
+  );
 }
 
 export function memoryCanEnterConsolidation(memory: MemoryRecord): boolean {

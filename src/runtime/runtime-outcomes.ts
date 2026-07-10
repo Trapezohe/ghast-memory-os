@@ -1,4 +1,8 @@
 import { redactForReport } from "../kernel/safety.js";
+import {
+  GMOS_METADATA_REFERENCE_SCHEMAS,
+  markedGmosMetadata,
+} from "../kernel/metadata-schema.js";
 import type {
   CommitOutcomeStoreInput,
   FailureKind,
@@ -102,7 +106,10 @@ export function runtimeFailureForStorage(
       input.additionalSurfaces,
     ),
     createdAt: input.createdAt,
-    metadata: redactRuntimePayloadRecord(input.metadata, classifyRuntimeSensitivity),
+    metadata: markedGmosMetadata(
+      redactRuntimePayloadRecord(input.metadata, classifyRuntimeSensitivity),
+      GMOS_METADATA_REFERENCE_SCHEMAS.failureMemoryLinks,
+    ),
   };
 }
 

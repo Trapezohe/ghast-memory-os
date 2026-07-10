@@ -24,6 +24,12 @@ import path from "node:path";
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { readGmosPackageRoot } from "../kernel/package-info.js";
 import {
+  GMOS_EVIDENCE_PAYLOAD_SCHEMAS,
+  gmosEvidencePayloadSchemaOf,
+  isLegacyProfileSnapshotPointEvidence,
+  markedGmosEvidencePayload,
+} from "../kernel/evidence-schema.js";
+import {
   ingestTranscript,
   runAutopilot,
   type AutopilotReport,
@@ -2196,16 +2202,19 @@ async function runSnapshotCommand(action: string | undefined): Promise<void> {
         sensitivity: "normal",
         eligibleForLongTermMemory: false,
         createdAt,
-        payload: {
-          schema: "gmos.profile_snapshot_point.v1",
-          name,
-          fileName,
-          sha256,
-          bytes: Buffer.byteLength(body, "utf8"),
-          createdAt,
-          bundleSchema: serialized.schema,
-          mode: "full",
-        },
+        payload: markedGmosEvidencePayload(
+          GMOS_EVIDENCE_PAYLOAD_SCHEMAS.profileSnapshotPoint,
+          {
+            schema: "gmos.profile_snapshot_point.v1",
+            name,
+            fileName,
+            sha256,
+            bytes: Buffer.byteLength(body, "utf8"),
+            createdAt,
+            bundleSchema: serialized.schema,
+            mode: "full",
+          },
+        ),
       });
       console.log(JSON.stringify({
         ok: true,
@@ -2230,11 +2239,19 @@ async function runSnapshotCommand(action: string | undefined): Promise<void> {
       });
       console.log(JSON.stringify({
         ok: true,
-        snapshots: snapshots.map((snapshot) => ({
-          id: snapshot.id,
-          createdAt: snapshot.createdAt,
-          ...snapshot.payload,
-        })),
+        snapshots: snapshots
+          .filter(
+            (snapshot) =>
+              gmosEvidencePayloadSchemaOf(snapshot.payload) ===
+                GMOS_EVIDENCE_PAYLOAD_SCHEMAS.profileSnapshotPoint ||
+              isLegacyProfileSnapshotPointEvidence(snapshot),
+          )
+          .map((snapshot) => ({
+            ...snapshot.payload,
+            id: snapshot.id,
+            profileId: snapshot.profileId,
+            createdAt: snapshot.createdAt,
+          })),
       }, null, 2));
       return;
     }

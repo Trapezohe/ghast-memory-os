@@ -17,6 +17,19 @@ import { buildEntityMentions, resolveWorldEntitySubject } from "../kernel/entiti
 import type { EntityResolver } from "../kernel/entities.js";
 import { buildEvidencePathExplanation } from "../kernel/evidence-path.js";
 import {
+  GMOS_EVIDENCE_PAYLOAD_SCHEMAS,
+  gmosEvidencePayloadSchemaOf,
+  gmosEvidenceReferenceShapeOf,
+  markedGmosEvidencePayload,
+} from "../kernel/evidence-schema.js";
+import {
+  GMOS_METADATA_REFERENCE_MARKER,
+  GMOS_METADATA_REFERENCE_SCHEMAS,
+  gmosMetadataReferenceSchemas,
+  hasGmosMetadataReferenceSchema,
+  markedGmosMetadata,
+} from "../kernel/metadata-schema.js";
+import {
   extractMemoryCandidatePlan,
 } from "../kernel/extraction.js";
 import {
@@ -59,11 +72,13 @@ import {
   temporalContextLabel,
 } from "../kernel/temporal-format.js";
 import {
+  conversationMessageEvidenceEventKey,
   isPersonRoutedMemory,
   redactForReport,
   safePublicLabel,
   safePublicInlineField,
   sanitizePublicPayloadRecord,
+  sessionDistillationEvidenceEventKey,
   sourceMetadataSpeakerIsPerson,
 } from "../kernel/safety.js";
 import type {
@@ -103,6 +118,7 @@ import type {
   MemoryConsolidationCluster,
   MemoryConsolidationResult,
   MemoryExtractionCandidate,
+  MemoryExtractionInput,
   MemoryExtractionReport,
   MemoryKind,
   MemoryReadRetrievalOptions,
@@ -115,6 +131,7 @@ import type {
   MemoryDossierCandidate,
   MemoryDossierEntitySnapshot,
   MemoryDossierResult,
+  MemoryAssociationRecord,
   QueryVectorEmbedding,
   MemoryVectorEmbedding,
   MemoryRole,
@@ -168,13 +185,72 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function resolvedEventTime(value: string | undefined, fallback: string): string {
+  if (value === undefined) return fallback;
+  const normalized = value.trim();
+  if (normalized.length === 0) return fallback;
+  if (!Number.isFinite(Date.parse(normalized))) {
+    throw new Error("gmOS host event createdAt must be a valid timestamp");
+  }
+  return normalized;
+}
+
+function publicMemoryMetadata(
+  metadata: Record<string, unknown>,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+  preserveAuthorityMarker = false,
+): Record<string, unknown> {
+  const redacted = redactRuntimePayloadRecord(metadata, classifyRuntimeSensitivity);
+  const output = sanitizePublicPayloadRecord(redacted);
+  if (
+    hasGmosMetadataReferenceSchema(
+      redacted,
+      GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+    ) &&
+    redacted.sessionDistillation === true
+  ) {
+    output.sessionDistillation = true;
+    const evidenceCount = typeof redacted.sessionEvidenceCount === "number"
+      ? redacted.sessionEvidenceCount
+      : Array.isArray(redacted.sessionEvidenceIds)
+        ? redacted.sessionEvidenceIds.length
+        : undefined;
+    if (evidenceCount !== undefined) output.sessionEvidenceCount = evidenceCount;
+  }
+  delete output.sessionDistillationKey;
+  delete output.sessionDistillationEvidenceId;
+  delete output.sessionEvidenceIds;
+  if (preserveAuthorityMarker) {
+    const schemas = gmosMetadataReferenceSchemas(redacted);
+    if (schemas.length > 0) output[GMOS_METADATA_REFERENCE_MARKER] = schemas;
+    else delete output[GMOS_METADATA_REFERENCE_MARKER];
+  } else {
+    delete output[GMOS_METADATA_REFERENCE_MARKER];
+  }
+  return output;
+}
+
 function publicMemoryRecord(
   memory: MemoryRecord,
   classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+  knownSensitivity?: Sensitivity | undefined,
+  preserveAuthorityMarker = false,
 ): MemoryRecord {
+  const sensitivity = knownSensitivity ??
+    runtimeMemorySensitivity(memory, classifyRuntimeSensitivity);
+  if (sensitivity === "secret_like") {
+    return {
+      ...memory,
+      content: "[redacted_secret]",
+      sensitivity,
+      sourceEventId: null,
+      metadata: {},
+    };
+  }
   return {
     ...memory,
     kind: safePublicLabel(memory.kind) as MemoryRecord["kind"],
+    sensitivity,
     sourceEventId: memory.sourceEventId == null
       ? memory.sourceEventId
       : redactRuntimePayloadString(
@@ -182,21 +258,98 @@ function publicMemoryRecord(
           classifyRuntimeSensitivity,
           "metadata",
         ),
-    metadata: redactRuntimePayloadRecord(memory.metadata, classifyRuntimeSensitivity),
+    metadata: publicMemoryMetadata(
+      memory.metadata,
+      classifyRuntimeSensitivity,
+      preserveAuthorityMarker,
+    ),
   };
+}
+
+function runtimeMemorySensitivity(
+  memory: MemoryRecord,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+): Sensitivity {
+  const declared = memory.sensitivity === "normal" || memory.sensitivity === "sensitive" ||
+      memory.sensitivity === "secret_like"
+    ? memory.sensitivity
+    : "secret_like";
+  return maxSensitivity(
+    maxSensitivity(
+      declared,
+      classifyRuntimeSensitivity(memory.content, "content"),
+    ),
+    classifyRuntimeSensitivity(memory.scope, "scope"),
+  );
+}
+
+function runtimeMemoryForRead(
+  memory: MemoryRecord,
+  includeSensitive: boolean | undefined,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+  preserveAuthorityMarker = false,
+): MemoryRecord | null {
+  const sensitivity = runtimeMemorySensitivity(memory, classifyRuntimeSensitivity);
+  if (sensitivity === "secret_like" || (sensitivity === "sensitive" && includeSensitive !== true)) {
+    return null;
+  }
+  return publicMemoryRecord(
+    memory,
+    classifyRuntimeSensitivity,
+    sensitivity,
+    preserveAuthorityMarker,
+  );
+}
+
+function runtimeMemoriesForRead(
+  memories: MemoryRecord[],
+  includeSensitive: boolean | undefined,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+  preserveAuthorityMarker = false,
+): MemoryRecord[] {
+  return memories.flatMap((memory) => {
+    const publicMemory = runtimeMemoryForRead(
+      memory,
+      includeSensitive,
+      classifyRuntimeSensitivity,
+      preserveAuthorityMarker,
+    );
+    return publicMemory ? [publicMemory] : [];
+  });
 }
 
 function profileIdFor(defaultProfileId: string, profileId?: string): string {
   return profileId ?? defaultProfileId;
 }
 
+const CONVERSATION_ROUTE_METADATA_KEYS = [
+  "conversationId",
+  "eventKey",
+  "messageId",
+  "sessionId",
+  "sessionKey",
+  "sourceId",
+  "sourceUri",
+  "windowId",
+] as const;
+
+function withoutConversationRouteMetadata(
+  metadata: Record<string, unknown>,
+): Record<string, unknown> {
+  const output = { ...metadata };
+  for (const key of CONVERSATION_ROUTE_METADATA_KEYS) delete output[key];
+  return output;
+}
+
 function sourceMetadataForEvent(
   event: Extract<HostEvent, { type: "conversation.message" }>,
   classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
 ): Record<string, unknown> {
-  return redactRuntimeSourceMetadataRecord(
-    event.metadata ?? {},
-    classifyRuntimeSensitivity,
+  return withoutConversationRouteMetadata(
+    redactRuntimeSourceMetadataRecord(
+      event.metadata ?? {},
+      classifyRuntimeSensitivity,
+    ),
   );
 }
 
@@ -330,6 +483,14 @@ function normalizeSourceTrust(value: unknown): SourceTrust | undefined {
 }
 
 function sourceTrustFromMemory(memory: MemoryRecord): SourceTrust {
+  if (
+    !hasGmosMetadataReferenceSchema(
+      memory.metadata,
+      GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+    )
+  ) {
+    return "user";
+  }
   const metadataTrust = normalizeSourceTrust(memory.metadata.sourceTrust);
   if (metadataTrust) return metadataTrust;
   const sourceMetadata = memory.metadata.sourceMetadata;
@@ -771,17 +932,16 @@ async function callRetrievalReranker(input: {
   }
 }
 
-function eventKey(event: HostEvent): string {
-  if (event.type === "conversation.message") {
-    return [
-      event.type,
-      event.profileId ?? "default",
-      event.conversationId ?? "conversation",
-      event.messageId ?? randomUUID(),
-      event.createdAt ?? nowIso(),
-    ].join(":");
-  }
-  return [event.type, event.profileId ?? "default", event.createdAt ?? nowIso(), randomUUID()].join(":");
+function legacyConversationMessageEventKey(
+  event: Extract<HostEvent, { type: "conversation.message" }>,
+): string {
+  return [
+    event.type,
+    event.profileId ?? "default",
+    event.conversationId ?? "conversation",
+    event.messageId,
+    event.createdAt,
+  ].join(":");
 }
 
 function stableSessionDistillationHash(
@@ -805,7 +965,7 @@ function stableSessionDistillationHash(
     .slice(0, 24);
 }
 
-function sessionDistillationEventKey(input: {
+function legacySessionDistillationEventKey(input: {
   profileId: string;
   sessionKey: string | null;
   events: readonly Extract<HostEvent, { type: "conversation.message" }>[];
@@ -831,12 +991,44 @@ function candidateDedupeKey(candidate: MemoryExtractionCandidate): string {
 }
 
 function windowSessionKey(event: Extract<HostEvent, { type: "conversation.message" }>): string | null {
-  const value = event.metadata?.sessionId ?? event.metadata?.sessionKey ?? event.metadata?.windowId;
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  for (const value of [
+    event.metadata?.sessionId,
+    event.metadata?.sessionKey,
+    event.metadata?.windowId,
+  ]) {
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return null;
+}
+
+interface ConversationRoute {
+  kind: "session" | "conversation" | "call";
+  value: string | null;
+  sessionKey: string | null;
+}
+
+function conversationRoute(
+  event: Extract<HostEvent, { type: "conversation.message" }>,
+): ConversationRoute {
+  const sessionKey = windowSessionKey(event);
+  if (sessionKey !== null) return { kind: "session", value: sessionKey, sessionKey };
+  const conversationId = event.conversationId?.trim() || null;
+  return conversationId !== null
+    ? { kind: "conversation", value: conversationId, sessionKey: null }
+    : { kind: "call", value: null, sessionKey: null };
+}
+
+function conversationRouteKey(
+  profileId: string,
+  event: Extract<HostEvent, { type: "conversation.message" }>,
+): string {
+  const route = conversationRoute(event);
+  return JSON.stringify([profileId, route.kind, route.value]);
 }
 
 const DEFAULT_SESSION_DISTILLATION_MAX_CHARS = 24_000;
+const SESSION_EVIDENCE_SAMPLE_LIMIT = 64;
 
 function prepareTurnDisplayQuery(input: PrepareTurnInput): string {
   return [...input.messages].reverse().find((message) => message.role === "user")?.content ?? "";
@@ -996,11 +1188,22 @@ interface InternalMemoryOSOptions {
   runtimeIntelligenceConcurrency?: number | undefined;
 }
 
-function publicTraceValues(values: string[], mode: "label" | "inline"): string[] {
+function publicTraceValues(
+  values: string[],
+  mode: "label" | "inline",
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+): string[] {
   const seen = new Set<string>();
   const output: string[] = [];
   for (const value of values) {
-    const publicValue = mode === "label" ? safePublicLabel(value) : safePublicInlineField(value);
+    const runtimePublicValue = redactRuntimePayloadString(
+      value,
+      classifyRuntimeSensitivity,
+      mode === "inline" ? "content" : "metadata",
+    );
+    const publicValue = mode === "label"
+      ? safePublicLabel(runtimePublicValue)
+      : safePublicInlineField(runtimePublicValue);
     const key = publicValue.toLowerCase();
     if (!key || seen.has(key)) continue;
     seen.add(key);
@@ -1040,6 +1243,65 @@ function publicSearchDecision(input: {
   return input.decision ?? fallbackSearchDecision(input.memory);
 }
 
+function publicScoreComponents(
+  score: MemorySearchTraceDecision["scoreComponents"],
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
+): MemorySearchTraceDecision["scoreComponents"] {
+  const finite = (value: unknown, fallback = 0): number =>
+    typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  const output: MemorySearchTraceDecision["scoreComponents"] = {
+    confidence: finite(score.confidence),
+    retrievalScore: finite(score.retrievalScore),
+    contentScore: finite(score.contentScore),
+    finalScore: finite(score.finalScore),
+  };
+  for (const key of ["ftsScore", "vectorScore", "associationScore", "fusionScore"] as const) {
+    if (typeof score[key] === "number" && Number.isFinite(score[key])) output[key] = score[key];
+  }
+  if (score.sourceTrust === "user" || score.sourceTrust === "agent" || score.sourceTrust === "external") {
+    output.sourceTrust = score.sourceTrust;
+  }
+  const annealing = score.annealing;
+  if (annealing && typeof annealing.active === "boolean" && typeof annealing.reason === "string") {
+    output.annealing = {
+      active: annealing.active,
+      reason: redactRuntimePayloadString(
+        annealing.reason,
+        classifyRuntimeSensitivity,
+        "metadata",
+      ),
+      ...(annealing.sourceTrust === "user" || annealing.sourceTrust === "agent" || annealing.sourceTrust === "external"
+        ? { sourceTrust: annealing.sourceTrust }
+        : {}),
+      ...(typeof annealing.capConfidence === "number" && Number.isFinite(annealing.capConfidence)
+        ? { capConfidence: annealing.capConfidence }
+        : {}),
+      ...(typeof annealing.retentionCap === "number" && Number.isFinite(annealing.retentionCap)
+        ? { retentionCap: annealing.retentionCap }
+        : {}),
+      ...(typeof annealing.startedAt === "string"
+        ? {
+            startedAt: redactRuntimePayloadString(
+              annealing.startedAt,
+              classifyRuntimeSensitivity,
+              "metadata",
+            ),
+          }
+        : {}),
+      ...(typeof annealing.confirmedAt === "string"
+        ? {
+            confirmedAt: redactRuntimePayloadString(
+              annealing.confirmedAt,
+              classifyRuntimeSensitivity,
+              "metadata",
+            ),
+          }
+        : {}),
+    };
+  }
+  return output;
+}
+
 function traceDecisionByMemoryId(
   decisions: MemorySearchTraceDecision[],
 ): Map<string, MemorySearchTraceDecision> {
@@ -1066,6 +1328,7 @@ function includedTurnExplanationMemory(input: {
   memory: MemoryRecord;
   decision: MemorySearchTraceDecision | undefined;
   evidenceEventIds: string[];
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier;
 }): TurnExplanationIncludedMemory {
   const decision = publicSearchDecision(input);
   const temporalLabel = temporalContextLabel(input.memory.createdAt, input.memory.metadata);
@@ -1076,16 +1339,21 @@ function includedTurnExplanationMemory(input: {
     content: input.memory.content,
     ...(temporalLabel ? { temporalLabel } : {}),
     retention: memoryRetention(input.memory),
-    cues: publicTraceValues(decision.cues, "inline"),
-    associations: publicTraceValues(decision.associations, "label"),
-    tags: publicTraceValues(decision.tags, "label"),
-    scoreComponents: decision.scoreComponents,
+    cues: publicTraceValues(decision.cues, "inline", input.classifyRuntimeSensitivity),
+    associations: publicTraceValues(
+      decision.associations,
+      "label",
+      input.classifyRuntimeSensitivity,
+    ),
+    tags: publicTraceValues(decision.tags, "label", input.classifyRuntimeSensitivity),
+    scoreComponents: publicScoreComponents(decision.scoreComponents, input.classifyRuntimeSensitivity),
     evidenceEventIds: input.evidenceEventIds,
   };
 }
 
 function excludedTurnExplanationMemory(
   decision: MemorySearchTraceDecision,
+  classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
 ): TurnExplanationExcludedMemory | null {
   if (!decision.reason) return null;
   if (decision.reason === "forget_residue") {
@@ -1112,10 +1380,14 @@ function excludedTurnExplanationMemory(
     status: decision.memory.status,
     reason: decision.reason,
     retention: memoryRetention(decision.memory),
-    cues: publicTraceValues(decision.cues, "inline"),
-    associations: publicTraceValues(decision.associations, "label"),
-    tags: publicTraceValues(decision.tags, "label"),
-    scoreComponents: decision.scoreComponents,
+    cues: publicTraceValues(decision.cues, "inline", classifyRuntimeSensitivity),
+    associations: publicTraceValues(
+      decision.associations,
+      "label",
+      classifyRuntimeSensitivity,
+    ),
+    tags: publicTraceValues(decision.tags, "label", classifyRuntimeSensitivity),
+    scoreComponents: publicScoreComponents(decision.scoreComponents, classifyRuntimeSensitivity),
   };
 }
 
@@ -1298,6 +1570,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     defaultPreset: options.disposition,
   }).name;
   let initialized = false;
+  const legacyEvidencePresence = new Map<string, {
+    present: boolean;
+    mutationVersion?: string | undefined;
+  }>();
 
   async function initialize(): Promise<void> {
     if (initialized) return;
@@ -1306,6 +1582,30 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     }
     await store.initialize();
     initialized = true;
+  }
+
+  async function mayHaveLegacyEvidenceKeys(profileId: string, sourceType: string): Promise<boolean> {
+    if (!store.getEvidenceByEventKey) return false;
+    if (!store.hasLegacyEvidenceKeys) return true;
+    const cacheKey = JSON.stringify([profileId, sourceType]);
+    const mutationVersion = store.evidenceMutationVersion
+      ? String(await store.evidenceMutationVersion(profileId, sourceType))
+      : undefined;
+    const cached = legacyEvidencePresence.get(cacheKey);
+    if (cached?.present === true) return true;
+    if (
+      cached?.present === false &&
+      mutationVersion !== undefined &&
+      cached.mutationVersion === mutationVersion
+    ) {
+      return false;
+    }
+    const present = await store.hasLegacyEvidenceKeys(profileId, sourceType);
+    legacyEvidencePresence.set(cacheKey, {
+      present,
+      ...(mutationVersion !== undefined ? { mutationVersion } : {}),
+    });
+    return present;
   }
 
   async function embeddingForRuntimeWrite(input: {
@@ -1425,11 +1725,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       content,
       sensitivity,
       eligibleForLongTermMemory: true,
-      payload: {
-        kind: safePublicLabel(kind),
-        scope: input.scope ?? "global",
-        metadata: redactRuntimeSourceMetadataRecord(input.metadata, classifyRuntimeSensitivity),
-      },
+      payload: markedGmosEvidencePayload(
+        GMOS_EVIDENCE_PAYLOAD_SCHEMAS.sdkLowLevelAdd,
+        {
+          kind: safePublicLabel(kind),
+          scope: input.scope ?? "global",
+          metadata: redactRuntimeSourceMetadataRecord(input.metadata, classifyRuntimeSensitivity),
+        },
+      ),
       createdAt,
     });
     return {
@@ -1517,10 +1820,89 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     };
   }
 
+  function traceForRuntimeRead(
+    trace: MemorySearchTraceCollector | undefined,
+    includeSensitive: boolean | undefined,
+  ): MemorySearchTraceCollector | undefined {
+    if (!trace) return undefined;
+    return {
+      recordMemorySearchDecision(decision) {
+        const memory = runtimeMemoryForRead(
+          decision.memory,
+          includeSensitive,
+          classifyRuntimeSensitivity,
+        );
+        if (!memory) return;
+        trace.recordMemorySearchDecision({
+          ...decision,
+          memory,
+          cues: publicTraceValues(decision.cues, "inline", classifyRuntimeSensitivity),
+          associations: publicTraceValues(
+            decision.associations,
+            "label",
+            classifyRuntimeSensitivity,
+          ),
+          tags: publicTraceValues(decision.tags, "label", classifyRuntimeSensitivity),
+          scoreComponents: publicScoreComponents(
+            decision.scoreComponents,
+            classifyRuntimeSensitivity,
+          ),
+        });
+      },
+    };
+  }
+
+  function runtimeAssociationSensitivity(association: MemoryAssociationRecord): Sensitivity {
+    let sensitivity = association.sensitivity === "normal" || association.sensitivity === "sensitive" ||
+        association.sensitivity === "secret_like"
+      ? association.sensitivity
+      : "secret_like";
+    for (const [value, surface] of [
+      [association.cue, "content"],
+      [association.targetSummary, "content"],
+      [association.tag, "metadata"],
+      [association.targetKind, "metadata"],
+      [association.targetId, "metadata"],
+      [association.sourceMemoryId, "metadata"],
+      [association.sourceEvidenceId, "metadata"],
+    ] as const) {
+      if (typeof value !== "string") continue;
+      sensitivity = maxSensitivity(
+        sensitivity,
+        classifyRuntimeSensitivity(value, surface),
+      );
+      if (sensitivity === "secret_like") break;
+    }
+    return sensitivity;
+  }
+
+  function runtimeAssociationsForRead(
+    associations: MemoryAssociationRecord[],
+    includeSensitive: boolean | undefined,
+  ): MemoryAssociationRecord[] {
+    return associations.filter((association) => {
+      const sensitivity = runtimeAssociationSensitivity(association);
+      return sensitivity !== "secret_like" &&
+        (sensitivity !== "sensitive" || includeSensitive === true);
+    });
+  }
+
+  function runtimeActionPoliciesForRead(
+    policies: ActionPolicy[],
+    includeSensitive: boolean | undefined,
+  ): ActionPolicy[] {
+    return policies.filter((policy) => {
+      const sensitivity = classifyRuntimeSensitivity(policy.text, "content");
+      return sensitivity !== "secret_like" &&
+        (sensitivity !== "sensitive" || includeSensitive === true);
+    });
+  }
+
   async function searchMemoriesWithRetrieval(
     input: MemorySearchInput,
     readRetrieval?: MemoryReadRetrievalOptions | undefined,
     queryEmbedding?: QueryVectorEmbedding | null | undefined,
+    preserveAuthorityMarker = false,
   ): Promise<MemoryRecord[]> {
     const resolvedQueryEmbedding =
       input.queryEmbedding === null
@@ -1531,11 +1913,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
             : queryEmbedding === undefined
             ? await queryEmbeddingForSearch(input.query, readRetrieval)
             : queryEmbedding ?? undefined);
-    const memories = await store.searchMemories({
+    const memories = runtimeMemoriesForRead(await store.searchMemories({
       ...input,
+      ...(input.trace
+        ? { trace: traceForRuntimeRead(input.trace, input.includeSensitive) }
+        : {}),
       retrieval,
       ...(resolvedQueryEmbedding ? { queryEmbedding: resolvedQueryEmbedding } : {}),
-    });
+    }), input.includeSensitive, classifyRuntimeSensitivity, preserveAuthorityMarker);
     const reranked = await callRetrievalReranker({ retrieval, memories });
     return reranked ?? memories;
   }
@@ -1547,8 +1932,37 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     return {
       ...store,
       searchMemories(input: MemorySearchInput) {
-        return searchMemoriesWithRetrieval(input, readRetrieval, queryEmbedding);
+        return searchMemoriesWithRetrieval(input, readRetrieval, queryEmbedding, true);
       },
+      async getMemoryById(
+        profileId: string,
+        id: string,
+        options?: {
+          includeSensitive?: boolean | undefined;
+          includePerson?: boolean | undefined;
+          includeArchived?: boolean | undefined;
+        },
+      ) {
+        const memory = await store.getMemoryById(profileId, id, options);
+        return memory
+          ? runtimeMemoryForRead(
+              memory,
+              options?.includeSensitive,
+              classifyRuntimeSensitivity,
+              true,
+            )
+          : null;
+      },
+      ...(store.searchAssociations
+        ? {
+            async searchAssociations(input: Parameters<NonNullable<typeof store.searchAssociations>>[0]) {
+              return runtimeAssociationsForRead(
+                await store.searchAssociations!(input),
+                input.includeSensitive,
+              );
+            },
+          }
+        : {}),
     };
   }
 
@@ -1645,13 +2059,16 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       content,
       sensitivity,
       eligibleForLongTermMemory: true,
-      payload: {
+      payload: markedGmosEvidencePayload(
+        GMOS_EVIDENCE_PAYLOAD_SCHEMAS.sdkLowLevelUpdate,
+        {
         memoryId: input.id,
         previousKind: safePublicLabel(existing.kind),
         kind: safePublicLabel(kind),
         scope: input.scope ?? existing.scope,
         metadata: redactRuntimeSourceMetadataRecord(input.metadata, classifyRuntimeSensitivity),
-      },
+        },
+      ),
       createdAt: updatedAt,
     });
     const embedding =
@@ -1726,21 +2143,21 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
 
   async function search(input: LowLevelSearchInput = {}): Promise<MemoryRecord[]> {
     await initialize();
-    return (await searchMemoriesWithRetrieval({
+    return searchMemoriesWithRetrieval({
       profileId: profileIdFor(defaultProfileId, input.profileId),
       purpose: input.purpose ?? "context",
       ...(input.query !== undefined ? { query: input.query } : {}),
       ...(input.limit !== undefined ? { limit: input.limit } : {}),
       ...(input.includeSensitive !== undefined ? { includeSensitive: input.includeSensitive } : {}),
       ...(input.includePerson !== undefined ? { includePerson: input.includePerson } : {}),
-    }, input.retrieval)).map((memory) => publicMemoryRecord(memory, classifyRuntimeSensitivity));
+    }, input.retrieval);
   }
 
   async function list(input: LowLevelListMemoriesInput = {}): Promise<MemoryRecord[]> {
     await initialize();
     const profileId = profileIdFor(defaultProfileId, input.profileId);
     if (store.listMemories) {
-      return (await store.listMemories({
+      return runtimeMemoriesForRead(await store.listMemories({
         profileId,
         ...(input.query !== undefined ? { query: input.query } : {}),
         ...(input.limit !== undefined ? { limit: input.limit } : {}),
@@ -1751,7 +2168,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           ? { includeSensitive: input.includeSensitive }
           : {}),
         ...(input.includePerson !== undefined ? { includePerson: input.includePerson } : {}),
-      })).map((memory) => publicMemoryRecord(memory, classifyRuntimeSensitivity));
+      }), input.includeSensitive, classifyRuntimeSensitivity);
     }
     if (input.status && input.status !== "active") {
       throw new Error("gmOS store does not support archived memory listing");
@@ -1759,14 +2176,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     if (input.kind || input.scope) {
       throw new Error("gmOS store does not support filtered memory listing");
     }
-    return (await store.searchMemories({
+    return runtimeMemoriesForRead(await store.searchMemories({
       profileId,
       purpose: "context",
       ...(input.query !== undefined ? { query: input.query } : {}),
       ...(input.limit !== undefined ? { limit: input.limit } : {}),
       ...(input.includeSensitive !== undefined ? { includeSensitive: input.includeSensitive } : {}),
       ...(input.includePerson !== undefined ? { includePerson: input.includePerson } : {}),
-    })).map((memory) => publicMemoryRecord(memory, classifyRuntimeSensitivity));
+    }), input.includeSensitive, classifyRuntimeSensitivity);
   }
 
   async function get(input: LowLevelGetMemoryInput): Promise<MemoryRecord | null> {
@@ -1776,10 +2193,93 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       includePerson: input.includePerson,
       includeArchived: input.includeArchived,
     });
-    return memory ? publicMemoryRecord(memory, classifyRuntimeSensitivity) : memory;
+    return memory
+      ? runtimeMemoryForRead(memory, input.includeSensitive, classifyRuntimeSensitivity)
+      : memory;
   }
 
   type ConversationEvent = Extract<HostEvent, { type: "conversation.message" }>;
+
+  function producerSourceMetadata(
+    metadata: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return withoutConversationRouteMetadata(metadata);
+  }
+
+  function producerConversationEvent(
+    event: ConversationEvent,
+    metadata: Record<string, unknown>,
+  ): ConversationEvent {
+    const {
+      conversationId: _conversationId,
+      messageId: _messageId,
+      metadata: _metadata,
+      ...publicEvent
+    } = event;
+    const publicMetadata = producerSourceMetadata(metadata);
+    return {
+      ...publicEvent,
+      profileId: event.profileId,
+      ...(Object.keys(publicMetadata).length > 0 ? { metadata: publicMetadata } : {}),
+    };
+  }
+
+  function producerEvidence(evidence: EvidenceEvent): EvidenceEvent {
+    return {
+      id: evidence.id,
+      eventKey: "[current_event]",
+      profileId: evidence.profileId,
+      sourceType: evidence.sourceType,
+      sourceUri: null,
+      content: evidence.content,
+      sensitivity: evidence.sensitivity,
+      eligibleForLongTermMemory: evidence.eligibleForLongTermMemory,
+      payload: {
+        ...(typeof evidence.payload.role === "string" ? { role: evidence.payload.role } : {}),
+        ...(typeof evidence.payload.privacyMode === "string"
+          ? { privacyMode: evidence.payload.privacyMode }
+          : {}),
+        ...(typeof evidence.payload.sourceTrust === "string"
+          ? { sourceTrust: evidence.payload.sourceTrust }
+          : {}),
+      },
+      createdAt: evidence.createdAt,
+    };
+  }
+
+  function producerExtractionInput(input: MemoryExtractionInput): MemoryExtractionInput {
+    const eventMetadata = producerSourceMetadata(
+      input.event.metadata && typeof input.event.metadata === "object"
+        ? input.event.metadata as Record<string, unknown>
+        : {},
+    );
+    return {
+      profileId: input.profileId,
+      event: producerConversationEvent(input.event, eventMetadata),
+      evidence: producerEvidence(input.evidence),
+      ...(input.window
+        ? {
+            window: {
+              messages: input.window.messages.map((message) => {
+                const metadata = producerSourceMetadata(
+                  message.metadata && typeof message.metadata === "object"
+                    ? message.metadata as Record<string, unknown>
+                    : {},
+                );
+                return {
+                  role: message.role,
+                  content: message.content,
+                  ...(message.createdAt ? { createdAt: message.createdAt } : {}),
+                  ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+                };
+              }),
+              evidenceIds: input.window.evidenceIds.map((_, index) => `evidence_${index + 1}`),
+            },
+          }
+        : {}),
+    };
+  }
+
   interface ConversationEvidenceWrite {
     event: ConversationEvent;
     evidence: EvidenceEvent;
@@ -1793,7 +2293,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     return {
       profileId,
       eventType: event.type,
-      observedAt: event.createdAt ?? nowIso(),
+      observedAt: resolvedEventTime(event.createdAt, nowIso()),
       memoryIds: [],
       worldBeliefIds: [],
     };
@@ -1866,13 +2366,21 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     ) {
       return null;
     }
-    const existing = store.findActiveMemoryByMetadata
+    const existingCandidate = store.findActiveMemoryByMetadata
       ? await store.findActiveMemoryByMetadata(
           input.profileId,
           "turnEvidenceId",
           input.evidence.id,
         )
       : null;
+    const existing =
+      existingCandidate &&
+      hasGmosMetadataReferenceSchema(
+        existingCandidate.metadata,
+        GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+      )
+        ? existingCandidate
+        : null;
     if (existing) {
       input.result.memoryIds.push(existing.id);
       return null;
@@ -1917,17 +2425,22 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       confidence,
       sensitivity: memorySensitivity,
       sourceEventId: input.evidence.id,
-      metadata: {
-        turnMemory: true,
-        turnEvidenceId: input.evidence.id,
-        sourceEvidenceId: input.evidence.id,
-        sourceTrust: input.sourceTrust,
-        ...annealingMetadata,
-        sourceRole: input.event.role,
-        eventTime,
-        ...(Object.keys(input.eventMetadata).length > 0 ? { sourceMetadata: input.eventMetadata } : {}),
-        ...(entityMentions.length > 0 ? { entityMentions } : {}),
-      },
+      metadata: markedGmosMetadata(
+        {
+          turnMemory: true,
+          turnEvidenceId: input.evidence.id,
+          sourceEvidenceId: input.evidence.id,
+          sourceTrust: input.sourceTrust,
+          ...annealingMetadata,
+          sourceRole: input.event.role,
+          eventTime,
+          ...(Object.keys(input.eventMetadata).length > 0
+            ? { sourceMetadata: input.eventMetadata }
+            : {}),
+          ...(entityMentions.length > 0 ? { entityMentions } : {}),
+        },
+        GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+      ),
       createdAt: eventTime,
     };
   }
@@ -1966,8 +2479,31 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   async function recordConversationEvidence(
     event: ConversationEvent,
     result: ObserveResult,
+    legacyEvidencePresent?: boolean | undefined,
   ): Promise<{ result: ObserveResult; write?: ConversationEvidenceWrite | undefined }> {
-    const sensitivity = classifyRuntimeSensitivity(event.content, "content");
+    const recordedEvent: ConversationEvent = {
+      ...event,
+      profileId: result.profileId,
+      messageId: event.messageId && event.messageId.trim().length > 0
+        ? event.messageId
+        : randomUUID(),
+      createdAt: resolvedEventTime(event.createdAt, result.observedAt),
+    };
+    const sensitivity = maxSensitivity(
+      classifyRuntimeSensitivity(recordedEvent.content, "content"),
+      runtimeValueSensitivity(
+        [
+          recordedEvent.profileId,
+          recordedEvent.conversationId ?? null,
+          recordedEvent.messageId,
+          recordedEvent.metadata?.sessionId ?? null,
+          recordedEvent.metadata?.sessionKey ?? null,
+          recordedEvent.metadata?.sourceId ?? null,
+          recordedEvent.metadata?.windowId ?? null,
+        ],
+        classifyRuntimeSensitivity,
+      ),
+    );
     const eligible = event.privacyMode !== "incognito" && sensitivity !== "secret_like";
     result.eligibleForLongTermMemory = eligible;
 
@@ -1977,30 +2513,59 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       };
     }
 
-    const sourceTrust = sourceTrustForEvent(event);
+    const sourceTrust = sourceTrustForEvent(recordedEvent);
     const allowLowerTrustPolicyWrites =
-      event.allowLowerTrustPolicyWrites === true || trust.allowLowerTrustPolicyWrites;
-    const eventMetadata = sourceMetadataForEvent(event, classifyRuntimeSensitivity);
-    const dedupeEventKey = eventKey(event);
+      recordedEvent.allowLowerTrustPolicyWrites === true || trust.allowLowerTrustPolicyWrites;
+    const eventMetadata = sourceMetadataForEvent(recordedEvent, classifyRuntimeSensitivity);
+    const conversationId = recordedEvent.conversationId && recordedEvent.conversationId.length > 0
+      ? recordedEvent.conversationId
+      : null;
+    const dedupeEventKey = conversationMessageEvidenceEventKey({
+      profileId: result.profileId,
+      conversationId,
+      messageId: recordedEvent.messageId!,
+      createdAt: recordedEvent.createdAt!,
+    });
+    const legacyEventKey = event.messageId?.trim() && event.createdAt?.trim()
+      ? legacyConversationMessageEventKey(event)
+      : null;
+    const mayHaveLegacyEvidence = legacyEvidencePresent ??
+      await mayHaveLegacyEvidenceKeys(result.profileId, recordedEvent.type);
+    const legacyEvidence = store.getEvidenceByEventKey && legacyEventKey && mayHaveLegacyEvidence
+      ? await store.getEvidenceByEventKey(legacyEventKey)
+      : null;
+    if (legacyEvidence?.profileId === result.profileId) {
+      return {
+        result: {
+          ...result,
+          evidenceId: legacyEvidence.id,
+          eligibleForLongTermMemory: legacyEvidence.eligibleForLongTermMemory,
+          skippedReason: "deduplicated_event",
+        },
+      };
+    }
     const claimed = await store.claimEvidence({
       profileId: result.profileId,
       eventKey: dedupeEventKey,
-      sourceType: event.type,
-      sourceUri: event.conversationId ? `conversation:${event.conversationId}` : null,
-      content: event.content,
+      sourceType: recordedEvent.type,
+      sourceUri: conversationId ? `conversation:${conversationId}` : null,
+      content: recordedEvent.content,
       sensitivity,
       eligibleForLongTermMemory: eligible,
-      payload: {
-        role: event.role,
-        messageId: event.messageId,
-        privacyMode: event.privacyMode ?? "normal",
+      payload: markedGmosEvidencePayload(
+        GMOS_EVIDENCE_PAYLOAD_SCHEMAS.conversationMessage,
+        {
+        role: recordedEvent.role,
+        messageId: recordedEvent.messageId,
+        privacyMode: recordedEvent.privacyMode ?? "normal",
         sourceTrust,
         ...(allowLowerTrustPolicyWrites && sourceTrust !== "user"
           ? { trustOverride: { allowPolicyWrites: true } }
           : {}),
         metadata: eventMetadata,
-      },
-      createdAt: event.createdAt,
+        },
+      ),
+      createdAt: recordedEvent.createdAt,
     });
     const evidence = claimed.evidence;
     if (!claimed.inserted) {
@@ -2017,7 +2582,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     return {
       result,
       write: {
-        event,
+        event: recordedEvent,
         evidence,
         eventMetadata,
         sensitivity,
@@ -2027,11 +2592,49 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     };
   }
 
+  function conversationEventFromInput(
+    message: IngestConversationInput["messages"][number],
+    profileId: string,
+  ): ConversationEvent {
+    return {
+      type: "conversation.message",
+      profileId,
+      role: message.role,
+      content: message.content,
+      ...(message.conversationId !== undefined ? { conversationId: message.conversationId } : {}),
+      ...(message.messageId !== undefined ? { messageId: message.messageId } : {}),
+      ...(message.sourceTrust !== undefined ? { sourceTrust: message.sourceTrust } : {}),
+      ...(message.allowLowerTrustPolicyWrites !== undefined
+        ? { allowLowerTrustPolicyWrites: message.allowLowerTrustPolicyWrites }
+        : {}),
+      ...(message.privacyMode !== undefined ? { privacyMode: message.privacyMode } : {}),
+      ...(message.createdAt !== undefined ? { createdAt: message.createdAt } : {}),
+      ...(message.metadata !== undefined ? { metadata: message.metadata } : {}),
+    };
+  }
+
+  async function recordConversationInput(input: {
+    message: IngestConversationInput["messages"][number];
+    defaultProfileId: string;
+  }): Promise<Awaited<ReturnType<typeof recordConversationEvidence>>> {
+    const profileId = profileIdFor(input.defaultProfileId, input.message.profileId);
+    const event = conversationEventFromInput(input.message, profileId);
+    const result = observeResultFor(profileId, event);
+    const legacyEvidencePresent = await mayHaveLegacyEvidenceKeys(
+      profileId,
+      "conversation.message",
+    );
+    return recordConversationEvidence(event, result, legacyEvidencePresent);
+  }
+
   interface WindowMember extends ConversationEvidenceWrite {
     result: ObserveResult;
   }
 
   interface SessionDistillationGroup {
+    profileId: string;
+    routeKind: "session" | "conversation" | "call";
+    routeValue: string | null;
     sessionKey: string | null;
     members: WindowMember[];
     firstIndex: number;
@@ -2047,9 +2650,19 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     distillationTruncatedMessageCount: number;
   }
 
+  interface DurableSessionProvenance {
+    eventKey: string;
+    conversationId?: string | undefined;
+    sessionId?: string | undefined;
+    sourceUri?: string | undefined;
+    evidenceIds: string[];
+  }
+
   interface SessionDistillationPlan {
     group: SessionDistillationGroup;
     sourceUri: string | null;
+    context: DurableSessionProvenance;
+    eventTime: string;
     distillerInput: MemorySessionDistillationInput;
   }
 
@@ -2123,14 +2736,42 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     };
   }
 
+  function redactSessionRouteIdentity(
+    content: string,
+    context: DurableSessionProvenance,
+  ): string {
+    let output = content;
+    const identities = [...new Set([context.sessionId, context.conversationId]
+      .flatMap((value) => typeof value === "string" && value.trim().length > 0
+        ? [value.trim()]
+        : []))]
+      .sort((left, right) => right.length - left.length);
+    for (const identity of identities) {
+      const escaped = identity.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+      const pattern = /^[A-Za-z0-9]+$/u.test(identity)
+        ? new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`, "giu")
+        : new RegExp(escaped, "giu");
+      output = output.replace(pattern, "[redacted_identity]");
+    }
+    return output;
+  }
+
   function sessionDistillationGroups(members: WindowMember[], observedAt: string): SessionDistillationGroup[] {
     const groups = new Map<string, SessionDistillationGroup>();
     for (const [firstIndex, member] of members.entries()) {
-      const sessionKey = windowSessionKey(member.event);
-      const groupKey = sessionKey === null ? "whole-call" : `session:${sessionKey}`;
+      const route = conversationRoute(member.event);
+      const profileId = member.result.profileId;
+      const groupKey = JSON.stringify([profileId, route.kind, route.value]);
       let group = groups.get(groupKey);
       if (!group) {
-        group = { sessionKey, members: [], firstIndex };
+        group = {
+          profileId,
+          routeKind: route.kind,
+          routeValue: route.value,
+          sessionKey: route.sessionKey,
+          members: [],
+          firstIndex,
+        };
         groups.set(groupKey, group);
       }
       group.members.push(member);
@@ -2182,7 +2823,6 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   }
 
   async function planSessionDistillationGroup(input: {
-    profileId: string;
     group: SessionDistillationGroup;
     observedAt: string;
     stats: SessionDistillationStats;
@@ -2190,39 +2830,74 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const members = input.group.members;
     if (members.length === 0) return null;
     const events = members.map((member) => member.event);
-    const distillationEventKey = sessionDistillationEventKey({
-      profileId: input.profileId,
-      sessionKey: input.group.sessionKey,
-      events,
+    const eventTime = sessionEventTime(members, input.observedAt);
+    const sessionEvidenceIds = members.map((member) => member.evidence.id);
+    const conversationId = input.group.routeKind === "conversation"
+      ? input.group.routeValue ?? undefined
+      : commonSessionString(members, (member) => member.event.conversationId);
+    const sessionId = input.group.routeKind === "session"
+      ? input.group.routeValue ?? undefined
+      : undefined;
+    const sourceUri = conversationId ? `conversation:${conversationId}` : null;
+    const distillationEventKey = sessionDistillationEvidenceEventKey({
+      profileId: input.group.profileId,
+      eventTime,
+      evidenceIds: sessionEvidenceIds,
+      sessionId,
+      conversationId,
     });
     const existingSessionEvidence = store.getEvidenceByEventKey
       ? await store.getEvidenceByEventKey(distillationEventKey)
       : null;
     if (existingSessionEvidence) return null;
-    const eventTime = sessionEventTime(members, input.observedAt);
-    const conversationId = commonSessionString(members, (member) => member.event.conversationId);
-    const sessionId = commonSessionString(members, (member) => windowSessionKey(member.event) ?? undefined);
-    const sourceUri = commonSessionString(members, (member) =>
-      member.event.conversationId ? `conversation:${member.event.conversationId}` : undefined
-    ) ?? null;
-    const sessionEvidenceIds = members.map((member) => member.evidence.id);
+    const existingLegacySessionEvidence = store.getEvidenceByEventKey &&
+        await mayHaveLegacyEvidenceKeys(
+          input.group.profileId,
+          "conversation.session_distillation",
+        )
+      ? await store.getEvidenceByEventKey(legacySessionDistillationEventKey({
+          profileId: input.group.profileId,
+          sessionKey: input.group.sessionKey,
+          events,
+        }))
+      : null;
+    if (existingLegacySessionEvidence?.profileId === input.group.profileId) return null;
     const { messages, truncatedMessageCount } = sessionDistillationMessages(members);
     input.stats.distillationTruncatedMessageCount += truncatedMessageCount;
+    const context: DurableSessionProvenance = {
+      eventKey: distillationEventKey,
+      ...(conversationId ? { conversationId } : {}),
+      ...(sessionId ? { sessionId } : {}),
+      ...(sourceUri ? { sourceUri } : {}),
+      evidenceIds: sessionEvidenceIds,
+    };
     const distillerInput: MemorySessionDistillationInput = {
-      profileId: input.profileId,
+      profileId: input.group.profileId,
       eventTime,
       context: {
-        eventKey: distillationEventKey,
-        ...(conversationId ? { conversationId } : {}),
-        ...(sessionId ? { sessionId } : {}),
-        ...(sourceUri ? { sourceUri } : {}),
-        evidenceIds: sessionEvidenceIds,
+        eventKey: "[current_session]",
+        evidenceIds: sessionEvidenceIds.map((_, index) => `evidence_${index + 1}`),
       },
-      messages,
+      messages: messages.map((message, index) => {
+        const metadata = producerSourceMetadata(
+          message.metadata && typeof message.metadata === "object"
+            ? message.metadata as Record<string, unknown>
+            : {},
+        );
+        return {
+          role: message.role,
+          content: message.content,
+          ...(message.createdAt ? { createdAt: message.createdAt } : {}),
+          evidenceId: `evidence_${index + 1}`,
+          ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+        };
+      }),
     };
     return {
       group: input.group,
       sourceUri,
+      context,
+      eventTime,
       distillerInput,
     };
   }
@@ -2252,13 +2927,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   }
 
   async function applySessionDistillationCall(input: {
-    profileId: string;
     result: SessionDistillationCallResult;
     stats: SessionDistillationStats;
     embeddingStats: RuntimeEmbeddingStats;
   }): Promise<void> {
     const { plan, outcome, candidates } = input.result;
-    const { context, eventTime } = plan.distillerInput;
+    const { context, eventTime } = plan;
+    const profileId = plan.group.profileId;
     input.stats.distillationCallCount += 1;
     if (outcome === "parse_failure") {
       input.stats.distillationParseFailureCount += 1;
@@ -2280,44 +2955,62 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     );
     const sessionSensitivity = members.reduce<Sensitivity>(
       (sensitivity, member) => maxSensitivity(sensitivity, member.sensitivity),
-      "normal",
+      runtimeValueSensitivity(
+        [context.conversationId ?? null, context.sessionId ?? null, plan.sourceUri],
+        classifyRuntimeSensitivity,
+      ),
     );
     const sessionAllowLowerTrustPolicyWrites = members.some(
       (member) => member.allowLowerTrustPolicyWrites,
     );
     const sessionEvidence = await store.recordEvidence({
-      profileId: input.profileId,
+      profileId,
       eventKey: context.eventKey,
       sourceType: "conversation.session_distillation",
       sourceUri: plan.sourceUri,
       content: sessionDistillationEvidenceContent(members),
       sensitivity: sessionSensitivity,
       eligibleForLongTermMemory: true,
-      payload: {
+      payload: markedGmosEvidencePayload(
+        GMOS_EVIDENCE_PAYLOAD_SCHEMAS.sessionDistillation,
+        {
         purpose: "session_distillation",
         eventTime,
         evidenceIds: context.evidenceIds,
         conversationId: context.conversationId,
         sessionId: context.sessionId,
-      },
+        },
+      ),
       createdAt: eventTime,
     });
     const sessionResult = members[members.length - 1]!.result;
     const sessionEvent: ConversationEvent = {
       type: "conversation.message",
-      profileId: input.profileId,
+      profileId,
       role: "user",
       content: sessionEvidence.content,
       createdAt: eventTime,
     };
     const freshCandidates: MemoryExtractionCandidate[] = [];
     const metadataByDedupeKey = new Map<string, Record<string, unknown>>();
-    for (const candidate of candidates) {
+    for (const rawCandidate of candidates) {
+      const candidate = {
+        ...rawCandidate,
+        content: redactSessionRouteIdentity(rawCandidate.content, context),
+      };
       const dedupeKey = candidateDedupeKey(candidate);
       const key = `${sessionEvidence.id}:${dedupeKey}`;
-      const existing = store.findActiveMemoryByMetadata
-        ? await store.findActiveMemoryByMetadata(input.profileId, "sessionDistillationKey", key)
+      const existingCandidate = store.findActiveMemoryByMetadata
+        ? await store.findActiveMemoryByMetadata(profileId, "sessionDistillationKey", key)
         : null;
+      const existing =
+        existingCandidate &&
+        hasGmosMetadataReferenceSchema(
+          existingCandidate.metadata,
+          GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+        )
+          ? existingCandidate
+          : null;
       if (existing) {
         sessionResult.memoryIds.push(existing.id);
         continue;
@@ -2328,14 +3021,15 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         sessionDistillationKey: key,
         sessionDistillationEvidenceId: sessionEvidence.id,
         sourceEvidenceId: sessionEvidence.id,
-        sessionEvidenceIds: context.evidenceIds,
+        sessionEvidenceIds: context.evidenceIds.slice(0, SESSION_EVIDENCE_SAMPLE_LIMIT),
+        sessionEvidenceCount: context.evidenceIds.length,
         eventTime,
       });
     }
     const before = sessionResult.memoryIds.length;
     await applyExtractionCandidates({
       result: sessionResult,
-      profileId: input.profileId,
+      profileId,
       candidates: freshCandidates,
       event: sessionEvent,
       evidence: sessionEvidence,
@@ -2362,7 +3056,6 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   }
 
   async function applySessionDistillation(input: {
-    profileId: string;
     members: WindowMember[];
     observedAt: string;
     skip: boolean;
@@ -2375,7 +3068,6 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const plans: SessionDistillationPlan[] = [];
     for (const group of sessionDistillationGroups(input.members, input.observedAt)) {
       const plan = await planSessionDistillationGroup({
-        profileId: input.profileId,
         group,
         observedAt: input.observedAt,
         stats: input.stats,
@@ -2397,7 +3089,6 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         throw new Error(`gmOS session distillation worker did not produce result ${index}`);
       }
       await applySessionDistillationCall({
-        profileId: input.profileId,
         result,
         stats: input.stats,
         embeddingStats: input.embeddingStats,
@@ -2558,23 +3249,37 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         confidence: write.confidence,
         sensitivity: write.memorySensitivity,
         sourceEventId: write.context.sourceEventId,
-        metadata: {
-          ...sanitizeRuntimeExternalMemoryMetadata(
-            write.candidate.metadata,
-            classifyRuntimeSensitivity,
-          ),
-          ...write.structuredMetadata,
-          ...(write.context.metadata ?? {}),
-          sourceTrust: write.context.sourceTrust,
-          ...write.annealingMetadata,
-          sourceRole: write.context.event.role,
-          ...(Object.keys(write.candidateSourceMetadata).length > 0
-            ? { sourceMetadata: write.candidateSourceMetadata }
-            : {}),
-          ...(write.memoryEntityMentions.length > 0
-            ? { entityMentions: write.memoryEntityMentions }
-            : {}),
-        },
+        metadata: markedGmosMetadata(
+          {
+            ...sanitizeRuntimeExternalMemoryMetadata(
+              write.candidate.metadata,
+              classifyRuntimeSensitivity,
+            ),
+            ...write.structuredMetadata,
+            ...(write.context.metadata ?? {}),
+            sourceTrust: write.context.sourceTrust,
+            ...write.annealingMetadata,
+            sourceRole: write.context.event.role,
+            ...(Object.keys(write.candidateSourceMetadata).length > 0
+              ? { sourceMetadata: write.candidateSourceMetadata }
+              : {}),
+            ...(write.memoryEntityMentions.length > 0
+              ? { entityMentions: write.memoryEntityMentions }
+              : {}),
+            ...(write.writeCandidate.predicate && write.subject
+              ? {
+                  worldBeliefSubject: write.subject,
+                  worldBeliefPredicate: write.writeCandidate.predicate,
+                  worldBeliefObject:
+                    write.writeCandidate.object ?? write.writeCandidate.content,
+                }
+              : {}),
+          },
+          GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+          ...(write.writeCandidate.predicate && write.subject
+            ? [GMOS_METADATA_REFERENCE_SCHEMAS.worldBeliefProjection]
+            : []),
+        ),
         createdAt: write.context.event.createdAt,
         ...(embedding ? { embedding } : {}),
       });
@@ -2604,21 +3309,26 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           sourceMemoryId: memory.id,
           cardinality: write.writeCandidate.cardinality,
           createdAt: write.context.event.createdAt ?? memory.createdAt,
-          metadata: {
-            ...sanitizeRuntimeExternalMemoryMetadata(
-              write.writeCandidate.metadata,
-              classifyRuntimeSensitivity,
-            ),
-            ...write.structuredMetadata,
-            ...(write.context.metadata ?? {}),
-            sourceTrust: write.context.sourceTrust,
-            ...write.annealingMetadata,
-            sourceRole: write.context.event.role,
-            ...(Object.keys(write.candidateSourceMetadata).length > 0
-              ? { sourceMetadata: write.candidateSourceMetadata }
-              : {}),
-            ...(beliefEntityMentions.length > 0 ? { entityMentions: beliefEntityMentions } : {}),
-          },
+          metadata: markedGmosMetadata(
+            {
+              ...sanitizeRuntimeExternalMemoryMetadata(
+                write.writeCandidate.metadata,
+                classifyRuntimeSensitivity,
+              ),
+              ...write.structuredMetadata,
+              ...(write.context.metadata ?? {}),
+              sourceTrust: write.context.sourceTrust,
+              ...write.annealingMetadata,
+              sourceRole: write.context.event.role,
+              ...(Object.keys(write.candidateSourceMetadata).length > 0
+                ? { sourceMetadata: write.candidateSourceMetadata }
+                : {}),
+              ...(beliefEntityMentions.length > 0
+                ? { entityMentions: beliefEntityMentions }
+                : {}),
+            },
+            GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+          ),
         });
         write.result.worldBeliefIds.push(belief.id);
       }
@@ -2686,22 +3396,30 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
 
     const recorded = await recordConversationEvidence(event, result);
     if (!recorded.write) return recorded.result;
-    const { evidence, eventMetadata, sensitivity, sourceTrust, allowLowerTrustPolicyWrites } =
-      recorded.write;
+    const {
+      event: recordedEvent,
+      evidence,
+      eventMetadata,
+      sensitivity,
+      sourceTrust,
+      allowLowerTrustPolicyWrites,
+    } = recorded.write;
     const extractFromRoles = resolvedExtractFromRoles(undefined);
-    if (!extractFromRoles.includes(event.role)) {
+    if (!extractFromRoles.includes(recordedEvent.role)) {
       return { ...recorded.result, skippedReason: "non_user_message" };
     }
-    if (isPersonRoutedMemory(event.content)) return { ...recorded.result, skippedReason: "person_routed" };
+    if (isPersonRoutedMemory(recordedEvent.content)) {
+      return { ...recorded.result, skippedReason: "person_routed" };
+    }
     const extraction = await extractMemoryCandidatePlan({
       extractor: options.extractor,
       temporalParser: options.temporal?.parser,
       inferTemporalFromText: options.temporal?.inferFromText,
-      extractionInput: {
+      extractionInput: producerExtractionInput({
         profileId,
-        event: { ...event, metadata: eventMetadata },
+        event: { ...recordedEvent, metadata: eventMetadata },
         evidence,
-      },
+      }),
       minConfidence: options.extraction?.minConfidence,
     });
     recorded.result.extraction = sanitizeRuntimeExtractionReport(
@@ -2712,7 +3430,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       result: recorded.result,
       profileId,
       candidates: extraction.candidates,
-      event,
+      event: recordedEvent,
       evidence,
       eventMetadata,
       sensitivity,
@@ -2747,7 +3465,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     );
     const results: ObserveResult[] = [];
     const extractionReports: MemoryExtractionReport[] = [];
-    const dedupeKeys = new Set<string>();
+    const dedupeKeysByProfile = new Map<string, Set<string>>();
     const extractionMinConfidence = options.extraction?.minConfidence ?? 0.01;
     let extractionWindowCount = 0;
     let extractionCallCount = 0;
@@ -2769,6 +3487,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const extractionFailedWindowIndexes = new Set<number>();
 
     interface ExtractionWindowTask {
+      profileId: string;
       windowIndex: number;
       transcriptCharCount: number;
       members: WindowMember[];
@@ -2783,7 +3502,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     }
 
     let pendingWindow: WindowMember[] = [];
-    let pendingSessionKey: string | null = null;
+    let pendingRouteKey: string | null = null;
     let pendingWindowChars = 0;
     const extractionTasks: ExtractionWindowTask[] = [];
     const sessionMembers: WindowMember[] = [];
@@ -2803,12 +3522,17 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           ? members.slice(-overlapMessages)
           : [];
       pendingWindow = preserved;
-      pendingSessionKey =
-        preserved.length > 0 ? windowSessionKey(preserved[preserved.length - 1]!.event) : null;
+      pendingRouteKey = preserved.length > 0
+        ? conversationRouteKey(
+            preserved[preserved.length - 1]!.result.profileId,
+            preserved[preserved.length - 1]!.event,
+          )
+        : null;
       pendingWindowChars = windowChars(preserved);
       const last = members[members.length - 1]!;
       const windowEvidenceIds = members.map((member) => member.evidence.id);
       extractionTasks.push({
+        profileId: last.result.profileId,
         windowIndex: extractionTasks.length,
         transcriptCharCount: windowChars(members),
         members,
@@ -2879,13 +3603,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     }
 
     async function extractWindow(task: ExtractionWindowTask): Promise<ExtractionWindowResult> {
-      const { members, last, windowEvidenceIds } = task;
+      const { profileId: windowProfileId, members, last, windowEvidenceIds } = task;
       const extraction = await extractMemoryCandidatePlan({
         extractor: options.extractor,
         temporalParser: options.temporal?.parser,
         inferTemporalFromText: options.temporal?.inferFromText,
-        extractionInput: {
-          profileId,
+        extractionInput: producerExtractionInput({
+          profileId: windowProfileId,
           event: { ...last.event, metadata: last.eventMetadata },
           evidence: last.evidence,
           window: {
@@ -2899,7 +3623,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
             })),
             evidenceIds: windowEvidenceIds,
           },
-        },
+        }),
         minConfidence: options.extraction?.minConfidence,
       });
       const safeReport = sanitizeRuntimeExtractionReport(
@@ -2963,7 +3687,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     }
 
     async function applyWindowExtraction(output: ExtractionWindowResult): Promise<void> {
-      const { members, last, windowEvidenceIds } = output.task;
+      const { profileId: windowProfileId, members, last, windowEvidenceIds } = output.task;
       const { extraction, safeReport } = output;
       last.result.extraction = safeReport;
       extractionReports.push(safeReport);
@@ -2975,9 +3699,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         (sourceTrust, member) => lowerTrust(sourceTrust, member.sourceTrust),
         "user",
       );
+      let profileDedupeKeys = dedupeKeysByProfile.get(windowProfileId);
+      if (!profileDedupeKeys) {
+        profileDedupeKeys = new Set<string>();
+        dedupeKeysByProfile.set(windowProfileId, profileDedupeKeys);
+      }
       const writtenMemories = await applyExtractionCandidates({
         result: last.result,
-        profileId,
+        profileId: windowProfileId,
         candidates: extraction.candidates,
         event: last.event,
         evidence: last.evidence,
@@ -2986,7 +3715,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         sourceTrust: windowSourceTrust,
         allowLowerTrustPolicyWrites: last.allowLowerTrustPolicyWrites,
         sourceEventId: last.evidence.id,
-        dedupeKeys,
+        dedupeKeys: profileDedupeKeys,
         embeddingStats,
         contextForCandidate: (candidate) => {
           const sourceIndex = Number.isInteger(candidate.sourceIndex)
@@ -3019,34 +3748,21 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       extractedFactMemories.push(...writtenMemories.filter((memory) => memory.kind === "fact"));
     }
 
-    for (const [index, message] of input.messages.entries()) {
-      const eventProfileId = profileIdFor(profileId, message.profileId);
-      const event: ConversationEvent = {
-        type: "conversation.message",
-        profileId: eventProfileId,
-        role: message.role,
-        content: message.content,
-        ...(message.conversationId !== undefined ? { conversationId: message.conversationId } : {}),
-        ...(message.messageId !== undefined ? { messageId: message.messageId } : {}),
-        ...(message.sourceTrust !== undefined ? { sourceTrust: message.sourceTrust } : {}),
-        ...(message.allowLowerTrustPolicyWrites !== undefined
-          ? { allowLowerTrustPolicyWrites: message.allowLowerTrustPolicyWrites }
-          : {}),
-        ...(message.privacyMode !== undefined ? { privacyMode: message.privacyMode } : {}),
-        ...(message.createdAt !== undefined ? { createdAt: message.createdAt } : {}),
-        ...(message.metadata !== undefined ? { metadata: message.metadata } : {}),
-      };
-      const result = observeResultFor(eventProfileId, event);
-      const recorded = await recordConversationEvidence(event, result);
+    for (const message of input.messages) {
+      const recorded = await recordConversationInput({
+        message,
+        defaultProfileId: profileId,
+      });
       results.push(recorded.result);
       if (!recorded.write) continue;
       const member: WindowMember = { ...recorded.write, result: recorded.result };
       sessionMembers.push(member);
-      if (turnRetention && !isPersonRoutedMemory(event.content)) {
+      const recordedEvent = recorded.write.event;
+      if (turnRetention && !isPersonRoutedMemory(recordedEvent.content)) {
         const turnMemory = await prepareTurnMemoryWrite({
           result: recorded.result,
-          profileId: eventProfileId,
-          event,
+          profileId: recorded.result.profileId,
+          event: recordedEvent,
           evidence: recorded.write.evidence,
           eventMetadata: recorded.write.eventMetadata,
           sensitivity: recorded.write.sensitivity,
@@ -3057,27 +3773,27 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         });
         if (turnMemory) turnMemoryWrites.push(turnMemory);
       }
-      if (!extractFromRoles.includes(event.role)) {
+      if (!extractFromRoles.includes(recordedEvent.role)) {
         recorded.result.skippedReason = "non_user_message";
         continue;
       }
-      if (isPersonRoutedMemory(event.content)) {
+      if (isPersonRoutedMemory(recordedEvent.content)) {
         recorded.result.skippedReason = "person_routed";
         continue;
       }
-      const sessionKey = windowSessionKey(event);
-      const eventChars = event.content.length;
-      const sessionChanged = sessionKey !== null && pendingSessionKey !== sessionKey;
+      const routeKey = conversationRouteKey(recorded.result.profileId, recordedEvent);
+      const eventChars = recordedEvent.content.length;
+      const routeChanged = pendingRouteKey !== null && pendingRouteKey !== routeKey;
       const maxMessagesReached = pendingWindow.length >= maxMessages;
       const charLimitReached = pendingWindowChars + eventChars > maxChars;
       if (
         pendingWindow.length > 0 &&
-        (maxMessagesReached || sessionChanged || charLimitReached)
+        (maxMessagesReached || routeChanged || charLimitReached)
       ) {
         const preserveOverlap =
           charLimitReached &&
           !maxMessagesReached &&
-          !sessionChanged &&
+          !routeChanged &&
           overlapMessages > 0 &&
           windowChars(pendingWindow.slice(-overlapMessages)) + eventChars <= maxChars;
         flushWindow({ preserveOverlap });
@@ -3085,7 +3801,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           flushWindow();
         }
       }
-      pendingSessionKey = sessionKey;
+      pendingRouteKey = routeKey;
       pendingWindow.push(member);
       pendingWindowChars += eventChars;
     }
@@ -3098,7 +3814,6 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     await replayFailedWindows();
     if (sessionDistillation) {
       await applySessionDistillation({
-        profileId,
         members: sessionMembers,
         observedAt,
         skip: input.messages.some((message) => message.privacyMode === "incognito"),
@@ -3109,14 +3824,27 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     }
     const recordConsolidationSummary = store.recordConsolidationSummary;
     if (entityConsolidationConfig && options.consolidator && recordConsolidationSummary) {
-      entityConsolidationStats = await applyIngestEntityConsolidation({
-        profileId,
-        now: observedAt,
-        factMemories: extractedFactMemories,
-        config: entityConsolidationConfig,
-        recordConsolidationSummary,
-        concurrency: windowConcurrency,
-      });
+      entityConsolidationStats = emptyEntityConsolidationStats();
+      const factMemoriesByProfile = new Map<string, MemoryRecord[]>();
+      for (const memory of extractedFactMemories) {
+        const memories = factMemoriesByProfile.get(memory.profileId) ?? [];
+        memories.push(memory);
+        factMemoriesByProfile.set(memory.profileId, memories);
+      }
+      for (const [windowProfileId, factMemories] of factMemoriesByProfile) {
+        const profileStats = await applyIngestEntityConsolidation({
+          profileId: windowProfileId,
+          now: observedAt,
+          factMemories,
+          config: entityConsolidationConfig,
+          recordConsolidationSummary,
+          concurrency: windowConcurrency,
+        });
+        entityConsolidationStats.clustersFound += profileStats.clustersFound;
+        entityConsolidationStats.clustersMerged += profileStats.clustersMerged;
+        entityConsolidationStats.consolidatorCallCount += profileStats.consolidatorCallCount;
+        entityConsolidationStats.consolidatorFailureCount += profileStats.consolidatorFailureCount;
+      }
     }
 
     return {
@@ -3168,29 +3896,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const embeddingStats = emptyRuntimeEmbeddingStats();
     const sessionDistillationStats = emptySessionDistillationStats();
     for (const message of input.messages) {
-      const eventProfileId = profileIdFor(profileId, message.profileId);
-      const event: ConversationEvent = {
-        type: "conversation.message",
-        profileId: eventProfileId,
-        role: message.role,
-        content: message.content,
-        ...(message.conversationId !== undefined ? { conversationId: message.conversationId } : {}),
-        ...(message.messageId !== undefined ? { messageId: message.messageId } : {}),
-        ...(message.sourceTrust !== undefined ? { sourceTrust: message.sourceTrust } : {}),
-        ...(message.allowLowerTrustPolicyWrites !== undefined
-          ? { allowLowerTrustPolicyWrites: message.allowLowerTrustPolicyWrites }
-          : {}),
-        ...(message.privacyMode !== undefined ? { privacyMode: message.privacyMode } : {}),
-        ...(message.createdAt !== undefined ? { createdAt: message.createdAt } : {}),
-        ...(message.metadata !== undefined ? { metadata: message.metadata } : {}),
-      };
-      const result = observeResultFor(eventProfileId, event);
-      const recorded = await recordConversationEvidence(event, result);
+      const recorded = await recordConversationInput({
+        message,
+        defaultProfileId: profileId,
+      });
       results.push(recorded.result);
       if (recorded.write) members.push({ ...recorded.write, result: recorded.result });
     }
     await applySessionDistillation({
-      profileId,
       members,
       observedAt,
       skip: input.messages.some((message) => message.privacyMode === "incognito"),
@@ -3284,9 +3997,12 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       includeSensitive: input.includeSensitive,
       ...(trace ? { trace } : {}),
     }, input.retrieval, queryEmbedding), query);
-    const actionPolicies = await store.listActionPolicies(profileId, {
-      includeSensitive: input.includeSensitive,
-    });
+    const actionPolicies = runtimeActionPoliciesForRead(
+      await store.listActionPolicies(profileId, {
+        includeSensitive: input.includeSensitive,
+      }),
+      input.includeSensitive,
+    );
     const curiosityBudget = store.listGapCandidates
       ? curiosityBudgetForTurn({
           configuredMax: exploration.enabled ? exploration.curiosityBudget : 0,
@@ -3303,10 +4019,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           includeSuppressed: trace !== undefined,
         })
       : [];
-    const curiosityPolicies = gapResults
-      .filter((result) => !result.suppressedReason)
-      .slice(0, curiosityBudget)
-      .map((result) => curiosityActionPolicy(result.candidate));
+    const curiosityPolicies = runtimeActionPoliciesForRead(
+      gapResults
+        .filter((result) => !result.suppressedReason)
+        .slice(0, curiosityBudget)
+        .map((result) => curiosityActionPolicy(result.candidate)),
+      input.includeSensitive,
+    );
     const suppressedCuriosity = gapResults
       .filter((result) => result.suppressedReason)
       .slice(0, 10)
@@ -3444,13 +4163,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         memory,
         decision: decisionsById.get(memory.id),
         evidenceEventIds: await evidenceEventIdsForMemory(memory),
+        classifyRuntimeSensitivity,
       }));
     }
 
     const excludedById = new Map<string, TurnExplanationExcludedMemory>();
     for (const decision of trace.decisions) {
       if (includedIds.has(decision.memory.id) || decision.decision !== "excluded") continue;
-      const excluded = excludedTurnExplanationMemory(decision);
+      const excluded = excludedTurnExplanationMemory(decision, classifyRuntimeSensitivity);
       if (excluded && !excludedById.has(excluded.id)) excludedById.set(excluded.id, excluded);
     }
     for (const memory of execution.candidateMemories) {
@@ -3461,7 +4181,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         memory,
         decision: "excluded",
         reason: "budget_cut",
-      });
+      }, classifyRuntimeSensitivity);
       if (excluded) excludedById.set(excluded.id, excluded);
     }
 
@@ -4163,6 +4883,12 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   function alreadyDistilledClusterKeys(events: EvidenceEvent[]): Set<string> {
     const keys = new Set<string>();
     for (const event of events) {
+      if (
+        event.payload._gmosSchema !==
+        GMOS_EVIDENCE_PAYLOAD_SCHEMAS.procedureDistillation
+      ) {
+        continue;
+      }
       const key = event.payload.clusterKey;
       if (typeof key === "string" && key.trim().length > 0) keys.add(key);
     }
@@ -4355,7 +5081,16 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     entityKey: string,
   ): Promise<MemoryRecord | null> {
     if (store.findActiveMemoryByMetadata) {
-      return store.findActiveMemoryByMetadata(profileId, "dossierFor", entityKey);
+      const indexed = await store.findActiveMemoryByMetadata(profileId, "dossierFor", entityKey);
+      if (
+        indexed &&
+        hasGmosMetadataReferenceSchema(
+          indexed.metadata,
+          GMOS_METADATA_REFERENCE_SCHEMAS.dossier,
+        )
+      ) {
+        return indexed;
+      }
     }
     if (!store.listMemories) return null;
     const existing = await store.listMemories({
@@ -4368,6 +5103,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     return existing.find(
       (memory) =>
         memory.status === "active" &&
+        hasGmosMetadataReferenceSchema(
+          memory.metadata,
+          GMOS_METADATA_REFERENCE_SCHEMAS.dossier,
+        ) &&
         memory.metadata.dossier === true &&
         memory.metadata.dossierFor === entityKey,
     ) ?? null;
@@ -4474,13 +5213,16 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         content: "Entity dossier synthesis",
         sensitivity: "normal",
         eligibleForLongTermMemory: false,
-        payload: {
+        payload: markedGmosEvidencePayload(
+          GMOS_EVIDENCE_PAYLOAD_SCHEMAS.dossier,
+          {
           entityKey: snapshot.entityKey,
           kind: snapshot.entityKind,
           sourceBeliefIds: entity.sourceBeliefIds,
           sourceMemoryIds: entity.sourceMemoryIds,
           ...(existing ? { supersededMemoryId: existing.id } : {}),
-        },
+          },
+        ),
         createdAt: input.now,
       });
       const embedding = await embeddingForRuntimeWrite({
@@ -4495,17 +5237,20 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         sensitivity: contentSensitivity,
         confidence: normalized.normalized.confidence,
         sourceEventId: evidence.id,
-        metadata: {
-          dossier: true,
-          dossierFor: snapshot.entityKey,
-          dossierKind: snapshot.entityKind,
-          dossierInputKey: inputKey,
-          dossierSource: "host_dossier_synthesizer",
-          sourceBeliefIds: entity.sourceBeliefIds,
-          sourceMemoryIds: entity.sourceMemoryIds,
-          aliases: snapshot.aliases,
-          ...(name ? { dossierSynthesizerName: name } : {}),
-        },
+        metadata: markedGmosMetadata(
+          {
+            dossier: true,
+            dossierFor: snapshot.entityKey,
+            dossierKind: snapshot.entityKind,
+            dossierInputKey: inputKey,
+            dossierSource: "host_dossier_synthesizer",
+            sourceBeliefIds: entity.sourceBeliefIds,
+            sourceMemoryIds: entity.sourceMemoryIds,
+            aliases: snapshot.aliases,
+            ...(name ? { dossierSynthesizerName: name } : {}),
+          },
+          GMOS_METADATA_REFERENCE_SCHEMAS.dossier,
+        ),
         createdAt: input.now,
         ...(embedding ? { embedding } : {}),
       });
@@ -4628,16 +5373,47 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   }
 
   function payloadReferencesMemory(payload: Record<string, unknown>, memoryId: string): boolean {
-    if (payload.memoryId === memoryId) return true;
-    if (payload.archivedMemberId === memoryId) return true;
-    if (payload.survivorId === memoryId) return true;
-    if (payload.supersededMemoryId === memoryId) return true;
-    if (payloadStringArray(payload.sourceMemoryIds).includes(memoryId)) return true;
-    if (payloadStringArray(payload.memberIds).includes(memoryId)) return true;
-    for (const key of ["actions", "previousValues", "restoredValues"]) {
+    const shape = gmosEvidenceReferenceShapeOf(payload);
+    if (!shape) return false;
+    for (const key of shape.memoryIdFields ?? []) {
+      if (payload[key] === memoryId) return true;
+    }
+    for (const key of shape.memoryIdArrays ?? []) {
+      if (payloadStringArray(payload[key]).includes(memoryId)) return true;
+    }
+    for (const key of [...(shape.actionArrays ?? []), ...(shape.snapshotArrays ?? [])]) {
       const values = payload[key];
       if (!Array.isArray(values)) continue;
       if (values.some((entry) => payloadRecord(entry).memoryId === memoryId)) return true;
+    }
+    if (!shape.provenanceCredit) return false;
+    const provenanceCredit = payloadRecord(payload.provenanceCredit);
+    const creditedMemories = Array.isArray(provenanceCredit.creditedMemories)
+      ? provenanceCredit.creditedMemories
+      : [];
+    for (const entry of creditedMemories) {
+      const credit = payloadRecord(entry);
+      if (
+        credit.id === memoryId ||
+        credit.viaMemoryId === memoryId ||
+        credit.derivedFromMemoryId === memoryId ||
+        payloadStringArray(credit.path).includes(memoryId)
+      ) {
+        return true;
+      }
+    }
+    const creditedProvenance = Array.isArray(provenanceCredit.creditedProvenance)
+      ? provenanceCredit.creditedProvenance
+      : [];
+    for (const entry of creditedProvenance) {
+      const credit = payloadRecord(entry);
+      if (
+        credit.viaMemoryId === memoryId ||
+        credit.derivedFromMemoryId === memoryId ||
+        payloadStringArray(credit.path).includes(memoryId)
+      ) {
+        return true;
+      }
     }
     return false;
   }
@@ -4645,7 +5421,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   function lifecycleReasonSummary(parts: string[]): string {
     const summary = parts
       .filter((part) => part.trim().length > 0)
-      .map((part) => redactForReport(part))
+      .map((part) =>
+        redactRuntimePayloadString(part, classifyRuntimeSensitivity, "content")
+      )
       .join("; ");
     return summary || "no_public_reason";
   }
@@ -4679,10 +5457,19 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     event: EvidenceEvent,
   ): MemoryLifecycleHistoryEntry[] {
     const payload = payloadRecord(event.payload);
+    const schema = gmosEvidencePayloadSchemaOf(payload);
     const sourceType = safePublicLabel(event.sourceType);
     const eventId = explanationEventId(event.id, classifyRuntimeSensitivity);
     if (event.id === memory.sourceEventId) {
-      if (sourceType === "consolidation" && memory.metadata.consolidationSummary === true) {
+      if (
+        schema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.consolidationSummary &&
+        sourceType === "consolidation" &&
+        hasGmosMetadataReferenceSchema(
+          memory.metadata,
+          GMOS_METADATA_REFERENCE_SCHEMAS.consolidationSummary,
+        ) &&
+        memory.metadata.consolidationSummary === true
+      ) {
         return [{
           createdAt: event.createdAt,
           eventKind: "consolidated_summary",
@@ -4694,7 +5481,15 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           ]),
         }];
       }
-      if (sourceType === "distillation" && memory.metadata.procedureDistillation === true) {
+      if (
+        schema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.procedureDistillation &&
+        sourceType === "distillation" &&
+        hasGmosMetadataReferenceSchema(
+          memory.metadata,
+          GMOS_METADATA_REFERENCE_SCHEMAS.procedureDistillation,
+        ) &&
+        memory.metadata.procedureDistillation === true
+      ) {
         return [{
           createdAt: event.createdAt,
           eventKind: "distilled_procedure",
@@ -4706,7 +5501,15 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           ]),
         }];
       }
-      if (sourceType === "dossier" && memory.metadata.dossier === true) {
+      if (
+        schema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.dossier &&
+        sourceType === "dossier" &&
+        hasGmosMetadataReferenceSchema(
+          memory.metadata,
+          GMOS_METADATA_REFERENCE_SCHEMAS.dossier,
+        ) &&
+        memory.metadata.dossier === true
+      ) {
         return [{
           createdAt: event.createdAt,
           eventKind: "dossier_created",
@@ -4728,7 +5531,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       }];
     }
     if (!payloadReferencesMemory(payload, memory.id)) return [];
-    if (sourceType === "maintenance" || sourceType === "memory.lifecycle") {
+    if (
+      schema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.lifecycleTransition &&
+      (sourceType === "maintenance" || sourceType === "memory.lifecycle")
+    ) {
       const fromStatus = payloadStatus(payload.from);
       const toStatus = payloadStatus(payload.to);
       const reasons = payloadStringArray(payload.reasons);
@@ -4742,7 +5548,11 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         reasonSummary: lifecycleReasonSummary(reasons.length > 0 ? reasons : [`source:${sourceType}`]),
       }];
     }
-    if (sourceType === "consolidation") {
+    if (
+      sourceType === "consolidation" &&
+      (schema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.consolidationDuplicate ||
+        schema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.consolidationSummary)
+    ) {
       const kind: MemoryLifecycleHistoryEntry["eventKind"] =
         payload.archivedMemberId === memory.id ||
         payloadStringArray(payload.sourceMemoryIds).includes(memory.id) ||
@@ -4760,7 +5570,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         reasonSummary: lifecycleReasonSummary(reasons.length > 0 ? reasons : ["consolidation"]),
       }];
     }
-    if (sourceType === "distillation") {
+    if (
+      schema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.procedureDistillation &&
+      sourceType === "distillation"
+    ) {
       return [{
         createdAt: event.createdAt,
         eventKind: event.id === memory.sourceEventId ? "distilled_procedure" : "distilled_source_trajectory",
@@ -4769,7 +5582,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         reasonSummary: lifecycleReasonSummary(["procedure distillation"]),
       }];
     }
-    if (sourceType === "dossier") {
+    if (schema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.dossier && sourceType === "dossier") {
       return [{
         createdAt: event.createdAt,
         eventKind: payload.supersededMemoryId === memory.id ? "archived" : "dossier_created",
@@ -4778,7 +5591,15 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         reasonSummary: lifecycleReasonSummary(["dossier"]),
       }];
     }
-    if (sourceType === "outcome" || sourceType === "feedback" || sourceType === "memory.reinforcement") {
+    const reinforcementSchemaMatchesSource =
+      (sourceType === "outcome" &&
+        schema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.outcomeReinforcement) ||
+      (sourceType === "feedback" &&
+        (schema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.feedbackReinforcement ||
+          schema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.feedbackConfidencePenalty)) ||
+      (sourceType === "memory.reinforcement" &&
+        schema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.memoryReinforcement);
+    if (reinforcementSchemaMatchesSource) {
       const entries: MemoryLifecycleHistoryEntry[] = [];
       if (payloadStringArray(payload.memoryIds).includes(memory.id)) {
         entries.push({
@@ -4820,8 +5641,12 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       }
       return entries;
     }
-    if (sourceType === "evolution") {
-      const reverted = typeof payload.revertedApplicationEventId === "string";
+    if (
+      sourceType === "evolution" &&
+      (schema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.evolutionApply ||
+        schema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.evolutionRevert)
+    ) {
+      const reverted = schema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.evolutionRevert;
       return [{
         createdAt: event.createdAt,
         eventKind: reverted ? "evolution_reverted" : "evolution_applied",
@@ -4833,7 +5658,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         ]),
       }];
     }
-    if (sourceType === "memory.rollback") {
+    if (
+      schema === GMOS_EVIDENCE_PAYLOAD_SCHEMAS.memoryRollback &&
+      sourceType === "memory.rollback"
+    ) {
       return [{
         createdAt: event.createdAt,
         eventKind: "rolled_back",
@@ -4849,6 +5677,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   }
 
   function failureReferencesMemory(failure: FailureEventRecord, memoryId: string): boolean {
+    if (
+      !hasGmosMetadataReferenceSchema(
+        failure.metadata,
+        GMOS_METADATA_REFERENCE_SCHEMAS.failureMemoryLinks,
+      )
+    ) {
+      return false;
+    }
     return (
       payloadStringArray(failure.metadata.relatedMemoryIds).includes(memoryId) ||
       payloadStringArray(failure.metadata.usedMemoryIds).includes(memoryId)
@@ -4888,7 +5724,12 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         });
       }
     }
-    const annealing = payloadRecord(memory.metadata.annealing);
+    const annealing = hasGmosMetadataReferenceSchema(
+      memory.metadata,
+      GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+    )
+      ? payloadRecord(memory.metadata.annealing)
+      : {};
     if (annealing.active === true) {
       entries.push({
         createdAt:
@@ -4959,15 +5800,24 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       });
       return null;
     }
-    const evidence = (await store.listEvidenceForMemory(memory.id)).map(
+    const publicMemory = runtimeMemoryForRead(memory, true, classifyRuntimeSensitivity);
+    if (!publicMemory) {
+      assertNoReadSideEffects({
+        operation: "explain",
+        before,
+        after: await readAuditSnapshot(store),
+      });
+      return null;
+    }
+    const evidence = (await store.listEvidenceForMemory(publicMemory.id)).map(
       (event) => sanitizeRuntimeEvidenceForPublicOutput(event, classifyRuntimeSensitivity),
     );
     const result: ExplainResult = {
-      id: memory.id,
+      id: publicMemory.id,
       kind: "memory",
-      memoryKind: safePublicLabel(memory.kind) as MemoryRecord["kind"],
-      sensitivity: memory.sensitivity,
-      text: memory.content,
+      memoryKind: publicMemory.kind,
+      sensitivity: publicMemory.sensitivity,
+      text: publicMemory.content,
       evidence,
       lifecycle: await memoryLifecycleHistory(memory),
     };

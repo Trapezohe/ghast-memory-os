@@ -65,9 +65,11 @@ Key write methods:
   order.
 - `ingestConversation({ profileId?, messages, window?, extraction?, turnRetention?, sessionDistillation?, consolidateEntities? })`:
   records each message as its own evidence event, then calls the extractor once
-  per eligible message window. `window.maxMessages` defaults to `12`; metadata
-  `sessionId`, `sessionKey`, or generic `windowId` starts a new window when it
-  changes. `window.concurrency` runs bounded extractor windows and
+  per eligible message window. `window.maxMessages` defaults to `12`;
+  extraction windows never cross profiles. Within a profile, routing uses an
+  explicit `sessionId`/`sessionKey`/`windowId` first, then `conversationId`, then
+  the current ingest call. Any route change starts a new window.
+  `window.concurrency` runs bounded extractor windows and
   session-distillation groups in parallel while applying results in source
   window/session order; the default is `1` unless a caller wires a higher
   concurrency. `extraction.extractFromRoles` overrides the
@@ -79,9 +81,10 @@ Key write methods:
   true`, `metadata.sourceEvidenceId`, and the same evidence id as
   `sourceEventId`. `sessionDistillation` defaults to disabled. When `true` and
   the runtime has a `sessionDistiller` hook, gmOS groups messages by the same
-  `sessionId`/`sessionKey`/`windowId` boundary used by extraction windows, then
-  calls the hook once per session after extraction and turn retention. Messages
-  without a session key use one whole-call fallback group. Each distiller input
+  profile-bound route used by extraction windows, then calls the hook once per
+  group after extraction and turn retention. Messages without an explicit
+  session key group by `conversationId`; only messages without either identity
+  use the current ingest call. Each distiller input
   is capped at 24,000 source content characters by default; over-cap messages
   are truncated from the tail of that session input. Returned candidates are
   stored as ordinary evidence-linked memories with default `kind: "fact"`,
@@ -124,6 +127,25 @@ same event-keyed ingest writes no new turn memories.
 Session distillation writes use the same gates and dedupe by deterministic
 session event key plus candidate content, so replaying the same session does not
 duplicate session summary memories or evidence.
+
+Extractor and session-distiller hooks receive content and timing, but not raw
+conversation routing identities. For extractor calls, gmOS omits
+`conversationId` and `messageId`, removes `sessionId`, `sessionKey`, `windowId`,
+`sourceId`, `sourceUri`, and `eventKey` from source metadata, replaces the evidence
+`eventKey` with `[current_event]`, and sets its `sourceUri` to `null`. For
+session-distiller calls, `context.eventKey` is `[current_session]`, evidence
+references are call-local aliases, and `conversationId`, `sessionId`, and
+`sourceUri` are absent. Profile-bound grouping and durable provenance still use
+the original values internally. Hooks should infer content only from the
+provided messages and use `sourceIndex` or call-local evidence aliases when
+they need grounding; they must not depend on durable route identifiers.
+
+Session-summary memories retain a bounded source-evidence sample plus
+`metadata.sessionEvidenceCount`; the public SDK exposes the count rather than
+raw evidence identifiers. The session-distillation evidence event remains the
+lossless internal provenance root, so safe profile backups can traverse the
+complete evidence closure without making ordinary explain/reconstruct reads
+scale with the full session.
 
 ### SQLite Store Encryption
 
@@ -173,6 +195,65 @@ Profile backup/restore methods run through the already opened store handle. For
 encrypted stores, source reads and restore writes therefore use the host-supplied
 driver and key. The profile backup document remains JSON and should be protected
 by the host when written to disk.
+
+Bundle reference remapping is schema-owned, not key-name driven. New gmOS-owned
+evidence payloads are stamped at creation with a versioned `_gmosSchema` marker.
+Only a recognized marker grants gmOS ownership of payload references; every
+unmarked payload, payload that merely uses names such as `outcome`, `memoryId`,
+or `actions`, and unknown future marker version remains opaque and lossless. A
+known schema owns only its declared reference fields; unrelated extension fields
+remain untouched.
+Cross-profile restore batch-loads existing evidence identities and resolves only
+owned session-evidence dependencies in topological order; cyclic owned
+dependencies and IDs already owned by another profile fail closed before any rows
+are written. Target identity reads, owner checks, row writes, vectors, and
+association rebuild run in one immediate SQLite transaction. Restore rejects an
+already-active outer transaction rather than silently weakening that guarantee.
+
+Reference-bearing record metadata uses `_gmosMetadataSchemas`, an array of
+versioned capabilities. The registry currently distinguishes runtime lineage,
+consolidation summaries and links, dossiers, procedure distillation, lifecycle
+archive state, dossier supersession, failure-to-memory links, host/mem0 imports,
+and explicit world-belief projections. Only fields
+declared by a recognized capability are remapped or trusted as gmOS control
+state. Unmarked/unknown metadata and unrelated extensions remain lossless host
+data. Runtime low-level writes and extractor metadata strip both the reserved
+marker and known capability-owned control fields; callers cannot overwrite
+annealing, trust, provenance, lifecycle, distillation, or import identity while
+an internal capability remains attached. Import authority is narrower still:
+callers cannot submit a claim, evidence id, deterministic key, or authority
+marker. Host and mem0 helpers require the optional
+`importHostSnapshotsAtomically` or `importMem0RecordsAtomically` store capability,
+and fail before import writes when it is absent.
+
+This marker boundary has three deliberately narrow alpha-upgrade adapters: legacy
+mem0 imports, legacy host snapshot imports, and legacy CLI profile-snapshot
+points. They do not trust a field name by itself. gmOS requires the complete
+historical envelope, exact profile/source/event identity, and exact linked
+evidence before atomically rebuilding a store-owned identity binding; otherwise
+the row remains opaque or migration fails closed. SQLite performs the identity
+claim, evidence write, memory write, vector/association projection, and host
+stale transition in one `BEGIN IMMEDIATE` transaction. Identity and revision
+keys are local HMAC digests over canonical tuples, not delimiter-joined source
+values. This preserves cross-process idempotence without exposing source
+identity in the operational ledger.
+
+The operational import-identity ledger and its HMAC secret are local SQLite
+state and never appear in SAFE or FULL profile documents. FULL trusted restore
+validates complete import envelopes and rebuilds target-local digests in the
+same restore transaction; cross-profile restore also rewrites the target event
+and metadata keys. SAFE restore removes import authority markers from restored
+memory and evidence and never creates claims. Manual, safety, retention, and
+forget archives block automatic re-import. Only a verified
+`host_import_stale` transition can restore the same memory id automatically;
+explicit archive restore first revalidates the unredacted binding.
+
+Profile bundles with `includeSensitive: false` apply strict identity-key
+classification at export and parse time. Recognized marker ownership therefore
+does not exempt session identity keys from SAFE filtering. This is intentionally
+stricter than public evidence listing, which can keep safe explanatory content
+visible after canonical identity redaction. FULL bundles with explicit
+`includeSensitive: true` retain their lossless trusted-migration behavior.
 
 ### Embedding Provider And Retrieval
 
@@ -344,14 +425,14 @@ the normal person isolation gates even if opted in.
 
 Confidence annealing is on by default. Rapid reinforcement from non-independent
 evidence within `windowMs`, and memories written from lower-trust sources, carry
-`metadata.annealing`; search, ranking, retention, `prepareTurn()`, and
+marker-owned `metadata.annealing`; search, ranking, retention, `prepareTurn()`, and
 `explainTurn()` use the capped effective confidence and expose the annealing
 state in score components.
 
 Outcome provenance credit is on by default under
 `lifecycle.outcomeReinforcement.provenanceCredit`. When
 `commitOutcome({ usedMemoryIds })` reinforces a derived memory, gmOS follows
-existing `sourceMemoryIds` / `sourceBeliefIds` / `sourceTrajectoryIds` metadata
+schema-owned `sourceMemoryIds` / `sourceBeliefIds` / `sourceTrajectoryIds` metadata
 through the evidence DAG in the same transaction. Memory sources receive
 `delta * hopDecay^hop`, bounded by `maxCreditDepth` and `maxCreditFanout`.
 Fan-out is deterministic: highest source confidence, newest source timestamp,
@@ -360,6 +441,12 @@ memories terminate propagation. Non-memory provenance is not numerically
 mutated; it is recorded in the outcome evidence payload under
 `provenanceCredit.creditedProvenance`. Propagated boosts are marked
 non-independent and do not count as independent annealing evidence.
+
+Current-state filtering never infers provenance from content equality alone.
+Extracted structured memories receive a `worldBeliefProjection` capability with
+canonical subject/predicate/object fields; those explicit fields, or a belief's
+actual `sourceMemoryId`, are the only basis for suppressing superseded source
+memories from context recall. History recall keeps them available.
 
 Consolidation defaults are shown above. `enabled: false` disables the
 `consolidate` phase even when requested. The tag-overlap threshold is clamped to
@@ -625,7 +712,11 @@ Primary methods:
   fallback. SQLite hosts can pass `forgetTargetParser` when they want to parse
   natural-language delete commands into structured target terms. Parser
   `undefined` or `null` falls back to literal `query`; parser empty terms archive
-  nothing. Empty literal queries also archive nothing.
+  nothing. Empty literal queries also archive nothing. SQLite forget scans every
+  active/dormant exact-term match; it does not silently stop after a retrieval
+  page. Derived-memory propagation uses reverse memory/evidence adjacency queues,
+  so deep lineage chains are traversed once rather than by repeated full-profile
+  fixed-point scans.
 - `memoryRollback(input)`: replay a memory evidence ledger and restore the memory
   as of `toEvidenceEventId`. The call requires `{ memoryId, toEvidenceEventId,
   approvedBy }` and writes a `memory.rollback` evidence event with its own
@@ -645,10 +736,20 @@ boundary/procedure policy memories without an explicit override, and cannot
 supersede higher-trust single-cardinality world beliefs.
 
 `forget()` now also redacts source evidence content when every memory derived
-from that evidence event has been forgotten. The evidence row, id, source type,
-and payload remain, but readable content is replaced with a sha256/length stub.
-If another active or dormant memory still points at the same evidence event,
-the evidence content is not redacted until that survivor is also forgotten.
+from that evidence event has been forgotten. The closure follows only recognized
+runtime-lineage metadata and versioned evidence-reference schemas, including
+session/window references, snapshot lineage, and annealing source evidence.
+Memories derived from a forgotten memory or its evidence provenance are archived
+conservatively so paraphrased session summaries cannot retain the deleted fact.
+The evidence row, id, source type, and payload remain, but readable content is
+replaced with a sha256/length stub. Evidence reachable from another active or
+dormant memory is protected until that survivor is also forgotten. Matching,
+derived archival, vector/belief projection updates, evidence redaction, and
+snapshot-residue cleanup run in one immediate SQLite transaction; an injected
+redaction failure rolls the entire forget operation back and a retry can finish.
+Evidence is considered already redacted only when its stored content is the
+actual redaction sentinel; an untrusted payload cannot forge a marker that skips
+content removal.
 
 Low-level compatibility methods such as `add`, `search`, `history`, `list`,
 `get`, `update`, `delete`, `backup`, and `restore` exist for migration,
@@ -1042,10 +1143,20 @@ await evolution.revertEvolutionApplication({
 suggested actions; callers may pass a subset of those actions but cannot add new
 targets or wider mutations. The action set is limited to bounded reinforcement
 adjustment, bounded confidence adjustment, demote to dormant, and reactivate.
+The exported SQLite store enforces the same persistence invariant before any
+write: `proposalId`, `approvedBy`, and every `memoryId` must be non-empty, action
+types must belong to that union, and numeric deltas must be finite. Invalid
+low-level calls therefore cannot create an application that the strict revert
+path cannot later consume.
 Every apply writes `sourceType: "evolution"` evidence with `{ proposalId,
 approvedBy, actions, previousValues }`; revert restores `previousValues`, writes
 its own evolution evidence, and a second revert fails with a typed
 `EvolutionApplicationError`.
+Revert accepts only the recognized evolution-apply schema and validates the
+complete envelope before its first write: non-empty proposal/approver, valid
+actions, full profile-bound memory snapshots, unique non-archived targets, and
+an exact action-to-snapshot target set. Partial or mixed-validity snapshots fail
+closed without changing memory or writing revert evidence.
 
 Parameter proposals are deliberately not self-applicable. Passing a
 `parameter_proposal_*` id to `applyEvolutionProposal()` throws
@@ -1142,9 +1253,11 @@ matching evidence-path lines; reconstruction stats expose
 `layerPolicy?: { summaryMinShare?: number; turnMaxShare?: number }` is an
 opt-in host policy for layered stores. Absent policy keeps reconstruction output
 byte-identical to the legacy global pool. When present, gmOS derives layers only
-from existing provenance metadata: `metadata.sessionDistillation === true` is a
-summary, `metadata.turnMemory === true` is a raw turn, and everything else is an
-atom. The kernel first ranks visible candidates through the normal fusion path,
+from metadata carrying the `runtimeLineage` capability:
+`metadata.sessionDistillation === true` is a summary,
+`metadata.turnMemory === true` is a raw turn, and everything else is an atom.
+Unmarked host fields with those names remain ordinary metadata. The kernel first
+ranks visible candidates through the normal fusion path,
 then guarantees up to `ceil(summaryMinShare * maxMemories)` top-ranked summaries
 when that many summaries exist, caps turns at `floor(turnMaxShare *
 maxMemories)`, and fills released slots by rank. Summary guarantees never invert
@@ -1166,8 +1279,10 @@ Hosts can also configure `createMemoryOS({ safety: { sensitivityClassifier } })`
 to mark product-specific local terms as `sensitive` or `secret_like`. The
 classifier is additive: gmOS still applies the built-in conservative detector and
 uses the maximum sensitivity, so the host callback cannot downgrade built-in
-secret-like matches. This is the extension point for host-owned safety semantics;
-do not add product-specific keyword lists to gmOS core.
+secret-like matches. Returning `null` or `undefined` means "no additional
+classification". A thrown exception or any other return value fails closed as
+`secret_like` on write and read paths. This is the extension point for host-owned
+safety semantics; do not add product-specific keyword lists to gmOS core.
 
 Hosts that need to mirror gmOS safety behavior outside the runtime can import
 `classifySensitivity`, `isSecretLikeMemoryContent`,
@@ -1333,9 +1448,10 @@ results record `sweepCues` and `sweepIncludedCount`; manifests record
 External benchmark runners can enable write-side session distillation with
 `sessionDistillation: true` or CLI `--session-distill on`. It requires either
 hooks with `sessionDistiller` or an intelligence config that can build one.
-Message ingest distills once per session key, with no-key messages using one
-whole-call fallback group. Memory ingest first direct-imports eligible memory
-events, then distills consecutive memory batches grouped by metadata session
+Message ingest distills once per profile-bound route: explicit session identity,
+then `conversationId`, then the current ingest call. Memory ingest first
+direct-imports eligible memory events, then distills consecutive memory batches
+grouped by metadata session
 identity (`sessionId`, `sessionKey`, `windowId`, `conversationId`, or `sourceId`)
 or, when absent, by the UTC calendar day of `createdAt`. Both modes use the same
 24,000 character per-session input cap as SDK ingest. Session provider calls use
@@ -1387,6 +1503,10 @@ gmos-inspect turn --db ./gmos.db --profile local --query "project release" --max
 gmos-inspect timeline <memory-id> --db ./gmos.db --profile local --format markdown
 gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
 ```
+
+`snapshot list` returns only evidence carrying the recognized
+`profileSnapshotPoint` payload schema. The evidence row, not payload extension
+fields, is authoritative for snapshot `id`, `profileId`, and `createdAt`.
 
 Value-taking CLI options use the next space-separated token as the value. If
 that token is missing or starts with `--`, gmOS reports `<option> requires a

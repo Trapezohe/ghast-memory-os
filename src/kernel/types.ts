@@ -235,10 +235,10 @@ export interface MemorySessionDistillationInput {
   eventTime: string;
   context: {
     eventKey: string;
-    conversationId?: string | undefined;
-    sessionId?: string | undefined;
-    sourceUri?: string | undefined;
     evidenceIds: string[];
+    conversationId?: never;
+    sessionId?: never;
+    sourceUri?: never;
   };
   messages: Array<{
     role: MemoryRole;
@@ -2177,6 +2177,58 @@ export interface ArchiveStaleHostImportsInput {
   archivedAt?: string | undefined;
 }
 
+export interface AtomicImportedMemoryResult {
+  sourceIndex: number;
+  memory: MemoryRecord;
+  disposition: "inserted" | "reused" | "restored";
+}
+
+export interface AtomicMem0ImportRecord {
+  sourceIndex: number;
+  originalId: string;
+  content: string;
+  kind: MemoryKind;
+  scope: string;
+  sensitivity: Sensitivity;
+  metadata: Record<string, unknown>;
+  createdAt?: string | undefined;
+}
+
+export interface ImportMem0RecordsAtomicallyInput {
+  profileId: string;
+  sourceFileHash: string;
+  records: AtomicMem0ImportRecord[];
+  occurredAt: string;
+}
+
+export interface AtomicHostSnapshotRecord {
+  sourceIndex: number;
+  hostMemoryId: string;
+  content: string;
+  kind: MemoryKind;
+  scope: string;
+  sensitivity: Sensitivity;
+  confidence: number;
+  sourceUri: string;
+  metadata: Record<string, unknown>;
+  createdAt?: string | null | undefined;
+  updatedAt?: string | null | undefined;
+}
+
+export interface ImportHostSnapshotsAtomicallyInput {
+  profileId: string;
+  sourceType: string;
+  records: AtomicHostSnapshotRecord[];
+  sync: boolean;
+  allowSecretLike: boolean;
+  occurredAt: string;
+}
+
+export interface ImportHostSnapshotsAtomicallyResult {
+  memories: AtomicImportedMemoryResult[];
+  archivedMemoryIds: string[];
+}
+
 export interface SearchIndexStatus {
   status: "ok" | "missing" | "stale" | "unsupported";
   totalMemoryCount: number;
@@ -2236,6 +2288,16 @@ export interface MemoryStore {
     | { evidence: EvidenceEvent; inserted: boolean };
   recordEvidence(input: RecordEvidenceInput): Promise<EvidenceEvent> | EvidenceEvent;
   getEvidenceByEventKey?(eventKey: string): Promise<EvidenceEvent | null> | EvidenceEvent | null;
+  /** Pair with evidenceMutationVersion to enable safe negative-result caching. */
+  hasLegacyEvidenceKeys?(
+    profileId: string,
+    sourceType: string,
+  ): Promise<boolean> | boolean;
+  /** Must change whenever hasLegacyEvidenceKeys could change for this profile/source pair. */
+  evidenceMutationVersion?(
+    profileId: string,
+    sourceType: string,
+  ): Promise<string | number> | string | number;
   addMemory(input: AddMemoryInput): Promise<MemoryRecord> | MemoryRecord;
   addMemories?(input: AddMemoryInput[]): Promise<MemoryRecord[]> | MemoryRecord[];
   updateMemory?(input: UpdateMemoryInput): Promise<MemoryRecord | null> | MemoryRecord | null;
@@ -2262,6 +2324,12 @@ export interface MemoryStore {
     key: string,
     value: string,
   ): Promise<MemoryRecord | null> | MemoryRecord | null;
+  importMem0RecordsAtomically?(
+    input: ImportMem0RecordsAtomicallyInput,
+  ): Promise<AtomicImportedMemoryResult[]> | AtomicImportedMemoryResult[];
+  importHostSnapshotsAtomically?(
+    input: ImportHostSnapshotsAtomicallyInput,
+  ): Promise<ImportHostSnapshotsAtomicallyResult> | ImportHostSnapshotsAtomicallyResult;
   archiveStaleHostImports?(
     input: ArchiveStaleHostImportsInput,
   ): Promise<string[]> | string[];

@@ -1,13 +1,18 @@
 import { createHash } from "node:crypto";
 
 import type {
-  AddMemoryInput,
+  AtomicHostSnapshotRecord,
   MemoryKind,
-  MemoryRecord,
   MemoryStore,
   Sensitivity,
 } from "../kernel/types.js";
-import { classifySensitivity, isPersonRoutedMemory } from "../kernel/safety.js";
+import {
+  classifyPayloadSensitivity,
+  isPersonRoutedMemory,
+  redactForReport,
+  sanitizePublicPayloadRecord,
+  stripGmosOwnedMetadataFields,
+} from "../kernel/safety.js";
 
 export interface HostMemorySnapshot {
   id: string;
@@ -83,13 +88,20 @@ export function normalizeHostMemoryKind(snapshot: Pick<HostMemorySnapshot, "cont
 }
 
 export function normalizeHostMemorySensitivity(
-  snapshot: Pick<HostMemorySnapshot, "content" | "sensitivity">,
+  snapshot: Pick<HostMemorySnapshot, "content" | "scope" | "sensitivity"> &
+    Partial<Pick<
+      HostMemorySnapshot,
+      "id" | "sourceUri" | "metadata" | "createdAt" | "updatedAt"
+    >>,
 ): Sensitivity {
-  const contentSensitivity = classifySensitivity(snapshot.content);
-  if (contentSensitivity === "secret_like") return "secret_like";
+  const detected = classifyPayloadSensitivity(snapshot);
   const explicit = stringOrEmpty(snapshot.sensitivity).toLowerCase();
-  if (SENSITIVITIES.has(explicit as Sensitivity)) return explicit as Sensitivity;
-  return contentSensitivity;
+  const declared = SENSITIVITIES.has(explicit as Sensitivity)
+    ? explicit as Sensitivity
+    : "normal";
+  if (detected === "secret_like" || declared === "secret_like") return "secret_like";
+  if (detected === "sensitive" || declared === "sensitive") return "sensitive";
+  return "normal";
 }
 
 function sourceUriFor(input: {
@@ -100,80 +112,29 @@ function sourceUriFor(input: {
   return `${input.sourceUriPrefix}/${encodeURIComponent(input.snapshot.id)}`;
 }
 
-function eventKeyFor(input: {
-  profileId: string;
-  sourceType: string;
-  snapshot: HostMemorySnapshot;
-  sourceUri: string;
-  contentHash: string;
-}): string {
-  return [
-    "host-memory",
-    input.profileId,
-    input.sourceType,
-    input.sourceUri,
-    input.snapshot.id,
-    input.snapshot.updatedAt ?? input.contentHash,
-  ].join(":");
-}
-
 function contentHash(content: string): string {
   return createHash("sha256").update(content).digest("hex").slice(0, 16);
 }
 
-function hostImportKey(input: {
-  profileId: string;
-  sourceType: string;
-  sourceUri: string;
-  snapshot: HostMemorySnapshot;
-  content: string;
-}): string {
-  return [
-    input.profileId,
-    input.sourceType,
-    input.sourceUri,
-    input.snapshot.id,
-    input.snapshot.updatedAt ?? contentHash(input.content),
-  ].join("|");
-}
-
-function importableHostSnapshotKeys(input: HostMemorySnapshotImportInput): string[] {
-  const sourceType = input.sourceType ?? "host.memory";
-  const sourceUriPrefix = input.sourceUriPrefix ?? "host://memory";
-  const skipPerson = input.skipPerson ?? true;
-  const skipSecretLike = input.skipSecretLike ?? true;
-  const keys: string[] = [];
-  for (const snapshot of input.memories) {
-    const content = snapshot.content.trim();
-    if (!content) continue;
-    const kind = normalizeHostMemoryKind(snapshot);
-    const sensitivity = normalizeHostMemorySensitivity(snapshot);
-    if (skipPerson && kind === "person") continue;
-    if (skipSecretLike && sensitivity === "secret_like") continue;
-    const sourceUri = sourceUriFor({ snapshot, sourceUriPrefix });
-    keys.push(
-      hostImportKey({
-        profileId: input.profileId,
-        sourceType,
-        sourceUri,
-        snapshot,
-        content,
-      }),
+async function importHostMemorySnapshotsIntoStore(
+  input: HostMemorySnapshotImportInput,
+  sync: boolean,
+): Promise<{
+  importReport: HostMemorySnapshotImportReport;
+  archivedMemoryIds: string[];
+}> {
+  if (!input.store.importHostSnapshotsAtomically) {
+    throw new Error(
+      "Host memory snapshot import requires MemoryStore.importHostSnapshotsAtomically",
     );
   }
-  return keys;
-}
-
-export async function loadHostMemorySnapshotsIntoStore(
-  input: HostMemorySnapshotImportInput,
-): Promise<HostMemorySnapshotImportReport> {
   await input.store.initialize();
   const sourceType = input.sourceType ?? "host.memory";
   const sourceUriPrefix = input.sourceUriPrefix ?? "host://memory";
   const skipPerson = input.skipPerson ?? true;
   const skipSecretLike = input.skipSecretLike ?? true;
   const nowIso = input.nowIso ?? new Date().toISOString();
-  const report: HostMemorySnapshotImportReport = {
+  const importReport: HostMemorySnapshotImportReport = {
     inputCount: input.memories.length,
     loadedCount: 0,
     reusedCount: 0,
@@ -181,133 +142,84 @@ export async function loadHostMemorySnapshotsIntoStore(
     loadedMemoryIds: [],
     skipped: [],
   };
-  if (!input.store.findActiveMemoryByMetadata) {
-    throw new Error("Host memory snapshot import requires MemoryStore.findActiveMemoryByMetadata");
-  }
-  const loadedMemoryIdsByIndex = new Map<number, string>();
-  const pendingAdds: Array<{ index: number; input: AddMemoryInput }> = [];
+  const records: AtomicHostSnapshotRecord[] = [];
 
   for (const [index, snapshot] of input.memories.entries()) {
     const content = snapshot.content.trim();
     if (!content) {
-      report.skipped.push({ id: snapshot.id, reason: "empty_content" });
+      importReport.skipped.push({ id: redactForReport(snapshot.id), reason: "empty_content" });
       continue;
     }
     const kind = normalizeHostMemoryKind(snapshot);
-    const sensitivity = normalizeHostMemorySensitivity(snapshot);
-    if (skipPerson && kind === "person") {
-      report.skipped.push({ id: snapshot.id, reason: "person_memory" });
-      continue;
-    }
-    if (skipSecretLike && sensitivity === "secret_like") {
-      report.skipped.push({ id: snapshot.id, reason: "secret_like" });
-      continue;
-    }
     const sourceUri = sourceUriFor({ snapshot, sourceUriPrefix });
-    const importKey = hostImportKey({
-      profileId: input.profileId,
+    const snapshotSensitivity = normalizeHostMemorySensitivity(snapshot);
+    const envelopeSensitivity = classifyPayloadSensitivity({
       sourceType,
       sourceUri,
       snapshot,
-      content,
     });
-    const existing = await input.store.findActiveMemoryByMetadata(
-      input.profileId,
-      "hostImportKey",
-      importKey,
-    );
-    if (existing) {
-      loadedMemoryIdsByIndex.set(index, existing.id);
-      report.reusedCount += 1;
+    const sensitivity = envelopeSensitivity === "secret_like" ||
+        snapshotSensitivity === "secret_like"
+      ? "secret_like"
+      : envelopeSensitivity === "sensitive" || snapshotSensitivity === "sensitive"
+        ? "sensitive"
+        : "normal";
+    if (skipPerson && kind === "person") {
+      importReport.skipped.push({ id: redactForReport(snapshot.id), reason: "person_memory" });
       continue;
     }
-    const evidence = await input.store.recordEvidence({
-      profileId: input.profileId,
-      eventKey: eventKeyFor({
-        profileId: input.profileId,
-        sourceType,
-        snapshot,
-        sourceUri,
-        contentHash: contentHash(content),
-      }),
-      sourceType,
-      sourceUri,
-      content,
-      sensitivity,
-      eligibleForLongTermMemory: sensitivity !== "secret_like",
-      payload: {
-        hostMemoryId: snapshot.id,
-        hostMemoryKind: kind,
-        sourceTrust: "external",
-      },
-      createdAt: snapshot.createdAt ?? nowIso,
-    });
-    pendingAdds.push({
-      index,
-      input: {
-        profileId: input.profileId,
-        kind,
-        scope: snapshot.scope ?? "global",
-        content,
-        sensitivity,
-        confidence: snapshot.confidence ?? 0.7,
-        sourceEventId: evidence.id,
-        metadata: {
-          hostImportKey: importKey,
-          hostImportSourceType: sourceType,
-          hostMemoryId: snapshot.id,
-          hostMemoryKind: kind,
-          hostContentHash: contentHash(content),
-          hostSnapshotImport: true,
-          sourceTrust: "external",
-        },
-        createdAt: snapshot.createdAt ?? nowIso,
-      },
-    });
-  }
-  const memories = input.store.addMemories
-    ? await input.store.addMemories(pendingAdds.map((pending) => pending.input))
-    : [];
-  if (!input.store.addMemories) {
-    for (const pending of pendingAdds) {
-      memories.push(await input.store.addMemory(pending.input) as MemoryRecord);
+    if (skipSecretLike && sensitivity === "secret_like") {
+      importReport.skipped.push({ id: redactForReport(snapshot.id), reason: "secret_like" });
+      continue;
     }
+    records.push({
+      sourceIndex: index,
+      hostMemoryId: snapshot.id,
+      content,
+      kind,
+      scope: snapshot.scope ?? "global",
+      sensitivity,
+      confidence: snapshot.confidence ?? 0.7,
+      sourceUri,
+      metadata: stripGmosOwnedMetadataFields(
+        sanitizePublicPayloadRecord(snapshot.metadata ?? {}),
+      ),
+      ...(snapshot.createdAt ? { createdAt: snapshot.createdAt } : {}),
+      ...(snapshot.updatedAt !== undefined ? { updatedAt: snapshot.updatedAt } : {}),
+    });
   }
-  for (const [offset, memory] of memories.entries()) {
-    const pending = pendingAdds[offset];
-    if (!pending) continue;
-    loadedMemoryIdsByIndex.set(pending.index, (memory as MemoryRecord).id);
-  }
-  report.loadedMemoryIds = [...loadedMemoryIdsByIndex.entries()]
-    .sort((left, right) => left[0] - right[0])
-    .map((entry) => entry[1]);
-  report.loadedCount = report.loadedMemoryIds.length;
-  report.skippedCount = report.skipped.length;
-  return report;
+  const result = await input.store.importHostSnapshotsAtomically({
+    profileId: input.profileId,
+    sourceType,
+    records,
+    sync,
+    allowSecretLike: skipSecretLike === false,
+    occurredAt: nowIso,
+  });
+  importReport.loadedMemoryIds = [...result.memories]
+    .sort((left, right) => left.sourceIndex - right.sourceIndex)
+    .map((entry) => entry.memory.id);
+  importReport.loadedCount = importReport.loadedMemoryIds.length;
+  importReport.reusedCount = result.memories.filter(
+    (entry) => entry.disposition !== "inserted",
+  ).length;
+  importReport.skippedCount = importReport.skipped.length;
+  return { importReport, archivedMemoryIds: result.archivedMemoryIds };
+}
+
+export async function loadHostMemorySnapshotsIntoStore(
+  input: HostMemorySnapshotImportInput,
+): Promise<HostMemorySnapshotImportReport> {
+  return (await importHostMemorySnapshotsIntoStore(input, false)).importReport;
 }
 
 export async function syncHostMemorySnapshotsIntoStore(
   input: HostMemorySnapshotImportInput,
 ): Promise<HostMemorySnapshotSyncReport> {
-  if (!input.store.archiveStaleHostImports) {
-    throw new Error(
-      "Host memory snapshot sync requires MemoryStore.archiveStaleHostImports",
-    );
-  }
-  const sourceType = input.sourceType ?? "host.memory";
-  const nowIso = input.nowIso ?? new Date().toISOString();
-  const activeImportKeys = importableHostSnapshotKeys(input);
-  const importReport = await loadHostMemorySnapshotsIntoStore({
-    ...input,
-    sourceType,
-    nowIso,
-  });
-  const archivedMemoryIds = await input.store.archiveStaleHostImports({
-    profileId: input.profileId,
-    sourceType,
-    activeImportKeys,
-    archivedAt: nowIso,
-  });
+  const { importReport, archivedMemoryIds } = await importHostMemorySnapshotsIntoStore(
+    input,
+    true,
+  );
   return {
     inputCount: importReport.inputCount,
     loadedCount: importReport.loadedCount,
