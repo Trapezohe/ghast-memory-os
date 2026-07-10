@@ -2061,7 +2061,11 @@ function ingestCacheIntegrity(
     distillationFailureCount: applied.distillationFailureCount,
     entityConsolidationFailureCount: applied.entityConsolidationConsolidatorFailureCount,
     entityConsolidationIncompleteClusterCount: requireEntityConsolidation
-      ? Math.max(0, applied.entityConsolidationClustersFound - applied.entityConsolidationClustersMerged)
+      ? Math.max(
+          0,
+          applied.entityConsolidationClustersFound -
+            applied.entityConsolidationConsolidatorCallCount,
+        )
       : 0,
   };
 }

@@ -56,6 +56,9 @@ import {
   extractAssociationCues,
 } from "../src/kernel/associations.js";
 import { reconstructMemoryContext } from "../src/kernel/reconstruction.js";
+import {
+  extractStructuredTableMemoryCandidates,
+} from "../src/kernel/extraction.js";
 import { resolveWorldEntitySubject } from "../src/kernel/entities.js";
 import { GMOS_EVIDENCE_PAYLOAD_SCHEMAS } from "../src/kernel/evidence-schema.js";
 import {
@@ -3799,6 +3802,69 @@ assert.equal(
   24,
 );
 await windowedMemory.close();
+
+const structuredTableCandidates = extractStructuredTableMemoryCandidates([{
+  role: "assistant",
+  content: [
+    "Project ownership",
+    "| Project | Owner | Status |",
+    "| --- | --- | --- |",
+    "| Atlas | Alice | Active |",
+  ].join("\n"),
+}]);
+assert.deepEqual(
+  structuredTableCandidates.map((candidate) => candidate.content),
+  ["Project ownership: Project = Atlas; Owner = Alice; Status = Active."],
+);
+const structuredTableStore = createSqliteMemoryStore({
+  path: path.join(tmp, "structured-table-extraction.db"),
+});
+const structuredTableMemory = createMemoryOS({
+  profileId: "structured-table-extraction",
+  store: structuredTableStore,
+  extractor: {
+    name: "structured-table-empty-model-extractor",
+    extract() {
+      return [];
+    },
+  },
+});
+const structuredTableIngest = await structuredTableMemory.ingestConversation({
+  profileId: "structured-table-extraction",
+  extraction: { extractFromRoles: ["assistant"] },
+  messages: [{
+    role: "assistant",
+    content: [
+      "Shift Rotation Sheet for GM Social Media Agents (Sunday - Saturday)",
+      "",
+      "|  | 8 am - 4 pm (Day Shift) | 12 am - 8 am (Night Shift) |",
+      "| --- | --- | --- |",
+      "| Sunday | Admon | Sara |",
+      "| Monday | Mostafa | Admon |",
+    ].join("\n"),
+    createdAt: "2026-07-11T00:00:00.000Z",
+  }],
+});
+assert.equal(structuredTableIngest.memoryIds.length, 4);
+assert.equal(structuredTableIngest.results[0]?.extraction?.outcome, "ok_with_candidates");
+assert.equal(structuredTableIngest.results[0]?.extraction?.acceptedCandidateCount, 4);
+const structuredTableMemories = structuredTableStore.listMemories({
+  profileId: "structured-table-extraction",
+  query: "Admon Sunday Day Shift",
+  includeSensitive: true,
+  limit: 20,
+});
+const structuredSundayAdmon = structuredTableMemories.find((entry) =>
+  entry.content ===
+    "Shift Rotation Sheet for GM Social Media Agents (Sunday - Saturday): Sunday — 8 am - 4 pm (Day Shift): Admon."
+);
+assert.ok(structuredSundayAdmon);
+assert.equal(structuredSundayAdmon.metadata.structuredArtifact, "markdown_table");
+assert.equal(structuredSundayAdmon.metadata.tableRow, "Sunday");
+assert.equal(structuredSundayAdmon.metadata.tableColumn, "8 am - 4 pm (Day Shift)");
+assert.equal(structuredSundayAdmon.metadata.sourceRole, "assistant");
+assert.equal(structuredSundayAdmon.metadata.extractionSource, "structured_table");
+await structuredTableMemory.close();
 
 const profileRouteExtractionCalls: Array<{ profileId: string; messages: string[] }> = [];
 const profileRouteStore = createSqliteMemoryStore({
@@ -37950,6 +38016,59 @@ assert.equal(
 );
 assert.equal(entityAggregationCached.runManifest.runtimeIntelligence.entityConsolidationConsolidatorCallCount, 0);
 assert.equal(entityAggregationExtractorCalls, 4);
+let entityAggregationNoMergeCalls = 0;
+const entityAggregationNoMergeCacheDir = path.join(
+  tmp,
+  "external-entity-aggregation-no-merge-cache",
+);
+const entityAggregationNoMergeOptions = {
+  cases: [entityAggregationCase],
+  ingestMode: "message" as const,
+  turnRetention: false,
+  consolidateEntities: true,
+  ingestCacheDir: entityAggregationNoMergeCacheDir,
+  intelligence: {
+    extractor: entityAggregationExtractor,
+    consolidator: {
+      name: "entity-aggregation-successful-no-merge-consolidator",
+      consolidate() {
+        entityAggregationNoMergeCalls += 1;
+        return [{
+          kind: "fact" as const,
+          content: "This candidate intentionally leaves source facts uncovered.",
+          confidence: 0.9,
+        }];
+      },
+    },
+  },
+};
+const entityAggregationNoMerge = await runExternalMemoryBenchmark(
+  entityAggregationNoMergeOptions,
+);
+assert.equal(
+  entityAggregationNoMerge.runManifest.runtimeIntelligence.entityConsolidationClustersFound,
+  3,
+);
+assert.equal(
+  entityAggregationNoMerge.runManifest.runtimeIntelligence.entityConsolidationConsolidatorCallCount,
+  3,
+);
+assert.equal(
+  entityAggregationNoMerge.runManifest.runtimeIntelligence.entityConsolidationClustersMerged,
+  0,
+);
+assert.equal(
+  entityAggregationNoMerge.runManifest.runtimeIntelligence.entityConsolidationConsolidatorFailureCount,
+  0,
+);
+assert.equal(entityAggregationNoMerge.runManifest.ingestCache.writes, 1);
+assert.equal(entityAggregationNoMerge.runManifest.ingestCache.writeSkips, 0);
+const entityAggregationNoMergeCached = await runExternalMemoryBenchmark(
+  entityAggregationNoMergeOptions,
+);
+assert.equal(entityAggregationNoMergeCached.runManifest.ingestCache.hits, 1);
+assert.equal(entityAggregationNoMergeCached.runManifest.ingestCache.misses, 0);
+assert.equal(entityAggregationNoMergeCalls, 3);
 const externalSchemaGuardCacheDir = path.join(tmp, "external-ingest-cache-schema");
 externalIngestCacheExtractorCalls = 0;
 await runExternalMemoryBenchmark({

@@ -31,6 +31,7 @@ import {
 } from "../kernel/metadata-schema.js";
 import {
   extractMemoryCandidatePlan,
+  extractStructuredTableMemoryCandidates,
 } from "../kernel/extraction.js";
 import {
   openAICompatibleOutcomeForError,
@@ -3415,6 +3416,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       extractor: options.extractor,
       temporalParser: options.temporal?.parser,
       inferTemporalFromText: options.temporal?.inferFromText,
+      supplementalCandidates: extractStructuredTableMemoryCandidates([recordedEvent]),
       extractionInput: producerExtractionInput({
         profileId,
         event: { ...recordedEvent, metadata: eventMetadata },
@@ -3604,23 +3606,25 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
 
     async function extractWindow(task: ExtractionWindowTask): Promise<ExtractionWindowResult> {
       const { profileId: windowProfileId, members, last, windowEvidenceIds } = task;
+      const windowMessages = members.map((member) => ({
+        role: member.event.role,
+        content: member.event.content,
+        ...(member.event.createdAt ? { createdAt: member.event.createdAt } : {}),
+        ...(Object.keys(member.eventMetadata).length > 0
+          ? { metadata: member.eventMetadata }
+          : {}),
+      }));
       const extraction = await extractMemoryCandidatePlan({
         extractor: options.extractor,
         temporalParser: options.temporal?.parser,
         inferTemporalFromText: options.temporal?.inferFromText,
+        supplementalCandidates: extractStructuredTableMemoryCandidates(windowMessages),
         extractionInput: producerExtractionInput({
           profileId: windowProfileId,
           event: { ...last.event, metadata: last.eventMetadata },
           evidence: last.evidence,
           window: {
-            messages: members.map((member) => ({
-              role: member.event.role,
-              content: member.event.content,
-              ...(member.event.createdAt ? { createdAt: member.event.createdAt } : {}),
-              ...(Object.keys(member.eventMetadata).length > 0
-                ? { metadata: member.eventMetadata }
-                : {}),
-            })),
+            messages: windowMessages,
             evidenceIds: windowEvidenceIds,
           },
         }),

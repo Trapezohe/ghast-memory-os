@@ -35,6 +35,8 @@ interface MemoryExtractionPlan {
   candidates: MemoryExtractionCandidate[];
 }
 
+const MAX_STRUCTURED_TABLE_CANDIDATES = 64;
+
 const KNOWN_MEMORY_KINDS = new Set([
   "fact",
   "preference",
@@ -47,6 +49,116 @@ const KNOWN_MEMORY_KINDS = new Set([
 
 function normalize(content: string): string {
   return content.replace(/\s+/gu, " ").trim();
+}
+
+function markdownTableCells(line: string): string[] | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) return null;
+  const cells: string[] = [];
+  let cell = "";
+  for (let index = 1; index < trimmed.length - 1; index += 1) {
+    const character = trimmed[index]!;
+    if (character === "\\" && trimmed[index + 1] === "|") {
+      cell += "|";
+      index += 1;
+      continue;
+    }
+    if (character === "|") {
+      cells.push(normalize(cell.replace(/[*_`]+/gu, "")));
+      cell = "";
+      continue;
+    }
+    cell += character;
+  }
+  cells.push(normalize(cell.replace(/[*_`]+/gu, "")));
+  return cells;
+}
+
+function markdownTableSeparator(cells: string[]): boolean {
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/u.test(cell));
+}
+
+function tableTitleBefore(lines: string[], tableStart: number): string {
+  for (let index = tableStart - 1; index >= Math.max(0, tableStart - 6); index -= 1) {
+    const title = normalize(lines[index] ?? "").replace(/:$/u, "");
+    if (title && !title.startsWith("|")) return title;
+  }
+  return "Structured table";
+}
+
+function sentence(content: string): string {
+  return /[.!?。！？]$/u.test(content) ? content : `${content}.`;
+}
+
+/**
+ * Preserves exact row/column relationships that lossy LLM extraction commonly
+ * drops from schedules, matrices, comparison grids, and other Markdown tables.
+ */
+export function extractStructuredTableMemoryCandidates(
+  messages: ReadonlyArray<{ role: string; content: string }>,
+): MemoryExtractionCandidate[] {
+  const candidates: MemoryExtractionCandidate[] = [];
+  for (const [sourceIndex, message] of messages.entries()) {
+    const lines = message.content.split(/\r?\n/u);
+    for (let index = 0; index + 2 < lines.length; index += 1) {
+      const header = markdownTableCells(lines[index] ?? "");
+      const separator = markdownTableCells(lines[index + 1] ?? "");
+      if (
+        !header || !separator || header.length < 2 ||
+        separator.length !== header.length || !markdownTableSeparator(separator)
+      ) {
+        continue;
+      }
+      const title = tableTitleBefore(lines, index);
+      const firstHeaderIsRowLabel = header[0] === "";
+      let rowIndex = index + 2;
+      for (; rowIndex < lines.length; rowIndex += 1) {
+        const row = markdownTableCells(lines[rowIndex] ?? "");
+        if (!row || row.length !== header.length) break;
+        if (firstHeaderIsRowLabel) {
+          const rowLabel = row[0] ?? "";
+          if (!rowLabel) continue;
+          for (let columnIndex = 1; columnIndex < header.length; columnIndex += 1) {
+            const column = header[columnIndex] ?? "";
+            const value = row[columnIndex] ?? "";
+            if (!column || !value) continue;
+            candidates.push({
+              kind: "fact",
+              content: sentence(`${title}: ${rowLabel} — ${column}: ${value}`),
+              confidence: 0.9,
+              sourceIndex,
+              metadata: {
+                structuredArtifact: "markdown_table",
+                tableTitle: title,
+                tableRow: rowLabel,
+                tableColumn: column,
+              },
+            });
+            if (candidates.length >= MAX_STRUCTURED_TABLE_CANDIDATES) return candidates;
+          }
+        } else {
+          const fields = header.flatMap((column, columnIndex) => {
+            const value = row[columnIndex] ?? "";
+            return column && value ? [`${column} = ${value}`] : [];
+          });
+          if (fields.length === 0) continue;
+          candidates.push({
+            kind: "fact",
+            content: sentence(`${title}: ${fields.join("; ")}`),
+            confidence: 0.9,
+            sourceIndex,
+            metadata: {
+              structuredArtifact: "markdown_table",
+              tableTitle: title,
+            },
+          });
+          if (candidates.length >= MAX_STRUCTURED_TABLE_CANDIDATES) return candidates;
+        }
+      }
+      index = Math.max(index + 1, rowIndex - 1);
+    }
+  }
+  return candidates;
 }
 
 function extractorName(extractor: MemoryExtractor | undefined): string | undefined {
@@ -415,6 +527,7 @@ export async function extractMemoryCandidateReport(input: {
 export async function extractMemoryCandidatePlan(input: {
   extractor?: MemoryExtractor | undefined;
   extractionInput: MemoryExtractionInput;
+  supplementalCandidates?: MemoryExtractionCandidate[] | undefined;
   minConfidence?: number | undefined;
   temporalParser?: MemoryTemporalParser | undefined;
   inferTemporalFromText?: boolean | undefined;
@@ -443,14 +556,21 @@ export async function extractMemoryCandidatePlan(input: {
     }
   }
 
+  const supplementalCandidates = input.supplementalCandidates ?? [];
+  if (supplementalCandidates.length > 0 && outcome === "not_configured") {
+    outcome = "ok_with_candidates";
+  } else if (supplementalCandidates.length > 0 && outcome === "ok_empty") {
+    outcome = "ok_with_candidates";
+  }
   const extractionSource: MemoryExtractionReport["extractionSource"] =
-    selected === null ? "none" : "custom";
+    selected === null && supplementalCandidates.length === 0 ? "none" : "custom";
   const extractor = extractorName(input.extractor);
   let rawCandidateCount = 0;
   const rejected: MemoryExtractionDecision[] = [];
 
   async function normalizeSourceCandidates(
     source: MemoryExtractionCandidate[],
+    sourceName: "custom" | "structured_table",
   ): Promise<Array<{
     raw: MemoryExtractionCandidate;
     candidate: MemoryExtractionCandidate;
@@ -488,8 +608,8 @@ export async function extractMemoryCandidatePlan(input: {
         ...result.candidate,
         metadata: {
           ...(result.candidate.metadata ?? {}),
-          extractionSource: "custom",
-          ...(input.extractor ? { extractorName: extractor } : {}),
+          extractionSource: sourceName,
+          ...(sourceName === "custom" && input.extractor ? { extractorName: extractor } : {}),
         },
       };
       normalized.push({ raw: rawCandidate, candidate });
@@ -497,7 +617,10 @@ export async function extractMemoryCandidatePlan(input: {
     return normalized;
   }
 
-  const normalized = selected === null ? [] : await normalizeSourceCandidates(selected);
+  const normalized = [
+    ...(selected === null ? [] : await normalizeSourceCandidates(selected, "custom")),
+    ...await normalizeSourceCandidates(supplementalCandidates, "structured_table"),
+  ];
 
   const deduped = uniqueCandidatesWithDecisions(normalized.map((entry) => entry.candidate));
   const acceptedKeys = new Set(deduped.map(candidateKey));
