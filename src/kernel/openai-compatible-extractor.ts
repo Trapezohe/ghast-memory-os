@@ -8,6 +8,7 @@ import {
   OpenAICompatibleResponseError,
   attachOpenAICompatibleRetryCount,
   createOpenAICompatibleDebugCapture,
+  markOpenAICompatibleRequestLifecycleOwner,
   openAICompatibleOutcomeForError,
   openAICompatibleRetryAfterMs,
   openAICompatibleRetryCount,
@@ -326,7 +327,7 @@ export function createOpenAICompatibleExtractor(
     ...(options.debugMaxFiles !== undefined ? { maxFiles: options.debugMaxFiles } : {}),
     ...(options.debugMaxChars !== undefined ? { maxChars: options.debugMaxChars } : {}),
   });
-  return {
+  return markOpenAICompatibleRequestLifecycleOwner({
     name,
     async extract(input) {
       const maxCandidates = input.window ? windowMaxCandidates : singleMessageMaxCandidates;
@@ -411,6 +412,7 @@ export function createOpenAICompatibleExtractor(
           retries: options.retries,
           maxRetries: options.maxRetries,
           backoffMs: options.backoffMs,
+          stage: "extractor",
         });
         debugCapture?.({
           hook: name,
@@ -434,5 +436,5 @@ export function createOpenAICompatibleExtractor(
         throw error;
       }
     },
-  };
+  });
 }

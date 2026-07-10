@@ -82,6 +82,7 @@ import {
   buildStateBenchLearnings,
   createOpenAICompatibleExternalBenchmarkAnswerer,
   createOpenAICompatibleExternalBenchmarkJudge,
+  ExternalMemoryBenchmarkProviderError,
   hashExternalMemoryBenchmarkInput,
   parseExternalMemoryBenchmarkDataset,
   parseExternalMemoryBenchmarkJsonl,
@@ -178,7 +179,12 @@ import {
   normalizeExplicitTemporalInstant,
   temporalCueValuesFromText,
 } from "../src/kernel/temporal-validity.js";
-import { OpenAICompatibleResponseError } from "../src/kernel/openai-compatible-response.js";
+import {
+  OpenAICompatibleResponseError,
+  runOpenAICompatibleRetry,
+  withOpenAICompatibleRequestObserver,
+  type OpenAICompatibleTerminalFailure,
+} from "../src/kernel/openai-compatible-response.js";
 import {
   consolidationCandidateCoveredSourceIds,
   resolveMemoryConsolidationConfig as resolveKernelMemoryConsolidationConfig,
@@ -7765,6 +7771,128 @@ assert.equal(llmNonPersonSpeakerReport.extraction?.decisions.length, 0);
 assert.equal(llmNonPersonSpeakerReport.memoryIds.length, 0);
 assert.equal(llmNonPersonSpeakerReport.worldBeliefIds.length, 0);
 await llmExtractorMemory.close();
+
+const terminalFailures: OpenAICompatibleTerminalFailure[] = [];
+let terminalFailureAttempts = 0;
+await assert.rejects(
+  () => withOpenAICompatibleRequestObserver({
+    beforeAttempt() {},
+    succeeded() {},
+    terminalFailure(failure) {
+      terminalFailures.push(failure);
+    },
+  }, () => runOpenAICompatibleRetry(async () => {
+    terminalFailureAttempts += 1;
+    throw new OpenAICompatibleResponseError(
+      "planned terminal provider outage",
+      "transport_failure",
+      { status: 503, retryable: true },
+    );
+  }, { stage: "answerer", maxRetries: 2, backoffMs: 0 })),
+  (error: unknown) =>
+    error instanceof OpenAICompatibleResponseError && error.status === 503,
+);
+assert.equal(terminalFailureAttempts, 3);
+assert.deepEqual(terminalFailures, [{
+  stage: "answerer",
+  failureKind: "transport_failure",
+  status: 503,
+  retryCount: 2,
+}]);
+const transientFailures: OpenAICompatibleTerminalFailure[] = [];
+let transientAttempts = 0;
+let transientSuccesses = 0;
+const transientRetry = await withOpenAICompatibleRequestObserver({
+  beforeAttempt() {},
+  succeeded() {
+    transientSuccesses += 1;
+  },
+  terminalFailure(failure) {
+    transientFailures.push(failure);
+  },
+}, () => runOpenAICompatibleRetry(async () => {
+  transientAttempts += 1;
+  if (transientAttempts < 3) {
+    throw new OpenAICompatibleResponseError(
+      "planned transient provider outage",
+      "transport_failure",
+      { status: 503, retryable: true },
+    );
+  }
+  return "recovered";
+}, { stage: "answerer", maxRetries: 2, backoffMs: 0 }));
+assert.deepEqual(transientRetry, { value: "recovered", retryCount: 2 });
+assert.equal(transientSuccesses, 1);
+assert.deepEqual(transientFailures, []);
+let openedCircuitBeforeAttempts = 0;
+let openedCircuitOperationAttempts = 0;
+const openedCircuitTerminalFailures: OpenAICompatibleTerminalFailure[] = [];
+await assert.rejects(
+  () => withOpenAICompatibleRequestObserver({
+    beforeAttempt() {
+      openedCircuitBeforeAttempts += 1;
+      if (openedCircuitBeforeAttempts === 2) {
+        throw new OpenAICompatibleResponseError(
+          "planned open provider circuit",
+          "transport_failure",
+          { status: 503, retryable: false },
+        );
+      }
+    },
+    succeeded() {},
+    terminalFailure(failure) {
+      openedCircuitTerminalFailures.push(failure);
+    },
+  }, () => runOpenAICompatibleRetry(async () => {
+    openedCircuitOperationAttempts += 1;
+    throw new OpenAICompatibleResponseError(
+      "planned first provider failure",
+      "transport_failure",
+      { status: 503, retryable: true },
+    );
+  }, { stage: "answerer", maxRetries: 2, backoffMs: 0 })),
+  (error: unknown) =>
+    error instanceof OpenAICompatibleResponseError && error.status === 503,
+);
+assert.equal(openedCircuitBeforeAttempts, 2);
+assert.equal(openedCircuitOperationAttempts, 1);
+assert.deepEqual(openedCircuitTerminalFailures, [{
+  stage: "answerer",
+  failureKind: "transport_failure",
+  status: 503,
+  retryCount: 1,
+}]);
+let longRetryAfterAttempts = 0;
+const longRetryAfterTerminalFailures: OpenAICompatibleTerminalFailure[] = [];
+const longRetryAfterStartedMs = Date.now();
+await assert.rejects(
+  () => withOpenAICompatibleRequestObserver({
+    maxRetryDelayMs: 5_000,
+    beforeAttempt() {},
+    succeeded() {},
+    terminalFailure(failure) {
+      longRetryAfterTerminalFailures.push(failure);
+    },
+  }, () => runOpenAICompatibleRetry(async () => {
+    longRetryAfterAttempts += 1;
+    throw new OpenAICompatibleResponseError(
+      "planned long retry-after provider outage",
+      "transport_failure",
+      { status: 503, retryable: true, retryAfterMs: 60_000 },
+    );
+  }, { stage: "answerer", maxRetries: 2, backoffMs: 0 })),
+  (error: unknown) =>
+    error instanceof OpenAICompatibleResponseError && error.status === 503,
+);
+assert.equal(longRetryAfterAttempts, 1);
+assert.equal(Date.now() - longRetryAfterStartedMs < 2_000, true);
+assert.deepEqual(longRetryAfterTerminalFailures, [{
+  stage: "answerer",
+  failureKind: "transport_failure",
+  status: 503,
+  retryAfterMs: 60_000,
+  retryCount: 0,
+}]);
 
 let intelligenceDossierVersion = "initial";
 const intelligenceFetch = async (url: string | URL | Request, init?: RequestInit) => {
@@ -27055,6 +27183,424 @@ await assert.rejects(
 assert.equal(failingJudgeCalls, 3);
 assert.equal(failingJudge.manifest?.judgeRetryCount, 2);
 assert.equal(failingJudge.manifest?.judgeRecoveredCount, 0);
+let transientHttpAnswererCalls = 0;
+const transientHttpAnswerer = createOpenAICompatibleExternalBenchmarkAnswerer({
+  baseUrl: "https://answerer.invalid/v1",
+  model: "transient-http-answerer",
+  maxRetries: 1,
+  fetchImpl: async () => {
+    transientHttpAnswererCalls += 1;
+    return transientHttpAnswererCalls === 1
+      ? {
+          ok: false,
+          status: 503,
+          statusText: "Service Unavailable",
+          text: async () => "quota temporarily unavailable",
+        }
+      : {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          text: async () => JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({ answer: "transient recovered" }) } }],
+          }),
+        };
+  },
+});
+assert.equal(
+  await transientHttpAnswerer.answer("Question?", "Context."),
+  "transient recovered",
+);
+assert.equal(transientHttpAnswererCalls, 2);
+let unauthorizedAnswererCalls = 0;
+const unauthorizedAnswerer = createOpenAICompatibleExternalBenchmarkAnswerer({
+  baseUrl: "https://answerer.invalid/v1",
+  model: "unauthorized-answerer",
+  fetchImpl: async () => {
+    unauthorizedAnswererCalls += 1;
+    return {
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+      text: async () => "unauthorized",
+    };
+  },
+});
+await assert.rejects(
+  () => unauthorizedAnswerer.answer("Question?", "Context."),
+  (error: unknown) =>
+    error instanceof OpenAICompatibleResponseError && error.status === 401,
+);
+assert.equal(unauthorizedAnswererCalls, 1);
+const providerOutageCases = ["amber", "cobalt", "violet"].map((answer, index) => ({
+  id: `provider-outage-${index + 1}`,
+  events: [{ type: "memory" as const, kind: "fact" as const, content: `Provider answer is ${answer}.` }],
+  question: "What is the provider answer?",
+  expectedAny: [answer],
+}));
+let customProviderAnswererCalls = 0;
+const customProviderAnswererRun = await runExternalMemoryBenchmark({
+  cases: providerOutageCases,
+  concurrency: 1,
+  protocol: "official_protocol",
+  answerer: {
+    name: "custom-provider-answerer",
+    answer() {
+      customProviderAnswererCalls += 1;
+      throw new ExternalMemoryBenchmarkProviderError("custom answerer quota exhausted", {
+        status: 503,
+        retryAfterMs: 1_000,
+        retryCount: 4,
+      });
+    },
+  },
+  judge: {
+    name: "custom-provider-answerer-unused-judge",
+    judge() {
+      throw new Error("custom provider answerer outage should stop before judge");
+    },
+  },
+});
+assert.equal(customProviderAnswererCalls, 1);
+assert.equal(customProviderAnswererRun.caseCount, 0);
+assert.equal(customProviderAnswererRun.runManifest.execution.stopReason, "provider_outage");
+assert.equal(customProviderAnswererRun.runManifest.execution.stopStage, "answerer");
+assert.equal(customProviderAnswererRun.runManifest.execution.stopHttpStatus, 503);
+assert.equal(customProviderAnswererRun.runManifest.execution.stopRetryAfterMs, 1_000);
+assert.equal(customProviderAnswererRun.runManifest.execution.stopRetryCount, 4);
+let customProviderJudgeCalls = 0;
+const customProviderJudgeRun = await runExternalMemoryBenchmark({
+  cases: providerOutageCases,
+  concurrency: 1,
+  protocol: "official_protocol",
+  answerer: {
+    name: "custom-provider-judge-reader",
+    answer() {
+      return "amber";
+    },
+  },
+  judge: {
+    name: "custom-provider-judge",
+    judge() {
+      customProviderJudgeCalls += 1;
+      throw new ExternalMemoryBenchmarkProviderError("custom judge quota exhausted", {
+        status: 429,
+      });
+    },
+  },
+});
+assert.equal(customProviderJudgeCalls, 1);
+assert.equal(customProviderJudgeRun.caseCount, 0);
+assert.equal(customProviderJudgeRun.runManifest.execution.stopReason, "provider_outage");
+assert.equal(customProviderJudgeRun.runManifest.execution.stopStage, "judge");
+assert.equal(customProviderJudgeRun.runManifest.execution.stopHttpStatus, 429);
+let providerOutageAnswererCalls = 0;
+let providerOutageCaseResults = 0;
+const providerOutageScoringCacheDir = path.join(tmp, "provider-outage-scoring-cache");
+const providerOutageAnswererRun = await runExternalMemoryBenchmark({
+  cases: providerOutageCases,
+  concurrency: 1,
+  ingestCacheDir: providerOutageScoringCacheDir,
+  protocol: "official_protocol",
+  answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
+    baseUrl: "https://answerer.invalid/v1",
+    model: "provider-outage-answerer",
+    fetchImpl: async () => {
+      providerOutageAnswererCalls += 1;
+      return {
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+        text: async () => "quota exhausted",
+      };
+    },
+  }),
+  judge: {
+    name: "provider-outage-unused-judge",
+    judge() {
+      throw new Error("provider outage should stop before judge");
+    },
+  },
+  onCaseResult() {
+    providerOutageCaseResults += 1;
+  },
+});
+assert.equal(providerOutageAnswererCalls, 3);
+assert.equal(providerOutageCaseResults, 0);
+assert.equal(providerOutageAnswererRun.caseCount, 0);
+assert.equal(providerOutageAnswererRun.pass, false);
+assert.equal(providerOutageAnswererRun.partial, true);
+assert.equal(providerOutageAnswererRun.runManifest.execution.interrupted, false);
+assert.equal(providerOutageAnswererRun.runManifest.execution.stopReason, "provider_outage");
+assert.equal(providerOutageAnswererRun.runManifest.execution.stopStage, "answerer");
+assert.equal(providerOutageAnswererRun.runManifest.execution.stopHttpStatus, 503);
+assert.equal(providerOutageAnswererRun.runManifest.execution.stopRetryCount, 2);
+assert.equal(providerOutageAnswererRun.runManifest.ingestCache.writes, 1);
+assert.equal(providerOutageAnswererRun.runManifest.ingestCache.writeSkips, 0);
+let longRetryAfterAnswererCalls = 0;
+const longRetryAfterAnswererRun = await runExternalMemoryBenchmark({
+  cases: providerOutageCases.slice(0, 1),
+  concurrency: 1,
+  protocol: "official_protocol",
+  answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
+    baseUrl: "https://answerer.invalid/v1",
+    model: "long-retry-after-answerer",
+    fetchImpl: async () => {
+      longRetryAfterAnswererCalls += 1;
+      return {
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+        headers: { get: (name: string) => name.toLowerCase() === "retry-after" ? "60" : null },
+        text: async () => "quota unavailable for one minute",
+      };
+    },
+  }),
+  judge: {
+    name: "long-retry-after-unused-judge",
+    judge() {
+      throw new Error("long retry-after outage should stop before judge");
+    },
+  },
+});
+assert.equal(longRetryAfterAnswererCalls, 1);
+assert.equal(longRetryAfterAnswererRun.caseCount, 0);
+assert.equal(longRetryAfterAnswererRun.runManifest.execution.stopReason, "provider_outage");
+assert.equal(longRetryAfterAnswererRun.runManifest.execution.stopRetryAfterMs, 60_000);
+assert.equal(longRetryAfterAnswererRun.runManifest.execution.stopRetryCount, 0);
+const providerOutageRecoveryRun = await runExternalMemoryBenchmark({
+  cases: providerOutageCases.slice(0, 1),
+  concurrency: 1,
+  ingestCacheDir: providerOutageScoringCacheDir,
+  protocol: "official_protocol",
+  answerer: {
+    name: "provider-outage-recovery-reader",
+    answer() {
+      return "amber";
+    },
+  },
+  judge: {
+    name: "provider-outage-recovery-judge",
+    judge() {
+      return { correct: true };
+    },
+  },
+});
+assert.equal(providerOutageRecoveryRun.pass, true);
+assert.equal(providerOutageRecoveryRun.runManifest.ingestCache.hits, 1);
+const providerOutageBundleDir = path.join(tmp, "provider-outage-reproduction-bundle");
+writeExternalMemoryBenchmarkReproductionBundle({
+  outputDir: providerOutageBundleDir,
+  report: providerOutageAnswererRun,
+  command: ["gmos", "gym", "external"],
+});
+const providerOutageBundleManifest = JSON.parse(
+  readFileSync(path.join(providerOutageBundleDir, "manifest.json"), "utf8"),
+) as {
+  partial?: boolean;
+  execution?: { stopReason?: string; stopStage?: string | null; stopHttpStatus?: number | null };
+};
+assert.equal(providerOutageBundleManifest.partial, true);
+assert.deepEqual(providerOutageBundleManifest.execution, {
+  caseGroupCount: 0,
+  plannedCaseGroupCount: 3,
+  reusedProfileCaseCount: 0,
+  executedCases: 0,
+  partial: true,
+  interrupted: false,
+  stopReason: "provider_outage",
+  stopStage: "answerer",
+  stopHttpStatus: 503,
+  stopRetryAfterMs: null,
+  stopRetryCount: 2,
+});
+assert.match(
+  readFileSync(path.join(providerOutageBundleDir, "REPRODUCE.md"), "utf8"),
+  /Stop: provider_outage stage=answerer status=503/u,
+);
+let preservedProgressAnswererCalls = 0;
+let preservedProgressCaseResults = 0;
+const preservedProgressRun = await runExternalMemoryBenchmark({
+  cases: providerOutageCases,
+  concurrency: 1,
+  protocol: "official_protocol",
+  answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
+    baseUrl: "https://answerer.invalid/v1",
+    model: "preserved-progress-answerer",
+    fetchImpl: async () => {
+      preservedProgressAnswererCalls += 1;
+      if (preservedProgressAnswererCalls === 1) {
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          text: async () => JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({ answer: "amber" }) } }],
+          }),
+        };
+      }
+      return {
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+        text: async () => "quota exhausted",
+      };
+    },
+  }),
+  judge: {
+    name: "preserved-progress-judge",
+    judge(_question, expectedAnswer, actualAnswer) {
+      return { correct: actualAnswer.includes(expectedAnswer) };
+    },
+  },
+  onCaseResult() {
+    preservedProgressCaseResults += 1;
+  },
+});
+assert.equal(preservedProgressAnswererCalls, 4);
+assert.equal(preservedProgressCaseResults, 1);
+assert.equal(preservedProgressRun.caseCount, 1);
+assert.deepEqual(preservedProgressRun.cases.map((entry) => entry.id), ["provider-outage-1"]);
+assert.equal(preservedProgressRun.pass, false);
+assert.equal(preservedProgressRun.partial, true);
+assert.equal(preservedProgressRun.runManifest.execution.stopReason, "provider_outage");
+const concurrentOutageCases = Array.from({ length: 6 }, (_entry, index) => ({
+  id: `concurrent-provider-outage-${index + 1}`,
+  events: [{
+    type: "memory" as const,
+    kind: "fact" as const,
+    content: `Concurrent provider answer ${index + 1}.`,
+  }],
+  question: "What is the concurrent provider answer?",
+  expectedAny: [String(index + 1)],
+}));
+let concurrentOutageAnswererCalls = 0;
+let releaseConcurrentOutageResponses: (() => void) | undefined;
+const concurrentOutageResponsesReady = new Promise<void>((resolve) => {
+  releaseConcurrentOutageResponses = resolve;
+});
+const concurrentOutageRun = await runExternalMemoryBenchmark({
+  cases: concurrentOutageCases,
+  concurrency: 2,
+  protocol: "official_protocol",
+  answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
+    baseUrl: "https://answerer.invalid/v1",
+    model: "concurrent-provider-outage-answerer",
+    maxRetries: 0,
+    fetchImpl: async () => {
+      concurrentOutageAnswererCalls += 1;
+      if (concurrentOutageAnswererCalls === 2) releaseConcurrentOutageResponses?.();
+      await concurrentOutageResponsesReady;
+      return {
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+        text: async () => "quota exhausted",
+      };
+    },
+  }),
+  judge: {
+    name: "concurrent-provider-outage-unused-judge",
+    judge() {
+      throw new Error("provider outage should stop before judge");
+    },
+  },
+});
+assert.equal(concurrentOutageAnswererCalls, 2);
+assert.equal(concurrentOutageRun.caseCount, 0);
+assert.equal(concurrentOutageRun.partial, true);
+assert.equal(concurrentOutageRun.runManifest.execution.plannedCaseGroupCount, 6);
+assert.equal(concurrentOutageRun.runManifest.execution.stopReason, "provider_outage");
+const signalOutageController = new AbortController();
+const signalOutageRun = await runExternalMemoryBenchmark({
+  cases: providerOutageCases.slice(0, 1),
+  concurrency: 1,
+  protocol: "official_protocol",
+  abortSignal: signalOutageController.signal,
+  answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
+    baseUrl: "https://answerer.invalid/v1",
+    model: "signal-provider-outage-answerer",
+    maxRetries: 0,
+    fetchImpl: async () => {
+      signalOutageController.abort();
+      return {
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+        text: async () => "quota exhausted during interrupt",
+      };
+    },
+  }),
+  judge: {
+    name: "signal-provider-outage-unused-judge",
+    judge() {
+      throw new Error("interrupted provider outage should stop before judge");
+    },
+  },
+});
+assert.equal(signalOutageRun.caseCount, 0);
+assert.equal(signalOutageRun.partial, true);
+assert.equal(signalOutageRun.runManifest.execution.interrupted, true);
+assert.equal(signalOutageRun.runManifest.execution.stopReason, "signal");
+assert.equal(signalOutageRun.runManifest.execution.stopStage, null);
+assert.equal(signalOutageRun.runManifest.execution.stopHttpStatus, null);
+assert.equal(signalOutageRun.runManifest.execution.stopRetryAfterMs, null);
+assert.equal(signalOutageRun.runManifest.execution.stopRetryCount, null);
+let providerOutageJudgeCalls = 0;
+const providerOutageJudgeRun = await runExternalMemoryBenchmark({
+  cases: providerOutageCases.slice(0, 1),
+  protocol: "official_protocol",
+  answerer: {
+    name: "provider-outage-reader",
+    answer() {
+      return "amber";
+    },
+  },
+  judge: createOpenAICompatibleExternalBenchmarkJudge({
+    baseUrl: "https://judge.invalid/v1",
+    model: "provider-outage-judge",
+    maxRetries: 0,
+    fetchImpl: async () => {
+      providerOutageJudgeCalls += 1;
+      return {
+        ok: false,
+        status: 429,
+        statusText: "Too Many Requests",
+        headers: { get: (name: string) => name.toLowerCase() === "retry-after" ? "0" : null },
+        text: async () => "quota exhausted",
+      };
+    },
+  }),
+});
+assert.equal(providerOutageJudgeCalls, 1);
+assert.equal(providerOutageJudgeRun.caseCount, 0);
+assert.equal(providerOutageJudgeRun.runManifest.execution.stopReason, "provider_outage");
+assert.equal(providerOutageJudgeRun.runManifest.execution.stopStage, "judge");
+assert.equal(providerOutageJudgeRun.runManifest.execution.stopHttpStatus, 429);
+assert.equal(providerOutageJudgeRun.runManifest.execution.stopRetryAfterMs, 0);
+let malformedAnswererCalls = 0;
+const malformedAnswererRun = await runExternalMemoryBenchmark({
+  cases: providerOutageCases.slice(0, 1),
+  protocol: "official_protocol",
+  answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
+    baseUrl: "https://answerer.invalid/v1",
+    model: "malformed-answerer",
+    maxRetries: 0,
+    fetchImpl: async () => {
+      malformedAnswererCalls += 1;
+      return { ok: true, status: 200, statusText: "OK", text: async () => "not json" };
+    },
+  }),
+  judge: {
+    name: "malformed-answerer-unused-judge",
+    judge() {
+      return { correct: false };
+    },
+  },
+});
+assert.equal(malformedAnswererCalls, 1);
+assert.equal(malformedAnswererRun.caseCount, 1);
+assert.equal(malformedAnswererRun.runManifest.execution.stopReason, "completed");
 assert.throws(
   () =>
     createOpenAICompatibleExternalBenchmarkAnswerer({
@@ -28848,6 +29394,54 @@ const externalSuiteGateExecution = await runExternalMemoryBenchmarkSuite({
   failOnBenchmarkFail: true,
 });
 assert.equal(externalSuiteGateExecution.result.pass, false);
+let providerOutageSuiteJudgeCalls = 0;
+const providerOutageSuiteExecution = await runExternalMemoryBenchmarkSuite({
+  suite: {
+    defaults: { protocol: "official_protocol", maxCases: 1 },
+    runs: [
+      { id: "provider-outage-first", inputFile: path.basename(externalBenchmarkFile) },
+      { id: "provider-outage-never-started", inputFile: path.basename(externalBenchmarkFile) },
+    ],
+  },
+  baseDir: path.dirname(externalBenchmarkFile),
+  judge: createOpenAICompatibleExternalBenchmarkJudge({
+    baseUrl: "https://suite-judge.invalid/v1",
+    model: "provider-outage-suite-judge",
+    maxRetries: 0,
+    fetchImpl: async () => {
+      providerOutageSuiteJudgeCalls += 1;
+      return {
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+        text: async () => "suite quota exhausted",
+      };
+    },
+  }),
+});
+assert.equal(providerOutageSuiteJudgeCalls, 1);
+assert.equal(providerOutageSuiteExecution.result.pass, false);
+assert.equal(providerOutageSuiteExecution.result.benchmarkPass, false);
+assert.equal(providerOutageSuiteExecution.result.partial, true);
+assert.equal(providerOutageSuiteExecution.result.runCount, 1);
+assert.deepEqual(Object.keys(providerOutageSuiteExecution.reports), ["provider-outage-first"]);
+assert.equal(providerOutageSuiteExecution.result.runs[0]?.stopReason, "provider_outage");
+assert.equal(providerOutageSuiteExecution.result.runs[0]?.stopStage, "judge");
+assert.equal(providerOutageSuiteExecution.result.runs[0]?.stopHttpStatus, 503);
+assert.deepEqual(providerOutageSuiteExecution.result.runManifest.execution, {
+  plannedRunCount: 2,
+  executedRunCount: 1,
+  stopReason: "provider_outage",
+  stopRunId: "provider-outage-first",
+  stopStage: "judge",
+  stopHttpStatus: 503,
+  stopRetryAfterMs: null,
+  stopRetryCount: 0,
+});
+assert.match(
+  renderExternalMemoryBenchmarkSuiteMarkdown(providerOutageSuiteExecution.result),
+  /Stop: provider_outage run=provider-outage-first stage=judge status=503 runs=1\/2/u,
+);
 const externalPartialSuiteFile = path.join(tmp, "external-partial-suite.json");
 writeFileSync(
   externalPartialSuiteFile,
@@ -29185,6 +29779,137 @@ assert.equal(unresolvedIngestSecond.runManifest.ingestCache.hits, 0);
 assert.equal(unresolvedIngestSecond.runManifest.ingestCache.misses, 1);
 assert.equal(unresolvedIngestSecond.runManifest.ingestCache.writeSkips, 1);
 assert.equal(unresolvedIngestExtractorCalls, 4);
+const providerOutageIngestCacheDir = path.join(tmp, "external-ingest-cache-provider-outage");
+let providerOutageExtractorCalls = 0;
+const providerOutageExtractorRun = await runExternalMemoryBenchmark({
+  cases: externalIngestCacheCases.slice(0, 1),
+  ingestMode: "message",
+  turnRetention: false,
+  concurrency: 1,
+  ingestReplayAttempts: 1,
+  ingestCacheDir: providerOutageIngestCacheDir,
+  intelligence: {
+    baseUrl: "https://extractor.invalid/v1",
+    model: "provider-outage-extractor",
+    retries: 2,
+    backoffMs: 0,
+    concurrency: 1,
+    fetchImpl: async () => {
+      providerOutageExtractorCalls += 1;
+      return {
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+        text: async () => "quota exhausted",
+      };
+    },
+  },
+});
+assert.equal(providerOutageExtractorCalls, 3);
+assert.equal(providerOutageExtractorRun.caseCount, 0);
+assert.equal(providerOutageExtractorRun.partial, true);
+assert.equal(providerOutageExtractorRun.runManifest.execution.stopReason, "provider_outage");
+assert.equal(providerOutageExtractorRun.runManifest.execution.stopStage, "extractor");
+assert.equal(providerOutageExtractorRun.runManifest.execution.stopHttpStatus, 503);
+assert.equal(providerOutageExtractorRun.runManifest.ingestCache.writes, 0);
+assert.equal(providerOutageExtractorRun.runManifest.ingestCache.writeSkips, 1);
+assert.deepEqual(providerOutageExtractorRun.runManifest.ingestCache.writeSkipReasons, [{
+  name: "unresolved_extraction_windows",
+  count: 1,
+}]);
+assert.equal(existsSync(providerOutageIngestCacheDir), false);
+let delayedProviderExtractorCalls = 0;
+const delayedProviderExtractorStartedMs = Date.now();
+const delayedProviderExtractorRun = await runExternalMemoryBenchmark({
+  cases: externalIngestCacheCases.slice(0, 1),
+  ingestMode: "message",
+  turnRetention: false,
+  concurrency: 1,
+  intelligence: {
+    baseUrl: "https://delayed-extractor.invalid/v1",
+    model: "delayed-provider-outage-extractor",
+    timeoutMs: 25,
+    retries: 1,
+    backoffMs: 0,
+    concurrency: 1,
+    fetchImpl: async () => {
+      delayedProviderExtractorCalls += 1;
+      return {
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+        headers: { get: (name: string) => name.toLowerCase() === "retry-after" ? "0.1" : null },
+        text: async () => "quota exhausted",
+      };
+    },
+  },
+});
+assert.equal(delayedProviderExtractorCalls, 2);
+assert.equal(delayedProviderExtractorRun.caseCount, 0);
+assert.equal(delayedProviderExtractorRun.runManifest.execution.stopReason, "provider_outage");
+assert.equal(Date.now() - delayedProviderExtractorStartedMs >= 80, true);
+await new Promise((resolve) => setTimeout(resolve, 150));
+assert.equal(delayedProviderExtractorCalls, 2);
+let preconstructedProviderExtractorCalls = 0;
+const preconstructedProviderExtractor = createOpenAICompatibleExtractor({
+  baseUrl: "https://preconstructed-extractor.invalid/v1",
+  model: "preconstructed-provider-outage-extractor",
+  retries: 2,
+  backoffMs: 0,
+  fetch: async () => {
+    preconstructedProviderExtractorCalls += 1;
+    return {
+      ok: false,
+      status: 503,
+      statusText: "Service Unavailable",
+      headers: { get: (name: string) => name.toLowerCase() === "retry-after" ? "0.05" : null },
+      text: async () => "quota exhausted",
+    };
+  },
+});
+const preconstructedProviderExtractorStartedMs = Date.now();
+const preconstructedProviderExtractorRun = await runExternalMemoryBenchmark({
+  cases: externalIngestCacheCases.slice(0, 1),
+  ingestMode: "message",
+  turnRetention: false,
+  concurrency: 1,
+  intelligenceTimeoutMs: 25,
+  intelligence: { extractor: preconstructedProviderExtractor },
+});
+assert.equal(preconstructedProviderExtractorCalls, 3);
+assert.equal(preconstructedProviderExtractorRun.caseCount, 0);
+assert.equal(
+  preconstructedProviderExtractorRun.runManifest.execution.stopReason,
+  "provider_outage",
+);
+assert.equal(Date.now() - preconstructedProviderExtractorStartedMs >= 80, true);
+await new Promise((resolve) => setTimeout(resolve, 150));
+assert.equal(preconstructedProviderExtractorCalls, 3);
+let customProviderExtractorCalls = 0;
+const customProviderExtractorRun = await runExternalMemoryBenchmark({
+  cases: externalIngestCacheCases.slice(0, 1),
+  ingestMode: "message",
+  turnRetention: false,
+  concurrency: 1,
+  ingestReplayAttempts: 2,
+  intelligence: {
+    extractor: {
+      name: "custom-provider-outage-extractor",
+      extract() {
+        customProviderExtractorCalls += 1;
+        throw new ExternalMemoryBenchmarkProviderError("custom extractor quota exhausted", {
+          status: 503,
+        });
+      },
+    },
+  },
+});
+assert.equal(customProviderExtractorCalls, 1);
+assert.equal(customProviderExtractorRun.caseCount, 0);
+assert.equal(customProviderExtractorRun.partial, true);
+assert.equal(customProviderExtractorRun.runManifest.execution.stopReason, "provider_outage");
+assert.equal(customProviderExtractorRun.runManifest.execution.stopStage, "extractor");
+assert.equal(customProviderExtractorRun.runManifest.execution.stopHttpStatus, 503);
 const embeddingFailureCacheRun = await runExternalMemoryBenchmark({
   cases: externalIngestCacheCases.slice(0, 1),
   ingestMode: "message",
@@ -31152,6 +31877,153 @@ assert.equal(externalRecoveringQueryRun.pass, true);
 assert.equal(externalRecoveringQueryRun.runManifest.runtimeIntelligence.queryEmbeddingRetryCount, 1);
 assert.equal(externalRecoveringQueryRun.runManifest.runtimeIntelligence.queryEmbeddingRecoveredCount, 1);
 assert.equal(externalRecoveringQueryRun.runManifest.runtimeIntelligence.queryEmbeddingFailureCount, 0);
+const queryCircuitQuestion = "Which query circuit beverage should be recalled?";
+const queryCircuitCases = [{
+  id: "external-query-circuit",
+  events: [{
+    type: "memory" as const,
+    kind: "fact" as const,
+    content: "The query circuit beverage is silver tea.",
+  }],
+  question: queryCircuitQuestion,
+  expectedAny: ["silver tea"],
+}];
+function queryCircuitFetch(failuresBeforeSuccess: number) {
+  let queryCalls = 0;
+  const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { input?: string[] };
+    if (!String(url).endsWith("/embeddings")) {
+      throw new Error("query circuit fixture should only call embeddings");
+    }
+    const inputs = body.input ?? [];
+    if (inputs.includes(queryCircuitQuestion)) {
+      queryCalls += 1;
+      if (queryCalls <= failuresBeforeSuccess) {
+        return {
+          ok: false,
+          status: 503,
+          statusText: "Service Unavailable",
+          text: async () => "query quota unavailable",
+        };
+      }
+    }
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({
+        data: inputs.map((_text, index) => ({ index, embedding: [1, 0, 0] })),
+      }),
+    };
+  };
+  return { fetchImpl, queryCalls: () => queryCalls };
+}
+const transientQueryCircuit = queryCircuitFetch(1);
+const transientQueryCircuitRun = await runExternalMemoryBenchmark({
+  cases: queryCircuitCases,
+  embedQuery: true,
+  intelligence: {
+    baseUrl: "https://query-circuit.invalid/v1",
+    model: "query-circuit-chat",
+    embedModel: "query-circuit-embed",
+    dimensions: 3,
+    retries: 0,
+    fetchImpl: transientQueryCircuit.fetchImpl,
+  },
+});
+assert.equal(transientQueryCircuitRun.pass, true);
+assert.equal(transientQueryCircuit.queryCalls(), 2);
+assert.equal(transientQueryCircuitRun.runManifest.execution.stopReason, "completed");
+assert.equal(transientQueryCircuitRun.runManifest.runtimeIntelligence.queryEmbeddingRetryCount, 1);
+assert.equal(transientQueryCircuitRun.runManifest.runtimeIntelligence.queryEmbeddingRecoveredCount, 1);
+const concurrentTransientQueryQuestions = [
+  "Which concurrent query beverage is first?",
+  "Which concurrent query beverage is second?",
+];
+const concurrentTransientQueryCalls = new Map<string, number>();
+let releaseConcurrentTransientQueries: (() => void) | undefined;
+const concurrentTransientQueriesReady = new Promise<void>((resolve) => {
+  releaseConcurrentTransientQueries = resolve;
+});
+const concurrentTransientQueryRun = await runExternalMemoryBenchmark({
+  cases: concurrentTransientQueryQuestions.map((question, index) => ({
+    id: `external-concurrent-query-circuit-${index + 1}`,
+    events: [{
+      type: "memory" as const,
+      kind: "fact" as const,
+      content: `Concurrent query beverage ${index + 1} is silver tea.`,
+    }],
+    question,
+    expectedAny: ["silver tea"],
+  })),
+  concurrency: 2,
+  embedQuery: true,
+  intelligence: {
+    baseUrl: "https://concurrent-query-circuit.invalid/v1",
+    model: "concurrent-query-circuit-chat",
+    embedModel: "concurrent-query-circuit-embed",
+    dimensions: 3,
+    retries: 0,
+    fetchImpl: async (url, init) => {
+      if (!String(url).endsWith("/embeddings")) {
+        throw new Error("concurrent query circuit fixture should only call embeddings");
+      }
+      const body = JSON.parse(String(init?.body ?? "{}")) as { input?: string[] };
+      const inputs = body.input ?? [];
+      const question = concurrentTransientQueryQuestions.find((entry) => inputs.includes(entry));
+      if (question) {
+        const callCount = (concurrentTransientQueryCalls.get(question) ?? 0) + 1;
+        concurrentTransientQueryCalls.set(question, callCount);
+        if (callCount === 1) {
+          if ([...concurrentTransientQueryCalls.values()].filter((count) => count >= 1).length === 2) {
+            releaseConcurrentTransientQueries?.();
+          }
+          await concurrentTransientQueriesReady;
+          return {
+            ok: false,
+            status: 503,
+            statusText: "Service Unavailable",
+            text: async () => "transient concurrent query quota unavailable",
+          };
+        }
+      }
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () => JSON.stringify({
+          data: inputs.map((_text, index) => ({ index, embedding: [1, 0, 0] })),
+        }),
+      };
+    },
+  },
+});
+assert.equal(concurrentTransientQueryRun.pass, true);
+assert.equal(concurrentTransientQueryRun.caseCount, 2);
+assert.equal(concurrentTransientQueryRun.runManifest.execution.stopReason, "completed");
+assert.deepEqual(
+  concurrentTransientQueryQuestions.map((question) => concurrentTransientQueryCalls.get(question)),
+  [2, 2],
+);
+const persistentQueryCircuit = queryCircuitFetch(Number.POSITIVE_INFINITY);
+const persistentQueryCircuitRun = await runExternalMemoryBenchmark({
+  cases: queryCircuitCases,
+  embedQuery: true,
+  intelligence: {
+    baseUrl: "https://query-circuit.invalid/v1",
+    model: "query-circuit-chat",
+    embedModel: "query-circuit-embed",
+    dimensions: 3,
+    retries: 0,
+    fetchImpl: persistentQueryCircuit.fetchImpl,
+  },
+});
+assert.equal(persistentQueryCircuit.queryCalls(), 2);
+assert.equal(persistentQueryCircuitRun.caseCount, 0);
+assert.equal(persistentQueryCircuitRun.partial, true);
+assert.equal(persistentQueryCircuitRun.runManifest.execution.stopReason, "provider_outage");
+assert.equal(persistentQueryCircuitRun.runManifest.execution.stopStage, "embedding_query");
+assert.equal(persistentQueryCircuitRun.runManifest.execution.stopHttpStatus, 503);
 let externalQueryEmbeddingFailureCount = 0;
 const externalFailingQueryIntelligence: DefaultIntelligence = {
   embeddingProvider: {
@@ -31747,12 +32619,35 @@ const legacyExternalReportWithoutSlices = JSON.parse(
 ) as typeof externalBenchmarkWithManifest;
 delete legacyExternalReportWithoutSlices.summary.sliceScores;
 delete legacyExternalReportWithoutSlices.cases[0]?.slices;
+delete legacyExternalReportWithoutSlices.runManifest.execution.stopReason;
+delete legacyExternalReportWithoutSlices.runManifest.execution.stopStage;
+delete legacyExternalReportWithoutSlices.runManifest.execution.stopHttpStatus;
+delete legacyExternalReportWithoutSlices.runManifest.execution.stopRetryAfterMs;
+delete legacyExternalReportWithoutSlices.runManifest.execution.stopRetryCount;
 assert.match(renderExternalMemoryBenchmarkMarkdown(legacyExternalReportWithoutSlices), /Slice scores: none/);
+const legacyExternalReportBundleDir = path.join(tmp, "legacy-external-report-bundle");
+writeExternalMemoryBenchmarkReproductionBundle({
+  outputDir: legacyExternalReportBundleDir,
+  report: legacyExternalReportWithoutSlices,
+});
+assert.match(
+  readFileSync(path.join(legacyExternalReportBundleDir, "REPRODUCE.md"), "utf8"),
+  /Stop: completed stage=none status=none/u,
+);
+assert.doesNotMatch(
+  readFileSync(path.join(legacyExternalReportBundleDir, "REPRODUCE.md"), "utf8"),
+  /undefined/u,
+);
 const legacyExternalSuiteWithoutSlices = JSON.parse(
   JSON.stringify(externalSuiteExecution.result),
 ) as typeof externalSuiteExecution.result;
 delete legacyExternalSuiteWithoutSlices.runs[0]?.sliceScores;
+delete legacyExternalSuiteWithoutSlices.runManifest.execution;
 assert.match(renderExternalMemoryBenchmarkSuiteMarkdown(legacyExternalSuiteWithoutSlices), /Slice scores/);
+assert.match(
+  renderExternalMemoryBenchmarkSuiteMarkdown(legacyExternalSuiteWithoutSlices),
+  /Stop: completed run=none stage=none status=none runs=2\/2/u,
+);
 assert.match(externalMarkdown, /External Long-Memory QA/);
 assert.match(externalMarkdown, /Run Manifest/);
 assert.match(externalMarkdown, /format=gmos\.external_long_memory_qa\.jsonl/);
@@ -32703,6 +33598,142 @@ const cliExternalOfficialProtocol = spawnSync(
 );
 assert.notEqual(cliExternalOfficialProtocol.status, 0);
 assert.match(cliExternalOfficialProtocol.stderr, /requires an OpenAI-compatible judge endpoint/);
+const cliProviderOutageServer = spawn(
+  process.execPath,
+  [
+    "-e",
+    `const http = require("node:http");
+let calls = 0;
+const server = http.createServer((request, response) => {
+  request.resume();
+  request.on("end", () => {
+    calls += 1;
+    if (calls <= 2) {
+      const content = calls === 1
+        ? JSON.stringify({ answer: "rollback matrix" })
+        : JSON.stringify({ correct: true, rationale: "fixture judge pass" });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ choices: [{ message: { content } }] }));
+      return;
+    }
+    response.writeHead(503, { "content-type": "text/plain" });
+    response.end("quota exhausted");
+  });
+});
+server.listen(0, "127.0.0.1", () => {
+  const address = server.address();
+  if (!address || typeof address === "string") process.exit(2);
+  process.stdout.write(String(address.port) + "\\n");
+});
+process.on("SIGTERM", () => server.close(() => process.exit(0)));`,
+  ],
+  { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] },
+);
+const cliProviderOutagePort = await new Promise<number>((resolve, reject) => {
+  let stdout = "";
+  let stderr = "";
+  const timeout = setTimeout(() => {
+    reject(new Error(`Timed out starting CLI provider outage server: ${stderr}`));
+  }, 5_000);
+  cliProviderOutageServer.stderr?.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString("utf8");
+  });
+  cliProviderOutageServer.stdout?.on("data", (chunk: Buffer) => {
+    stdout += chunk.toString("utf8");
+    const line = stdout.split(/\r?\n/u)[0]?.trim();
+    if (!line) return;
+    const port = Number(line);
+    if (!Number.isInteger(port) || port <= 0) return;
+    clearTimeout(timeout);
+    resolve(port);
+  });
+  cliProviderOutageServer.once("exit", (code, signal) => {
+    clearTimeout(timeout);
+    reject(new Error(`CLI provider outage server exited early: code=${code} signal=${signal} ${stderr}`));
+  });
+});
+const cliProviderOutageJsonFile = path.join(tmp, "cli-provider-outage-report.json");
+const cliProviderOutageResultsJsonl = path.join(tmp, "cli-provider-outage-results.jsonl");
+const cliProviderOutageBundleDir = path.join(tmp, "cli-provider-outage-bundle");
+let cliProviderOutage: ReturnType<typeof spawnSync>;
+try {
+  cliProviderOutage = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "src/cli/gmos.ts",
+      "gym",
+      "external",
+      "--input-file",
+      externalBenchmarkFile,
+      "--protocol",
+      "official-protocol",
+      "--answerer-base-url",
+      `http://127.0.0.1:${cliProviderOutagePort}/v1`,
+      "--answerer-model",
+      "provider-outage-fixture",
+      "--max-cases",
+      "3",
+      "--concurrency",
+      "1",
+      "--format",
+      "json",
+      "--json-file",
+      cliProviderOutageJsonFile,
+      "--results-jsonl",
+      cliProviderOutageResultsJsonl,
+      "--reproduction-bundle",
+      cliProviderOutageBundleDir,
+    ],
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+} finally {
+  if (cliProviderOutageServer.exitCode === null) {
+    const stopped = new Promise<void>((resolve) => {
+      cliProviderOutageServer.once("exit", () => resolve());
+    });
+    cliProviderOutageServer.kill("SIGTERM");
+    await stopped;
+  }
+}
+assert.equal(cliProviderOutage.status, 75, cliProviderOutage.stderr);
+const cliProviderOutageReport = JSON.parse(cliProviderOutage.stdout) as {
+  caseCount?: number;
+  partial?: boolean;
+  cases?: Array<{ id?: string }>;
+  runManifest?: {
+    execution?: { stopReason?: string; stopStage?: string | null; stopHttpStatus?: number | null };
+  };
+};
+assert.equal(cliProviderOutageReport.caseCount, 1);
+assert.equal(cliProviderOutageReport.partial, true);
+assert.equal(cliProviderOutageReport.runManifest?.execution?.stopReason, "provider_outage");
+assert.equal(cliProviderOutageReport.runManifest?.execution?.stopStage, "answerer");
+assert.equal(cliProviderOutageReport.runManifest?.execution?.stopHttpStatus, 503);
+assert.deepEqual(
+  JSON.parse(readFileSync(cliProviderOutageJsonFile, "utf8")),
+  cliProviderOutageReport,
+);
+const cliProviderOutageJsonlCases = readFileSync(cliProviderOutageResultsJsonl, "utf8")
+  .trim()
+  .split(/\r?\n/u)
+  .map((line) => JSON.parse(line) as { id?: string });
+const cliProviderOutageBundleReport = JSON.parse(
+  readFileSync(path.join(cliProviderOutageBundleDir, "results.json"), "utf8"),
+) as {
+  cases?: Array<{ id?: string }>;
+  runManifest?: { execution?: { stopReason?: string } };
+};
+assert.deepEqual(cliProviderOutageJsonlCases.map((entry) => entry.id), ["project-next-step"]);
+assert.deepEqual(
+  cliProviderOutageBundleReport.cases?.map((entry) => entry.id),
+  cliProviderOutageReport.cases?.map((entry) => entry.id),
+);
+assert.equal(
+  cliProviderOutageBundleReport.runManifest?.execution?.stopReason,
+  "provider_outage",
+);
 const cliExternalInvalidJudgeProfile = spawnSync(
   process.execPath,
   [

@@ -4,8 +4,10 @@ import {
 } from "../kernel/openai-compatible-extractor.js";
 import {
   OpenAICompatibleResponseError,
+  type OpenAICompatibleRequestStage,
   attachOpenAICompatibleRetryCount,
   createOpenAICompatibleDebugCapture,
+  markOpenAICompatibleRequestLifecycleOwner,
   openAICompatibleOutcomeForError,
   openAICompatibleRetryAfterMs,
   openAICompatibleRetryCount,
@@ -154,6 +156,7 @@ async function fetchJsonWithRetry(
     maxRetries?: number | undefined;
     backoffMs?: number | undefined;
     throwOnFailure?: boolean | undefined;
+    stage: OpenAICompatibleRequestStage;
   },
 ): Promise<unknown | null> {
   const timeoutMs = boundedInteger(options.timeoutMs, DEFAULT_TIMEOUT_MS, 1000, 120_000);
@@ -178,6 +181,7 @@ async function fetchJsonWithRetry(
       retries: options.retries,
       maxRetries: options.maxRetries,
       backoffMs: options.backoffMs,
+      stage: options.stage,
     });
     return result.value;
   } catch (error) {
@@ -216,7 +220,10 @@ function safeContent(value: unknown, maxLength: number): string | null {
 async function callChatJson(
   options: OpenAICompatibleBaseOptions,
   messages: Array<{ role: "system" | "user"; content: string }>,
-  parseOptions: { throwOnFailure?: boolean | undefined } = {},
+  parseOptions: {
+    stage: OpenAICompatibleRequestStage;
+    throwOnFailure?: boolean | undefined;
+  },
 ): Promise<unknown | null> {
   const payload = await fetchJsonWithRetry(
     endpoint(options.baseUrl, "/chat/completions"),
@@ -243,6 +250,7 @@ async function callChatJson(
       maxRetries: options.maxRetries,
       backoffMs: options.backoffMs,
       throwOnFailure: parseOptions.throwOnFailure,
+      stage: parseOptions.stage,
     },
   );
   if (payload === null) return null;
@@ -393,7 +401,7 @@ export function createOpenAICompatibleConsolidator(
   options: OpenAICompatibleBaseOptions,
 ): MemoryConsolidator {
   const fetchImpl = fetchFor(options);
-  return {
+  return markOpenAICompatibleRequestLifecycleOwner({
     name: options.name ?? `openai-compatible-consolidator:${options.model}`,
     async consolidate(cluster: MemoryConsolidationCluster) {
       const isEntityCluster = cluster.kind === "entity";
@@ -416,19 +424,20 @@ export function createOpenAICompatibleConsolidator(
           },
           { role: "user", content: JSON.stringify({ cluster }) },
         ],
+        { stage: "consolidator" },
       );
       const items = arrayFromPayload(parsed, ["summaries", "candidates", "memories"]);
       if (items === null) return null;
       return items.map(normalizeConsolidationOutput).filter((item): item is MemoryConsolidationCandidate => item !== null);
     },
-  };
+  });
 }
 
 export function createOpenAICompatibleProcedureDistiller(
   options: OpenAICompatibleBaseOptions,
 ): MemoryProcedureDistiller {
   const fetchImpl = fetchFor(options);
-  return {
+  return markOpenAICompatibleRequestLifecycleOwner({
     name: options.name ?? `openai-compatible-procedure-distiller:${options.model}`,
     async distill(cluster: Omit<MemoryProcedureDistillationCluster, "clusterKey">) {
       const parsed = await callChatJson(
@@ -443,19 +452,20 @@ export function createOpenAICompatibleProcedureDistiller(
           },
           { role: "user", content: JSON.stringify({ cluster }) },
         ],
+        { stage: "procedure_distiller" },
       );
       const items = arrayFromPayload(parsed, ["procedures", "candidates", "summaries"]);
       if (items === null) return null;
       return items.map(normalizeProcedureOutput).filter((item): item is MemoryProcedureDistillationCandidate => item !== null);
     },
-  };
+  });
 }
 
 export function createOpenAICompatibleDossierSynthesizer(
   options: OpenAICompatibleBaseOptions,
 ): MemoryDossierSynthesizer {
   const fetchImpl = fetchFor(options);
-  return {
+  return markOpenAICompatibleRequestLifecycleOwner({
     name: options.name ?? `openai-compatible-dossier-synthesizer:${options.model}`,
     async synthesize(entity: MemoryDossierEntitySnapshot) {
       const parsed = await callChatJson(
@@ -470,12 +480,13 @@ export function createOpenAICompatibleDossierSynthesizer(
           },
           { role: "user", content: JSON.stringify({ entity }) },
         ],
+        { stage: "dossier_synthesizer" },
       );
       const items = arrayFromPayload(parsed, ["dossiers", "candidates", "summaries"]);
       if (items === null) return null;
       return items.map(normalizeDossierOutput).filter((item): item is MemoryDossierCandidate => item !== null);
     },
-  };
+  });
 }
 
 function sessionDistillationPrompt(input: MemorySessionDistillationInput): string {
@@ -506,7 +517,7 @@ export function createOpenAICompatibleSessionDistiller(
     ...(options.debugMaxFiles !== undefined ? { maxFiles: options.debugMaxFiles } : {}),
     ...(options.debugMaxChars !== undefined ? { maxChars: options.debugMaxChars } : {}),
   });
-  return {
+  return markOpenAICompatibleRequestLifecycleOwner({
     name,
     async distill(input) {
       const messages = [
@@ -585,6 +596,7 @@ export function createOpenAICompatibleSessionDistiller(
           retries: options.retries,
           maxRetries: options.maxRetries,
           backoffMs: options.backoffMs,
+          stage: "session_distiller",
         });
         debugCapture?.({
           hook: name,
@@ -608,7 +620,7 @@ export function createOpenAICompatibleSessionDistiller(
         throw error;
       }
     },
-  };
+  });
 }
 
 export function createOpenAICompatibleQueryPlanner(
@@ -617,7 +629,7 @@ export function createOpenAICompatibleQueryPlanner(
   const fetchImpl = fetchFor(options);
   const defaultMaxAnchors = boundedInteger(options.maxAnchors, 4, 0, 12);
   const defaultMaxSweepCues = boundedInteger(options.maxSweepCues, 3, 0, 12);
-  return {
+  return markOpenAICompatibleRequestLifecycleOwner({
     name: options.name ?? `openai-compatible-query-planner:${options.model}`,
     async plan(input) {
       const maxAnchors = boundedInteger(input.maxAnchors, defaultMaxAnchors, 0, 12);
@@ -643,12 +655,12 @@ export function createOpenAICompatibleQueryPlanner(
             }),
           },
         ],
-        { throwOnFailure: true },
+        { stage: "query_planner", throwOnFailure: true },
       );
       const plan = normalizeQueryPlannerOutput(parsed, maxAnchors, maxSweepCues);
       return plan.sweepCues?.length ? plan : plan.requiredAnchors ?? [];
     },
-  };
+  });
 }
 
 function embeddingVectors(payload: unknown): number[][] | null {
@@ -679,7 +691,7 @@ export function createOpenAICompatibleEmbeddingProvider(
   const fetchImpl = fetchFor(options);
   const dimensions = boundedInteger(options.dimensions, DEFAULT_DIMENSIONS, 1, 65536);
   const maxBatchSize = boundedInteger(options.maxBatchSize, 32, 1, 256);
-  return {
+  return markOpenAICompatibleRequestLifecycleOwner({
     name: options.name ?? `openai-compatible-embedding:${options.model}`,
     dimensions,
     maxBatchSize,
@@ -706,6 +718,7 @@ export function createOpenAICompatibleEmbeddingProvider(
             maxRetries: queryPriority ? 0 : options.maxRetries,
             backoffMs: options.backoffMs,
             throwOnFailure: true,
+            stage: queryPriority ? "embedding_query" : "embedding_bulk",
           },
         );
         const batchVectors = embeddingVectors(payload);
@@ -721,14 +734,14 @@ export function createOpenAICompatibleEmbeddingProvider(
       }
       return vectors;
     },
-  };
+  });
 }
 
 export function createOpenAICompatibleReranker(
   options: OpenAICompatibleBaseOptions,
 ): MemoryRetrievalReranker {
   const fetchImpl = fetchFor(options);
-  return {
+  return markOpenAICompatibleRequestLifecycleOwner({
     name: options.name ?? `openai-compatible-reranker:${options.model}`,
     async rerank(candidates: MemoryRetrievalRerankerCandidate[]) {
       const parsed = await callChatJson(
@@ -743,6 +756,7 @@ export function createOpenAICompatibleReranker(
           },
           { role: "user", content: JSON.stringify({ candidates }) },
         ],
+        { stage: "reranker" },
       );
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
         return candidates.map((candidate) => candidate.id);
@@ -761,7 +775,7 @@ export function createOpenAICompatibleReranker(
         return [id];
       });
     },
-  };
+  });
 }
 
 function withDefaults<T extends OpenAICompatibleBaseOptions>(

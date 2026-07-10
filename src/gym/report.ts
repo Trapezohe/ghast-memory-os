@@ -432,7 +432,7 @@ export function renderExternalMemoryBenchmarkMarkdown(
     `Git: ${report.runManifest.git.branch ?? "unknown"} ${report.runManifest.git.sha ?? "unknown"} dirty=${report.runManifest.git.dirty ?? "unknown"}`,
     `Dataset: ${report.runManifest.dataset.id ?? "unknown"} format=${report.runManifest.dataset.format} hash=${report.runManifest.dataset.hash ?? "unknown"} cases=${report.runManifest.dataset.caseCount} executed=${executedCases}`,
     `Dataset warnings: ${report.runManifest.dataset.warnings.length ? report.runManifest.dataset.warnings.map(markdownCell).join("; ") : "none"}`,
-    `Execution: caseGroups=${report.runManifest.execution.caseGroupCount} plannedCaseGroups=${report.runManifest.execution.plannedCaseGroupCount ?? report.runManifest.execution.caseGroupCount} reusedProfileCases=${report.runManifest.execution.reusedProfileCaseCount} executedCases=${report.runManifest.execution.executedCases ?? executedCases} partial=${report.runManifest.execution.partial ?? report.partial ?? false} interrupted=${report.runManifest.execution.interrupted ?? false}`,
+    `Execution: caseGroups=${report.runManifest.execution.caseGroupCount} plannedCaseGroups=${report.runManifest.execution.plannedCaseGroupCount ?? report.runManifest.execution.caseGroupCount} reusedProfileCases=${report.runManifest.execution.reusedProfileCaseCount} executedCases=${report.runManifest.execution.executedCases ?? executedCases} partial=${report.runManifest.execution.partial ?? report.partial ?? false} interrupted=${report.runManifest.execution.interrupted ?? false} stopReason=${report.runManifest.execution.stopReason ?? "completed"} stopStage=${report.runManifest.execution.stopStage ?? "none"} stopHttpStatus=${report.runManifest.execution.stopHttpStatus ?? "none"} stopRetryAfterMs=${report.runManifest.execution.stopRetryAfterMs ?? "none"} stopRetryCount=${report.runManifest.execution.stopRetryCount ?? "none"}`,
     `Slice: ${slice.partial ? "partial" : "full"} selected=${slice.selectedCases}/${slice.totalDatasetCases} executed=${slice.executedCases} maxCases=${slice.sliceSpec.maxCases ?? "none"} caseOffset=${slice.sliceSpec.caseOffset} caseIds=${slice.sliceSpec.caseIds.join(",") || "none"}`,
     `Options: mode=${report.runManifest.options.mode ?? "case/default"} protocol=${report.runManifest.options.protocol} judgeProfile=${report.runManifest.options.judgeProfile} readerProfile=${report.runManifest.options.readerProfile ?? "default"} maxSteps=${report.runManifest.options.maxSteps ?? "default"} maxBranch=${report.runManifest.options.maxBranch ?? "default"} maxMemories=${report.runManifest.options.maxMemories ?? "default"} contextBudgetTokens=${report.runManifest.options.contextBudgetTokens ?? "default"} maxCharsPerMemory=${report.runManifest.options.maxCharsPerMemory ?? "default"} fullContentTopRank=${report.runManifest.options.fullContentTopRank ?? "default"} fullContentMaxChars=${report.runManifest.options.fullContentMaxChars ?? "default"} layerPolicy=${report.runManifest.options.layerPolicy ? JSON.stringify(report.runManifest.options.layerPolicy) : "none"} temporalMode=${report.runManifest.options.temporalMode ?? "case/default"} includeSensitive=${report.runManifest.options.includeSensitive} includeTemporalMetadata=${report.runManifest.options.includeTemporalMetadata} includeTemporalContext=${report.runManifest.options.includeTemporalContext ?? true} requireConvergence=${report.runManifest.options.requireConvergence} concurrency=${report.runManifest.options.concurrency} extractionWindow=${report.runManifest.options.extractionWindow ?? "default"} ingestReplayAttempts=${report.runManifest.options.ingestReplayAttempts ?? "default"} turnRetention=${report.runManifest.options.turnRetention} sessionDistillation=${report.runManifest.options.sessionDistillation ?? false} consolidateEntities=${report.runManifest.options.consolidateEntities ?? false} queryPlanner=${report.runManifest.options.queryPlanner} sweepCues=${report.runManifest.options.sweepCues} reuseProfiles=${report.runManifest.options.reuseProfiles} diagnosticsLevel=${report.runManifest.options.diagnosticsLevel}`,
     `Failure sample limit: ${report.runManifest.options.failureSampleLimit}`,
@@ -496,12 +496,14 @@ export function renderExternalMemoryBenchmarkSuiteMarkdown(
 ): string {
   const slowRuns = slowestSuiteRuns(report);
   const weakSlices = weakestSuiteSlices(report);
+  const execution = report.runManifest.execution;
   return [
     "# gmOS External Benchmark Suite",
     "",
     `Status: ${report.pass ? "PASS" : "FAIL"}`,
     `BenchmarkStatus: ${report.benchmarkPass ? "PASS" : "FAIL"}`,
     `Run scope: ${report.partial ? "PARTIAL" : "FULL"} executed=${report.totalExecutedCases ?? report.totalCaseCount}/${report.totalDatasetCases ?? report.totalCaseCount}`,
+    `Stop: ${execution?.stopReason ?? "completed"} run=${execution?.stopRunId ?? "none"} stage=${execution?.stopStage ?? "none"} status=${execution?.stopHttpStatus ?? "none"} runs=${execution?.executedRunCount ?? report.runCount}/${execution?.plannedRunCount ?? report.runCount}`,
     `Runs: ${report.passedRunCount}/${report.runCount}`,
     `Mean score: ${report.scoreMean.toFixed(4)}`,
     `Weighted score: ${report.scoreWeighted.toFixed(4)}`,
@@ -556,6 +558,7 @@ export function renderExternalMemoryBenchmarkSuiteMarkdown(
     `Suite reachable score: ${reachableScoreLine(report.runManifest.ceilingMetrics)}`,
     `Deterministic only: ${report.runManifest.deterministicOnly ? "yes" : "no"}`,
     `Partial: ${report.runManifest.partial ? "yes" : "no"}`,
+    `Execution: stopReason=${execution?.stopReason ?? "completed"} stopRun=${execution?.stopRunId ?? "none"} stopStage=${execution?.stopStage ?? "none"} stopHttpStatus=${execution?.stopHttpStatus ?? "none"} stopRetryAfterMs=${execution?.stopRetryAfterMs ?? "none"} stopRetryCount=${execution?.stopRetryCount ?? "none"} runs=${execution?.executedRunCount ?? report.runCount}/${execution?.plannedRunCount ?? report.runCount}`,
     "",
     "## Runs",
     "",

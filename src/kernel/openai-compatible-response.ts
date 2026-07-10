@@ -1,9 +1,59 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { redactForReport } from "./safety.js";
 
 export type OpenAICompatibleResponseFailureKind = "parse_failure" | "transport_failure";
+
+export type OpenAICompatibleRequestStage =
+  | "extractor"
+  | "session_distiller"
+  | "consolidator"
+  | "embedding_bulk"
+  | "embedding_query"
+  | "query_planner"
+  | "reranker"
+  | "procedure_distiller"
+  | "dossier_synthesizer"
+  | "answerer"
+  | "judge";
+
+export interface OpenAICompatibleTerminalFailure {
+  stage: OpenAICompatibleRequestStage;
+  failureKind: OpenAICompatibleResponseFailureKind;
+  status?: number | undefined;
+  retryAfterMs?: number | undefined;
+  retryCount: number;
+}
+
+export interface OpenAICompatibleRequestObserver {
+  beforeAttempt(stage: OpenAICompatibleRequestStage): void;
+  terminalFailure(failure: OpenAICompatibleTerminalFailure): void;
+  succeeded(stage: OpenAICompatibleRequestStage): void;
+  maxRetryDelayMs?: number | undefined;
+}
+
+const REQUEST_OBSERVER = new AsyncLocalStorage<OpenAICompatibleRequestObserver>();
+const REQUEST_LIFECYCLE_OWNERS = new WeakSet<object>();
+
+export function markOpenAICompatibleRequestLifecycleOwner<T extends object>(value: T): T {
+  REQUEST_LIFECYCLE_OWNERS.add(value);
+  return value;
+}
+
+export function ownsOpenAICompatibleRequestLifecycle(value: unknown): boolean {
+  return (typeof value === "object" && value !== null) || typeof value === "function"
+    ? REQUEST_LIFECYCLE_OWNERS.has(value)
+    : false;
+}
+
+export function withOpenAICompatibleRequestObserver<T>(
+  observer: OpenAICompatibleRequestObserver,
+  operation: () => T,
+): T {
+  return REQUEST_OBSERVER.run(observer, operation);
+}
 
 const RETRY_COUNT = Symbol.for("@ghast/memory.openaiCompatibleRetryCount");
 
@@ -46,6 +96,8 @@ export interface OpenAICompatibleRetryOptions {
   retries?: number | undefined;
   maxRetries?: number | undefined;
   backoffMs?: number | undefined;
+  maxRetryDelayMs?: number | undefined;
+  stage?: OpenAICompatibleRequestStage | undefined;
 }
 
 export interface OpenAICompatibleRetryResult<T> {
@@ -89,7 +141,7 @@ export function openAICompatibleRetryAfterMs(value: string | null | undefined): 
 
 function retryableTransportError(error: unknown): boolean {
   if (error instanceof OpenAICompatibleResponseError) {
-    return error.failureKind === "transport_failure" && error.retryable;
+    return error.retryable;
   }
   return true;
 }
@@ -116,17 +168,24 @@ export async function runOpenAICompatibleRetry<T>(
   const timeoutMs = boundedInteger(options?.timeoutMs, 20_000, 1000, 120_000);
   const retries = boundedInteger(options?.retries ?? options?.maxRetries, 2, 0, 5);
   const backoffMs = boundedInteger(options?.backoffMs, 250, 0, 30_000);
+  const stage = options?.stage;
+  const observer = stage ? REQUEST_OBSERVER.getStore() : undefined;
+  const maxRetryDelayMs = options?.maxRetryDelayMs ?? observer?.maxRetryDelayMs;
   let retryCount = 0;
   let lastError: unknown;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      return { value: await operation(controller.signal), retryCount };
+      if (stage) observer?.beforeAttempt(stage);
+      const value = await operation(controller.signal);
+      if (stage) observer?.succeeded(stage);
+      return { value, retryCount };
     } catch (error) {
       lastError = error;
       if (!retryableTransportError(error) || attempt >= retries) break;
       const delayMs = retryDelayMs(error, attempt, backoffMs);
+      if (maxRetryDelayMs !== undefined && delayMs > Math.max(0, maxRetryDelayMs)) break;
       retryCount += 1;
       await sleep(delayMs);
     } finally {
@@ -137,6 +196,19 @@ export async function runOpenAICompatibleRetry<T>(
     ? lastError
     : new OpenAICompatibleResponseError("OpenAI-compatible request timed out", "transport_failure");
   attachOpenAICompatibleRetryCount(error, retryCount);
+  if (stage) {
+    observer?.terminalFailure({
+      stage,
+      failureKind: openAICompatibleFailureKind(error),
+      ...(error instanceof OpenAICompatibleResponseError && error.status !== undefined
+        ? { status: error.status }
+        : {}),
+      ...(error instanceof OpenAICompatibleResponseError && error.retryAfterMs !== undefined
+        ? { retryAfterMs: error.retryAfterMs }
+        : {}),
+      retryCount,
+    });
+  }
   throw error;
 }
 

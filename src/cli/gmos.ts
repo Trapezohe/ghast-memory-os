@@ -2324,6 +2324,8 @@ async function main(): Promise<void> {
     printReport(report, renderExternalMemoryBenchmarkMarkdown(report));
     if (interrupted || report.runManifest.execution.interrupted) {
       process.exitCode = 130;
+    } else if (report.runManifest.execution.stopReason === "provider_outage") {
+      process.exitCode = 75;
     } else if (!report.pass) {
       process.exitCode = 1;
     }
@@ -2361,7 +2363,11 @@ async function main(): Promise<void> {
       });
     }
     printReport(execution.result, renderExternalMemoryBenchmarkSuiteMarkdown(execution.result));
-    if (!execution.result.pass) process.exitCode = 1;
+    if (execution.result.runManifest.execution?.stopReason === "provider_outage") {
+      process.exitCode = 75;
+    } else if (!execution.result.pass) {
+      process.exitCode = 1;
+    }
     return;
   }
 

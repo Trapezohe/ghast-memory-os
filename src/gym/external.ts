@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   copyFileSync,
   existsSync,
@@ -49,7 +50,18 @@ import {
   type OpenAICompatibleFetch,
 } from "../intelligence/index.js";
 import { readGmosPackageInfo, readGmosPackageRoot } from "../kernel/package-info.js";
-import { parseOpenAICompatibleJsonText } from "../kernel/openai-compatible-response.js";
+import {
+  OpenAICompatibleResponseError,
+  type OpenAICompatibleRequestObserver,
+  type OpenAICompatibleRequestStage,
+  type OpenAICompatibleTerminalFailure,
+  openAICompatibleRetryAfterMs,
+  openAICompatibleRetryCount,
+  ownsOpenAICompatibleRequestLifecycle,
+  parseOpenAICompatibleJsonText,
+  runOpenAICompatibleRetry,
+  withOpenAICompatibleRequestObserver,
+} from "../kernel/openai-compatible-response.js";
 import {
   classifySensitivity,
   eligibleForLongTermMemory,
@@ -69,10 +81,44 @@ export type ExternalMemoryBenchmarkTemporalMode = "auto" | "current" | "history"
 export type ExternalMemoryBenchmarkDiagnosticsLevel = "off" | "basic" | "full";
 export type ExternalMemoryBenchmarkIngestMode = "memory" | "message";
 export type ExternalMemoryBenchmarkReaderProfile = "default" | "expansive" | "wide";
+export type ExternalMemoryBenchmarkStopReason = "completed" | "signal" | "provider_outage";
+export type ExternalMemoryBenchmarkProviderStage =
+  | "extractor"
+  | "session_distiller"
+  | "consolidator"
+  | "embedding_bulk"
+  | "embedding_query"
+  | "query_planner"
+  | "reranker"
+  | "procedure_distiller"
+  | "dossier_synthesizer"
+  | "answerer"
+  | "judge";
 export type ExternalMemoryBenchmarkDatasetFormat =
   | "gmos.external_long_memory_qa.jsonl"
   | "longmemeval.json"
   | "locomo.json";
+
+export class ExternalMemoryBenchmarkProviderError extends Error {
+  readonly status: 429 | 503;
+  readonly retryAfterMs: number | null;
+  readonly retryCount: number;
+
+  constructor(
+    message: string,
+    details: {
+      status: 429 | 503;
+      retryAfterMs?: number | null | undefined;
+      retryCount?: number | undefined;
+    },
+  ) {
+    super(message);
+    this.name = "ExternalMemoryBenchmarkProviderError";
+    this.status = details.status;
+    this.retryAfterMs = details.retryAfterMs ?? null;
+    this.retryCount = Math.max(0, Math.trunc(details.retryCount ?? 0));
+  }
+}
 
 export interface ExternalMemoryBenchmarkIntelligenceConfig {
   baseUrl?: string | undefined;
@@ -727,6 +773,11 @@ export interface ExternalMemoryBenchmarkRunManifest {
     executedCases: number;
     partial: boolean;
     interrupted: boolean;
+    stopReason?: ExternalMemoryBenchmarkStopReason | undefined;
+    stopStage?: ExternalMemoryBenchmarkProviderStage | null | undefined;
+    stopHttpStatus?: number | null | undefined;
+    stopRetryAfterMs?: number | null | undefined;
+    stopRetryCount?: number | null | undefined;
   };
   slice: {
     sliceSpec: ExternalMemoryBenchmarkSliceSpec;
@@ -932,6 +983,8 @@ function reproductionReadme(input: {
   envVarNames: string[];
 }): string {
   const dataset = input.report.runManifest.dataset;
+  const execution = input.report.runManifest.execution;
+  const stopReason = execution.stopReason ?? (execution.interrupted ? "signal" : "completed");
   return [
     "# Reproduce gmOS External Benchmark Run",
     "",
@@ -942,6 +995,7 @@ function reproductionReadme(input: {
     `Protocol: ${input.report.runManifest.protocol}`,
     `Judge: ${input.report.runManifest.judgeProvenance.kind}:${input.report.runManifest.judgeProvenance.name ?? "none"}`,
     `Judge profile: ${judgeProfileLabel(input.report.runManifest.judgeProfile)}`,
+    `Stop: ${stopReason} stage=${execution.stopStage ?? "none"} status=${execution.stopHttpStatus ?? "none"}`,
     "",
     "## Command",
     "",
@@ -988,6 +1042,8 @@ export function writeExternalMemoryBenchmarkReproductionBundle(
     judgeProvenance: input.report.runManifest.judgeProvenance,
     options: input.report.runManifest.options,
     slice: input.report.runManifest.slice,
+    partial: input.report.partial,
+    execution: input.report.runManifest.execution,
     scoreSemantics: input.report.runManifest.scoreSemantics,
     runtimeIntelligence: input.report.runManifest.runtimeIntelligence,
     command,
@@ -2527,11 +2583,99 @@ function openAICompatibleExternalBenchmarkJudgeWithCase(
 const DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_MS = 20_000;
 const DEFAULT_OPENAI_COMPATIBLE_MAX_TOKENS = 2048;
 const DEFAULT_OPENAI_COMPATIBLE_ANSWERER_JUDGE_RETRIES = 2;
-const DEFAULT_OPENAI_COMPATIBLE_RETRY_BACKOFF_MS = 250;
 const MIN_OPENAI_COMPATIBLE_MAX_TOKENS = 64;
 const MAX_OPENAI_COMPATIBLE_MAX_TOKENS = 8192;
 const MAX_RECORDED_GENERATED_ANSWER_CHARS = 2000;
 const MAX_RECORDED_ERROR_CHARS = 300;
+
+interface ExternalBenchmarkProviderOutage {
+  stage: OpenAICompatibleRequestStage;
+  status: 429 | 503;
+  retryAfterMs: number | null;
+  retryCount: number;
+}
+
+interface ExternalBenchmarkProviderCircuit {
+  readonly outage: ExternalBenchmarkProviderOutage | null;
+  observer: OpenAICompatibleRequestObserver;
+  throwIfOpen(): void;
+  reportHookFailure(stage: OpenAICompatibleRequestStage, error: unknown): void;
+  withQueryScope<T>(scope: string, operation: () => Promise<T>): Promise<T>;
+}
+
+function createExternalBenchmarkProviderCircuit(): ExternalBenchmarkProviderCircuit {
+  const queryScope = new AsyncLocalStorage<string>();
+  const consecutiveQueryEmbeddingFailures = new Map<string, number>();
+  let outage: ExternalBenchmarkProviderOutage | null = null;
+  const recordTerminalFailure = (failure: OpenAICompatibleTerminalFailure): void => {
+    if (outage || (failure.status !== 429 && failure.status !== 503)) return;
+    if (failure.stage === "embedding_query") {
+      const scope = queryScope.getStore();
+      if (!scope) return;
+      const failureCount = (consecutiveQueryEmbeddingFailures.get(scope) ?? 0) + 1;
+      consecutiveQueryEmbeddingFailures.set(scope, failureCount);
+      if (failureCount < 2) return;
+    }
+    outage = {
+      stage: failure.stage,
+      status: failure.status,
+      retryAfterMs: failure.retryAfterMs ?? null,
+      retryCount: failure.retryCount,
+    };
+  };
+  const throwIfOpen = (): void => {
+    if (!outage) return;
+    throw new OpenAICompatibleResponseError(
+      `OpenAI-compatible provider circuit is open after ${outage.status} at ${outage.stage}`,
+      "transport_failure",
+      {
+        status: outage.status,
+        retryable: false,
+        ...(outage.retryAfterMs !== null ? { retryAfterMs: outage.retryAfterMs } : {}),
+      },
+    );
+  };
+  const observer: OpenAICompatibleRequestObserver = {
+    maxRetryDelayMs: 5_000,
+    beforeAttempt() {
+      throwIfOpen();
+    },
+    terminalFailure(failure: OpenAICompatibleTerminalFailure) {
+      recordTerminalFailure(failure);
+    },
+    succeeded(stage) {
+      if (stage !== "embedding_query") return;
+      const scope = queryScope.getStore();
+      if (scope) consecutiveQueryEmbeddingFailures.delete(scope);
+    },
+  };
+  return {
+    get outage() {
+      return outage;
+    },
+    observer,
+    throwIfOpen,
+    reportHookFailure(stage, error) {
+      if (!(error instanceof ExternalMemoryBenchmarkProviderError)) return;
+      recordTerminalFailure({
+        stage,
+        failureKind: "transport_failure",
+        status: error.status,
+        ...(error.retryAfterMs !== null ? { retryAfterMs: error.retryAfterMs } : {}),
+        retryCount: error.retryCount,
+      });
+    },
+    withQueryScope(scope, operation) {
+      return queryScope.run(scope, async () => {
+        try {
+          return await operation();
+        } finally {
+          consecutiveQueryEmbeddingFailures.delete(scope);
+        }
+      });
+    },
+  };
+}
 const STRICT_JUDGE_SYSTEM_PROMPT = [
   "You are a strict but fair long-memory benchmark judge.",
   "Return JSON only: {\"correct\":true|false,\"rationale\":\"...\"}.",
@@ -2629,29 +2773,25 @@ interface OpenAICompatibleJsonValidator {
   onRecovered?: (() => void) | undefined;
 }
 
-function waitForOpenAICompatibleRetry(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, DEFAULT_OPENAI_COMPATIBLE_RETRY_BACKOFF_MS));
-}
-
 async function fetchOpenAICompatibleJson(
   options: ExternalMemoryBenchmarkOpenAICompatibleHookOptions,
   messages: Array<{ role: "system" | "user"; content: string }>,
   validator?: OpenAICompatibleJsonValidator | undefined,
-  request?: { responseFormat?: "json" | "text" } | undefined,
+  request?: {
+    stage: "answerer" | "judge";
+    responseFormat?: "json" | "text";
+  } | undefined,
 ): Promise<unknown> {
   const fetchImpl = openAICompatibleFetch(options);
   const timeoutMs = hookTimeoutMs(options.timeoutMs);
   const maxTokens = hookMaxTokens(options.maxTokens);
   const maxRetries = Math.max(0, Math.min(Math.trunc(options.maxRetries ?? validator?.defaultMaxRetries ?? 0), 3));
   const responseFormat = request?.responseFormat ?? "json";
-  let lastError: unknown;
-  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
+  try {
+    const result = await runOpenAICompatibleRetry(async (signal) => {
       const response = await fetchImpl(openAICompatibleEndpoint(options.baseUrl), {
         method: "POST",
-        signal: controller.signal,
+        signal,
         headers: {
           "content-type": "application/json",
           ...(options.apiKey ? { authorization: `Bearer ${options.apiKey}` } : {}),
@@ -2667,24 +2807,51 @@ async function fetchOpenAICompatibleJson(
       });
       const text = await response.text();
       if (!response.ok) {
-        throw new Error(`request failed: ${response.status} ${response.statusText}`);
+        throw new OpenAICompatibleResponseError(
+          `request failed: ${response.status} ${response.statusText}`,
+          "transport_failure",
+          {
+            status: response.status,
+            retryable: response.status === 429 || response.status >= 500,
+            retryAfterMs: openAICompatibleRetryAfterMs(response.headers?.get("retry-after")),
+          },
+        );
       }
-      const parsed = JSON.parse(text) as unknown;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text) as unknown;
+      } catch {
+        throw new OpenAICompatibleResponseError(
+          "OpenAI-compatible benchmark hook returned malformed response JSON",
+          "parse_failure",
+          { retryable: true },
+        );
+      }
       if (validator && !validator.validate(parsed)) {
-        throw new Error(validator.errorMessage);
+        throw new OpenAICompatibleResponseError(
+          validator.errorMessage,
+          "parse_failure",
+          { retryable: true },
+        );
       }
-      if (attempt > 0) validator?.onRecovered?.();
       return parsed;
-    } catch (error) {
-      lastError = error;
-      if (attempt >= maxRetries) break;
+    }, {
+      timeoutMs,
+      maxRetries,
+      backoffMs: 250,
+      stage: request?.stage,
+    });
+    for (let retry = 0; retry < result.retryCount; retry += 1) {
       validator?.onRetry?.();
-      await waitForOpenAICompatibleRetry();
-    } finally {
-      clearTimeout(timer);
     }
+    if (result.retryCount > 0) validator?.onRecovered?.();
+    return result.value;
+  } catch (error) {
+    for (let retry = 0; retry < openAICompatibleRetryCount(error); retry += 1) {
+      validator?.onRetry?.();
+    }
+    throw error;
   }
-  throw lastError instanceof Error ? lastError : new Error("OpenAI-compatible hook failed");
 }
 
 function textFromCompletionContent(value: unknown): string {
@@ -2806,7 +2973,7 @@ export function createOpenAICompatibleExternalBenchmarkAnswerer(
         onRecovered() {
           manifest.answererRecoveredCount = (manifest.answererRecoveredCount ?? 0) + 1;
         },
-      }));
+      }, { stage: "answerer" }));
       const answer = parsed.answer;
       if (typeof answer !== "string" || answer.trim().length === 0) {
         throw new Error("OpenAI-compatible benchmark answerer returned no answer");
@@ -2849,7 +3016,7 @@ export function createOpenAICompatibleExternalBenchmarkJudge(
         onRecovered() {
           manifest.judgeRecoveredCount = (manifest.judgeRecoveredCount ?? 0) + 1;
         },
-      }, { responseFormat: "text" });
+      }, { stage: "judge", responseFormat: "text" });
       const decision = upstreamLongMemEvalJudgeDecision(completionText(payload));
       if (!decision) {
         throw new Error("OpenAI-compatible benchmark LongMemEval judge returned no yes/no answer");
@@ -2884,7 +3051,7 @@ export function createOpenAICompatibleExternalBenchmarkJudge(
       onRecovered() {
         manifest.judgeRecoveredCount = (manifest.judgeRecoveredCount ?? 0) + 1;
       },
-    }));
+    }, { stage: "judge" }));
     if (typeof parsed.correct !== "boolean") {
       throw new Error("OpenAI-compatible benchmark judge returned no boolean correct field");
     }
@@ -3001,6 +3168,7 @@ async function officialScoringResult(input: {
   answerer: ExternalMemoryBenchmarkAnswerer | undefined;
   benchmarkCase: ExternalMemoryBenchmarkCase;
   context: string;
+  onProviderFailure: (stage: "answerer" | "judge", error: unknown) => void;
 }): Promise<OfficialScoringResult> {
   if (!input.judge) return { judgeResult: null };
   const safeContext = judgeSafeAnswer(input.context);
@@ -3015,6 +3183,7 @@ async function officialScoringResult(input: {
       actualAnswer = answer.trim();
       generatedAnswer = boundedReportString(actualAnswer, MAX_RECORDED_GENERATED_ANSWER_CHARS);
     } catch (error) {
+      input.onProviderFailure("answerer", error);
       return { judgeResult: null, answererError: errorForReport(error) };
     }
   }
@@ -3028,6 +3197,7 @@ async function officialScoringResult(input: {
       ...(generatedAnswer !== undefined ? { generatedAnswer } : {}),
     };
   } catch (error) {
+    input.onProviderFailure("judge", error);
     return {
       judgeResult: null,
       ...(generatedAnswer !== undefined ? { generatedAnswer } : {}),
@@ -3189,6 +3359,7 @@ function createRunManifest(input: {
   sliceSpec: ExternalMemoryBenchmarkSliceSpec;
   partial: boolean;
   interrupted: boolean;
+  providerOutage: ExternalBenchmarkProviderOutage | null;
 }): ExternalMemoryBenchmarkRunManifest {
   const packageInfo = readGmosPackageInfo();
   const protocol = normalizeProtocol(input.options.protocol);
@@ -3224,6 +3395,15 @@ function createRunManifest(input: {
       executedCases: input.executedCases,
       partial: input.partial,
       interrupted: input.interrupted,
+      stopReason: input.interrupted
+        ? "signal"
+        : input.providerOutage
+          ? "provider_outage"
+          : "completed",
+      stopStage: input.interrupted ? null : input.providerOutage?.stage ?? null,
+      stopHttpStatus: input.interrupted ? null : input.providerOutage?.status ?? null,
+      stopRetryAfterMs: input.interrupted ? null : input.providerOutage?.retryAfterMs ?? null,
+      stopRetryCount: input.interrupted ? null : input.providerOutage?.retryCount ?? null,
     },
     slice: {
       sliceSpec: input.sliceSpec,
@@ -4111,6 +4291,32 @@ function wrapQueryPlanner(
   };
 }
 
+function intelligenceHookStage(
+  label: string,
+  embeddingQuery: boolean,
+): OpenAICompatibleRequestStage {
+  switch (label) {
+    case "extractor":
+      return "extractor";
+    case "sessionDistiller":
+      return "session_distiller";
+    case "consolidator":
+      return "consolidator";
+    case "embeddingProvider":
+      return embeddingQuery ? "embedding_query" : "embedding_bulk";
+    case "queryPlanner":
+      return "query_planner";
+    case "reranker":
+      return "reranker";
+    case "procedureDistiller":
+      return "procedure_distiller";
+    case "dossierSynthesizer":
+      return "dossier_synthesizer";
+    default:
+      throw new Error(`Unknown external benchmark intelligence hook: ${label}`);
+  }
+}
+
 function hookNamesFor(hooks: DefaultIntelligence): ExternalMemoryBenchmarkRuntimeIntelligenceManifest["hookNames"] {
   return {
     extractor: hookName(hooks.extractor),
@@ -4306,6 +4512,7 @@ function resolveRuntimeIntelligence(input: {
   maintainPhases: MaintenancePhase[];
   intelligenceTimeoutMs?: number | undefined;
   intelligenceConcurrency?: number | undefined;
+  providerCircuit: ExternalBenchmarkProviderCircuit;
 }): RuntimeIntelligenceState {
   if (!input.intelligence) {
     if (input.sessionDistillation) {
@@ -4438,14 +4645,37 @@ function resolveRuntimeIntelligence(input: {
   } else {
     rawHooks = input.intelligence as DefaultIntelligence;
   }
+  const lifecycleOwnedHookLabels = new Set<string>();
+  for (const [label, hook] of [
+    ["extractor", rawHooks.extractor],
+    ["sessionDistiller", rawHooks.sessionDistiller],
+    ["consolidator", rawHooks.consolidator],
+    ["procedureDistiller", rawHooks.procedureDistiller],
+    ["dossierSynthesizer", rawHooks.dossierSynthesizer],
+    ["embeddingProvider", rawHooks.embeddingProvider],
+    ["reranker", rawHooks.reranker ?? rawHooks.retrieval?.reranker],
+    ["queryPlanner", rawHooks.queryPlanner],
+  ] as const) {
+    if (ownsOpenAICompatibleRequestLifecycle(hook)) lifecycleOwnedHookLabels.add(label);
+  }
   const limit = createLimit(concurrency);
-  const run = <T>(label: string, task: () => Promise<T>): Promise<T> =>
-    limit(
-      label === "embeddingProvider" && currentEmbeddingProviderCallPriority() === "query"
-        ? "query"
-        : "default",
-      () => withTimeout(Promise.resolve().then(task), timeoutMs, label),
-    );
+  const run = <T>(label: string, task: () => Promise<T>): Promise<T> => {
+    const embeddingQuery = label === "embeddingProvider" &&
+      currentEmbeddingProviderCallPriority() === "query";
+    const stage = intelligenceHookStage(label, embeddingQuery);
+    return limit(embeddingQuery ? "query" : "default", async () => {
+      try {
+        input.providerCircuit.throwIfOpen();
+        const operation = Promise.resolve().then(task);
+        return config || lifecycleOwnedHookLabels.has(label)
+          ? await operation
+          : await withTimeout(operation, timeoutMs, label);
+      } catch (error) {
+        input.providerCircuit.reportHookFailure(stage, error);
+        throw error;
+      }
+    });
+  };
   const extractor = wrapExtractor(rawHooks.extractor, run);
   const sessionDistiller = wrapSessionDistiller(rawHooks.sessionDistiller, run);
   if (input.sessionDistillation && !sessionDistiller) {
@@ -5379,8 +5609,10 @@ async function scoreCase(input: {
   sweepCues: boolean;
   plannerMaxAnchors: number;
   onPlannerFailure: () => void;
+  onProviderFailure: (stage: "answerer" | "judge", error: unknown) => void;
+  shouldStop: () => boolean;
   writeDebugReaderContext?: ((caseId: string, context: string) => void) | undefined;
-}): Promise<ExternalMemoryBenchmarkCaseResult> {
+}): Promise<ExternalMemoryBenchmarkCaseResult | null> {
   const startedMs = Date.now();
   const coreScoringStartedMs = Date.now();
   const id = input.benchmarkCase.id ?? `case-${input.index + 1}`;
@@ -5451,6 +5683,7 @@ async function scoreCase(input: {
         })
       : null;
   const context = prepared?.contextBlock ?? reconstructed?.contextBlock ?? "";
+  if (input.shouldStop()) return null;
   const readerContext = readerContextForReport(context, input.options.readerContextCharLimit);
   const expectedAny = input.benchmarkCase.expectedAny ?? [];
   const expectedAll = input.benchmarkCase.expectedAll ?? [];
@@ -5504,7 +5737,14 @@ async function scoreCase(input: {
     answerer,
     benchmarkCase: input.benchmarkCase,
     context,
+    onProviderFailure: input.onProviderFailure,
   });
+  if (
+    input.shouldStop() &&
+    (officialResult.answererError !== undefined || officialResult.judgeError !== undefined)
+  ) {
+    return null;
+  }
   const judgeResult = officialResult.judgeResult;
   const scoringRuntimeMs = Math.max(0, Date.now() - coreScoringStartedMs);
   const taxonomyResult = failureReasons.length
@@ -5647,6 +5887,7 @@ async function runCaseGroup(input: {
   group: CaseGroup;
   options: RunExternalMemoryBenchmarkOptions;
   runtimeIntelligence: RuntimeIntelligenceState;
+  providerCircuit: ExternalBenchmarkProviderCircuit;
   ingestCache: IngestCacheCounters;
   recordResult: (index: number, result: ExternalMemoryBenchmarkCaseResult) => void;
   shouldStop: () => boolean;
@@ -5893,7 +6134,9 @@ async function runCaseGroup(input: {
     setupDurationMs = Math.max(0, Date.now() - groupStartedMs);
     for (const item of input.group.items) {
       if (input.shouldStop()) break;
-      const result = await scoreCase({
+      const result = await input.providerCircuit.withQueryScope(
+        `${input.group.key}:${item.index}`,
+        () => scoreCase({
         memory: runtime.memory,
         profileId: input.group.profileId,
         caseGroupKey: input.group.key,
@@ -5946,8 +6189,14 @@ async function runCaseGroup(input: {
           input.runtimeIntelligence.manifest.queryPlanner.failureCount =
             input.runtimeIntelligence.plannerFailureCount;
         },
+        onProviderFailure: (stage, error) => {
+          input.providerCircuit.reportHookFailure(stage, error);
+        },
+        shouldStop: input.shouldStop,
         writeDebugReaderContext: input.writeDebugReaderContext,
-      });
+        }),
+      );
+      if (result === null) break;
       results.push(result);
       input.recordResult(item.index, result);
     }
@@ -6026,8 +6275,19 @@ async function runGroupsWithConcurrency(
   return results;
 }
 
-export async function runExternalMemoryBenchmark(
+export function runExternalMemoryBenchmark(
   options: RunExternalMemoryBenchmarkOptions,
+): Promise<ExternalMemoryBenchmarkResult> {
+  const providerCircuit = createExternalBenchmarkProviderCircuit();
+  return withOpenAICompatibleRequestObserver(
+    providerCircuit.observer,
+    () => runExternalMemoryBenchmarkWithCircuit(options, providerCircuit),
+  );
+}
+
+async function runExternalMemoryBenchmarkWithCircuit(
+  options: RunExternalMemoryBenchmarkOptions,
+  providerCircuit: ExternalBenchmarkProviderCircuit,
 ): Promise<ExternalMemoryBenchmarkResult> {
   const startedAt = new Date().toISOString();
   if (!Array.isArray(options.cases) || options.cases.length === 0) {
@@ -6102,6 +6362,7 @@ export async function runExternalMemoryBenchmark(
     maintainPhases,
     intelligenceTimeoutMs: options.intelligenceTimeoutMs,
     intelligenceConcurrency: options.intelligenceConcurrency,
+    providerCircuit,
   });
   const embedQuery = options.embedQuery ?? runtimeIntelligence.hooks?.embeddingProvider !== undefined;
   runtimeIntelligence.manifest.embedQuery = embedQuery;
@@ -6180,7 +6441,8 @@ export async function runExternalMemoryBenchmark(
   let completedCount = 0;
   let passedCount = 0;
   let debugContextFilesWritten = 0;
-  const shouldStop = (): boolean => normalizedOptions.abortSignal?.aborted === true;
+  const shouldStop = (): boolean =>
+    normalizedOptions.abortSignal?.aborted === true || providerCircuit.outage !== null;
   const writeDebugReaderContext = (caseId: string, context: string): void => {
     if (
       !normalizedOptions.debugDir ||
@@ -6224,6 +6486,7 @@ export async function runExternalMemoryBenchmark(
       group,
       options: normalizedOptions,
       runtimeIntelligence,
+      providerCircuit,
       ingestCache,
       recordResult,
       shouldStop,
@@ -6258,11 +6521,17 @@ export async function runExternalMemoryBenchmark(
       : officialPassedCount / completedCases.length;
   const primaryScore = protocol === "official_protocol" ? officialScore ?? 0 : strictScore;
   const retrievalEmptyCount = completedCases.filter((entry) => entry.retrievedMemoryCount === 0).length;
-  const interrupted = shouldStop() && completedCases.length < selectedCases.length;
+  const interrupted = normalizedOptions.abortSignal?.aborted === true &&
+    completedCases.length < selectedCases.length;
+  const providerOutage = completedCases.length < selectedCases.length
+    ? providerCircuit.outage
+    : null;
   const partial = completedCases.length < totalDatasetCases || interrupted;
   return {
     schema: "gmos.external_long_memory_qa.v1",
-    pass: completedCases.length > 0 && finalPassedCount === completedCases.length,
+    pass: completedCases.length === selectedCases.length &&
+      completedCases.length > 0 &&
+      finalPassedCount === completedCases.length,
     partial,
     datasetFormat: normalizedOptions.datasetFormat ?? "gmos.external_long_memory_qa.jsonl",
     caseCount: completedCases.length,
@@ -6293,6 +6562,7 @@ export async function runExternalMemoryBenchmark(
       sliceSpec,
       partial,
       interrupted,
+      providerOutage,
     }),
     cases: completedCases,
   };

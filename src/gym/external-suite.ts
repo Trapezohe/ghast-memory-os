@@ -15,8 +15,10 @@ import {
   type ExternalMemoryBenchmarkMode,
   type ExternalMemoryBenchmarkProtocol,
   type ExternalMemoryBenchmarkResult,
+  type ExternalMemoryBenchmarkRunManifest,
   type ExternalMemoryBenchmarkScoreSemantics,
   type ExternalMemoryBenchmarkSliceScore,
+  type ExternalMemoryBenchmarkStopReason,
   type ExternalMemoryBenchmarkTemporalMode,
   type RunExternalMemoryBenchmarkOptions,
 } from "./external.js";
@@ -66,6 +68,11 @@ export interface ExternalMemoryBenchmarkSuiteRunSummary {
   finishedAt: string;
   durationMs: number;
   partial: boolean;
+  stopReason?: ExternalMemoryBenchmarkStopReason | undefined;
+  stopStage?: ExternalMemoryBenchmarkRunManifest["execution"]["stopStage"];
+  stopHttpStatus?: number | null | undefined;
+  stopRetryAfterMs?: number | null | undefined;
+  stopRetryCount?: number | null | undefined;
   caseCount: number;
   totalDatasetCases: number;
   selectedCases: number;
@@ -143,6 +150,16 @@ export interface ExternalMemoryBenchmarkSuiteResult {
     protocols: ExternalMemoryBenchmarkProtocol[];
     deterministicOnly: boolean;
     partial: boolean;
+    execution?: {
+      plannedRunCount: number;
+      executedRunCount: number;
+      stopReason: ExternalMemoryBenchmarkStopReason;
+      stopRunId: string | null;
+      stopStage: ExternalMemoryBenchmarkRunManifest["execution"]["stopStage"];
+      stopHttpStatus: number | null;
+      stopRetryAfterMs: number | null;
+      stopRetryCount: number | null;
+    } | undefined;
   };
   runs: ExternalMemoryBenchmarkSuiteRunSummary[];
 }
@@ -483,6 +500,8 @@ export async function runExternalMemoryBenchmarkSuite(
       }),
     );
     reports[run.id] = report;
+    const stopReason = report.runManifest.execution.stopReason ??
+      (report.runManifest.execution.interrupted ? "signal" : "completed");
     const summary: ExternalMemoryBenchmarkSuiteRunSummary = {
       id: run.id,
       inputFile: run.inputFile,
@@ -492,6 +511,11 @@ export async function runExternalMemoryBenchmarkSuite(
       finishedAt: report.runManifest.finishedAt,
       durationMs: durationMs(report.runManifest.startedAt, report.runManifest.finishedAt),
       partial: report.partial,
+      stopReason,
+      stopStage: report.runManifest.execution.stopStage ?? null,
+      stopHttpStatus: report.runManifest.execution.stopHttpStatus ?? null,
+      stopRetryAfterMs: report.runManifest.execution.stopRetryAfterMs ?? null,
+      stopRetryCount: report.runManifest.execution.stopRetryCount ?? null,
       caseCount: report.caseCount,
       totalDatasetCases: report.runManifest.slice.totalDatasetCases,
       selectedCases: report.runManifest.slice.selectedCases,
@@ -521,8 +545,10 @@ export async function runExternalMemoryBenchmarkSuite(
     };
     runs.push(summary);
     options.onRunResult?.(summary);
+    if (stopReason === "provider_outage" || stopReason === "signal") break;
   }
-  const partial = runs.some((run) => run.partial);
+  const suiteStoppedEarly = runs.length < options.suite.runs.length;
+  const partial = suiteStoppedEarly || runs.some((run) => run.partial);
   const benchmarkPass = runs.every((run) => run.pass) && !partial;
   const scoreMean = runs.length ? runs.reduce((sum, run) => sum + run.score, 0) / runs.length : 0;
   const strictScoreMean = runs.length
@@ -572,12 +598,16 @@ export async function runExternalMemoryBenchmarkSuite(
         reachableScore: totalReachableCount ? totalReachablePassedCount / totalReachableCount : 0,
       }
     : null;
+  const stoppedRun = runs.find((run) =>
+    run.stopReason === "signal" || run.stopReason === "provider_outage"
+  );
+  const stopReason = stoppedRun?.stopReason ?? "completed";
   const failOnBenchmarkFail = options.failOnBenchmarkFail === true;
   const finishedAt = new Date().toISOString();
   return {
     result: {
       schema: "gmos.external_benchmark_suite.v1",
-      pass: !failOnBenchmarkFail || benchmarkPass,
+      pass: stopReason === "completed" && (!failOnBenchmarkFail || benchmarkPass),
       benchmarkPass,
       partial,
       runCount: runs.length,
@@ -624,6 +654,16 @@ export async function runExternalMemoryBenchmarkSuite(
         protocols,
         deterministicOnly,
         partial,
+        execution: {
+          plannedRunCount: options.suite.runs.length,
+          executedRunCount: runs.length,
+          stopReason,
+          stopRunId: stoppedRun?.id ?? null,
+          stopStage: stoppedRun?.stopStage ?? null,
+          stopHttpStatus: stoppedRun?.stopHttpStatus ?? null,
+          stopRetryAfterMs: stoppedRun?.stopRetryAfterMs ?? null,
+          stopRetryCount: stoppedRun?.stopRetryCount ?? null,
+        },
       },
       runs,
     },
