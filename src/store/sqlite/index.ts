@@ -110,6 +110,7 @@ import {
   sanitizePublicPayloadRecord,
   shouldHideFromOrdinaryContext,
 } from "../../kernel/safety.js";
+import { normalizeExplicitTemporalInstant } from "../../kernel/temporal-validity.js";
 import {
   cosineSimilarity,
   LOCAL_TEXT_VECTOR_DIMENSIONS,
@@ -327,6 +328,10 @@ interface RawGapCandidate {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function contextSearchReference(asOf: string | undefined): string {
+  return (asOf ? normalizeExplicitTemporalInstant(asOf) : null) ?? nowIso();
 }
 
 function id(prefix: string): string {
@@ -3723,6 +3728,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       profileId: input.profileId,
       query,
       purpose: input.purpose === "history" ? "history" : "context",
+      ...(input.asOf ? { asOf: input.asOf } : {}),
       includeSensitive: input.includeSensitive,
       includePerson: input.includePerson,
       limit: Math.min(Math.max(candidateLimit * 4, 24), 100),
@@ -4896,7 +4902,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     const query = input.query?.trim() ?? "";
     const purpose = input.purpose ?? "context";
     const ordinaryRecallPurpose = purpose === "context" || purpose === "history";
-    const asOfIso = purpose === "context" ? nowIso() : "";
+    const asOfIso = purpose === "context" ? contextSearchReference(input.asOf) : "";
     const supersededHiddenMemoryIds =
       purpose === "context" && input.trace ? supersededSourceMemoryIds(input.profileId) : new Set<string>();
     const temporalHiddenMemoryIds =
@@ -6582,7 +6588,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     initialize();
     const query = input.query.trim();
     const purpose = input.purpose ?? "context";
-    const asOfIso = nowIso();
+    const asOfIso = contextSearchReference(input.asOf);
     const hiddenContextMemoryIds =
       purpose === "context" ? contextHiddenMemoryIds(input.profileId, asOfIso) : new Set<string>();
     const hiddenContextBeliefIds =

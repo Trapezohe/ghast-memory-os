@@ -1485,6 +1485,7 @@ export interface MemorySearchInput {
   profileId: string;
   query?: string;
   limit?: number;
+  asOf?: string | undefined;
   scoreThreshold?: number | undefined;
   purpose?: "context" | "history" | "delete" | "manage";
   includeSensitive?: boolean | undefined;
@@ -1523,6 +1524,7 @@ export interface MemoryAssociationSearchInput {
   profileId: string;
   query: string;
   limit?: number | undefined;
+  asOf?: string | undefined;
   purpose?: "context" | "history" | undefined;
   includeSensitive?: boolean | undefined;
   includePerson?: boolean | undefined;

@@ -18,7 +18,10 @@ import {
   temporalContextSegment,
   temporalReferenceDateLabel,
 } from "./temporal-format.js";
-import { temporalCueValuesFromText } from "./temporal-validity.js";
+import {
+  normalizeExplicitTemporalInstant,
+  temporalCueValuesFromText,
+} from "./temporal-validity.js";
 import type {
   EvidenceEvent,
   MemoryAssociationRecord,
@@ -2080,6 +2083,7 @@ function sweepStatsFor(
 async function runReconstructionSweeps(input: {
   store: MemoryStore;
   profileId: string;
+  asOf?: string | undefined;
   sweepCues: string[];
   recallPurpose: ReconstructionRecallPurpose;
   includeSensitive?: boolean | undefined;
@@ -2108,6 +2112,7 @@ async function runReconstructionSweeps(input: {
       profileId: input.profileId,
       query: cue,
       purpose: input.recallPurpose,
+      ...(input.asOf ? { asOf: input.asOf } : {}),
       includeSensitive: input.includeSensitive,
       limit: perCueCap + 1,
       ...(input.queryEmbedding ? { freshQueryEmbedding: true } : {}),
@@ -2148,6 +2153,7 @@ function directMemorySearchQueries(
 async function searchDirectMemoryCandidates(input: {
   store: MemoryStore;
   profileId: string;
+  asOf?: string | undefined;
   query: string;
   queryEmbedding?: QueryVectorEmbedding | null | undefined;
   intent: ReconstructionIntent;
@@ -2174,6 +2180,7 @@ async function searchDirectMemoryCandidates(input: {
       profileId: input.profileId,
       query: searchQuery,
       purpose: input.recallPurpose,
+      ...(input.asOf ? { asOf: input.asOf } : {}),
       includeSensitive: input.includeSensitive,
       limit,
       ...(input.freshQueryEmbedding
@@ -2334,6 +2341,7 @@ function informationGainForPath(input: {
 async function fuseDirectMemorySearch(input: {
   store: MemoryStore;
   profileId: string;
+  asOf?: string | undefined;
   query: string;
   queryEmbedding?: QueryVectorEmbedding | null | undefined;
   intent: ReconstructionIntent;
@@ -2360,6 +2368,7 @@ async function fuseDirectMemorySearch(input: {
   const directMemoryCandidates = await searchDirectMemoryCandidates({
     store: input.store,
     profileId: input.profileId,
+    ...(input.asOf ? { asOf: input.asOf } : {}),
     query: input.query,
     queryEmbedding: input.queryEmbedding,
     intent: input.intent,
@@ -2425,6 +2434,7 @@ async function fuseDirectMemorySearch(input: {
 async function topUpUncoveredAnchors(input: {
   store: MemoryStore;
   profileId: string;
+  asOf?: string | undefined;
   plan: AnchorCoveragePlan | null;
   intent: ReconstructionIntent;
   queryEmbedding?: QueryVectorEmbedding | undefined;
@@ -2451,6 +2461,7 @@ async function topUpUncoveredAnchors(input: {
     const trace = await fuseDirectMemorySearch({
       store: input.store,
       profileId: input.profileId,
+      ...(input.asOf ? { asOf: input.asOf } : {}),
       query: anchor.anchorCue,
       queryEmbedding: input.queryEmbedding,
       intent: input.intent,
@@ -3050,6 +3061,7 @@ async function fallbackReconstruction(input: {
         profileId: input.profileId,
         query: anchor.anchorCue,
         purpose: input.recallPurpose,
+        ...(input.asOf ? { asOf: input.asOf } : {}),
         includeSensitive: input.includeSensitive,
         limit: anchor.required
           ? 1
@@ -3070,6 +3082,7 @@ async function fallbackReconstruction(input: {
       profileId: input.profileId,
       query: input.query,
       purpose: input.recallPurpose,
+      ...(input.asOf ? { asOf: input.asOf } : {}),
       includeSensitive: input.includeSensitive,
       limit: input.candidateMemoryLimit,
       ...(input.queryEmbedding ? { queryEmbedding: input.queryEmbedding } : {}),
@@ -3154,6 +3167,7 @@ async function fallbackReconstruction(input: {
   const sweepDraft = await runReconstructionSweeps({
     store: input.store,
     profileId: input.profileId,
+    ...(input.asOf ? { asOf: input.asOf } : {}),
     sweepCues: input.intent.sweepCues,
     recallPurpose: input.recallPurpose,
     includeSensitive: input.includeSensitive,
@@ -3227,6 +3241,9 @@ export async function reconstructMemoryContext(input: {
   const stopWhenEvidenceEnough = input.request.stopWhenEvidenceEnough !== false;
   const includeTemporalMetadata = input.request.includeTemporalMetadata === true;
   const includeTemporalContext = input.request.includeTemporalContext !== false;
+  const asOf = input.request.asOf
+    ? normalizeExplicitTemporalInstant(input.request.asOf) ?? undefined
+    : undefined;
   const evidenceConvergenceThreshold = boundedNumber(
     input.request.evidenceConvergenceThreshold,
     0.72,
@@ -3274,7 +3291,7 @@ export async function reconstructMemoryContext(input: {
       targetMemoryCount,
       includeTemporalMetadata,
       includeTemporalContext,
-      asOf: input.request.asOf,
+      ...(asOf ? { asOf } : {}),
       ...(input.request.anchorCoverage !== undefined ? { anchorCoverage: input.request.anchorCoverage } : {}),
       cueExtractor: input.cueExtractor,
       inferTemporalCuesFromText,
@@ -3311,6 +3328,7 @@ export async function reconstructMemoryContext(input: {
     plannerSteps.push(...await topUpUncoveredAnchors({
       store: input.store,
       profileId,
+      ...(asOf ? { asOf } : {}),
       plan: anchorPlan,
       intent,
       recallPurpose,
@@ -3339,6 +3357,7 @@ export async function reconstructMemoryContext(input: {
       profileId,
       query: cue.cue,
       purpose: recallPurpose,
+      ...(asOf ? { asOf } : {}),
       includeSensitive: input.request.includeSensitive,
       limit: Math.min(maxBranch * 4, 48),
     });
@@ -3563,6 +3582,7 @@ export async function reconstructMemoryContext(input: {
     const anchorTopUpSteps = await topUpUncoveredAnchors({
       store: input.store,
       profileId,
+      ...(asOf ? { asOf } : {}),
       plan: anchorPlan,
       intent,
       queryEmbedding: input.queryEmbedding,
@@ -3616,6 +3636,7 @@ export async function reconstructMemoryContext(input: {
     const hybridTrace = await fuseDirectMemorySearch({
       store: input.store,
       profileId,
+      ...(asOf ? { asOf } : {}),
       query,
       queryEmbedding: input.queryEmbedding,
       intent,
@@ -3643,6 +3664,7 @@ export async function reconstructMemoryContext(input: {
       const saturationTrace = await fuseDirectMemorySearch({
         store: input.store,
         profileId,
+        ...(asOf ? { asOf } : {}),
         query,
         // Saturation is supply fill, not semantic retrieval; null blocks runtime query embedding injection.
         queryEmbedding: null,
@@ -3692,6 +3714,7 @@ export async function reconstructMemoryContext(input: {
   const sweepDraft = await runReconstructionSweeps({
     store: input.store,
     profileId,
+    ...(asOf ? { asOf } : {}),
     sweepCues: intent.sweepCues,
     recallPurpose,
     includeSensitive: input.request.includeSensitive,
@@ -3718,7 +3741,7 @@ export async function reconstructMemoryContext(input: {
     stopReason,
     includeTemporalMetadata,
     includeTemporalContext,
-    asOf: input.request.asOf,
+    ...(asOf ? { asOf } : {}),
     maxMemories,
     maxCharsPerMemory,
     fullContentTopRank,

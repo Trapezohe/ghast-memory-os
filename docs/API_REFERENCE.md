@@ -593,7 +593,10 @@ Primary methods:
   prompt-visible date segments. Pass `asOf: "YYYY-MM-DD"` or an ISO instant to
   render a prompt-visible `As of: YYYY-MM-DD` anchor and deterministic
   `days_ago=N` / `days_ahead=N` annotations beside the existing absolute dates.
-  Unparseable `asOf` values are ignored.
+  For context-purpose reconstruction, that same instant filters memories and
+  world beliefs by explicit `validFrom`, `validTo`, and `expiresAt` metadata
+  (`validFrom` inclusive, `validTo`/`expiresAt` exclusive). Unparseable `asOf`
+  values are ignored and retrieval keeps its wall-clock behavior.
 - `explainEvidencePath(input)`: explain why evidence was selected for a query.
 - `commitOutcome(input)`: record task outcome signals. Failed outcomes may pass
   `failureKind`; omitted values default to `task_failure`. Hosts should pass

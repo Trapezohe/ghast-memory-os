@@ -111,8 +111,11 @@ tables.
 `reconstructContext({ asOf })` is still a pure read. The kernel validates the
 reference date deterministically, renders an `As of: YYYY-MM-DD` prompt anchor,
 and annotates memory/path temporal segments with UTC calendar-day
-`days_ago=N` or `days_ahead=N` deltas. Invalid `asOf` values are ignored, so
-callers that do not pass a reference date keep the previous context shape.
+`days_ago=N` or `days_ahead=N` deltas. Context-purpose retrieval also evaluates
+explicit `validFrom`, `validTo`, and `expiresAt` windows at that same instant;
+the start is inclusive and the end is exclusive. Invalid `asOf` values are
+ignored, so callers that do not pass a reference date keep wall-clock filtering
+and the previous context shape.
 
 ## Lifecycle Model
 

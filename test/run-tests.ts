@@ -5468,6 +5468,58 @@ const contextTemporalSearch = await temporalMemory.search({
 assert.equal(contextTemporalSearch.some((entry) => entry.id === activeTemporalMemory.id), true);
 assert.equal(contextTemporalSearch.some((entry) => entry.id === expiredTemporalMemory.id), false);
 assert.equal(contextTemporalSearch.some((entry) => entry.id === futureTemporalMemory.id), false);
+const historicalTemporalSearch = await temporalStore.searchMemories({
+  profileId: "temporal",
+  query: "Temporal window Atlas owner",
+  purpose: "context",
+  asOf: "1999-06-01",
+  limit: 10,
+});
+assert.equal(historicalTemporalSearch.some((entry) => entry.id === expiredTemporalMemory.id), true);
+assert.equal(historicalTemporalSearch.some((entry) => entry.id === activeTemporalMemory.id), false);
+assert.equal(historicalTemporalSearch.some((entry) => entry.id === futureTemporalMemory.id), false);
+const temporalBoundarySearch = await temporalStore.searchMemories({
+  profileId: "temporal",
+  query: "Temporal window Atlas owner",
+  purpose: "context",
+  asOf: "2000-01-01T00:00:00.000Z",
+  limit: 10,
+});
+assert.equal(temporalBoundarySearch.some((entry) => entry.id === expiredTemporalMemory.id), false);
+assert.equal(temporalBoundarySearch.some((entry) => entry.id === activeTemporalMemory.id), true);
+assert.equal(temporalBoundarySearch.some((entry) => entry.id === futureTemporalMemory.id), false);
+const invalidAsOfTemporalSearch = await temporalStore.searchMemories({
+  profileId: "temporal",
+  query: "Temporal window Atlas owner",
+  purpose: "context",
+  asOf: "not-a-date",
+  limit: 10,
+});
+assert.deepEqual(
+  invalidAsOfTemporalSearch.map((entry) => entry.id),
+  contextTemporalSearch.map((entry) => entry.id),
+);
+const historicalTemporalAssociations = temporalStore.searchAssociations({
+  profileId: "temporal",
+  query: "ExpiredOwner",
+  purpose: "context",
+  asOf: "1999-06-01",
+  limit: 10,
+});
+const currentTemporalAssociations = temporalStore.searchAssociations({
+  profileId: "temporal",
+  query: "ExpiredOwner",
+  purpose: "context",
+  limit: 10,
+});
+assert.equal(
+  historicalTemporalAssociations.some((entry) => entry.targetId === expiredTemporalMemory.id),
+  true,
+);
+assert.equal(
+  currentTemporalAssociations.some((entry) => entry.targetId === expiredTemporalMemory.id),
+  false,
+);
 const manageTemporalSearch = await temporalMemory.search({
   profileId: "temporal",
   query: "Temporal window Atlas owner",
@@ -5490,6 +5542,19 @@ assert.doesNotMatch(temporalReconstruction.contextBlock, /time=06:45 UTC/);
 assert.equal(temporalReconstruction.paths.some((path) => path.createdAt === "2026-06-03T06:45:00.000Z"), true);
 assert.doesNotMatch(temporalReconstruction.contextBlock, /ExpiredOwner/);
 assert.doesNotMatch(temporalReconstruction.contextBlock, /FutureOwner/);
+const historicalTemporalReconstruction = await temporalMemory.reconstructContext({
+  profileId: "temporal",
+  query: "Temporal window Atlas owner",
+  asOf: "1999-06-01",
+  temporalMode: "current",
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.match(historicalTemporalReconstruction.contextBlock, /As of: 1999-06-01/);
+assert.match(historicalTemporalReconstruction.contextBlock, /ExpiredOwner/);
+assert.doesNotMatch(historicalTemporalReconstruction.contextBlock, /ActiveOwner/);
+assert.doesNotMatch(historicalTemporalReconstruction.contextBlock, /FutureOwner/);
 assert.deepEqual(
   filterTemporalAnnotationSegments(
     `fact${observedAtSegment("2023-05-20T14:33:00.000Z")}; kind=fact; confidence=0.90`,
@@ -6466,7 +6531,10 @@ await temporalBeliefOnlyStore.addWorldBelief({
   predicate: "project.state",
   object: "ActiveBeliefOnlyOwner",
   confidence: 0.9,
-  metadata: { validTo: "2999-01-01T00:00:00.000Z" },
+  metadata: {
+    validFrom: "2000-01-01T00:00:00.000Z",
+    validTo: "2999-01-01T00:00:00.000Z",
+  },
 });
 const temporalBeliefOnlyReconstruction = await temporalBeliefOnlyMemory.reconstructContext({
   profileId: "temporal-belief-only",
@@ -6477,6 +6545,18 @@ const temporalBeliefOnlyReconstruction = await temporalBeliefOnlyMemory.reconstr
 });
 assert.match(temporalBeliefOnlyReconstruction.contextBlock, /ActiveBeliefOnlyOwner/);
 assert.doesNotMatch(temporalBeliefOnlyReconstruction.contextBlock, /ExpiredBeliefOnlyOwner/);
+const historicalTemporalBeliefOnlyReconstruction = await temporalBeliefOnlyMemory.reconstructContext({
+  profileId: "temporal-belief-only",
+  query: "belief window project owner",
+  asOf: "1999-06-01T01:30:00+02:00",
+  temporalMode: "current",
+  maxSteps: 4,
+  maxBranch: 8,
+  maxMemories: 8,
+});
+assert.match(historicalTemporalBeliefOnlyReconstruction.contextBlock, /As of: 1999-05-31/);
+assert.match(historicalTemporalBeliefOnlyReconstruction.contextBlock, /ExpiredBeliefOnlyOwner/);
+assert.doesNotMatch(historicalTemporalBeliefOnlyReconstruction.contextBlock, /ActiveBeliefOnlyOwner/);
 await temporalBeliefOnlyStore.addWorldBelief({
   profileId: "temporal-belief-only",
   subject: "project:sticky-window",
@@ -22893,6 +22973,127 @@ const requiredAnchorOrdinaryIncluded = await reconstructMemoryContext({
   },
 });
 assert.match(requiredAnchorOrdinaryIncluded.contextBlock, /report the answer in days/);
+
+const expectedReconstructionAsOf = "2020-05-31T23:30:00.000Z";
+const asOfAssociationSearches: Array<{ query: string; asOf?: string | undefined }> = [];
+const asOfMemorySearches: Array<{
+  query?: string | undefined;
+  asOf?: string | undefined;
+}> = [];
+const asOfPropagationStore = {
+  searchAssociations(input: { query: string; asOf?: string | undefined }) {
+    asOfAssociationSearches.push({
+      query: input.query,
+      ...(input.asOf ? { asOf: input.asOf } : {}),
+    });
+    return [];
+  },
+  searchMemories(input: { query?: string | undefined; asOf?: string | undefined }) {
+    asOfMemorySearches.push({
+      ...(input.query !== undefined ? { query: input.query } : {}),
+      ...(input.asOf ? { asOf: input.asOf } : {}),
+    });
+    return [];
+  },
+  getMemoryById() {
+    return null;
+  },
+  listEvidenceForMemory() {
+    return [];
+  },
+} as unknown as MemoryStore;
+await reconstructMemoryContext({
+  store: asOfPropagationStore,
+  defaultProfileId: "asof-propagation",
+  request: {
+    profileId: "asof-propagation",
+    query: "AsOf propagation query",
+    asOf: "2020-06-01T01:30:00+02:00",
+    maxSteps: 2,
+    maxBranch: 2,
+    maxMemories: 30,
+    stopWhenEvidenceEnough: false,
+    reconstructionIntent: {
+      requiredAnchors: [{ cue: "AsOf required anchor" }],
+      sweepCues: ["market sale"],
+    },
+  },
+});
+assert.equal(asOfAssociationSearches.length > 0, true);
+assert.equal(asOfMemorySearches.length > 0, true);
+assert.equal(
+  asOfAssociationSearches.every((entry) => entry.asOf === expectedReconstructionAsOf),
+  true,
+);
+assert.equal(
+  asOfMemorySearches.every((entry) => entry.asOf === expectedReconstructionAsOf),
+  true,
+);
+assert.equal(asOfMemorySearches.some((entry) => entry.query === "AsOf required anchor"), true);
+assert.equal(asOfMemorySearches.some((entry) => entry.query === ""), true);
+assert.equal(asOfMemorySearches.some((entry) => entry.query === "market sale"), true);
+
+const fallbackAsOfMemorySearches: Array<{
+  query?: string | undefined;
+  asOf?: string | undefined;
+}> = [];
+const fallbackAsOfPropagationStore = {
+  searchMemories(input: { query?: string | undefined; asOf?: string | undefined }) {
+    fallbackAsOfMemorySearches.push({
+      ...(input.query !== undefined ? { query: input.query } : {}),
+      ...(input.asOf ? { asOf: input.asOf } : {}),
+    });
+    return [];
+  },
+  listEvidenceForMemory() {
+    return [];
+  },
+} as unknown as MemoryStore;
+await reconstructMemoryContext({
+  store: fallbackAsOfPropagationStore,
+  defaultProfileId: "fallback-asof-propagation",
+  request: {
+    profileId: "fallback-asof-propagation",
+    query: "Fallback AsOf propagation query",
+    asOf: "2020-06-01T01:30:00+02:00",
+    maxMemories: 30,
+    stopWhenEvidenceEnough: false,
+    reconstructionIntent: {
+      requiredAnchors: [{ cue: "Fallback AsOf required anchor" }],
+      sweepCues: ["feed purchase"],
+    },
+  },
+});
+assert.equal(fallbackAsOfMemorySearches.length > 0, true);
+assert.equal(
+  fallbackAsOfMemorySearches.every((entry) => entry.asOf === expectedReconstructionAsOf),
+  true,
+);
+assert.equal(
+  fallbackAsOfMemorySearches.some((entry) => entry.query === "Fallback AsOf required anchor"),
+  true,
+);
+assert.equal(
+  fallbackAsOfMemorySearches.some((entry) => entry.query === "feed purchase"),
+  true,
+);
+fallbackAsOfMemorySearches.length = 0;
+await reconstructMemoryContext({
+  store: fallbackAsOfPropagationStore,
+  defaultProfileId: "fallback-asof-propagation",
+  request: {
+    profileId: "fallback-asof-propagation",
+    query: "Fallback invalid AsOf propagation query",
+    asOf: "not-a-date",
+    maxMemories: 3,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.equal(fallbackAsOfMemorySearches.length > 0, true);
+assert.equal(
+  fallbackAsOfMemorySearches.every((entry) => Object.hasOwn(entry, "asOf") === false),
+  true,
+);
 
 const layerNow = "2026-07-04T00:00:00.000Z";
 const layerMemory = (
