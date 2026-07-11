@@ -231,24 +231,38 @@ function publicMemoryMetadata(
   return output;
 }
 
+function preserveInternalFusionScore(source: MemoryRecord, output: MemoryRecord): MemoryRecord {
+  const fusionScore = (source as MemoryRecord & { __gmosFusionScore?: unknown }).__gmosFusionScore;
+  if (typeof fusionScore === "number" && Number.isFinite(fusionScore)) {
+    Object.defineProperty(output, "__gmosFusionScore", {
+      value: fusionScore,
+      enumerable: false,
+      configurable: true,
+    });
+  }
+  return output;
+}
+
 function publicMemoryRecord(
   memory: MemoryRecord,
   classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
   knownSensitivity?: Sensitivity | undefined,
   preserveAuthorityMarker = false,
+  preserveFusionScore = false,
 ): MemoryRecord {
   const sensitivity = knownSensitivity ??
     runtimeMemorySensitivity(memory, classifyRuntimeSensitivity);
   if (sensitivity === "secret_like") {
-    return {
+    const output = {
       ...memory,
       content: "[redacted_secret]",
       sensitivity,
       sourceEventId: null,
       metadata: {},
     };
+    return preserveFusionScore ? preserveInternalFusionScore(memory, output) : output;
   }
-  return {
+  const output = {
     ...memory,
     kind: safePublicLabel(memory.kind) as MemoryRecord["kind"],
     sensitivity,
@@ -265,6 +279,7 @@ function publicMemoryRecord(
       preserveAuthorityMarker,
     ),
   };
+  return preserveFusionScore ? preserveInternalFusionScore(memory, output) : output;
 }
 
 function runtimeMemorySensitivity(
@@ -289,6 +304,7 @@ function runtimeMemoryForRead(
   includeSensitive: boolean | undefined,
   classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
   preserveAuthorityMarker = false,
+  preserveFusionScore = false,
 ): MemoryRecord | null {
   const sensitivity = runtimeMemorySensitivity(memory, classifyRuntimeSensitivity);
   if (sensitivity === "secret_like" || (sensitivity === "sensitive" && includeSensitive !== true)) {
@@ -299,6 +315,7 @@ function runtimeMemoryForRead(
     classifyRuntimeSensitivity,
     sensitivity,
     preserveAuthorityMarker,
+    preserveFusionScore,
   );
 }
 
@@ -307,6 +324,7 @@ function runtimeMemoriesForRead(
   includeSensitive: boolean | undefined,
   classifyRuntimeSensitivity: RuntimeSensitivityClassifier,
   preserveAuthorityMarker = false,
+  preserveFusionScore = false,
 ): MemoryRecord[] {
   return memories.flatMap((memory) => {
     const publicMemory = runtimeMemoryForRead(
@@ -314,6 +332,7 @@ function runtimeMemoriesForRead(
       includeSensitive,
       classifyRuntimeSensitivity,
       preserveAuthorityMarker,
+      preserveFusionScore,
     );
     return publicMemory ? [publicMemory] : [];
   });
@@ -1912,6 +1931,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     readRetrieval?: MemoryReadRetrievalOptions | undefined,
     queryEmbedding?: QueryVectorEmbedding | null | undefined,
     preserveAuthorityMarker = false,
+    preserveFusionScoreOnOutput = false,
   ): Promise<MemoryRecord[]> {
     const resolvedQueryEmbedding =
       input.queryEmbedding === null
@@ -1929,7 +1949,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         : {}),
       retrieval,
       ...(resolvedQueryEmbedding ? { queryEmbedding: resolvedQueryEmbedding } : {}),
-    }), input.includeSensitive, classifyRuntimeSensitivity, preserveAuthorityMarker);
+    }), input.includeSensitive, classifyRuntimeSensitivity, preserveAuthorityMarker, true);
     const reranked = await callRetrievalReranker({
       retrieval,
       memories,
@@ -1937,7 +1957,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       ...(input.asOf ? { asOf: input.asOf } : {}),
       ...(input.purpose ? { purpose: input.purpose } : {}),
     });
-    return reranked ?? memories;
+    const ordered = reranked ?? memories;
+    return preserveFusionScoreOnOutput ? ordered : ordered.map((memory) => ({ ...memory }));
   }
 
   function storeWithRetrieval(
@@ -1947,7 +1968,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     return {
       ...store,
       searchMemories(input: MemorySearchInput) {
-        return searchMemoriesWithRetrieval(input, readRetrieval, queryEmbedding, true);
+        return searchMemoriesWithRetrieval(input, readRetrieval, queryEmbedding, true, true);
       },
       async getMemoryById(
         profileId: string,

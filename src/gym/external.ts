@@ -846,6 +846,7 @@ export interface ExternalMemoryBenchmarkRunManifest {
     queryPlanner: boolean;
     sweepCues: boolean;
     plannerMaxAnchors: number;
+    plannerMaxSweepCues: number;
     consolidateEntities: boolean;
   };
   scoreSemantics: ExternalMemoryBenchmarkScoreSemantics;
@@ -994,6 +995,7 @@ export interface RunExternalMemoryBenchmarkOptions {
   queryPlanner?: boolean | undefined;
   sweepCues?: boolean | undefined;
   plannerMaxAnchors?: number | undefined;
+  plannerMaxSweepCues?: number | undefined;
   intelligence?: ExternalMemoryBenchmarkIntelligence | undefined;
   intelligenceTimeoutMs?: number | undefined;
   intelligenceConcurrency?: number | undefined;
@@ -4379,6 +4381,7 @@ function createRunManifest(input: {
       queryPlanner: input.runtimeIntelligence.manifest.queryPlanner.enabled,
       sweepCues: input.runtimeIntelligence.manifest.sweepCues.enabled,
       plannerMaxAnchors: input.runtimeIntelligence.manifest.queryPlanner.maxAnchors ?? 4,
+      plannerMaxSweepCues: input.runtimeIntelligence.manifest.sweepCues.maxCues,
       consolidateEntities: input.runtimeIntelligence.manifest.consolidateEntities,
       reuseProfiles: input.options.reuseProfiles ?? true,
       failureSampleLimit: normalizedFailureSampleLimit(input.options.failureSampleLimit),
@@ -4610,6 +4613,14 @@ function normalizedPlannerMaxAnchors(value: number | undefined): number {
   if (value === undefined) return 4;
   if (!Number.isInteger(value) || value < 0 || value > 12) {
     throw new Error("External benchmark plannerMaxAnchors must be an integer from 0 to 12");
+  }
+  return value;
+}
+
+function normalizedPlannerMaxSweepCues(value: number | undefined): number {
+  if (value === undefined) return 3;
+  if (!Number.isInteger(value) || value < 0 || value > 12) {
+    throw new Error("External benchmark plannerMaxSweepCues must be an integer from 0 to 12");
   }
   return value;
 }
@@ -4912,6 +4923,7 @@ async function planRequiredAnchors(input: {
     const seen = new Set<string>();
     const anchors: ReconstructionRequiredAnchorHint[] = [];
     for (const anchor of anchorItems) {
+      if (anchors.length >= input.maxAnchors) break;
       if (!anchor || typeof anchor !== "object") continue;
       const cue = plannerAnchorText(anchor.cue, 160);
       if (!cue) continue;
@@ -4925,6 +4937,7 @@ async function planRequiredAnchors(input: {
     const seenSweepCues = new Set<string>();
     const sweepCues: string[] = [];
     for (const item of sweepItems) {
+      if (sweepCues.length >= maxSweepCues) break;
       const cue = plannerAnchorText(item, 160);
       const key = cue?.toLowerCase().replace(/\s+/gu, " ");
       if (!cue || !key || seenSweepCues.has(key)) continue;
@@ -6255,6 +6268,7 @@ function checkpointContractForRun(input: {
       queryPlanner: runtime.queryPlanner.enabled,
       sweepCues: runtime.sweepCues.enabled,
       plannerMaxAnchors: runtime.queryPlanner.maxAnchors ?? 4,
+      plannerMaxSweepCues: runtime.sweepCues.maxCues,
       reuseProfiles: input.options.reuseProfiles !== false,
       protocol: normalizeProtocol(input.options.protocol),
       judgeProfile: effectiveJudgeProfile({
@@ -6894,6 +6908,7 @@ async function scoreCase(input: {
   queryPlanner?: MemoryQueryPlanner | undefined;
   sweepCues: boolean;
   plannerMaxAnchors: number;
+  plannerMaxSweepCues: number;
   onPlannerFailure: () => void;
   onProviderFailure: (stage: "answerer" | "judge", error: unknown) => void;
   onProviderSuccess: (stage: "answerer" | "judge") => void;
@@ -6922,7 +6937,7 @@ async function scoreCase(input: {
         queryPlanner: input.queryPlanner,
         question: input.benchmarkCase.question,
         maxAnchors: input.options.queryPlanner === true ? input.plannerMaxAnchors : 0,
-        maxSweepCues: input.sweepCues ? 3 : 0,
+        maxSweepCues: input.sweepCues ? input.plannerMaxSweepCues : 0,
         onFailure: input.onPlannerFailure,
       })
     : {};
@@ -7537,6 +7552,7 @@ async function runCaseGroup(input: {
           : undefined,
         sweepCues: input.runtimeIntelligence.manifest.sweepCues.enabled,
         plannerMaxAnchors: input.runtimeIntelligence.manifest.queryPlanner.maxAnchors ?? 4,
+        plannerMaxSweepCues: input.runtimeIntelligence.manifest.sweepCues.maxCues,
         onPlannerFailure: () => {
           input.runtimeIntelligence.plannerFailureCount += 1;
           input.runtimeIntelligence.manifest.queryPlanner.failureCount =
@@ -7754,6 +7770,7 @@ async function runExternalMemoryBenchmarkWithCircuit(
   const debugContextFailureLimit = normalizedDebugContextFailureLimit(options.debugContextFailureLimit);
   const readerContextCharLimit = normalizedReaderContextCharLimit(options.readerContextCharLimit);
   const plannerMaxAnchors = normalizedPlannerMaxAnchors(options.plannerMaxAnchors);
+  const plannerMaxSweepCues = normalizedPlannerMaxSweepCues(options.plannerMaxSweepCues);
   const debugDir = options.debugDir ??
     (options.intelligence && isIntelligenceConfig(options.intelligence)
       ? options.intelligence.debugDir
@@ -7814,7 +7831,7 @@ async function runExternalMemoryBenchmarkWithCircuit(
   runtimeIntelligence.manifest.sweepCues = {
     ...runtimeIntelligence.manifest.sweepCues,
     enabled: sweepCues && runtimeIntelligence.hooks?.queryPlanner !== undefined,
-    maxCues: 3,
+    maxCues: plannerMaxSweepCues,
   };
   const maxCharsPerMemory = readerProfileMaxCharsPerMemory(readerProfile, options.maxCharsPerMemory);
   const fullContentTopRank = readerProfileFullContentTopRank(
@@ -7849,6 +7866,7 @@ async function runExternalMemoryBenchmarkWithCircuit(
     debugContextFailureLimit,
     readerContextCharLimit,
     plannerMaxAnchors,
+    plannerMaxSweepCues,
     queryPlanner,
     sweepCues,
     ...(debugDir ? { debugDir } : {}),

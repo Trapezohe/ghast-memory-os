@@ -352,6 +352,7 @@ function normalizeQueryPlannerOutput(
   const seen = new Set<string>();
   const requiredAnchors: ReconstructionRequiredAnchorHint[] = [];
   for (const item of items ?? []) {
+    if (requiredAnchors.length >= maxAnchors) break;
     const anchor = normalizeQueryPlannerAnchor(item);
     const key = normalizedPlannerKey(anchor?.cue);
     if (!anchor || !key || seen.has(key)) continue;
@@ -377,6 +378,7 @@ function normalizeQueryPlannerSweepCues(value: unknown, maxSweepCues: number): s
   const seen = new Set<string>();
   const output: string[] = [];
   for (const item of items) {
+    if (output.length >= maxSweepCues) break;
     const cue = safeContent(item, 160);
     const key = normalizedPlannerKey(cue ?? undefined);
     if (!cue || !key || seen.has(key)) continue;
@@ -642,7 +644,7 @@ export function createOpenAICompatibleQueryPlanner(
             role: "system",
             content: commonSystemPrompt(
               "a query planner",
-              "Return {\"requiredAnchors\":[{\"cue\":\"distinct fact or event needed to answer\",\"hint\":\"optional short retrieval hint\"}],\"sweepCues\":[\"event class to exhaustively sweep\"]}. Use anchors for distinct endpoints. If the question aggregates repeated events using totals, counts, how many times/days/hours, name the event class or classes to sweep. Return empty arrays for simple one-fact questions.",
+              "Return {\"requiredAnchors\":[{\"cue\":\"distinct known fact or endpoint needed to answer\",\"hint\":\"optional short retrieval hint\"}],\"sweepCues\":[\"lexically diverse search probe\"]}. Use anchors only for distinct known endpoints. For questions that aggregate, count, or enumerate a broad category across repeated events, fill the available sweepCues with lexically diverse probes that cover how evidence may actually be worded. Include the category wording, synonyms or role titles, and representative concrete subtypes or hyponyms when useful. Prefer distinct head terms over paraphrasing the same phrase. Do not claim which facts actually occurred or invent specific people, places, dates, or answer members. Unknown aggregate members belong in sweep probes, not required anchors. Return empty arrays for simple one-fact questions.",
             ),
           },
           {

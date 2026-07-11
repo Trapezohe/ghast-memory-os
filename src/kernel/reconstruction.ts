@@ -157,18 +157,18 @@ function allocateLayeredMemories(input: {
   }));
   const selected = new Set<string>();
   const summaries = ranked.filter((candidate) => candidate.layer === "summary");
-  if (summaries.length === 0) {
-    return ranked.slice(0, input.maxMemories).map((candidate) => candidate.memory);
-  }
+  const selectionCapacity = Math.min(input.maxMemories, ranked.length);
   const summaryMin = Math.min(
     summaries.length,
-    Math.ceil(input.policy.summaryMinShare * input.maxMemories),
+    Math.ceil(input.policy.summaryMinShare * selectionCapacity),
   );
   for (const candidate of summaries.slice(0, summaryMin)) {
     if (selected.size >= input.maxMemories) break;
     selected.add(candidate.memory.id);
   }
-  const turnMax = Math.floor(input.policy.turnMaxShare * input.maxMemories);
+  const turnMax = input.policy.turnMaxShare > 0 && selectionCapacity > 0
+    ? Math.max(1, Math.floor(input.policy.turnMaxShare * selectionCapacity))
+    : 0;
   let selectedTurns = ranked.filter((candidate) =>
     selected.has(candidate.memory.id) && candidate.layer === "turn"
   ).length;
@@ -1662,7 +1662,7 @@ function explicitReconstructionIntent(
     );
   }
   const explicitQueryCues = normalizedCueHints(hint.queryCues, 32);
-  const sweepCues = normalizedSweepCues(hint.sweepCues, 8);
+  const sweepCues = normalizedSweepCues(hint.sweepCues, 12);
   const requiredAnchors = options.includeRequiredAnchors === false
     ? []
     : normalizedRequiredAnchors(hint.requiredAnchors, 12);
@@ -2237,6 +2237,25 @@ function compareSweepCullPriority(
     right.memory.id.localeCompare(left.memory.id);
 }
 
+function sweepCandidateToCull(
+  candidates: ReconstructionSweepCandidate[],
+): ReconstructionSweepCandidate | undefined {
+  const perCue = new Map<string, number>();
+  for (const candidate of candidates) {
+    perCue.set(candidate.cue, (perCue.get(candidate.cue) ?? 0) + 1);
+  }
+  const withoutLastCueRepresentatives = candidates.filter(
+    (candidate) => (perCue.get(candidate.cue) ?? 0) > 1,
+  );
+  return [...(withoutLastCueRepresentatives.length > 0 ? withoutLastCueRepresentatives : candidates)]
+    .sort(compareSweepCullPriority)[0];
+}
+
+function sweepCandidateRelevance(memory: MemoryRecord, rank: number, resultCount: number): number {
+  const rerankedPositionScore = Math.max(0, resultCount - rank) / Math.max(1, resultCount);
+  return internalFusionScore(memory) + rerankedPositionScore;
+}
+
 function sweepStatsFor(
   cueStats: ReconstructionSweepCueDraftStats[],
   candidates: ReconstructionSweepCandidate[],
@@ -2286,9 +2305,10 @@ async function runReconstructionSweeps(input: {
     1,
     DEFAULT_SWEEP_GLOBAL_CAP,
   );
-  const seen = new Set<string>();
   const candidates: ReconstructionSweepCandidate[] = [];
+  const candidateById = new Map<string, ReconstructionSweepCandidate>();
   const cueStats: ReconstructionSweepCueDraftStats[] = [];
+  const resultsByCue: Array<{ cue: string; memories: MemoryRecord[] }> = [];
   for (const cue of input.sweepCues) {
     const found = await input.store.searchMemories({
       profileId: input.profileId,
@@ -2300,14 +2320,26 @@ async function runReconstructionSweeps(input: {
       ...(input.queryEmbedding ? { freshQueryEmbedding: true } : {}),
     });
     cueStats.push({ cue, matched: found.length });
-    for (const memory of found.slice(0, perCueCap)) {
-      if (seen.has(memory.id) || candidates.length >= globalCap) continue;
-      seen.add(memory.id);
-      candidates.push({
-        cue,
-        memory,
-        relevance: internalFusionScore(memory),
-      });
+    resultsByCue.push({ cue, memories: found.slice(0, perCueCap) });
+  }
+  for (let rank = 0; rank < perCueCap; rank += 1) {
+    for (const result of resultsByCue) {
+      const memory = result.memories[rank];
+      if (!memory) continue;
+      const relevance = sweepCandidateRelevance(memory, rank, result.memories.length);
+      const existing = candidateById.get(memory.id);
+      if (existing) {
+        if (relevance > existing.relevance) {
+          existing.cue = result.cue;
+          existing.memory = memory;
+          existing.relevance = relevance;
+        }
+        continue;
+      }
+      if (candidates.length >= globalCap) continue;
+      const candidate = { cue: result.cue, memory, relevance };
+      candidateById.set(memory.id, candidate);
+      candidates.push(candidate);
     }
   }
   return {
@@ -3140,13 +3172,13 @@ function composeReconstructedContext(input: {
       sweepCandidates.length > 0 &&
       estimateTokens(renderSweepSection(sweepCandidates)) > sweepBudget
     ) {
-      const drop = [...sweepCandidates].sort(compareSweepCullPriority)[0];
+      const drop = sweepCandidateToCull(sweepCandidates);
       if (!drop) break;
       sweepCandidates = sweepCandidates.filter((candidate) => candidate.memory.id !== drop.memory.id);
     }
     contextBlock = render(true);
     while (sweepCandidates.length > 0 && estimateTokens(contextBlock) > budget) {
-      const drop = [...sweepCandidates].sort(compareSweepCullPriority)[0];
+      const drop = sweepCandidateToCull(sweepCandidates);
       if (!drop) break;
       sweepCandidates = sweepCandidates.filter((candidate) => candidate.memory.id !== drop.memory.id);
       contextBlock = render(true);
@@ -3164,7 +3196,7 @@ function composeReconstructedContext(input: {
       } else if (evidence.length > 0) {
         evidence = evidence.slice(0, -1);
       } else if (sweepCandidates.length > 0) {
-        const drop = [...sweepCandidates].sort(compareSweepCullPriority)[0];
+        const drop = sweepCandidateToCull(sweepCandidates);
         if (!drop) break;
         sweepCandidates = sweepCandidates.filter((candidate) => candidate.memory.id !== drop.memory.id);
       } else if (memories.length > 0) {

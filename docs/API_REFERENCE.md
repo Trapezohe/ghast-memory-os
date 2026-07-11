@@ -1257,10 +1257,13 @@ from metadata carrying the `runtimeLineage` capability:
 `metadata.sessionDistillation === true` is a summary,
 `metadata.turnMemory === true` is a raw turn, and everything else is an atom.
 Unmarked host fields with those names remain ordinary metadata. The kernel first
-ranks visible candidates through the normal fusion path,
-then guarantees up to `ceil(summaryMinShare * maxMemories)` top-ranked summaries
-when that many summaries exist, caps turns at `floor(turnMaxShare *
-maxMemories)`, and fills released slots by rank. Summary guarantees never invert
+ranks visible candidates through the normal fusion path and sets the allocation
+capacity to `min(maxMemories, visibleCandidateCount)`. It then guarantees up to
+`ceil(summaryMinShare * allocationCapacity)` top-ranked summaries when that many
+summaries exist, caps turns at `floor(turnMaxShare * allocationCapacity)`, and
+fills released slots by rank. A positive `turnMaxShare` always permits one turn
+when a turn is the only available evidence, and the turn cap still applies when
+no summary candidates exist. Summary guarantees never invert
 summary-vs-summary rank, filtered memories stay filtered, and stats expose
 `stats.layers.{candidates,included,culled}`. Under token pressure with a policy,
 path lines are still removed first; memory lines are then culled by lowest rank

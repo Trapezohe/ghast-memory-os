@@ -209,7 +209,7 @@ Usage:
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --turn-retention on --session-distill on --consolidate-entities on --extraction-window 1000 --extraction-max-chars 30000 --extractor-max-candidates 32 --extractor-max-tokens 4000 --ingest-replay-attempts 1 --embed-query on --intelligence-base-url https://api.deepseek.com/v1 --intelligence-model deepseek-chat --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-embed-base-url http://127.0.0.1:11434/v1 --intelligence-embed-model nomic-embed-text --intelligence-embed-dimensions 768 --intelligence-disable-thinking
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --intelligence-base-url https://provider.example/v1 --intelligence-model provider-chat-model --intelligence-embed-model off --format json
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --session-distill on --distiller-base-url http://127.0.0.1:11434/v1 --distiller-model llama3.1 --intelligence-api-key-env GMOS_BENCH_API_KEY
-  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode memory --query-planner on --sweep-cues on --planner-base-url http://127.0.0.1:11434/v1 --planner-model llama3.1 --intelligence-api-key-env GMOS_BENCH_API_KEY
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode memory --query-planner on --sweep-cues on --planner-max-sweep-cues 6 --planner-base-url http://127.0.0.1:11434/v1 --planner-model llama3.1 --intelligence-api-key-env GMOS_BENCH_API_KEY
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --protocol official-protocol --answerer-base-url http://127.0.0.1:11434/v1 --answerer-model llama3.1 --answerer-timeout-ms 90000 --answerer-disable-thinking
   gmos gym external gains --input-file ./long-memory-cleaned.json --dataset-format longmemeval --reproduction-bundle ./release-evidence/bench-run
   gmos gym external-suite --suite-file ./path/to/external-suite.json --output-dir ./external-runs --format markdown
@@ -2744,6 +2744,7 @@ async function main(): Promise<void> {
     const embedQuery = embedQueryOption();
     const queryPlanner = queryPlannerOption();
     const sweepCues = sweepCuesOption();
+    const plannerMaxSweepCues = boundedIntegerOptionValue("--planner-max-sweep-cues", 1, 12);
     const sourceEvidence = sourceEvidenceOption();
     const turnRetention = turnRetentionOption();
     const sessionDistillation = sessionDistillOption();
@@ -2923,6 +2924,7 @@ async function main(): Promise<void> {
       ...(embedQuery !== undefined ? { embedQuery } : {}),
       ...(queryPlanner !== undefined ? { queryPlanner } : {}),
       ...(sweepCues !== undefined ? { sweepCues } : {}),
+      ...(plannerMaxSweepCues !== undefined ? { plannerMaxSweepCues } : {}),
       ...(intelligence ? { intelligence } : {}),
       ...(maintainPhases ? { maintainPhases } : {}),
       ...(has("--progress") || resultsJsonl
