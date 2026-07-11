@@ -1695,6 +1695,29 @@ function autoTemporalRecallPurpose(query: string): ReconstructionRecallPurpose {
     : "context";
 }
 
+function queryNeedsAggregateRecall(query: string): boolean {
+  const normalized = query.normalize("NFC").toLowerCase();
+  return (
+    /\b(?:across|all time|altogether|combined|cumulative|how many|how much|how often|so far|to date|total)\b/u.test(
+      normalized,
+    ) ||
+    /(?:总共|一共|累计|合计|多少次|多少钱|多少个|多少项)/u.test(normalized)
+  );
+}
+
+function targetMemoryCountForQuery(
+  query: string,
+  recallPurpose: ReconstructionRecallPurpose,
+  maxMemories: number,
+): number {
+  const desired = queryNeedsAggregateRecall(query)
+    ? 16
+    : recallPurpose === "history"
+      ? 4
+      : 2;
+  return Math.min(desired, maxMemories);
+}
+
 function seedFrontier(
   query: string,
   intent: ReconstructionIntent,
@@ -2443,7 +2466,7 @@ async function fuseDirectMemorySearch(input: {
   );
   for (const candidate of rankedCandidates) {
     if (input.memories.length >= input.maxMemories) break;
-    if (input.supplyFill !== true && input.maxNewPaths !== undefined && selectedNewPaths.length >= input.maxNewPaths) break;
+    if (input.maxNewPaths !== undefined && selectedNewPaths.length >= input.maxNewPaths) break;
     if (input.seenMemoryIds.has(candidate.memory.id)) continue;
     if (!memoryMatchesTemporalConstraint(candidate.memory, temporalConstraints)) continue;
     if (input.supplyFill !== true) {
@@ -3302,11 +3325,7 @@ export async function reconstructMemoryContext(input: {
     input.request.temporalMode,
     input.request.recallPurpose,
   );
-  const targetMemoryCount = layerPolicy
-    ? candidateMemoryLimit
-    : recallPurpose === "history"
-      ? Math.min(4, maxMemories)
-      : Math.min(2, maxMemories);
+  const targetMemoryCount = targetMemoryCountForQuery(query, recallPurpose, maxMemories);
   if (!input.store.searchAssociations) {
     return fallbackReconstruction({
       store: input.store,
@@ -3607,6 +3626,18 @@ export async function reconstructMemoryContext(input: {
     input.cueExtractor,
     inferTemporalCuesFromText,
   );
+  const convergenceBeforeAnchorTopUp = evidenceConvergenceForPaths({
+    coverage: coverageBeforeAnchorTopUp,
+    memories,
+    paths,
+    intent,
+    threshold: evidenceConvergenceThreshold,
+    targetMemoryCount,
+    stopWhenEvidenceEnough,
+    prunedBranchCount,
+    frontierRemaining: frontier.length,
+  });
+  const wideSupplyRequested = layerPolicy !== undefined || maxMemories > 24;
   const hybridNeededBeforeAnchorTopUp = shouldRunHybridDirectMemorySearch({
     recallPurpose,
     memories,
@@ -3615,7 +3646,11 @@ export async function reconstructMemoryContext(input: {
     targetMemoryCount,
     intent,
     coverage: coverageBeforeAnchorTopUp,
-  }) || ((layerPolicy !== undefined || maxMemories > 24) && memories.length < candidateMemoryLimit);
+  }) || (
+    wideSupplyRequested &&
+    memories.length < candidateMemoryLimit &&
+    (!stopWhenEvidenceEnough || !convergenceBeforeAnchorTopUp.reached)
+  );
 
   if (anchorPlan && memories.length < candidateMemoryLimit) {
     const anchorTopUpSteps = await topUpUncoveredAnchors({
@@ -3658,6 +3693,17 @@ export async function reconstructMemoryContext(input: {
     input.cueExtractor,
     inferTemporalCuesFromText,
   );
+  const convergenceBeforeHybrid = evidenceConvergenceForPaths({
+    coverage: finalCoverageBeforeHybrid,
+    memories,
+    paths,
+    intent,
+    threshold: evidenceConvergenceThreshold,
+    targetMemoryCount,
+    stopWhenEvidenceEnough,
+    prunedBranchCount,
+    frontierRemaining: frontier.length,
+  });
   const hybridNeededAfterAnchorTopUp = shouldRunHybridDirectMemorySearch({
     recallPurpose,
     memories,
@@ -3666,7 +3712,11 @@ export async function reconstructMemoryContext(input: {
     targetMemoryCount,
     intent,
     coverage: finalCoverageBeforeHybrid,
-  }) || ((layerPolicy !== undefined || maxMemories > 24) && memories.length < candidateMemoryLimit);
+  }) || (
+    wideSupplyRequested &&
+    memories.length < candidateMemoryLimit &&
+    (!stopWhenEvidenceEnough || !convergenceBeforeHybrid.reached)
+  );
   const allowReinforcementOnlyHybrid = anchorPlan !== null && hybridNeededBeforeAnchorTopUp;
   if (
     (memories.length < candidateMemoryLimit || allowReinforcementOnlyHybrid) &&
@@ -3686,6 +3736,9 @@ export async function reconstructMemoryContext(input: {
       paths,
       seenMemoryIds,
       selectedSourceCues,
+      ...(stopWhenEvidenceEnough
+        ? { maxNewPaths: Math.max(4, targetMemoryCount - memories.length) }
+        : {}),
       cueExtractor: input.cueExtractor,
       inferTemporalCuesFromText,
     });
@@ -3698,8 +3751,27 @@ export async function reconstructMemoryContext(input: {
       fallbackStep: stepCountForTrace(paths),
     });
     if (hybridStep) plannerSteps.push(hybridStep);
-    const wideSupplyRequested = layerPolicy !== undefined || maxMemories > 24;
-    if (wideSupplyRequested && memories.length < candidateMemoryLimit) {
+    const convergenceAfterHybrid = evidenceConvergenceForPaths({
+      coverage: evidenceCoverageForPaths(
+        query,
+        paths,
+        input.cueExtractor,
+        inferTemporalCuesFromText,
+      ),
+      memories,
+      paths,
+      intent,
+      threshold: evidenceConvergenceThreshold,
+      targetMemoryCount,
+      stopWhenEvidenceEnough,
+      prunedBranchCount,
+      frontierRemaining: frontier.length,
+    });
+    if (
+      wideSupplyRequested &&
+      memories.length < candidateMemoryLimit &&
+      (!stopWhenEvidenceEnough || !convergenceAfterHybrid.reached)
+    ) {
       const saturationTrace = await fuseDirectMemorySearch({
         store: input.store,
         profileId,
@@ -3717,6 +3789,9 @@ export async function reconstructMemoryContext(input: {
         selectedSourceCues,
         searchQueries: [""],
         reinforceExisting: false,
+        ...(stopWhenEvidenceEnough
+          ? { maxNewPaths: Math.max(4, targetMemoryCount - memories.length) }
+          : {}),
         // Saturation is supply fill, not exploration: candidateMemoryLimit and
         // the output token budget bound it, so branch/source narrowing should not.
         supplyFill: true,

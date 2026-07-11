@@ -29910,6 +29910,23 @@ assert.deepEqual(
   wideSupplyContext.memories.map((memoryRecord) => memoryRecord.id),
   wideSupplyContextAgain.memories.map((memoryRecord) => memoryRecord.id),
 );
+const convergedWideSupplyContext = await wideSupplyMemory.reconstructContext({
+  ...wideSupplyRequest,
+  stopWhenEvidenceEnough: true,
+});
+assert.equal(convergedWideSupplyContext.stats.evidenceConvergence.reached, true);
+assert.equal(convergedWideSupplyContext.memories.length < 50, true);
+const aggregateWideSupplyContext = await wideSupplyMemory.reconstructContext({
+  ...wideSupplyRequest,
+  query: "How many WideSupplyKey entries are there in total?",
+  stopWhenEvidenceEnough: true,
+});
+assert.equal(aggregateWideSupplyContext.memories.length >= 16, true);
+assert.equal(aggregateWideSupplyContext.memories.length < 50, true);
+assert.equal(
+  aggregateWideSupplyContext.memories.length > convergedWideSupplyContext.memories.length,
+  true,
+);
 assert.equal(
   wideSupplyContext.memories.some((memoryRecord) => memoryRecord.content.includes("person gated")),
   false,
@@ -38875,9 +38892,13 @@ const nativeTimestampWideLines = nativeTimestampWideContext
   .filter((line) => line.startsWith("- "));
 assert.equal(nativeTimestampWideBenchmark.pass, true);
 assert.equal(nativeTimestampWideBenchmark.runManifest.options.contextBudgetTokens, 16000);
-assert.equal((nativeTimestampWideBenchmark.cases[0]?.retrievedMemoryCount ?? 0) >= 150, true);
+const nativeTimestampWideRetrieved =
+  nativeTimestampWideBenchmark.cases[0]?.retrievedMemoryCount ?? 0;
+assert.equal(nativeTimestampWideRetrieved >= 16, true);
+assert.equal(nativeTimestampWideRetrieved < 50, true);
 assert.equal(
-  nativeTimestampWideLines.filter((line) => /\d{4}-\d{2}-\d{2}/u.test(line)).length >= 150,
+  nativeTimestampWideLines.filter((line) => /\d{4}-\d{2}-\d{2}/u.test(line)).length >=
+    nativeTimestampWideRetrieved,
   true,
 );
 const locomoFixture = JSON.stringify([
