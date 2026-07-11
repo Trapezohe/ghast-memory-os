@@ -1790,6 +1790,214 @@ function queryNeedsAggregateRecall(query: string): boolean {
   );
 }
 
+function queryNeedsEntityAliasCandidates(query: string): boolean {
+  const normalized = query.normalize("NFC").toLowerCase();
+  return (
+    /\b(?:how many|number of)\s+(?:different|distinct|unique)\b/u.test(normalized) ||
+    /(?:多少个不同|多少位不同|不同的?多少个|不同的?多少位|哪些不同|哪几位不同)/u.test(normalized)
+  );
+}
+
+interface StructuredEntityMention {
+  subject: string;
+  subjectKey: string;
+  relation: string;
+  relationKey: string;
+  object: string;
+  objectKey: string;
+  createdAtMs: number;
+  sourceEvidenceId: string;
+}
+
+const ENTITY_ALIAS_CANDIDATE_MAX_GAP_MS = 7 * 24 * 60 * 60 * 1000;
+
+function normalizedStructuredEntityText(value: string): string {
+  return value
+    .normalize("NFC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function normalizedStructuredRelation(value: string): string {
+  const auxiliaries = new Set(["am", "are", "been", "being", "did", "does", "had", "has", "have", "is", "was", "were"]);
+  const tokens = normalizedStructuredEntityText(value).split(" ").filter(Boolean);
+  while (tokens.length > 1 && auxiliaries.has(tokens[0]!)) tokens.shift();
+  return tokens.join(" ");
+}
+
+function structuredEntityMetadataValue(
+  metadata: Record<string, unknown>,
+  primaryKey: string,
+  fallbackKey: string,
+): string | null {
+  const raw = metadata[primaryKey] ?? metadata[fallbackKey];
+  if (typeof raw !== "string") return null;
+  const value = raw.replace(/\s+/gu, " ").trim();
+  if (!value || value.length > 128 || classifySensitivity(value) === "secret_like") return null;
+  const safe = safePublicInlineField(value);
+  if (/^\[redacted_[a-z_]+\]$/iu.test(safe)) return null;
+  return safe === "other" && value !== "other" ? null : safe;
+}
+
+function structuredEntityMention(memory: MemoryRecord): StructuredEntityMention | null {
+  if (
+    memory.metadata.sourceTrust !== "user" ||
+    !hasGmosMetadataReferenceSchema(
+      memory.metadata,
+      GMOS_METADATA_REFERENCE_SCHEMAS.worldBeliefProjection,
+    )
+  ) {
+    return null;
+  }
+  const subject = structuredEntityMetadataValue(memory.metadata, "worldBeliefSubject", "subject");
+  const predicate = structuredEntityMetadataValue(memory.metadata, "worldBeliefPredicate", "predicate");
+  const object = structuredEntityMetadataValue(memory.metadata, "worldBeliefObject", "object");
+  if (!subject || !predicate || !object) return null;
+  const subjectKey = normalizedStructuredEntityText(subject);
+  const relationKey = normalizedStructuredRelation(predicate);
+  const objectKey = normalizedStructuredEntityText(object);
+  const createdAtMs = Date.parse(memory.createdAt);
+  const sourceEvidenceId = typeof memory.metadata.sourceEvidenceId === "string"
+    ? memory.metadata.sourceEvidenceId.trim()
+    : "";
+  if (
+    !subjectKey ||
+    !relationKey ||
+    !objectKey ||
+    !Number.isFinite(createdAtMs) ||
+    !sourceEvidenceId ||
+    sourceEvidenceId.length > 256
+  ) {
+    return null;
+  }
+  return {
+    subject,
+    subjectKey,
+    relation: relationKey,
+    relationKey,
+    object,
+    objectKey,
+    createdAtMs,
+    sourceEvidenceId,
+  };
+}
+
+function looksLikeExplicitlyNamedEntity(value: string): boolean {
+  return /(?:^|\s)(?:dr|mr|mrs|ms|prof)\.?\s+\p{L}/iu.test(value);
+}
+
+function sourceSupportsStructuredEntityMention(source: string, objectKey: string): boolean {
+  const sourceTokens = new Set(normalizedStructuredEntityText(source).split(" ").filter(Boolean));
+  const objectTokens = objectKey.split(" ").filter(Boolean);
+  return objectTokens.length >= 2 && objectTokens.every((token) => sourceTokens.has(token));
+}
+
+function sourceExplicitlyDistinguishesEntity(source: string): boolean {
+  return (
+    /\b(?:another|different|distinct|separate|other)\b/iu.test(source) ||
+    /(?:另一(?:位|个)?|不同(?:的)?|另外(?:一位|一个)?|分别)/u.test(source)
+  );
+}
+
+function entityAliasCandidateHints(
+  memories: MemoryRecord[],
+  visibleSourceEvidence: ReadonlyMap<string, string>,
+  maxHints = 2,
+): string[] {
+  const mentions = uniqueMemoriesById(memories)
+    .map(structuredEntityMention)
+    .filter((mention): mention is StructuredEntityMention =>
+      mention !== null &&
+      sourceSupportsStructuredEntityMention(
+        visibleSourceEvidence.get(mention.sourceEvidenceId) ?? "",
+        mention.objectKey,
+      )
+    );
+  const groups = new Map<string, {
+    relation: string;
+    genericObject: string;
+    genericCreatedAtMs: number;
+    specificObjects: Map<string, {
+      object: string;
+      createdAtMs: number;
+      explicitlyDistinct: boolean;
+    }>;
+  }>();
+  for (const generic of mentions) {
+    if (
+      generic.objectKey.split(" ").length < 2 ||
+      looksLikeExplicitlyNamedEntity(generic.object)
+    ) {
+      continue;
+    }
+    for (const specific of mentions) {
+      const genericSource = visibleSourceEvidence.get(generic.sourceEvidenceId) ?? "";
+      const specificSource = visibleSourceEvidence.get(specific.sourceEvidenceId) ?? "";
+      if (
+        specific === generic ||
+        specific.subjectKey !== generic.subjectKey ||
+        specific.relationKey !== generic.relationKey ||
+        specific.objectKey === generic.objectKey ||
+        Math.abs(specific.createdAtMs - generic.createdAtMs) > ENTITY_ALIAS_CANDIDATE_MAX_GAP_MS ||
+        !looksLikeExplicitlyNamedEntity(specific.object) ||
+        !` ${specific.objectKey} `.includes(` ${generic.objectKey} `)
+      ) {
+        continue;
+      }
+      const key = [generic.subjectKey, generic.relationKey, generic.objectKey].join("\n");
+      const group = groups.get(key) ?? {
+        relation: generic.relation,
+        genericObject: generic.object,
+        genericCreatedAtMs: generic.createdAtMs,
+        specificObjects: new Map<string, {
+          object: string;
+          createdAtMs: number;
+          explicitlyDistinct: boolean;
+        }>(),
+      };
+      const existingSpecific = group.specificObjects.get(specific.objectKey);
+      const explicitlyDistinct =
+        existingSpecific?.explicitlyDistinct === true ||
+        sourceExplicitlyDistinguishesEntity(genericSource) ||
+        sourceExplicitlyDistinguishesEntity(specificSource);
+      const existingGap = existingSpecific
+        ? Math.abs(existingSpecific.createdAtMs - generic.createdAtMs)
+        : Number.POSITIVE_INFINITY;
+      const specificGap = Math.abs(specific.createdAtMs - generic.createdAtMs);
+      const useSpecific =
+        !existingSpecific ||
+        specificGap < existingGap ||
+        (specificGap === existingGap && specific.createdAtMs < existingSpecific.createdAtMs);
+      group.specificObjects.set(
+        specific.objectKey,
+        useSpecific
+          ? {
+              object: specific.object,
+              createdAtMs: specific.createdAtMs,
+              explicitlyDistinct,
+            }
+          : { ...existingSpecific, explicitlyDistinct },
+      );
+      groups.set(key, group);
+    }
+  }
+  const hints: string[] = [];
+  for (const [, group] of [...groups].sort(([left], [right]) => left.localeCompare(right))) {
+    if (group.specificObjects.size !== 1) continue;
+    const specific = [...group.specificObjects.values()][0];
+    if (!specific || specific.explicitlyDistinct) continue;
+    const genericDate = new Date(group.genericCreatedAtMs).toISOString().slice(0, 10);
+    const specificDate = new Date(specific.createdAtMs).toISOString().slice(0, 10);
+    hints.push(
+      `Potential entity alias (inference, not a fact): role-only ${JSON.stringify(group.genericObject)} (${genericDate}) and named ${JSON.stringify(specific.object)} (${specificDate}) share the same subject and relation ${JSON.stringify(group.relation)}. Status: unresolved; a same-entity interpretation requires corroboration from the surrounding source evidence, otherwise they remain distinct.`,
+    );
+    if (hints.length >= maxHints) break;
+  }
+  return hints;
+}
+
 function finiteEnumerationTarget(query: string): number | null {
   const normalized = query.normalize("NFC").toLowerCase();
   const asksForEnumeration =
@@ -2972,6 +3180,7 @@ function composeReconstructedContext(input: {
     return lines.join("\n");
   };
   let contentSurfaces = { plain: "", temporal: "" };
+  let includeEntityAliasCandidates = true;
   const render = (includeSweeps: boolean): string => {
     coverage = evidenceCoverageForPaths(
       publicQuery,
@@ -3082,11 +3291,51 @@ function composeReconstructedContext(input: {
           };
         })
       : [];
+    const candidateMemories = uniqueMemoriesById([
+      ...memories,
+      ...(includeSweeps ? sweepCandidates.map((candidate) => candidate.memory) : []),
+    ]);
+    const visibleSourceEvidence = new Map(evidence.map((event) => [event.id, event.content]));
+    for (const memory of candidateMemories) {
+      if (
+        memory.metadata.turnMemory !== true ||
+        memory.metadata.sourceTrust !== "user" ||
+        !hasGmosMetadataReferenceSchema(
+          memory.metadata,
+          GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+        )
+      ) {
+        continue;
+      }
+      const sourceEvidenceId = typeof memory.metadata.sourceEvidenceId === "string"
+        ? memory.metadata.sourceEvidenceId.trim()
+        : "";
+      const publicSourceMemory = publicMemory(
+        memory,
+        hideInternalRouteSignals,
+        privateOutputSignalKeySet,
+      );
+      const visibleContent = truncateMemoryContent(
+        publicSourceMemory.content,
+        capForMemoryId(memory.id, fullIds),
+      );
+      if (sourceEvidenceId && visibleContent === publicSourceMemory.content) {
+        visibleSourceEvidence.set(sourceEvidenceId, visibleContent);
+      }
+    }
+    const entityAliasHints =
+      includeEntityAliasCandidates &&
+        queryNeedsEntityAliasCandidates(publicQuery) &&
+        !hideInternalRouteSignals
+      ? entityAliasCandidateHints(candidateMemories, visibleSourceEvidence)
+      : [];
+    const entityAliasSurfaceEntries = entityAliasHints.map((hint) => ({ plain: hint, temporal: hint }));
     const surfaceEntries = [
       ...memorySurfaceEntries,
       ...pathSurfaceEntries,
       ...evidenceSurfaceEntries,
       ...sweepSurfaceEntries,
+      ...entityAliasSurfaceEntries,
     ];
     contentSurfaces = {
       plain: surfaceEntries.map((entry) => `- ${entry.plain}`).join("\n"),
@@ -3132,11 +3381,22 @@ function composeReconstructedContext(input: {
     if (includeSweeps && sweepCandidates.length > 0) {
       lines.push(...renderSweepSection(sweepCandidates).split("\n"));
     }
+    if (entityAliasHints.length > 0) {
+      lines.push("Potential entity aliases (inferences, not independent facts):");
+      lines.push(...entityAliasHints.map((hint) => `- ${hint}`));
+    }
     lines.push("</gmos-reconstructed-context>");
     return lines.join("\n");
   };
   let contextBlock = render(false);
   const budget = input.contextBudgetTokens ?? 1800;
+  // Alias candidates are optional navigation aids, never source evidence. If
+  // they would exceed the budget, remove them before culling any original
+  // memory, path, or evidence content.
+  if (estimateTokens(contextBlock) > budget && includeEntityAliasCandidates) {
+    includeEntityAliasCandidates = false;
+    contextBlock = render(false);
+  }
   // Path lines carry truncated summaries of the same targets; full memory
   // content and exact source evidence are what downstream readers need. Cull
   // duplicate paths first, then retain the largest ranked evidence prefix that
@@ -3177,6 +3437,10 @@ function composeReconstructedContext(input: {
       sweepCandidates = sweepCandidates.filter((candidate) => candidate.memory.id !== drop.memory.id);
     }
     contextBlock = render(true);
+    if (estimateTokens(contextBlock) > budget && includeEntityAliasCandidates) {
+      includeEntityAliasCandidates = false;
+      contextBlock = render(true);
+    }
     while (sweepCandidates.length > 0 && estimateTokens(contextBlock) > budget) {
       const drop = sweepCandidateToCull(sweepCandidates);
       if (!drop) break;
@@ -3190,6 +3454,10 @@ function composeReconstructedContext(input: {
     stopReason = "budget_exhausted";
     const includeSweeps = input.sweepDraft !== undefined;
     contextBlock = render(includeSweeps);
+    if (estimateTokens(contextBlock) > budget && includeEntityAliasCandidates) {
+      includeEntityAliasCandidates = false;
+      contextBlock = render(includeSweeps);
+    }
     while (estimateTokens(contextBlock) > budget) {
       if (paths.length > 0) {
         paths = paths.slice(0, -1);
