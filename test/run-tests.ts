@@ -35,6 +35,7 @@ import {
   redactForReport as publicRedactForReport,
   runAutopilot,
   type EntityResolver,
+  type EvidenceEvent,
   type MemoryCueExtractor,
   type MemoryExtractionOutcome,
   type MemoryExtractionInput,
@@ -56,6 +57,7 @@ import {
   extractAssociationCues,
 } from "../src/kernel/associations.js";
 import { reconstructMemoryContext } from "../src/kernel/reconstruction.js";
+import { collectReaderEvidenceForMemories } from "../src/kernel/reader-evidence.js";
 import {
   extractStructuredTableMemoryCandidates,
 } from "../src/kernel/extraction.js";
@@ -2960,6 +2962,147 @@ assert.match(unsafeKindContext.contextBlock, /\[other; observed 2026-06-25; conf
 assert.match(unsafeKindContext.contextBlock, /\[other; priority=1\]/);
 assert.doesNotMatch(unsafeKindContext.contextBlock, /kind-injected/);
 assert.equal(JSON.stringify(unsafeKindContext).includes("kind-injected"), false);
+const composerBudgetMemories: MemoryRecord[] = [
+  {
+    id: "memory_composer_budget_1",
+    profileId: "composer_budget",
+    kind: "fact",
+    scope: "global",
+    content: "Composer budget first ranked memory.",
+    sensitivity: "normal",
+    status: "active",
+    confidence: 0.9,
+    sourceEventId: null,
+    metadata: {},
+    createdAt: "2026-07-01T00:00:00.000Z",
+    updatedAt: "2026-07-01T00:00:00.000Z",
+  },
+  {
+    id: "memory_composer_budget_2",
+    profileId: "composer_budget",
+    kind: "fact",
+    scope: "global",
+    content: "Composer budget second ranked memory.",
+    sensitivity: "normal",
+    status: "active",
+    confidence: 0.8,
+    sourceEventId: null,
+    metadata: {},
+    createdAt: "2026-07-01T00:00:00.000Z",
+    updatedAt: "2026-07-01T00:00:00.000Z",
+  },
+];
+const composerBudgetPolicies = [{
+  id: "policy_composer_budget",
+  kind: "do_not_push" as const,
+  text: "Keep the composer budget safety boundary.",
+  priority: 10,
+  sourceMemoryId: null,
+}];
+const composerBudgetEvidence: EvidenceEvent[] = [
+  {
+    id: "evidence_composer_budget_primary",
+    eventKey: "evidence-composer-budget-primary",
+    profileId: "composer_budget",
+    sourceType: "conversation.message",
+    content: "Composer budget primary evidence.",
+    sensitivity: "normal",
+    eligibleForLongTermMemory: true,
+    payload: {},
+    createdAt: "2026-07-01T00:00:00.000Z",
+  },
+  {
+    id: "evidence_composer_budget_oversized",
+    eventKey: "evidence-composer-budget-oversized",
+    profileId: "composer_budget",
+    sourceType: "conversation.message",
+    content: `Composer oversized evidence ${"x".repeat(2000)}`,
+    sensitivity: "normal",
+    eligibleForLongTermMemory: true,
+    payload: {},
+    createdAt: "2026-07-01T00:00:01.000Z",
+  },
+];
+const composerBudgetBaseline = composeTurnContext({
+  profileId: "composer_budget",
+  memories: composerBudgetMemories,
+  actionPolicies: composerBudgetPolicies,
+  evidence: composerBudgetEvidence.slice(0, 1),
+  includeEvidence: true,
+  contextBudgetTokens: 10_000,
+});
+const composerPartialEvidence = composeTurnContext({
+  profileId: "composer_budget",
+  memories: composerBudgetMemories,
+  actionPolicies: composerBudgetPolicies,
+  evidence: composerBudgetEvidence,
+  includeEvidence: true,
+  contextBudgetTokens: composerBudgetBaseline.stats.promptTokenEstimate,
+});
+assert.deepEqual(composerPartialEvidence.memories.map((memoryRecord) => memoryRecord.id), [
+  "memory_composer_budget_1",
+  "memory_composer_budget_2",
+]);
+assert.deepEqual(composerPartialEvidence.evidence.map((event) => event.id), [
+  "evidence_composer_budget_primary",
+]);
+assert.match(composerPartialEvidence.contextBlock, /Composer budget primary evidence/u);
+assert.doesNotMatch(composerPartialEvidence.contextBlock, /Composer oversized evidence/u);
+assert.match(composerPartialEvidence.contextBlock, /Keep the composer budget safety boundary/u);
+assert.deepEqual(composerPartialEvidence.directives, [
+  "Respect user boundary: Keep the composer budget safety boundary.",
+]);
+assert.equal(
+  composerPartialEvidence.stats.promptTokenEstimate,
+  Math.ceil(composerPartialEvidence.contextBlock.length / 4),
+);
+assert.ok(
+  composerPartialEvidence.stats.promptTokenEstimate <= composerBudgetBaseline.stats.promptTokenEstimate,
+);
+const composerOneMemoryEnvelope = composeTurnContext({
+  profileId: "composer_budget",
+  memories: composerBudgetMemories.slice(0, 1),
+  actionPolicies: composerBudgetPolicies,
+  evidence: [],
+  includeEvidence: true,
+  contextBudgetTokens: 10_000,
+});
+const composerEvidenceBeforeMemory = composeTurnContext({
+  profileId: "composer_budget",
+  memories: composerBudgetMemories,
+  actionPolicies: composerBudgetPolicies,
+  evidence: composerBudgetEvidence.slice(1),
+  includeEvidence: true,
+  contextBudgetTokens: composerOneMemoryEnvelope.stats.promptTokenEstimate,
+});
+assert.deepEqual(composerEvidenceBeforeMemory.evidence, []);
+assert.deepEqual(composerEvidenceBeforeMemory.memories.map((memoryRecord) => memoryRecord.id), [
+  "memory_composer_budget_1",
+]);
+assert.match(composerEvidenceBeforeMemory.contextBlock, /first ranked memory/u);
+assert.doesNotMatch(composerEvidenceBeforeMemory.contextBlock, /second ranked memory/u);
+const composerPolicyEnvelope = composeTurnContext({
+  profileId: "composer_budget",
+  memories: [],
+  actionPolicies: [
+    ...composerBudgetPolicies,
+    {
+      id: "policy_composer_budget_prefer",
+      kind: "prefer",
+      text: "Preserve the second fixed action policy.",
+      priority: 5,
+      sourceMemoryId: null,
+    },
+  ],
+  evidence: composerBudgetEvidence,
+  includeEvidence: true,
+  contextBudgetTokens: 1,
+});
+assert.equal(composerPolicyEnvelope.evidence.length, 0);
+assert.equal(composerPolicyEnvelope.actionPolicies.length, 2);
+assert.match(composerPolicyEnvelope.contextBlock, /Keep the composer budget safety boundary/u);
+assert.match(composerPolicyEnvelope.contextBlock, /Preserve the second fixed action policy/u);
+assert.ok(composerPolicyEnvelope.stats.promptTokenEstimate > 1);
 const datedComposerMemories = [
   {
     id: "memory_composer_event_time",
@@ -3791,6 +3934,24 @@ const windowedExplain = await windowedMemory.explain(
   "windowed-extraction",
 );
 assert.equal(windowedExplain?.evidence.length, 12);
+const windowedReconstructed = await windowedMemory.reconstructContext({
+  profileId: "windowed-extraction",
+  query: "Windowed shared fact grounded once",
+  includeEvidence: true,
+  contextBudgetTokens: 4000,
+});
+assert.deepEqual(windowedReconstructed.evidence.map((event) => event.id), [windowEvidenceIds[0]]);
+assert.match(windowedReconstructed.contextBlock, /Windowed eligible assistant turn 0/u);
+assert.doesNotMatch(windowedReconstructed.contextBlock, /Windowed eligible user turn 1/u);
+const windowedPrepared = await windowedMemory.prepareTurn({
+  profileId: "windowed-extraction",
+  messages: [{ role: "user", content: "Windowed shared fact grounded once" }],
+  includeEvidence: true,
+  contextBudgetTokens: 4000,
+});
+assert.deepEqual(windowedPrepared.evidence.map((event) => event.id), [windowEvidenceIds[0]]);
+assert.match(windowedPrepared.contextBlock, /Windowed eligible assistant turn 0/u);
+assert.doesNotMatch(windowedPrepared.contextBlock, /Windowed eligible user turn 1/u);
 const windowedReingest = await windowedMemory.ingestConversation({
   profileId: "windowed-extraction",
   messages: windowedMessages,
@@ -30601,6 +30762,359 @@ const duplicateWideShared = layerMemory(
   "atom",
   "DuplicateWideKey shared fact.",
 );
+const primaryProjectionEvidence: EvidenceEvent = {
+  id: "evidence_primary_projection_exact",
+  eventKey: "evidence-primary-projection-exact",
+  profileId: "layer",
+  sourceType: "conversation.message",
+  content: "EvidenceProjectionKey durable fact exact supporting user turn.",
+  sensitivity: "normal",
+  eligibleForLongTermMemory: true,
+  payload: {},
+  createdAt: layerNow,
+};
+const companionProjectionEvidence = Array.from({ length: 40 }, (_, index): EvidenceEvent => ({
+  ...primaryProjectionEvidence,
+  id: `evidence_primary_projection_companion_${index}`,
+  eventKey: `evidence-primary-projection-companion-${index}`,
+  content: index === 0
+    ? "EvidenceProjectionKey unrelated extraction-window chatter 0."
+    : `Unrelated extraction-window chatter topic ${index}.`,
+}));
+const primaryProjectionMemory: MemoryRecord = {
+  ...layerMemory(
+    "memory_primary_projection",
+    "atom",
+    "EvidenceProjectionKey durable fact.",
+  ),
+  sourceEventId: primaryProjectionEvidence.id,
+  metadata: {
+    sourceEvidenceId: primaryProjectionEvidence.id,
+    windowEvidenceIds: [
+      primaryProjectionEvidence.id,
+      ...companionProjectionEvidence.map((event) => event.id),
+    ],
+    [GMOS_METADATA_REFERENCE_MARKER]: [GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage],
+  },
+};
+const primaryProjectionLineage = [primaryProjectionEvidence, ...companionProjectionEvidence];
+const primaryProjectionContext = await reconstructMemoryContext({
+  store: {
+    searchMemories() {
+      return [primaryProjectionMemory];
+    },
+    listEvidenceForMemory() {
+      return primaryProjectionLineage;
+    },
+  } as unknown as MemoryStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "EvidenceProjectionKey",
+    maxMemories: 1,
+    contextBudgetTokens: 4000,
+    includeEvidence: true,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.deepEqual(primaryProjectionContext.evidence.map((event) => event.id), [
+  primaryProjectionEvidence.id,
+]);
+assert.match(primaryProjectionContext.contextBlock, /exact supporting user turn/u);
+assert.doesNotMatch(primaryProjectionContext.contextBlock, /extraction-window chatter/u);
+assert.equal(primaryProjectionLineage.length, 41);
+const ambiguousProjectionMemory: MemoryRecord = {
+  ...primaryProjectionMemory,
+  id: "memory_primary_projection_ambiguous",
+  sourceEventId: companionProjectionEvidence.at(-1)!.id,
+  metadata: {
+    windowEvidenceIds: primaryProjectionLineage.map((event) => event.id),
+    [GMOS_METADATA_REFERENCE_MARKER]: [GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage],
+  },
+};
+const ambiguousProjectionContext = await reconstructMemoryContext({
+  store: {
+    searchMemories() {
+      return [ambiguousProjectionMemory];
+    },
+    listEvidenceForMemory() {
+      return primaryProjectionLineage;
+    },
+  } as unknown as MemoryStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "EvidenceProjectionKey",
+    maxMemories: 1,
+    contextBudgetTokens: 4000,
+    includeEvidence: true,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.deepEqual(ambiguousProjectionContext.evidence.map((event) => event.id), [
+  primaryProjectionEvidence.id,
+]);
+assert.equal(ambiguousProjectionContext.paths[0]?.sourceEvidenceId, undefined);
+assert.doesNotMatch(ambiguousProjectionContext.contextBlock, /extraction-window chatter/u);
+const noRelevantProjectionMemory: MemoryRecord = {
+  ...ambiguousProjectionMemory,
+  id: "memory_primary_projection_no_relevant",
+  content: "NoRelevantProjectionSignal durable fact.",
+};
+const noRelevantProjectionContext = await reconstructMemoryContext({
+  store: {
+    searchMemories() {
+      return [noRelevantProjectionMemory];
+    },
+    listEvidenceForMemory() {
+      return companionProjectionEvidence;
+    },
+  } as unknown as MemoryStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "NoRelevantProjectionSignal",
+    maxMemories: 1,
+    contextBudgetTokens: 4000,
+    includeEvidence: true,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.equal(noRelevantProjectionContext.evidence.length, 0);
+assert.equal(noRelevantProjectionContext.paths[0]?.sourceEvidenceId, undefined);
+const danglingPrimaryProjectionMemory: MemoryRecord = {
+  ...primaryProjectionMemory,
+  id: "memory_primary_projection_dangling",
+  sourceEventId: primaryProjectionEvidence.id,
+  metadata: {
+    sourceEvidenceId: "evidence_primary_projection_missing",
+    windowEvidenceIds: [primaryProjectionEvidence.id],
+    [GMOS_METADATA_REFERENCE_MARKER]: [GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage],
+  },
+};
+const danglingPrimaryProjectionContext = await reconstructMemoryContext({
+  store: {
+    searchMemories() {
+      return [danglingPrimaryProjectionMemory];
+    },
+    listEvidenceForMemory() {
+      return [primaryProjectionEvidence];
+    },
+  } as unknown as MemoryStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "EvidenceProjectionKey",
+    maxMemories: 1,
+    contextBudgetTokens: 4000,
+    includeEvidence: true,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.deepEqual(danglingPrimaryProjectionContext.evidence.map((event) => event.id), [
+  primaryProjectionEvidence.id,
+]);
+const unmarkedProjectionMemory: MemoryRecord = {
+  ...primaryProjectionMemory,
+  id: "memory_primary_projection_unmarked",
+  sourceEventId: primaryProjectionEvidence.id,
+  metadata: {
+    sourceEvidenceId: companionProjectionEvidence[0]!.id,
+  },
+};
+const unmarkedProjectionContext = await reconstructMemoryContext({
+  store: {
+    searchMemories() {
+      return [unmarkedProjectionMemory];
+    },
+    listEvidenceForMemory() {
+      return [primaryProjectionEvidence, companionProjectionEvidence[0]!];
+    },
+  } as unknown as MemoryStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "EvidenceProjectionKey",
+    maxMemories: 1,
+    contextBudgetTokens: 4000,
+    includeEvidence: true,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.deepEqual(unmarkedProjectionContext.evidence.map((event) => event.id), [
+  primaryProjectionEvidence.id,
+]);
+const aggregateProjectionMemory: MemoryRecord = {
+  ...primaryProjectionMemory,
+  id: "memory_primary_projection_aggregate",
+  sourceEventId: primaryProjectionEvidence.id,
+  metadata: {
+    sessionEvidenceIds: companionProjectionEvidence.slice(0, 4).map((event) => event.id),
+    [GMOS_METADATA_REFERENCE_MARKER]: [GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage],
+  },
+};
+const aggregateProjectionContext = await reconstructMemoryContext({
+  store: {
+    searchMemories() {
+      return [aggregateProjectionMemory];
+    },
+    listEvidenceForMemory() {
+      return [primaryProjectionEvidence, ...companionProjectionEvidence.slice(0, 4)];
+    },
+  } as unknown as MemoryStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "EvidenceProjectionKey",
+    maxMemories: 1,
+    contextBudgetTokens: 4000,
+    includeEvidence: true,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.deepEqual(aggregateProjectionContext.evidence.map((event) => event.id), [
+  primaryProjectionEvidence.id,
+]);
+const indexedProjectionMemory: MemoryRecord = {
+  ...ambiguousProjectionMemory,
+  id: "memory_primary_projection_indexed",
+  metadata: {
+    sourceIndex: 0,
+    windowEvidenceIds: primaryProjectionLineage.map((event) => event.id),
+    [GMOS_METADATA_REFERENCE_MARKER]: [GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage],
+  },
+};
+const indexedProjectionContext = await reconstructMemoryContext({
+  store: {
+    searchMemories() {
+      return [indexedProjectionMemory];
+    },
+    listEvidenceForMemory() {
+      return primaryProjectionLineage;
+    },
+  } as unknown as MemoryStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "EvidenceProjectionKey",
+    maxMemories: 1,
+    contextBudgetTokens: 4000,
+    includeEvidence: true,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.deepEqual(indexedProjectionContext.evidence.map((event) => event.id), [
+  primaryProjectionEvidence.id,
+]);
+assert.equal(indexedProjectionContext.paths[0]?.sourceEvidenceId, primaryProjectionEvidence.id);
+const cappedProjectionMemories: MemoryRecord[] = [];
+const cappedProjectionLineage = new Map<string, EvidenceEvent[]>();
+for (let index = 0; index < 10; index += 1) {
+  const exact: EvidenceEvent = {
+    ...primaryProjectionEvidence,
+    id: `evidence_capped_projection_exact_${index}`,
+    eventKey: `evidence-capped-projection-exact-${index}`,
+    content: `CapKey${index} exact source turn.`,
+  };
+  const companion: EvidenceEvent = {
+    ...primaryProjectionEvidence,
+    id: `evidence_capped_projection_companion_${index}`,
+    eventKey: `evidence-capped-projection-companion-${index}`,
+    content: `CapKey${index} supporting detail costs $${100 + index}.`,
+  };
+  const memoryRecord: MemoryRecord = {
+    ...layerMemory(
+      `memory_capped_projection_${index}`,
+      "atom",
+      `CapKey${index} supporting detail costs $${100 + index}.`,
+    ),
+    sourceEventId: exact.id,
+    metadata: {
+      sourceEvidenceId: exact.id,
+      windowEvidenceIds: [exact.id, companion.id],
+      [GMOS_METADATA_REFERENCE_MARKER]: [GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage],
+    },
+  };
+  cappedProjectionMemories.push(memoryRecord);
+  cappedProjectionLineage.set(memoryRecord.id, [exact, companion]);
+}
+const cappedReaderEvidence = await collectReaderEvidenceForMemories({
+  store: {
+    listEvidenceForMemory(memoryId: string) {
+      const lineage = cappedProjectionLineage.get(memoryId) ?? [];
+      const index = Number(memoryId.match(/(\d+)$/u)?.[1] ?? 0);
+      return index % 2 === 0 ? lineage : [...lineage].reverse();
+    },
+  } as unknown as MemoryStore,
+  memories: cappedProjectionMemories,
+  query: "CapKey supporting detail costs",
+});
+assert.equal(cappedReaderEvidence.length, 18);
+assert.deepEqual(
+  cappedReaderEvidence.slice(0, 10).map((event) => event.id),
+  Array.from({ length: 10 }, (_entry, index) => `evidence_capped_projection_exact_${index}`),
+);
+assert.equal(
+  cappedReaderEvidence.filter((event) => event.id.includes("_companion_")).length,
+  8,
+);
+const safeProjectionEvents: EvidenceEvent[] = [
+  {
+    ...primaryProjectionEvidence,
+    id: "evidence_safe_projection_incognito",
+    eventKey: "evidence-safe-projection-incognito",
+    content: "SafetyProjectionSignal private receipt costs $777 at Harbor Clinic.",
+    payload: { privacyMode: "incognito" },
+  },
+  {
+    ...primaryProjectionEvidence,
+    id: "evidence_safe_projection_sensitive",
+    eventKey: "evidence-safe-projection-sensitive",
+    content: "SafetyProjectionSignal medical receipt costs $777.",
+    sensitivity: "sensitive",
+  },
+  {
+    ...primaryProjectionEvidence,
+    id: "evidence_safe_projection_allowed",
+    eventKey: "evidence-safe-projection-allowed",
+    content: "The ordinary receipt confirms $777.",
+  },
+];
+const safeProjectionMemory: MemoryRecord = {
+  ...layerMemory(
+    "memory_safe_projection",
+    "atom",
+    "SafetyProjectionSignal receipt costs $777 at Harbor Clinic.",
+  ),
+  sourceEventId: safeProjectionEvents.at(-1)!.id,
+  metadata: {
+    windowEvidenceIds: safeProjectionEvents.map((event) => event.id),
+    [GMOS_METADATA_REFERENCE_MARKER]: [GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage],
+  },
+};
+const safeProjectionContext = await reconstructMemoryContext({
+  store: {
+    searchMemories() {
+      return [safeProjectionMemory];
+    },
+    listEvidenceForMemory() {
+      return safeProjectionEvents;
+    },
+  } as unknown as MemoryStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How much did the SafetyProjectionSignal receipt cost?",
+    maxMemories: 1,
+    contextBudgetTokens: 4000,
+    includeEvidence: true,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.deepEqual(safeProjectionContext.evidence.map((event) => event.id), [
+  "evidence_safe_projection_allowed",
+]);
+assert.equal(safeProjectionContext.paths[0]?.sourceEvidenceId, undefined);
 const countExactContentOccurrences = (text: string, content: string): number =>
   text.split(content).length - 1;
 const duplicateWideFillers = Array.from({ length: 80 }, (_entry, index) =>

@@ -135,8 +135,11 @@ Transcript import records one evidence event per message, then uses
 `ingestConversation()` to extract over windows instead of calling the extractor
 once per message. The default window is 12 eligible messages; session metadata
 can split windows without changing evidence granularity. Memories created from
-a window keep `windowEvidenceIds` in metadata so `explain()` and reconstruction
-can trace back to the contributing messages.
+a window keep `windowEvidenceIds` in metadata so `explain()`, audit, forgetting,
+and backup can trace the complete contributing window. `prepareTurn()` and
+`reconstructContext()` project grounded sources plus a bounded set of
+query-relevant window companions into agent reader context; they do not replay
+the entire extraction window.
 
 Hosts that need raw-turn recall can opt in to hybrid storage:
 

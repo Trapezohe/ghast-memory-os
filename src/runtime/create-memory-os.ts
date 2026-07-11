@@ -67,6 +67,7 @@ import {
   resolveEmbeddingProviderConfig,
 } from "../kernel/embeddings.js";
 import { isReservedSpeakerIdentity } from "../kernel/person-identity.js";
+import { collectReaderEvidenceForMemories } from "../kernel/reader-evidence.js";
 import { reconstructMemoryContext } from "../kernel/reconstruction.js";
 import {
   temporalContextCalendarDate,
@@ -4005,6 +4006,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     displayQuery: string;
     retrievalQuery: string;
     candidateMemories: MemoryRecord[];
+    candidateEvidenceCount: number;
     curiosityPolicies: ActionPolicy[];
     suppressedCuriosity: Array<{
       policy: ActionPolicy;
@@ -4035,7 +4037,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       purpose: "context",
       includeSensitive: input.includeSensitive,
       ...(trace ? { trace } : {}),
-    }, input.retrieval, queryEmbedding), query);
+    }, input.retrieval, queryEmbedding, true), query);
     const actionPolicies = runtimeActionPoliciesForRead(
       await store.listActionPolicies(profileId, {
         includeSensitive: input.includeSensitive,
@@ -4073,36 +4075,53 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         reason: result.suppressedReason!,
       }));
     const allActionPolicies = [...actionPolicies, ...curiosityPolicies];
-    const evidence: EvidenceEvent[] = [];
-    const seenEvidenceIds = new Set<string>();
-    async function appendEvidenceForMemory(memoryId: string): Promise<void> {
-      for (const event of await store.listEvidenceForMemory(memoryId)) {
-        if (seenEvidenceIds.has(event.id)) continue;
-        seenEvidenceIds.add(event.id);
-        const publicEvidence = sanitizeRuntimeEvidenceForPublicOutput(
-          event,
-          classifyRuntimeSensitivity,
-        );
-        evidence.push(
-          hideTaskRetrievalHints
-            ? hideEvidencePayload(publicEvidence, privateRouteSignals)
-            : publicEvidence,
-        );
-      }
-    }
+    const evidenceMemories = [...memories];
+    const evidenceMemoryIds = new Set(memories.map((memory) => memory.id));
     if (input.includeEvidence) {
-      for (const memory of memories) {
-        await appendEvidenceForMemory(memory.id);
-      }
       for (const policy of allActionPolicies) {
-        if (policy.sourceMemoryId) await appendEvidenceForMemory(policy.sourceMemoryId);
+        if (!policy.sourceMemoryId || evidenceMemoryIds.has(policy.sourceMemoryId)) continue;
+        const storedSourceMemory = await store.getMemoryById(profileId, policy.sourceMemoryId, {
+          includeSensitive: input.includeSensitive,
+        });
+        const sourceMemory = storedSourceMemory
+          ? runtimeMemoryForRead(
+              storedSourceMemory,
+              input.includeSensitive,
+              classifyRuntimeSensitivity,
+              true,
+            )
+          : null;
+        if (!sourceMemory) continue;
+        evidenceMemoryIds.add(sourceMemory.id);
+        evidenceMemories.push(sourceMemory);
       }
     }
+    const evidence = input.includeEvidence
+      ? (await collectReaderEvidenceForMemories({
+          store,
+          memories: evidenceMemories,
+          query: displayQuery,
+        })).map(
+          (event) => {
+            const publicEvidence = sanitizeRuntimeEvidenceForPublicOutput(
+              event,
+              classifyRuntimeSensitivity,
+            );
+            return hideTaskRetrievalHints
+              ? hideEvidencePayload(publicEvidence, privateRouteSignals)
+              : publicEvidence;
+          },
+        )
+      : [];
     const prepared = composeTurnContext({
       profileId,
-      memories: hideTaskRetrievalHints
+      memories: (hideTaskRetrievalHints
         ? memories.map((memory) => hideRouteMemoryMetadata(memory, privateRouteSignals))
-        : memories,
+        : memories).map((memory) => publicMemoryRecord(
+          memory,
+          classifyRuntimeSensitivity,
+          memory.sensitivity,
+        )),
       actionPolicies: hideTaskRetrievalHints
         ? allActionPolicies.map((policy) => hideRouteActionPolicy(policy, privateRouteSignals))
         : allActionPolicies,
@@ -4158,6 +4177,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       displayQuery,
       retrievalQuery: query,
       candidateMemories: memories,
+      candidateEvidenceCount: evidence.length,
       curiosityPolicies,
       suppressedCuriosity,
       dispositionPreset: disposition.preset.name,
@@ -4277,7 +4297,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         actionPolicyCount: prepared.stats.actionPolicyCount,
         ...(planner ? { planner } : {}),
         stoppedAt:
-          execution.candidateMemories.length > prepared.memories.length
+          execution.candidateMemories.length > prepared.memories.length ||
+            execution.candidateEvidenceCount > prepared.evidence.length
             ? "token_budget"
             : planner && planner.stopReason !== "evidence_sufficient"
               ? "planner"

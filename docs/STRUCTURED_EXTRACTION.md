@@ -129,8 +129,11 @@ Return the same candidate JSON shape for single-message and windowed input. A
 windowed candidate may include `sourceIndex` to identify the grounding message
 within `window.messages`. gmOS validates that index, writes
 `metadata.sourceEvidenceId` when it maps to an eligible message, and always
-stores `metadata.windowEvidenceIds` so explanation and reconstruction can reach
-the full contributing window.
+stores `metadata.windowEvidenceIds` so explanation, audit, forgetting, and
+backup can reach the full contributing window. Agent reader context receives
+the exact `sourceEvidenceId` first and may add at most one query-relevant window
+companion; an ambiguous window without a valid source index is not presented as
+if its final message were the grounding source.
 
 The OpenAI-compatible windowed prompt is intentionally generic. It keeps the
 data-not-instructions boundary, requires JSON only, and asks for exhaustive

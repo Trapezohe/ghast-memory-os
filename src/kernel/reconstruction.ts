@@ -18,6 +18,10 @@ import {
   sanitizeEvidenceForPublicOutput,
 } from "./safety.js";
 import {
+  collectReaderEvidenceForMemories,
+  exactPrimaryEvidenceId,
+} from "./reader-evidence.js";
+import {
   observedAtSegment,
   temporalContextLabel,
   temporalContextSegment,
@@ -2882,7 +2886,7 @@ function pathFromDirectMemory(
     routeSources: ["hybrid_direct_memory"],
     informationGain: Math.max(0.1, candidate.memory.confidence),
     sourceMemoryId: candidate.memory.id,
-    sourceEvidenceId: candidate.memory.sourceEventId,
+    sourceEvidenceId: exactPrimaryEvidenceId(candidate.memory),
     createdAt: candidate.memory.createdAt,
     ...(anchorCue ? { anchorCue } : {}),
   };
@@ -3741,37 +3745,9 @@ function composeReconstructedContext(input: {
 async function evidenceForMemories(
   store: MemoryStore,
   memories: MemoryRecord[],
+  query: string,
 ): Promise<EvidenceEvent[]> {
-  const batches = await Promise.all(
-    memories.map(async (memory) => ({
-      memory,
-      events: await store.listEvidenceForMemory(memory.id),
-    })),
-  );
-  const evidence: EvidenceEvent[] = [];
-  const seen = new Set<string>();
-  const append = (event: EvidenceEvent | undefined): void => {
-    if (!event || seen.has(event.id)) return;
-    seen.add(event.id);
-    evidence.push(event);
-  };
-  // Preserve one exact source per ranked memory before adding the wider window
-  // lineage. This keeps relationship-bearing source turns under tight budgets.
-  for (const { memory, events } of batches) {
-    const metadataSourceEvidenceId = typeof memory.metadata.sourceEvidenceId === "string"
-      ? memory.metadata.sourceEvidenceId
-      : undefined;
-    const primaryIds = [metadataSourceEvidenceId, memory.sourceEventId ?? undefined];
-    for (const id of primaryIds) append(events.find((event) => event.id === id));
-  }
-  for (const { events } of batches) {
-    for (const event of events) {
-      if (seen.has(event.id)) continue;
-      seen.add(event.id);
-      evidence.push(event);
-    }
-  }
-  return evidence;
+  return collectReaderEvidenceForMemories({ store, memories, query });
 }
 
 async function fallbackReconstruction(input: {
@@ -3874,7 +3850,7 @@ async function fallbackReconstruction(input: {
     confidence: memory.confidence,
     informationGain: Math.max(0.1, memory.confidence),
     sourceMemoryId: memory.id,
-    sourceEvidenceId: memory.sourceEventId,
+    sourceEvidenceId: exactPrimaryEvidenceId(memory),
     createdAt: memory.createdAt,
     ...(memoryAnchors.get(memory.id) ? { anchorCue: memoryAnchors.get(memory.id) } : {}),
   }));
@@ -3961,7 +3937,9 @@ async function fallbackReconstruction(input: {
     query: input.query,
     displayQuery: input.displayQuery,
     memories: safeMemories,
-    evidence: input.includeEvidence ? await evidenceForMemories(input.store, safeMemories) : [],
+    evidence: input.includeEvidence
+      ? await evidenceForMemories(input.store, safeMemories, input.displayQuery ?? input.query)
+      : [],
     paths: safePaths,
     intent: input.intent,
     includeEvidence: input.includeEvidence,
@@ -4197,6 +4175,7 @@ export async function reconstructMemoryContext(input: {
         cue.anchorCue,
       );
       const sourceMemory = await sourceMemoryForAssociation(association);
+      if (sourceMemory) path.sourceEvidenceId = exactPrimaryEvidenceId(sourceMemory);
       const associationRejectReason = associationSourceRejectReason(
         association.cue,
         [
@@ -4299,7 +4278,7 @@ export async function reconstructMemoryContext(input: {
         ...path,
         targetId: memory.id,
         sourceMemoryId: memory.id,
-        sourceEvidenceId: path.sourceEvidenceId ?? memory.sourceEventId,
+        sourceEvidenceId: exactPrimaryEvidenceId(memory),
       };
       enqueueGeneratedCues();
       paths.push(resolvedPath);
@@ -4555,7 +4534,9 @@ export async function reconstructMemoryContext(input: {
     query,
     displayQuery: publicQuery,
     memories,
-    evidence: input.request.includeEvidence ? await evidenceForMemories(input.store, memories) : [],
+    evidence: input.request.includeEvidence
+      ? await evidenceForMemories(input.store, memories, publicQuery)
+      : [],
     paths,
     intent,
     includeEvidence: input.request.includeEvidence,
