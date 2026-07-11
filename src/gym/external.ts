@@ -5191,9 +5191,11 @@ function wrapReranker(
   const name = hookName(reranker) ?? "anonymous";
   return {
     name,
-    rerank(input) {
+    rerank(input, context) {
       return run("reranker", async () =>
-        typeof reranker === "function" ? reranker(input) : reranker.rerank(input)
+        typeof reranker === "function"
+          ? reranker(input, context)
+          : reranker.rerank(input, context)
       );
     },
   };

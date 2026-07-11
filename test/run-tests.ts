@@ -10135,6 +10135,7 @@ assert.deepEqual(longRetryAfterTerminalFailures, [{
 }]);
 
 let intelligenceDossierVersion = "initial";
+let intelligenceRerankerRequest: unknown = null;
 const intelligenceFetch = async (url: string | URL | Request, init?: RequestInit) => {
   const request = JSON.parse(String(init?.body ?? "{}")) as {
     input?: string[];
@@ -10204,6 +10205,7 @@ const intelligenceFetch = async (url: string | URL | Request, init?: RequestInit
       }],
     });
   } else if (system.includes("retrieval reranker")) {
+    intelligenceRerankerRequest = JSON.parse(user);
     content = JSON.stringify({ ids: ["candidate-b", "candidate-a", "outside-id"] });
   } else if (system.includes("query planner")) {
     content = JSON.stringify({
@@ -10277,8 +10279,21 @@ const defaultRerank = await (typeof defaultIntelligence.reranker === "function"
   : defaultIntelligence.reranker.rerank)([
   { id: "candidate-a", kind: "fact", snippet: "a", fusedScore: 0.4 },
   { id: "candidate-b", kind: "fact", snippet: "b", fusedScore: 0.3 },
-]);
+], {
+  query: "Which candidate answers the Atlas question?",
+  asOf: "2026-07-04T10:00:00.000Z",
+  purpose: "context",
+});
 assert.deepEqual(defaultRerank, ["candidate-b", "candidate-a"]);
+assert.deepEqual(intelligenceRerankerRequest, {
+  query: "Which candidate answers the Atlas question?",
+  asOf: "2026-07-04T10:00:00.000Z",
+  purpose: "context",
+  candidates: [
+    { id: "candidate-a", kind: "fact", snippet: "a", fusedScore: 0.4 },
+    { id: "candidate-b", kind: "fact", snippet: "b", fusedScore: 0.3 },
+  ],
+});
 const defaultPlan = await (typeof defaultIntelligence.queryPlanner === "function"
   ? defaultIntelligence.queryPlanner
   : defaultIntelligence.queryPlanner.plan)({
@@ -29911,13 +29926,15 @@ const originalRerankerOrder = (
   })
 ).map((memoryRecord) => memoryRecord.id);
 let rerankerContractCandidateIds: string[] = [];
+let rerankerContractQuery = "";
 const partialRerankerContractMemory = createMemoryOS({
   profileId: "reranker-contract",
   store: rerankerContractStore,
   extractor: () => [],
   retrieval: {
-    reranker: (candidates) => {
+    reranker: (candidates, context) => {
       rerankerContractCandidateIds = candidates.map((candidate) => candidate.id);
+      rerankerContractQuery = context?.query ?? "";
       return [
         candidates[2]?.id ?? "",
         candidates[0]?.id ?? "",
@@ -29936,6 +29953,7 @@ const partialRerankerOrder = (
   })
 ).map((memoryRecord) => memoryRecord.id);
 assert.equal(rerankerContractCandidateIds.length, 50);
+assert.equal(rerankerContractQuery, "RerankWindowKey");
 assert.deepEqual(partialRerankerOrder, [
   rerankerContractCandidateIds[2],
   rerankerContractCandidateIds[0],

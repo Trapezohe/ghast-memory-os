@@ -835,11 +835,21 @@ export interface MemoryRetrievalRerankerCandidate {
 export type MemoryRetrievalReranker =
   | ((
       candidates: MemoryRetrievalRerankerCandidate[],
+      context?: {
+        query: string;
+        asOf?: string | undefined;
+        purpose?: "context" | "history" | "delete" | "manage" | undefined;
+      },
     ) => Promise<string[]> | string[])
   | {
       name?: string | undefined;
       rerank(
         candidates: MemoryRetrievalRerankerCandidate[],
+        context?: {
+          query: string;
+          asOf?: string | undefined;
+          purpose?: "context" | "history" | "delete" | "manage" | undefined;
+        },
       ): Promise<string[]> | string[];
     };
 

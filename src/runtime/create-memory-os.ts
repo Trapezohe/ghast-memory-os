@@ -899,6 +899,9 @@ function internalFusionScore(memory: MemoryRecord, fallback: number): number {
 async function callRetrievalReranker(input: {
   retrieval: MemoryRetrievalConfig | undefined;
   memories: MemoryRecord[];
+  query: string;
+  asOf?: string | undefined;
+  purpose?: MemorySearchInput["purpose"] | undefined;
 }): Promise<MemoryRecord[] | null> {
   const reranker = input.retrieval?.reranker;
   if (!reranker || input.memories.length === 0) return null;
@@ -910,9 +913,14 @@ async function callRetrievalReranker(input: {
       snippet: redactForReport(memory.content).slice(0, 240),
       fusedScore: internalFusionScore(memory, Math.max(0, input.memories.length - index)),
     }));
+    const context = {
+      query: input.query,
+      ...(input.asOf ? { asOf: input.asOf } : {}),
+      ...(input.purpose ? { purpose: input.purpose } : {}),
+    };
     const order = typeof reranker === "function"
-      ? await reranker(candidates)
-      : await reranker.rerank(candidates);
+      ? await reranker(candidates, context)
+      : await reranker.rerank(candidates, context);
     const allowed = new Map(head.map((memory) => [memory.id, memory]));
     const reranked: MemoryRecord[] = [];
     const seen = new Set<string>();
@@ -1922,7 +1930,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       retrieval,
       ...(resolvedQueryEmbedding ? { queryEmbedding: resolvedQueryEmbedding } : {}),
     }), input.includeSensitive, classifyRuntimeSensitivity, preserveAuthorityMarker);
-    const reranked = await callRetrievalReranker({ retrieval, memories });
+    const reranked = await callRetrievalReranker({
+      retrieval,
+      memories,
+      query: input.query?.trim() ?? "",
+      ...(input.asOf ? { asOf: input.asOf } : {}),
+      ...(input.purpose ? { purpose: input.purpose } : {}),
+    });
     return reranked ?? memories;
   }
 

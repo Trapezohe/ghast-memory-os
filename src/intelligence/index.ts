@@ -743,7 +743,7 @@ export function createOpenAICompatibleReranker(
   const fetchImpl = fetchFor(options);
   return markOpenAICompatibleRequestLifecycleOwner({
     name: options.name ?? `openai-compatible-reranker:${options.model}`,
-    async rerank(candidates: MemoryRetrievalRerankerCandidate[]) {
+    async rerank(candidates: MemoryRetrievalRerankerCandidate[], context) {
       const parsed = await callChatJson(
         { ...options, fetchImpl },
         [
@@ -751,10 +751,13 @@ export function createOpenAICompatibleReranker(
             role: "system",
             content: commonSystemPrompt(
               "a retrieval reranker",
-              "Return {\"ids\":[\"candidate-id\"]}. You may only include ids from the input.",
+              "Rank candidates by relevance to the supplied query and retrieval purpose. Return {\"ids\":[\"candidate-id\"]}. You may only include ids from the input.",
             ),
           },
-          { role: "user", content: JSON.stringify({ candidates }) },
+          {
+            role: "user",
+            content: JSON.stringify({ ...(context ?? { query: "" }), candidates }),
+          },
         ],
         { stage: "reranker" },
       );
