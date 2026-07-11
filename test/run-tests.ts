@@ -33578,6 +33578,103 @@ try {
   reconstructionStore.searchAssociations =
     originalReconstructionSearchAssociations as typeof reconstructionStore.searchAssociations;
 }
+const directRrfStore = createSqliteMemoryStore({ path: path.join(tmp, "direct-rrf.db") });
+const directRrfMemory = createMemoryOS({
+  profileId: "direct-rrf",
+  store: directRrfStore,
+  extractor: () => [],
+});
+const directRrfAdded = await directRrfMemory.addMany([
+  {
+    profileId: "direct-rrf",
+    kind: "fact",
+    content: "Root-ranked evidence should beat an isolated side-probe hit.",
+    confidence: 0.9,
+    createdAt: "2026-07-11T00:00:00.000Z",
+  },
+  {
+    profileId: "direct-rrf",
+    kind: "fact",
+    content: "Isolated side-probe evidence should not receive a fixed bonus.",
+    confidence: 0.9,
+    createdAt: "2026-07-11T00:00:00.000Z",
+  },
+  {
+    profileId: "direct-rrf",
+    kind: "fact",
+    content: "Cross-query corroborated evidence should accumulate reciprocal ranks.",
+    confidence: 0.9,
+    createdAt: "2026-07-11T00:00:00.000Z",
+  },
+]);
+const [directRrfRoot, directRrfSide, directRrfCorroborated] = directRrfAdded.memories;
+assert.ok(directRrfRoot);
+assert.ok(directRrfSide);
+assert.ok(directRrfCorroborated);
+const directRrfRootQuery = "direct reciprocal rank root question";
+const directRrfSideQuery = "direct reciprocal rank side probe";
+const originalDirectRrfSearchMemories = directRrfStore.searchMemories.bind(directRrfStore);
+const originalDirectRrfSearchAssociations = directRrfStore.searchAssociations?.bind(directRrfStore);
+assert.ok(originalDirectRrfSearchAssociations);
+let directRrfScenario: "root_vs_side" | "corroborated" = "root_vs_side";
+const directRrfSearchQueries: string[] = [];
+directRrfStore.searchAssociations = (() => []) as typeof directRrfStore.searchAssociations;
+directRrfStore.searchMemories = ((input) => {
+  directRrfSearchQueries.push(input.query ?? "");
+  if (input.query === directRrfRootQuery) {
+    return directRrfScenario === "root_vs_side"
+      ? [directRrfRoot]
+      : [directRrfRoot, directRrfCorroborated];
+  }
+  if (input.query === directRrfSideQuery) {
+    return directRrfScenario === "root_vs_side" ? [directRrfSide] : [directRrfCorroborated];
+  }
+  return [];
+}) as typeof directRrfStore.searchMemories;
+try {
+  const directRrfRootPreferred = await directRrfMemory.reconstructContext({
+    profileId: "direct-rrf",
+    query: directRrfRootQuery,
+    reconstructionIntent: { queryCues: [directRrfSideQuery] },
+    anchorCoverage: false,
+    includeEvidence: false,
+    maxSteps: 1,
+    maxBranch: 1,
+    maxMemories: 1,
+    contextBudgetTokens: 1000,
+    stopWhenEvidenceEnough: false,
+  });
+  assert.match(directRrfRootPreferred.contextBlock, /Root-ranked evidence/);
+  assert.doesNotMatch(directRrfRootPreferred.contextBlock, /Isolated side-probe evidence/);
+  assert.equal(directRrfSearchQueries.includes(directRrfSideQuery), true);
+
+  directRrfScenario = "corroborated";
+  directRrfSearchQueries.length = 0;
+  const directRrfCorroborationPreferred = await directRrfMemory.reconstructContext({
+    profileId: "direct-rrf",
+    query: directRrfRootQuery,
+    reconstructionIntent: { queryCues: [directRrfSideQuery] },
+    anchorCoverage: false,
+    includeEvidence: false,
+    maxSteps: 1,
+    maxBranch: 1,
+    maxMemories: 1,
+    contextBudgetTokens: 1000,
+    stopWhenEvidenceEnough: false,
+  });
+  assert.equal(directRrfSearchQueries.includes(directRrfSideQuery), true);
+  assert.match(directRrfCorroborationPreferred.contextBlock, /Cross-query corroborated evidence/);
+  const directRrfCorroboratedPath = directRrfCorroborationPreferred.paths.find((pathRecord) =>
+    pathRecord.targetSummary.includes("Cross-query corroborated evidence")
+  );
+  assert.ok(directRrfCorroboratedPath);
+  assert.match(directRrfCorroboratedPath.routeReason ?? "", /query_corroboration:2/);
+} finally {
+  directRrfStore.searchMemories = originalDirectRrfSearchMemories;
+  directRrfStore.searchAssociations =
+    originalDirectRrfSearchAssociations as typeof directRrfStore.searchAssociations;
+  await directRrfMemory.close();
+}
 const privateHybridCue = "PrivateHybridRoute-Zephyr-8842";
 const privateHybridLeakPattern = /PrivateHybridRoute-Zephyr-8842|privatehybridroute-zephyr-8842/iu;
 await reconstructionMemory.add({

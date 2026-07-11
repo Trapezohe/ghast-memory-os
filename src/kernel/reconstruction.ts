@@ -2941,7 +2941,8 @@ function rankAssociation(
 interface DirectMemoryCandidate {
   memory: MemoryRecord;
   matchedQuery?: string | undefined;
-  searchRank: number;
+  reciprocalRankSum: number;
+  matchedQueryCount: number;
 }
 
 interface ReconstructionSweepCandidate {
@@ -3289,7 +3290,14 @@ async function searchDirectMemoryCandidates(input: {
     input.cueExtractor,
     input.inferTemporalCuesFromText,
   );
-  for (const [queryIndex, searchQuery] of searchQueries.entries()) {
+  const rootQueryKey = normalizedText(input.query);
+  const seenQueryKeys = new Set<string>();
+  for (const searchQuery of searchQueries) {
+    const searchQueryKey = normalizedText(searchQuery);
+    if (seenQueryKeys.has(searchQueryKey)) continue;
+    seenQueryKeys.add(searchQueryKey);
+    const isRootQuery = searchQueryKey === rootQueryKey;
+    const queryWeight = isRootQuery ? 2 : 1;
     const memories = await input.store.searchMemories({
       profileId: input.profileId,
       query: searchQuery,
@@ -3307,29 +3315,41 @@ async function searchDirectMemoryCandidates(input: {
     });
     for (const [memoryIndex, memory] of memories.entries()) {
       const existing = candidates.get(memory.id);
-      const searchRank = queryIndex * limit + memoryIndex + 1;
-      if (existing && existing.searchRank <= searchRank) continue;
+      const reciprocalRank = reciprocalRankScore(memoryIndex + 1) * queryWeight;
+      if (existing) {
+        existing.reciprocalRankSum += reciprocalRank;
+        existing.matchedQueryCount += 1;
+        if (isRootQuery) existing.memory = memory;
+        else existing.matchedQuery ??= searchQuery;
+        continue;
+      }
       candidates.set(memory.id, {
         memory,
-        matchedQuery: searchQuery === input.query ? undefined : searchQuery,
-        searchRank,
+        ...(!isRootQuery ? { matchedQuery: searchQuery } : {}),
+        reciprocalRankSum: reciprocalRank,
+        matchedQueryCount: 1,
       });
     }
   }
-  return [...candidates.values()].sort((a, b) => a.searchRank - b.searchRank);
+  return [...candidates.values()].sort((left, right) =>
+    right.reciprocalRankSum - left.reciprocalRankSum ||
+    right.memory.updatedAt.localeCompare(left.memory.updatedAt) ||
+    left.memory.id.localeCompare(right.memory.id)
+  );
 }
 
 function rankDirectMemory(
   candidate: DirectMemoryCandidate,
-  rank: number,
   intent: ReconstructionIntent,
 ): RankedMemoryCandidate {
   const memory = candidate.memory;
-  const reasons = [`hybrid_direct_memory_rrf:${rank}`];
-  let routeScore = memory.confidence + reciprocalRankScore(rank) * 100;
+  const reasons = [`hybrid_direct_memory_rrf:${candidate.reciprocalRankSum.toFixed(6)}`];
+  let routeScore = memory.confidence + candidate.reciprocalRankSum * 100;
   if (candidate.matchedQuery) {
-    routeScore += 5;
     reasons.push("cue_search");
+  }
+  if (candidate.matchedQueryCount > 1) {
+    reasons.push(`query_corroboration:${candidate.matchedQueryCount}`);
   }
   if (memoryMatchesIntent(memory, intent)) {
     routeScore += 6;
@@ -3495,7 +3515,7 @@ async function fuseDirectMemorySearch(input: {
     inferTemporalCuesFromText: input.inferTemporalCuesFromText,
   });
   const rankedCandidates = directMemoryCandidates
-    .map((memory, index) => rankDirectMemory(memory, index + 1, input.intent))
+    .map((memory) => rankDirectMemory(memory, input.intent))
     .sort(compareRankedMemoryCandidates);
   const temporalConstraints = [...input.intent.queryCues].filter(exactTemporalCue);
   const reinforcedPaths: ReconstructedEvidencePath[] = [];
