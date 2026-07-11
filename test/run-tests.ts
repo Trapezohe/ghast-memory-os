@@ -36298,10 +36298,26 @@ assert.match(
 );
 assert.match(reasoningAnswererSystemPrompt, /prioritize the user's statements/iu);
 assert.match(reasoningAnswererSystemPrompt, /prefer the latest explicit user-grounded update/iu);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /combine context facts only when clear discourse continuity, coreference, a shared event, or a shared subject and date makes the inference unique/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /presentation order or line adjacency alone does not establish a connection/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /an arranged or initiated transaction does not by itself prove that every physical follow-up step is complete/iu,
+);
 assert.match(reasoningAnswererSystemPrompt, /state that the information is insufficient/iu);
 assert.match(
   reasoningAnswererSystemPrompt,
-  /personalize it using relevant stated preferences without presenting an unmentioned item as a previously known fact/iu,
+  /first use relevant known possessions, tools, preferences, constraints, and prior choices/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /may propose new options from general knowledge, but distinguish those suggestions from remembered facts/iu,
 );
 assert.equal(reasoningAnswerer.manifest?.answererRetryCount, 0);
 assert.equal(reasoningAnswerer.manifest?.answererRecoveredCount, 0);
