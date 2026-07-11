@@ -1884,8 +1884,26 @@ function structuredEntityMention(memory: MemoryRecord): StructuredEntityMention 
   };
 }
 
+interface ExplicitNamedEntity {
+  label: string;
+  key: string;
+}
+
+function explicitNamedEntity(value: string): ExplicitNamedEntity | null {
+  if (/\b(?:and)\b|&|(?:和|与)/iu.test(value)) return null;
+  const segments = value.split(/[,;()]/u);
+  const label = segments[0]?.trim() ?? "";
+  const suffix = segments.slice(1).join(" ");
+  if (/(?:^|[^\p{L}\p{N}])(?:dr|mr|mrs|ms|prof)\.?\s+\p{L}/iu.test(suffix)) return null;
+  if (!/^(?:dr|mr|mrs|ms|prof)\.?\s+\p{L}[\p{L}.'’-]*(?:\s+\p{L}[\p{L}.'’-]*)?$/iu.test(label)) {
+    return null;
+  }
+  const key = normalizedStructuredEntityText(label);
+  return label && key ? { label, key } : null;
+}
+
 function looksLikeExplicitlyNamedEntity(value: string): boolean {
-  return /(?:^|\s)(?:dr|mr|mrs|ms|prof)\.?\s+\p{L}/iu.test(value);
+  return explicitNamedEntity(value) !== null;
 }
 
 function sourceSupportsStructuredEntityMention(source: string, objectKey: string): boolean {
@@ -1899,6 +1917,74 @@ function sourceExplicitlyDistinguishesEntity(source: string): boolean {
     /\b(?:another|different|distinct|separate|other)\b/iu.test(source) ||
     /(?:另一(?:位|个)?|不同(?:的)?|另外(?:一位|一个)?|分别)/u.test(source)
   );
+}
+
+function roleLikeStructuredRelation(relationKey: string): boolean {
+  return new Set([
+    "occupation",
+    "profession",
+    "role",
+    "serves as",
+    "specialty",
+    "works as",
+  ]).has(relationKey);
+}
+
+interface NamedEntityAliasCandidate {
+  key: string;
+  object: string;
+  createdAtMs: number;
+  sourceEvidenceId: string;
+}
+
+function namedEntityAliasCandidatesFor(
+  generic: StructuredEntityMention,
+  mentions: StructuredEntityMention[],
+): NamedEntityAliasCandidate[] {
+  const candidates: NamedEntityAliasCandidate[] = [];
+  for (const relation of mentions) {
+    if (
+      relation === generic ||
+      relation.subjectKey !== generic.subjectKey ||
+      relation.relationKey !== generic.relationKey ||
+      relation.objectKey === generic.objectKey ||
+      Math.abs(relation.createdAtMs - generic.createdAtMs) > ENTITY_ALIAS_CANDIDATE_MAX_GAP_MS
+    ) {
+      continue;
+    }
+    const namedObject = explicitNamedEntity(relation.object);
+    if (
+      namedObject &&
+      ` ${relation.objectKey} `.includes(` ${generic.objectKey} `)
+    ) {
+      candidates.push({
+        key: namedObject.key,
+        object: relation.object,
+        createdAtMs: relation.createdAtMs,
+        sourceEvidenceId: relation.sourceEvidenceId,
+      });
+      continue;
+    }
+    if (!namedObject) continue;
+    const roles = mentions.filter((role) =>
+      role !== generic &&
+      role !== relation &&
+      role.subjectKey === namedObject.key &&
+      roleLikeStructuredRelation(role.relationKey) &&
+      role.objectKey === generic.objectKey &&
+      role.sourceEvidenceId === relation.sourceEvidenceId &&
+      Math.abs(role.createdAtMs - generic.createdAtMs) <= ENTITY_ALIAS_CANDIDATE_MAX_GAP_MS
+    );
+    if (roles.length > 0) {
+      candidates.push({
+        key: namedObject.key,
+        object: `${namedObject.label}, ${generic.object}`,
+        createdAtMs: relation.createdAtMs,
+        sourceEvidenceId: relation.sourceEvidenceId,
+      });
+    }
+  }
+  return candidates;
 }
 
 function entityAliasCandidateHints(
@@ -1932,20 +2018,12 @@ function entityAliasCandidateHints(
     ) {
       continue;
     }
-    for (const specific of mentions) {
+    for (const specific of namedEntityAliasCandidatesFor(
+      generic,
+      mentions,
+    )) {
       const genericSource = visibleSourceEvidence.get(generic.sourceEvidenceId) ?? "";
       const specificSource = visibleSourceEvidence.get(specific.sourceEvidenceId) ?? "";
-      if (
-        specific === generic ||
-        specific.subjectKey !== generic.subjectKey ||
-        specific.relationKey !== generic.relationKey ||
-        specific.objectKey === generic.objectKey ||
-        Math.abs(specific.createdAtMs - generic.createdAtMs) > ENTITY_ALIAS_CANDIDATE_MAX_GAP_MS ||
-        !looksLikeExplicitlyNamedEntity(specific.object) ||
-        !` ${specific.objectKey} `.includes(` ${generic.objectKey} `)
-      ) {
-        continue;
-      }
       const key = [generic.subjectKey, generic.relationKey, generic.objectKey].join("\n");
       const group = groups.get(key) ?? {
         relation: generic.relation,
@@ -1957,7 +2035,7 @@ function entityAliasCandidateHints(
           explicitlyDistinct: boolean;
         }>(),
       };
-      const existingSpecific = group.specificObjects.get(specific.objectKey);
+      const existingSpecific = group.specificObjects.get(specific.key);
       const explicitlyDistinct =
         existingSpecific?.explicitlyDistinct === true ||
         sourceExplicitlyDistinguishesEntity(genericSource) ||
@@ -1971,7 +2049,7 @@ function entityAliasCandidateHints(
         specificGap < existingGap ||
         (specificGap === existingGap && specific.createdAtMs < existingSpecific.createdAtMs);
       group.specificObjects.set(
-        specific.objectKey,
+        specific.key,
         useSpecific
           ? {
               object: specific.object,
@@ -2499,6 +2577,7 @@ async function runReconstructionSweeps(input: {
   queryEmbedding?: QueryVectorEmbedding | undefined;
   perCueCap?: number | undefined;
   globalCap?: number | undefined;
+  expandStructuredRoleSiblings?: boolean | undefined;
 }): Promise<ReconstructionSweepDraft | undefined> {
   if (input.sweepCues.length === 0) return undefined;
   const perCueCap = boundedInteger(
@@ -2548,6 +2627,72 @@ async function runReconstructionSweeps(input: {
       const candidate = { cue: result.cue, memory, relevance };
       candidateById.set(memory.id, candidate);
       candidates.push(candidate);
+    }
+  }
+  if (input.expandStructuredRoleSiblings === true) {
+    const structuredRoleSeeds = new Map<string, {
+      cue: string;
+      name: ExplicitNamedEntity;
+      sourceEvidenceId: string;
+      relevance: number;
+    }>();
+    const expandedMatchedByCue = new Map<string, number>();
+    for (const candidate of candidates) {
+      const mention = structuredEntityMention(candidate.memory);
+      const name = mention ? explicitNamedEntity(mention.subject) : null;
+      if (!mention || !name || !roleLikeStructuredRelation(mention.relationKey)) continue;
+      const key = `${name.key}\n${mention.sourceEvidenceId}`;
+      const existing = structuredRoleSeeds.get(key);
+      if (!existing || candidate.relevance > existing.relevance) {
+        structuredRoleSeeds.set(key, {
+          cue: candidate.cue,
+          name,
+          sourceEvidenceId: mention.sourceEvidenceId,
+          relevance: candidate.relevance,
+        });
+      }
+    }
+    for (const [, seed] of [...structuredRoleSeeds].sort(([left], [right]) =>
+      left.localeCompare(right)
+    ).slice(0, 8)) {
+      const found = await input.store.searchMemories({
+        profileId: input.profileId,
+        query: seed.name.label,
+        purpose: input.recallPurpose,
+        ...(input.asOf ? { asOf: input.asOf } : {}),
+        includeSensitive: input.includeSensitive,
+        limit: perCueCap,
+        ...(input.queryEmbedding ? { freshQueryEmbedding: true } : {}),
+      });
+      const siblings = found.filter((memory) =>
+        structuredEntityMention(memory)?.sourceEvidenceId === seed.sourceEvidenceId
+      );
+      if (siblings.length === 0) continue;
+      expandedMatchedByCue.set(
+        seed.name.label,
+        Math.max(expandedMatchedByCue.get(seed.name.label) ?? 0, found.length),
+      );
+      for (const [rank, memory] of siblings.entries()) {
+        if (candidateById.has(memory.id)) continue;
+        if (candidates.length >= globalCap) {
+          const drop = sweepCandidateToCull(candidates);
+          if (!drop) break;
+          candidateById.delete(drop.memory.id);
+          candidates.splice(candidates.indexOf(drop), 1);
+        }
+        const candidate = {
+          cue: seed.name.label,
+          memory,
+          relevance: seed.relevance + reciprocalRankScore(rank + 1),
+        };
+        candidateById.set(memory.id, candidate);
+        candidates.push(candidate);
+      }
+    }
+    for (const [cue, matched] of expandedMatchedByCue) {
+      const existing = cueStats.find((entry) => entry.cue === cue);
+      if (existing) existing.matched = Math.max(existing.matched, matched);
+      else cueStats.push({ cue, matched });
     }
   }
   return {
@@ -3739,6 +3884,7 @@ async function fallbackReconstruction(input: {
     recallPurpose: input.recallPurpose,
     includeSensitive: input.includeSensitive,
     queryEmbedding: input.queryEmbedding,
+    expandStructuredRoleSiblings: queryNeedsEntityAliasCandidates(input.displayQuery ?? input.query),
   });
   return composeReconstructedContext({
     profileId: input.profileId,
@@ -4332,6 +4478,7 @@ export async function reconstructMemoryContext(input: {
     recallPurpose,
     includeSensitive: input.request.includeSensitive,
     queryEmbedding: input.queryEmbedding,
+    expandStructuredRoleSiblings: queryNeedsEntityAliasCandidates(publicQuery),
   });
   return composeReconstructedContext({
     profileId,

@@ -29840,6 +29840,287 @@ const entityRefinementPattern =
   /Potential entity alias .*role-only "external auditor" .*named "Dr\. Morgan, external auditor" .*Status: unresolved; a same-entity interpretation requires corroboration/u;
 assert.match(entityRefinementContext.contextBlock, entityRefinementPattern);
 assert.match(entityRefinementContext.contentSurfaces.temporal, entityRefinementPattern);
+const splitEntityRefinementRows = [
+  entityRefinementRows[0]!,
+  entityRefinementRows[2]!,
+  {
+    ...layerMemory(
+      "memory_entity_refinement_split_role",
+      "atom",
+      "Atlas reviewer Dr. Morgan role external auditor",
+    ),
+    metadata: {
+      sourceTrust: "user",
+      worldBeliefSubject: "Dr. Morgan",
+      worldBeliefPredicate: "role",
+      worldBeliefObject: "external auditor",
+      sourceEvidenceId: "evidence_entity_refinement_split_named",
+      [GMOS_METADATA_REFERENCE_MARKER]: [
+        GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+        GMOS_METADATA_REFERENCE_SCHEMAS.worldBeliefProjection,
+      ],
+    },
+  },
+  {
+    ...layerMemory(
+      "memory_entity_refinement_split_relation",
+      "atom",
+      "Atlas was reviewed by Dr. Morgan",
+    ),
+    metadata: {
+      sourceTrust: "user",
+      worldBeliefSubject: "project:atlas",
+      worldBeliefPredicate: "reviewed_by",
+      worldBeliefObject: "Dr. Morgan",
+      sourceEvidenceId: "evidence_entity_refinement_split_named",
+      [GMOS_METADATA_REFERENCE_MARKER]: [
+        GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+        GMOS_METADATA_REFERENCE_SCHEMAS.worldBeliefProjection,
+      ],
+    },
+  },
+  {
+    ...layerMemory(
+      "memory_entity_refinement_split_source",
+      "fact",
+      "user: Atlas was reviewed by its external auditor, Dr. Morgan.",
+    ),
+    metadata: {
+      sourceTrust: "user",
+      turnMemory: true,
+      sourceEvidenceId: "evidence_entity_refinement_split_named",
+      [GMOS_METADATA_REFERENCE_MARKER]: [GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage],
+    },
+  },
+];
+const splitEntityRefinementContext = await reconstructMemoryContext({
+  store: layerStoreFor(splitEntityRefinementRows),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 6,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.match(splitEntityRefinementContext.contextBlock, entityRefinementPattern);
+const sweepExpansionGeneric = splitEntityRefinementRows[0]!;
+const sweepExpansionGenericSource = splitEntityRefinementRows[1]!;
+const sweepExpansionRole = {
+  ...splitEntityRefinementRows[2]!,
+  content: "Dr. Morgan role external auditor",
+};
+const sweepExpansionRelation = {
+  ...splitEntityRefinementRows[3]!,
+  content: "reviewed_by Dr. Morgan",
+};
+const sweepExpansionNamedSource = splitEntityRefinementRows[4]!;
+const sweepExpansionQueries: string[] = [];
+const sweepExpansionStore = {
+  searchMemories(input: { query?: string; limit?: number }) {
+    const query = input.query?.trim().toLowerCase() ?? "";
+    sweepExpansionQueries.push(query);
+    const rows = query === "external auditor"
+      ? [sweepExpansionRole]
+      : query === "dr. morgan"
+        ? [sweepExpansionRole, sweepExpansionRelation]
+        : [
+            sweepExpansionGeneric,
+            sweepExpansionGenericSource,
+            sweepExpansionNamedSource,
+          ];
+    return rows.slice(0, input.limit ?? rows.length);
+  },
+  listEvidenceForMemory() {
+    return [];
+  },
+} as unknown as MemoryStore;
+const sweepExpandedEntityRefinementContext = await reconstructMemoryContext({
+  store: sweepExpansionStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 6,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+    reconstructionIntent: { sweepCues: ["external auditor"] },
+  },
+});
+assert.match(sweepExpandedEntityRefinementContext.contextBlock, entityRefinementPattern);
+sweepExpansionQueries.length = 0;
+await reconstructMemoryContext({
+  store: sweepExpansionStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "Describe the Atlas review.",
+    maxMemories: 6,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+    reconstructionIntent: { sweepCues: ["external auditor"] },
+  },
+});
+assert.equal(sweepExpansionQueries.includes("dr. morgan"), false);
+const ambiguousSplitEntityRefinementContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    ...splitEntityRefinementRows,
+    {
+      ...splitEntityRefinementRows[2]!,
+      id: "memory_entity_refinement_split_second_role",
+      content: "Atlas reviewer Dr. Taylor role external auditor",
+      metadata: {
+        ...splitEntityRefinementRows[2]!.metadata,
+        subject: "Dr. Taylor",
+        worldBeliefSubject: "Dr. Taylor",
+        sourceEvidenceId: "evidence_entity_refinement_split_second_named",
+      },
+    },
+    {
+      ...splitEntityRefinementRows[3]!,
+      id: "memory_entity_refinement_split_second_relation",
+      content: "Atlas was reviewed by Dr. Taylor",
+      metadata: {
+        ...splitEntityRefinementRows[3]!.metadata,
+        object: "Dr. Taylor",
+        worldBeliefObject: "Dr. Taylor",
+        sourceEvidenceId: "evidence_entity_refinement_split_second_named",
+      },
+    },
+    {
+      ...splitEntityRefinementRows[4]!,
+      id: "memory_entity_refinement_split_second_source",
+      content: "user: Atlas was reviewed by its external auditor, Dr. Taylor.",
+      metadata: {
+        ...splitEntityRefinementRows[4]!.metadata,
+        sourceEvidenceId: "evidence_entity_refinement_split_second_named",
+      },
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 8,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.doesNotMatch(ambiguousSplitEntityRefinementContext.contextBlock, /Potential entity alias/u);
+const missingRelationEntityRefinementContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    splitEntityRefinementRows[0]!,
+    splitEntityRefinementRows[1]!,
+    splitEntityRefinementRows[2]!,
+    {
+      ...splitEntityRefinementRows[4]!,
+      content: "user: My friend was reviewed by the external auditor, Dr. Morgan.",
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 6,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.doesNotMatch(missingRelationEntityRefinementContext.contextBlock, /Potential entity alias/u);
+const crossSubjectEntityRefinementContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    splitEntityRefinementRows[0]!,
+    splitEntityRefinementRows[1]!,
+    splitEntityRefinementRows[2]!,
+    {
+      ...splitEntityRefinementRows[3]!,
+      metadata: {
+        ...splitEntityRefinementRows[3]!.metadata,
+        subject: "project:beta",
+        worldBeliefSubject: "project:beta",
+      },
+    },
+    {
+      ...splitEntityRefinementRows[4]!,
+      content: "user: Atlas and Beta are active; Beta was reviewed by Dr. Morgan, an external auditor.",
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 6,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.doesNotMatch(crossSubjectEntityRefinementContext.contextBlock, /Potential entity alias/u);
+const coordinatedNameEntityRefinementContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    entityRefinementRows[0]!,
+    entityRefinementRows[2]!,
+    {
+      ...entityRefinementRows[1]!,
+      content: "Atlas was reviewed by Dr. Morgan and Dr. Taylor, external auditors.",
+      metadata: {
+        ...entityRefinementRows[1]!.metadata,
+        object: "Dr. Morgan and Dr. Taylor, external auditor",
+        worldBeliefObject: "Dr. Morgan and Dr. Taylor, external auditor",
+      },
+    },
+    {
+      ...entityRefinementRows[3]!,
+      content: "user: Atlas was reviewed by Dr. Morgan and Dr. Taylor, external auditors.",
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 6,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.doesNotMatch(coordinatedNameEntityRefinementContext.contextBlock, /Potential entity alias/u);
+for (const [suffix, object] of [
+  ["comma", "Dr. Morgan, external auditor and Dr. Taylor"],
+  ["semicolon", "Dr. Morgan, external auditor; Dr. Taylor, external auditor"],
+  ["em_dash", "Dr. Morgan, external auditor—Dr. Taylor"],
+  ["colon", "Dr. Morgan, external auditor:Dr. Taylor"],
+] as const) {
+  const coordinatedSuffixContext = await reconstructMemoryContext({
+    store: layerStoreFor([
+      entityRefinementRows[0]!,
+      entityRefinementRows[2]!,
+      {
+        ...entityRefinementRows[1]!,
+        id: `memory_entity_refinement_coordinated_${suffix}`,
+        content: `Atlas was reviewed by ${object}.`,
+        metadata: {
+          ...entityRefinementRows[1]!.metadata,
+          object,
+          worldBeliefObject: object,
+        },
+      },
+      {
+        ...entityRefinementRows[3]!,
+        id: `memory_entity_refinement_coordinated_${suffix}_source`,
+        content: `user: Atlas was reviewed by ${object}.`,
+      },
+    ]),
+    defaultProfileId: "layer",
+    request: {
+      profileId: "layer",
+      query: "How many different reviewers assessed Atlas?",
+      maxMemories: 6,
+      contextBudgetTokens: 4000,
+      stopWhenEvidenceEnough: false,
+    },
+  });
+  assert.doesNotMatch(coordinatedSuffixContext.contextBlock, /Potential entity alias/u);
+}
 const budgetedEntityRefinementContext = await reconstructMemoryContext({
   store: layerStoreFor(entityRefinementRows),
   defaultProfileId: "layer",
