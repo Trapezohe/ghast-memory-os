@@ -1889,6 +1889,11 @@ interface ExplicitNamedEntity {
   key: string;
 }
 
+interface LeadingRoleNamedEntity {
+  name: ExplicitNamedEntity;
+  roleKey: string;
+}
+
 function explicitNamedEntity(value: string): ExplicitNamedEntity | null {
   if (/\b(?:and)\b|&|(?:和|与)/iu.test(value)) return null;
   const segments = value.split(/[,;()]/u);
@@ -1902,14 +1907,45 @@ function explicitNamedEntity(value: string): ExplicitNamedEntity | null {
   return label && key ? { label, key } : null;
 }
 
+function normalizedStructuredRoleText(value: string): string {
+  const tokens = normalizedStructuredEntityText(value).split(" ").filter(Boolean);
+  const articles = new Set(["a", "an", "the"]);
+  while (tokens.length > 1 && articles.has(tokens[0]!)) tokens.shift();
+  return tokens.join(" ");
+}
+
+function leadingRoleNamedEntity(value: string): LeadingRoleNamedEntity | null {
+  const match = /^(.+?)\s+((?:dr|mr|mrs|ms|prof)\.?\s+\p{L}[\p{L}.'’-]*(?:\s+\p{L}[\p{L}.'’-]*)?)$/iu.exec(
+    value.trim(),
+  );
+  if (!match) return null;
+  const role = (match[1] ?? "").replace(/[,;:()\p{Pd}]+$/gu, "").trim();
+  const nameLabel = (match[2] ?? "").trim();
+  if (
+    !role ||
+    /(?:^|[^\p{L}\p{N}])(?:dr|mr|mrs|ms|prof)\.?\s+\p{L}/iu.test(role)
+  ) {
+    return null;
+  }
+  const name = explicitNamedEntity(nameLabel);
+  const roleKey = normalizedStructuredRoleText(role);
+  return name && roleKey ? { name, roleKey } : null;
+}
+
 function looksLikeExplicitlyNamedEntity(value: string): boolean {
-  return explicitNamedEntity(value) !== null;
+  return explicitNamedEntity(value) !== null || leadingRoleNamedEntity(value) !== null;
 }
 
 function sourceSupportsStructuredEntityMention(source: string, objectKey: string): boolean {
   const sourceTokens = new Set(normalizedStructuredEntityText(source).split(" ").filter(Boolean));
   const objectTokens = objectKey.split(" ").filter(Boolean);
   return objectTokens.length >= 2 && objectTokens.every((token) => sourceTokens.has(token));
+}
+
+function sourceContainsStructuredEntityPhrase(source: string, objectKey: string): boolean {
+  const sourceKey = normalizedStructuredEntityText(source);
+  return objectKey.split(" ").filter(Boolean).length >= 2 &&
+    ` ${sourceKey} `.includes(` ${objectKey} `);
 }
 
 function sourceExplicitlyDistinguishesEntity(source: string): boolean {
@@ -1940,6 +1976,7 @@ interface NamedEntityAliasCandidate {
 function namedEntityAliasCandidatesFor(
   generic: StructuredEntityMention,
   mentions: StructuredEntityMention[],
+  visibleSourceEvidence: ReadonlyMap<string, string>,
 ): NamedEntityAliasCandidate[] {
   const candidates: NamedEntityAliasCandidate[] = [];
   for (const relation of mentions) {
@@ -1960,6 +1997,27 @@ function namedEntityAliasCandidatesFor(
       candidates.push({
         key: namedObject.key,
         object: relation.object,
+        createdAtMs: relation.createdAtMs,
+        sourceEvidenceId: relation.sourceEvidenceId,
+      });
+      continue;
+    }
+    const leadingRole = leadingRoleNamedEntity(relation.object);
+    if (
+      leadingRole &&
+      leadingRole.roleKey === normalizedStructuredRoleText(generic.object) &&
+      sourceContainsStructuredEntityPhrase(
+        visibleSourceEvidence.get(generic.sourceEvidenceId) ?? "",
+        generic.objectKey,
+      ) &&
+      sourceContainsStructuredEntityPhrase(
+        visibleSourceEvidence.get(relation.sourceEvidenceId) ?? "",
+        relation.objectKey,
+      )
+    ) {
+      candidates.push({
+        key: leadingRole.name.key,
+        object: `${leadingRole.name.label}, ${generic.object}`,
         createdAtMs: relation.createdAtMs,
         sourceEvidenceId: relation.sourceEvidenceId,
       });
@@ -2021,6 +2079,7 @@ function entityAliasCandidateHints(
     for (const specific of namedEntityAliasCandidatesFor(
       generic,
       mentions,
+      visibleSourceEvidence,
     )) {
       const genericSource = visibleSourceEvidence.get(generic.sourceEvidenceId) ?? "";
       const specificSource = visibleSourceEvidence.get(specific.sourceEvidenceId) ?? "";
@@ -3621,6 +3680,17 @@ function composeReconstructedContext(input: {
       contextBlock = render(includeSweeps);
     }
     output = outputState();
+  }
+  if (!includeEntityAliasCandidates) {
+    const includeSweeps = input.sweepDraft !== undefined;
+    includeEntityAliasCandidates = true;
+    const withOptionalAliases = render(includeSweeps);
+    if (estimateTokens(withOptionalAliases) <= budget) {
+      contextBlock = withOptionalAliases;
+    } else {
+      includeEntityAliasCandidates = false;
+      contextBlock = render(includeSweeps);
+    }
   }
   const outputMemories = memories.map((memory) =>
     publicMemory(memory, hideInternalRouteSignals, privateOutputSignalKeySet),
