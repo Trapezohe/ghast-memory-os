@@ -166,6 +166,18 @@ function modelMetadata(
   return sanitized;
 }
 
+function modelCardinalityForPredicate(
+  value: unknown,
+  predicate: string | undefined,
+): MemoryExtractionCandidate["cardinality"] | undefined {
+  const cardinality = optionalCardinality(value);
+  if (cardinality !== "single") return cardinality;
+  const schemaQualifiedPredicate =
+    predicate !== undefined &&
+    /^[\p{L}\p{N}_-]+(?:[.:][\p{L}\p{N}_-]+)+$/u.test(predicate);
+  return schemaQualifiedPredicate ? "single" : "multi";
+}
+
 function normalizeCandidate(
   value: unknown,
   extractionInput: MemoryExtractionInput,
@@ -185,6 +197,8 @@ function normalizeCandidate(
   const confidence = boundedNumber(Number(record.confidence), 0, 0, 1);
   const subjectAliases = optionalStringArray(record.subjectAliases);
   const sourceIndex = optionalSourceIndex(record.sourceIndex);
+  const predicate = optionalString(record.predicate);
+  const cardinality = modelCardinalityForPredicate(record.cardinality, predicate);
   const allowValidityEnd = explicitlyEndsValidity(candidateSource(extractionInput, sourceIndex));
   const validTo = allowValidityEnd ? optionalString(record.validTo) : undefined;
   return {
@@ -192,7 +206,7 @@ function normalizeCandidate(
     content,
     confidence,
     ...(sourceIndex !== undefined ? { sourceIndex } : {}),
-    ...(optionalString(record.predicate) ? { predicate: optionalString(record.predicate) } : {}),
+    ...(predicate ? { predicate } : {}),
     ...(optionalString(record.subject) ? { subject: optionalString(record.subject) } : {}),
     ...(subjectAliases ? { subjectAliases } : {}),
     ...(optionalString(record.speaker) ? { speaker: optionalString(record.speaker) } : {}),
@@ -201,9 +215,7 @@ function normalizeCandidate(
     ...(optionalString(record.eventTime) ? { eventTime: optionalString(record.eventTime) } : {}),
     ...(optionalString(record.validFrom) ? { validFrom: optionalString(record.validFrom) } : {}),
     ...(validTo ? { validTo } : {}),
-    ...(optionalCardinality(record.cardinality)
-      ? { cardinality: optionalCardinality(record.cardinality) }
-      : {}),
+    ...(cardinality ? { cardinality } : {}),
     ...(optionalActionPolicyKind(record.actionPolicyKind)
       ? { actionPolicyKind: optionalActionPolicyKind(record.actionPolicyKind) }
       : {}),
@@ -223,7 +235,7 @@ function systemPrompt(maxCandidates: number): string {
     "For transcript windows, cover distinct durable facts exhaustively: names, dates, places, numbers, decisions, preferences, plans, life events, projects, and task outcomes.",
     "Emit one candidate per distinct fact. Prefer concrete specifics over abstractions. Do not skip durable facts only because they seem minor.",
     "Write candidate content in the same language as the source event. Preserve source wording where it carries meaning; do not translate non-English events into fixed English storage phrases.",
-    "Use confidence from 0 to 1. Use cardinality='single' only for current-state beliefs.",
+    "Use confidence from 0 to 1. Use cardinality='single' only for a schema-qualified functional slot predicate such as project.state or user.home_city. Free-form predicates and repeatable events, interests, preferences, purchases, visits, authored items, and watched items must use cardinality='multi'.",
     "For windowed transcript input, include sourceIndex when one transcript line grounds the candidate.",
     "Use subject, subjectAliases, predicate, and object for world-state facts; object should be the concise current value. Use speaker only when the fact belongs to a named human speaker and subject is not already explicit. Use source only for a concise public source label.",
     "Use eventTime for when an event occurred. Use validFrom and validTo only for a fact's applicability window. validTo requires the source to explicitly say the fact expires, ends, stops, or is valid until a time. Never use the observation time or the endpoint of an ongoing duration as validTo; for phrases such as 'for three months now' or 'over the past two weeks', omit validTo.",

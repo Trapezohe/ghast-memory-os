@@ -8972,6 +8972,15 @@ const structuredFieldsExtractor = createOpenAICompatibleExtractor({
                     subject: "user",
                     predicate: "car_service_experience",
                     object: "great",
+                    cardinality: "single",
+                    confidence: 0.9,
+                  },
+                  {
+                    kind: "project",
+                    subject: "project:atlas",
+                    predicate: "project.state",
+                    object: "ready",
+                    cardinality: "single",
                     confidence: 0.9,
                   },
                 ],
@@ -8990,6 +8999,9 @@ assert.equal(structuredFieldsCandidates[0]?.content, "user car_service_experienc
 assert.equal(structuredFieldsCandidates[0]?.subject, "user");
 assert.equal(structuredFieldsCandidates[0]?.predicate, "car_service_experience");
 assert.equal(structuredFieldsCandidates[0]?.object, "great");
+assert.equal(structuredFieldsCandidates[0]?.cardinality, "multi");
+assert.equal(structuredFieldsCandidates[1]?.predicate, "project.state");
+assert.equal(structuredFieldsCandidates[1]?.cardinality, "single");
 assert.equal(
   structuredFieldsCandidates[0]?.metadata?.llmExtractorModel,
   "fixture-structured-fields-model",
