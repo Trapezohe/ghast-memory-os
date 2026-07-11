@@ -18116,6 +18116,32 @@ const lowLevelMatches = await memory.search({
   query: "compatibility concise SDK docs",
 });
 assert.ok(lowLevelMatches.some((entry) => entry.id === lowLevelMemory.id));
+const lexicalNoiseStore = createSqliteMemoryStore({ path: ":memory:" });
+const lexicalNoiseMemory = createMemoryOS({
+  profileId: "lexical-noise",
+  store: lexicalNoiseStore,
+});
+const lexicalNoiseRelevant = await lexicalNoiseMemory.add({
+  profileId: "lexical-noise",
+  kind: "fact",
+  content: "Target coupon redemption happened at Target.",
+  confidence: 0.9,
+  createdAt: "2026-01-01T00:00:00.000Z",
+});
+await lexicalNoiseMemory.add({
+  profileId: "lexical-noise",
+  kind: "fact",
+  content: "Where did the user discuss the process?",
+  confidence: 0.9,
+  createdAt: "2026-02-01T00:00:00.000Z",
+});
+const lexicalNoiseMatches = await lexicalNoiseStore.searchMemories({
+  profileId: "lexical-noise",
+  query: "Where did the user redeem the Target coupon?",
+  limit: 2,
+});
+assert.equal(lexicalNoiseMatches[0]?.id, lexicalNoiseRelevant.id);
+await lexicalNoiseMemory.close();
 const deepHistoryMemory = await memory.add({
   profileId: "fts-history",
   kind: "project",
