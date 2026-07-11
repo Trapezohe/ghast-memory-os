@@ -29963,7 +29963,7 @@ const entityRefinementRows = [
     ...layerMemory(
       "memory_entity_refinement_role_source",
       "fact",
-      "user: Atlas review evidence says an external auditor assessed the release controls.",
+      "user: I recently had the Atlas release controls review assessed by an external auditor during deployment.",
     ),
     metadata: {
       sourceTrust: "user",
@@ -29976,7 +29976,7 @@ const entityRefinementRows = [
     ...layerMemory(
       "memory_entity_refinement_named_source",
       "fact",
-      "user: The Atlas release-control review identifies Dr. Morgan as the external auditor.",
+      "user: I just learned the Atlas release controls review identifies Dr. Morgan as the external auditor.",
     ),
     metadata: {
       sourceTrust: "user",
@@ -29998,9 +29998,403 @@ const entityRefinementContext = await reconstructMemoryContext({
   },
 });
 const entityRefinementPattern =
-  /Potential entity alias .*role-only "external auditor" .*named "Dr\. Morgan, external auditor" .*Status: unresolved; a same-entity interpretation requires corroboration/u;
+  /Corroborated entity alias .*role-only "external auditor" .*named "Dr\. Morgan, external auditor" .*Treat them as one entity when counting this relation/u;
 assert.match(entityRefinementContext.contextBlock, entityRefinementPattern);
 assert.match(entityRefinementContext.contentSurfaces.temporal, entityRefinementPattern);
+const crossSentenceEntityRefinementContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    entityRefinementRows[0]!,
+    entityRefinementRows[1]!,
+    {
+      ...entityRefinementRows[2]!,
+      content: "user: What should I do about the Atlas release controls? I recently had them assessed by an external auditor.",
+    },
+    {
+      ...entityRefinementRows[3]!,
+      content: "user: I just had the Atlas release controls assessed by external auditor Dr. Morgan.",
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 6,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.match(crossSentenceEntityRefinementContext.contextBlock, entityRefinementPattern);
+const mismatchedEventEntityRefinementContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    entityRefinementRows[0]!,
+    entityRefinementRows[1]!,
+    entityRefinementRows[2]!,
+    {
+      ...entityRefinementRows[3]!,
+      content: "user: An Atlas quarterly billing audit identifies Dr. Morgan as the external auditor for invoice sampling.",
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 6,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.match(mismatchedEventEntityRefinementContext.contextBlock, /Potential entity alias/u);
+assert.doesNotMatch(mismatchedEventEntityRefinementContext.contextBlock, /Corroborated entity alias/u);
+const sameTimestampWithoutContinuityEntityRefinementContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    entityRefinementRows[0]!,
+    {
+      ...entityRefinementRows[2]!,
+      content: "user: The Atlas release controls review was assessed by an external auditor during deployment.",
+    },
+    entityRefinementRows[1]!,
+    {
+      ...entityRefinementRows[3]!,
+      content: "user: Dr. Morgan, the external auditor, assessed the Atlas release controls review.",
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 6,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.match(sameTimestampWithoutContinuityEntityRefinementContext.contextBlock, /Potential entity alias/u);
+assert.doesNotMatch(
+  sameTimestampWithoutContinuityEntityRefinementContext.contextBlock,
+  /Corroborated entity alias/u,
+);
+const separatedEventTimeEntityRefinementContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    {
+      ...entityRefinementRows[0]!,
+      metadata: {
+        ...entityRefinementRows[0]!.metadata,
+        eventTime: "2022-07-04T00:00:00.000Z",
+      },
+    },
+    entityRefinementRows[2]!,
+    {
+      ...entityRefinementRows[1]!,
+      metadata: {
+        ...entityRefinementRows[1]!.metadata,
+        eventTime: "2024-07-04T00:00:00.000Z",
+      },
+    },
+    entityRefinementRows[3]!,
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 6,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.doesNotMatch(
+  separatedEventTimeEntityRefinementContext.contextBlock,
+  /Corroborated entity alias/u,
+);
+const unrelatedContinuityEntityRefinementContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    entityRefinementRows[0]!,
+    entityRefinementRows[1]!,
+    {
+      ...entityRefinementRows[2]!,
+      content: "user: I just finished lunch. The Atlas release controls review was assessed by an external auditor.",
+    },
+    {
+      ...entityRefinementRows[3]!,
+      content: "user: I recently finished a book. Dr. Morgan, the external auditor, assessed the Atlas release controls review.",
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 6,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.match(unrelatedContinuityEntityRefinementContext.contextBlock, /Potential entity alias/u);
+assert.doesNotMatch(
+  unrelatedContinuityEntityRefinementContext.contextBlock,
+  /Corroborated entity alias/u,
+);
+const secondRoleEntityRefinementContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    entityRefinementRows[0]!,
+    entityRefinementRows[2]!,
+    entityRefinementRows[1]!,
+    {
+      ...entityRefinementRows[3]!,
+      content: "user: I just had the Atlas release controls review assessed by a second external auditor Dr. Morgan for a second opinion.",
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 6,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.doesNotMatch(secondRoleEntityRefinementContext.contextBlock, /Corroborated entity alias/u);
+const chineseDistinctRoleEntityRefinementContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    entityRefinementRows[0]!,
+    entityRefinementRows[1]!,
+    {
+      ...entityRefinementRows[2]!,
+      content: "user: 最近 Atlas release controls review 由一位 external auditor 完成。",
+    },
+    {
+      ...entityRefinementRows[3]!,
+      content: "user: 刚刚 Atlas release controls review 由另一位 external auditor Dr. Morgan 完成。",
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 6,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.doesNotMatch(chineseDistinctRoleEntityRefinementContext.contextBlock, /Potential entity alias/u);
+assert.doesNotMatch(chineseDistinctRoleEntityRefinementContext.contextBlock, /Corroborated entity alias/u);
+const chineseNeighboringDistinctEntityRefinementContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    entityRefinementRows[0]!,
+    entityRefinementRows[1]!,
+    {
+      ...entityRefinementRows[2]!,
+      content: "user: I recently had the Atlas release controls review assessed by an external auditor; Beta billing review 由另一位 external auditor Dr. Taylor 完成。",
+    },
+    entityRefinementRows[3]!,
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 6,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.match(chineseNeighboringDistinctEntityRefinementContext.contextBlock, entityRefinementPattern);
+const sameRoleNewAppointmentEntityRefinementContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    entityRefinementRows[0]!,
+    entityRefinementRows[2]!,
+    entityRefinementRows[1]!,
+    {
+      ...entityRefinementRows[3]!,
+      content: "user: I just scheduled another appointment about the Atlas release controls review with the same external auditor Dr. Morgan.",
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 6,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.match(sameRoleNewAppointmentEntityRefinementContext.contextBlock, entityRefinementPattern);
+const negatedSameRoleEntityRefinementContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    entityRefinementRows[0]!,
+    entityRefinementRows[1]!,
+    entityRefinementRows[2]!,
+    {
+      ...entityRefinementRows[3]!,
+      content: "user: I just had the Atlas release controls review assessed by external auditor Dr. Morgan. Dr. Morgan was not the same external auditor who assessed the earlier review.",
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 6,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.doesNotMatch(negatedSameRoleEntityRefinementContext.contextBlock, /Potential entity alias/u);
+assert.doesNotMatch(negatedSameRoleEntityRefinementContext.contextBlock, /Corroborated entity alias/u);
+const prefixedPronounDistinctEntityRefinementContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    entityRefinementRows[0]!,
+    entityRefinementRows[1]!,
+    entityRefinementRows[2]!,
+    {
+      ...entityRefinementRows[3]!,
+      content: "user: I just had the Atlas release controls review assessed by external auditor Dr. Morgan. However, she was not the same external auditor who assessed the earlier review.",
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 6,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.doesNotMatch(prefixedPronounDistinctEntityRefinementContext.contextBlock, /Potential entity alias/u);
+assert.doesNotMatch(prefixedPronounDistinctEntityRefinementContext.contextBlock, /Corroborated entity alias/u);
+const chinesePronounDistinctEntityRefinementContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    entityRefinementRows[0]!,
+    entityRefinementRows[1]!,
+    entityRefinementRows[2]!,
+    {
+      ...entityRefinementRows[3]!,
+      content: "user: I just had the Atlas release controls review assessed by external auditor Dr. Morgan. 她不是同一位 external auditor who assessed the earlier review.",
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 6,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.doesNotMatch(chinesePronounDistinctEntityRefinementContext.contextBlock, /Potential entity alias/u);
+assert.doesNotMatch(chinesePronounDistinctEntityRefinementContext.contextBlock, /Corroborated entity alias/u);
+const neighboringDistinctEntityRefinementContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    entityRefinementRows[0]!,
+    entityRefinementRows[1]!,
+    entityRefinementRows[2]!,
+    {
+      ...entityRefinementRows[3]!,
+      content: "user: I just had the Atlas release controls review assessed by external auditor Dr. Morgan while Dr. Taylor was not the same external auditor who assessed the Beta billing audit.",
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 6,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.match(neighboringDistinctEntityRefinementContext.contextBlock, entityRefinementPattern);
+const day1EntityRefinementTime = "2026-07-01T00:00:00.000Z";
+const day2EntityRefinementTime = "2026-07-02T00:00:00.000Z";
+const day30EntityRefinementTime = "2026-07-30T00:00:00.000Z";
+const day30EntityRefinementEvidenceId = "evidence_entity_refinement_named_day30";
+const day30EntityRefinementRows = [
+  {
+    ...entityRefinementRows[0]!,
+    createdAt: day1EntityRefinementTime,
+    updatedAt: day1EntityRefinementTime,
+    metadata: {
+      ...entityRefinementRows[0]!.metadata,
+      eventTime: day1EntityRefinementTime,
+    },
+  },
+  {
+    ...entityRefinementRows[2]!,
+    createdAt: day1EntityRefinementTime,
+    updatedAt: day1EntityRefinementTime,
+  },
+  {
+    ...entityRefinementRows[1]!,
+    createdAt: day2EntityRefinementTime,
+    updatedAt: day2EntityRefinementTime,
+    metadata: {
+      ...entityRefinementRows[1]!.metadata,
+      eventTime: day2EntityRefinementTime,
+    },
+  },
+  {
+    ...entityRefinementRows[3]!,
+    createdAt: day2EntityRefinementTime,
+    updatedAt: day2EntityRefinementTime,
+  },
+  {
+    ...entityRefinementRows[1]!,
+    id: "memory_entity_refinement_named_day30",
+    confidence: 0.2,
+    createdAt: day30EntityRefinementTime,
+    updatedAt: day30EntityRefinementTime,
+    metadata: {
+      ...entityRefinementRows[1]!.metadata,
+      eventTime: day30EntityRefinementTime,
+      sourceEvidenceId: day30EntityRefinementEvidenceId,
+    },
+  },
+];
+const day30UnrelatedModifierEntityRefinementContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    ...day30EntityRefinementRows,
+    {
+      ...entityRefinementRows[3]!,
+      id: "memory_entity_refinement_named_day30_unrelated_source",
+      content: "user: External auditor Dr. Morgan used a different checklist for the latest Atlas release controls review.",
+      createdAt: day30EntityRefinementTime,
+      updatedAt: day30EntityRefinementTime,
+      metadata: {
+        ...entityRefinementRows[3]!.metadata,
+        sourceEvidenceId: day30EntityRefinementEvidenceId,
+      },
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 8,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.match(day30UnrelatedModifierEntityRefinementContext.contextBlock, entityRefinementPattern);
+const day30CorrectionEntityRefinementContext = await reconstructMemoryContext({
+  store: layerStoreFor([
+    ...day30EntityRefinementRows,
+    {
+      ...entityRefinementRows[3]!,
+      id: "memory_entity_refinement_named_day30_correction_source",
+      content: "user: I just learned external auditor Dr. Morgan was a different reviewer from the external auditor who assessed the earlier Atlas release controls review.",
+      createdAt: day30EntityRefinementTime,
+      updatedAt: day30EntityRefinementTime,
+      metadata: {
+        ...entityRefinementRows[3]!.metadata,
+        sourceEvidenceId: day30EntityRefinementEvidenceId,
+      },
+    },
+  ]),
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many different reviewers assessed Atlas?",
+    maxMemories: 8,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.doesNotMatch(day30CorrectionEntityRefinementContext.contextBlock, /Potential entity alias/u);
+assert.doesNotMatch(day30CorrectionEntityRefinementContext.contextBlock, /Corroborated entity alias/u);
 const splitEntityRefinementRows = [
   entityRefinementRows[0]!,
   entityRefinementRows[2]!,
@@ -30044,7 +30438,7 @@ const splitEntityRefinementRows = [
     ...layerMemory(
       "memory_entity_refinement_split_source",
       "fact",
-      "user: Atlas was reviewed by its external auditor, Dr. Morgan.",
+      "user: I just learned the Atlas release controls review was performed by its external auditor, Dr. Morgan.",
     ),
     metadata: {
       sourceTrust: "user",
@@ -30081,7 +30475,7 @@ const leadingRoleEntityRefinementContext = await reconstructMemoryContext({
     },
     {
       ...entityRefinementRows[3]!,
-      content: "user: Atlas was reviewed by external auditor Dr. Morgan.",
+      content: "user: I just learned the Atlas release controls review identifies external auditor Dr. Morgan.",
     },
   ]),
   defaultProfileId: "layer",
@@ -30107,7 +30501,7 @@ const articleLeadingRoleEntityRefinementContext = await reconstructMemoryContext
     },
     {
       ...entityRefinementRows[2]!,
-      content: "user: Atlas was reviewed by an external auditor.",
+      content: "user: I recently had the Atlas release controls review assessed by an external auditor during deployment.",
     },
     {
       ...entityRefinementRows[1]!,
@@ -30120,7 +30514,7 @@ const articleLeadingRoleEntityRefinementContext = await reconstructMemoryContext
     },
     {
       ...entityRefinementRows[3]!,
-      content: "user: Atlas was reviewed by external auditor Dr. Morgan.",
+      content: "user: I just learned the Atlas release controls review identifies external auditor Dr. Morgan.",
     },
   ]),
   defaultProfileId: "layer",
@@ -30134,7 +30528,7 @@ const articleLeadingRoleEntityRefinementContext = await reconstructMemoryContext
 });
 assert.match(
   articleLeadingRoleEntityRefinementContext.contextBlock,
-  /Potential entity alias .*role-only "an external auditor" .*named "Dr\. Morgan, an external auditor"/u,
+  /Corroborated entity alias .*role-only "an external auditor" .*named "Dr\. Morgan, an external auditor"/u,
 );
 const leadingRoleMismatchEntityRefinementContext = await reconstructMemoryContext({
   store: layerStoreFor([
@@ -30430,11 +30824,11 @@ assert.equal(
 );
 assert.match(
   budgetedEntityRefinementContext.contextBlock,
-  /Atlas review evidence says an external auditor assessed the release controls/u,
+  /recently had the Atlas release controls review assessed by an external auditor during deployment/u,
 );
 assert.match(
   budgetedEntityRefinementContext.contextBlock,
-  /Atlas release-control review identifies Dr\. Morgan as the external auditor/u,
+  /just learned the Atlas release controls review identifies Dr\. Morgan as the external auditor/u,
 );
 const recoveredBudgetEntityRefinementContext = await reconstructMemoryContext({
   store: layerStoreFor([

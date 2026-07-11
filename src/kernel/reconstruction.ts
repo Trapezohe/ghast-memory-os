@@ -1810,11 +1810,15 @@ interface StructuredEntityMention {
   relationKey: string;
   object: string;
   objectKey: string;
+  confidence: number;
   createdAtMs: number;
   sourceEvidenceId: string;
 }
 
 const ENTITY_ALIAS_CANDIDATE_MAX_GAP_MS = 7 * 24 * 60 * 60 * 1000;
+const ENTITY_ALIAS_CORROBORATION_MAX_GAP_MS = 48 * 60 * 60 * 1000;
+const ENTITY_ALIAS_CORROBORATION_MIN_CONFIDENCE = 0.75;
+const ENTITY_ALIAS_LOW_INFORMATION_CONTEXT_TERMS = new Set("evidence identified identifies identify mention mentioned mentions name named note noted notes person report reported reports role said same say says someone".split(" "));
 
 function normalizedStructuredEntityText(value: string): string {
   return value
@@ -1851,6 +1855,10 @@ function structuredEntityMention(memory: MemoryRecord): StructuredEntityMention 
     memory.metadata.sourceTrust !== "user" ||
     !hasGmosMetadataReferenceSchema(
       memory.metadata,
+      GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+    ) ||
+    !hasGmosMetadataReferenceSchema(
+      memory.metadata,
       GMOS_METADATA_REFERENCE_SCHEMAS.worldBeliefProjection,
     )
   ) {
@@ -1863,10 +1871,22 @@ function structuredEntityMention(memory: MemoryRecord): StructuredEntityMention 
   const subjectKey = normalizedStructuredEntityText(subject);
   const relationKey = normalizedStructuredRelation(predicate);
   const objectKey = normalizedStructuredEntityText(object);
-  const createdAtMs = Date.parse(memory.createdAt);
+  const normalizedEventTime = typeof memory.metadata.eventTime === "string"
+    ? normalizeExplicitTemporalInstant(memory.metadata.eventTime)
+    : null;
+  const createdAtMs = Date.parse(normalizedEventTime ?? memory.createdAt);
   const sourceEvidenceId = typeof memory.metadata.sourceEvidenceId === "string"
     ? memory.metadata.sourceEvidenceId.trim()
     : "";
+  const annealing = memory.metadata.annealing;
+  const capConfidence =
+    annealing && typeof annealing === "object" && !Array.isArray(annealing) &&
+      (annealing as Record<string, unknown>).active === true
+      ? Number((annealing as Record<string, unknown>).capConfidence)
+      : Number.NaN;
+  const confidence = Number.isFinite(capConfidence)
+    ? Math.min(memory.confidence, capConfidence)
+    : memory.confidence;
   if (
     !subjectKey ||
     !relationKey ||
@@ -1884,6 +1904,7 @@ function structuredEntityMention(memory: MemoryRecord): StructuredEntityMention 
     relationKey,
     object,
     objectKey,
+    confidence,
     createdAtMs,
     sourceEvidenceId,
   };
@@ -1953,11 +1974,349 @@ function sourceContainsStructuredEntityPhrase(source: string, objectKey: string)
     ` ${sourceKey} `.includes(` ${objectKey} `);
 }
 
-function sourceExplicitlyDistinguishesEntity(source: string): boolean {
-  return (
-    /\b(?:another|different|distinct|separate|other)\b/iu.test(source) ||
-    /(?:另一(?:位|个)?|不同(?:的)?|另外(?:一位|一个)?|分别)/u.test(source)
+const ENTITY_ALIAS_TOKEN_WINDOW_RADIUS = 12;
+const ENTITY_ALIAS_REQUIRED_SPAN_MAX_TOKENS = 12;
+const ENTITY_ALIAS_SENTENCE_BOUNDARY = "gmosaliasboundarymarker";
+const ENTITY_ALIAS_DISCOURSE_PREFIXES = new Set(["actually", "but", "however", "still", "though", "yet"]);
+
+type SourceAliasWindow = { context: string; anchorSegment: string };
+
+function sourceAliasTokens(source: string): string[] {
+  const protectedTitles = source.replace(/\b(dr|mr|mrs|ms|prof)\./giu, "$1");
+  const segments = protectedTitles.split(/([\r\n;；.!?。！？]+)/u);
+  return segments.flatMap((segment, index) =>
+    index % 2 === 1
+      ? [ENTITY_ALIAS_SENTENCE_BOUNDARY]
+      : normalizedStructuredEntityText(segment).split(" ").filter(Boolean)
   );
+}
+
+function sourceAliasWindowsContaining(source: string, requiredKeys: string[]): SourceAliasWindow[] {
+  const requiredPhrases = requiredKeys
+    .map((key) => normalizedStructuredEntityText(key).split(" ").filter(Boolean))
+    .filter((terms) => terms.length > 0);
+  if (requiredPhrases.length === 0) return [];
+  const tokens = sourceAliasTokens(source);
+  const segmentByIndex: number[] = [];
+  let segment = 0;
+  for (const [index, token] of tokens.entries()) {
+    if (token === ENTITY_ALIAS_SENTENCE_BOUNDARY) segment += 1;
+    segmentByIndex[index] = segment;
+  }
+  const windows: SourceAliasWindow[] = [];
+  const seen = new Set<string>();
+  const phraseStarts = (phrase: string[]): number[] =>
+    tokens.flatMap((token, index) => {
+      if (token !== phrase[0]) return [];
+      const matches = phrase.every((term, offset) =>
+        tokens[index + offset] === term &&
+        segmentByIndex[index + offset] === segmentByIndex[index]
+      );
+      return matches ? [index] : [];
+    });
+  const startsByPhrase = requiredPhrases.map(phraseStarts);
+  for (const anchorIndex of startsByPhrase[0] ?? []) {
+    const requiredSpans: Array<{ start: number; end: number }> = [{
+      start: anchorIndex,
+      end: anchorIndex + requiredPhrases[0]!.length - 1,
+    }];
+    for (const [phraseIndex, phrase] of requiredPhrases.slice(1).entries()) {
+      let nearestStart = -1;
+      let nearestDistance = Number.POSITIVE_INFINITY;
+      for (const candidateIndex of startsByPhrase[phraseIndex + 1] ?? []) {
+        if (
+          segmentByIndex[candidateIndex] !== segmentByIndex[anchorIndex]
+        ) {
+          continue;
+        }
+        const distance = Math.abs(candidateIndex - anchorIndex);
+        if (distance < nearestDistance) {
+          nearestStart = candidateIndex;
+          nearestDistance = distance;
+        }
+      }
+      if (nearestStart < 0) {
+        requiredSpans.length = 0;
+        break;
+      }
+      requiredSpans.push({
+        start: nearestStart,
+        end: nearestStart + phrase.length - 1,
+      });
+    }
+    if (requiredSpans.length !== requiredPhrases.length) continue;
+    const spanStart = Math.min(...requiredSpans.map((span) => span.start));
+    const spanEnd = Math.max(...requiredSpans.map((span) => span.end));
+    if (spanEnd - spanStart + 1 > ENTITY_ALIAS_REQUIRED_SPAN_MAX_TOKENS) continue;
+    const context = tokens
+      .slice(
+        Math.max(0, spanStart - ENTITY_ALIAS_TOKEN_WINDOW_RADIUS),
+        Math.min(tokens.length, spanEnd + ENTITY_ALIAS_TOKEN_WINDOW_RADIUS + 1),
+      )
+      .join(" ");
+    if (!context || seen.has(context)) continue;
+    seen.add(context);
+    windows.push({
+      context,
+      anchorSegment: tokens
+        .filter((_entry, index) =>
+          segmentByIndex[index] === segmentByIndex[anchorIndex] &&
+          tokens[index] !== ENTITY_ALIAS_SENTENCE_BOUNDARY
+        )
+        .join(" "),
+    });
+  }
+  return windows;
+}
+
+function highInformationAliasContextSequence(
+  source: string,
+  excludedKeys: string[],
+): Array<string | null> {
+  const excluded = new Set(
+    excludedKeys.flatMap((key) =>
+      queryTerms(key.replace(/[_\p{Pd}]+/gu, " "), 64)
+    ),
+  );
+  return normalizedStructuredEntityText(source).split(" ").filter(Boolean).map((term) => {
+    if (
+      term === ENTITY_ALIAS_SENTENCE_BOUNDARY ||
+      excluded.has(term) ||
+      ENTITY_ALIAS_LOW_INFORMATION_CONTEXT_TERMS.has(term) ||
+      queryTerms(term, 1).length === 0
+    ) {
+      return null;
+    }
+    if (/\p{Script=Han}/u.test(term)) return [...term].length >= 2 ? term : null;
+    if (/^\d+$/u.test(term)) return term.length >= 2 ? term : null;
+    return term.length >= 4 ? term : null;
+  });
+}
+
+type EntityAliasCorroboration = { corroborated: boolean; explicitlyDistinct: boolean; gapMs: number };
+
+function sharedAliasContextBigram(
+  leftTerms: Array<string | null>,
+  rightTerms: Array<string | null>,
+): string | null {
+  const leftBigrams = new Set<string>();
+  for (let index = 0; index + 1 < leftTerms.length; index += 1) {
+    const left = leftTerms[index];
+    const right = leftTerms[index + 1];
+    if (left && right) leftBigrams.add(`${left}\n${right}`);
+  }
+  for (let index = 0; index + 1 < rightTerms.length; index += 1) {
+    const left = rightTerms[index];
+    const right = rightTerms[index + 1];
+    if (!left || !right) continue;
+    const bigram = `${left}\n${right}`;
+    if (leftBigrams.has(bigram)) return bigram;
+  }
+  return null;
+}
+
+function sourceSignalsRecentEntityEvent(source: string): boolean {
+  return (
+    /\b(?:just|recently|same (?:appointment|event|visit))\b/iu.test(source) ||
+    /(?:刚刚|刚才|最近|同一次|同一场|同一位)/u.test(source)
+  );
+}
+
+function sourceAliasNegatesSameRole(terms: string[]): boolean {
+  const phrase = terms.slice(-6).join(" ");
+  return /(?:^|\s)(?:not(?: exactly)?|never)(?: the)? same$/u.test(phrase) ||
+    /(?:^|\s)no longer(?: the)? same$/u.test(phrase) ||
+    /(?:^|\s)(?:aren|isn|wasn|weren) t(?: the)? same$/u.test(phrase) ||
+    /(?:^|\s)(?:arent|isnt|wasnt|werent)(?: the)? same$/u.test(phrase);
+}
+
+function sourceAliasAnchorExplicitlyDistinguishesEntity(
+  source: string,
+  roleKey: string,
+  nameKey?: string,
+): boolean {
+  const tokens = normalizedStructuredEntityText(source).split(" ").filter(Boolean);
+  const roleTerms = normalizedStructuredRoleText(roleKey).split(" ").filter(Boolean);
+  if (roleTerms.length === 0) return false;
+  const nameTerms = nameKey
+    ? normalizedStructuredEntityText(nameKey).split(" ").filter(Boolean)
+    : [];
+  const phraseStarts = (phrase: string[]): number[] =>
+    tokens.flatMap((term, index) =>
+      phrase.every((phraseTerm, offset) => tokens[index + offset] === phraseTerm)
+        ? [index]
+        : []
+    );
+  const roleStarts = phraseStarts(roleTerms);
+  const nameStarts = nameTerms.length > 0 ? phraseStarts(nameTerms) : [];
+  const titledStarts = tokens.flatMap((term, index) =>
+    /^(?:dr|mr|mrs|ms|prof)$/u.test(term) && index + 1 < tokens.length ? [index] : []
+  );
+  const directModifiers = new Set([
+    "additional",
+    "another",
+    "different",
+    "distinct",
+    "new",
+    "next",
+    "other",
+    "second",
+    "separate",
+  ]);
+  const roleBelongsToCandidate = (roleStart: number): boolean => {
+    if (nameStarts.length === 0) return nameTerms.length === 0;
+    const nearestDistance = Math.min(
+      ...titledStarts.map((titleStart) => Math.abs(titleStart - roleStart)),
+    );
+    const nearestTitles = titledStarts.filter(
+      (titleStart) => Math.abs(titleStart - roleStart) === nearestDistance,
+    );
+    return nearestTitles.length === 1 && nameStarts.includes(nearestTitles[0]!);
+  };
+  for (const roleStart of roleStarts) {
+    if (!roleBelongsToCandidate(roleStart)) continue;
+    const preceding = tokens.slice(Math.max(0, roleStart - 6), roleStart);
+    if (sourceAliasNegatesSameRole(preceding) || /(?:不是|并非|不再是|绝非)(?:同一(?:位|个)?|相同(?:的)?)$/u.test(preceding.join(" "))) return true;
+    if (preceding.slice(-4).includes("same") || /同一(?:位|个)?$/u.test(preceding.join(" "))) continue;
+    if (preceding.slice(-4).some((term) => directModifiers.has(term)) || /(?:另一(?:位|个)?|不同(?:的)?|另外(?:一位|一个)?|分别)$/u.test(preceding.join(" "))) return true;
+  }
+  if (nameStarts.length === 0) return false;
+  for (const nameStart of nameStarts) {
+    const afterName = tokens.slice(nameStart + nameTerms.length, nameStart + nameTerms.length + 12);
+    const modifierIndex = afterName.findIndex((term) => directModifiers.has(term));
+    const fromIndex = modifierIndex < 0 ? -1 : afterName.indexOf("from", modifierIndex + 1);
+    if (
+      fromIndex >= 0 &&
+      roleStarts.some((roleStart) =>
+        roleStart >= nameStart + nameTerms.length + fromIndex + 1 &&
+        roleStart <= nameStart + nameTerms.length + fromIndex + 7
+      )
+    ) {
+      return true;
+    }
+    const beforeName = tokens.slice(Math.max(0, nameStart - 5), nameStart);
+    const namesSeparateEvent = beforeName.includes("separate") &&
+      beforeName.some((term) => /^(?:appointment|event|review|visit)$/u.test(term));
+    if (
+      namesSeparateEvent &&
+      roleStarts.some((roleStart) => Math.abs(roleStart - nameStart) <= 12)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function sourceAliasContextExplicitlyNegatesSameEntity(
+  source: string,
+  roleKey: string,
+  nameKey: string,
+): boolean {
+  const roleTerms = normalizedStructuredRoleText(roleKey).split(" ").filter(Boolean);
+  const nameTerms = normalizedStructuredEntityText(nameKey).split(" ").filter(Boolean);
+  if (roleTerms.length === 0 || nameTerms.length === 0) return false;
+  const tokens = normalizedStructuredEntityText(source).split(" ").filter(Boolean);
+  for (let index = 0; index + roleTerms.length <= tokens.length; index += 1) {
+    if (!roleTerms.every((term, offset) => tokens[index + offset] === term)) continue;
+    const preceding = tokens.slice(Math.max(0, index - 6), index);
+    if (!sourceAliasNegatesSameRole(preceding) && !/(?:他|她)(?:不是|并非|不再是|绝非)(?:同一(?:位|个)?|相同(?:的)?)$/u.test(preceding.join(""))) continue;
+    const segmentStart = tokens.lastIndexOf(ENTITY_ALIAS_SENTENCE_BOUNDARY, index - 1) + 1;
+    const nextBoundary = tokens.indexOf(ENTITY_ALIAS_SENTENCE_BOUNDARY, index);
+    const segmentEnd = nextBoundary < 0 ? tokens.length : nextBoundary;
+    const segmentTokens = tokens.slice(segmentStart, segmentEnd);
+    const pronounIndex = ENTITY_ALIAS_DISCOURSE_PREFIXES.has(segmentTokens[0] ?? "") ? 1 : 0;
+    const startsWithPronoun = /^(?:he|she|they|他|她|他们|她们)$/u.test(
+      segmentTokens[pronounIndex] ?? "",
+    );
+    const startsWithChinesePronounNegation = /^(?:(?:不过|但是|然而|其实|仍然)?(?:他|她)(?:不是|并非|不再是|绝非)(?:同一(?:位|个)?|相同(?:的)?))/u.test(
+      segmentTokens.slice(0, 2).join(""),
+    );
+    const previousBoundary = tokens.lastIndexOf(ENTITY_ALIAS_SENTENCE_BOUNDARY, segmentStart - 2);
+    const previousSegment = tokens.slice(previousBoundary + 1, segmentStart - 1);
+    const previousNamesCandidate = previousSegment.some((term, nameIndex) =>
+      nameTerms.every((nameTerm, offset) => previousSegment[nameIndex + offset] === nameTerm)
+    );
+    const namesAnotherTitledEntity = segmentTokens.some((term, tokenIndex) =>
+      /^(?:dr|mr|mrs|ms|prof)$/u.test(term) && tokenIndex + 1 < segmentTokens.length
+    );
+    if (
+      (startsWithPronoun || startsWithChinesePronounNegation) &&
+      previousNamesCandidate &&
+      !namesAnotherTitledEntity
+    ) return true;
+  }
+  return false;
+}
+
+function corroborationForEntityAlias(input: {
+  generic: StructuredEntityMention;
+  specific: NamedEntityAliasCandidate;
+  genericSource: string;
+  specificSource: string;
+}): EntityAliasCorroboration {
+  const gapMs = Math.abs(input.specific.createdAtMs - input.generic.createdAtMs);
+  const roleKey = normalizedStructuredRoleText(input.generic.object);
+  const genericWindows = sourceAliasWindowsContaining(
+    input.genericSource,
+    [roleKey],
+  );
+  const specificWindows = sourceAliasWindowsContaining(
+    input.specificSource,
+    [roleKey, input.specific.key],
+  );
+  const explicitlyDistinct =
+    genericWindows.some((window) =>
+      sourceAliasAnchorExplicitlyDistinguishesEntity(
+        window.anchorSegment,
+        roleKey,
+        input.specific.key,
+      )
+    ) ||
+    specificWindows.some((window) =>
+      sourceAliasAnchorExplicitlyDistinguishesEntity(
+        window.anchorSegment,
+        roleKey,
+        input.specific.key,
+      ) ||
+      sourceAliasContextExplicitlyNegatesSameEntity(
+        window.context,
+        roleKey,
+        input.specific.key,
+      )
+    );
+  if (explicitlyDistinct) {
+    return { corroborated: false, explicitlyDistinct: true, gapMs };
+  }
+  if (
+    input.generic.confidence < ENTITY_ALIAS_CORROBORATION_MIN_CONFIDENCE ||
+    input.specific.confidence < ENTITY_ALIAS_CORROBORATION_MIN_CONFIDENCE ||
+    gapMs > ENTITY_ALIAS_CORROBORATION_MAX_GAP_MS
+  ) {
+    return { corroborated: false, explicitlyDistinct: false, gapMs };
+  }
+  const excludedKeys = [
+    input.generic.subjectKey,
+    input.generic.relationKey,
+    input.generic.objectKey,
+    input.specific.key,
+    input.specific.object,
+  ];
+  const continuitySupported =
+    genericWindows.some((window) => sourceSignalsRecentEntityEvent(window.anchorSegment)) &&
+    specificWindows.some((window) => sourceSignalsRecentEntityEvent(window.anchorSegment));
+  if (!continuitySupported) {
+    return { corroborated: false, explicitlyDistinct: false, gapMs };
+  }
+  for (const genericWindow of genericWindows) {
+    const genericTerms = highInformationAliasContextSequence(genericWindow.context, excludedKeys);
+    for (const specificWindow of specificWindows) {
+      const specificTerms = highInformationAliasContextSequence(specificWindow.context, excludedKeys);
+      if (sharedAliasContextBigram(genericTerms, specificTerms)) {
+        return { corroborated: true, explicitlyDistinct: false, gapMs };
+      }
+    }
+  }
+  return { corroborated: false, explicitlyDistinct: false, gapMs };
 }
 
 function roleLikeStructuredRelation(relationKey: string): boolean {
@@ -1974,6 +2333,7 @@ function roleLikeStructuredRelation(relationKey: string): boolean {
 interface NamedEntityAliasCandidate {
   key: string;
   object: string;
+  confidence: number;
   createdAtMs: number;
   sourceEvidenceId: string;
 }
@@ -1989,8 +2349,7 @@ function namedEntityAliasCandidatesFor(
       relation === generic ||
       relation.subjectKey !== generic.subjectKey ||
       relation.relationKey !== generic.relationKey ||
-      relation.objectKey === generic.objectKey ||
-      Math.abs(relation.createdAtMs - generic.createdAtMs) > ENTITY_ALIAS_CANDIDATE_MAX_GAP_MS
+      relation.objectKey === generic.objectKey
     ) {
       continue;
     }
@@ -2002,6 +2361,7 @@ function namedEntityAliasCandidatesFor(
       candidates.push({
         key: namedObject.key,
         object: relation.object,
+        confidence: relation.confidence,
         createdAtMs: relation.createdAtMs,
         sourceEvidenceId: relation.sourceEvidenceId,
       });
@@ -2023,6 +2383,7 @@ function namedEntityAliasCandidatesFor(
       candidates.push({
         key: leadingRole.name.key,
         object: `${leadingRole.name.label}, ${generic.object}`,
+        confidence: relation.confidence,
         createdAtMs: relation.createdAtMs,
         sourceEvidenceId: relation.sourceEvidenceId,
       });
@@ -2036,12 +2397,16 @@ function namedEntityAliasCandidatesFor(
       roleLikeStructuredRelation(role.relationKey) &&
       role.objectKey === generic.objectKey &&
       role.sourceEvidenceId === relation.sourceEvidenceId &&
-      Math.abs(role.createdAtMs - generic.createdAtMs) <= ENTITY_ALIAS_CANDIDATE_MAX_GAP_MS
+      Math.abs(role.createdAtMs - relation.createdAtMs) <= ENTITY_ALIAS_CANDIDATE_MAX_GAP_MS
     );
     if (roles.length > 0) {
       candidates.push({
         key: namedObject.key,
         object: `${namedObject.label}, ${generic.object}`,
+        confidence: Math.min(
+          relation.confidence,
+          Math.max(...roles.map((role) => role.confidence)),
+        ),
         createdAtMs: relation.createdAtMs,
         sourceEvidenceId: relation.sourceEvidenceId,
       });
@@ -2067,11 +2432,13 @@ function entityAliasCandidateHints(
   const groups = new Map<string, {
     relation: string;
     genericObject: string;
-    genericCreatedAtMs: number;
     specificObjects: Map<string, {
       object: string;
+      genericCreatedAtMs: number;
       createdAtMs: number;
       explicitlyDistinct: boolean;
+      corroborated: boolean;
+      gapMs: number;
     }>;
   }>();
   for (const generic of mentions) {
@@ -2088,37 +2455,62 @@ function entityAliasCandidateHints(
     )) {
       const genericSource = visibleSourceEvidence.get(generic.sourceEvidenceId) ?? "";
       const specificSource = visibleSourceEvidence.get(specific.sourceEvidenceId) ?? "";
+      const corroboration = corroborationForEntityAlias({
+        generic,
+        specific,
+        genericSource,
+        specificSource,
+      });
+      if (
+        corroboration.gapMs > ENTITY_ALIAS_CANDIDATE_MAX_GAP_MS &&
+        !corroboration.explicitlyDistinct
+      ) {
+        continue;
+      }
       const key = [generic.subjectKey, generic.relationKey, generic.objectKey].join("\n");
       const group = groups.get(key) ?? {
         relation: generic.relation,
         genericObject: generic.object,
-        genericCreatedAtMs: generic.createdAtMs,
         specificObjects: new Map<string, {
           object: string;
+          genericCreatedAtMs: number;
           createdAtMs: number;
           explicitlyDistinct: boolean;
+          corroborated: boolean;
+          gapMs: number;
         }>(),
       };
       const existingSpecific = group.specificObjects.get(specific.key);
       const explicitlyDistinct =
         existingSpecific?.explicitlyDistinct === true ||
-        sourceExplicitlyDistinguishesEntity(genericSource) ||
-        sourceExplicitlyDistinguishesEntity(specificSource);
-      const existingGap = existingSpecific
-        ? Math.abs(existingSpecific.createdAtMs - generic.createdAtMs)
-        : Number.POSITIVE_INFINITY;
-      const specificGap = Math.abs(specific.createdAtMs - generic.createdAtMs);
+        corroboration.explicitlyDistinct;
       const useSpecific =
         !existingSpecific ||
-        specificGap < existingGap ||
-        (specificGap === existingGap && specific.createdAtMs < existingSpecific.createdAtMs);
+        (corroboration.corroborated && !existingSpecific.corroborated) ||
+        (
+          corroboration.corroborated === existingSpecific.corroborated &&
+          (
+            corroboration.gapMs < existingSpecific.gapMs ||
+            (
+              corroboration.gapMs === existingSpecific.gapMs &&
+              (generic.createdAtMs < existingSpecific.genericCreatedAtMs ||
+                (
+                  generic.createdAtMs === existingSpecific.genericCreatedAtMs &&
+                  specific.createdAtMs < existingSpecific.createdAtMs
+                ))
+            )
+          )
+        );
       group.specificObjects.set(
         specific.key,
         useSpecific
           ? {
               object: specific.object,
+              genericCreatedAtMs: generic.createdAtMs,
               createdAtMs: specific.createdAtMs,
               explicitlyDistinct,
+              corroborated: corroboration.corroborated,
+              gapMs: corroboration.gapMs,
             }
           : { ...existingSpecific, explicitlyDistinct },
       );
@@ -2130,11 +2522,17 @@ function entityAliasCandidateHints(
     if (group.specificObjects.size !== 1) continue;
     const specific = [...group.specificObjects.values()][0];
     if (!specific || specific.explicitlyDistinct) continue;
-    const genericDate = new Date(group.genericCreatedAtMs).toISOString().slice(0, 10);
+    const genericDate = new Date(specific.genericCreatedAtMs).toISOString().slice(0, 10);
     const specificDate = new Date(specific.createdAtMs).toISOString().slice(0, 10);
-    hints.push(
-      `Potential entity alias (inference, not a fact): role-only ${JSON.stringify(group.genericObject)} (${genericDate}) and named ${JSON.stringify(specific.object)} (${specificDate}) share the same subject and relation ${JSON.stringify(group.relation)}. Status: unresolved; a same-entity interpretation requires corroboration from the surrounding source evidence, otherwise they remain distinct.`,
-    );
+    if (specific.corroborated) {
+      hints.push(
+        `Corroborated entity alias (derived, not an independent fact): role-only ${JSON.stringify(group.genericObject)} (${genericDate}) and named ${JSON.stringify(specific.object)} (${specificDate}) share the same user-sourced subject, relation ${JSON.stringify(group.relation)}, role, and event context within 48 hours. Treat them as one entity when counting this relation unless explicit contradictory evidence is present.`,
+      );
+    } else {
+      hints.push(
+        `Potential entity alias (inference, not a fact): role-only ${JSON.stringify(group.genericObject)} (${genericDate}) and named ${JSON.stringify(specific.object)} (${specificDate}) share the same subject and relation ${JSON.stringify(group.relation)}. Status: uncertain; do not infer either sameness or difference without additional corroborating evidence.`,
+      );
+    }
     if (hints.length >= maxHints) break;
   }
   return hints;
