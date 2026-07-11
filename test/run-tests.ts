@@ -36096,6 +36096,14 @@ assert.match(
   reasoningAnswererSystemPrompt,
   /when the question explicitly asks about plans, schedules, or intentions, use that evidence as prospective/iu,
 );
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /concrete outcomes such as a completed purchase, a delivered service, a diagnosis received, a prescription issued, a recorded result, or an attended follow-up can confirm completion/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /month and day without a year, use the attached observation or event date to resolve the year/iu,
+);
 assert.match(reasoningAnswererSystemPrompt, /prioritize the user's statements/iu);
 assert.match(reasoningAnswererSystemPrompt, /prefer the latest explicit user-grounded update/iu);
 assert.match(reasoningAnswererSystemPrompt, /state that the information is insufficient/iu);
