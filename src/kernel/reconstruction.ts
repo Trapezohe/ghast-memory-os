@@ -1343,13 +1343,25 @@ function pathCoversCue(
   cue: string,
   cueExtractor?: MemoryCueExtractor | undefined,
 ): boolean {
+  return evidenceTextCoversCue(
+    `${path.cue} ${path.tag} ${path.targetKind ?? ""} ${path.targetSummary}`,
+    cue,
+    cueExtractor,
+  );
+}
+
+function evidenceTextCoversCue(
+  text: string,
+  cue: string,
+  cueExtractor?: MemoryCueExtractor | undefined,
+): boolean {
   const normalizedCue = normalizedText(cue);
-  const pathText = `${path.cue} ${path.tag} ${path.targetKind ?? ""} ${path.targetSummary}`;
-  if (normalizedText(pathText).includes(normalizedCue)) return true;
+  if (/\p{Script=Han}/u.test(cue) && normalizedText(text).includes(normalizedCue)) return true;
+  if (associationCueTextPattern(cue)?.test(text)) return true;
   const cueKey = associationCueKey(cue);
   if (!cueKey) return false;
   const pathKeys = new Set(
-    evidenceAssociationCues(pathText, 64, cueExtractor)
+    evidenceAssociationCues(text, 64, cueExtractor)
       .map((pathCue) => associationCueKey(pathCue.cue))
       .filter(Boolean),
   );
@@ -1363,10 +1375,18 @@ function evidenceCoverageForPaths(
   paths: ReconstructedEvidencePath[],
   cueExtractor?: MemoryCueExtractor | undefined,
   inferTemporalCuesFromText = false,
+  memories: MemoryRecord[] = [],
 ): ReconstructionEvidenceCoverage {
   const cues = coverageCues(query, cueExtractor, inferTemporalCuesFromText);
   const coveredCues = cues.filter((cue) =>
-    paths.some((path) => pathCoversCue(path, cue, cueExtractor))
+    paths.some((path) => pathCoversCue(path, cue, cueExtractor)) ||
+    memories.some((memory) =>
+      evidenceTextCoversCue(
+        `${memory.kind} ${memory.scope} ${memory.content} ${JSON.stringify(memory.metadata)}`,
+        cue,
+        cueExtractor,
+      )
+    )
   );
   const uncoveredCues = cues.filter((cue) => !coveredCues.includes(cue));
   const coverageRate =
@@ -1438,6 +1458,35 @@ function hasIntentEvidence(
   return intent.expectedTags.size === 0 || paths.some((path) => pathMatchesIntent(path, intent));
 }
 
+function evidenceSupportingPaths(input: {
+  paths: ReconstructedEvidencePath[];
+  coverage: ReconstructionEvidenceCoverage;
+  intent: ReconstructionIntent;
+}): ReconstructedEvidencePath[] {
+  return input.paths.filter((path) =>
+    (path.anchorCue !== undefined && pathCoversCue(path, path.anchorCue)) ||
+    pathMatchesIntent(path, input.intent) ||
+    input.coverage.coveredCues.some((cue) => pathCoversCue(path, cue))
+  );
+}
+
+function evidenceSupportingMemories(input: {
+  memories: MemoryRecord[];
+  coverage: ReconstructionEvidenceCoverage;
+  intent: ReconstructionIntent;
+}): MemoryRecord[] {
+  const queryCues = [...input.coverage.coveredCues, ...input.coverage.uncoveredCues];
+  return input.memories.filter((memory) =>
+    memoryMatchesIntent(memory, input.intent) ||
+    queryCues.some((cue) =>
+      evidenceTextCoversCue(
+        `${memory.kind} ${memory.scope} ${memory.content} ${JSON.stringify(memory.metadata)}`,
+        cue,
+      )
+    )
+  );
+}
+
 function evidenceConvergenceForPaths(input: {
   coverage: ReconstructionEvidenceCoverage;
   memories: MemoryRecord[];
@@ -1449,25 +1498,38 @@ function evidenceConvergenceForPaths(input: {
   prunedBranchCount: number;
   frontierRemaining: number;
 }): ReconstructionEvidenceConvergence {
-  const intentMatched = hasIntentEvidence(input.paths, input.intent);
+  const supportingPaths = evidenceSupportingPaths(input);
+  const supportingMemories = evidenceSupportingMemories(input);
+  const supportingEvidenceKeys = new Set<string>(
+    supportingMemories.map((memory) => `memory:${memory.id}`),
+  );
+  for (const path of supportingPaths) {
+    const key = path.sourceMemoryId
+      ? `memory:${path.sourceMemoryId}`
+      : path.targetType === "memory"
+        ? `memory:${path.targetId}`
+        : `${path.targetType}:${path.targetId}`;
+    supportingEvidenceKeys.add(key);
+  }
+  const supportingEvidenceCount = supportingEvidenceKeys.size;
+  const intentMatched =
+    hasIntentEvidence(supportingPaths, input.intent) ||
+    supportingMemories.some((memory) => memoryMatchesIntent(memory, input.intent));
   const coveredRequiredIntentGroups = input.intent.requiredTagGroups.filter((group) =>
-    input.paths.some((path) => pathMatchesTagGroup(path, group.tags)),
+    supportingPaths.some((path) => pathMatchesTagGroup(path, group.tags)) ||
+    supportingMemories.some((memory) => memoryMatchesTagGroup(memory, group.tags)),
   );
   const missingRequiredIntentGroups = input.intent.requiredTagGroups
     .filter((group) => !coveredRequiredIntentGroups.includes(group))
     .map((group) => group.name);
   const targetMemoryCount = Math.max(1, input.targetMemoryCount);
   const memoryContentScore =
-    input.memories.length > 0 ? Math.min(1, input.memories.length / targetMemoryCount) : 0;
-  const pathSupportScore = input.paths.length > 0 ? Math.min(1, input.paths.length / 4) : 0;
+    supportingEvidenceCount > 0 ? Math.min(1, supportingEvidenceCount / targetMemoryCount) : 0;
+  const pathSupportScore = supportingEvidenceCount > 0
+    ? Math.min(1, supportingEvidenceCount / 4)
+    : 0;
   const intentScore = intentMatched ? 1 : 0;
-  const memorySupportEnough =
-    input.memories.length >= targetMemoryCount &&
-    (input.intent.expectedTags.size === 0 ||
-      input.memories.some((memory) => memoryMatchesIntent(memory, input.intent)));
-  const pathOnlySupportEnough =
-    input.memories.length === 0 && input.paths.length >= targetMemoryCount && intentMatched;
-  const pathSupportEnough = input.paths.length >= targetMemoryCount && intentMatched;
+  const supportEnough = supportingEvidenceCount >= targetMemoryCount && intentMatched;
   const baseScore = Math.min(
     1,
     input.coverage.coverageRate * 0.45 +
@@ -1488,13 +1550,13 @@ function evidenceConvergenceForPaths(input: {
     requiredIntentCovered &&
     !hasUncoveredTemporalCue &&
     (input.coverage.coveredCueCount > 0 || input.intent.requiredTagGroups.length > 0) &&
-    (memorySupportEnough || pathOnlySupportEnough || pathSupportEnough);
+    supportEnough;
   const score = intentGroundedEnough ? Math.max(baseScore, input.threshold) : baseScore;
   return {
     score,
     reached:
       (score >= input.threshold &&
-        (memorySupportEnough || pathOnlySupportEnough) &&
+        supportEnough &&
         intentMatched &&
         coverageIsSufficient(input.coverage)) ||
       intentGroundedEnough,
@@ -1677,22 +1739,45 @@ function inferTemporalRecallPurpose(
 
 function autoTemporalRecallPurpose(query: string): ReconstructionRecallPurpose {
   const normalized = query.normalize("NFC").toLowerCase();
+  const decisivelyHistorical = [
+    /\b(?:before|earlier|formerly|historical|history|originally|past|previous|previously|prior|since)\b/u,
+    /\b(?:what|where|who|when|which|how)\b[^?!.]{0,96}\b(?:did|had|was|were)\b/u,
+    /\b(?:last|past)\s+(?:few\s+)?(?:days?|weeks?|months?|years?)\b/u,
+    /(?:曾经|之前|以前|过去|历史|原来|最初|以来|之间)/u,
+  ];
+  if (decisivelyHistorical.some((pattern) => pattern.test(normalized))) return "history";
+
+  const futureQuestionAuxiliary =
+    /\b(?:What|Where|Who|When|Which|How|what|where|who|when|which|how)\b[^?!.]{0,64}\b(?:will|shall)\b/u.test(
+      query,
+    ) || /^\s*(?:Will|Shall)\b/u.test(query);
+  const explicitlyProspective =
+    /\b(?:am|are|is)\s+going to\b|\b(?:future|upcoming)\b|\bnext\s+(?:day|days|month|months|plan|plans|step|steps|week|weeks|year|years)\b/u.test(
+      normalized,
+    ) ||
+    futureQuestionAuxiliary ||
+    /(?:将来|未来|接下来|下次)/u.test(normalized);
+  if (explicitlyProspective) return "context";
+
   const explicitlyCurrent =
     /\b(?:as of now|at present|current|currently|latest|most recent|now|right now|today)\b/u.test(normalized) ||
     /(?:当前|目前|现在|如今|最新)/u.test(normalized);
   if (explicitlyCurrent) return "context";
 
-  const explicitlyHistorical = [
-    /\b(?:before|earlier|formerly|historical|history|originally|past|previous|previously|prior|used to)\b/u,
-    /\b(?:across all|all time|altogether|between|combined|cumulative|over time|since|so far|to date|total)\b/u,
+  const analyticalHistory = [
+    /\b(?:across all|all time|altogether|between|combined|cumulative|over time|so far|to date|total)\b/u,
     /\bhow (?:long|many|much|often)\b/u,
-    /\b(?:last|past)\s+(?:few\s+)?(?:days?|weeks?|months?|years?)\b/u,
     /\b(?:what date|when)\b/u,
-    /(?:曾经|之前|以前|过去|历史|原来|最初|总共|一共|累计|合计|以来|之间|多少|多久|何时|什么时候)/u,
+    /(?:总共|一共|累计|合计|多少|多久|何时|什么时候)/u,
   ];
-  return explicitlyHistorical.some((pattern) => pattern.test(normalized))
-    ? "history"
-    : "context";
+  if (analyticalHistory.some((pattern) => pattern.test(normalized))) return "history";
+
+  const boundedCalendarReference =
+    /\b(?:after|before|between|by|during|from|in|since|through|until)\s+(?:the\s+)?(?:jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\b/u.test(
+      normalized,
+    );
+  if (boundedCalendarReference) return "history";
+  return /\bused to\b/u.test(normalized) ? "history" : "context";
 }
 
 function queryNeedsAggregateRecall(query: string): boolean {
@@ -1705,16 +1790,47 @@ function queryNeedsAggregateRecall(query: string): boolean {
   );
 }
 
+function finiteEnumerationTarget(query: string): number | null {
+  const normalized = query.normalize("NFC").toLowerCase();
+  const asksForEnumeration =
+    /\b(?:list|name|order|sequence)\b/u.test(normalized) ||
+    /\b(?:what|which)\b[^?!.]{0,48}\b(?:are|were)\b/u.test(normalized);
+  if (!asksForEnumeration) return null;
+  const match = /\b(?:the\s+)?(both|two|three|four|five|six|seven|eight|nine|ten)\s+([a-z][a-z-]*)\b/u.exec(
+    normalized,
+  );
+  if (!match) return null;
+  if (/^(?:day|days|hour|hours|month|months|week|weeks|year|years)$/u.test(match[2] ?? "")) {
+    return null;
+  }
+  const counts: Record<string, number> = {
+    both: 2,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+  };
+  return counts[match[1] ?? ""] ?? null;
+}
+
 function targetMemoryCountForQuery(
   query: string,
   recallPurpose: ReconstructionRecallPurpose,
   maxMemories: number,
 ): number {
+  const finiteTarget = finiteEnumerationTarget(query);
   const desired = queryNeedsAggregateRecall(query)
-    ? 16
-    : recallPurpose === "history"
-      ? 4
-      : 2;
+    ? 48
+    : finiteTarget !== null
+      ? Math.max(finiteTarget, recallPurpose === "history" ? 4 : 2)
+      : recallPurpose === "history"
+        ? 4
+        : 2;
   return Math.min(desired, maxMemories);
 }
 
@@ -1795,14 +1911,18 @@ function associationMatchesIntent(
   );
 }
 
-function memoryMatchesIntent(memory: MemoryRecord, intent: ReconstructionIntent): boolean {
+function memoryMatchesTagGroup(memory: MemoryRecord, tags: Set<string>): boolean {
   const actionPolicyKind =
     typeof memory.metadata.actionPolicyKind === "string" ? memory.metadata.actionPolicyKind : "";
   return (
-    intent.expectedTags.has(memory.kind) ||
-    (actionPolicyKind.length > 0 && intent.expectedTags.has(actionPolicyKind)) ||
-    (memory.kind === "boundary" && intent.expectedTags.has("do_not_push"))
+    tags.has(memory.kind) ||
+    (actionPolicyKind.length > 0 && tags.has(actionPolicyKind)) ||
+    (memory.kind === "boundary" && tags.has("do_not_push"))
   );
+}
+
+function memoryMatchesIntent(memory: MemoryRecord, intent: ReconstructionIntent): boolean {
+  return memoryMatchesTagGroup(memory, intent.expectedTags);
 }
 
 function sourceScopeRejectReason(
@@ -2668,6 +2788,7 @@ function composeReconstructedContext(input: {
     ? filterPathsForIncludedMemories(uniquePathsById(input.paths), memories)
     : uniquePathsById(input.paths);
   let sweepCandidates = [...(input.sweepDraft?.candidates ?? [])];
+  let stopReason = input.stopReason;
   const includeTemporalContext = input.includeTemporalContext !== false;
   const publicQuery = input.displayQuery ?? input.query;
   const privateSignalKeys = privateRouteSignalKeys(
@@ -2700,6 +2821,7 @@ function composeReconstructedContext(input: {
     paths,
     input.cueExtractor,
     input.inferTemporalCuesFromText,
+    memories,
   );
   let evidenceConvergence = evidenceConvergenceForPaths({
     coverage,
@@ -2716,7 +2838,7 @@ function composeReconstructedContext(input: {
     coverage,
     memories,
     paths,
-    stopReason: input.stopReason,
+    stopReason,
     evidenceConvergence,
   });
   const outputState = (): {
@@ -2754,12 +2876,12 @@ function composeReconstructedContext(input: {
       coverage: outputCoverage,
       memories,
       paths: outputPaths,
-      stopReason: input.stopReason,
+      stopReason,
       evidenceConvergence: outputEvidenceConvergence,
     });
     const exposePlannerTrace = input.displayQuery === undefined || input.displayQuery === input.query;
     const outputPlannerTrace = exposePlannerTrace && input.plannerTrace
-      ? publicPlannerTrace(input.plannerTrace, privateSignalKeys, input.stopReason)
+      ? publicPlannerTrace(input.plannerTrace, privateSignalKeys, stopReason)
       : undefined;
     const outputAssociationCount = outputPlannerTrace
       ? outputPlannerTrace.steps.reduce((sum, step) => sum + step.exploredAssociationCount, 0)
@@ -2824,6 +2946,7 @@ function composeReconstructedContext(input: {
       paths,
       input.cueExtractor,
       input.inferTemporalCuesFromText,
+      memories,
     );
     evidenceConvergence = evidenceConvergenceForPaths({
       coverage,
@@ -2840,7 +2963,7 @@ function composeReconstructedContext(input: {
       coverage,
       memories,
       paths,
-      stopReason: input.stopReason,
+      stopReason,
       evidenceConvergence,
     });
     const output = outputState();
@@ -3030,7 +3153,30 @@ function composeReconstructedContext(input: {
     }
   }
 
-  const output = outputState();
+  let output = outputState();
+  if (stopReason === "evidence_sufficient" && !output.evidenceConvergence.reached) {
+    stopReason = "budget_exhausted";
+    const includeSweeps = input.sweepDraft !== undefined;
+    contextBlock = render(includeSweeps);
+    while (estimateTokens(contextBlock) > budget) {
+      if (paths.length > 0) {
+        paths = paths.slice(0, -1);
+      } else if (evidence.length > 0) {
+        evidence = evidence.slice(0, -1);
+      } else if (sweepCandidates.length > 0) {
+        const drop = [...sweepCandidates].sort(compareSweepCullPriority)[0];
+        if (!drop) break;
+        sweepCandidates = sweepCandidates.filter((candidate) => candidate.memory.id !== drop.memory.id);
+      } else if (memories.length > 0) {
+        if (input.layerPolicy) dropLayerAwareMemory(memories);
+        else memories = memories.slice(0, -1);
+      } else {
+        break;
+      }
+      contextBlock = render(includeSweeps);
+    }
+    output = outputState();
+  }
   const outputMemories = memories.map((memory) =>
     publicMemory(memory, hideInternalRouteSignals, privateOutputSignalKeySet),
   );
@@ -3062,7 +3208,7 @@ function composeReconstructedContext(input: {
       associationCount: output.associationCount,
       retrievedMemoryCount: memories.length,
       promptTokenEstimate: estimateTokens(contextBlock),
-      stopReason: input.stopReason,
+      stopReason,
       evidenceCoverage: output.coverage,
       uncertainty: output.uncertainty,
       evidenceConvergence: output.evidenceConvergence,
@@ -3195,7 +3341,7 @@ async function fallbackReconstruction(input: {
     }));
   }
   const memories = [...memoryById.values()];
-  const targetMemoryCount = Math.min(input.targetMemoryCount, Math.max(1, memories.length));
+  const targetMemoryCount = input.targetMemoryCount;
   const paths = memories.map((memory, index) => ({
     id: `fallback:${memory.id}`,
     step: 1,
@@ -3217,16 +3363,33 @@ async function fallbackReconstruction(input: {
     createdAt: memory.createdAt,
     ...(memoryAnchors.get(memory.id) ? { anchorCue: memoryAnchors.get(memory.id) } : {}),
   }));
-  const fallbackCoverage = evidenceCoverageForPaths(
+  const candidateCoverage = evidenceCoverageForPaths(
     input.query,
     paths,
     input.cueExtractor,
     input.inferTemporalCuesFromText,
   );
+  const safePaths = evidenceSupportingPaths({
+    paths,
+    coverage: candidateCoverage,
+    intent: input.intent,
+  });
+  const safeMemoryIds = new Set(
+    safePaths.flatMap((path) => [path.targetId, path.sourceMemoryId].filter(
+      (id): id is string => typeof id === "string" && id.length > 0,
+    )),
+  );
+  const safeMemories = memories.filter((memory) => safeMemoryIds.has(memory.id));
+  const fallbackCoverage = evidenceCoverageForPaths(
+    input.query,
+    safePaths,
+    input.cueExtractor,
+    input.inferTemporalCuesFromText,
+  );
   const fallbackConvergence = evidenceConvergenceForPaths({
     coverage: fallbackCoverage,
-    memories,
-    paths,
+    memories: safeMemories,
+    paths: safePaths,
     intent: input.intent,
     threshold: input.evidenceConvergenceThreshold,
     targetMemoryCount,
@@ -3234,10 +3397,8 @@ async function fallbackReconstruction(input: {
     prunedBranchCount: 0,
     frontierRemaining: 0,
   });
-  const safeMemories = fallbackConvergence.reached ? memories : [];
-  const safePaths = fallbackConvergence.reached ? paths : [];
   const stopReason =
-    memories.length === 0
+    safeMemories.length === 0 && safePaths.length === 0
       ? "no_frontier"
       : fallbackConvergence.reached
         ? "evidence_sufficient"
@@ -3594,9 +3755,8 @@ export async function reconstructMemoryContext(input: {
         );
         continue;
       }
-      if (seenMemoryIds.has(association.targetId)) continue;
       const memory = await sourceMemoryForAssociation(association);
-      if (!memory) continue;
+      if (!memory || seenMemoryIds.has(memory.id)) continue;
       const sourceRejectReason = sourceScopeRejectReason(memory, intent, selectedSourceCues);
       if (sourceRejectReason) {
         prunedBranchCount += 1;
@@ -3619,11 +3779,22 @@ export async function reconstructMemoryContext(input: {
         stepTrace.branches.push(traceBranchFromPath(path, "pruned", "anchor_lane_reserved_memory_slot"));
         continue;
       }
+      const resolvedPath: ReconstructedEvidencePath = {
+        ...path,
+        targetId: memory.id,
+        sourceMemoryId: memory.id,
+        sourceEvidenceId: path.sourceEvidenceId ?? memory.sourceEventId,
+      };
       enqueueGeneratedCues();
-      paths.push(path);
+      paths.push(resolvedPath);
       stepTrace.selectedBranchCount += 1;
       stepTrace.branches.push(
-        traceBranchFromPath(path, "selected", path.routeReason ?? ranked.routeReason, generatedCues),
+        traceBranchFromPath(
+          resolvedPath,
+          "selected",
+          resolvedPath.routeReason ?? ranked.routeReason,
+          generatedCues,
+        ),
       );
       seenMemoryIds.add(memory.id);
       memories.push(memory);
@@ -3795,26 +3966,10 @@ export async function reconstructMemoryContext(input: {
       fallbackStep: stepCountForTrace(paths),
     });
     if (hybridStep) plannerSteps.push(hybridStep);
-    const convergenceAfterHybrid = evidenceConvergenceForPaths({
-      coverage: evidenceCoverageForPaths(
-        query,
-        paths,
-        input.cueExtractor,
-        inferTemporalCuesFromText,
-      ),
-      memories,
-      paths,
-      intent,
-      threshold: evidenceConvergenceThreshold,
-      targetMemoryCount,
-      stopWhenEvidenceEnough,
-      prunedBranchCount,
-      frontierRemaining: frontier.length,
-    });
     if (
       wideSupplyRequested &&
       memories.length < candidateMemoryLimit &&
-      (!stopWhenEvidenceEnough || !convergenceAfterHybrid.reached)
+      !stopWhenEvidenceEnough
     ) {
       const saturationTrace = await fuseDirectMemorySearch({
         store: input.store,

@@ -6656,6 +6656,42 @@ const projectHistoricalKeywordAutoReconstruction = await projectRuleMemory.recon
   temporalMode: "auto",
 });
 assert.match(projectHistoricalKeywordAutoReconstruction.contextBlock, /Bluepath/);
+for (const historicalTimeQuery of [
+  "What was Project Iris's plan in January?",
+  "Which Project Iris plan did the team use?",
+]) {
+  const historicalTimeReconstruction = await projectRuleMemory.reconstructContext({
+    profileId: "project_history_rule",
+    query: historicalTimeQuery,
+    temporalMode: "auto",
+  });
+  assert.match(historicalTimeReconstruction.contextBlock, /Bluepath/);
+}
+for (const prospectivePlanQuery of [
+  "May I use Project Iris's plan?",
+  "What will Project Iris use in March?",
+  "How do I contact Will about Project Iris's current plan?",
+  "How many Project Iris plans are currently active?",
+]) {
+  const prospectivePlanReconstruction = await projectRuleMemory.reconstructContext({
+    profileId: "project_history_rule",
+    query: prospectivePlanQuery,
+    temporalMode: "auto",
+  });
+  assert.match(prospectivePlanReconstruction.contextBlock, /Greenline/);
+  assert.doesNotMatch(prospectivePlanReconstruction.contextBlock, /Bluepath/);
+}
+for (const mixedHistoricalQuery of [
+  "What was Project Iris's previous plan before its current status?",
+  "How much of Project Iris's plan changed since I started going to the gym consistently?",
+]) {
+  const mixedHistoricalReconstruction = await projectRuleMemory.reconstructContext({
+    profileId: "project_history_rule",
+    query: mixedHistoricalQuery,
+    temporalMode: "auto",
+  });
+  assert.match(mixedHistoricalReconstruction.contextBlock, /Bluepath/);
+}
 const projectHistoricalKeywordAutoForcedCurrent = await projectRuleMemory.reconstructContext({
   profileId: "project_history_rule",
   query: "What plan did Project Iris previously use?",
@@ -7225,6 +7261,41 @@ assert.equal(fallbackOnlyReconstruction.stats.uncertainty?.level, "high");
 assert.ok((fallbackOnlyReconstruction.stats.evidenceCoverage?.coverageRate ?? 1) < 0.5);
 assert.equal(fallbackOnlyReconstruction.stats.evidenceConvergence?.reached, false);
 await fallbackOnlyMemory.close();
+
+const partialFallbackMemories: MemoryRecord[] = ["alpha", "beta"].map((value, index) => ({
+  id: `memory_partial_fallback_${value}`,
+  profileId: "partial-fallback",
+  kind: "fact",
+  scope: "global",
+  content: `PartialFallbackKey relevant value ${value}.`,
+  sensitivity: "normal",
+  status: "active",
+  confidence: 0.9,
+  metadata: {},
+  createdAt: `2026-06-2${index + 5}T00:00:00.000Z`,
+  updatedAt: `2026-06-2${index + 5}T00:00:00.000Z`,
+}));
+const partialFallbackReconstruction = await reconstructMemoryContext({
+  store: {
+    searchMemories() {
+      return partialFallbackMemories;
+    },
+    listEvidenceForMemory() {
+      return [];
+    },
+  } as unknown as MemoryStore,
+  defaultProfileId: "partial-fallback",
+  request: {
+    profileId: "partial-fallback",
+    query: "How many PartialFallbackKey entries are there in total?",
+    maxMemories: 48,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: true,
+  },
+});
+assert.equal(partialFallbackReconstruction.memories.length, 2);
+assert.equal(partialFallbackReconstruction.stats.evidenceConvergence.reached, false);
+assert.equal(partialFallbackReconstruction.stats.stopReason, "no_frontier");
 
 const fallbackSourceScopeMemories: MemoryRecord[] = [
   {
@@ -29743,7 +29814,10 @@ const countExactContentOccurrences = (text: string, content: string): number =>
 const duplicateWideFillers = Array.from({ length: 80 }, (_entry, index) =>
   layerMemory(`memory_duplicate_wide_${index}`, "atom", `DuplicateWideKey filler fact ${index}.`)
 );
-const duplicateWideAssociations: MemoryAssociationRecord[] = ["alias_a", "alias_b"].map((targetId, index) => ({
+const duplicateWideAssociations: MemoryAssociationRecord[] = Array.from(
+  { length: 30 },
+  (_entry, index) => `alias_${index}`,
+).map((targetId, index) => ({
   id: `assoc_duplicate_wide_${index}`,
   profileId: "layer",
   cue: "DuplicateWideKey",
@@ -29806,6 +29880,163 @@ assert.equal(
   countExactContentOccurrences(duplicateWideContext.contextBlock, duplicateWideShared.content),
   1,
 );
+const duplicateAggregateContext = await reconstructMemoryContext({
+  store: duplicateWideStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many DuplicateWideKey facts are there in total?",
+    maxMemories: 30,
+    maxSteps: 8,
+    maxBranch: 12,
+    contextBudgetTokens: 100000,
+    stopWhenEvidenceEnough: true,
+    layerPolicy: { summaryMinShare: 0.1, turnMaxShare: 1 },
+  },
+});
+assert.equal(duplicateAggregateContext.memories.length, 30);
+assert.equal(
+  new Set(duplicateAggregateContext.memories.map((memoryRecord) => memoryRecord.id)).size,
+  30,
+);
+const duplicateBeliefAssociations: MemoryAssociationRecord[] = Array.from(
+  { length: 30 },
+  (_entry, index) => ({
+    id: `assoc_duplicate_belief_${index}`,
+    profileId: "layer",
+    cue: "DuplicateBeliefKey",
+    cueKind: "lexical" as const,
+    tag: "fact",
+    targetType: "world_belief" as const,
+    targetId: "belief_duplicate_shared",
+    targetKind: "world_belief",
+    targetSummary: "DuplicateBeliefKey shared belief.",
+    sensitivity: "normal" as const,
+    status: "active" as const,
+    confidence: 0.9,
+    sourceMemoryId: null,
+    createdAt: layerNow,
+    updatedAt: layerNow,
+  }),
+);
+const duplicateBeliefContext = await reconstructMemoryContext({
+  store: {
+    searchAssociations(input: { limit?: number | undefined }) {
+      return duplicateBeliefAssociations.slice(0, input.limit ?? duplicateBeliefAssociations.length);
+    },
+    getMemoryById() {
+      return null;
+    },
+    searchMemories() {
+      return [];
+    },
+    listEvidenceForMemory() {
+      return [];
+    },
+  } as unknown as MemoryStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "How many DuplicateBeliefKey facts are there in total?",
+    maxMemories: 30,
+    maxSteps: 8,
+    maxBranch: 12,
+    contextBudgetTokens: 100000,
+    stopWhenEvidenceEnough: true,
+  },
+});
+assert.equal(duplicateBeliefContext.stats.evidenceConvergence.reached, false);
+for (const [queryCue, unrelatedWord] of [
+  ["art", "party"],
+  ["car", "card"],
+] as const) {
+  const substringCollisionAssociations: MemoryAssociationRecord[] = Array.from(
+    { length: 48 },
+    (_entry, index) => ({
+      ...duplicateBeliefAssociations[0]!,
+      id: `assoc_substring_collision_${queryCue}_${index}`,
+      cue: unrelatedWord,
+      targetId: `belief_substring_collision_${queryCue}_${index}`,
+      targetSummary: `${unrelatedWord} unrelated filler ${index}.`,
+    }),
+  );
+  const substringCollisionContext = await reconstructMemoryContext({
+    store: {
+      searchAssociations() {
+        return substringCollisionAssociations;
+      },
+      getMemoryById() {
+        return null;
+      },
+      searchMemories() {
+        return [];
+      },
+      listEvidenceForMemory() {
+        return [];
+      },
+    } as unknown as MemoryStore,
+    defaultProfileId: "layer",
+    request: {
+      profileId: "layer",
+      query: `How many ${queryCue} facts are there in total?`,
+      maxMemories: 48,
+      maxSteps: 8,
+      maxBranch: 12,
+      contextBudgetTokens: 100000,
+      stopWhenEvidenceEnough: true,
+    },
+  });
+  assert.equal(substringCollisionContext.stats.evidenceConvergence.reached, false);
+}
+const mixedEvidenceMemory = layerMemory(
+  "memory_mixed_evidence",
+  "atom",
+  "MixedEvidenceKey memory fact.",
+);
+const mixedEvidenceAssociations: MemoryAssociationRecord[] = [
+  {
+    ...duplicateWideAssociations[0]!,
+    id: "assoc_mixed_evidence_memory",
+    cue: "MixedEvidenceKey",
+    targetId: mixedEvidenceMemory.id,
+    targetSummary: mixedEvidenceMemory.content,
+    sourceMemoryId: mixedEvidenceMemory.id,
+  },
+  {
+    ...duplicateBeliefAssociations[0]!,
+    id: "assoc_mixed_evidence_belief",
+    cue: "MixedEvidenceKey",
+    targetId: "belief_mixed_evidence",
+    targetSummary: "MixedEvidenceKey independent belief fact.",
+  },
+];
+const mixedEvidenceContext = await reconstructMemoryContext({
+  store: {
+    searchAssociations() {
+      return mixedEvidenceAssociations;
+    },
+    getMemoryById(_profileId: string, id: string) {
+      return id === mixedEvidenceMemory.id ? mixedEvidenceMemory : null;
+    },
+    searchMemories() {
+      return [mixedEvidenceMemory];
+    },
+    listEvidenceForMemory() {
+      return [];
+    },
+  } as unknown as MemoryStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "MixedEvidenceKey",
+    maxMemories: 2,
+    maxSteps: 2,
+    maxBranch: 2,
+    contextBudgetTokens: 4000,
+    stopWhenEvidenceEnough: true,
+  },
+});
+assert.equal(mixedEvidenceContext.stats.evidenceConvergence.reached, true);
 const duplicateWidePathSection = duplicateWideContext.contextBlock.slice(
   duplicateWideContext.contextBlock.indexOf("Reconstructed evidence paths:"),
 );
@@ -29906,6 +30137,20 @@ await wideSupplyMemory.add({
   content: "WideSupplyForgotten archived row.",
   confidence: 0.9,
 });
+await wideSupplyMemory.addMany([
+  {
+    profileId: "wide-supply",
+    kind: "fact",
+    content: "SparseAggregateKey relevant value alpha.",
+    confidence: 0.9,
+  },
+  {
+    profileId: "wide-supply",
+    kind: "fact",
+    content: "SparseAggregateKey relevant value beta.",
+    confidence: 0.9,
+  },
+]);
 const wideSupplyForget = await wideSupplyMemory.forget({
   profileId: "wide-supply",
   query: "WideSupplyForgotten",
@@ -29940,12 +30185,71 @@ const aggregateWideSupplyContext = await wideSupplyMemory.reconstructContext({
   query: "How many WideSupplyKey entries are there in total?",
   stopWhenEvidenceEnough: true,
 });
-assert.equal(aggregateWideSupplyContext.memories.length >= 16, true);
-assert.equal(aggregateWideSupplyContext.memories.length < 50, true);
+assert.equal(aggregateWideSupplyContext.memories.length >= 48, true);
+assert.equal(aggregateWideSupplyContext.memories.length < 80, true);
 assert.equal(
   aggregateWideSupplyContext.memories.length > convergedWideSupplyContext.memories.length,
   true,
 );
+const explicitMultiWideSupplyContext = await wideSupplyMemory.reconstructContext({
+  ...wideSupplyRequest,
+  query: "What were the values for both WideSupplyKey groups?",
+  stopWhenEvidenceEnough: true,
+});
+assert.equal(explicitMultiWideSupplyContext.memories.length >= 4, true);
+assert.equal(explicitMultiWideSupplyContext.memories.length < 48, true);
+for (const boundedQuantityQuery of [
+  "What happened to WideSupplyKey two weeks ago?",
+  "Did WideSupplyKey require two-factor authentication?",
+  "Which WideSupplyKey item involved purchasing three cows?",
+  "What were the two WideSupplyKey songs?",
+]) {
+  const boundedQuantityContext = await wideSupplyMemory.reconstructContext({
+    ...wideSupplyRequest,
+    query: boundedQuantityQuery,
+    stopWhenEvidenceEnough: true,
+  });
+  assert.equal(boundedQuantityContext.memories.length < 48, true);
+}
+const sparseAggregateContext = await wideSupplyMemory.reconstructContext({
+  ...wideSupplyRequest,
+  query: "How many SparseAggregateKey entries are there in total?",
+  stopWhenEvidenceEnough: true,
+});
+assert.equal(sparseAggregateContext.memories.length, 2);
+assert.equal(
+  sparseAggregateContext.memories.filter((memoryRecord) =>
+    memoryRecord.content.includes("SparseAggregateKey")
+  ).length,
+  2,
+);
+assert.equal(sparseAggregateContext.stats.evidenceConvergence.reached, false);
+const finiteEnumerationContext = await wideSupplyMemory.reconstructContext({
+  ...wideSupplyRequest,
+  query: "What is the order of the six WideSupplyKey museums?",
+  stopWhenEvidenceEnough: true,
+});
+assert.equal(finiteEnumerationContext.memories.length >= 6, true);
+assert.equal(finiteEnumerationContext.memories.length < 48, true);
+const pathCulledOnlyAggregateContext = await wideSupplyMemory.reconstructContext({
+  ...wideSupplyRequest,
+  query: "How many WideSupplyKey entries are there in total?",
+  contextBudgetTokens: 2500,
+  stopWhenEvidenceEnough: true,
+});
+assert.equal(pathCulledOnlyAggregateContext.memories.length >= 48, true);
+assert.equal(pathCulledOnlyAggregateContext.paths.length < 48, true);
+assert.equal(pathCulledOnlyAggregateContext.stats.evidenceConvergence.reached, true);
+assert.equal(pathCulledOnlyAggregateContext.stats.stopReason, "evidence_sufficient");
+assert.equal(pathCulledOnlyAggregateContext.stats.promptTokenEstimate <= 2500, true);
+const budgetCulledAggregateContext = await wideSupplyMemory.reconstructContext({
+  ...wideSupplyRequest,
+  query: "How many WideSupplyKey entries are there in total?",
+  contextBudgetTokens: 900,
+  stopWhenEvidenceEnough: true,
+});
+assert.equal(budgetCulledAggregateContext.stats.evidenceConvergence.reached, false);
+assert.equal(budgetCulledAggregateContext.stats.stopReason, "budget_exhausted");
 assert.equal(
   wideSupplyContext.memories.some((memoryRecord) => memoryRecord.content.includes("person gated")),
   false,
