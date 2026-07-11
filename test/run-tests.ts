@@ -32056,6 +32056,95 @@ assert.deepEqual(partialRerankerOrder, [
     (id) => id !== rerankerContractCandidateIds[2] && id !== rerankerContractCandidateIds[0],
   ),
 ]);
+const reconstructionRerankerStore = createSqliteMemoryStore({
+  path: path.join(tmp, "reconstruction-reranker-root-query.db"),
+});
+const reconstructionRerankerCalls: Array<{ query: string; snippets: string[] }> = [];
+const reconstructionRerankerMemory = createMemoryOS({
+  profileId: "reconstruction-reranker-root-query",
+  store: reconstructionRerankerStore,
+  extractor: () => [],
+  retrieval: {
+    reranker: (candidates, context) => {
+      reconstructionRerankerCalls.push({
+        query: context?.query ?? "",
+        snippets: candidates.map((candidate) => candidate.snippet),
+      });
+      return candidates.map((candidate) => candidate.id);
+    },
+  },
+});
+await reconstructionRerankerMemory.addMany([
+  {
+    profileId: "reconstruction-reranker-root-query",
+    kind: "fact",
+    content: "RootRerankIntent baseline evidence.",
+    confidence: 0.9,
+  },
+  {
+    profileId: "reconstruction-reranker-root-query",
+    kind: "fact",
+    content: "DirectLaneProbe exclusive required-anchor evidence.",
+    confidence: 0.9,
+  },
+  {
+    profileId: "reconstruction-reranker-root-query",
+    kind: "fact",
+    content: "SweepLaneProbe exclusive sweep evidence.",
+    confidence: 0.9,
+  },
+]);
+const reconstructionRerankerRootQuery =
+  "How many RootRerankIntent entries are there in total?";
+const reconstructionRerankerIntent = {
+  requiredAnchors: [{ cue: "DirectLaneProbe" }],
+  sweepCues: ["SweepLaneProbe"],
+};
+function assertReconstructionRerankerUsesRootQuery(): void {
+  for (const probe of ["DirectLaneProbe", "SweepLaneProbe"]) {
+    const probeCalls = reconstructionRerankerCalls.filter((call) =>
+      call.snippets.some((snippet) => snippet.includes(probe))
+    );
+    assert.equal(probeCalls.length > 0, true);
+    assert.equal(
+      probeCalls.every((call) => call.query === reconstructionRerankerRootQuery),
+      true,
+    );
+  }
+}
+await reconstructionRerankerMemory.reconstructContext({
+  profileId: "reconstruction-reranker-root-query",
+  query: reconstructionRerankerRootQuery,
+  maxMemories: 8,
+  contextBudgetTokens: 4000,
+  stopWhenEvidenceEnough: false,
+  reconstructionIntent: reconstructionRerankerIntent,
+});
+assertReconstructionRerankerUsesRootQuery();
+reconstructionRerankerCalls.length = 0;
+await reconstructionRerankerMemory.explainEvidencePath({
+  profileId: "reconstruction-reranker-root-query",
+  query: reconstructionRerankerRootQuery,
+  maxMemories: 8,
+  contextBudgetTokens: 4000,
+  stopWhenEvidenceEnough: false,
+  reconstructionIntent: reconstructionRerankerIntent,
+});
+assertReconstructionRerankerUsesRootQuery();
+reconstructionRerankerCalls.length = 0;
+await reconstructionRerankerMemory.prepareTurn({
+  profileId: "reconstruction-reranker-root-query",
+  messages: [{ role: "user", content: reconstructionRerankerRootQuery }],
+  contextBudgetTokens: 4000,
+  reconstruction: {
+    mode: "shadow",
+    maxMemories: 8,
+    stopWhenEvidenceEnough: false,
+    reconstructionIntent: reconstructionRerankerIntent,
+  },
+});
+assertReconstructionRerankerUsesRootQuery();
+await reconstructionRerankerMemory.close();
 const throwingRerankerContractMemory = createMemoryOS({
   profileId: "reranker-contract",
   store: rerankerContractStore,

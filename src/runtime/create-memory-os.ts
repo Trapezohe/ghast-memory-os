@@ -1933,6 +1933,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     queryEmbedding?: QueryVectorEmbedding | null | undefined,
     preserveAuthorityMarker = false,
     preserveFusionScoreOnOutput = false,
+    rerankQuery?: string | undefined,
   ): Promise<MemoryRecord[]> {
     const resolvedQueryEmbedding =
       input.queryEmbedding === null
@@ -1954,7 +1955,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const reranked = await callRetrievalReranker({
       retrieval,
       memories,
-      query: input.query?.trim() ?? "",
+      query: rerankQuery?.trim() || input.query?.trim() || "",
       ...(input.asOf ? { asOf: input.asOf } : {}),
       ...(input.purpose ? { purpose: input.purpose } : {}),
     });
@@ -1965,11 +1966,19 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   function storeWithRetrieval(
     readRetrieval?: MemoryReadRetrievalOptions | undefined,
     queryEmbedding?: QueryVectorEmbedding | null | undefined,
+    rerankQuery?: string | undefined,
   ) {
     return {
       ...store,
       searchMemories(input: MemorySearchInput) {
-        return searchMemoriesWithRetrieval(input, readRetrieval, queryEmbedding, true, true);
+        return searchMemoriesWithRetrieval(
+          input,
+          readRetrieval,
+          queryEmbedding,
+          true,
+          true,
+          rerankQuery,
+        );
       },
       async getMemoryById(
         profileId: string,
@@ -4133,7 +4142,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const reconstruction =
       input.reconstruction?.mode === "shadow"
         ? await reconstructMemoryContext({
-            store: storeWithRetrieval(input.retrieval, queryEmbedding),
+            store: storeWithRetrieval(input.retrieval, queryEmbedding, query),
             defaultProfileId,
             cueExtractor: options.reconstruction?.cueExtractor,
             inferTemporalCuesFromText: options.reconstruction?.inferTemporalCuesFromText,
@@ -4321,12 +4330,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       request: sanitizedReconstructRequest(input, classifyRuntimeSensitivity),
       defaultPreset: defaultDisposition,
     });
-    const queryEmbedding = await queryEmbeddingForSearch(
-      reconstructQueryForEmbedding(disposition.request),
-      input.retrieval,
-    ) ?? null;
+    const reconstructionQuery = reconstructQueryForEmbedding(disposition.request);
+    const queryEmbedding = await queryEmbeddingForSearch(reconstructionQuery, input.retrieval) ?? null;
     const reconstructed = await reconstructMemoryContext({
-      store: storeWithRetrieval(input.retrieval, queryEmbedding),
+      store: storeWithRetrieval(input.retrieval, queryEmbedding, reconstructionQuery),
       defaultProfileId,
       cueExtractor: options.reconstruction?.cueExtractor,
       inferTemporalCuesFromText: options.reconstruction?.inferTemporalCuesFromText,
@@ -4355,12 +4362,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       }, classifyRuntimeSensitivity),
       defaultPreset: defaultDisposition,
     });
-    const queryEmbedding = await queryEmbeddingForSearch(
-      reconstructQueryForEmbedding(disposition.request),
-      input.retrieval,
-    ) ?? null;
+    const reconstructionQuery = reconstructQueryForEmbedding(disposition.request);
+    const queryEmbedding = await queryEmbeddingForSearch(reconstructionQuery, input.retrieval) ?? null;
     const reconstructed = await reconstructMemoryContext({
-      store: storeWithRetrieval(input.retrieval, queryEmbedding),
+      store: storeWithRetrieval(input.retrieval, queryEmbedding, reconstructionQuery),
       defaultProfileId,
       cueExtractor: options.reconstruction?.cueExtractor,
       inferTemporalCuesFromText: options.reconstruction?.inferTemporalCuesFromText,
