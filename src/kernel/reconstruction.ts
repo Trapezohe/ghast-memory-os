@@ -1671,7 +1671,28 @@ function inferTemporalRecallPurpose(
   if (recallPurpose === "history" || recallPurpose === "context") return recallPurpose;
   if (temporalMode === "history") return "history";
   if (temporalMode === "current") return "context";
+  if (temporalMode === "auto") return autoTemporalRecallPurpose(query);
   return "context";
+}
+
+function autoTemporalRecallPurpose(query: string): ReconstructionRecallPurpose {
+  const normalized = query.normalize("NFC").toLowerCase();
+  const explicitlyCurrent =
+    /\b(?:as of now|at present|current|currently|latest|most recent|now|right now|today)\b/u.test(normalized) ||
+    /(?:当前|目前|现在|如今|最新)/u.test(normalized);
+  if (explicitlyCurrent) return "context";
+
+  const explicitlyHistorical = [
+    /\b(?:before|earlier|formerly|historical|history|originally|past|previous|previously|prior|used to)\b/u,
+    /\b(?:across all|all time|altogether|between|combined|cumulative|over time|since|so far|to date|total)\b/u,
+    /\bhow (?:long|many|much|often)\b/u,
+    /\b(?:last|past)\s+(?:few\s+)?(?:days?|weeks?|months?|years?)\b/u,
+    /\b(?:what date|when)\b/u,
+    /(?:曾经|之前|以前|过去|历史|原来|最初|总共|一共|累计|合计|以来|之间|多少|多久|何时|什么时候)/u,
+  ];
+  return explicitlyHistorical.some((pattern) => pattern.test(normalized))
+    ? "history"
+    : "context";
 }
 
 function seedFrontier(

@@ -6643,6 +6643,27 @@ const projectHistoricalKeywordDefaultReconstruction = await projectRuleMemory.re
 });
 assert.match(projectHistoricalKeywordDefaultReconstruction.contextBlock, /Greenline/);
 assert.doesNotMatch(projectHistoricalKeywordDefaultReconstruction.contextBlock, /Bluepath/);
+const projectHistoricalKeywordAutoReconstruction = await projectRuleMemory.reconstructContext({
+  profileId: "project_history_rule",
+  query: "What plan did Project Iris previously use?",
+  temporalMode: "auto",
+});
+assert.match(projectHistoricalKeywordAutoReconstruction.contextBlock, /Bluepath/);
+const projectHistoricalKeywordAutoForcedCurrent = await projectRuleMemory.reconstructContext({
+  profileId: "project_history_rule",
+  query: "What plan did Project Iris previously use?",
+  temporalMode: "auto",
+  recallPurpose: "context",
+});
+assert.match(projectHistoricalKeywordAutoForcedCurrent.contextBlock, /Greenline/);
+assert.doesNotMatch(projectHistoricalKeywordAutoForcedCurrent.contextBlock, /Bluepath/);
+const projectCurrentKeywordAutoReconstruction = await projectRuleMemory.reconstructContext({
+  profileId: "project_history_rule",
+  query: "What plan does Project Iris currently use?",
+  temporalMode: "auto",
+});
+assert.match(projectCurrentKeywordAutoReconstruction.contextBlock, /Greenline/);
+assert.doesNotMatch(projectCurrentKeywordAutoReconstruction.contextBlock, /Bluepath/);
 const projectPassiveUsedToCurrentPlanReconstruction = await projectRuleMemory.reconstructContext({
   profileId: "project_history_rule",
   query: "What is Project Iris used to track currently?",
