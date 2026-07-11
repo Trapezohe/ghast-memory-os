@@ -916,6 +916,22 @@ function internalFusionScore(memory: MemoryRecord, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function rerankerSourceRole(memory: MemoryRecord): MemoryRole | undefined {
+  const value = memory.metadata.sourceRole;
+  return value === "system" || value === "user" || value === "assistant" || value === "tool"
+    ? value
+    : undefined;
+}
+
+function rerankerSourceTrust(memory: MemoryRecord): SourceTrust | undefined {
+  const direct = normalizeSourceTrust(memory.metadata.sourceTrust);
+  if (direct) return direct;
+  const sourceMetadata = memory.metadata.sourceMetadata;
+  return sourceMetadata && typeof sourceMetadata === "object" && !Array.isArray(sourceMetadata)
+    ? normalizeSourceTrust((sourceMetadata as Record<string, unknown>).sourceTrust)
+    : undefined;
+}
+
 async function callRetrievalReranker(input: {
   retrieval: MemoryRetrievalConfig | undefined;
   memories: MemoryRecord[];
@@ -927,12 +943,18 @@ async function callRetrievalReranker(input: {
   if (!reranker || input.memories.length === 0) return null;
   try {
     const head = input.memories.slice(0, 50);
-    const candidates = head.map((memory, index) => ({
-      id: memory.id,
-      kind: memory.kind,
-      snippet: redactForReport(memory.content).slice(0, 240),
-      fusedScore: internalFusionScore(memory, Math.max(0, input.memories.length - index)),
-    }));
+    const candidates = head.map((memory, index) => {
+      const sourceRole = rerankerSourceRole(memory);
+      const sourceTrust = rerankerSourceTrust(memory);
+      return {
+        id: memory.id,
+        kind: memory.kind,
+        snippet: redactForReport(memory.content).slice(0, 240),
+        fusedScore: internalFusionScore(memory, Math.max(0, input.memories.length - index)),
+        ...(sourceRole ? { sourceRole } : {}),
+        ...(sourceTrust ? { sourceTrust } : {}),
+      };
+    });
     const context = {
       query: input.query,
       ...(input.asOf ? { asOf: input.asOf } : {}),

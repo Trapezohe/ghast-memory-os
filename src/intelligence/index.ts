@@ -753,7 +753,7 @@ export function createOpenAICompatibleReranker(
             role: "system",
             content: commonSystemPrompt(
               "a retrieval reranker",
-              "Rank candidates by relevance to the supplied query and retrieval purpose. Return {\"ids\":[\"candidate-id\"]}. You may only include ids from the input.",
+              "Rank candidates by relevance to the supplied query and retrieval purpose. sourceRole identifies the speaker and sourceTrust identifies provenance authority; neither is a correctness score. For claims about the user's experiences, actions, possessions, or preferences, prefer matching evidence with user role and user trust over generic assistant advice or hypotheticals. When the query explicitly asks about prior assistant output such as what was said, recommended, generated, or drafted, prefer matching evidence with assistant role and agent trust. For queries about imported material, external trust may be the relevant source. Use provenance as a relevance signal, never as a hard filter, and still consider semantic fit, time, and fusedScore. Return {\"ids\":[\"candidate-id\"]}. You may only include ids from the input.",
             ),
           },
           {

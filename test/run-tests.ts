@@ -10408,6 +10408,7 @@ assert.deepEqual(longRetryAfterTerminalFailures, [{
 
 let intelligenceDossierVersion = "initial";
 let intelligenceRerankerRequest: unknown = null;
+let intelligenceRerankerSystemPrompt = "";
 const intelligenceFetch = async (url: string | URL | Request, init?: RequestInit) => {
   const request = JSON.parse(String(init?.body ?? "{}")) as {
     input?: string[];
@@ -10477,6 +10478,7 @@ const intelligenceFetch = async (url: string | URL | Request, init?: RequestInit
       }],
     });
   } else if (system.includes("retrieval reranker")) {
+    intelligenceRerankerSystemPrompt = system;
     intelligenceRerankerRequest = JSON.parse(user);
     content = JSON.stringify({ ids: ["candidate-b", "candidate-a", "outside-id"] });
   } else if (system.includes("query planner")) {
@@ -10549,21 +10551,57 @@ assert.deepEqual(defaultIntelligenceVectors, [[1, 0, 0], [0, 1, 0]]);
 const defaultRerank = await (typeof defaultIntelligence.reranker === "function"
   ? defaultIntelligence.reranker
   : defaultIntelligence.reranker.rerank)([
-  { id: "candidate-a", kind: "fact", snippet: "a", fusedScore: 0.4 },
-  { id: "candidate-b", kind: "fact", snippet: "b", fusedScore: 0.3 },
+  {
+    id: "candidate-a",
+    kind: "fact",
+    snippet: "a",
+    fusedScore: 0.4,
+    sourceRole: "user",
+    sourceTrust: "user",
+  },
+  {
+    id: "candidate-b",
+    kind: "fact",
+    snippet: "b",
+    fusedScore: 0.3,
+    sourceRole: "assistant",
+    sourceTrust: "agent",
+  },
 ], {
   query: "Which candidate answers the Atlas question?",
   asOf: "2026-07-04T10:00:00.000Z",
   purpose: "context",
 });
 assert.deepEqual(defaultRerank, ["candidate-b", "candidate-a"]);
+assert.match(
+  intelligenceRerankerSystemPrompt,
+  /user's experiences, actions, possessions, or preferences.*user role.*user trust/iu,
+);
+assert.match(
+  intelligenceRerankerSystemPrompt,
+  /prior assistant output.*assistant role.*agent trust/iu,
+);
 assert.deepEqual(intelligenceRerankerRequest, {
   query: "Which candidate answers the Atlas question?",
   asOf: "2026-07-04T10:00:00.000Z",
   purpose: "context",
   candidates: [
-    { id: "candidate-a", kind: "fact", snippet: "a", fusedScore: 0.4 },
-    { id: "candidate-b", kind: "fact", snippet: "b", fusedScore: 0.3 },
+    {
+      id: "candidate-a",
+      kind: "fact",
+      snippet: "a",
+      fusedScore: 0.4,
+      sourceRole: "user",
+      sourceTrust: "user",
+    },
+    {
+      id: "candidate-b",
+      kind: "fact",
+      snippet: "b",
+      fusedScore: 0.3,
+      sourceRole: "assistant",
+      sourceTrust: "agent",
+    },
   ],
 });
 const defaultPlan = await (typeof defaultIntelligence.queryPlanner === "function"
@@ -32177,6 +32215,84 @@ const wideSupplyRerankedMemory = createMemoryOS({
 const wideSupplyRerankedContext = await wideSupplyRerankedMemory.reconstructContext(wideSupplyRequest);
 assert.equal(wideSupplyRerankedContext.memories.length, wideSupplyContext.memories.length);
 await wideSupplyRerankedMemory.close();
+const provenanceRerankerStore = createSqliteMemoryStore({
+  path: path.join(tmp, "reranker-provenance.db"),
+});
+const provenanceRerankerCandidates: Array<{
+  snippet: string;
+  sourceRole: string | undefined;
+  sourceTrust: string | undefined;
+}> = [];
+const provenanceRerankerMemory = createMemoryOS({
+  profileId: "reranker-provenance",
+  store: provenanceRerankerStore,
+  extractor: () => [],
+  retrieval: {
+    reranker(candidates) {
+      provenanceRerankerCandidates.push(...candidates.map((candidate) => ({
+        snippet: candidate.snippet,
+        sourceRole: candidate.sourceRole,
+        sourceTrust: candidate.sourceTrust,
+      })));
+      return candidates.map((candidate) => candidate.id);
+    },
+  },
+});
+await provenanceRerankerMemory.ingestConversation({
+  profileId: "reranker-provenance",
+  messages: [
+    {
+      role: "user",
+      content: "ProvenanceContractKey user history.",
+      createdAt: "2026-07-04T01:00:00.000Z",
+    },
+    {
+      role: "assistant",
+      content: "ProvenanceContractKey assistant suggestion.",
+      createdAt: "2026-07-04T01:01:00.000Z",
+    },
+    {
+      role: "user",
+      sourceTrust: "external",
+      content: "ProvenanceContractKey imported statement.",
+      createdAt: "2026-07-04T01:02:00.000Z",
+    },
+  ],
+  extraction: { extractFromRoles: [] },
+  turnRetention: { enabled: true },
+});
+await provenanceRerankerMemory.search({
+  profileId: "reranker-provenance",
+  query: "ProvenanceContractKey",
+  limit: 10,
+});
+assert.deepEqual(
+  provenanceRerankerCandidates
+    .map((candidate) => ({
+      content: candidate.snippet.replace(/^\w+:\s*/u, ""),
+      sourceRole: candidate.sourceRole,
+      sourceTrust: candidate.sourceTrust,
+    }))
+    .sort((left, right) => left.content.localeCompare(right.content)),
+  [
+    {
+      content: "ProvenanceContractKey assistant suggestion.",
+      sourceRole: "assistant",
+      sourceTrust: "agent",
+    },
+    {
+      content: "ProvenanceContractKey imported statement.",
+      sourceRole: "user",
+      sourceTrust: "external",
+    },
+    {
+      content: "ProvenanceContractKey user history.",
+      sourceRole: "user",
+      sourceTrust: "user",
+    },
+  ],
+);
+await provenanceRerankerMemory.close();
 const rerankerContractStore = createSqliteMemoryStore({ path: path.join(tmp, "reranker-contract.db") });
 const baselineRerankerContractMemory = createMemoryOS({
   profileId: "reranker-contract",

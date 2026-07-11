@@ -830,6 +830,8 @@ export interface MemoryRetrievalRerankerCandidate {
   kind: MemoryKind;
   snippet: string;
   fusedScore: number;
+  sourceRole?: MemoryRole | undefined;
+  sourceTrust?: SourceTrust | undefined;
 }
 
 export type MemoryRetrievalReranker =
