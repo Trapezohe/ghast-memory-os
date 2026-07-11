@@ -3775,10 +3775,17 @@ const windowEvidenceIds = Array.isArray(windowedStored?.metadata.windowEvidenceI
   ? windowedStored.metadata.windowEvidenceIds.filter((entry): entry is string => typeof entry === "string")
   : [];
 assert.equal(windowedStored?.confidence, 0.65);
-assert.equal(windowedStored?.sourceEventId, windowEvidenceIds[11]);
+assert.equal(windowedStored?.sourceEventId, windowEvidenceIds[0]);
 assert.equal(windowedStored?.metadata.sourceIndex, 0);
 assert.equal(windowedStored?.metadata.sourceEvidenceId, windowEvidenceIds[0]);
+assert.equal(windowedStored?.sourceEventId, windowedStored?.metadata.sourceEvidenceId);
+assert.equal(windowedStored?.createdAt, windowedMessages[0]?.createdAt);
 assert.equal(windowEvidenceIds.length, 12);
+const windowedMemoryEvidence = await windowedStore.listEvidenceForMemory(
+  windowedIngest.memoryIds[0]!,
+);
+assert.equal(windowedMemoryEvidence[0]?.id, windowEvidenceIds[0]);
+assert.equal(windowedMemoryEvidence.length, 12);
 const windowedExplain = await windowedMemory.explain(
   windowedIngest.memoryIds[0]!,
   "windowed-extraction",
@@ -37378,6 +37385,81 @@ assert.equal(externalMessageModeBenchmark.runManifest.runtimeIntelligence.ingest
 assert.equal(externalMessageModeBenchmark.runManifest.runtimeIntelligence.extractionWindowCount, 1);
 assert.equal(externalMessageModeBenchmark.runManifest.runtimeIntelligence.extractionCallCount, 1);
 assert.equal(externalMessageModeBenchmark.runManifest.options.extractionWindow, 12);
+const externalSourceEvidenceEvents = [
+  {
+    type: "message" as const,
+    role: "user" as const,
+    content: "At Target I redeemed a $40 coupon on coffee creamer.",
+  },
+  ...Array.from({ length: 7 }, (_, index) => ({
+    type: "message" as const,
+    role: "assistant" as const,
+    content: `SourceEvidenceFiller${index + 1} ${"x".repeat(800)}`,
+  })),
+];
+const externalSourceEvidenceCases = [{
+  id: "external-message-source-evidence",
+  profileId: "external_message_source_evidence",
+  events: externalSourceEvidenceEvents,
+  question: "Where did the user redeem the coupon and for how much?",
+  expectedAll: ["Target", "$40"],
+}];
+const externalSourceEvidenceExtractor = {
+  name: "external-source-evidence-extractor",
+  extract() {
+    return [{
+      kind: "fact" as const,
+      content: "The user redeemed a coupon.",
+      confidence: 0.9,
+      sourceIndex: 0,
+    }];
+  },
+};
+let externalSourceEvidenceOffManifest: ExternalMemoryBenchmarkCheckpointManifest | undefined;
+const externalSourceEvidenceOff = await runExternalMemoryBenchmark({
+  ingestMode: "message",
+  turnRetention: false,
+  contextBudgetTokens: 300,
+  intelligence: { extractor: externalSourceEvidenceExtractor },
+  cases: externalSourceEvidenceCases,
+  checkpoint: {
+    providerIdentity: "external-source-evidence-provider-v1",
+    onPrepared(manifest) {
+      externalSourceEvidenceOffManifest = manifest;
+    },
+  },
+});
+let externalSourceEvidenceOnManifest: ExternalMemoryBenchmarkCheckpointManifest | undefined;
+const externalSourceEvidenceOn = await runExternalMemoryBenchmark({
+  ingestMode: "message",
+  turnRetention: false,
+  includeEvidence: true,
+  contextBudgetTokens: 300,
+  intelligence: { extractor: externalSourceEvidenceExtractor },
+  cases: externalSourceEvidenceCases,
+  checkpoint: {
+    providerIdentity: "external-source-evidence-provider-v1",
+    onPrepared(manifest) {
+      externalSourceEvidenceOnManifest = manifest;
+    },
+  },
+});
+assert.equal(externalSourceEvidenceOff.pass, false);
+assert.equal(externalSourceEvidenceOff.runManifest.options.includeEvidence, false);
+assert.doesNotMatch(externalSourceEvidenceOff.cases[0]?.readerContext ?? "", /Target|\$40/u);
+assert.equal(externalSourceEvidenceOn.pass, true);
+assert.equal(externalSourceEvidenceOn.runManifest.options.includeEvidence, true);
+assert.match(externalSourceEvidenceOn.cases[0]?.readerContext ?? "", /Target/u);
+assert.match(externalSourceEvidenceOn.cases[0]?.readerContext ?? "", /\$40/u);
+assert.doesNotMatch(
+  externalSourceEvidenceOn.cases[0]?.readerContext ?? "",
+  /SourceEvidenceFiller7/u,
+);
+assert.ok((externalSourceEvidenceOn.cases[0]?.promptTokenEstimate ?? Infinity) <= 300);
+assert.notEqual(
+  externalSourceEvidenceOffManifest?.fingerprint,
+  externalSourceEvidenceOnManifest?.fingerprint,
+);
 let externalMissedExtractorCalls = 0;
 const externalMissedAnswerCase = {
   id: "external-message-turn-retention-missed-answer",

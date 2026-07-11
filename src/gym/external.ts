@@ -826,6 +826,7 @@ export interface ExternalMemoryBenchmarkRunManifest {
     temporalMode: ExternalMemoryBenchmarkTemporalMode | null;
     relativeTimeRendering: boolean;
     includeSensitive: boolean;
+    includeEvidence: boolean;
     includeTemporalMetadata: boolean;
     includeTemporalContext: boolean;
     requireConvergence: boolean;
@@ -969,6 +970,7 @@ export interface RunExternalMemoryBenchmarkOptions {
   layerPolicy?: ReconstructionLayerPolicy | undefined;
   temporalMode?: ExternalMemoryBenchmarkTemporalMode | undefined;
   includeSensitive?: boolean | undefined;
+  includeEvidence?: boolean | undefined;
   includeTemporalMetadata?: boolean | undefined;
   includeTemporalContext?: boolean | undefined;
   readerProfile?: ExternalMemoryBenchmarkReaderProfile | undefined;
@@ -2967,6 +2969,7 @@ async function wideBudgetRunContainsTerm(input: {
       profileId: input.profileId,
       messages: [{ role: "user", content: input.benchmarkCase.question }],
       contextBudgetTokens,
+      includeEvidence: input.options.includeEvidence === true,
       includeTemporalContext: input.options.includeTemporalContext,
       ...(input.options.includeSensitive === true ? { includeSensitive: true } : {}),
       ...(input.readRetrieval ? { retrieval: input.readRetrieval } : {}),
@@ -2996,6 +2999,7 @@ async function wideBudgetRunContainsTerm(input: {
     layerPolicy: input.options.layerPolicy,
     ...(input.options.anchorCoverage !== undefined ? { anchorCoverage: input.options.anchorCoverage } : {}),
     ...(temporalMode !== null ? { temporalMode } : {}),
+    includeEvidence: input.options.includeEvidence === true,
     includeTemporalMetadata: input.options.includeTemporalMetadata ?? false,
     includeTemporalContext: input.options.includeTemporalContext,
     ...(input.options.includeSensitive === true ? { includeSensitive: true } : {}),
@@ -4360,6 +4364,7 @@ function createRunManifest(input: {
         answerAtDate(benchmarkCase.answerAt) !== ""
       ),
       includeSensitive: input.options.includeSensitive ?? false,
+      includeEvidence: input.options.includeEvidence === true,
       includeTemporalMetadata: input.options.includeTemporalMetadata ?? false,
       includeTemporalContext: input.options.includeTemporalContext !== false,
       requireConvergence: input.options.requireConvergence ?? false,
@@ -6234,6 +6239,7 @@ function checkpointContractForRun(input: {
       layerPolicy: input.options.layerPolicy ?? null,
       temporalMode: input.options.temporalMode ?? null,
       includeSensitive: input.options.includeSensitive === true,
+      includeEvidence: input.options.includeEvidence === true,
       includeTemporalMetadata: input.options.includeTemporalMetadata === true,
       includeTemporalContext: input.options.includeTemporalContext !== false,
       readerProfile: input.options.readerProfile ?? "default",
@@ -6935,6 +6941,7 @@ async function scoreCase(input: {
           profileId,
           messages: [{ role: "user", content: input.benchmarkCase.question }],
           contextBudgetTokens: input.options.contextBudgetTokens,
+          includeEvidence: input.options.includeEvidence === true,
           includeTemporalContext: input.options.includeTemporalContext,
           ...(input.options.includeSensitive === true ? { includeSensitive: true } : {}),
           ...(input.readRetrieval ? { retrieval: input.readRetrieval } : {}),
@@ -6957,6 +6964,7 @@ async function scoreCase(input: {
           layerPolicy: input.options.layerPolicy,
           ...(input.options.anchorCoverage !== undefined ? { anchorCoverage: input.options.anchorCoverage } : {}),
           ...(temporalMode !== null ? { temporalMode } : {}),
+          includeEvidence: input.options.includeEvidence === true,
           includeTemporalMetadata: input.options.includeTemporalMetadata ?? false,
           includeTemporalContext: input.options.includeTemporalContext,
           ...(input.options.includeSensitive === true ? { includeSensitive: true } : {}),
@@ -7833,6 +7841,7 @@ async function runExternalMemoryBenchmarkWithCircuit(
       options.contextBudgetTokens,
     ),
     maxCharsPerMemory,
+    includeEvidence: options.includeEvidence ?? false,
     ...(fullContentTopRank !== undefined ? { fullContentTopRank } : {}),
     ...(fullContentMaxChars !== undefined ? { fullContentMaxChars } : {}),
     layerPolicy: readerProfileLayerPolicy(readerProfile, options.layerPolicy),

@@ -39,6 +39,7 @@ export interface ExternalMemoryBenchmarkSuiteRunConfig {
   contextBudgetTokens?: number | undefined;
   temporalMode?: ExternalMemoryBenchmarkTemporalMode | undefined;
   includeSensitive?: boolean | undefined;
+  includeEvidence?: boolean | undefined;
   includeTemporalMetadata?: boolean | undefined;
   concurrency?: number | undefined;
   reuseProfiles?: boolean | undefined;
@@ -276,6 +277,7 @@ function parseRunConfig(value: unknown, label: string): ExternalMemoryBenchmarkS
     contextBudgetTokens: optionalPositiveInteger(record.contextBudgetTokens, `${label}.contextBudgetTokens`),
     temporalMode: temporalModeValue(record.temporalMode, `${label}.temporalMode`),
     includeSensitive: optionalBoolean(record.includeSensitive, `${label}.includeSensitive`),
+    includeEvidence: optionalBoolean(record.includeEvidence, `${label}.includeEvidence`),
     includeTemporalMetadata: optionalBoolean(record.includeTemporalMetadata, `${label}.includeTemporalMetadata`),
     concurrency: optionalPositiveInteger(record.concurrency, `${label}.concurrency`),
     reuseProfiles: optionalBoolean(record.reuseProfiles, `${label}.reuseProfiles`),
@@ -306,6 +308,10 @@ function parseDefaults(value: unknown): ExternalMemoryBenchmarkSuiteDocument["de
     includeTemporalMetadata: optionalBoolean(
       record.includeTemporalMetadata,
       "External benchmark suite defaults.includeTemporalMetadata",
+    ),
+    includeEvidence: optionalBoolean(
+      record.includeEvidence,
+      "External benchmark suite defaults.includeEvidence",
     ),
     includeSensitive: optionalBoolean(record.includeSensitive, "External benchmark suite defaults.includeSensitive"),
     concurrency: optionalPositiveInteger(record.concurrency, "External benchmark suite defaults.concurrency"),
@@ -381,6 +387,7 @@ function effectiveRun(
     contextBudgetTokens: run.contextBudgetTokens ?? defaults?.contextBudgetTokens,
     temporalMode: run.temporalMode ?? defaults?.temporalMode,
     includeSensitive: run.includeSensitive ?? defaults?.includeSensitive,
+    includeEvidence: run.includeEvidence ?? defaults?.includeEvidence,
     includeTemporalMetadata: run.includeTemporalMetadata ?? defaults?.includeTemporalMetadata,
     concurrency: run.concurrency ?? defaults?.concurrency,
     reuseProfiles: run.reuseProfiles ?? defaults?.reuseProfiles,
@@ -439,6 +446,7 @@ function reportOptions(input: {
     ...(input.run.contextBudgetTokens !== undefined ? { contextBudgetTokens: input.run.contextBudgetTokens } : {}),
     ...(input.run.temporalMode !== undefined ? { temporalMode: input.run.temporalMode } : {}),
     ...(input.run.includeSensitive !== undefined ? { includeSensitive: input.run.includeSensitive } : {}),
+    ...(input.run.includeEvidence !== undefined ? { includeEvidence: input.run.includeEvidence } : {}),
     ...(input.run.includeTemporalMetadata !== undefined ? { includeTemporalMetadata: input.run.includeTemporalMetadata } : {}),
     ...(input.run.concurrency !== undefined ? { concurrency: input.run.concurrency } : {}),
     ...(input.run.reuseProfiles !== undefined ? { reuseProfiles: input.run.reuseProfiles } : {}),

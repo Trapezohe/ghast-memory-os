@@ -2983,12 +2983,30 @@ function composeReconstructedContext(input: {
   let contextBlock = render(false);
   const budget = input.contextBudgetTokens ?? 1800;
   // Path lines carry truncated summaries of the same targets; full memory
-  // content is what downstream readers need, so cull paths before memories.
-  while (estimateTokens(contextBlock) > budget && (memories.length > 0 || paths.length > 0)) {
-    if (paths.length > 0) paths = paths.slice(0, -1);
-    else if (input.layerPolicy) dropLayerAwareMemory(memories);
+  // content and exact source evidence are what downstream readers need. Cull
+  // duplicate paths first, then retain the largest ranked evidence prefix that
+  // fits instead of dropping the entire evidence lane on the first overflow.
+  while (estimateTokens(contextBlock) > budget && paths.length > 0) {
+    paths = paths.slice(0, -1);
+    contextBlock = render(false);
+  }
+  if (estimateTokens(contextBlock) > budget && evidence.length > 0) {
+    const rankedEvidence = [...evidence];
+    let lower = 0;
+    let upper = rankedEvidence.length;
+    while (lower < upper) {
+      const candidateCount = Math.ceil((lower + upper) / 2);
+      evidence = rankedEvidence.slice(0, candidateCount);
+      const candidateBlock = render(false);
+      if (estimateTokens(candidateBlock) <= budget) lower = candidateCount;
+      else upper = candidateCount - 1;
+    }
+    evidence = rankedEvidence.slice(0, lower);
+    contextBlock = render(false);
+  }
+  while (estimateTokens(contextBlock) > budget && memories.length > 0) {
+    if (input.layerPolicy) dropLayerAwareMemory(memories);
     else memories = memories.slice(0, -1);
-    evidence = [];
     contextBlock = render(false);
   }
   if (input.sweepDraft) {
@@ -3004,6 +3022,12 @@ function composeReconstructedContext(input: {
       sweepCandidates = sweepCandidates.filter((candidate) => candidate.memory.id !== drop.memory.id);
     }
     contextBlock = render(true);
+    while (sweepCandidates.length > 0 && estimateTokens(contextBlock) > budget) {
+      const drop = [...sweepCandidates].sort(compareSweepCullPriority)[0];
+      if (!drop) break;
+      sweepCandidates = sweepCandidates.filter((candidate) => candidate.memory.id !== drop.memory.id);
+      contextBlock = render(true);
+    }
   }
 
   const output = outputState();
@@ -3057,10 +3081,30 @@ async function evidenceForMemories(
   store: MemoryStore,
   memories: MemoryRecord[],
 ): Promise<EvidenceEvent[]> {
+  const batches = await Promise.all(
+    memories.map(async (memory) => ({
+      memory,
+      events: await store.listEvidenceForMemory(memory.id),
+    })),
+  );
   const evidence: EvidenceEvent[] = [];
   const seen = new Set<string>();
-  for (const memory of memories) {
-    for (const event of await store.listEvidenceForMemory(memory.id)) {
+  const append = (event: EvidenceEvent | undefined): void => {
+    if (!event || seen.has(event.id)) return;
+    seen.add(event.id);
+    evidence.push(event);
+  };
+  // Preserve one exact source per ranked memory before adding the wider window
+  // lineage. This keeps relationship-bearing source turns under tight budgets.
+  for (const { memory, events } of batches) {
+    const metadataSourceEvidenceId = typeof memory.metadata.sourceEvidenceId === "string"
+      ? memory.metadata.sourceEvidenceId
+      : undefined;
+    const primaryIds = [metadataSourceEvidenceId, memory.sourceEventId ?? undefined];
+    for (const id of primaryIds) append(events.find((event) => event.id === id));
+  }
+  for (const { events } of batches) {
+    for (const event of events) {
       if (seen.has(event.id)) continue;
       seen.add(event.id);
       evidence.push(event);

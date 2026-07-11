@@ -3745,12 +3745,12 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           return {
             result: last.result,
             event: source.event,
-            evidence: last.evidence,
+            evidence: source.evidence,
             eventMetadata: source.eventMetadata,
             sensitivity: sourceMember ? source.sensitivity : windowSensitivity,
             sourceTrust: sourceMember ? source.sourceTrust : windowSourceTrust,
             allowLowerTrustPolicyWrites: source.allowLowerTrustPolicyWrites,
-            sourceEventId: last.evidence.id,
+            sourceEventId: source.evidence.id,
             metadata: {
               windowEvidenceIds,
               ...(validSourceIndex !== undefined

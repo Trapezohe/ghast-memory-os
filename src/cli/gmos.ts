@@ -202,7 +202,7 @@ Usage:
   gmos gym run --db :memory: --generated-seeds 3 --format markdown --report-file ./memory-gym.md
   gmos gym scale --sizes 100,1000 --threshold-p95-ms 250 --ingest-threshold-p95-ms 25 --ingest-last-to-first-factor 3
   gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --protocol deterministic-local --require-convergence --include-sensitive --temporal-metadata
-  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --reader-profile expansive --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --reader-profile expansive --source-evidence on --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
   gmos gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --max-cases 5 --results-jsonl ./paid-smoke.results.jsonl
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --resume-results-jsonl /outside/repo/longmemeval.results.jsonl
@@ -830,6 +830,14 @@ function sweepCuesOption(): boolean | undefined {
   if (raw === "on") return true;
   if (raw === "off") return false;
   throw new Error("--sweep-cues must be on or off");
+}
+
+function sourceEvidenceOption(): boolean | undefined {
+  const raw = value("--source-evidence");
+  if (raw === undefined) return undefined;
+  if (raw === "on") return true;
+  if (raw === "off") return false;
+  throw new Error("--source-evidence must be on or off");
 }
 
 function turnRetentionOption(): boolean | undefined {
@@ -2736,6 +2744,7 @@ async function main(): Promise<void> {
     const embedQuery = embedQueryOption();
     const queryPlanner = queryPlannerOption();
     const sweepCues = sweepCuesOption();
+    const sourceEvidence = sourceEvidenceOption();
     const turnRetention = turnRetentionOption();
     const sessionDistillation = sessionDistillOption();
     const consolidateEntities = consolidateEntitiesOption();
@@ -2878,6 +2887,7 @@ async function main(): Promise<void> {
       ...(debugContextFailureLimit !== undefined ? { debugContextFailureLimit } : {}),
       ...(debugDumpMemories !== undefined ? { debugDumpMemories } : {}),
       temporalMode,
+      ...(sourceEvidence !== undefined ? { includeEvidence: sourceEvidence } : {}),
       ...(has("--temporal-metadata") ? { includeTemporalMetadata: true } : {}),
       ...(has("--include-sensitive") ? { includeSensitive: true } : {}),
       concurrency,
