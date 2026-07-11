@@ -6,7 +6,10 @@ import {
   localTextVector,
   normalizeVector,
 } from "./local-vector.js";
-import { OpenAICompatibleResponseError } from "./openai-compatible-response.js";
+import {
+  OpenAICompatibleResponseError,
+  ownsOpenAICompatibleRequestLifecycle,
+} from "./openai-compatible-response.js";
 import { classifySensitivity, isPersonRoutedMemory } from "./safety.js";
 import type {
   EmbeddingProvider,
@@ -50,6 +53,7 @@ export interface ResolvedEmbeddingProviderConfig {
   embedSensitive: boolean;
   embedPerson: boolean;
   timeoutMs: number;
+  managesOwnRequestLifecycle: boolean;
   embed(texts: string[]): Promise<number[][]>;
 }
 
@@ -65,11 +69,13 @@ export function resolveEmbeddingProviderConfig(
   let embedSensitive = false;
   let embedPerson = false;
   let timeoutMs: number | undefined;
+  let hasExplicitTimeout = false;
   if (isEmbeddingProviderConfig(input)) {
     provider = input.provider;
     embedSensitive = input.embedSensitive === true;
     embedPerson = input.embedPerson === true;
     timeoutMs = input.timeoutMs;
+    hasExplicitTimeout = input.timeoutMs !== undefined;
   } else {
     provider = input;
   }
@@ -91,6 +97,8 @@ export function resolveEmbeddingProviderConfig(
     embedSensitive,
     embedPerson,
     timeoutMs: boundedTimeout(timeoutMs),
+    managesOwnRequestLifecycle:
+      !hasExplicitTimeout && ownsOpenAICompatibleRequestLifecycle(provider),
     embed,
   };
 }
@@ -300,10 +308,13 @@ async function callProviderResult(input: {
 > {
   try {
     const timeoutMs = boundedTimeout(input.timeoutMs ?? input.provider.timeoutMs);
-    const vectors = await withTimeout(
-      embeddingProviderCallPriority.run(input.priority, () => input.provider.embed(input.texts)),
-      timeoutMs,
+    const operation = embeddingProviderCallPriority.run(
+      input.priority,
+      () => input.provider.embed(input.texts),
     );
+    const vectors = input.provider.managesOwnRequestLifecycle && input.timeoutMs === undefined
+      ? await operation
+      : await withTimeout(operation, timeoutMs);
     if (vectors.length !== input.texts.length) return { ok: false, failureReason: "parse" };
     const dimensions =
       input.provider.dimensions > 0 ? input.provider.dimensions : vectors[0]?.length ?? 0;

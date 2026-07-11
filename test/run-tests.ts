@@ -61,6 +61,10 @@ import { collectReaderEvidenceForMemories } from "../src/kernel/reader-evidence.
 import {
   extractStructuredTableMemoryCandidates,
 } from "../src/kernel/extraction.js";
+import {
+  embeddingsForMemories,
+  resolveEmbeddingProviderConfig,
+} from "../src/kernel/embeddings.js";
 import { resolveWorldEntitySubject } from "../src/kernel/entities.js";
 import { GMOS_EVIDENCE_PAYLOAD_SCHEMAS } from "../src/kernel/evidence-schema.js";
 import {
@@ -10546,8 +10550,48 @@ assert.equal(typeof createOpenAICompatibleSessionDistiller, "function");
 const defaultIntelligenceEmbed = typeof defaultIntelligence.embeddingProvider === "function"
   ? defaultIntelligence.embeddingProvider
   : defaultIntelligence.embeddingProvider.embed.bind(defaultIntelligence.embeddingProvider);
+assert.equal(
+  resolveEmbeddingProviderConfig(defaultIntelligence.embeddingProvider)?.managesOwnRequestLifecycle,
+  true,
+);
+assert.equal(
+  resolveEmbeddingProviderConfig({
+    provider: defaultIntelligence.embeddingProvider,
+    timeoutMs: 2_500,
+  })?.managesOwnRequestLifecycle,
+  false,
+);
 const defaultIntelligenceVectors = await defaultIntelligenceEmbed(["alpha", "beta"]);
 assert.deepEqual(defaultIntelligenceVectors, [[1, 0, 0], [0, 1, 0]]);
+const slowManagedEmbeddingProvider = createOpenAICompatibleEmbeddingProvider({
+  baseUrl: "https://slow-embedding.invalid/v1",
+  model: "slow-fixture-embedding-model",
+  dimensions: 1,
+  timeoutMs: 2_000,
+  retries: 0,
+  fetchImpl: async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ data: [{ index: 0, embedding: [1] }] }),
+    };
+  },
+});
+const slowManagedEmbeddingResult = await embeddingsForMemories({
+  provider: resolveEmbeddingProviderConfig(slowManagedEmbeddingProvider),
+  memories: [{ kind: "fact", sensitivity: "normal", content: "slow but valid" }],
+});
+assert.equal(slowManagedEmbeddingResult.providerFailureCount, 0);
+assert.equal(slowManagedEmbeddingResult.embeddedMemoryCount, 1);
+const explicitlyBoundedManagedEmbeddingResult = await embeddingsForMemories({
+  provider: resolveEmbeddingProviderConfig(slowManagedEmbeddingProvider),
+  memories: [{ kind: "fact", sensitivity: "normal", content: "explicitly bounded" }],
+  timeoutMs: 50,
+});
+assert.equal(explicitlyBoundedManagedEmbeddingResult.providerFailureCount, 1);
+assert.equal(explicitlyBoundedManagedEmbeddingResult.embeddedMemoryCount, 0);
 const defaultRerank = await (typeof defaultIntelligence.reranker === "function"
   ? defaultIntelligence.reranker
   : defaultIntelligence.reranker.rerank)([
@@ -42244,6 +42288,7 @@ const externalIntelligenceRequestBodies: Array<{
   max_tokens?: number | undefined;
   system?: string | undefined;
 }> = [];
+let externalIntelligenceDelayedEmbeddingCall = false;
 try {
   const externalIntelligenceRun = await runExternalMemoryBenchmark({
     cases: externalIntelligenceMessageCases.cases,
@@ -42274,6 +42319,10 @@ try {
           system: request.messages?.[0]?.content,
         });
         if (String(url).endsWith("/embeddings")) {
+          if (!externalIntelligenceDelayedEmbeddingCall) {
+            externalIntelligenceDelayedEmbeddingCall = true;
+            await new Promise((resolve) => setTimeout(resolve, 1_600));
+          }
           return {
             ok: true,
             status: 200,
@@ -42332,6 +42381,7 @@ try {
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.model, "bench-chat");
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.embedModel, "bench-embed");
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.embedQuery, true);
+  assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.embeddingFailureCount, 0);
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.queryEmbeddingFailureCount, 0);
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.concurrency, 1);
   assert.equal(externalIntelligenceRun.runManifest.runtimeIntelligence.timeoutMs, 5000);

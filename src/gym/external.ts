@@ -70,6 +70,7 @@ import {
   type OpenAICompatibleTerminalFailure,
   openAICompatibleRetryAfterMs,
   openAICompatibleRetryCount,
+  markOpenAICompatibleRequestLifecycleOwner,
   ownsOpenAICompatibleRequestLifecycle,
   parseOpenAICompatibleJsonText,
   runOpenAICompatibleRetry,
@@ -5279,10 +5280,15 @@ function wrapEmbeddingProvider(
   run: <T>(label: string, task: () => Promise<T>) => Promise<T>,
 ): EmbeddingProvider | undefined {
   if (!embeddingProvider) return undefined;
+  const ownsRequestLifecycle = ownsOpenAICompatibleRequestLifecycle(embeddingProvider);
   if (typeof embeddingProvider === "function") {
-    return (texts) => run("embeddingProvider", async () => embeddingProvider(texts));
+    const wrapped = (texts: string[]) =>
+      run("embeddingProvider", async () => embeddingProvider(texts));
+    return ownsRequestLifecycle
+      ? markOpenAICompatibleRequestLifecycleOwner(wrapped)
+      : wrapped;
   }
-  return {
+  const wrapped: EmbeddingProvider = {
     name: embeddingProvider.name,
     dimensions: embeddingProvider.dimensions,
     ...(embeddingProvider.maxBatchSize !== undefined
@@ -5292,6 +5298,9 @@ function wrapEmbeddingProvider(
       return run("embeddingProvider", async () => embeddingProvider.embed(texts));
     },
   };
+  return ownsRequestLifecycle
+    ? markOpenAICompatibleRequestLifecycleOwner(wrapped)
+    : wrapped;
 }
 
 function wrapReranker(
