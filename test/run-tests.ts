@@ -38229,6 +38229,158 @@ assert.equal(sweepRunnerOn.runManifest.runtimeIntelligence.sweepCues.enabled, tr
 assert.equal(sweepRunnerOn.runManifest.runtimeIntelligence.sweepCues.maxCues, 6);
 assert.equal(sweepRunnerOn.runManifest.runtimeIntelligence.sweepCues.name, "sweep-cue-test-planner");
 assert.equal(renderExternalMemoryBenchmarkMarkdown(sweepRunnerOn).includes("Runtime sweep cues: enabled=true"), true);
+const routedPlannerCalls: Array<{
+  question: string;
+  maxAnchors: number;
+  maxSweepCues: number | undefined;
+}> = [];
+const routedPlannerRun = await runExternalMemoryBenchmark({
+  cases: [
+    {
+      id: "planner-route-simple-current-state",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "The current project codename is Cedar.",
+      }],
+      question: "What is the current project codename?",
+      expectedAny: ["Cedar"],
+    },
+    {
+      id: "planner-route-recommendation",
+      events: [{
+        type: "memory" as const,
+        kind: "preference" as const,
+        content: "The user prefers quiet hotels with ocean views.",
+      }],
+      question: "What hotel features should a recommendation prioritize?",
+      expectedAny: ["ocean views"],
+    },
+    {
+      id: "planner-route-recommended-order",
+      events: [{
+        type: "memory" as const,
+        kind: "procedure" as const,
+        content: "The study plan starts with the overview chapter.",
+      }],
+      question: "Can you recommend a chronological order for reviewing the chapters?",
+      expectedAny: ["overview chapter"],
+    },
+    {
+      id: "planner-route-duration-endpoints",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "The trip started on June 1 and ended on June 10.",
+      }],
+      question: "How many days passed between the trip start and end?",
+      expectedAny: ["June 1"],
+    },
+    {
+      id: "planner-route-list-as-noun",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "The shared grocery list method uses a paper checklist.",
+      }],
+      question: "Is my household using the same grocery list method as me?",
+      expectedAny: ["paper checklist"],
+    },
+    {
+      id: "planner-route-singular-word-ending-s",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "The most recently purchased camera lens is a 50mm prime.",
+      }],
+      question: "What type of camera lens did I purchase most recently?",
+      expectedAny: ["50mm prime"],
+    },
+    {
+      id: "planner-route-chinese-includes",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "这个方案已经启用了退款功能。",
+      }],
+      question: "这个方案包括退款吗？",
+      expectedAny: ["退款功能"],
+    },
+    {
+      id: "planner-route-current-collection",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "The user has led two projects and is currently leading one project.",
+      }],
+      question: "How many projects have I led or am currently leading?",
+      expectedAny: ["two projects"],
+    },
+    {
+      id: "planner-route-explicit-order",
+      events: [
+        {
+          type: "memory" as const,
+          kind: "fact" as const,
+          content: "The first trip was in January.",
+        },
+        {
+          type: "memory" as const,
+          kind: "fact" as const,
+          content: "The second trip was in March.",
+        },
+      ],
+      question: "List the trips in chronological order from earliest to latest.",
+      expectedAny: ["January"],
+    },
+  ],
+  protocol: "official_protocol",
+  concurrency: 1,
+  queryPlanner: true,
+  plannerMaxAnchors: 4,
+  sweepCues: true,
+  plannerMaxSweepCues: 6,
+  intelligence: {
+    queryPlanner: {
+      name: "intent-routed-planner",
+      plan(input) {
+        routedPlannerCalls.push({
+          question: input.question,
+          maxAnchors: input.maxAnchors,
+          maxSweepCues: input.maxSweepCues,
+        });
+        return {
+          requiredAnchors: [{ cue: "trip chronology" }],
+          sweepCues: ["trip timeline"],
+        };
+      },
+    },
+  },
+  answerer: {
+    name: "intent-routing-context-reader",
+    answer(_question, context) {
+      return context;
+    },
+  },
+  judge: {
+    name: "intent-routing-context-judge",
+    judge(_question, expectedAnswer, actualAnswer) {
+      return { correct: actualAnswer.includes(expectedAnswer) };
+    },
+  },
+});
+assert.deepEqual(routedPlannerCalls.map((entry) => entry.maxSweepCues), [0, 0, 0, 0, 0, 0, 0, 6, 6]);
+assert.equal(routedPlannerCalls.every((entry) => entry.maxAnchors === 4), true);
+assert.equal(
+  routedPlannerRun.cases.slice(0, 7).every(
+    (entry) => entry.derivedRequiredAnchors.length === 1 && entry.sweepCues.length === 0,
+  ),
+  true,
+);
+assert.deepEqual(routedPlannerRun.cases.slice(7).map((entry) => entry.sweepCues), [
+  ["trip timeline"],
+  ["trip timeline"],
+]);
 const zeroAnchorSweepRun = await runExternalMemoryBenchmark({
   cases: [sweepRunnerCase],
   maxMemories: 1,

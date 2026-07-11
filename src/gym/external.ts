@@ -4965,6 +4965,89 @@ async function planRequiredAnchors(input: {
   }
 }
 
+function questionNeedsWideEvidenceSweep(question: string): boolean {
+  const normalized = question.normalize("NFC").toLowerCase().replace(/\s+/gu, " ").trim();
+  if (!normalized) return false;
+  if (
+    /\b(?:previous|earlier|last)\s+(?:chat|conversation|response)|\bremind me\b|\bwhat did you (?:say|recommend|suggest|write|draft|generate)\b/u.test(
+      normalized,
+    ) ||
+    /(?:上次|之前|此前).{0,8}(?:对话|回答|回复|建议)|提醒我/u.test(normalized)
+  ) {
+    return false;
+  }
+  if (
+    /\b(?:advice|recommendation|recommend|suggestion|suggest|tips?)\b/u.test(normalized) ||
+    /(?:建议|推荐|技巧)/u.test(normalized)
+  ) {
+    return false;
+  }
+  if (
+    /\bhow many\s+(?:days?|weeks?|months?|years?|hours?|minutes?)\b.*\b(?:between|from)\b/u.test(
+      normalized,
+    ) ||
+    /(?:相隔|之间).{0,12}(?:多少天|多少周|多少个月|多少年|多少小时|多少分钟)/u.test(normalized)
+  ) {
+    return false;
+  }
+  if (
+    /\b(?:what (?:is|was) the order of|in chronological order|chronologically|earliest to latest|latest to earliest|first to last|last to first)\b/u.test(
+      normalized,
+    ) ||
+    /(?:按时间顺序|先后顺序|从最早到最晚|从最晚到最早|从第一个到最后一个)/u.test(normalized)
+  ) {
+    return true;
+  }
+  if (
+    /\bhow (?:many|much)\b.*\b(?:different|distinct|unique|times|occasions|instances|events)\b/u.test(
+      normalized,
+    ) ||
+    /\bhow (?:many|much)\b.*\b(?:and|or|both|including)\b/u.test(normalized) ||
+    /\b(?:across|altogether|combined)\b/u.test(normalized) ||
+    /(?:多少次|多少个不同|多少位不同|多少种不同)/u.test(normalized) ||
+    /(?:(?:多少|几(?:个|项|位|种|次)).{0,24}(?:以及|或者|包括)|(?:以及|或者|包括).{0,24}(?:多少|几(?:个|项|位|种|次)))/u.test(
+      normalized,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:current|currently|now|latest|most recent|previous|initial|updated|revised|final)\b/u.test(
+      normalized,
+    ) ||
+    /(?:当前|现在|最新|最近一次|上一版|初稿|更新后|修改后|最终版)/u.test(normalized)
+  ) {
+    return false;
+  }
+  if (
+    /\b(?:cumulative|in total|so far|to date|total)\b/u.test(
+      normalized,
+    ) ||
+    /(?:总共|一共|累计|合计|迄今|到目前为止)/u.test(normalized)
+  ) {
+    return true;
+  }
+  if (
+    /\bhow (?:many|much)\b.*\b(?:have|has|had)\s+(?:i|we)\b/u.test(normalized) ||
+    /\bhow (?:many|much)\b.*\b(?:past|last|since|this (?:week|month|year))\b/u.test(normalized) ||
+    /(?:过去|自从).{0,24}(?:多少|几次|几个|几位|几种)/u.test(
+      normalized,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /^(?:please\s+)?(?:list|enumerate)\b/u.test(normalized) ||
+    /\b(?:can|could|would|will) you (?:please )?(?:list|enumerate)\b/u.test(normalized) ||
+    /\bname\s+(?:all|each|every)\b/u.test(normalized) ||
+    /\b(?:what|which)\s+(?:all|different|distinct|unique)\b/u.test(normalized) ||
+    /(?:^|请)(?:列出|罗列|枚举)|(?:全部|所有|哪些|哪几)/u.test(normalized)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function reconstructionIntentWithRequiredAnchors(
   intent: ReconstructionIntentHint | undefined,
   anchors: ReconstructionRequiredAnchorHint[],
@@ -6947,7 +7030,9 @@ async function scoreCase(input: {
         queryPlanner: input.queryPlanner,
         question: input.benchmarkCase.question,
         maxAnchors: input.options.queryPlanner === true ? input.plannerMaxAnchors : 0,
-        maxSweepCues: input.sweepCues ? input.plannerMaxSweepCues : 0,
+        maxSweepCues: input.sweepCues && questionNeedsWideEvidenceSweep(input.benchmarkCase.question)
+          ? input.plannerMaxSweepCues
+          : 0,
         onFailure: input.onPlannerFailure,
       })
     : {};
