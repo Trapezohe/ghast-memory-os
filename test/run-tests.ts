@@ -31800,6 +31800,193 @@ const wideAccepted = await reconstructMemoryContext({
   },
 });
 assert.equal(wideAccepted.memories.length, 200);
+const shortlistOrdinaryMemory = {
+  ...layerMemory(
+    "memory_query_shortlist_ordinary",
+    "atom",
+    "OrdinaryLedgerFiller summarizes the expense question without a monetary value.",
+  ),
+  metadata: { sourceTrust: "user" },
+};
+const shortlistSweepMemories = [
+  {
+    ...layerMemory(
+      "memory_query_shortlist_assistant_noise",
+      "turn",
+      "assistant: LedgerExpenseKey examples could hypothetically cost $999.",
+    ),
+    metadata: {
+      turnMemory: true,
+      sourceRole: "assistant",
+      sourceTrust: "assistant",
+      subject: "user",
+    },
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  },
+  {
+    ...layerMemory(
+      "memory_query_shortlist_assistant_fact",
+      "turn",
+      "assistant: LedgerExpenseKey receipt confirms a completed $75 purchase.",
+    ),
+    metadata: {
+      turnMemory: true,
+      sourceRole: "assistant",
+      sourceTrust: "assistant",
+      subject: "user",
+    },
+    createdAt: "2026-01-05T00:00:00.000Z",
+    updatedAt: "2026-01-05T00:00:00.000Z",
+  },
+  {
+    ...layerMemory(
+      "memory_query_shortlist_25",
+      "turn",
+      "user: LedgerExpenseKey chain replacement was completed for $25.",
+    ),
+    metadata: { turnMemory: true, sourceTrust: "user" },
+    createdAt: "2026-01-10T00:00:00.000Z",
+    updatedAt: "2026-01-10T00:00:00.000Z",
+  },
+  ...Array.from({ length: 7 }, (_entry, index) => ({
+    ...layerMemory(
+      `memory_query_shortlist_noise_${index}`,
+      "turn",
+      `user: LedgerExpenseKey non-monetary receipt note ${index}.`,
+    ),
+    metadata: { turnMemory: true, sourceTrust: "user" },
+    createdAt: `2026-02-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
+    updatedAt: `2026-02-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
+  })),
+  {
+    ...layerMemory(
+      "memory_query_shortlist_40",
+      "turn",
+      "user: LedgerExpenseKey bike lights were purchased for $40.",
+    ),
+    metadata: { turnMemory: true, sourceTrust: "user" },
+    createdAt: "2026-03-10T00:00:00.000Z",
+    updatedAt: "2026-03-10T00:00:00.000Z",
+  },
+  {
+    ...layerMemory(
+      "memory_query_shortlist_120",
+      "turn",
+      "user: LedgerExpenseKey helmet was purchased for $120.",
+    ),
+    metadata: { turnMemory: true, sourceTrust: "user" },
+    createdAt: "2026-04-10T00:00:00.000Z",
+    updatedAt: "2026-04-10T00:00:00.000Z",
+  },
+];
+let includeShortlistHelmet = true;
+const shortlistSweepQuery = "ledger expense receipts and purchases";
+const shortlistStore = {
+  searchAssociations() {
+    return [];
+  },
+  getMemoryById() {
+    return null;
+  },
+  searchMemories(input: { query?: string }) {
+    if (input.query === shortlistSweepQuery) {
+      return includeShortlistHelmet
+        ? shortlistSweepMemories
+        : shortlistSweepMemories.filter((memoryRecord) =>
+            memoryRecord.id !== "memory_query_shortlist_120"
+          );
+    }
+    return [shortlistOrdinaryMemory];
+  },
+  listEvidenceForMemory() {
+    return [];
+  },
+} as unknown as MemoryStore;
+const shortlistRequest = {
+  profileId: "layer",
+  query: "How much total money did I spend on LedgerExpenseKey this year?",
+  reconstructionIntent: { sweepCues: [shortlistSweepQuery] },
+  includeTemporalMetadata: true,
+  maxMemories: 1,
+  maxSteps: 1,
+  maxBranch: 1,
+  contextBudgetTokens: 2500,
+  stopWhenEvidenceEnough: false,
+} as const;
+const monetaryShortlistContext = await reconstructMemoryContext({
+  store: shortlistStore,
+  defaultProfileId: "layer",
+  request: shortlistRequest,
+});
+const monetaryShortlistTitle = "Query-relevant evidence shortlist";
+const monetaryShortlistStart = monetaryShortlistContext.contextBlock.indexOf(
+  monetaryShortlistTitle,
+);
+const monetaryShortlistMemoryStart = monetaryShortlistContext.contextBlock.indexOf(
+  "Memory content:",
+);
+assert.equal(monetaryShortlistStart >= 0, true);
+assert.equal(monetaryShortlistStart < monetaryShortlistMemoryStart, true);
+const monetaryShortlistSection = monetaryShortlistContext.contextBlock.slice(
+  monetaryShortlistStart,
+  monetaryShortlistMemoryStart,
+);
+assert.match(monetaryShortlistSection, /\$25/u);
+assert.match(monetaryShortlistSection, /\$40/u);
+assert.match(monetaryShortlistSection, /\$75/u);
+assert.match(monetaryShortlistSection, /\$120/u);
+assert.doesNotMatch(monetaryShortlistSection, /\$999/u);
+assert.equal(
+  monetaryShortlistContext.contentSurfaces.temporal.indexOf("$120") <
+    monetaryShortlistContext.contentSurfaces.temporal.indexOf("OrdinaryLedgerFiller"),
+  true,
+);
+for (const amount of ["$25", "$40", "$75", "$120"]) {
+  assert.equal(
+    countExactContentOccurrences(monetaryShortlistContext.contentSurfaces.temporal, amount),
+    1,
+  );
+}
+const monetaryShortlistAppendix = monetaryShortlistContext.contextBlock.slice(
+  monetaryShortlistContext.contextBlock.indexOf("Additional dated mentions:"),
+);
+assert.equal(
+  monetaryShortlistAppendix.indexOf("$25") < monetaryShortlistAppendix.indexOf("$40") &&
+    monetaryShortlistAppendix.indexOf("$40") < monetaryShortlistAppendix.indexOf("$120"),
+  true,
+);
+assert.equal(monetaryShortlistContext.stats.promptTokenEstimate <= 2500, true);
+const nonAggregateShortlistContext = await reconstructMemoryContext({
+  store: shortlistStore,
+  defaultProfileId: "layer",
+  request: {
+    ...shortlistRequest,
+    query: "What does LedgerExpenseKey say?",
+  },
+});
+assert.doesNotMatch(nonAggregateShortlistContext.contextBlock, /Query-relevant evidence shortlist/u);
+const nonMonetaryTotalShortlistContext = await reconstructMemoryContext({
+  store: shortlistStore,
+  defaultProfileId: "layer",
+  request: {
+    ...shortlistRequest,
+    query: "How many LedgerExpenseKey entries did I record in total?",
+  },
+});
+const nonMonetaryTotalShortlistSection = nonMonetaryTotalShortlistContext.contextBlock.slice(
+  nonMonetaryTotalShortlistContext.contextBlock.indexOf(monetaryShortlistTitle),
+  nonMonetaryTotalShortlistContext.contextBlock.indexOf("Memory content:"),
+);
+assert.match(nonMonetaryTotalShortlistSection, /non-monetary receipt note/u);
+assert.doesNotMatch(nonMonetaryTotalShortlistSection, /\$999/u);
+includeShortlistHelmet = false;
+const forgottenShortlistContext = await reconstructMemoryContext({
+  store: shortlistStore,
+  defaultProfileId: "layer",
+  request: shortlistRequest,
+});
+assert.doesNotMatch(forgottenShortlistContext.contextBlock, /\$120/u);
 const wideSupplyStore = createSqliteMemoryStore({ path: path.join(tmp, "wide-supply-saturation.db") });
 const wideSupplyMemory = createMemoryOS({
   profileId: "wide-supply",
@@ -32673,10 +32860,15 @@ const sweepWithCuesAgain = await sweepMemory.reconstructContext({
   maxMemories: 2,
   contextBudgetTokens: 1200,
 });
-const sweepOrdinaryOnly = sweepWithCues.contextBlock.replace(
-  /\nAdditional dated mentions:\n(?:- [^\n]*\n?)+(?=<\/gmos-reconstructed-context>)/u,
-  "\n",
-);
+const sweepOrdinaryOnly = sweepWithCues.contextBlock
+  .replace(
+    /\nQuery-relevant evidence shortlist[^\n]*:\n(?:- [^\n]*\n?)+(?=Memory content:)/u,
+    "\n",
+  )
+  .replace(
+    /\nAdditional dated mentions:\n(?:- [^\n]*\n?)+(?=<\/gmos-reconstructed-context>)/u,
+    "\n",
+  );
 assert.equal(sweepOrdinaryOnly, sweepBase.contextBlock);
 assert.equal(sweepBase.memories.filter((memory) => /Feed purchase instance/iu.test(memory.content)).length <= 2, true);
 assert.match(sweepWithCues.contextBlock, /Additional dated mentions:/);

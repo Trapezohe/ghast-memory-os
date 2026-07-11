@@ -2962,6 +2962,110 @@ interface ReconstructionSweepDraft {
   cueStats: ReconstructionSweepCueDraftStats[];
 }
 
+const QUERY_EVIDENCE_SHORTLIST_MAX_ITEMS = 8;
+const QUERY_EVIDENCE_SHORTLIST_MAX_TOKENS = 640;
+
+function queryNeedsMonetaryEvidence(query: string): boolean {
+  const normalized = query.normalize("NFC").toLowerCase();
+  return queryNeedsAggregateRecall(query) && (
+    /\b(?:cost|costs|expense|expenses|money|paid|payment|payments|price|prices|purchase|purchases|spend|spending|spent)\b/u.test(
+      normalized,
+    ) ||
+    /(?:一共多少钱|价格|总价|总费用|总支出|支付|支出|花了|花费|费用|金额)/u.test(normalized)
+  );
+}
+
+function monetaryEvidenceSignatures(text: string): string[] {
+  const matches = text.normalize("NFC").match(
+    /(?:[$€£¥]\s*\d+(?:[.,]\d+)*|\b\d+(?:[.,]\d+)*\s*(?:cny|dollars?|eur|euros?|gbp|pounds?|rmb|usd|yuan)\b)/giu,
+  ) ?? [];
+  return [...new Set(matches.map((value) => value.toLowerCase().replace(/[\s,]/gu, "")))];
+}
+
+function userGroundedMemory(memory: MemoryRecord): boolean {
+  return memory.metadata.sourceTrust === "user" ||
+    memory.metadata.sourceRole === "user" ||
+    /^\s*user\s*:/iu.test(memory.content);
+}
+
+function assistantGroundedMemory(memory: MemoryRecord): boolean {
+  return memory.metadata.sourceTrust === "assistant" ||
+    memory.metadata.sourceRole === "assistant" ||
+    /^\s*assistant\s*:/iu.test(memory.content);
+}
+
+function hypotheticalAssistantMemory(memory: MemoryRecord): boolean {
+  return assistantGroundedMemory(memory) &&
+    /\b(?:could|estimate|estimated|example|hypothetical|hypothetically|might|typically)\b/iu.test(
+      memory.content,
+    );
+}
+
+function userCentricQuery(query: string): boolean {
+  return /\b(?:i|me|my|mine|our|ours|we)\b/iu.test(query) || /(?:我|我们|我的|我们的)/u.test(query);
+}
+
+function queryEvidenceShortlistCandidates(input: {
+  query: string;
+  candidates: ReconstructionSweepCandidate[];
+  maxItems: number;
+}): ReconstructionSweepCandidate[] {
+  if (!queryNeedsAggregateRecall(input.query) || input.maxItems <= 0) return [];
+  const monetaryQuery = queryNeedsMonetaryEvidence(input.query);
+  const queryIsUserCentric = userCentricQuery(input.query);
+  const ranked = input.candidates.map((candidate) => {
+    const signatures = monetaryEvidenceSignatures(candidate.memory.content);
+    const userGrounded = userGroundedMemory(candidate.memory);
+    return {
+      candidate,
+      signatures,
+      userGrounded,
+      score: candidate.relevance +
+        (monetaryQuery && signatures.length > 0 ? 12 : 0) +
+        (userGrounded ? 4 : 0) -
+        (assistantGroundedMemory(candidate.memory) ? 4 : 0),
+    };
+  }).filter((entry) =>
+    !(queryIsUserCentric && hypotheticalAssistantMemory(entry.candidate.memory))
+  ).sort((left, right) =>
+    right.score - left.score ||
+    right.candidate.memory.updatedAt.localeCompare(left.candidate.memory.updatedAt) ||
+    left.candidate.memory.id.localeCompare(right.candidate.memory.id)
+  );
+  let pool = ranked;
+  if (monetaryQuery) {
+    pool = ranked.filter((entry) => entry.signatures.length > 0);
+  }
+  const selected: typeof ranked = [];
+  const selectedIds = new Set<string>();
+  const selectedContent = new Set<string>();
+  const seenSignatures = new Set<string>();
+  const add = (entry: (typeof ranked)[number]): void => {
+    const contentKey = normalizedText(entry.candidate.memory.content);
+    if (
+      selectedIds.has(entry.candidate.memory.id) ||
+      (contentKey.length > 0 && selectedContent.has(contentKey))
+    ) {
+      return;
+    }
+    selected.push(entry);
+    selectedIds.add(entry.candidate.memory.id);
+    if (contentKey.length > 0) selectedContent.add(contentKey);
+    for (const signature of entry.signatures) seenSignatures.add(signature);
+  };
+  if (monetaryQuery) {
+    for (const entry of pool) {
+      if (selected.length >= input.maxItems) break;
+      if (entry.signatures.some((signature) => !seenSignatures.has(signature))) add(entry);
+    }
+  }
+  for (const entry of pool) {
+    if (selected.length >= input.maxItems) break;
+    add(entry);
+  }
+  return selected.map((entry) => entry.candidate);
+}
+
 const DEFAULT_SWEEP_PER_CUE_CAP = 40;
 const DEFAULT_SWEEP_GLOBAL_CAP = 80;
 
@@ -3891,8 +3995,10 @@ function composeReconstructedContext(input: {
     ];
     return lines.join("\n");
   };
+  const budget = input.contextBudgetTokens ?? 1800;
   let contentSurfaces = { plain: "", temporal: "" };
   let includeEntityAliasCandidates = true;
+  let shortlistItemLimit = QUERY_EVIDENCE_SHORTLIST_MAX_ITEMS;
   const render = (includeSweeps: boolean): string => {
     coverage = evidenceCoverageForPaths(
       publicQuery,
@@ -3998,11 +4104,49 @@ function composeReconstructedContext(input: {
             ? temporalContextLabel(memory.createdAt, memory.metadata)
             : "";
           return {
+            memoryId: memory.id,
             plain: content,
             temporal: temporal ? `${temporal} ${content}` : content,
           };
         })
       : [];
+    const shortlistEntries = (includeSweeps
+      ? queryEvidenceShortlistCandidates({
+          query: publicQuery,
+          candidates: sweepCandidates,
+          maxItems: shortlistItemLimit,
+        })
+      : []).map((candidate) => {
+        const memory = publicMemory(
+          candidate.memory,
+          hideInternalRouteSignals,
+          privateOutputSignalKeySet,
+        );
+        const content = truncateMemoryContent(memory.content, capForMemoryId(memory.id, fullIds));
+        const temporal = includeTemporalContext
+          ? temporalContextLabel(memory.createdAt, memory.metadata)
+          : "";
+        return {
+          memoryId: memory.id,
+          plain: content,
+          temporal: temporal ? `${temporal} ${content}` : content,
+          contextLine: temporal ? `- [${temporal}] ${content}` : `- ${content}`,
+        };
+      });
+    const shortlistTokenBudget = Math.min(
+      QUERY_EVIDENCE_SHORTLIST_MAX_TOKENS,
+      Math.max(0, Math.floor(budget * 0.08)),
+    );
+    const shortlistTitle =
+      "Query-relevant evidence shortlist (ranked mentions; verify and deduplicate against the dated appendix):";
+    while (
+      shortlistEntries.length > 0 &&
+      estimateTokens([shortlistTitle, ...shortlistEntries.map((entry) => entry.contextLine)].join("\n")) >
+        shortlistTokenBudget
+    ) {
+      shortlistEntries.pop();
+    }
+    const shortlistMemoryIds = new Set(shortlistEntries.map((entry) => entry.memoryId));
     const candidateMemories = uniqueMemoriesById([
       ...memories,
       ...(includeSweeps ? sweepCandidates.map((candidate) => candidate.memory) : []),
@@ -4043,10 +4187,11 @@ function composeReconstructedContext(input: {
       : [];
     const entityAliasSurfaceEntries = entityAliasHints.map((hint) => ({ plain: hint, temporal: hint }));
     const surfaceEntries = [
+      ...shortlistEntries,
       ...memorySurfaceEntries,
       ...pathSurfaceEntries,
       ...evidenceSurfaceEntries,
-      ...sweepSurfaceEntries,
+      ...sweepSurfaceEntries.filter((entry) => !shortlistMemoryIds.has(entry.memoryId)),
       ...entityAliasSurfaceEntries,
     ];
     contentSurfaces = {
@@ -4066,6 +4211,9 @@ function composeReconstructedContext(input: {
         : []),
       `Evidence convergence: score=${output.evidenceConvergence.score.toFixed(2)}; reached=${output.evidenceConvergence.reached}; threshold=${output.evidenceConvergence.threshold.toFixed(2)}; pruned=${output.evidenceConvergence.prunedBranchCount}; frontier=${output.evidenceConvergence.frontierRemaining}; stopWhenEvidenceEnough=${output.evidenceConvergence.stopWhenEvidenceEnough}`,
       `Reconstruction uncertainty: ${output.uncertainty.level}${output.uncertainty.reasons.length ? ` (${output.uncertainty.reasons.join(", ")})` : ""}`,
+      ...(shortlistEntries.length > 0
+        ? [shortlistTitle, ...shortlistEntries.map((entry) => entry.contextLine)]
+        : []),
       "Memory content:",
       ...publicMemories.map(
         (memory) =>
@@ -4101,7 +4249,6 @@ function composeReconstructedContext(input: {
     return lines.join("\n");
   };
   let contextBlock = render(false);
-  const budget = input.contextBudgetTokens ?? 1800;
   // Alias candidates are optional navigation aids, never source evidence. If
   // they would exceed the budget, remove them before culling any original
   // memory, path, or evidence content.
@@ -4149,6 +4296,10 @@ function composeReconstructedContext(input: {
       sweepCandidates = sweepCandidates.filter((candidate) => candidate.memory.id !== drop.memory.id);
     }
     contextBlock = render(true);
+    while (shortlistItemLimit > 0 && estimateTokens(contextBlock) > budget) {
+      shortlistItemLimit -= 1;
+      contextBlock = render(true);
+    }
     if (estimateTokens(contextBlock) > budget && includeEntityAliasCandidates) {
       includeEntityAliasCandidates = false;
       contextBlock = render(true);
@@ -4171,7 +4322,9 @@ function composeReconstructedContext(input: {
       contextBlock = render(includeSweeps);
     }
     while (estimateTokens(contextBlock) > budget) {
-      if (paths.length > 0) {
+      if (shortlistItemLimit > 0) {
+        shortlistItemLimit -= 1;
+      } else if (paths.length > 0) {
         paths = paths.slice(0, -1);
       } else if (evidence.length > 0) {
         evidence = evidence.slice(0, -1);
