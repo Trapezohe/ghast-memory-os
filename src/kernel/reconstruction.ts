@@ -18,8 +18,17 @@ import {
   sanitizeEvidenceForPublicOutput,
 } from "./safety.js";
 import {
+  carryReaderEvidenceSource,
+  carryReaderMemorySource,
   collectReaderEvidenceForMemories,
+  createReaderSourceBindings,
+  establishReaderMemoryAuthority,
   exactPrimaryEvidenceId,
+  readerEvidenceSurfaceText,
+  readerMemoryHasUserAuthority,
+  readerMemorySurfaceText,
+  readerUnverifiedSurfaceText,
+  sanitizeReaderEvidenceForPublicOutput,
 } from "./reader-evidence.js";
 import { queryTerms } from "./query-terms.js";
 import {
@@ -298,12 +307,15 @@ function formatPathLine(
   temporalSegment: string,
   maxCharsPerMemory: number | undefined,
   targetReference?: string | undefined,
+  targetSurface?: string | undefined,
 ): string {
   const routeScore = path.routeScore !== undefined ? `; routeScore=${path.routeScore.toFixed(2)}` : "";
   const routeReason = path.routeReason ? `; reason=${path.routeReason}` : "";
   const informationGain =
     path.informationGain !== undefined ? `; gain=${path.informationGain.toFixed(2)}` : "";
-  const targetSummary = targetReference ?? truncateMemoryContent(path.targetSummary, maxCharsPerMemory);
+  const targetSummary = targetReference ?? targetSurface ?? readerUnverifiedSurfaceText(
+    truncateMemoryContent(path.targetSummary, maxCharsPerMemory),
+  );
   return `- [step=${path.step}; cue=${path.cue}; tag=${path.tag}; kind=${path.targetKind ?? path.targetType}${temporalSegment}; confidence=${path.confidence.toFixed(2)}${routeScore}${informationGain}${routeReason}] ${targetSummary}`;
 }
 
@@ -352,18 +364,18 @@ function publicMemory(
     [GMOS_METADATA_REFERENCE_MARKER]: _authorityMarker,
     ...publicMetadata
   } = memory.metadata;
-  const publicRecord = {
+  const publicRecord = carryReaderMemorySource(memory, {
     ...memory,
     kind: safePublicLabel(memory.kind) as MemoryRecord["kind"],
     metadata: publicMetadata,
-  };
+  });
   if (!hideRouteSignals) return publicRecord;
-  return {
+  return carryReaderMemorySource(publicRecord, {
     ...publicRecord,
     scope: "global",
     content: redactPrivateRouteSignals(memory.content, privateOutputSignalKeys),
     metadata: {},
-  };
+  });
 }
 
 function publicEvidenceEvent(
@@ -1734,40 +1746,460 @@ function inferTemporalRecallPurpose(
   query: string,
   temporalMode: ReconstructContextInput["temporalMode"],
   recallPurpose?: ReconstructContextInput["recallPurpose"],
+  referenceDate?: string | undefined,
 ): ReconstructionRecallPurpose {
   if (recallPurpose === "history" || recallPurpose === "context") return recallPurpose;
   if (temporalMode === "history") return "history";
   if (temporalMode === "current") return "context";
-  if (temporalMode === "auto") return autoTemporalRecallPurpose(query);
+  if (temporalMode === "auto") return autoTemporalRecallPurpose(query, referenceDate);
   return "context";
 }
 
-function autoTemporalRecallPurpose(query: string): ReconstructionRecallPurpose {
-  const normalized = query.normalize("NFC").toLowerCase();
-  const decisivelyHistorical = [
-    /\b(?:before|earlier|formerly|historical|history|originally|past|previous|previously|prior|since)\b/u,
-    /\b(?:what|where|who|when|which|how)\b[^?!.]{0,96}\b(?:did|had|was|were)\b/u,
-    /\b(?:last|past)\s+(?:few\s+)?(?:days?|weeks?|months?|years?)\b/u,
-    /(?:曾经|之前|以前|过去|历史|原来|最初|以来|之间)/u,
-  ];
-  if (decisivelyHistorical.some((pattern) => pattern.test(normalized))) return "history";
+interface QueryRecallIntentClassification {
+  aggregateRecall: boolean;
+  explicitExhaustiveEnumeration: boolean;
+  orderingRecall: boolean;
+  quantitativeAggregate: boolean;
+  temporalPurpose: ReconstructionRecallPurpose;
+  unboundedEnumeration: boolean;
+}
 
-  const futureQuestionAuxiliary =
-    /\b(?:What|Where|Who|When|Which|How|what|where|who|when|which|how)\b[^?!.]{0,64}\b(?:will|shall)\b/u.test(
-      query,
-    ) || /^\s*(?:Will|Shall)\b/u.test(query);
+const QUERY_MONTH_INDEX: Readonly<Record<string, number>> = {
+  jan: 0,
+  january: 0,
+  feb: 1,
+  february: 1,
+  mar: 2,
+  march: 2,
+  apr: 3,
+  april: 3,
+  may: 4,
+  jun: 5,
+  june: 5,
+  jul: 6,
+  july: 6,
+  aug: 7,
+  august: 7,
+  sep: 8,
+  sept: 8,
+  september: 8,
+  oct: 9,
+  october: 9,
+  nov: 10,
+  november: 10,
+  dec: 11,
+  december: 11,
+};
+
+function queryCalendarDirection(
+  query: string,
+  referenceDate?: string | undefined,
+): "future" | "past" | null {
+  if (!referenceDate) return null;
+  const reference = new Date(referenceDate);
+  if (!Number.isFinite(reference.getTime())) return null;
+  let future = false;
+  let past = false;
+  const classify = (year: number, month?: number, day?: number): void => {
+    const candidate = Date.UTC(year, month ?? 0, day ?? 1);
+    const referencePoint = Date.UTC(
+      reference.getUTCFullYear(),
+      month === undefined ? 0 : reference.getUTCMonth(),
+      day === undefined ? 1 : reference.getUTCDate(),
+    );
+    if (candidate > referencePoint) future = true;
+    else if (candidate < referencePoint) past = true;
+  };
+  for (const match of query.matchAll(/\b((?:19|20)\d{2})(?:-(\d{2})(?:-(\d{2}))?)?\b/gu)) {
+    classify(Number(match[1]), match[2] ? Number(match[2]) - 1 : undefined, match[3] ? Number(match[3]) : undefined);
+  }
+  for (const match of query.matchAll(
+    /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+(\d{1,2})(?:st|nd|rd|th)?)?(?:,?\s+((?:19|20)\d{2}))?\b/gu,
+  )) {
+    const month = QUERY_MONTH_INDEX[match[1] ?? ""];
+    if (month === undefined) continue;
+    if (!match[2] && !match[3]) {
+      const prefix = query.slice(Math.max(0, (match.index ?? 0) - 16), match.index ?? 0);
+      if (!/(?:after|before|by|during|from|in|on|since|through|until)\s+$/u.test(prefix)) {
+        continue;
+      }
+    }
+    classify(
+      match[3] ? Number(match[3]) : reference.getUTCFullYear(),
+      month,
+      match[2] ? Number(match[2]) : 1,
+    );
+  }
+  for (const match of query.matchAll(/((?:19|20)\d{2})年(?:([1-9]|1[0-2])月)?(?:([1-9]|[12]\d|3[01])日)?/gu)) {
+    classify(Number(match[1]), match[2] ? Number(match[2]) - 1 : undefined, match[3] ? Number(match[3]) : undefined);
+  }
+  return future === past ? null : future ? "future" : "past";
+}
+
+function classifyQueryRecallIntent(
+  query: string,
+  referenceDate?: string | undefined,
+): QueryRecallIntentClassification {
+  const original = query.normalize("NFC");
+  const normalized = query.normalize("NFC").toLowerCase();
+  const proceduralInstruction =
+    /^\s*how\s+(?:can|do|should|would)\b[^?!.]{0,64}\b(?:build|create|make|reset|set up|write)\b/u.test(
+      normalized,
+    ) ||
+    /\b(?:instructions|steps)\s+(?:for|to)\b/u.test(normalized) ||
+    /\b(?:files?)\s+in\s+(?:this|the)\s+(?:directory|folder)\b/u.test(normalized) ||
+    /^\s*(?:please\s+)?(?:give(?:\s+me)?|list|name|show(?:\s+me)?)\b[^?!.]{0,64}\b(?:commands?|dependencies|instructions?|steps?)\b[^?!.]{0,64}\b(?:install|reset|run|set\s+up)\b/u.test(
+      normalized,
+    ) ||
+    /^\s*(?:please\s+)?(?:give(?:\s+me)?|list|name|show(?:\s+me)?)\b[^?!.]{0,64}\b(?:options?|ways?)\s+for\s+(?:building|creating|making|resetting|setting\s+up|writing)\b/u.test(
+      normalized,
+    ) ||
+    /^\s*(?:please\s+)?(?:give(?:\s+me)?|list|name|show(?:\s+me)?)\b[^?!.]{0,64}\b(?:i|we|you)\s+(?:need(?:\s+to)?|should|must)\s+(?:configure|install|reset|run|set\s+up)\b/u.test(
+      normalized,
+    ) ||
+    /(?:应该|需要|怎么|如何).{0,16}(?:创建|制作|安装|重置|设置|依赖)/u.test(normalized);
+  const providedCollectionTransform =
+    /^\s*(?:please\s+)?(?:arrange|order|put|reorder|sort)\s+(?:this|these|the following)\b/u.test(
+      normalized,
+    ) ||
+    /^\s*(?:chronological(?:ly)?|reverse[- ]chronological(?:ly)?)\s+(?:list|show(?:\s+me)?)\s+(?:these|the\s+following)\b/u.test(
+      normalized,
+    ) ||
+    /^\s*(?:please\s+)?(?:list|show(?:\s+me)?)\s+(?:these|the\s+following)\b[^?!.]{0,64}\b(?:chronological(?:ly)?|by\s+(?:date|time)|in\s+(?:date|time)\s+order)\b/u.test(
+      normalized,
+    );
+  const personalWorldScope =
+    /\b(?:i|me|mine|my|our|ours|we)\b/u.test(normalized) ||
+    /(?:我|我们|我的|我们的|用户)/u.test(normalized);
+  const durableCollectionScope =
+    /\b(?:activities|airlines|appointments|dates|entries|events|meetings|memories|orders|purchases|rooms|sessions|trips|visits)\b/u.test(
+      normalized,
+    );
+  const assistantHistoryScope =
+    /^\s*(?:what|which)\b[^?!.]{0,48}\b(?:did|were)\s+you\s+(?:recommend|suggest)\b/u.test(
+      normalized,
+    ) ||
+    /^\s*(?:what|which)\s+were\s+your\s+(?:recommendations|suggestions)\b/u.test(normalized) ||
+    /\b(?:you|your)\b[^?!.]{0,32}\b(?:recommended|suggested|recommendations|suggestions)\b/u.test(
+      normalized,
+    );
+  const userWorldRecallScope =
+    personalWorldScope || durableCollectionScope || assistantHistoryScope ||
+    /(?:订单|行程|旅行|会议|购买|配件|城市|国家|航班|记忆|偏好)/u.test(normalized);
+  const explicitChronologicalRange =
+    /\b(?:earliest|oldest|first)\s*(?:-|–|—|to|through)\s*(?:latest|newest|last)\b/u.test(
+      normalized,
+    ) ||
+    /\b(?:latest|newest|last)\s*(?:-|–|—|to|through)\s*(?:earliest|oldest|first)\b/u.test(
+      normalized,
+    ) ||
+    /\b(?:earliest|oldest|latest|newest|most recent)\s+first\b/u.test(normalized) ||
+    /(?:从最早到最新|从最旧到最新|从最新到最早|从早到晚|从晚到早)/u.test(normalized);
+  const chronologicalSignal =
+    explicitChronologicalRange ||
+    /\b(?:chronological(?:ly)?|reverse[- ]chronological(?:ly)?|timeline)\b/u.test(normalized) ||
+    /\b(?:order(?:ed)?|sort(?:ed)?|arrange(?:d)?)\s+by\s+(?:date|time)\b/u.test(normalized) ||
+    /\b(?:by\s+(?:date|time)|in\s+(?:date|time|temporal)\s+order)\b/u.test(normalized) ||
+    /(?:按时间顺序|时间顺序|先后顺序|时间线)/u.test(normalized);
+  const collectionOrdering =
+    /^\s*(?:please\s+)?(?:arrange|order|sort)\s+(?:these\s+|the\s+|my\s+)?(?:activities|dates|entries|events|memories|steps|trips|visits)\b/u.test(
+      normalized,
+    ) ||
+    /\b(?:can|could|would)\s+you\s+(?:arrange|order|sort)\s+(?:these\s+|the\s+|my\s+)?(?:activities|dates|entries|events|memories|steps|trips|visits)\b/u.test(
+      normalized,
+    ) ||
+    /\b(?:order|sequence)\s+of\s+(?:these\s+|the\s+|my\s+)?(?:activities|dates|entries|events|memories|steps|trips|visits)\b/u.test(
+      normalized,
+    ) ||
+    /^\s*(?:in\s+)?what\s+order\s+(?:are|were)\s+(?:(?:my|our|the|these|those|your)\s+)?[a-z][a-z-]*(?:s|es)\b/u.test(
+      normalized,
+    ) ||
+    /(?:按顺序|依次|顺序列出|排列顺序|排序)/u.test(normalized);
+  const orderingRecall =
+    (chronologicalSignal || collectionOrdering) &&
+    userWorldRecallScope &&
+    !proceduralInstruction &&
+    !providedCollectionTransform;
+  const chronologicalOrdering = chronologicalSignal && orderingRecall;
+  const comparativeAcross =
+    /\b(?:compare|comparison|differ|difference|varied|varies|vary|variation)\b[^?!.]{0,96}\bacross\b/u.test(
+      normalized,
+    ) ||
+    /\bacross\s+(?:all|my|our|the|these|those|your)\b[^?!.]{0,64}\b(?:compared|differed|varied|varies|vary)\b/u.test(
+      normalized,
+    );
+  const scalarAdviceQuestion =
+    /^\s*how\s+(?:many|much)\b[^?!.]{0,48}\b(?:can|could|should|would)\s+(?:i|we)\b/u.test(
+      normalized,
+    ) ||
+    /^\s*how\s+(?:many|much)\b[^?!.]{0,48}\bdo\s+(?:i|we)\s+need\s+to\b/u.test(
+      normalized,
+    ) ||
+    (
+      /^\s*how\s+much\s+(?:does|is)\b/u.test(normalized) &&
+      !/\b(?:across|all|altogether|combined|cumulative|total)\b/u.test(normalized)
+    );
+  const quantitativeAggregate =
+    !scalarAdviceQuestion &&
+    (
+      /\b(?:across all|all time|altogether|combined|cumulative|how many|how much|how often|so far|to date|total)\b/u.test(
+        normalized,
+      ) ||
+      comparativeAcross ||
+      /(?:总共|一共|累计|合计|多少次|多少钱|多少个|多少项)/u.test(normalized)
+    );
+  const pluralWhMatch = /^\s*(?:what|which)\s+([a-z][a-z -]{0,62}?)\s+(?:are|did|do|does|has|have|were)\b/u.exec(
+    normalized,
+  );
+  const pluralWhNoun = pluralWhMatch?.[1]?.trim().split(/\s+/u).at(-1) ?? "";
+  const pluralCollectionNoun = (noun: string): boolean =>
+    noun.length > 0 &&
+    (
+      [
+        "children",
+        "clothes",
+        "data",
+        "deer",
+        "feet",
+        "fish",
+        "geese",
+        "men",
+        "mice",
+        "people",
+        "sheep",
+        "teeth",
+        "women",
+      ].includes(noun) ||
+      (
+        /(?:s|es)$/u.test(noun) &&
+        !/(?:address|business|news|series|species|status)$/u.test(noun) &&
+        !/(?:is|ss|us)$/u.test(noun)
+      )
+    );
+  const pluralWhEnumeration = pluralCollectionNoun(pluralWhNoun);
+  const copularWhMatch = /^\s*(?:what|which)\s+(?:are|were)\s+(?:(?:my|our|your)\s+)?([a-z][a-z -]{0,62})/u.exec(
+    normalized,
+  );
+  const copularWhNoun = copularWhMatch?.[1]?.trim().split(/\s+/u).at(-1) ?? "";
+  const copularWhEnumeration = pluralCollectionNoun(copularWhNoun);
+  const imperativeCollectionMatch = /^\s*(?:give me|show me)\s+(?:(?:all|my|our|the|your)\s+)?([a-z][a-z -]{0,62})/u.exec(
+    normalized,
+  );
+  const imperativeCollectionNoun = imperativeCollectionMatch?.[1]
+    ?.trim()
+    .split(/\s+/u)
+    .find(pluralCollectionNoun) ?? "";
+  const imperativeCollectionEnumeration = pluralCollectionNoun(imperativeCollectionNoun);
+  // English present perfect is structural: a perfect auxiliary must govern a
+  // real participle. Generic `-en`/`-ed` suffix checks classify nouns such as
+  // "children" and adjectives such as "red" as past events.
+  const pastParticiple =
+    "(?:[a-z][a-z-]{1,}ed|arisen|awoken|beaten|become|been|begun|bent|bet|bidden|bitten|bled|blown|borne|broken|brought|built|burst|bought|caught|chosen|clung|come|cost|crept|cut|dealt|dug|done|drawn|driven|drunk|eaten|fallen|fed|felt|fled|flown|forbidden|forgotten|forgiven|found|fought|frozen|given|gone|grown|had|heard|held|hung|hurt|kept|known|laid|led|left|lent|let|lit|lost|made|meant|met|paid|proven|put|quit|read|ridden|risen|run|said|seen|sent|set|shaken|shone|shown|shot|shrunk|shut|slept|slid|slit|smelt|sought|sold|spoken|sped|spent|spilt|spun|split|spread|sprung|stood|stolen|stuck|stung|struck|swum|swept|taken|taught|told|torn|thought|thrown|understood|woken|won|worn|withdrawn|written)";
+  const explicitPossessionStateQuestion =
+    /^\s*(?:who|which\s+(?:people|person|user))\s+(?:has|have)\s+(?:[a-z][a-z-]*\s+){0,2}(?:access|abilities|ability|availability|children|credentials|custody|experience|eyes|hair|hearing|knowledge|mobility|ownership|parking|permission|permissions|qualifications|resources|rights|skills|staff|status|time|training|vision)\b/u.test(
+      normalized,
+    );
+  const whSubjectPresentPerfect = new RegExp(
+    String.raw`^\s*(?:who|what|which\s+[a-z][a-z -]{0,62})\s+(?:has|have)\s+${pastParticiple}\b`,
+    "u",
+  ).test(normalized) && !explicitPossessionStateQuestion && (
+    /^\s*(?:who|what)\b/u.test(normalized) ||
+    pluralWhEnumeration
+  );
+  const presentPerfectSubject =
+    "(?:he|i|she|they|we|you|(?:my|our|their|your)\\s+[a-z][a-z'’-]*|the\\s+[a-z][a-z'’-]*|[a-z][a-z'’-]*['’]s\\s+[a-z][a-z'’-]*|(?:children|data|deer|fish|men|people|sheep|women|[a-z][a-z'’-]*s))";
+  const invertedPresentPerfectQuestion = new RegExp(
+    String.raw`^\s*(?:what|where|who|when|which|how)\b[^?!.]{0,96}\b(?:has|have)\s+${presentPerfectSubject}\s+${pastParticiple}\b`,
+    "u",
+  ).test(normalized);
+  const namedSubjectPresentPerfectQuestion = new RegExp(
+    String.raw`^\s*(?:What|Where|Who|When|Which|How)\b[^?!.]{0,96}\b(?:has|have)\s+(?:[A-Z][\p{L}'’-]*(?:\s+[A-Z][\p{L}'’-]*)?(?:\s+and\s+[A-Z][\p{L}'’-]*(?:\s+[A-Z][\p{L}'’-]*)?)*)\s+${pastParticiple}\b`,
+    "u",
+  ).test(original);
+  const presentPerfectQuestion =
+    whSubjectPresentPerfect ||
+    invertedPresentPerfectQuestion ||
+    namedSubjectPresentPerfectQuestion ||
+    /\bwhat\s+has\s+(?:been|changed|happened|occurred)\b/u.test(normalized);
+  const historicalWhoEnumeration =
+    /^\s*who\b/u.test(normalized) && whSubjectPresentPerfect;
+  const historicalPerfectEnumeration =
+    presentPerfectQuestion &&
+    (/^\s*what\s+(?:has|have)\b/u.test(normalized) || pluralWhEnumeration);
+  const explicitExhaustiveEnumeration =
+    /^\s*(?:please\s+)?(?:enumerate|list|name)\s+(?:me\s+)?(?:all|each|every)\b/u.test(
+      normalized,
+    ) ||
+    /^\s*(?:what|which)\b[^?!.]{0,48}\b(?:all|each|every)\b/u.test(normalized) ||
+    /\b(?:and|plus)\s+(?:all|each|every)\b/u.test(normalized) ||
+    /\b(?:across|for|from|per)\s+each\b/u.test(normalized) ||
+    /(?:所有|全部|每个|各个)/u.test(normalized);
+  const unboundedEnumeration =
+    (
+      /^\s*(?:please\s+)?(?:enumerate|list)\b/u.test(normalized) &&
+      userWorldRecallScope &&
+      !proceduralInstruction &&
+      !providedCollectionTransform
+    ) ||
+    (
+      /^\s*(?:please\s+)?name\s+(?:(?:all|each|every|my|our|your)\b|(?:the\s+)?(?:\d{1,3}|both|two|three|four|five|six|seven|eight|nine|ten)\b)/u.test(
+        normalized,
+      ) && !proceduralInstruction && !providedCollectionTransform
+    ) ||
+    (
+      /^\s*(?:what|which)\b[^?!.]{0,48}\b(?:all|each|every)\b/u.test(normalized) &&
+      userWorldRecallScope &&
+      !proceduralInstruction &&
+      !providedCollectionTransform
+    ) ||
+    (
+      /^\s*(?:请)?(?:列出|枚举|罗列)/u.test(normalized) &&
+      userWorldRecallScope &&
+      !proceduralInstruction &&
+      !providedCollectionTransform
+    ) ||
+    (
+      /^\s*(?:请)?(?:给我看|展示|显示)/u.test(normalized) &&
+      userWorldRecallScope &&
+      !proceduralInstruction &&
+      !providedCollectionTransform
+    ) ||
+    (
+      /(?:哪些|哪几(?:个|项|次|位)?)/u.test(normalized) &&
+      userWorldRecallScope &&
+      !proceduralInstruction &&
+      !providedCollectionTransform
+    ) ||
+    (pluralWhEnumeration && userWorldRecallScope && !proceduralInstruction && !providedCollectionTransform) ||
+    (copularWhEnumeration && userWorldRecallScope && !proceduralInstruction && !providedCollectionTransform) ||
+    (imperativeCollectionEnumeration && userWorldRecallScope && !proceduralInstruction && !providedCollectionTransform) ||
+    historicalWhoEnumeration ||
+    historicalPerfectEnumeration;
+  const aggregateRecall = orderingRecall || quantitativeAggregate || unboundedEnumeration;
+  const classified = (
+    temporalPurpose: ReconstructionRecallPurpose,
+  ): QueryRecallIntentClassification => ({
+    aggregateRecall,
+    explicitExhaustiveEnumeration,
+    orderingRecall,
+    quantitativeAggregate,
+    temporalPurpose,
+    unboundedEnumeration,
+  });
+
+  const strongHistoricalBoundary = [
+    /\b(?:earlier|formerly|historical|history|originally|past|previous|previously|prior)\b/u,
+    /\bbefore\s+(?:now|today)\b/u,
+    /\b(?:the day before|yesterday)\b/u,
+    /\b(?:last|past)\s+(?:few\s+)?(?:days?|weeks?|months?|years?)\b/u,
+    /(?:前天|上个月|上周|去年|昨天|昨日|刚才|曾经|之前|以前|过去|历史|原来|最初|以来|之间)/u,
+  ].some((pattern) => pattern.test(normalized));
+  const boundedCalendarReference =
+    /\b(?:after|before|between|by|during|from|in|on|since|through|until)\s+(?:the\s+)?(?:jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\b/u.test(
+      normalized,
+    ) ||
+    /\b(?:after|before|between|by|during|from|in|on|since|through|until)\s+(?:the\s+)?(?:19|20)\d{2}(?:-\d{2}(?:-\d{2})?)?\b/u.test(
+      normalized,
+    );
+  const calendarDirection = queryCalendarDirection(normalized, referenceDate);
+  const relationalHistoricalBoundary = /\b(?:before|since)\b/u.test(normalized);
+  const questionBody = normalized.replace(/^\s*(?:what|where|who|when|which|how)\b/u, "");
+  const questionAuxiliaries = [...questionBody.matchAll(
+    /\b(am|are|can|could|did|do|does|had|has|have|is|may|might|shall|should|was|were|will|would)\b/gu,
+  )];
+  const firstQuestionAuxiliary = questionAuxiliaries[0];
+  const firstAuxiliaryPrefix = firstQuestionAuxiliary?.index === undefined
+    ? ""
+    : questionBody.slice(0, firstQuestionAuxiliary.index);
+  const firstAuxiliaryStartsRelativeClause = /\b(?:that|which|who)\b/u.test(firstAuxiliaryPrefix);
+  const relativeClauseMainAuxiliary = firstAuxiliaryStartsRelativeClause
+    ? [...questionAuxiliaries.slice(1)].reverse().find((match) =>
+        ["can", "could", "may", "might", "shall", "should", "will", "would"].includes(match[1] ?? "")
+      ) ?? questionAuxiliaries.at(-1)
+    : undefined;
+  const mainQuestionAuxiliary = relativeClauseMainAuxiliary?.[1] ?? firstQuestionAuxiliary?.[1] ?? null;
+  const leadingRequestAuxiliary = /^\s*(can|could|may|might|shall|should|will|would)\b/u.exec(
+    normalized,
+  )?.[1] ?? null;
+  const modalPerfectQuestion = new RegExp(
+    String.raw`^\s*(?:what|where|who|when|which|how)\b[^?!.]{0,96}?\b(?:could|might|should|would)\b[^?!.]{0,32}\bhave\s+${pastParticiple}\b`,
+    "u",
+  ).test(normalized);
+  const mainProspectiveQuestion =
+    !modalPerfectQuestion &&
+    (
+      ["can", "could", "may", "might", "shall", "should", "will", "would"].includes(
+        mainQuestionAuxiliary ?? "",
+      ) || leadingRequestAuxiliary !== null
+    );
+  const mainPastQuestion =
+    ["did", "had", "was", "were"].includes(mainQuestionAuxiliary ?? "") ||
+    modalPerfectQuestion ||
+    presentPerfectQuestion;
+  const mainPresentQuestion =
+    ["am", "are", "do", "does", "is"].includes(mainQuestionAuxiliary ?? "");
+  const pastSubjectEvent = new RegExp(
+    String.raw`\b(?:he|i|she|the user|they|we|you)\b[^?!.]{0,40}\b(?:attended|bought|completed|flew|ordered|purchased|recommended|started|stayed|suggested|traveled|travelled|used|visited)\b`,
+    "u",
+  ).test(normalized) || /\b(?:happened|occurred)\b/u.test(normalized);
+  const chinesePastAspect =
+    /(?:我|我们|用户)[^，。？！?]{0,32}(?:到过|吃过|读过|见过|看过|买过|去过|用过|住过|坐过|搭乘过|乘坐过)/u.test(
+      normalized,
+    ) ||
+    /(?:我|我们|用户)[^，。？！?]{0,32}(?:买|坐|去|搭乘|乘坐|参加|访问|看|读|吃|见|用|住)了[^，。？！?]{0,32}(?:什么|哪些|哪几)/u.test(
+      normalized,
+    );
+  const historicalQuestionGrammar =
+    mainPastQuestion || pastSubjectEvent || chinesePastAspect;
+  const explicitPresentStateQuestion =
+    /\b(?:what|where|who|when|which|how)\b[^?!.]{0,96}\b(?:do|does)\s+(?:he|i|she|the\s+(?:team|user)|they|we|you)\s+have\b/u.test(
+      normalized,
+    ) ||
+    /\b(?:what|where|who|when|which|how)\b[^?!.]{0,96}\b(?:am|are|is)\s+(?:currently\s+)?[a-z][a-z-]*ing\b/u.test(
+      normalized,
+    ) ||
+    /\b(?:what|where|who|when|which|how)\b[^?!.]{0,96}\b(?:has|have)\s+(?:a|an|my|our|the|your)\b/u.test(
+      normalized,
+    );
+  const presentStateQuestion = explicitPresentStateQuestion || (
+    !presentPerfectQuestion &&
+    !chronologicalOrdering &&
+    /\b(?:what|where|who|when|which|how)\b[^?!.]{0,96}\b(?:am|are|do|does|has|have|is)\b/u.test(
+      normalized,
+    )
+  );
   const explicitlyProspective =
     /\b(?:am|are|is)\s+going to\b|\b(?:future|upcoming)\b|\bnext\s+(?:day|days|month|months|plan|plans|step|steps|week|weeks|year|years)\b/u.test(
       normalized,
     ) ||
-    futureQuestionAuxiliary ||
-    /(?:将来|未来|接下来|下次)/u.test(normalized);
-  if (explicitlyProspective) return "context";
+    mainProspectiveQuestion ||
+    /(?:明天|明日|将来|未来|接下来|下次)/u.test(normalized) ||
+    (!historicalQuestionGrammar && /(?:推荐|建议)/u.test(normalized));
 
   const explicitlyCurrent =
-    /\b(?:as of now|at present|current|currently|latest|most recent|now|right now|today)\b/u.test(normalized) ||
-    /(?:当前|目前|现在|如今|最新)/u.test(normalized);
-  if (explicitlyCurrent) return "context";
+    (
+      /\b(?:as of now|at present|current|currently|latest|most recent|now|right now|today)\b/u.test(normalized) ||
+      /(?:今天|今日|当前|目前|现在|如今|最新)/u.test(normalized)
+    ) && !/\bbefore\s+(?:now|today)\b/u.test(normalized);
+  // Main-clause tense wins over dates and historical relative clauses. For
+  // example, a 2027 booking may already have happened, while a hotel mentioned
+  // in an old recommendation can still be the subject of a current decision.
+  if (
+    (explicitlyCurrent && (mainProspectiveQuestion || mainPresentQuestion || !strongHistoricalBoundary)) ||
+    (!strongHistoricalBoundary && (mainProspectiveQuestion || mainPresentQuestion))
+  ) {
+    return classified("context");
+  }
+  if (strongHistoricalBoundary) return classified("history");
+  if (mainPastQuestion) return classified("history");
+  if (explicitlyProspective || calendarDirection === "future") return classified("context");
+  if (presentStateQuestion) return classified("context");
+  if (relationalHistoricalBoundary) return classified("history");
+  if (historicalQuestionGrammar || /\bused to\b/u.test(normalized)) {
+    return classified("history");
+  }
+  if (calendarDirection === "past") return classified("history");
+  if (boundedCalendarReference || chronologicalOrdering) return classified("history");
 
   const analyticalHistory = [
     /\b(?:across all|all time|altogether|between|combined|cumulative|over time|so far|to date|total)\b/u,
@@ -1775,24 +2207,19 @@ function autoTemporalRecallPurpose(query: string): ReconstructionRecallPurpose {
     /\b(?:what date|when)\b/u,
     /(?:总共|一共|累计|合计|多少|多久|何时|什么时候)/u,
   ];
-  if (analyticalHistory.some((pattern) => pattern.test(normalized))) return "history";
+  if (analyticalHistory.some((pattern) => pattern.test(normalized))) return classified("history");
+  return classified("context");
+}
 
-  const boundedCalendarReference =
-    /\b(?:after|before|between|by|during|from|in|since|through|until)\s+(?:the\s+)?(?:jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\b/u.test(
-      normalized,
-    );
-  if (boundedCalendarReference) return "history";
-  return /\bused to\b/u.test(normalized) ? "history" : "context";
+function autoTemporalRecallPurpose(
+  query: string,
+  referenceDate?: string | undefined,
+): ReconstructionRecallPurpose {
+  return classifyQueryRecallIntent(query, referenceDate).temporalPurpose;
 }
 
 function queryNeedsAggregateRecall(query: string): boolean {
-  const normalized = query.normalize("NFC").toLowerCase();
-  return (
-    /\b(?:across|all time|altogether|combined|cumulative|how many|how much|how often|so far|to date|total)\b/u.test(
-      normalized,
-    ) ||
-    /(?:总共|一共|累计|合计|多少次|多少钱|多少个|多少项)/u.test(normalized)
-  );
+  return classifyQueryRecallIntent(query).aggregateRecall;
 }
 
 function queryNeedsEntityAliasCandidates(query: string): boolean {
@@ -1852,7 +2279,7 @@ function structuredEntityMetadataValue(
 
 function structuredEntityMention(memory: MemoryRecord): StructuredEntityMention | null {
   if (
-    memory.metadata.sourceTrust !== "user" ||
+    !readerMemoryHasUserAuthority(memory) ||
     !hasGmosMetadataReferenceSchema(
       memory.metadata,
       GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
@@ -1893,6 +2320,7 @@ function structuredEntityMention(memory: MemoryRecord): StructuredEntityMention 
     !objectKey ||
     !Number.isFinite(createdAtMs) ||
     !sourceEvidenceId ||
+    sourceEvidenceId !== memory.sourceEventId ||
     sourceEvidenceId.length > 256
   ) {
     return null;
@@ -2540,13 +2968,18 @@ function entityAliasCandidateHints(
 
 function finiteEnumerationTarget(query: string): number | null {
   const normalized = query.normalize("NFC").toLowerCase();
-  const asksForEnumeration =
-    /\b(?:list|name|order|sequence)\b/u.test(normalized) ||
-    /\b(?:what|which)\b[^?!.]{0,48}\b(?:are|were)\b/u.test(normalized);
-  if (!asksForEnumeration) return null;
-  const match = /\b(?:the\s+)?(both|two|three|four|five|six|seven|eight|nine|ten)\s+([a-z][a-z-]*)\b/u.exec(
-    normalized,
-  );
+  const countToken = "(\\d{1,3}|both|two|three|four|five|six|seven|eight|nine|ten)";
+  const boundedEnumerationPatterns = [
+    /^\s*(?:please\s+)?(?:enumerate|give\s+me|list|name|show\s+me)\s+(?:(?:all|first|last|latest|my|our|recent|the|your)\s+){0,5}(\d{1,3}|both|two|three|four|five|six|seven|eight|nine|ten)\s+([a-z][a-z-]*)\b/u,
+    /^\s*(?:what|which)\s+(?:(?:are|were)\s+)?(?:(?:all|first|last|latest|my|our|recent|the|your)\s+){0,5}(\d{1,3}|both|two|three|four|five|six|seven|eight|nine|ten)\s+([a-z][a-z-]*)\b/u,
+    new RegExp(
+      String.raw`\b(?:order|sequence)\s+of\s+(?:all\s+)?(?:the\s+)?${countToken}\s+([a-z][a-z-]*)\b`,
+      "u",
+    ),
+  ];
+  const match = boundedEnumerationPatterns
+    .map((pattern) => pattern.exec(normalized))
+    .find((candidate) => candidate !== null) ?? null;
   if (!match) return null;
   if (/^(?:day|days|hour|hours|month|months|week|weeks|year|years)$/u.test(match[2] ?? "")) {
     return null;
@@ -2563,7 +2996,9 @@ function finiteEnumerationTarget(query: string): number | null {
     nine: 9,
     ten: 10,
   };
-  return counts[match[1] ?? ""] ?? null;
+  const token = match[1] ?? "";
+  const parsed = counts[token] ?? Number(token);
+  return Number.isInteger(parsed) && parsed >= 2 && parsed <= 256 ? parsed : null;
 }
 
 function targetMemoryCountForQuery(
@@ -2572,13 +3007,30 @@ function targetMemoryCountForQuery(
   maxMemories: number,
 ): number {
   const finiteTarget = finiteEnumerationTarget(query);
-  const desired = queryNeedsAggregateRecall(query)
+  const classification = classifyQueryRecallIntent(query);
+  const normalized = query.normalize("NFC").toLowerCase();
+  const boundedExhaustiveCount = new RegExp(
+    String.raw`\b(?:all|each|every)\s+(?:the\s+)?(?:\d{1,3}|both|two|three|four|five|six|seven|eight|nine|ten)\s+[a-z][a-z-]*\b`,
+    "u",
+  ).test(normalized);
+  const requiresWideRecall =
+    classification.quantitativeAggregate ||
+    (
+      classification.unboundedEnumeration &&
+      classification.explicitExhaustiveEnumeration &&
+      !boundedExhaustiveCount
+    ) ||
+    (finiteTarget === null &&
+      (classification.orderingRecall || classification.unboundedEnumeration));
+  const desired = requiresWideRecall
     ? 48
     : finiteTarget !== null
       ? Math.max(finiteTarget, recallPurpose === "history" ? 4 : 2)
-      : recallPurpose === "history"
-        ? 4
-        : 2;
+      : classification.aggregateRecall
+        ? 48
+        : recallPurpose === "history"
+          ? 4
+          : 2;
   return Math.min(desired, maxMemories);
 }
 
@@ -3864,12 +4316,22 @@ function composeReconstructedContext(input: {
     privateSignalKeys.size > 0;
   const publicEvidence = input.includeEvidence
     ? input.evidence
-        .map(input.sanitizeEvidenceForOutput ?? sanitizeEvidenceForPublicOutput)
-        .map((event) => publicEvidenceEvent(
-          event,
-          hideInternalRouteSignals,
-          privateOutputSignalKeySet,
-        ))
+        .map((event) =>
+          sanitizeReaderEvidenceForPublicOutput(
+            event,
+            input.sanitizeEvidenceForOutput ?? sanitizeEvidenceForPublicOutput,
+          )
+        )
+        .map((event) =>
+          carryReaderEvidenceSource(
+            event,
+            publicEvidenceEvent(
+              event,
+              hideInternalRouteSignals,
+              privateOutputSignalKeySet,
+            ),
+          )
+        )
     : [];
   let evidence = [...publicEvidence];
   let coverage = evidenceCoverageForPaths(
@@ -3975,7 +4437,13 @@ function composeReconstructedContext(input: {
       : new Set(memories.slice(0, input.fullContentTopRank).map((memory) => memory.id));
   const capForMemoryId = (memoryId: string | null | undefined, fullIds: Set<string>): number | undefined =>
     memoryId && fullIds.has(memoryId) ? input.fullContentMaxChars : input.maxCharsPerMemory;
-  const renderSweepSection = (candidates: ReconstructionSweepCandidate[]): string => {
+  const renderSweepSection = (
+    candidates: ReconstructionSweepCandidate[],
+    sourceBindings = createReaderSourceBindings(uniqueMemoriesById([
+      ...memories,
+      ...candidates.map((candidate) => candidate.memory),
+    ])),
+  ): string => {
     if (candidates.length === 0) return "";
     const fullIds = fullContentMemoryIds();
     const lines = [
@@ -3990,7 +4458,8 @@ function composeReconstructedContext(input: {
           ? temporalContextLabel(memory.createdAt, memory.metadata)
           : "";
         const content = truncateMemoryContent(memory.content, capForMemoryId(memory.id, fullIds));
-        return temporal ? `- [${temporal}] ${content}` : `- ${content}`;
+        const surface = readerMemorySurfaceText(memory, { bindings: sourceBindings, content });
+        return temporal ? `- [${temporal}] ${surface}` : `- ${surface}`;
       }),
     ];
     return lines.join("\n");
@@ -4030,6 +4499,11 @@ function composeReconstructedContext(input: {
     const printedMemoryIndexes = new Map(memories.map((memory, index) => [memory.id, index + 1]));
     const fullIds = fullContentMemoryIds();
     const asOf = temporalReferenceDateLabel(input.asOf);
+    const candidateMemories = uniqueMemoriesById([
+      ...memories,
+      ...(includeSweeps ? sweepCandidates.map((candidate) => candidate.memory) : []),
+    ]);
+    const sourceBindings = createReaderSourceBindings(candidateMemories);
     const temporalSegmentForPath = (path: ReconstructedEvidencePath): string => {
       const memory = memoryById.get(path.targetId) ?? memoryById.get(path.sourceMemoryId ?? "");
       return memory
@@ -4060,16 +4534,43 @@ function composeReconstructedContext(input: {
     const publicMemories = memories.map((memory) =>
       publicMemory(memory, hideInternalRouteSignals, privateOutputSignalKeySet)
     );
+    const candidateMemoryById = new Map(candidateMemories.map((memory) => [memory.id, memory]));
+    const evidenceById = new Map(evidence.map((event) => [event.id, event]));
+    const authoritySurfaceForPath = (
+      path: ReconstructedEvidencePath,
+      rawPath: ReconstructedEvidencePath | undefined,
+      content: string,
+    ): string => {
+      const rawTargetId = rawPath?.targetId ?? path.targetId;
+      const rawSourceMemoryId = rawPath?.sourceMemoryId ?? path.sourceMemoryId;
+      const sourceMemory = candidateMemoryById.get(rawTargetId) ??
+        (rawSourceMemoryId ? candidateMemoryById.get(rawSourceMemoryId) : undefined);
+      if (sourceMemory) {
+        const publicSourceMemory = publicMemory(
+          sourceMemory,
+          hideInternalRouteSignals,
+          privateOutputSignalKeySet,
+        );
+        return readerMemorySurfaceText(publicSourceMemory, { bindings: sourceBindings, content });
+      }
+      const rawSourceEvidenceId = rawPath?.sourceEvidenceId ?? path.sourceEvidenceId;
+      const sourceEvidence = evidenceById.get(rawTargetId) ??
+        (rawSourceEvidenceId ? evidenceById.get(rawSourceEvidenceId) : undefined);
+      return sourceEvidence
+        ? readerEvidenceSurfaceText(sourceEvidence, sourceBindings, content)
+        : readerUnverifiedSurfaceText(content);
+    };
     const surfaceLine = (content: string, temporalSegment: string): string => {
       const temporal = temporalSegment.replace(/^;\s*/u, "");
       return temporal ? `${temporal} ${content}` : content;
     };
     const memorySurfaceEntries = publicMemories.map((memory) => {
       const content = truncateMemoryContent(memory.content, capForMemoryId(memory.id, fullIds));
+      const surface = readerMemorySurfaceText(memory, { bindings: sourceBindings, content });
       return {
-        plain: content,
+        plain: surface,
         temporal: surfaceLine(
-          content,
+          surface,
           includeTemporalContext ? temporalContextSegment(memory.createdAt, memory.metadata, asOf) : "",
         ),
       };
@@ -4077,18 +4578,19 @@ function composeReconstructedContext(input: {
     const pathSurfaceEntries = output.paths.flatMap((path, index) => {
       if (targetReferenceForPath(path, paths[index]) !== undefined) return [];
       const content = truncateMemoryContent(path.targetSummary, capForPath(path));
+      const surface = authoritySurfaceForPath(path, paths[index], content);
       return [{
-        plain: content,
+        plain: surface,
         temporal: surfaceLine(
-          content,
+          surface,
           includeTemporalContext ? temporalSegmentForPath(path) : "",
         ),
       }];
     });
     const evidenceSurfaceEntries = evidence.map((event) => ({
-      plain: event.content,
+      plain: readerEvidenceSurfaceText(event, sourceBindings),
       temporal: surfaceLine(
-        event.content,
+        readerEvidenceSurfaceText(event, sourceBindings),
         input.includeTemporalMetadata ? observedAtSegment(event.createdAt) : "",
       ),
     }));
@@ -4103,10 +4605,11 @@ function composeReconstructedContext(input: {
           const temporal = includeTemporalContext
             ? temporalContextLabel(memory.createdAt, memory.metadata)
             : "";
+          const surface = readerMemorySurfaceText(memory, { bindings: sourceBindings, content });
           return {
             memoryId: memory.id,
-            plain: content,
-            temporal: temporal ? `${temporal} ${content}` : content,
+            plain: surface,
+            temporal: temporal ? `${temporal} ${surface}` : surface,
           };
         })
       : [];
@@ -4126,11 +4629,12 @@ function composeReconstructedContext(input: {
         const temporal = includeTemporalContext
           ? temporalContextLabel(memory.createdAt, memory.metadata)
           : "";
+        const surface = readerMemorySurfaceText(memory, { bindings: sourceBindings, content });
         return {
           memoryId: memory.id,
-          plain: content,
-          temporal: temporal ? `${temporal} ${content}` : content,
-          contextLine: temporal ? `- [${temporal}] ${content}` : `- ${content}`,
+          plain: surface,
+          temporal: temporal ? `${temporal} ${surface}` : surface,
+          contextLine: temporal ? `- [${temporal}] ${surface}` : `- ${surface}`,
         };
       });
     const shortlistTokenBudget = Math.min(
@@ -4147,15 +4651,11 @@ function composeReconstructedContext(input: {
       shortlistEntries.pop();
     }
     const shortlistMemoryIds = new Set(shortlistEntries.map((entry) => entry.memoryId));
-    const candidateMemories = uniqueMemoriesById([
-      ...memories,
-      ...(includeSweeps ? sweepCandidates.map((candidate) => candidate.memory) : []),
-    ]);
     const visibleSourceEvidence = new Map(evidence.map((event) => [event.id, event.content]));
     for (const memory of candidateMemories) {
       if (
         memory.metadata.turnMemory !== true ||
-        memory.metadata.sourceTrust !== "user" ||
+        !readerMemoryHasUserAuthority(memory) ||
         !hasGmosMetadataReferenceSchema(
           memory.metadata,
           GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
@@ -4166,6 +4666,7 @@ function composeReconstructedContext(input: {
       const sourceEvidenceId = typeof memory.metadata.sourceEvidenceId === "string"
         ? memory.metadata.sourceEvidenceId.trim()
         : "";
+      if (sourceEvidenceId !== memory.sourceEventId) continue;
       const publicSourceMemory = publicMemory(
         memory,
         hideInternalRouteSignals,
@@ -4216,8 +4717,10 @@ function composeReconstructedContext(input: {
         : []),
       "Memory content:",
       ...publicMemories.map(
-        (memory) =>
-          `- [${safePublicLabel(memory.kind)}${includeTemporalContext ? temporalContextSegment(memory.createdAt, memory.metadata, asOf) : ""}; confidence=${memory.confidence.toFixed(2)}] ${truncateMemoryContent(memory.content, capForMemoryId(memory.id, fullIds))}`,
+        (memory) => {
+          const content = truncateMemoryContent(memory.content, capForMemoryId(memory.id, fullIds));
+          return `- [${safePublicLabel(memory.kind)}${includeTemporalContext ? temporalContextSegment(memory.createdAt, memory.metadata, asOf) : ""}; confidence=${memory.confidence.toFixed(2)}] ${readerMemorySurfaceText(memory, { bindings: sourceBindings, content })}`;
+        },
       ),
       "Reconstructed evidence paths:",
       ...output.paths.map((path, index) =>
@@ -4226,6 +4729,11 @@ function composeReconstructedContext(input: {
           includeTemporalContext ? temporalSegmentForPath(path) : "",
           capForPath(path),
           targetReferenceForPath(path, paths[index]),
+          authoritySurfaceForPath(
+            path,
+            paths[index],
+            truncateMemoryContent(path.targetSummary, capForPath(path)),
+          ),
         )
       ),
     ];
@@ -4234,12 +4742,12 @@ function composeReconstructedContext(input: {
       lines.push(
         ...evidence.map(
           (event) =>
-            `- [${safePublicLabel(event.sourceType)}; ${event.sensitivity}; eligible=${event.eligibleForLongTermMemory}${input.includeTemporalMetadata ? observedAtSegment(event.createdAt) : ""}] ${event.content}`,
+            `- [${safePublicLabel(event.sourceType)}; ${event.sensitivity}; eligible=${event.eligibleForLongTermMemory}${input.includeTemporalMetadata ? observedAtSegment(event.createdAt) : ""}] ${readerEvidenceSurfaceText(event, sourceBindings)}`,
         ),
       );
     }
     if (includeSweeps && sweepCandidates.length > 0) {
-      lines.push(...renderSweepSection(sweepCandidates).split("\n"));
+      lines.push(...renderSweepSection(sweepCandidates, sourceBindings).split("\n"));
     }
     if (entityAliasHints.length > 0) {
       lines.push("Potential entity aliases (inferences, not independent facts):");
@@ -4589,14 +5097,26 @@ async function fallbackReconstruction(input: {
     queryEmbedding: input.queryEmbedding,
     expandStructuredRoleSiblings: queryNeedsEntityAliasCandidates(input.displayQuery ?? input.query),
   });
+  const readerEvidence = input.includeEvidence
+    ? await evidenceForMemories(
+        input.store,
+        safeMemories,
+        input.displayQuery ?? input.query,
+      )
+    : (await establishReaderMemoryAuthority({ store: input.store, memories: safeMemories }), []);
+  const primaryMemoryIds = new Set(safeMemories.map((memory) => memory.id));
+  const supplementalMemories = (sweepDraft?.candidates ?? [])
+    .map((candidate) => candidate.memory)
+    .filter((memory) => !primaryMemoryIds.has(memory.id));
+  if (supplementalMemories.length > 0) {
+    await establishReaderMemoryAuthority({ store: input.store, memories: supplementalMemories });
+  }
   return composeReconstructedContext({
     profileId: input.profileId,
     query: input.query,
     displayQuery: input.displayQuery,
     memories: safeMemories,
-    evidence: input.includeEvidence
-      ? await evidenceForMemories(input.store, safeMemories, input.displayQuery ?? input.query)
-      : [],
+    evidence: input.includeEvidence ? readerEvidence : [],
     paths: safePaths,
     intent: input.intent,
     includeEvidence: input.includeEvidence,
@@ -4680,6 +5200,7 @@ export async function reconstructMemoryContext(input: {
     query,
     input.request.temporalMode,
     input.request.recallPurpose,
+    asOf,
   );
   const targetMemoryCount = targetMemoryCountForQuery(query, recallPurpose, maxMemories);
   if (!input.store.searchAssociations) {
@@ -5186,14 +5707,22 @@ export async function reconstructMemoryContext(input: {
     queryEmbedding: input.queryEmbedding,
     expandStructuredRoleSiblings: queryNeedsEntityAliasCandidates(publicQuery),
   });
+  const readerEvidence = input.request.includeEvidence
+    ? await evidenceForMemories(input.store, memories, publicQuery)
+    : (await establishReaderMemoryAuthority({ store: input.store, memories }), []);
+  const primaryMemoryIds = new Set(memories.map((memory) => memory.id));
+  const supplementalMemories = (sweepDraft?.candidates ?? [])
+    .map((candidate) => candidate.memory)
+    .filter((memory) => !primaryMemoryIds.has(memory.id));
+  if (supplementalMemories.length > 0) {
+    await establishReaderMemoryAuthority({ store: input.store, memories: supplementalMemories });
+  }
   return composeReconstructedContext({
     profileId,
     query,
     displayQuery: publicQuery,
     memories,
-    evidence: input.request.includeEvidence
-      ? await evidenceForMemories(input.store, memories, publicQuery)
-      : [],
+    evidence: input.request.includeEvidence ? readerEvidence : [],
     paths,
     intent,
     includeEvidence: input.request.includeEvidence,

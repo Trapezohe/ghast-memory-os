@@ -245,6 +245,17 @@ export interface SqliteMemoryStoreOptions {
   entityResolver?: EntityResolver | undefined;
   embeddingProvider?: EmbeddingProvider | EmbeddingProviderConfig | undefined;
   retrieval?: MemoryRetrievalConfig | undefined;
+  /** Maximum eligible vectors scanned exactly before dense vector retrieval is reported degraded. */
+  vectorSearchExactScanLimit?: number | undefined;
+  /** Whether an exact-scan overflow falls back with a warning or aborts the search. */
+  vectorSearchDegradationPolicy?: "warn" | "error" | undefined;
+  onVectorSearchDegraded?: ((input: {
+    profileId: string;
+    reason: "exact_scan_limit_exceeded";
+    exactScanLimit: number;
+    providerName: string;
+    dimensions: number;
+  }) => void) | undefined;
   forgetTargetParser?: SqliteForgetTargetParser | undefined;
 }
 
@@ -354,6 +365,8 @@ const READ_AUDIT_FTS_TABLES = [
 ] as const;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_VECTOR_SEARCH_EXACT_SCAN_LIMIT = 4_096;
+const MAX_VECTOR_SEARCH_EXACT_SCAN_LIMIT = 8_192;
 const IMPORT_IDENTITY_SECRET_NAME = "import_identity_hmac_v1";
 const IMPORTER_MEM0_SCHEMA = "gmos.mem0.v2" as const;
 const IMPORTER_HOST_SCHEMA = "gmos.host_snapshot.v2" as const;
@@ -1175,7 +1188,7 @@ function scoreAssociation(association: MemoryAssociationRecord, query: string): 
 }
 
 function limit(input: number | undefined, fallback: number, maximum: number): number {
-  if (input === undefined) return fallback;
+  if (input === undefined || !Number.isFinite(input)) return fallback;
   return Math.max(1, Math.min(Math.trunc(input), maximum));
 }
 
@@ -1432,12 +1445,19 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     resolveWorldEntitySubject(input, options.entityResolver);
   let embeddingProvider = resolveEmbeddingProviderConfig(options.embeddingProvider);
   const retrievalConfig = options.retrieval;
+  const vectorSearchExactScanLimit = limit(
+    options.vectorSearchExactScanLimit,
+    DEFAULT_VECTOR_SEARCH_EXACT_SCAN_LIMIT,
+    MAX_VECTOR_SEARCH_EXACT_SCAN_LIMIT,
+  );
+  const vectorSearchDegradationPolicy = options.vectorSearchDegradationPolicy ?? "warn";
   let initialized = false;
   let ftsAvailableCache: boolean | null = null;
   let vectorIndexAvailableCache: boolean | null = null;
   let evidenceRestoreGeneration = 0;
   const legacyEvidenceMutationGenerations = new Map<string, number>();
   const statementCache = new Map<string, Database.Statement>();
+  const warnedDegradedVectorSearches = new Set<string>();
 
   function legacyEvidenceMutationKey(profileId: string, sourceType: string): string {
     return JSON.stringify([profileId, sourceType]);
@@ -4916,28 +4936,79 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
     const vectorStatusSql = lifecycleReachableAliasStatusSql("v", input.purpose);
     const memoryStatusSql = lifecycleReachableAliasStatusSql("m", input.purpose);
     const rows = queryEmbedding
-      ? db
-          .prepare(
-            `SELECT m.*, v.vector_json, 0 AS hit_count
-             FROM gmos_memory_vectors v
-             JOIN gmos_memories m ON m.id = v.id
-             WHERE v.profile_id = ?
-               AND ${vectorStatusSql}
-               AND v.provider_name = ?
-               AND v.dimensions = ?
-               AND v.embedding_status = 'embedded'
-               AND m.profile_id = ?
-               AND ${memoryStatusSql}
-             ORDER BY v.updated_at DESC, v.id ASC
-             LIMIT ?`,
-          )
-          .all(
-            input.profileId,
-            queryEmbedding.providerName,
-            queryEmbedding.dimensions,
-            input.profileId,
-            candidateRowLimit,
-          ) as Array<Record<string, unknown>>
+      ? (() => {
+          const providerRows = db
+            .prepare(
+              `WITH eligible(id) AS MATERIALIZED (
+                 SELECT v.id
+                 FROM gmos_memory_vectors v
+                 JOIN gmos_memories m ON m.id = v.id
+                 WHERE v.profile_id = ?
+                   AND ${vectorStatusSql}
+                   AND v.provider_name = ?
+                   AND v.dimensions = ?
+                   AND v.embedding_status = 'embedded'
+                   AND m.profile_id = ?
+                   AND ${memoryStatusSql}
+                 LIMIT ?
+               ),
+               eligible_count(value) AS (
+                 SELECT COUNT(*) FROM eligible
+               )
+               SELECT m.*, v.vector_json, 0 AS hit_count,
+                      c.value AS __gmos_eligible_count
+               FROM eligible_count c
+               LEFT JOIN eligible e ON c.value <= ?
+               LEFT JOIN gmos_memory_vectors v ON v.id = e.id
+               LEFT JOIN gmos_memories m ON m.id = e.id
+               ORDER BY v.updated_at DESC, v.id ASC
+              `,
+            )
+            .all(
+              input.profileId,
+              queryEmbedding.providerName,
+              queryEmbedding.dimensions,
+              input.profileId,
+              vectorSearchExactScanLimit + 1,
+              vectorSearchExactScanLimit,
+            ) as Array<Record<string, unknown>>;
+          const eligibleCount = Number(providerRows[0]?.__gmos_eligible_count ?? 0);
+          if (eligibleCount > vectorSearchExactScanLimit) {
+            const degraded = {
+              profileId: input.profileId,
+              reason: "exact_scan_limit_exceeded" as const,
+              exactScanLimit: vectorSearchExactScanLimit,
+              providerName: queryEmbedding.providerName,
+              dimensions: queryEmbedding.dimensions,
+            };
+            options.onVectorSearchDegraded?.(degraded);
+            if (vectorSearchDegradationPolicy === "error") {
+              throw new Error(
+                `gmOS dense vector retrieval exceeded the exact scan limit ` +
+                `(${vectorSearchExactScanLimit}) for provider ${queryEmbedding.providerName}`,
+              );
+            }
+            if (!options.onVectorSearchDegraded) {
+              const warningKey = JSON.stringify([
+                input.profileId,
+                queryEmbedding.providerName,
+                queryEmbedding.dimensions,
+                vectorSearchExactScanLimit,
+              ]);
+              if (!warnedDegradedVectorSearches.has(warningKey)) {
+                warnedDegradedVectorSearches.add(warningKey);
+                process.emitWarning(
+                  `gmOS dense vector retrieval is disabled because eligible vectors exceed ` +
+                  `the exact scan limit (${vectorSearchExactScanLimit}); configure a bounded ` +
+                  "exact limit or install an ANN index",
+                  { code: "GMOS_VECTOR_SEARCH_DEGRADED", type: "GmosVectorSearchWarning" },
+                );
+              }
+            }
+            return [];
+          }
+          return providerRows.filter((row) => typeof row.id === "string");
+        })()
       : (() => {
           const featurePlaceholders = queryFeatures.map(() => "?").join(", ");
           const statusSql = lifecycleReachableStatusSql(input.purpose);
@@ -4974,22 +5045,31 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
             ) as Array<Record<string, unknown>>;
         })();
     return rows
-      .map((row, index) => {
+      .map((row) => {
         const rawVector = parseJsonArray(row.vector_json);
         const similarity =
           rawVector.length === queryVector.length ? cosineSimilarity(queryVector, rawVector) : 0;
-        const { vector_json: _vectorJson, hit_count: hitCount, ...memoryRow } = row;
+        const {
+          vector_json: _vectorJson,
+          hit_count: hitCount,
+          __gmos_eligible_count: _eligibleCount,
+          ...memoryRow
+        } = row;
         return {
           ...memoryRow,
           __gmos_vector_similarity: similarity,
           __gmos_feature_hit_count: Number(hitCount ?? 0),
-          __gmos_vector_score: similarity > 0 ? similarity + reciprocalRank(index + 1) : 0,
           __gmos_search_score: similarity > 0 ? similarity * 3 : 0,
         };
       })
       .filter((row) => Number(row.__gmos_vector_similarity ?? 0) >= 0.45)
       .sort((a, b) => Number(b.__gmos_search_score ?? 0) - Number(a.__gmos_search_score ?? 0))
-      .slice(0, candidateLimit);
+      .slice(0, candidateLimit)
+      .map((row, index) => ({
+        ...row,
+        __gmos_vector_score:
+          Number(row.__gmos_vector_similarity ?? 0) + reciprocalRank(index + 1),
+      }));
   }
 
   function mergeSearchRows(

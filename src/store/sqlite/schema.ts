@@ -599,6 +599,13 @@ export function ensureSqliteSchema(db: Database.Database): void {
       "ALTER TABLE gmos_memory_vectors ADD COLUMN embedding_status TEXT NOT NULL DEFAULT 'embedded';",
     );
   }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_gmos_memory_vectors_provider_search
+      ON gmos_memory_vectors(
+        profile_id, provider_name, dimensions, embedding_status,
+        status, updated_at DESC, id ASC
+      );
+  `);
   if (!columnExists(db, "gmos_api_keys", "default_disposition")) {
     db.exec("ALTER TABLE gmos_api_keys ADD COLUMN default_disposition TEXT;");
   }

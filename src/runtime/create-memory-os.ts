@@ -67,7 +67,13 @@ import {
   resolveEmbeddingProviderConfig,
 } from "../kernel/embeddings.js";
 import { isReservedSpeakerIdentity } from "../kernel/person-identity.js";
-import { collectReaderEvidenceForMemories } from "../kernel/reader-evidence.js";
+import {
+  carryReaderEvidenceSource,
+  carryReaderMemorySource,
+  collectReaderEvidenceForMemories,
+  establishReaderMemoryAuthority,
+  sanitizeReaderEvidenceForPublicOutput,
+} from "../kernel/reader-evidence.js";
 import { reconstructMemoryContext } from "../kernel/reconstruction.js";
 import {
   temporalContextCalendarDate,
@@ -261,7 +267,10 @@ function publicMemoryRecord(
       sourceEventId: null,
       metadata: {},
     };
-    return preserveFusionScore ? preserveInternalFusionScore(memory, output) : output;
+    return carryReaderMemorySource(
+      memory,
+      preserveFusionScore ? preserveInternalFusionScore(memory, output) : output,
+    );
   }
   const output = {
     ...memory,
@@ -280,7 +289,10 @@ function publicMemoryRecord(
       preserveAuthorityMarker,
     ),
   };
-  return preserveFusionScore ? preserveInternalFusionScore(memory, output) : output;
+  return carryReaderMemorySource(
+    memory,
+    preserveFusionScore ? preserveInternalFusionScore(memory, output) : output,
+  );
 }
 
 function runtimeMemorySensitivity(
@@ -1454,12 +1466,12 @@ function redactRouteSignals(value: string, privateSignals: string[]): string {
 }
 
 function hideRouteMemoryMetadata(memory: MemoryRecord, privateSignals: string[] = []): MemoryRecord {
-  return {
+  return carryReaderMemorySource(memory, {
     ...memory,
     scope: "global",
     content: redactRouteSignals(memory.content, privateSignals),
     metadata: {},
-  };
+  });
 }
 
 function hideEvidencePayload(event: EvidenceEvent, privateSignals: string[] = []): EvidenceEvent {
@@ -4127,19 +4139,26 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         evidenceMemories.push(sourceMemory);
       }
     }
-    const evidence = input.includeEvidence
-      ? (await collectReaderEvidenceForMemories({
+    const readerEvidence = input.includeEvidence
+      ? await collectReaderEvidenceForMemories({
           store,
           memories: evidenceMemories,
           query: displayQuery,
-        })).map(
+        })
+      : (await establishReaderMemoryAuthority({ store, memories }), []);
+    const evidence = input.includeEvidence
+      ? readerEvidence.map(
           (event) => {
-            const publicEvidence = sanitizeRuntimeEvidenceForPublicOutput(
+            const publicEvidence = sanitizeReaderEvidenceForPublicOutput(
               event,
-              classifyRuntimeSensitivity,
+              (rawEvent) =>
+                sanitizeRuntimeEvidenceForPublicOutput(rawEvent, classifyRuntimeSensitivity),
             );
             return hideTaskRetrievalHints
-              ? hideEvidencePayload(publicEvidence, privateRouteSignals)
+              ? carryReaderEvidenceSource(
+                  publicEvidence,
+                  hideEvidencePayload(publicEvidence, privateRouteSignals),
+                )
               : publicEvidence;
           },
         )

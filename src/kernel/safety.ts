@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 
-import { gmosEvidenceReferenceShapeOf } from "./evidence-schema.js";
+import {
+  GMOS_EVIDENCE_PAYLOAD_SCHEMAS,
+  gmosEvidencePayloadSchemaOf,
+  gmosEvidenceReferenceShapeOf,
+} from "./evidence-schema.js";
 import {
   GMOS_METADATA_REFERENCE_MARKER,
   GMOS_METADATA_REFERENCE_SCHEMAS,
@@ -490,6 +494,36 @@ function canonicalEvidenceIdentity(
       "normal",
     ),
   };
+}
+
+export interface CanonicalReaderConversationSource {
+  role: "user" | "assistant";
+  sourceTrust: "user" | "agent";
+}
+
+/**
+ * Resolve reader authority from the raw event identity. Callers must do this
+ * before public sanitization redacts the canonical conversation key.
+ */
+export function canonicalReaderConversationSource(
+  event: EvidenceEvent,
+): CanonicalReaderConversationSource | null {
+  if (
+    canonicalEvidenceIdentity(event, false)?.kind !== "conversation.message" ||
+    gmosEvidencePayloadSchemaOf(event.payload) !==
+      GMOS_EVIDENCE_PAYLOAD_SCHEMAS.conversationMessage ||
+    !event.eligibleForLongTermMemory ||
+    event.payload.privacyMode !== "normal"
+  ) {
+    return null;
+  }
+  if (event.payload.role === "user" && event.payload.sourceTrust === "user") {
+    return { role: "user", sourceTrust: "user" };
+  }
+  if (event.payload.role === "assistant" && event.payload.sourceTrust === "agent") {
+    return { role: "assistant", sourceTrust: "agent" };
+  }
+  return null;
 }
 
 const MEMORY_VERSION_SNAPSHOT_KINDS: ReadonlySet<string> = new Set([

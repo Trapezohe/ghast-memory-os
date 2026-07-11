@@ -4,10 +4,181 @@ import {
   hasGmosMetadataReferenceSchema,
 } from "./metadata-schema.js";
 import { queryTerms } from "./query-terms.js";
-import { classifySensitivity } from "./safety.js";
+import {
+  canonicalReaderConversationSource,
+  classifySensitivity,
+  sanitizeEvidenceForPublicOutput,
+} from "./safety.js";
 import type { EvidenceEvent, MemoryRecord, MemoryStore } from "./types.js";
 
 const MAX_READER_EVIDENCE_COMPANIONS = 8;
+interface ReaderConversationSourceProjection {
+  evidenceId: string;
+  profileId: string;
+  role: "user" | "assistant";
+  sourceTrust: "user" | "agent";
+}
+
+const readerConversationSources = new WeakMap<
+  EvidenceEvent,
+  ReaderConversationSourceProjection
+>();
+const readerMemorySources = new WeakMap<MemoryRecord, ReaderConversationSourceProjection>();
+
+function canonicalReaderSourceProjection(
+  event: EvidenceEvent,
+): ReaderConversationSourceProjection | null {
+  const source = canonicalReaderConversationSource(event);
+  return source
+    ? { ...source, evidenceId: event.id, profileId: event.profileId }
+    : null;
+}
+
+function readerSourceKey(source: ReaderConversationSourceProjection): string {
+  return `${source.profileId}\u0000${source.evidenceId}`;
+}
+
+function readerMemorySource(memory: MemoryRecord): ReaderConversationSourceProjection | undefined {
+  const source = readerMemorySources.get(memory);
+  if (
+    !source || source.evidenceId !== memory.sourceEventId || source.profileId !== memory.profileId
+  ) {
+    return undefined;
+  }
+  return source;
+}
+
+export function bindReaderMemorySources(
+  memories: MemoryRecord[],
+  events: EvidenceEvent[],
+): void {
+  const sources = new Map<string, ReaderConversationSourceProjection>();
+  for (const event of events) {
+    const source = readerConversationSources.get(event) ?? canonicalReaderSourceProjection(event);
+    if (source) sources.set(readerSourceKey(source), source);
+  }
+  for (const memory of memories) {
+    readerMemorySources.delete(memory);
+    if (!memory.sourceEventId) continue;
+    if (!exactPrimaryEvidenceIds(memory).includes(memory.sourceEventId)) continue;
+    const source = sources.get(`${memory.profileId}\u0000${memory.sourceEventId}`);
+    if (source) readerMemorySources.set(memory, source);
+  }
+}
+
+export function carryReaderMemorySource(
+  sourceMemory: MemoryRecord,
+  outputMemory: MemoryRecord,
+): MemoryRecord {
+  const source = readerMemorySource(sourceMemory);
+  readerMemorySources.delete(outputMemory);
+  if (source) readerMemorySources.set(outputMemory, source);
+  return outputMemory;
+}
+
+export function readerMemoryHasUserAuthority(memory: MemoryRecord): boolean {
+  const source = readerMemorySource(memory);
+  return source?.role === "user" && source.sourceTrust === "user";
+}
+
+export function sanitizeReaderEvidenceForPublicOutput(
+  event: EvidenceEvent,
+  sanitizer: (event: EvidenceEvent) => EvidenceEvent = sanitizeEvidenceForPublicOutput,
+): EvidenceEvent {
+  const source = readerConversationSources.get(event) ?? canonicalReaderSourceProjection(event);
+  const sanitized = sanitizer(event);
+  readerConversationSources.delete(sanitized);
+  if (source) readerConversationSources.set(sanitized, source);
+  return sanitized;
+}
+
+export function carryReaderEvidenceSource(
+  sourceEvent: EvidenceEvent,
+  outputEvent: EvidenceEvent,
+): EvidenceEvent {
+  const source = readerConversationSources.get(sourceEvent);
+  readerConversationSources.delete(outputEvent);
+  if (source) readerConversationSources.set(outputEvent, source);
+  return outputEvent;
+}
+
+function readerSurfaceJsonContent(content: string): string {
+  // A single-line JSON string preserves the trust boundary without charging
+  // two or six visible characters for every line separator in long memories.
+  // This matters because context budgets are enforced on the rendered surface.
+  return JSON.stringify(content.replace(/(?:\r\n?|\n|\u0085|\u2028|\u2029)+/gu, " "));
+}
+
+/**
+ * Render one reader-sanitized event without allowing payload metadata or
+ * multiline content to impersonate an authoritative conversation source.
+ */
+export type ReaderSourceBindings = ReadonlyMap<string, string>;
+
+export function createReaderSourceBindings(memories: MemoryRecord[]): ReaderSourceBindings {
+  const bindings = new Map<string, string>();
+  for (const memory of memories) {
+    const source = readerMemorySource(memory);
+    const sourceKey = source ? readerSourceKey(source) : "";
+    if (source && !bindings.has(sourceKey)) {
+      bindings.set(sourceKey, `source-${bindings.size + 1}`);
+    }
+  }
+  return bindings;
+}
+
+function readerAuthoritySurface(input: {
+  source: ReaderConversationSourceProjection | undefined;
+  content: string;
+  bindings?: ReaderSourceBindings | undefined;
+  unboundReference: "unbound" | "unverified";
+}): string {
+  const role = input.source?.role ?? "unverified";
+  const trust = input.source?.sourceTrust ?? "unverified";
+  const reference = input.bindings
+    ? input.source
+      ? input.bindings.get(readerSourceKey(input.source)) ?? input.unboundReference
+      : "unverified"
+    : undefined;
+  return `[${reference ? `source_ref=${reference}; ` : ""}source_role=${role}; source_trust=${trust}] content=${readerSurfaceJsonContent(input.content)}`;
+}
+
+export function readerMemorySurfaceText(
+  memory: MemoryRecord,
+  options: {
+    bindings?: ReaderSourceBindings | undefined;
+    content?: string | undefined;
+  } = {},
+): string {
+  return readerAuthoritySurface({
+    source: readerMemorySource(memory),
+    content: options.content ?? memory.content,
+    bindings: options.bindings,
+    unboundReference: "unverified",
+  });
+}
+
+export function readerEvidenceSurfaceText(
+  event: EvidenceEvent,
+  bindings?: ReaderSourceBindings | undefined,
+  content = event.content,
+): string {
+  const source = readerConversationSources.get(event);
+  return readerAuthoritySurface({
+    source,
+    content,
+    bindings,
+    unboundReference: "unbound",
+  });
+}
+
+export function readerUnverifiedSurfaceText(content: string): string {
+  return readerAuthoritySurface({
+    source: undefined,
+    content,
+    unboundReference: "unverified",
+  });
+}
 
 function stringIds(value: unknown): string[] {
   return Array.isArray(value)
@@ -281,6 +452,7 @@ export async function collectReaderEvidenceForMemories(input: {
       events: await input.store.listEvidenceForMemory(memory.id),
     })),
   );
+  for (const { memory, events } of sourceBatches) bindReaderMemorySources([memory], events);
   const evidence: EvidenceEvent[] = [];
   const seen = new Set<string>();
   const append = (event: EvidenceEvent): void => {
@@ -327,4 +499,22 @@ export async function collectReaderEvidenceForMemories(input: {
     includedCompanions += 1;
   }
   return evidence;
+}
+
+/**
+ * Resolve source authority for memory-only reader surfaces without exposing the
+ * linked evidence lane. Metadata is never used as an authority source.
+ */
+export async function establishReaderMemoryAuthority(input: {
+  store: MemoryStore;
+  memories: MemoryRecord[];
+}): Promise<void> {
+  await Promise.all(
+    input.memories.map(async (memory) => {
+      const events = memory.sourceEventId
+        ? await input.store.listEvidenceForMemory(memory.id)
+        : [];
+      bindReaderMemorySources([memory], events);
+    }),
+  );
 }

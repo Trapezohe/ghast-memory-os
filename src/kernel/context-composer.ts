@@ -1,5 +1,13 @@
 import type { ActionPolicy, EvidenceEvent, MemoryRecord, PreparedTurn } from "./types.js";
-import { safePublicLabel, sanitizeEvidenceForPublicOutput } from "./safety.js";
+import { safePublicLabel } from "./safety.js";
+import {
+  bindReaderMemorySources,
+  carryReaderMemorySource,
+  createReaderSourceBindings,
+  readerEvidenceSurfaceText,
+  readerMemorySurfaceText,
+  sanitizeReaderEvidenceForPublicOutput,
+} from "./reader-evidence.js";
 import { temporalContextSegment } from "./temporal-format.js";
 
 function estimateTokens(text: string): number {
@@ -15,30 +23,34 @@ export function composeTurnContext(input: {
   includeTemporalContext?: boolean | undefined;
   contextBudgetTokens?: number | undefined;
 }): PreparedTurn {
-  const memories = input.memories.map((memory) => ({
-    ...memory,
-    kind: safePublicLabel(memory.kind) as MemoryRecord["kind"],
-  }));
+  if (input.evidence.length > 0) bindReaderMemorySources(input.memories, input.evidence);
+  const memories = input.memories.map((memory) =>
+    carryReaderMemorySource(memory, {
+      ...memory,
+      kind: safePublicLabel(memory.kind) as MemoryRecord["kind"],
+    })
+  );
   const actionPolicies = input.actionPolicies.map((policy) => ({
     ...policy,
     kind: safePublicLabel(policy.kind) as ActionPolicy["kind"],
   }));
   const publicEvidence = input.includeEvidence
-    ? input.evidence.map(sanitizeEvidenceForPublicOutput)
+    ? input.evidence.map((event) => sanitizeReaderEvidenceForPublicOutput(event))
     : [];
   let evidence = [...publicEvidence];
   const directives = actionPolicies
     .filter((policy) => policy.kind === "do_not_push")
     .map((policy) => `Respect user boundary: ${policy.text}`);
   const includeTemporalContext = input.includeTemporalContext !== false;
-  const memoryLine = (memory: MemoryRecord): string =>
-    `- [${memory.kind}${includeTemporalContext ? temporalContextSegment(memory.createdAt, memory.metadata) : ""}; confidence=${memory.confidence.toFixed(2)}] ${memory.content}`;
 
   const render = (): string => {
+    const sourceBindings = createReaderSourceBindings(memories);
     const lines = [
       "<gmos-context>",
       "User-world memory:",
-      ...memories.map(memoryLine),
+      ...memories.map((memory) =>
+        `- [${memory.kind}${includeTemporalContext ? temporalContextSegment(memory.createdAt, memory.metadata) : ""}; confidence=${memory.confidence.toFixed(2)}] ${readerMemorySurfaceText(memory, { bindings: sourceBindings })}`
+      ),
       "Action policies:",
       ...actionPolicies.map(
         (policy) => `- [${policy.kind}; priority=${policy.priority}] ${policy.text}`,
@@ -49,7 +61,7 @@ export function composeTurnContext(input: {
       lines.push(
         ...evidence.map(
           (event) =>
-            `- [${safePublicLabel(event.sourceType)}; ${event.sensitivity}; eligible=${event.eligibleForLongTermMemory}] ${event.content}`,
+            `- [${safePublicLabel(event.sourceType)}; ${event.sensitivity}; eligible=${event.eligibleForLongTermMemory}] ${readerEvidenceSurfaceText(event, sourceBindings)}`,
         ),
       );
     }

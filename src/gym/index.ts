@@ -2169,7 +2169,7 @@ export async function runMemoryGym(options: RunMemoryGymOptions = {}): Promise<M
   );
   const multiIntentReconstructed = await memory.reconstructContext({
     profileId: "gym_reconstruct",
-    query: "我之前说的那个计划，先做什么，哪些不要主动做？",
+    query: "我之前说的那个计划，先做什么，最重要的一项边界是什么？",
     reconstructionIntent: {
       queryCues: ["Helio"],
       requiredTagGroups: [
