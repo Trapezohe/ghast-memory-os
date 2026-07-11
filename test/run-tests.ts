@@ -32206,7 +32206,8 @@ const sweepSection = sweepWithCues.contextBlock.slice(
   sweepWithCues.contextBlock.indexOf("Additional dated mentions:"),
 );
 assert.deepEqual(
-  [...sweepSection.matchAll(/observed (2026-02-\d{2})/gu)].map((match) => match[1]),
+  [...sweepSection.matchAll(/observed (2026-02-\d{2})/gu)]
+    .map((match) => match[1]),
   ["2026-02-01", "2026-02-02", "2026-02-03", "2026-02-04", "2026-02-05", "2026-02-06"],
 );
 assert.equal(sweepWithCues.stats.sweeps?.matched, 6);
@@ -32270,6 +32271,81 @@ const fairMultiCueSweep = await sweepMemory.reconstructContext({
 assert.match(fairMultiCueSweep.contextBlock, /RareFairSweepKey unique answer/u);
 assert.equal((fairMultiCueSweep.stats.sweeps?.cues[2]?.matched ?? 0) >= 1, true);
 assert.equal((fairMultiCueSweep.stats.sweeps?.cues[2]?.included ?? 0) >= 1, true);
+const rankedSweepCues = Array.from(
+  { length: 6 },
+  (_entry, index) => `RankedSweepCue${index + 1}`,
+);
+const rankedSweepRows = new Map<string, MemoryRecord[]>();
+for (const [cueIndex, cue] of rankedSweepCues.entries()) {
+  const rows = Array.from({ length: 40 }, (_entry, rank) => {
+    const memoryRecord: MemoryRecord = {
+      ...layerMemory(
+        `memory_ranked_sweep_noise_${cueIndex}_${rank}`,
+        "turn",
+        `Unrelated sweep filler ${cueIndex}-${rank}.`,
+      ),
+      confidence: 0.1,
+      createdAt: `2026-06-${String((rank % 28) + 1).padStart(2, "0")}T00:00:00.000Z`,
+    };
+    Object.defineProperty(memoryRecord, "__gmosFusionScore", {
+      value: 0.02,
+      enumerable: false,
+      configurable: true,
+    });
+    return memoryRecord;
+  });
+  if (cueIndex === rankedSweepCues.length - 1) {
+    const exactUserFact: MemoryRecord = {
+      ...layerMemory(
+        "memory_ranked_sweep_late_exact_user_fact",
+        "atom",
+        `${cue} exact user receipt survives global sweep pressure.`,
+      ),
+      confidence: 0.99,
+      metadata: {
+        sourceTrust: "user",
+        sourceEvidenceId: "evidence_ranked_sweep_late_exact_user_fact",
+        [GMOS_METADATA_REFERENCE_MARKER]: [GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage],
+      },
+      createdAt: "2026-07-31T00:00:00.000Z",
+    };
+    Object.defineProperty(exactUserFact, "__gmosFusionScore", {
+      value: 0.02,
+      enumerable: false,
+      configurable: true,
+    });
+    rows[39] = exactUserFact;
+  }
+  rankedSweepRows.set(cue.toLowerCase(), rows);
+}
+const rankedSweepStore = {
+  searchMemories(input: { query?: string | undefined; limit?: number | undefined }) {
+    const rows = rankedSweepRows.get(input.query?.trim().toLowerCase() ?? "") ?? [];
+    return rows.slice(0, input.limit ?? rows.length);
+  },
+  listEvidenceForMemory() {
+    return [];
+  },
+} as unknown as MemoryStore;
+const rankedSweepContext = await reconstructMemoryContext({
+  store: rankedSweepStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "Which exact receipt should be included?",
+    reconstructionIntent: { sweepCues: rankedSweepCues },
+    maxSteps: 1,
+    maxBranch: 1,
+    maxMemories: 1,
+    contextBudgetTokens: 100000,
+    stopWhenEvidenceEnough: false,
+  },
+});
+assert.match(
+  rankedSweepContext.contextBlock,
+  /RankedSweepCue6 exact user receipt survives global sweep pressure/u,
+);
+assert.equal((rankedSweepContext.stats.sweeps?.included ?? 0) <= 80, true);
 const maxSweepCueList = Array.from({ length: 10 }, (_entry, index) => `MaxSweepCue${index + 1}`);
 const maxSweepCueContext = await reconstructMemoryContext({
   store: layerStoreFor([]),

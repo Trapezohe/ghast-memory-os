@@ -21,6 +21,7 @@ import {
   collectReaderEvidenceForMemories,
   exactPrimaryEvidenceId,
 } from "./reader-evidence.js";
+import { queryTerms } from "./query-terms.js";
 import {
   observedAtSegment,
   temporalContextLabel,
@@ -2547,6 +2548,7 @@ interface DirectMemoryCandidate {
 
 interface ReconstructionSweepCandidate {
   cue: string;
+  matchedCues: string[];
   memory: MemoryRecord;
   relevance: number;
 }
@@ -2564,17 +2566,19 @@ interface ReconstructionSweepDraft {
 const DEFAULT_SWEEP_PER_CUE_CAP = 40;
 const DEFAULT_SWEEP_GLOBAL_CAP = 80;
 
-function internalFusionScore(memory: MemoryRecord): number {
-  const value = Number((memory as MemoryRecord & { __gmosFusionScore?: unknown }).__gmosFusionScore);
-  return Number.isFinite(value) ? value : memory.confidence;
-}
-
 function compareSweepChronological(
   left: ReconstructionSweepCandidate,
   right: ReconstructionSweepCandidate,
 ): number {
   return left.memory.createdAt.localeCompare(right.memory.createdAt) ||
     left.memory.id.localeCompare(right.memory.id);
+}
+
+function compareSweepReaderPriority(
+  left: ReconstructionSweepCandidate,
+  right: ReconstructionSweepCandidate,
+): number {
+  return right.relevance - left.relevance || compareSweepChronological(left, right);
 }
 
 function compareSweepCullPriority(
@@ -2591,18 +2595,50 @@ function sweepCandidateToCull(
 ): ReconstructionSweepCandidate | undefined {
   const perCue = new Map<string, number>();
   for (const candidate of candidates) {
-    perCue.set(candidate.cue, (perCue.get(candidate.cue) ?? 0) + 1);
+    for (const cue of candidate.matchedCues) {
+      perCue.set(cue, (perCue.get(cue) ?? 0) + 1);
+    }
   }
   const withoutLastCueRepresentatives = candidates.filter(
-    (candidate) => (perCue.get(candidate.cue) ?? 0) > 1,
+    (candidate) => candidate.matchedCues.every((cue) => (perCue.get(cue) ?? 0) > 1),
   );
   return [...(withoutLastCueRepresentatives.length > 0 ? withoutLastCueRepresentatives : candidates)]
     .sort(compareSweepCullPriority)[0];
 }
 
-function sweepCandidateRelevance(memory: MemoryRecord, rank: number, resultCount: number): number {
-  const rerankedPositionScore = Math.max(0, resultCount - rank) / Math.max(1, resultCount);
-  return internalFusionScore(memory) + rerankedPositionScore;
+function sweepLexicalCoverage(memory: MemoryRecord, cue: string): number {
+  const terms = queryTerms(cue, 24);
+  if (terms.length === 0) return 0;
+  const content = memory.content.normalize("NFC").toLowerCase();
+  return terms.filter((term) => content.includes(term)).length / terms.length;
+}
+
+function sweepSourceAuthority(memory: MemoryRecord): number {
+  if (
+    !hasGmosMetadataReferenceSchema(
+      memory.metadata,
+      GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+    )
+  ) {
+    return 0.5;
+  }
+  if (memory.metadata.sourceTrust === "user") return 1;
+  if (memory.metadata.sourceTrust === "agent") return 0.25;
+  if (memory.metadata.sourceTrust === "external") return 0;
+  return 0.5;
+}
+
+function sweepCandidateRelevance(input: {
+  memory: MemoryRecord;
+  maxLexicalCoverage: number;
+  reciprocalRankSum: number;
+}): number {
+  return (
+    2 * input.maxLexicalCoverage +
+    10 * input.reciprocalRankSum +
+    0.75 * sweepSourceAuthority(input.memory) +
+    0.5 * input.memory.confidence
+  );
 }
 
 function sweepStatsFor(
@@ -2611,7 +2647,9 @@ function sweepStatsFor(
 ): NonNullable<ReconstructedContext["stats"]["sweeps"]> {
   const includedByCue = new Map<string, number>();
   for (const candidate of candidates) {
-    includedByCue.set(candidate.cue, (includedByCue.get(candidate.cue) ?? 0) + 1);
+    for (const cue of candidate.matchedCues) {
+      includedByCue.set(cue, (includedByCue.get(cue) ?? 0) + 1);
+    }
   }
   const cues = cueStats.map((cue) => {
     const included = includedByCue.get(cue.cue) ?? 0;
@@ -2622,10 +2660,12 @@ function sweepStatsFor(
       truncated: Math.max(0, cue.matched - included),
     };
   });
+  const matched = cues.reduce((sum, cue) => sum + cue.matched, 0);
+  const included = candidates.length;
   return {
-    matched: cues.reduce((sum, cue) => sum + cue.matched, 0),
-    included: cues.reduce((sum, cue) => sum + cue.included, 0),
-    truncated: cues.reduce((sum, cue) => sum + cue.truncated, 0),
+    matched,
+    included,
+    truncated: Math.max(0, matched - included),
     cues,
   };
 }
@@ -2672,25 +2712,70 @@ async function runReconstructionSweeps(input: {
     cueStats.push({ cue, matched: found.length });
     resultsByCue.push({ cue, memories: found.slice(0, perCueCap) });
   }
-  for (let rank = 0; rank < perCueCap; rank += 1) {
-    for (const result of resultsByCue) {
-      const memory = result.memories[rank];
-      if (!memory) continue;
-      const relevance = sweepCandidateRelevance(memory, rank, result.memories.length);
-      const existing = candidateById.get(memory.id);
-      if (existing) {
-        if (relevance > existing.relevance) {
-          existing.cue = result.cue;
-          existing.memory = memory;
-          existing.relevance = relevance;
-        }
+  const aggregateById = new Map<string, {
+    memory: MemoryRecord;
+    cue: string;
+    bestCueCoverage: number;
+    bestCueRankScore: number;
+    maxLexicalCoverage: number;
+    reciprocalRankSum: number;
+    matchedCues: Set<string>;
+  }>();
+  for (const result of resultsByCue) {
+    for (const [rank, memory] of result.memories.entries()) {
+      const lexicalCoverage = sweepLexicalCoverage(memory, result.cue);
+      const rankScore = reciprocalRankScore(rank + 1);
+      const existing = aggregateById.get(memory.id);
+      if (!existing) {
+        aggregateById.set(memory.id, {
+          memory,
+          cue: result.cue,
+          bestCueCoverage: lexicalCoverage,
+          bestCueRankScore: rankScore,
+          maxLexicalCoverage: lexicalCoverage,
+          reciprocalRankSum: rankScore,
+          matchedCues: new Set([result.cue]),
+        });
         continue;
       }
-      if (candidates.length >= globalCap) continue;
-      const candidate = { cue: result.cue, memory, relevance };
-      candidateById.set(memory.id, candidate);
-      candidates.push(candidate);
+      existing.matchedCues.add(result.cue);
+      existing.maxLexicalCoverage = Math.max(existing.maxLexicalCoverage, lexicalCoverage);
+      existing.reciprocalRankSum += rankScore;
+      if (
+        lexicalCoverage > existing.bestCueCoverage ||
+        (lexicalCoverage === existing.bestCueCoverage && rankScore > existing.bestCueRankScore) ||
+        (
+          lexicalCoverage === existing.bestCueCoverage &&
+          rankScore === existing.bestCueRankScore &&
+          result.cue.localeCompare(existing.cue) < 0
+        )
+      ) {
+        existing.memory = memory;
+        existing.cue = result.cue;
+        existing.bestCueCoverage = lexicalCoverage;
+        existing.bestCueRankScore = rankScore;
+      }
     }
+  }
+  for (const aggregate of aggregateById.values()) {
+    const candidate = {
+      cue: aggregate.cue,
+      matchedCues: [...aggregate.matchedCues].sort((left, right) => left.localeCompare(right)),
+      memory: aggregate.memory,
+      relevance: sweepCandidateRelevance({
+        memory: aggregate.memory,
+        maxLexicalCoverage: aggregate.maxLexicalCoverage,
+        reciprocalRankSum: aggregate.reciprocalRankSum,
+      }),
+    };
+    candidateById.set(candidate.memory.id, candidate);
+    candidates.push(candidate);
+  }
+  while (candidates.length > globalCap) {
+    const drop = sweepCandidateToCull(candidates);
+    if (!drop) break;
+    candidateById.delete(drop.memory.id);
+    candidates.splice(candidates.indexOf(drop), 1);
   }
   if (input.expandStructuredRoleSiblings === true) {
     const structuredRoleSeeds = new Map<string, {
@@ -2737,19 +2822,20 @@ async function runReconstructionSweeps(input: {
       );
       for (const [rank, memory] of siblings.entries()) {
         if (candidateById.has(memory.id)) continue;
-        if (candidates.length >= globalCap) {
-          const drop = sweepCandidateToCull(candidates);
-          if (!drop) break;
-          candidateById.delete(drop.memory.id);
-          candidates.splice(candidates.indexOf(drop), 1);
-        }
         const candidate = {
           cue: seed.name.label,
+          matchedCues: [seed.name.label],
           memory,
           relevance: seed.relevance + reciprocalRankScore(rank + 1),
         };
         candidateById.set(memory.id, candidate);
         candidates.push(candidate);
+        if (candidates.length > globalCap) {
+          const drop = sweepCandidateToCull(candidates);
+          if (!drop) break;
+          candidateById.delete(drop.memory.id);
+          candidates.splice(candidates.indexOf(drop), 1);
+        }
       }
     }
     for (const [cue, matched] of expandedMatchedByCue) {
@@ -2759,7 +2845,7 @@ async function runReconstructionSweeps(input: {
     }
   }
   return {
-    candidates: candidates.sort(compareSweepChronological),
+    candidates: candidates.sort(compareSweepReaderPriority),
     cueStats,
   };
 }
@@ -3372,7 +3458,7 @@ function composeReconstructedContext(input: {
     const fullIds = fullContentMemoryIds();
     const lines = [
       "Additional dated mentions:",
-      ...candidates.sort(compareSweepChronological).map((candidate) => {
+      ...[...candidates].sort(compareSweepChronological).map((candidate) => {
         const memory = publicMemory(
           candidate.memory,
           hideInternalRouteSignals,
@@ -3483,7 +3569,7 @@ function composeReconstructedContext(input: {
       ),
     }));
     const sweepSurfaceEntries = includeSweeps
-      ? sweepCandidates.map((candidate) => {
+      ? [...sweepCandidates].sort(compareSweepChronological).map((candidate) => {
           const memory = publicMemory(
             candidate.memory,
             hideInternalRouteSignals,
