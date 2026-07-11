@@ -35949,13 +35949,19 @@ assert.match(
   longMemEvalOfficialPromptBodies[3]?.messages?.[0]?.content ?? "",
   /do not penalize off-by-one errors/u,
 );
-const reasoningAnswererBodies: Array<{ max_tokens?: number }> = [];
+const reasoningAnswererBodies: Array<{
+  max_tokens?: number;
+  messages?: Array<{ role?: string; content?: string }>;
+}> = [];
 const reasoningAnswerer = createOpenAICompatibleExternalBenchmarkAnswerer({
   baseUrl: "https://answerer.invalid/v1",
   model: "reasoning-answerer",
   maxTokens: 3072,
   fetchImpl: async (_url, init) => {
-    reasoningAnswererBodies.push(JSON.parse(String(init?.body ?? "{}")) as { max_tokens?: number });
+    reasoningAnswererBodies.push(JSON.parse(String(init?.body ?? "{}")) as {
+      max_tokens?: number;
+      messages?: Array<{ role?: string; content?: string }>;
+    });
     return {
       ok: true,
       status: 200,
@@ -35974,6 +35980,32 @@ const reasoningAnswerer = createOpenAICompatibleExternalBenchmarkAnswerer({
 assert.equal(reasoningAnswerer.manifest?.maxTokens, 3072);
 assert.equal(await reasoningAnswerer.answer("Question?", "Context."), "reasoning answer parsed");
 assert.equal(reasoningAnswererBodies[0]?.max_tokens, 3072);
+const reasoningAnswererSystemPrompt = reasoningAnswererBodies[0]?.messages?.find(
+  (message) => message.role === "system",
+)?.content ?? "";
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /deduplicate only repeated descriptions of the same underlying fact or event/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /preserve separate occurrences when dates, objects, states, or event instances differ/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /completed or observed events from plans, intentions, scheduled future actions/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /when the question explicitly asks about plans, schedules, or intentions, use that evidence as prospective/iu,
+);
+assert.match(reasoningAnswererSystemPrompt, /prioritize the user's statements/iu);
+assert.match(reasoningAnswererSystemPrompt, /prefer the latest explicit user-grounded update/iu);
+assert.match(reasoningAnswererSystemPrompt, /state that the information is insufficient/iu);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /personalize it using relevant stated preferences without presenting an unmentioned item as a previously known fact/iu,
+);
 assert.equal(reasoningAnswerer.manifest?.answererRetryCount, 0);
 assert.equal(reasoningAnswerer.manifest?.answererRecoveredCount, 0);
 let reasoningContentOnlyAnswererCalls = 0;
