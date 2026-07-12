@@ -4296,6 +4296,144 @@ assert.equal(
 );
 await windowedMemory.close();
 
+const crossTurnFoldingExtractor: MemoryExtractor = (input) => {
+  const sourceIndex = input.window?.messages.findIndex((message) =>
+    message.role === "user" && message.content.includes("Yes, Cedar Market")
+  ) ?? -1;
+  if (sourceIndex < 0) return [];
+  return [{
+    kind: "fact",
+    content: "The user redeemed the $5 coffee coupon at Cedar Market.",
+    confidence: 0.9,
+    sourceIndex,
+    metadata: {
+      resolvedAcrossTurns: true,
+      resolvedEntities: ["$5 coffee coupon", "Cedar Market"],
+    },
+  }];
+};
+const crossTurnBaseMessages = [
+  { role: "user" as const, content: "I redeemed the $5 coffee coupon." },
+  { role: "assistant" as const, content: "The only matching store was Cedar Market." },
+];
+const crossTurnExtractionInput: MemoryExtractionInput = {
+  profileId: "cross-turn-folding",
+  event: { type: "conversation.message", role: "user", content: "Yes, Cedar Market was where I redeemed it." },
+  evidence: {
+    id: "cross-turn-evidence",
+    eventKey: "cross-turn-event",
+    profileId: "cross-turn-folding",
+    sourceType: "conversation.message",
+    sourceUri: null,
+    content: "Yes, Cedar Market was where I redeemed it.",
+    sensitivity: "normal",
+    eligibleForLongTermMemory: true,
+    payload: {},
+    createdAt: "2026-07-08T10:02:00.000Z",
+  },
+  window: {
+    messages: [
+      ...crossTurnBaseMessages,
+      { role: "user", content: "Yes, Cedar Market was where I redeemed it." },
+    ],
+    evidenceIds: ["cross-turn-1", "cross-turn-2", "cross-turn-3"],
+  },
+};
+const crossTurnCandidates = await extractMemoryCandidates({
+  extractor: crossTurnFoldingExtractor,
+  extractionInput: crossTurnExtractionInput,
+});
+assert.equal(crossTurnCandidates.length, 1);
+assert.equal(crossTurnCandidates[0]?.sourceIndex, 2);
+assert.equal(crossTurnCandidates[0]?.metadata?.resolvedAcrossTurns, true);
+const ungroundedCrossTurnCandidates = await extractMemoryCandidates({
+  extractor: () => [{
+    kind: "fact",
+    content: "The user redeemed the $5 coffee coupon at Harbor Shop.",
+    confidence: 0.9,
+    sourceIndex: 2,
+    metadata: {
+      resolvedAcrossTurns: true,
+      resolvedEntities: ["$5 coffee coupon", "Harbor Shop"],
+    },
+  }],
+  extractionInput: crossTurnExtractionInput,
+});
+assert.deepEqual(ungroundedCrossTurnCandidates, []);
+const unconfirmedCrossTurnCandidates = await extractMemoryCandidates({
+  extractor: crossTurnFoldingExtractor,
+  extractionInput: {
+    profileId: "cross-turn-folding",
+    event: { type: "conversation.message", role: "assistant", content: crossTurnBaseMessages[1]?.content ?? "" },
+    evidence: {
+      id: "cross-turn-unconfirmed-evidence",
+      eventKey: "cross-turn-unconfirmed-event",
+      profileId: "cross-turn-folding",
+      sourceType: "conversation.message",
+      sourceUri: null,
+      content: crossTurnBaseMessages[1]?.content ?? "",
+      sensitivity: "normal",
+      eligibleForLongTermMemory: true,
+      payload: {},
+      createdAt: "2026-07-08T10:01:00.000Z",
+    },
+    window: { messages: crossTurnBaseMessages, evidenceIds: ["cross-turn-1", "cross-turn-2"] },
+  },
+});
+assert.deepEqual(unconfirmedCrossTurnCandidates, []);
+const valueUpdateCandidates = await extractMemoryCandidates({
+  extractor: () => [{
+    kind: "fact",
+    content: "On 2026-07-08, the user's 5K personal best improved to 27:12.",
+    confidence: 0.95,
+    sourceIndex: 1,
+    subject: "user",
+    predicate: "user.5k_personal_best",
+    object: "27:12",
+    cardinality: "single",
+    eventTime: "2026-07-08T11:00:00.000Z",
+    metadata: {
+      resolvedAcrossTurns: true,
+      resolvedEntities: ["2026-07-08", "5K", "27:12"],
+    },
+  }],
+  extractionInput: {
+    profileId: "value-update-folding",
+    event: {
+      type: "conversation.message",
+      role: "user",
+      content: "On 2026-07-08 I improved my 5K personal best to 27:12.",
+      createdAt: "2026-07-08T11:00:00.000Z",
+    },
+    evidence: {
+      id: "value-update-evidence",
+      eventKey: "value-update-event",
+      profileId: "value-update-folding",
+      sourceType: "conversation.message",
+      sourceUri: null,
+      content: "On 2026-07-08 I improved my 5K personal best to 27:12.",
+      sensitivity: "normal",
+      eligibleForLongTermMemory: true,
+      payload: {},
+      createdAt: "2026-07-08T11:00:00.000Z",
+    },
+    window: {
+      messages: [
+        { role: "user", content: "My 5K personal best was 28:40.", createdAt: "2026-06-01T09:00:00.000Z" },
+        {
+          role: "user",
+          content: "On 2026-07-08 I improved my 5K personal best to 27:12.",
+          createdAt: "2026-07-08T11:00:00.000Z",
+        },
+      ],
+      evidenceIds: ["value-update-old", "value-update-new"],
+    },
+  },
+});
+assert.equal(valueUpdateCandidates.length, 1);
+assert.equal(valueUpdateCandidates[0]?.object, "27:12");
+assert.equal(valueUpdateCandidates[0]?.eventTime, "2026-07-08T11:00:00.000Z");
+
 const structuredTableCandidates = extractStructuredTableMemoryCandidates([{
   role: "assistant",
   content: [
@@ -4993,6 +5131,17 @@ assert.equal(sessionSummaryRows[0]?.metadata.sessionDistillationEvidenceId, unde
 assert.equal(sessionSummaryRows[0]?.metadata.sessionEvidenceIds, undefined);
 assert.equal(sessionSummaryRows[0]?.metadata.sessionDistillationKey, undefined);
 assert.equal(sessionSummaryRows[0]?.metadata.sessionEvidenceCount, 2);
+assert.equal(sessionSummaryRows[0]?.metadata.eventDate, "2026-07-04");
+assert.match(String(sessionSummaryRows[0]?.metadata.episodeKey), /^episode_[a-f0-9]{24}$/u);
+const sessionSummaryReconstruction = await sessionDistillationMemory.reconstructContext({
+  profileId: "session-distillation",
+  query: "quartz testing notes",
+  maxMemories: 2,
+  contextBudgetTokens: 4000,
+  layerPolicy: { summaryMinShare: 0.5, turnMaxShare: 0.5 },
+});
+assert.match(sessionSummaryReconstruction.contextBlock, /2 hours testing quartz/u);
+assert.equal((sessionSummaryReconstruction.stats.layers?.included.summary ?? 0) >= 1, true);
 const sessionSummaryEvidence = await sessionDistillationMemory.listEvidence({
   profileId: "session-distillation",
   limit: 20,
@@ -5260,6 +5409,7 @@ const perSessionDistillationIngest = await perSessionDistillationMemory.ingestCo
   profileId: "session-distillation-per-session",
   messages: perSessionDistillationMessages,
   extraction: { extractFromRoles: ["user", "assistant"] },
+  turnRetention: { enabled: true },
   sessionDistillation: true,
 });
 assert.equal(perSessionDistillationIngest.distillationCallCount, 3);
@@ -5307,6 +5457,19 @@ const perSessionDistilledRows = (await perSessionDistillationMemory.list({
   includeSensitive: true,
   limit: 20,
 })).filter((memoryRecord) => memoryRecord.metadata.sessionDistillation === true);
+const perSessionTurnRows = (await perSessionDistillationMemory.list({
+  profileId: "session-distillation-per-session",
+  status: "any",
+  includeSensitive: true,
+  limit: 20,
+})).filter((memoryRecord) => memoryRecord.metadata.turnMemory === true);
+assert.equal(perSessionTurnRows.length, 5);
+assert.equal(
+  perSessionDistilledRows.every((summary) =>
+    perSessionTurnRows.some((turn) => turn.metadata.episodeKey === summary.metadata.episodeKey)
+  ),
+  true,
+);
 assert.deepEqual(
   perSessionDistilledRows
     .map((memoryRecord) => [memoryRecord.content, memoryRecord.createdAt])
@@ -5322,6 +5485,7 @@ const perSessionReplay = await perSessionDistillationMemory.ingestConversation({
   profileId: "session-distillation-per-session",
   messages: perSessionDistillationMessages,
   extraction: { extractFromRoles: ["user", "assistant"] },
+  turnRetention: { enabled: true },
   sessionDistillation: true,
 });
 assert.equal(perSessionReplay.distillationCallCount, 0);
@@ -5340,6 +5504,7 @@ const perSessionAppend = await perSessionDistillationMemory.ingestConversation({
   profileId: "session-distillation-per-session",
   messages: [...perSessionDistillationMessages, ...fourthSessionMessages],
   extraction: { extractFromRoles: ["user", "assistant"] },
+  turnRetention: { enabled: true },
   sessionDistillation: true,
 });
 assert.equal(perSessionAppend.distillationCallCount, 1);
@@ -11293,6 +11458,7 @@ assert.deepEqual(longRetryAfterTerminalFailures, [{
 let intelligenceDossierVersion = "initial";
 let intelligenceRerankerRequest: unknown = null;
 let intelligenceRerankerSystemPrompt = "";
+let intelligenceSessionDistillationSystemPrompt = "";
 const intelligenceFetch = async (url: string | URL | Request, init?: RequestInit) => {
   const request = JSON.parse(String(init?.body ?? "{}")) as {
     input?: string[];
@@ -11355,6 +11521,7 @@ const intelligenceFetch = async (url: string | URL | Request, init?: RequestInit
       }],
     });
   } else if (system.includes("session distillation hook")) {
+    intelligenceSessionDistillationSystemPrompt = system;
     content = JSON.stringify({
       candidates: [{
         content: "2026-07-04: Atlas session distillation captured 3 review hours.",
@@ -11426,6 +11593,10 @@ assert.deepEqual(defaultSessionDistillationCandidates, [{
   content: "2026-07-04: Atlas session distillation captured 3 review hours.",
   confidence: 0.61,
 }]);
+assert.match(intelligenceSessionDistillationSystemPrompt, /ordered factual narrative/u);
+assert.match(intelligenceSessionDistillationSystemPrompt, /assistant artifacts/u);
+assert.match(intelligenceSessionDistillationSystemPrompt, /old to new values/u);
+assert.doesNotMatch(intelligenceSessionDistillationSystemPrompt, /Exclude assistant suggestions/u);
 assert.equal(typeof createOpenAICompatibleSessionDistiller, "function");
 const defaultIntelligenceEmbed = typeof defaultIntelligence.embeddingProvider === "function"
   ? defaultIntelligence.embeddingProvider
@@ -43604,6 +43775,7 @@ const externalOpenAICacheMeta = JSON.parse(
     entityConsolidationIncompleteClusterCount?: number;
   };
   keyFields?: {
+    sessionDistillation?: { contractVersion?: number };
     extraction?: {
       contractVersion?: number | null;
       window?: number;
@@ -43624,7 +43796,8 @@ assert.deepEqual(externalOpenAICacheMeta.integrity, {
   entityConsolidationFailureCount: 0,
   entityConsolidationIncompleteClusterCount: 0,
 });
-assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.contractVersion, 2);
+assert.equal(externalOpenAICacheMeta.keyFields?.sessionDistillation?.contractVersion, 1);
+assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.contractVersion, 3);
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.window, 40);
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.maxChars, 30000);
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.extractorMaxCandidates, 48);

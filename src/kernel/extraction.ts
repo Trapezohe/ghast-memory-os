@@ -349,13 +349,32 @@ function wordTokens(value: string): string[] {
 
 function sourceGroundsTerms(source: string, value: string): boolean {
   const sourceTokens = wordTokens(source);
-  const required = wordTokens(value).filter((token) => token.length >= 3);
+  const required = wordTokens(value).filter((token) => token.length >= 3 || /\d/u.test(token));
   return required.length > 0 && required.every((token) =>
     sourceTokens.some((sourceToken) =>
       sourceToken === token ||
       (token.length >= 4 && sourceToken.startsWith(token.slice(0, 4)))
     )
   );
+}
+
+function resolvedAcrossTurnsGrounded(
+  candidate: MemoryExtractionCandidate,
+  input: MemoryExtractionInput,
+): boolean {
+  if (candidate.metadata?.resolvedAcrossTurns !== true) return true;
+  const sourceIndex = candidate.sourceIndex;
+  if (typeof sourceIndex !== "number" || !Number.isInteger(sourceIndex)) return false;
+  if (!input.window?.messages[sourceIndex]) return false;
+  const declaredEntities = normalizedStringArray(candidate.metadata.resolvedEntities);
+  if (!declaredEntities || declaredEntities.length === 0) return false;
+  const windowSource = input.window.messages
+    .map((message) => `${message.createdAt ?? ""} ${message.content}`)
+    .join("\n");
+  return uniqueStrings([
+    ...declaredEntities,
+    ...properNounTokens(candidate.content),
+  ]).every((entity) => sourceGroundsTerms(windowSource, entity));
 }
 
 function obligationMetadata(
@@ -710,6 +729,10 @@ export async function extractMemoryCandidatePlan(input: {
     }> = [];
     rawCandidateCount += source.length;
     for (const rawCandidate of source) {
+      if (!resolvedAcrossTurnsGrounded(rawCandidate, input.extractionInput)) {
+        rejected.push(rejectDecision(rawCandidate, "invalid_kind"));
+        continue;
+      }
       const content = normalize(rawCandidate.content);
       const temporalParserInput = temporalParserInputForCandidate(rawCandidate, {
         content,

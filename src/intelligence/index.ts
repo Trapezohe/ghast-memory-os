@@ -528,11 +528,11 @@ export function createOpenAICompatibleSessionDistiller(
           content: commonSystemPrompt(
             "a session distillation hook",
             [
-              "Summarize the session into compact, dated, user-centric factual notes.",
-              "Enumerate every discrete activity, purchase, amount, duration, count, and event the user reports.",
-              "Use one line per fact and include the fact date, or the session date when the fact has no explicit date.",
-              "Exclude assistant suggestions, questions, instructions, and advice.",
-              "Return {\"candidates\":[{\"content\":\"...\",\"kind\":\"fact|preference|procedure|project|task_trajectory\",\"confidence\":0.6}]}",
+              "Return one compact ordered factual narrative of the session, a few hundred tokens at most.",
+              "Date the narrative with the supplied session eventTime and preserve explicit fact dates.",
+              "Record in order what the user did, said, decided, and asked; state changes such as pending to completed or old to new values; and assistant artifacts including proposals and revisions with their gist and order.",
+              "Resolve confirmed cross-turn relations and preserve exact names, values, counts, preferences, and outcomes without speculation.",
+              "Return {\"candidates\":[{\"content\":\"...\",\"kind\":\"fact\",\"confidence\":0.6}]}",
             ].join(" "),
           ),
         },

@@ -3083,6 +3083,11 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       createdAt: eventTime,
     });
     const sessionResult = members[members.length - 1]!.result;
+    const episodeKeys = [...new Set(members.flatMap((member) =>
+      member.episodeKey ? [member.episodeKey] : []
+    ))];
+    const episodeKey = episodeKeys.length === 1 ? episodeKeys[0] : undefined;
+    const eventDate = temporalContextCalendarDate(eventTime);
     const sessionEvent: ConversationEvent = {
       type: "conversation.message",
       profileId,
@@ -3123,6 +3128,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         sessionEvidenceIds: context.evidenceIds.slice(0, SESSION_EVIDENCE_SAMPLE_LIMIT),
         sessionEvidenceCount: context.evidenceIds.length,
         eventTime,
+        ...(eventDate ? { eventDate } : {}),
+        ...(episodeKey ? { episodeKey } : {}),
       });
     }
     const before = sessionResult.memoryIds.length;

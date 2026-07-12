@@ -1292,6 +1292,7 @@ interface IngestCacheKeyFields {
     consolidatorNameHash: string | null;
   } | undefined;
   sessionDistillation: {
+    contractVersion: number;
     enabled: boolean;
     nameHash: string | null;
     endpointIdentity: string | null;
@@ -1323,7 +1324,8 @@ interface IngestCacheKeyFields {
   customProviderIdentityHash: string | null;
 }
 
-const MESSAGE_EXTRACTION_CONTRACT_VERSION = 2;
+const MESSAGE_EXTRACTION_CONTRACT_VERSION = 3;
+const SESSION_DISTILLATION_CONTRACT_VERSION = 1;
 const ENTITY_CONSOLIDATION_CONTRACT_VERSION = 2;
 const INGEST_CACHE_IMPLEMENTATION_VERSION = 4;
 
@@ -1908,6 +1910,7 @@ function ingestCacheKeyFields(input: {
         }
       : {}),
     sessionDistillation: {
+      contractVersion: SESSION_DISTILLATION_CONTRACT_VERSION,
       enabled: runtime.sessionDistillation.enabled,
       nameHash: checkpointIdentityHash(runtime.sessionDistillation.name),
       endpointIdentity: endpoint(
