@@ -38551,6 +38551,67 @@ assert.match(
 assert.equal(semanticReviewAnswerer.manifest?.semanticReviewEnabled, true);
 assert.equal(semanticReviewAnswerer.manifest?.semanticReviewCount, 1);
 assert.equal(semanticReviewAnswerer.manifest?.semanticReviewCorrectionCount, 1);
+const completedEventReviewBodies: Array<{
+  messages?: Array<{ role?: string; content?: string }>;
+}> = [];
+const completedEventReviewAnswerer = createOpenAICompatibleExternalBenchmarkAnswerer({
+  baseUrl: "https://answerer.invalid/v1",
+  model: "completed-event-review-answerer",
+  fetchImpl: async (_url, init) => {
+    completedEventReviewBodies.push(JSON.parse(String(init?.body ?? "{}")) as {
+      messages?: Array<{ role?: string; content?: string }>;
+    });
+    const answer = completedEventReviewBodies.length === 1
+      ? "Two providers, excluding the diagnosis-only encounter."
+      : "Three distinct providers.";
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ answer }) } }],
+      }),
+    };
+  },
+});
+assert.equal(
+  await completedEventReviewAnswerer.answer(
+    "How many different service providers did I visit?",
+    [
+      '- observed=2023-01-15; source_role=user; source_trust=user content="I received a diagnosis and prescription from specialist Dr. Rowan on February 10th."',
+      '- observed=2023-01-28; source_role=user; source_trust=user content="I attended a follow-up with Dr. Vale today."',
+      '- observed=2023-01-28; source_role=user; source_trust=user content="I plan to visit Dr. Moss next month."',
+      '- observed 2023-01-15; source_role=user; source_trust=user content="user had recent experience with specialist Dr. Rowan"',
+      '- observed=2023-01-28; source_role=assistant; source_trust=agent content="You should also visit Dr. Reed."',
+    ].join("\n"),
+  ),
+  "Three distinct providers.",
+);
+assert.equal(completedEventReviewBodies.length, 2);
+assert.match(
+  completedEventReviewBodies[1]?.messages?.[0]?.content ?? "",
+  /independently reconstruct a completed-event aggregation from the supplied user-grounded assertions/iu,
+);
+assert.match(
+  completedEventReviewBodies[1]?.messages?.[0]?.content ?? "",
+  /diagnosis, prescription, biopsy or recorded result, delivered service, completed purchase, or attended follow-up is concrete completion evidence/iu,
+);
+assert.match(
+  completedEventReviewBodies[1]?.messages?.[0]?.content ?? "",
+  /prefer directAssertions over derivedAssertions when they conflict or paraphrases lose temporal detail/iu,
+);
+assert.match(
+  completedEventReviewBodies[1]?.messages?.[0]?.content ?? "",
+  /return exactly one canonical final result.*do not echo a draft, provisional or discarded ordering, duplicate entity/iu,
+);
+const completedEventReviewPayload = completedEventReviewBodies[1]?.messages?.[1]?.content ?? "";
+assert.match(completedEventReviewPayload, /"occurrenceDateHints":\["2023-02-10"\]/u);
+assert.match(completedEventReviewPayload, /"hasProspectiveLanguage":true/u);
+assert.match(completedEventReviewPayload, /"derivedAssertions":\[/u);
+assert.doesNotMatch(completedEventReviewPayload, /Dr\. Reed/u);
+assert.doesNotMatch(completedEventReviewPayload, /draftAnswer/u);
+assert.equal(completedEventReviewAnswerer.manifest?.semanticReviewCount, 1);
+assert.equal(completedEventReviewAnswerer.manifest?.semanticReviewCorrectionCount, 1);
 const dialogueReviewBodies: Array<{
   messages?: Array<{ role?: string; content?: string }>;
 }> = [];

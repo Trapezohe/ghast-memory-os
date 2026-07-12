@@ -4044,6 +4044,108 @@ function answerNeedsDialogueRatificationReview(question: string, answer: string)
   );
 }
 
+function questionNeedsCompletedEventLedgerReview(question: string): boolean {
+  const focus = primaryBenchmarkQuestionClause(question).toLowerCase();
+  if (!focus) return false;
+  const aggregation =
+    /\bhow many\b.{0,80}\b(?:different|distinct|unique)\b/u.test(focus) ||
+    /\b(?:earliest|oldest|first)\b.{0,80}\b(?:latest|newest|most recent|last)\b/u.test(
+      focus,
+    ) ||
+    /\b(?:chronological order|chronologically|in order|what (?:is|was) the order)\b/u.test(
+      focus,
+    );
+  if (!aggregation) return false;
+  const completedExperience =
+    /\b(?:did i|have i|had i)\b.{0,120}\b(?:attend(?:ed)?|buy|bought|complete(?:d)?|experience(?:d)?|fly|flown|go|gone|receive(?:d)?|see|seen|take|taken|use(?:d)?|visit(?:ed)?|work(?:ed)?)\b/u.test(
+      focus,
+    ) ||
+    /\b(?:i|the user)\s+(?:have|has|had)\b.{0,120}\b(?:attended|bought|completed|experienced|flown|gone|received|seen|taken|used|visited|worked)\b/u.test(
+      focus,
+    );
+  const asksForProspectiveEvents =
+    /\b(?:plan(?:ned|s)?|planning|schedule(?:d)?|future|upcoming|intend(?:ed|s)?|want(?:ed|s)? to)\b/u.test(
+      focus,
+    );
+  return completedExperience && !asksForProspectiveEvents;
+}
+
+interface CompletedEventReviewAssertion {
+  evidence: string;
+  observationDate?: string | undefined;
+  occurrenceDateHints: string[];
+  hasProspectiveLanguage: boolean;
+}
+
+interface CompletedEventReviewAssertions {
+  directAssertions: CompletedEventReviewAssertion[];
+  derivedAssertions: CompletedEventReviewAssertion[];
+}
+
+function userGroundedContextContent(rawLine: string): string | null {
+  if (!/(?:source_role=user|source_trust=user|\buser:)/iu.test(rawLine)) return null;
+  if (/(?:source_role=assistant|source_trust=agent|\b0?assistant:)/iu.test(rawLine)) return null;
+  const contentMarker = rawLine.indexOf('content="');
+  const candidate = (contentMarker >= 0
+    ? rawLine.slice(contentMarker + 'content="'.length).replace(/"\s*$/u, "")
+    : rawLine).trim().slice(0, 1600);
+  return candidate || null;
+}
+
+function completedEventObservationDate(rawLine: string): string | undefined {
+  return /(?:\bobserved(?:=|\s)|^-\s*)(\d{4}-\d{2}-\d{2})\b/u.exec(rawLine)?.[1];
+}
+
+function completedEventOccurrenceDateHints(
+  evidence: string,
+  observationDate: string | undefined,
+): string[] {
+  const hints: string[] = [];
+  const seen = new Set<string>();
+  for (const match of dateAnswerMatches(evidence)) {
+    const hint = match.key.startsWith("month-day:") && observationDate
+      ? `${observationDate.slice(0, 4)}-${match.key.slice("month-day:".length)}`
+      : match.key;
+    if (seen.has(hint)) continue;
+    seen.add(hint);
+    hints.push(hint);
+  }
+  if (hints.length === 0 && observationDate) hints.push(observationDate);
+  return hints.slice(0, 6);
+}
+
+function completedEventReviewAssertions(context: string): CompletedEventReviewAssertions {
+  const directAssertions: CompletedEventReviewAssertion[] = [];
+  const derivedAssertions: CompletedEventReviewAssertion[] = [];
+  const seenDirect = new Set<string>();
+  const seenDerived = new Set<string>();
+  const prospectiveLanguage =
+    /\b(?:am|are|is|was|were)?\s*(?:considering|hoping|intending|planning|scheduled)\b|\b(?:going|need|needs|plan|plans|planned|want|wants|wanted|will|would like) to\b|\b(?:future|next|upcoming)\s+(?:appointment|booking|flight|trip|visit)\b|\b(?:haven't|hasn't|have not|has not)\s+(?:booked|completed|done|visited)\b|(?:计划|打算|准备|将要|尚未|还没)/iu;
+  for (const rawLine of context.split(/\r?\n/u)) {
+    const evidence = userGroundedContextContent(rawLine);
+    if (!evidence) continue;
+    const derived = /^user(?:\s|:)/iu.test(evidence);
+    const key = evidence.normalize("NFC").replace(/\s+/gu, " ").toLowerCase();
+    const seen = derived ? seenDerived : seenDirect;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const observationDate = completedEventObservationDate(rawLine);
+    const assertion: CompletedEventReviewAssertion = {
+      evidence,
+      ...(observationDate ? { observationDate } : {}),
+      occurrenceDateHints: completedEventOccurrenceDateHints(evidence, observationDate),
+      hasProspectiveLanguage: prospectiveLanguage.test(evidence),
+    };
+    if (derived) derivedAssertions.push(assertion);
+    else directAssertions.push(assertion);
+    if (directAssertions.length >= 40 && derivedAssertions.length >= 16) break;
+  }
+  return {
+    directAssertions: directAssertions.slice(0, 40),
+    derivedAssertions: derivedAssertions.slice(0, 16),
+  };
+}
+
 interface PendingLedgerReviewAssertions {
   pendingAssertions: string[];
   completionAssertions: string[];
@@ -4171,13 +4273,14 @@ export function createOpenAICompatibleExternalBenchmarkAnswerer(
       }
       const initialAnswer = answer.trim();
       const pendingLedgerReview = questionNeedsPendingActionLedger(question);
+      const completedEventLedgerReview = questionNeedsCompletedEventLedgerReview(question);
       const dialogueRatificationReview = answerNeedsDialogueRatificationReview(
         question,
         initialAnswer,
       );
       if (
         options.semanticReview === false ||
-        (!pendingLedgerReview && !dialogueRatificationReview)
+        (!pendingLedgerReview && !completedEventLedgerReview && !dialogueRatificationReview)
       ) {
         return initialAnswer;
       }
@@ -4189,6 +4292,8 @@ export function createOpenAICompatibleExternalBenchmarkAnswerer(
             systemPrompt,
             pendingLedgerReview
               ? "Perform a ledger audit using the supplied structured assertions. Each pending assertion establishes a row. Remove a row only when a supplied independent completion assertion explicitly matches its action and target. Transaction status and omission are not completion assertions. Return JSON only: {\"answer\":\"final corrected answer\"}."
+              : completedEventLedgerReview
+                ? "Independently reconstruct a completed-event aggregation from the supplied user-grounded assertions. Build a private ledger of distinct entities the user actually experienced. A diagnosis, prescription, biopsy or recorded result, delivered service, completed purchase, or attended follow-up is concrete completion evidence even when the word completed is absent. Exclude plans, intentions, future or unbooked actions, hypothetical options, loyalty relationships, and assistant suggestions. An assertion may mix completed and prospective clauses; classify each clause separately. Prefer directAssertions over derivedAssertions when they conflict or paraphrases lose temporal detail. Deduplicate repeated mentions of the same entity. For chronological order, an explicit event date represented in occurrenceDateHints overrides observationDate; observationDate is only the fallback when the assertion contains no event date. Return exactly one canonical final result. Do not echo a draft, provisional or discarded ordering, duplicate entity, private ledger, chronology explanation, or alternate second list. Return JSON only: {\"answer\":\"final corrected answer\"}."
               : "Audit a draft that claims the requested attribute is missing. Reconstruct the immediate dialogue chain and apply the bounded dialogue-ratification rule. If the user confirmed the sole candidate while continuing the subject, use that ratified attribute. If confirmation, subject continuity, or uniqueness is absent, keep the uncertainty. Return JSON only: {\"answer\":\"final corrected answer\"}.",
           ].join("\n"),
         },
@@ -4196,8 +4301,12 @@ export function createOpenAICompatibleExternalBenchmarkAnswerer(
           role: "user",
           content: JSON.stringify({
             question,
-            ...(pendingLedgerReview ? pendingLedgerReviewAssertions(context) : { context }),
-            draftAnswer: initialAnswer,
+            ...(pendingLedgerReview
+              ? pendingLedgerReviewAssertions(context)
+              : completedEventLedgerReview
+                ? completedEventReviewAssertions(context)
+                : { context }),
+            ...(!completedEventLedgerReview ? { draftAnswer: initialAnswer } : {}),
           }),
         },
       ], validator, { stage: "answerer" }));
