@@ -181,9 +181,15 @@ function allocateLayeredMemories(input: {
     summaries.length,
     Math.ceil(input.policy.summaryMinShare * selectionCapacity),
   );
-  for (const candidate of summaries.slice(0, summaryMin)) {
+  let selectedSummaries = summaries.filter((candidate) =>
+    selected.has(candidate.memory.id)
+  ).length;
+  for (const candidate of summaries) {
+    if (selectedSummaries >= summaryMin) break;
     if (selected.size >= input.maxMemories) break;
+    if (selected.has(candidate.memory.id)) continue;
     selected.add(candidate.memory.id);
+    selectedSummaries += 1;
   }
   const turnMax = input.policy.turnMaxShare > 0 && selectionCapacity > 0
     ? Math.max(1, Math.floor(input.policy.turnMaxShare * selectionCapacity))
@@ -240,14 +246,17 @@ async function completeEpisodeAdjacency(input: {
   fullContentMaxChars?: number | undefined;
   includeSensitive?: boolean | undefined;
 }): Promise<{ memories: MemoryRecord[]; protectedMemoryIds: Set<string> }> {
-  const floor = allocateLayeredMemories({
+  const initialFloor = allocateLayeredMemories({
     memories: input.memories,
     maxMemories: input.maxMemories,
     policy: input.layerPolicy,
   });
-  // Episode supply may replace an exact duplicate, but never outrank this standalone prefix.
-  const protectedMemoryIds = new Set(floor.map((memory) => memory.id));
-  if (!input.store.listMemories) return { memories: input.memories, protectedMemoryIds };
+  if (!input.store.listMemories) {
+    return {
+      memories: input.memories,
+      protectedMemoryIds: new Set(initialFloor.map((memory) => memory.id)),
+    };
+  }
   const seedsByEpisode = new Map<string, number[]>();
   for (const memory of input.memories) {
     const key = episodeKey(memory);
@@ -257,7 +266,12 @@ async function completeEpisodeAdjacency(input: {
     if (!ordinals.includes(ordinal)) ordinals.push(ordinal);
     seedsByEpisode.set(key, ordinals);
   }
-  if (seedsByEpisode.size === 0) return { memories: input.memories, protectedMemoryIds };
+  if (seedsByEpisode.size === 0) {
+    return {
+      memories: input.memories,
+      protectedMemoryIds: new Set(initialFloor.map((memory) => memory.id)),
+    };
+  }
   const episodeRanks = new Map(
     [...seedsByEpisode.keys()].map((key, index) => [key, index]),
   );
@@ -270,7 +284,28 @@ async function completeEpisodeAdjacency(input: {
       limit: EPISODE_SCAN_LIMIT,
     }) ?? []
   ))).flat();
-  const episodeTurns = uniqueMemoriesById(episodeCandidates).filter((memory) => {
+  const rankedEpisodeSummaries = uniqueMemoriesById(episodeCandidates)
+    .filter((memory) => memoryLayer(memory) === "summary")
+    .sort((left, right) =>
+      (episodeRanks.get(episodeKey(left) ?? "") ?? Number.MAX_SAFE_INTEGER) -
+      (episodeRanks.get(episodeKey(right) ?? "") ?? Number.MAX_SAFE_INTEGER)
+    );
+  const summaryMinimum = input.layerPolicy
+    ? Math.ceil(input.layerPolicy.summaryMinShare * Math.min(
+        input.maxMemories,
+        input.memories.length + rankedEpisodeSummaries.length,
+      ))
+    : 0;
+  const guaranteedSummaries = rankedEpisodeSummaries.slice(0, summaryMinimum);
+  const standaloneSupply = uniqueMemoriesById([...input.memories, ...guaranteedSummaries]);
+  const guaranteedSummaryIds = new Set(guaranteedSummaries.map((memory) => memory.id));
+  const floor = allocateLayeredMemories({
+    memories: standaloneSupply,
+    maxMemories: input.maxMemories,
+    policy: input.layerPolicy,
+    protectedMemoryIds: guaranteedSummaryIds,
+  });
+  const episodeTurns = uniqueMemoriesById([...episodeCandidates, ...input.memories]).filter((memory) => {
     const key = episodeKey(memory);
     const ordinal = turnOrdinal(memory);
     return Boolean(key && ordinal !== null && memory.metadata.turnMemory === true);
@@ -283,7 +318,8 @@ async function completeEpisodeAdjacency(input: {
     input.maxCharsPerMemory ?? 0,
     input.fullContentMaxChars ?? 0,
   ) || undefined;
-  const floorTokens = floor.reduce(
+  const standaloneFloor = floor.filter((memory) => memory.metadata.turnMemory !== true);
+  const floorTokens = standaloneFloor.reduce(
     (sum, memory) =>
       sum + estimateTokens(truncateMemoryContent(memory.content, expansionContentCap)) + 64,
     0,
@@ -303,14 +339,9 @@ async function completeEpisodeAdjacency(input: {
     turnsByEpisode.set(key, turns);
   }
   const expandedTurnIds = new Set<string>();
-  const retrievedMemoryIds = new Set(input.memories.map((memory) => memory.id));
   let expansionTokens = 0;
   const addTurn = (memory: MemoryRecord | undefined): void => {
     if (!memory || expandedTurnIds.has(memory.id)) return;
-    if (retrievedMemoryIds.has(memory.id)) {
-      expandedTurnIds.add(memory.id);
-      return;
-    }
     const cost = estimateTokens(truncateMemoryContent(memory.content, expansionContentCap)) + 64;
     if (expansionTokens + cost > expansionBudget) return;
     expandedTurnIds.add(memory.id);
@@ -338,7 +369,16 @@ async function completeEpisodeAdjacency(input: {
     const evidenceId = exactPrimaryEvidenceId(memory);
     return evidenceId ? [[evidenceId, memory] as const] : [];
   }));
-  const completed = uniqueMemoriesById([...floor, ...expandedTurns, ...input.memories]);
+  const completed = uniqueMemoriesById([
+    ...standaloneFloor,
+    ...expandedTurns,
+    ...standaloneSupply.filter((memory) => memory.metadata.turnMemory !== true),
+  ]);
+  const protectedMemoryIds = new Set([
+    ...standaloneFloor.map((memory) => memory.id),
+    ...expandedTurns.filter((memory) => floor.some((entry) => entry.id === memory.id))
+      .map((memory) => memory.id),
+  ]);
   const deduped = completed.filter((memory) => {
     if (memory.metadata.turnMemory === true) return true;
     const evidenceId = exactPrimaryEvidenceId(memory);
@@ -363,7 +403,7 @@ function orderEpisodeTurns(memories: MemoryRecord[]): MemoryRecord[] {
   const output: MemoryRecord[] = [];
   for (const memory of memories) {
     const key = episodeKey(memory);
-    if (!key || !groups.has(key)) {
+    if (!key || memory.metadata.turnMemory !== true || !groups.has(key)) {
       output.push(memory);
       continue;
     }

@@ -37,6 +37,7 @@ import {
   type EntityResolver,
   type EvidenceEvent,
   type MemoryCueExtractor,
+  type MemoryExtractionCandidate,
   type MemoryExtractionOutcome,
   type MemoryExtractionInput,
   type MemoryExtractor,
@@ -4346,6 +4347,53 @@ const crossTurnCandidates = await extractMemoryCandidates({
 assert.equal(crossTurnCandidates.length, 1);
 assert.equal(crossTurnCandidates[0]?.sourceIndex, 2);
 assert.equal(crossTurnCandidates[0]?.metadata?.resolvedAcrossTurns, true);
+const implicitAdoptionCandidate: MemoryExtractionCandidate = {
+  kind: "fact",
+  content: "The user redeemed the $5 coffee coupon at Cedar Market.",
+  confidence: 0.9,
+  sourceIndex: 2,
+  metadata: {
+    resolvedAcrossTurns: true,
+    resolvedEntities: ["$5 coffee coupon", "Cedar Market"],
+  },
+};
+const implicitAdoptionInput: MemoryExtractionInput = {
+  ...crossTurnExtractionInput,
+  event: {
+    type: "conversation.message",
+    role: "user",
+    content: "I shop at Cedar Market every week and use its rewards app.",
+  },
+  window: {
+    messages: [
+      ...crossTurnBaseMessages,
+      { role: "user", content: "I shop at Cedar Market every week and use its rewards app." },
+    ],
+    evidenceIds: ["cross-turn-1", "cross-turn-2", "cross-turn-3"],
+  },
+};
+assert.equal((await extractMemoryCandidates({
+  extractor: () => [implicitAdoptionCandidate],
+  extractionInput: implicitAdoptionInput,
+})).length, 1);
+assert.deepEqual(await extractMemoryCandidates({
+  extractor: () => [implicitAdoptionCandidate],
+  extractionInput: {
+    ...implicitAdoptionInput,
+    event: {
+      type: "conversation.message",
+      role: "user",
+      content: "I shop there every week and use its rewards app.",
+    },
+    window: {
+      messages: [
+        ...crossTurnBaseMessages,
+        { role: "user", content: "I shop there every week and use its rewards app." },
+      ],
+      evidenceIds: ["cross-turn-1", "cross-turn-2", "cross-turn-3"],
+    },
+  },
+}), []);
 const ungroundedCrossTurnCandidates = await extractMemoryCandidates({
   extractor: () => [{
     kind: "fact",
@@ -9831,6 +9879,9 @@ const llmExtractorPromptText =
 assert.equal(typeof llmExtractorPromptText, "string");
 assert.match(llmExtractorPromptText, /same language as the source event/u);
 assert.match(llmExtractorPromptText, /do not translate non-English events into fixed English storage phrases/u);
+assert.match(llmExtractorPromptText, /first-person statement about the user's own usage, possession, purchase, visit, or habit/u);
+assert.match(llmExtractorPromptText, /assistant listed multiple candidates/u);
+assert.match(llmExtractorPromptText, /user never names the proposed entity/u);
 const openAICompatibleExtractorInput: MemoryExtractionInput = {
   profileId: "llm_extractor_parser",
   event: {
@@ -31865,6 +31916,142 @@ const layerStoreFor = (rows: MemoryRecord[]): MemoryStore => ({
     } satisfies EvidenceEvent];
   },
 } as unknown as MemoryStore);
+const denseSummaryEpisodeKeys = Array.from(
+  { length: 3 },
+  (_entry, index) => `episode_${(index + 100).toString(16).padStart(24, "0")}`,
+);
+const denseSummarySeeds = denseSummaryEpisodeKeys.map((episodeKey, index): MemoryRecord => ({
+  ...layerMemory(
+    `memory_dense_summary_seed_${index}`,
+    "atom",
+    `DenseSummaryKey top-ranked session fact ${index}.`,
+  ),
+  metadata: { episodeKey, turnOrdinal: 0 },
+}));
+const denseSummaryRows = denseSummaryEpisodeKeys.map((episodeKey, index): MemoryRecord => ({
+  ...layerMemory(
+    `memory_dense_summary_${index}`,
+    "summary",
+    `DenseSummaryKey guaranteed session summary ${index}.`,
+  ),
+  metadata: {
+    sessionDistillation: true,
+    [GMOS_METADATA_REFERENCE_MARKER]: [GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage],
+    episodeKey,
+  },
+}));
+const denseSummaryAtoms = Array.from(
+  { length: 300 },
+  (_entry, index) => layerMemory(
+    `memory_dense_summary_atom_${index}`,
+    "atom",
+    `DenseSummaryKey competing atom ${index}.`,
+  ),
+);
+const denseSummaryContext = await reconstructMemoryContext({
+  store: {
+    searchMemories(input: { limit?: number }) {
+      return [...denseSummarySeeds, ...denseSummaryAtoms].slice(0, input.limit ?? 303);
+    },
+    listMemories(input: { metadataEquals?: { value?: string } }) {
+      return denseSummaryRows.filter((memory) =>
+        memory.metadata.episodeKey === input.metadataEquals?.value
+      );
+    },
+    listEvidenceForMemory() {
+      return [];
+    },
+  } as unknown as MemoryStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "DenseSummaryKey",
+    maxMemories: 20,
+    contextBudgetTokens: 6000,
+    maxCharsPerMemory: 400,
+    stopWhenEvidenceEnough: false,
+    layerPolicy: { summaryMinShare: 0.3, turnMaxShare: 0.4 },
+  },
+});
+assert.deepEqual(
+  denseSummaryContext.memories
+    .filter((memory) => memory.metadata.sessionDistillation === true)
+    .map((memory) => memory.id),
+  denseSummaryRows.map((memory) => memory.id),
+);
+for (const summary of denseSummaryRows) {
+  assert.equal(denseSummaryContext.contextBlock.includes(summary.content), true);
+}
+
+const denseEpisodeKey = "episode_0000000000000000000000ff";
+const denseEpisodeTurns = Array.from({ length: 60 }, (_entry, turnOrdinal): MemoryRecord => ({
+  ...layerMemory(
+    `memory_dense_episode_turn_${turnOrdinal}`,
+    "turn",
+    turnOrdinal === 0
+      ? `DenseEpisodeKey hotel preference gold line ${"g".repeat(760)}`
+      : `DenseEpisodeKey turn ${turnOrdinal} ${"t".repeat(780)}`,
+  ),
+  metadata: {
+    turnMemory: true,
+    [GMOS_METADATA_REFERENCE_MARKER]: [GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage],
+    episodeKey: denseEpisodeKey,
+    turnOrdinal,
+  },
+}));
+const denseEpisodeSummary: MemoryRecord = {
+  ...layerMemory(
+    "memory_dense_episode_summary",
+    "summary",
+    "DenseEpisodeKey preference summary preserves the hotel preference.",
+  ),
+  metadata: {
+    sessionDistillation: true,
+    [GMOS_METADATA_REFERENCE_MARKER]: [GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage],
+    episodeKey: denseEpisodeKey,
+  },
+};
+const denseEpisodeStandalone = layerMemory(
+  "memory_dense_episode_standalone",
+  "atom",
+  "DenseEpisodeKey standalone preference fact remains available.",
+);
+const denseEpisodeContext = await reconstructMemoryContext({
+  store: {
+    searchMemories(input: { limit?: number }) {
+      return [denseEpisodeStandalone, ...denseEpisodeTurns.slice(0, 33)].slice(
+        0,
+        input.limit ?? 34,
+      );
+    },
+    listMemories() {
+      return [denseEpisodeSummary, ...denseEpisodeTurns];
+    },
+    listEvidenceForMemory() {
+      return [];
+    },
+  } as unknown as MemoryStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "DenseEpisodeKey",
+    maxMemories: 200,
+    contextBudgetTokens: 4000,
+    maxCharsPerMemory: 400,
+    stopWhenEvidenceEnough: false,
+    layerPolicy: { summaryMinShare: 0.3, turnMaxShare: 0.4 },
+  },
+});
+const denseEpisodeContribution = denseEpisodeContext.memories
+  .filter((memory) => memory.metadata.turnMemory === true)
+  .reduce((tokens, memory) => {
+    const chars = [...memory.content].length;
+    return tokens + Math.ceil((chars <= 400 ? chars : 403) / 4) + 64;
+  }, 0);
+assert.equal(denseEpisodeContribution <= Math.floor(4000 * 0.4), true);
+assert.match(denseEpisodeContext.contextBlock, /hotel preference gold line/u);
+assert.match(denseEpisodeContext.contextBlock, /preference summary preserves the hotel preference/u);
+assert.match(denseEpisodeContext.contextBlock, /standalone preference fact remains available/u);
 const layerRows = [
   layerMemory("memory_layer_turn_1", "turn", "LayerKey turn ranked first."),
   layerMemory("memory_layer_turn_2", "turn", "LayerKey turn ranked second."),
@@ -43797,7 +43984,7 @@ assert.deepEqual(externalOpenAICacheMeta.integrity, {
   entityConsolidationIncompleteClusterCount: 0,
 });
 assert.equal(externalOpenAICacheMeta.keyFields?.sessionDistillation?.contractVersion, 1);
-assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.contractVersion, 3);
+assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.contractVersion, 4);
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.window, 40);
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.maxChars, 30000);
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.extractorMaxCandidates, 48);

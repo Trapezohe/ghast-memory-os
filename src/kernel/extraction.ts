@@ -365,16 +365,17 @@ function resolvedAcrossTurnsGrounded(
   if (candidate.metadata?.resolvedAcrossTurns !== true) return true;
   const sourceIndex = candidate.sourceIndex;
   if (typeof sourceIndex !== "number" || !Number.isInteger(sourceIndex)) return false;
-  if (!input.window?.messages[sourceIndex]) return false;
+  if (input.window?.messages[sourceIndex]?.role !== "user") return false;
   const declaredEntities = normalizedStringArray(candidate.metadata.resolvedEntities);
   if (!declaredEntities || declaredEntities.length === 0) return false;
-  const windowSource = input.window.messages
+  const userSource = input.window.messages
+    .filter((message) => message.role === "user")
     .map((message) => `${message.createdAt ?? ""} ${message.content}`)
     .join("\n");
   return uniqueStrings([
     ...declaredEntities,
     ...properNounTokens(candidate.content),
-  ]).every((entity) => sourceGroundsTerms(windowSource, entity));
+  ]).every((entity) => sourceGroundsTerms(userSource, entity));
 }
 
 function obligationMetadata(
