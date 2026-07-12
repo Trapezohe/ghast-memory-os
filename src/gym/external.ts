@@ -3962,7 +3962,10 @@ function commaDelimitedMainQuestion(clause: string): string {
 }
 
 function primaryBenchmarkQuestionClause(question: string): string {
-  const normalizedQuestion = question.normalize("NFC").replace(/\s+/gu, " ").trim();
+  const normalizedQuestion = question.normalize("NFC").replace(/\s+/gu, " ").trim().replace(
+    /^Question date:\s*\d{4}-\d{2}-\d{2}\s*/iu,
+    "",
+  );
   if (!normalizedQuestion) return "";
   const clauses = strongBenchmarkQuestionClauses(normalizedQuestion);
   for (let index = clauses.length - 1; index >= 0; index -= 1) {

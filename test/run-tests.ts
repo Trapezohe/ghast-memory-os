@@ -38615,6 +38615,15 @@ assert.doesNotMatch(completedEventReviewPayload, /Dr\. Reed/u);
 assert.doesNotMatch(completedEventReviewPayload, /draftAnswer/u);
 assert.equal(completedEventReviewAnswerer.manifest?.semanticReviewCount, 1);
 assert.equal(completedEventReviewAnswerer.manifest?.semanticReviewCorrectionCount, 1);
+assert.equal(
+  await completedEventReviewAnswerer.answer(
+    "Question date: 2023-03-02\nWhat are the couriers I have used before, from the earliest to the most recent?",
+    '- observed=2023-02-01; source_role=user; source_trust=user content="I used North Parcel today."',
+  ),
+  "Three distinct providers.",
+);
+assert.equal(completedEventReviewBodies.length, 4);
+assert.equal(completedEventReviewAnswerer.manifest?.semanticReviewCount, 2);
 const dialogueReviewBodies: Array<{
   messages?: Array<{ role?: string; content?: string }>;
 }> = [];
