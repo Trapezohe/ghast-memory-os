@@ -38197,6 +38197,7 @@ const pendingRoutingQuestions = [
   "How many shoes do I still need to return?",
   "How many books have yet to be collected?",
   "How many prescriptions do I still need to pick up?",
+  "How many electronics do I need to pick up from or return to a store?",
   "Which clothes, if any, do I still need to return?",
   "How many clothes, including shoes, do I still need to return?",
   "Which clothes do I still need to return? I know where the store is.",
@@ -38343,7 +38344,11 @@ assert.match(
 );
 assert.match(
   pendingActionAnswererSystemPrompt,
-  /performed the same ACTION on the same TARGET, that action is complete or cancelled, or the user no longer needs to perform it/iu,
+  /same physical ACTION on the same TARGET as performed using action-specific wording independent of a broader transaction-status word/iu,
+);
+assert.match(
+  pendingActionAnswererSystemPrompt,
+  /says that exact action is complete or cancelled, or says the user no longer needs to perform it/iu,
 );
 assert.match(
   pendingActionAnswererSystemPrompt,
@@ -38351,11 +38356,15 @@ assert.match(
 );
 assert.match(
   pendingActionAnswererSystemPrompt,
-  /transaction label such as an exchange, replacement, refund, or reorder may support completion when user-grounded context unambiguously states or entails the matching handoff/iu,
+  /transaction-status word such as exchange, replacement, refund, or reorder is not by itself evidence that a pending physical handoff was performed, even when the word is past tense or ordinary-world assumptions make completion plausible/iu,
 );
 assert.match(
   pendingActionAnswererSystemPrompt,
-  /broad transaction label alone is not sufficient when it leaves the physical action unresolved/iu,
+  /supersede the physical-action row only when additional user-grounded language, separate from the transaction-status word, explicitly says that the matching item was handed over/iu,
+);
+assert.match(
+  pendingActionAnswererSystemPrompt,
+  /never fill in that required completion evidence from common sense or from the transaction-status word itself/iu,
 );
 assert.match(
   pendingActionAnswererSystemPrompt,
@@ -38364,6 +38373,18 @@ assert.match(
 assert.match(
   pendingActionAnswererSystemPrompt,
   /retain the pending row unless matching completion, cancellation, or lack of further obligation is unambiguous/iu,
+);
+assert.match(
+  pendingActionAnswererSystemPrompt,
+  /'I need to ACTION item A; a broader transaction-status assertion follows' retains ACTION item A because the second clause supplies no independent action-specific completion evidence/iu,
+);
+assert.match(
+  pendingActionAnswererSystemPrompt,
+  /'I need to ACTION item A; I physically handed item A to the responsible party and that handoff was accepted' closes ACTION item A/iu,
+);
+assert.match(
+  pendingActionAnswererSystemPrompt,
+  /this benchmark ledger rule overrides ordinary-world assumptions/iu,
 );
 assert.doesNotMatch(
   pendingActionAnswererSystemPrompt,
@@ -38407,6 +38428,18 @@ assert.match(
 );
 assert.match(
   reasoningAnswererSystemPrompt,
+  /surface it early with a concrete preparation and use step/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /if a remembered tool or device can fail because it is not ready, the primary recommendation must say how to make or check it ready before relying on it/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /do not introduce a second device or alternative before the primary remembered resource's readiness and use are clear/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
   /do not merely name it or reduce it to background rationale/iu,
 );
 assert.match(
@@ -38415,7 +38448,23 @@ assert.match(
 );
 assert.match(
   reasoningAnswererSystemPrompt,
-  /prefer one direct grounded recommendation plus at most two or three supporting points unless the user explicitly asks for a broad list/iu,
+  /for a narrow advice or troubleshooting request, output at most three short action lines total: one primary grounded recommendation and up to two supporting actions/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /do not add a third supporting action even if it is relevant/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /every supporting action must directly help apply the remembered user-grounded resource or constraint/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /omit tangential diagnoses, generic checklists, alternative products or solutions, and follow-up offers/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /use more than three action lines only when the user explicitly asks for a broad list/iu,
 );
 assert.match(
   reasoningAnswererSystemPrompt,
