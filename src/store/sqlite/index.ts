@@ -822,6 +822,339 @@ function sourceTrustFromMetadata(metadata: Record<string, unknown>): SourceTrust
   return undefined;
 }
 
+function sourceRoleFromMetadata(
+  metadata: Record<string, unknown>,
+): "system" | "user" | "assistant" | "tool" | undefined {
+  if (
+    !hasGmosMetadataReferenceSchema(
+      metadata,
+      GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
+    )
+  ) {
+    return undefined;
+  }
+  const role = metadata.sourceRole;
+  return role === "system" || role === "user" || role === "assistant" || role === "tool"
+    ? role
+    : undefined;
+}
+
+type MemoryQuerySourceFocus =
+  | "assistant_explicit"
+  | "neutral_recall"
+  | "system_explicit"
+  | "tool_explicit"
+  | "user_world";
+
+function primaryQuestionFocus(normalizedQuery: string): string {
+  const chineseTemporalAssistantBackground =
+    /(?:你|助手|智能体).{0,40}(推荐|建议|说).{0,20}(?:之后|以后|(?<!最)后(?!续|面))\s*(.+)$/u.exec(
+      normalizedQuery,
+    );
+  const chineseBasedOnAssistantBackground =
+    /(?:根据|基于)(?:你|助手|智能体).{0,40}(?:推荐|建议)[,，]?\s*(.+)$/u.exec(
+      normalizedQuery,
+    );
+  const chineseRecommendedContext =
+    /(?:在)?(?:你|助手|智能体).{0,40}(?:推荐|建议)的.{0,32}(?:里|中|当中)\s*((?:我|我们).+)$/u.exec(
+      normalizedQuery,
+    );
+  const chineseBackgroundTail =
+    chineseRecommendedContext?.[1]?.trim() ??
+    chineseTemporalAssistantBackground?.[2]?.trim() ??
+    chineseBasedOnAssistantBackground?.[1]?.trim();
+  const temporalPrefix = chineseTemporalAssistantBackground?.index === undefined
+    ? ""
+    : normalizedQuery.slice(0, chineseTemporalAssistantBackground.index);
+  const implicitUserActionTail = chineseBackgroundTail
+    ? /^(?:实际|真正)?(?:买了|购买了|做了|去了|访问了|住了|入住了|预订了|选择了|选了|提到过|拥有|说过|用了|穿了).{0,32}(?:多少|几个|哪些|哪几|哪(?:个|家|种|款|里|儿)?|什么|何时|哪里|怎么|如何|谁)/u.test(
+        chineseBackgroundTail,
+      )
+    : false;
+  const temporalTailIsUserAction = chineseTemporalAssistantBackground === null ||
+    questionExplicitlyRequestsUserAction(chineseBackgroundTail ?? "") ||
+    (
+      /^(?:我|我们).{0,16}(?:在|根据|基于)/u.test(temporalPrefix) &&
+      implicitUserActionTail
+    );
+  if (
+    chineseBackgroundTail &&
+    temporalTailIsUserAction &&
+    /(?:多少|几个|哪些|哪几|哪(?:个|家|种|款|里|儿)?|什么|何时|哪里|怎么|如何|谁|为何|为什么)/u.test(
+      chineseBackgroundTail,
+    )
+  ) {
+    return chineseBackgroundTail;
+  }
+  const clauses = normalizedQuery
+    .split(
+      /(?:[.!?;。！？；]+|[:：]\s*|[,，]\s*|\b(?:although|but|despite(?: the fact that)?|even though|however|instead|though)\b|(?:虽然|尽管|即使|但是|不过|然而|反而|可是|但))/gu,
+    )
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+  for (let index = clauses.length - 1; index >= 0; index -= 1) {
+    const clause = clauses[index]!;
+    if (
+      /\b(?:can|could|did|do|does|how|is|what|when|where|which|who|why|would)\b/u.test(
+        clause,
+      ) ||
+      /(?:多少|几个|哪些|哪几|哪(?:个|家|种|款|里|儿)?|什么|何时|哪里|怎么|如何|谁|为何|为什么)/u.test(
+        clause,
+      )
+    ) {
+      return clause;
+    }
+  }
+  return normalizedQuery;
+}
+
+function questionHasUserInterrogativeActor(focus: string): boolean {
+  const match = /\b(?:how|what|when|where|which|who)\b.{0,64}?\b(?:am|are|did|do|does|had|has|have|was|were)\s+(i|my|our|the assistant|the agent|we|you|your)\b/u.exec(
+    focus,
+  );
+  const actor = match?.[1];
+  return actor === "i" || actor === "my" || actor === "our" || actor === "we";
+}
+
+function questionHasEmbeddedUserWhActor(focus: string): boolean {
+  return /\b(?:how|what|when|where|which|who)\b\s+(?:(?!\b(?:you|your|assistant|agent)\b)[a-z'-]+\s+){0,4}(?:i|we)\b/u.test(
+    focus,
+  );
+}
+
+function questionExplicitlyRequestsUserAction(focus: string): boolean {
+  return (
+    /\b(?:how|what|when|where|which|who)\b.{0,80}\b(?:did|do|have|has|had|was|were|am|are) (?:i|we)\b/u.test(
+      focus,
+    ) ||
+    /\b(?:how|what|when|where|which|who)\b.{0,80}\b(?:i|we)\b.{0,32}\b(?:bought|chose|did|had|mentioned|owned|said|told|used|wore)\b/u.test(
+      focus,
+    ) ||
+    /\b(?:how|what|when|where|which|who)\b.{0,80}\b(?:i|we)\b.{0,32}\b[a-z]+ed\b/u.test(
+      focus,
+    ) ||
+    /(?:我|我们).{0,48}(?:实际|真正)?(?:买了|购买了|做了|去了|访问了|住了|入住了|预订了|选择了|选了|提到过|拥有|说过|用了|穿了).{0,32}(?:多少|几个|哪些|哪几|哪(?:个|家|种|款|里|儿)?|什么|何时|哪里|怎么|如何|谁)/u.test(
+      focus,
+    )
+  );
+}
+
+function questionFocusesOnUserWorld(focus: string): boolean {
+  return questionExplicitlyRequestsUserAction(focus) ||
+    /\b(?:how|what|when|where|which|who)\b.{0,80}\b(?:my|our)\b/u.test(focus) ||
+    /(?:多少|几个|哪些|哪几|哪(?:个|家|种|款|里|儿)?|什么|何时|哪里|怎么|如何|谁).{0,80}(?:我的|我们的)/u.test(
+      focus,
+    );
+}
+
+function queryFramesConversationRecall(normalizedQuery: string): boolean {
+  return (
+    /\b(?:previous|earlier|last) (?:chat|conversation|discussion|game)\b/u.test(
+      normalizedQuery,
+    ) ||
+    /\b(?:check(?:ing)? back|follow(?:ing)? up|follow-up|going back|looking back|thinking back)\b/u.test(
+      normalizedQuery,
+    ) ||
+    /\bremind me\b|\bdo you remember\b|\btrying to recall\b/u.test(normalizedQuery) ||
+    /(?:之前|先前|上次|此前).{0,12}(?:聊天|对话|讨论|游戏)|(?:回顾|回想|想起|还记得)/u.test(
+      normalizedQuery,
+    )
+  );
+}
+
+function queryRecallsCollaborativeConversation(normalizedQuery: string): boolean {
+  return (
+    /\b(?:did|have|had) we (?:agree on|agreed on|create|created|decide|decided|discuss|discussed|outline|outlined|settle on|settled on|talk about|talked about|write|wrote)\b/u.test(
+      normalizedQuery,
+    ) ||
+    /\bwe (?:agreed on|created|decided|discussed|outlined|settled on|talked about|wrote)\b/u.test(
+      normalizedQuery,
+    ) ||
+    /(?:我们).{0,24}(?:创建|决定|讨论|聊过|谈过|拟定|列出|写过|商定|敲定|达成一致)/u.test(
+      normalizedQuery,
+    )
+  );
+}
+
+function questionExplicitlyRequestsAssistantOutput(focus: string): boolean {
+  return (
+    /\b(?:how|what|when|where|which|who)\b.{0,96}\bdid (?:you|the assistant|the agent)\b.{0,40}\b(?:answer|call|choose|create|draft|generate|give|list|make|name|outline|provide|recommend|respond|say|select|suggest|tell|write)\b/u.test(
+      focus,
+    ) ||
+    /\b(?:you|the assistant|the agent)\b.{0,80}\b(?:answered|called|chose|created|drafted|generated|gave|listed|made|named|outlined|provided|recommended|responded|said|selected|suggested|told|wrote)\b/u.test(
+      focus,
+    ) ||
+    /\b(?:your|the assistant'?s|the agent'?s)\b.{0,48}\b(?:advice|answer|draft|recommendation|response|suggestion)\b/u.test(
+      focus,
+    ) ||
+    /\baccording to (?:you|the assistant|the agent)\b/u.test(focus) ||
+    /(?:你(?:当时)?|助手|智能体).{0,24}(?:回答|回复|建议|推荐|说|写|提供)|(?:你的|助手的|智能体的).{0,16}(?:回答|回复|建议|推荐|草稿)/u.test(
+      focus,
+    )
+  );
+}
+
+function questionExplicitlyRequestsMachineSource(
+  normalizedQuery: string,
+): "system_explicit" | "tool_explicit" | undefined {
+  if (
+    /\btool\b.{0,48}\b(?:message|output|report(?:ed)?|response|result|return(?:ed)?|said|say)\b/u.test(
+      normalizedQuery,
+    ) ||
+    /(?:工具).{0,24}(?:消息|输出|报告|回复|响应|结果|返回|说)/u.test(normalizedQuery)
+  ) {
+    return "tool_explicit";
+  }
+  if (
+    /\bsystem\b.{0,48}\b(?:instruction|message|output|prompt|response|result|said|say)\b/u.test(
+      normalizedQuery,
+    ) ||
+    /(?:系统).{0,24}(?:指令|消息|输出|提示词|回复|响应|结果|说)/u.test(normalizedQuery)
+  ) {
+    return "system_explicit";
+  }
+  return undefined;
+}
+
+function questionRecallsVersionedArtifact(focus: string): boolean {
+  return (
+    /\b(?:current|final|initial|latest|most recent|original|revised|updated)\b.{0,64}\b(?:answer|article|code|document|draft|email|letter|message|name|outline|plan|poem|proposal|response|song|story|title|version)\b/u.test(
+      focus,
+    ) ||
+    /\b(?:answer|article|code|document|draft|email|letter|message|name|outline|plan|poem|proposal|response|song|story|title|version)\b.{0,64}\b(?:current|final|initial|latest|most recent|original|revised|updated)\b/u.test(
+      focus,
+    ) ||
+    /(?:当前|最终|最后|初始|最初|最新|最近|原始|初稿|修订|修改后|更新后).{0,32}(?:回答|文章|代码|文档|草稿|邮件|信件|消息|名称|大纲|计划|诗|提案|回复|歌曲|故事|标题|版本)/u.test(
+      focus,
+    )
+  );
+}
+
+function attributionIsScopedToQuestionFocus(input: {
+  normalizedQuery: string;
+  focus: string;
+  attributionPattern: RegExp;
+}): boolean {
+  const focusIndex = input.normalizedQuery.lastIndexOf(input.focus);
+  if (focusIndex < 0) return false;
+  const focusEnd = focusIndex + input.focus.length;
+  for (const match of input.normalizedQuery.matchAll(input.attributionPattern)) {
+    const attributionIndex = match.index;
+    const attributionEnd = attributionIndex + match[0].length;
+    if (attributionIndex >= focusIndex && attributionEnd <= focusEnd) return true;
+    if (
+      attributionEnd <= focusIndex &&
+      /^[\s,，:：()（）\-–—]*$/u.test(input.normalizedQuery.slice(attributionEnd, focusIndex))
+    ) {
+      return true;
+    }
+    if (
+      attributionIndex >= focusEnd &&
+      /^[\s,，:：()（）\-–—]*$/u.test(input.normalizedQuery.slice(focusEnd, attributionIndex))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function questionAttributesAnswerToMachineSource(
+  normalizedQuery: string,
+  focus: string,
+): "system_explicit" | "tool_explicit" | undefined {
+  if (
+    attributionIsScopedToQuestionFocus({
+      normalizedQuery,
+      focus,
+      attributionPattern:
+        /\baccording to (?:the )?tool(?:'s)?(?: (?:message|output|response|result))?\b|(?:根据|按照)工具(?:消息|输出|回复|响应|结果)?/gu,
+    })
+  ) {
+    return "tool_explicit";
+  }
+  if (
+    attributionIsScopedToQuestionFocus({
+      normalizedQuery,
+      focus,
+      attributionPattern:
+        /\baccording to (?:the )?system(?:'s)?(?: (?:instruction|message|output|prompt|response|result))?\b|(?:根据|按照)系统(?:指令|消息|输出|提示词|回复|响应|结果)?/gu,
+    })
+  ) {
+    return "system_explicit";
+  }
+  return undefined;
+}
+
+function questionAttributesAnswerToAssistant(normalizedQuery: string, focus: string): boolean {
+  return attributionIsScopedToQuestionFocus({
+    normalizedQuery,
+    focus,
+    attributionPattern:
+      /\baccording to (?:you|the assistant|the agent)\b|(?:根据|按照)(?:你|助手|智能体)(?:的说法|的回答|的回复)?/gu,
+  });
+}
+
+function memoryQuerySourceFocus(query: string): MemoryQuerySourceFocus {
+  const normalized = query.normalize("NFC").toLowerCase().replace(/\s+/gu, " ").trim();
+  const focus = primaryQuestionFocus(normalized);
+  const attributedMachineSource = questionAttributesAnswerToMachineSource(normalized, focus);
+  if (attributedMachineSource) return attributedMachineSource;
+  if (questionAttributesAnswerToAssistant(normalized, focus)) {
+    return "assistant_explicit";
+  }
+  const conversationRecall = queryFramesConversationRecall(normalized);
+  if (queryRecallsCollaborativeConversation(focus)) {
+    return "neutral_recall";
+  }
+  if (questionHasUserInterrogativeActor(focus)) return "user_world";
+  if (conversationRecall && questionHasEmbeddedUserWhActor(focus)) return "user_world";
+  const machineSourceFocus = questionExplicitlyRequestsMachineSource(focus);
+  if (machineSourceFocus) return machineSourceFocus;
+  if (questionExplicitlyRequestsAssistantOutput(focus)) return "assistant_explicit";
+  if (questionExplicitlyRequestsUserAction(focus)) return "user_world";
+  if (questionFocusesOnUserWorld(focus)) return "user_world";
+  if (questionRecallsVersionedArtifact(focus)) return "neutral_recall";
+  if (
+    conversationRecall ||
+    /\bremind me\b|\bdo you remember\b|\btrying to recall\b/u.test(normalized) ||
+    /\bwe (?:created|decided|discussed|outlined|talked about|wrote)\b/u.test(normalized)
+  ) {
+    return "neutral_recall";
+  }
+  return "user_world";
+}
+
+function memorySearchSourceAdjustment(memory: MemoryRecord, query: string): number {
+  if (!query.trim()) return 0;
+  const sourceRole = sourceRoleFromMetadata(memory.metadata);
+  const sourceTrust = sourceTrustFromMetadata(memory.metadata);
+  const userGrounded = sourceRole === "user" || (sourceRole === undefined && sourceTrust === "user");
+  const assistantGrounded =
+    sourceRole === "assistant" || (sourceRole === undefined && sourceTrust === "agent");
+  const sourceFocus = memoryQuerySourceFocus(query);
+  if (sourceFocus === "system_explicit" || sourceFocus === "tool_explicit") {
+    const requestedRole = sourceFocus === "system_explicit" ? "system" : "tool";
+    if (sourceRole === requestedRole) return 0.45;
+    if (sourceRole !== undefined) return -0.2;
+    if (sourceTrust === "external") return 0.2;
+    return 0;
+  }
+  if (sourceFocus === "assistant_explicit") {
+    if (assistantGrounded) return 0.45;
+    if (userGrounded) return -0.2;
+    return 0;
+  }
+  if (sourceFocus === "neutral_recall") {
+    if (sourceRole === "system" || sourceRole === "tool") {
+      return -0.2;
+    }
+    return 0;
+  }
+  if (userGrounded) return 0.45;
+  if (assistantGrounded) return -0.45;
+  return 0;
+}
+
 function memoryAnnealingRecord(memory: MemoryRecord): Record<string, unknown> | null {
   if (
     !hasGmosMetadataReferenceSchema(
@@ -1110,8 +1443,28 @@ function memorySearchScoreComponents(input: {
   const contentScore = input.query
     ? scoreMemory(input.memory, input.query)
     : confidence;
+  const queryTermCount = input.query ? queryTerms(input.query).length : 0;
+  const lexicalHitCount = Math.max(0, contentScore - confidence);
+  const boundedContentRelevance = queryTermCount > 0 && lexicalHitCount > 0
+    // Any exact lexical anchor is meaningful fallback evidence when a dense
+    // provider is unavailable. Coverage adds discrimination without letting
+    // long generic text accumulate an unbounded score.
+    ? Math.min(0.5, 0.25 + (lexicalHitCount / queryTermCount) * 0.25)
+    : 0;
+  const relevanceScore = input.fusionScore !== undefined
+    ? Math.max(0, input.fusionScore) + boundedContentRelevance
+    : Math.max(0, contentScore - confidence, input.retrievalScore);
+  const sourceAdjustment = input.query
+    ? memorySearchSourceAdjustment(input.memory, input.query)
+    : 0;
   const finalScore = input.query
-    ? Math.max(contentScore, confidence + input.retrievalScore)
+    ? input.fusionScore !== undefined
+      // Hybrid retrieval scores are bounded and already combine lexical, vector,
+      // and association ranks. Source authority breaks ties between user-world
+      // evidence and assistant suggestions unless the query explicitly asks for
+      // a prior assistant output.
+      ? confidence + relevanceScore + sourceAdjustment
+      : Math.max(contentScore, confidence + input.retrievalScore)
     : confidence;
   const sourceTrust = sourceTrustFromMetadata(input.memory.metadata);
   const annealing = activeAnnealingRecord(input.memory);
@@ -7710,6 +8063,9 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         associationScore,
         fusionScore,
       });
+      const relevanceAboveConfidence = scoreComponents.finalScore -
+        effectiveMemoryConfidence(memory) -
+        (query && fusionScore !== undefined ? memorySearchSourceAdjustment(memory, query) : 0);
       let reason: MemorySearchTraceDecisionReason | null = null;
       if (!input.includePerson && memory.kind === "person") {
         reason = "person_gated";
@@ -7731,7 +8087,7 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
         reason = "sensitivity_gated";
       } else if (
         query &&
-        scoreComponents.finalScore <= memory.confidence + (input.scoreThreshold ?? 0)
+        relevanceAboveConfidence <= (input.scoreThreshold ?? 0)
       ) {
         reason = "below_score_threshold";
       }

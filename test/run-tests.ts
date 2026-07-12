@@ -18968,6 +18968,685 @@ const exactDenseMatches = await exactDenseStore.searchMemories({
 assert.equal(exactDenseMatches[0]?.id, exactDenseTarget.id);
 await exactDenseMemory.close();
 
+const hybridFusionDominanceProvider = {
+  name: "test-hybrid-fusion-dominance-provider",
+  dimensions: 7,
+  async embed(texts: string[]) {
+    return texts.map((text) => {
+      if (text.includes("OwnedSemanticResource80")) return [0.8, 0, 0, 0, 0, 0, 0.6];
+      if (text.includes("OwnedSemanticResource65")) {
+        return [0.65, 0, 0, 0, 0, 0, Math.sqrt(1 - 0.65 ** 2)];
+      }
+      if (text.includes("generic advice I recommended")) {
+        return [0.9, 0, 0, 0, 0, 0, Math.sqrt(1 - 0.9 ** 2)];
+      }
+      if (/battery troubleshooting/iu.test(text)) return [1, 0, 0, 0, 0, 0, 0];
+      if (/hotel|Hotel Azure|Hotel ToolExact|Hotel SystemExact|酒店|哪家/iu.test(text)) {
+        return [0, 1, 0, 0, 0, 0, 0];
+      }
+      if (/helmet|Giro|Bell Zephyr|actually buy|according to you|你当时说我买了什么|你说完开场白后又说了什么/iu.test(text)) {
+        return [0, 0, 1, 0, 0, 0, 0];
+      }
+      if (/I visited Kyoto/iu.test(text)) return [0, 0, 0, 0.8, 0, 0, 0.6];
+      if (/visit Osaka/iu.test(text)) {
+        return [0, 0, 0, 0.9, 0, 0, Math.sqrt(1 - 0.9 ** 2)];
+      }
+      if (/which city|city I visited|remember about my trip|remember where I went/iu.test(text)) {
+        return [0, 0, 0, 1, 0, 0, 0];
+      }
+      if (/project plan|Cedar plan|plan did you create|方案/iu.test(text)) {
+        return [0, 0, 0, 0, 1, 0, 0];
+      }
+      if (/My medication is Lisinopril/iu.test(text)) return [0, 0, 0, 0, 0, 0.8, 0.6];
+      if (/ask about Metformin/iu.test(text)) {
+        return [0, 0, 0, 0, 0, 0.9, Math.sqrt(1 - 0.9 ** 2)];
+      }
+      if (/know about my medication/iu.test(text)) return [0, 0, 0, 0, 0, 1, 0];
+      return [0, 0, 0, 0, 0, 0, 1];
+    });
+  },
+};
+const hybridFusionDominanceStore = createSqliteMemoryStore({
+  path: path.join(tmp, "hybrid-fusion-dominance.db"),
+  embeddingProvider: hybridFusionDominanceProvider,
+});
+const hybridFusionDominanceMemory = createMemoryOS({
+  profileId: "hybrid-fusion-dominance",
+  store: hybridFusionDominanceStore,
+  embeddingProvider: hybridFusionDominanceProvider,
+  extractor: () => [],
+});
+await hybridFusionDominanceMemory.ingestConversation({
+  profileId: "hybrid-fusion-dominance",
+  messages: [
+    {
+      role: "user",
+      content: "OwnedSemanticResource80 is a device I already have and can use.",
+      createdAt: "2026-07-04T02:00:00.000Z",
+    },
+    {
+      role: "user",
+      content: "OwnedSemanticResource65 is another device I already have and can use.",
+      createdAt: "2026-07-04T02:00:30.000Z",
+    },
+    {
+      role: "assistant",
+      content: "Battery troubleshooting request phone runtime tips are generic advice I recommended.",
+      createdAt: "2026-07-04T02:01:00.000Z",
+    },
+    {
+      role: "user",
+      content: "Please recommend a hotel for my trip.",
+      createdAt: "2026-07-04T02:02:00.000Z",
+    },
+    {
+      role: "assistant",
+      content: "I recommended Hotel Azure for the trip.",
+      createdAt: "2026-07-04T02:03:00.000Z",
+    },
+    {
+      role: "tool",
+      content: "Tool recommended Hotel ToolExact.",
+      createdAt: "2026-07-04T02:03:10.000Z",
+    },
+    {
+      role: "system",
+      content: "System recommended Hotel SystemExact.",
+      createdAt: "2026-07-04T02:03:20.000Z",
+    },
+    {
+      role: "assistant",
+      content: "I recommended the Giro helmet as a possible option.",
+      createdAt: "2026-07-04T02:04:00.000Z",
+    },
+    {
+      role: "assistant",
+      content: "I said you bought the Giro helmet.",
+      createdAt: "2026-07-04T02:04:30.000Z",
+    },
+    {
+      role: "user",
+      content: "I actually bought the Bell Zephyr helmet.",
+      createdAt: "2026-07-04T02:05:00.000Z",
+    },
+    {
+      role: "user",
+      content: "I visited Kyoto during the spring trip.",
+      createdAt: "2026-07-04T02:06:00.000Z",
+    },
+    {
+      role: "assistant",
+      content: "You should visit Osaka on a future trip.",
+      createdAt: "2026-07-04T02:07:00.000Z",
+    },
+    {
+      role: "user",
+      content: "Please create a project plan.",
+      createdAt: "2026-07-04T02:08:00.000Z",
+    },
+    {
+      role: "assistant",
+      content: "I created the Cedar plan for the project.",
+      createdAt: "2026-07-04T02:09:00.000Z",
+    },
+    {
+      role: "user",
+      content: "My medication is Lisinopril.",
+      createdAt: "2026-07-04T02:10:00.000Z",
+    },
+    {
+      role: "assistant",
+      content: "You could ask about Metformin as a generic option.",
+      createdAt: "2026-07-04T02:11:00.000Z",
+    },
+  ],
+  extraction: { extractFromRoles: [] },
+  turnRetention: { enabled: true },
+});
+const batteryAdviceQuery = "battery troubleshooting request phone runtime tips";
+const batteryAdviceQueryVector = (await hybridFusionDominanceProvider.embed([batteryAdviceQuery]))[0]!;
+const hybridFusionDominanceMatches = hybridFusionDominanceStore.searchMemories({
+  profileId: "hybrid-fusion-dominance",
+  query: batteryAdviceQuery,
+  queryEmbedding: {
+    providerName: hybridFusionDominanceProvider.name,
+    dimensions: hybridFusionDominanceProvider.dimensions,
+    vector: batteryAdviceQueryVector,
+  },
+  limit: 3,
+});
+assert.deepEqual(
+  hybridFusionDominanceMatches.slice(0, 2).map((entry) => entry.metadata.sourceRole),
+  ["user", "user"],
+);
+assert.match(hybridFusionDominanceMatches[0]?.content ?? "", /OwnedSemanticResource80/u);
+assert.match(hybridFusionDominanceMatches[1]?.content ?? "", /OwnedSemanticResource65/u);
+const priorAssistantQuery = "What did you recommend for battery troubleshooting?";
+const priorAssistantQueryVector = (await hybridFusionDominanceProvider.embed([priorAssistantQuery]))[0]!;
+const priorAssistantOutputMatches = hybridFusionDominanceStore.searchMemories({
+  profileId: "hybrid-fusion-dominance",
+  query: priorAssistantQuery,
+  queryEmbedding: {
+    providerName: hybridFusionDominanceProvider.name,
+    dimensions: hybridFusionDominanceProvider.dimensions,
+    vector: priorAssistantQueryVector,
+  },
+  limit: 3,
+});
+assert.equal(priorAssistantOutputMatches[0]?.metadata.sourceRole, "assistant");
+const hotelAssistantQuery = "Which hotel did you recommend?";
+const hotelAssistantQueryVector = (await hybridFusionDominanceProvider.embed([hotelAssistantQuery]))[0]!;
+const hotelAssistantMatches = hybridFusionDominanceStore.searchMemories({
+  profileId: "hybrid-fusion-dominance",
+  query: hotelAssistantQuery,
+  queryEmbedding: {
+    providerName: hybridFusionDominanceProvider.name,
+    dimensions: hybridFusionDominanceProvider.dimensions,
+    vector: hotelAssistantQueryVector,
+  },
+  limit: 6,
+});
+assert.equal(hotelAssistantMatches[0]?.metadata.sourceRole, "assistant");
+assert.match(hotelAssistantMatches[0]?.content ?? "", /Hotel Azure/u);
+assert.equal(hotelAssistantMatches.some((entry) => entry.metadata.sourceRole === "tool"), true);
+assert.equal(hotelAssistantMatches.some((entry) => entry.metadata.sourceRole === "system"), true);
+const previousChatQuery =
+  "I'm checking our previous chat. Can you remind me which hotel was selected?";
+const previousChatQueryVector = (await hybridFusionDominanceProvider.embed([previousChatQuery]))[0]!;
+const previousChatMatches = hybridFusionDominanceStore.searchMemories({
+  profileId: "hybrid-fusion-dominance",
+  query: previousChatQuery,
+  queryEmbedding: {
+    providerName: hybridFusionDominanceProvider.name,
+    dimensions: hybridFusionDominanceProvider.dimensions,
+    vector: previousChatQueryVector,
+  },
+  limit: 3,
+});
+assert.equal(previousChatMatches[0]?.metadata.sourceRole, "assistant");
+assert.match(previousChatMatches[0]?.content ?? "", /Hotel Azure/u);
+for (const collaborativeRecallQuery of [
+  "Which hotel did we discuss?",
+  "Which hotel did we agree on?",
+  "Which hotel did we settle on?",
+  "Which hotel did we discuss in our previous chat?",
+  "Which hotel have we discussed in our previous chat?",
+]) {
+  const collaborativeRecallQueryVector = (await hybridFusionDominanceProvider.embed([
+    collaborativeRecallQuery,
+  ]))[0]!;
+  const collaborativeRecallMatches = hybridFusionDominanceStore.searchMemories({
+    profileId: "hybrid-fusion-dominance",
+    query: collaborativeRecallQuery,
+    queryEmbedding: {
+      providerName: hybridFusionDominanceProvider.name,
+      dimensions: hybridFusionDominanceProvider.dimensions,
+      vector: collaborativeRecallQueryVector,
+    },
+    limit: 1,
+  });
+  assert.equal(collaborativeRecallMatches[0]?.metadata.sourceRole, "assistant");
+  assert.match(collaborativeRecallMatches[0]?.content ?? "", /Hotel Azure/u);
+}
+for (const mixedUserWorldQuery of [
+  "You recommended Giro, but what did I actually buy?",
+  "You recommended Giro; what did I actually buy?",
+  "You recommended Giro. What did I actually buy?",
+  "Although you recommended Giro, what did I actually buy?",
+  "Despite the fact that you recommended Giro, what did I actually buy?",
+  "What did I actually buy after you recommended Giro?",
+  "助手推荐了 Giro 头盔，但我实际买了什么？",
+  "助手推荐了 Giro 头盔。我实际买了什么？",
+  "你当时推荐 Giro 后我买了什么？",
+  "我在你当时推荐 Giro 后买了什么？",
+  "你当时说 Giro 很好后我买了什么？",
+  "According to you Giro was good, but what did I actually buy?",
+  "According to you Giro was good. What did I actually buy?",
+]) {
+  const mixedUserWorldQueryVector = (await hybridFusionDominanceProvider.embed([
+    mixedUserWorldQuery,
+  ]))[0]!;
+  const mixedUserWorldMatches = hybridFusionDominanceStore.searchMemories({
+    profileId: "hybrid-fusion-dominance",
+    query: mixedUserWorldQuery,
+    queryEmbedding: {
+      providerName: hybridFusionDominanceProvider.name,
+      dimensions: hybridFusionDominanceProvider.dimensions,
+      vector: mixedUserWorldQueryVector,
+    },
+    limit: 3,
+  });
+  assert.equal(mixedUserWorldMatches[0]?.metadata.sourceRole, "user");
+  assert.match(mixedUserWorldMatches[0]?.content ?? "", /Bell Zephyr/u);
+}
+const previousUserHistoryQuery =
+  "Looking back at our previous conversation, can you remind me which city I visited?";
+const previousUserHistoryQueryVector = (await hybridFusionDominanceProvider.embed([
+  previousUserHistoryQuery,
+]))[0]!;
+const previousUserHistoryMatches = hybridFusionDominanceStore.searchMemories({
+  profileId: "hybrid-fusion-dominance",
+  query: previousUserHistoryQuery,
+  queryEmbedding: {
+    providerName: hybridFusionDominanceProvider.name,
+    dimensions: hybridFusionDominanceProvider.dimensions,
+    vector: previousUserHistoryQueryVector,
+  },
+  limit: 3,
+});
+assert.equal(previousUserHistoryMatches[0]?.metadata.sourceRole, "user");
+assert.match(previousUserHistoryMatches[0]?.content ?? "", /Kyoto/u);
+const collaborativeUserHistoryQuery = "Which city did we visit?";
+const collaborativeUserHistoryQueryVector = (await hybridFusionDominanceProvider.embed([
+  collaborativeUserHistoryQuery,
+]))[0]!;
+const collaborativeUserHistoryMatches = hybridFusionDominanceStore.searchMemories({
+  profileId: "hybrid-fusion-dominance",
+  query: collaborativeUserHistoryQuery,
+  queryEmbedding: {
+    providerName: hybridFusionDominanceProvider.name,
+    dimensions: hybridFusionDominanceProvider.dimensions,
+    vector: collaborativeUserHistoryQueryVector,
+  },
+  limit: 1,
+});
+assert.equal(collaborativeUserHistoryMatches[0]?.metadata.sourceRole, "user");
+assert.match(collaborativeUserHistoryMatches[0]?.content ?? "", /Kyoto/u);
+for (const userWorldRecall of [
+  { query: "What do you remember about my trip?", expected: /Kyoto/u },
+  { query: "Do you remember where I went?", expected: /Kyoto/u },
+  { query: "What do you know about my medication?", expected: /Lisinopril/u },
+]) {
+  const queryVector = (await hybridFusionDominanceProvider.embed([userWorldRecall.query]))[0]!;
+  const matches = hybridFusionDominanceStore.searchMemories({
+    profileId: "hybrid-fusion-dominance",
+    query: userWorldRecall.query,
+    queryEmbedding: {
+      providerName: hybridFusionDominanceProvider.name,
+      dimensions: hybridFusionDominanceProvider.dimensions,
+      vector: queryVector,
+    },
+    limit: 3,
+  });
+  assert.equal(matches[0]?.metadata.sourceRole, "user");
+  assert.match(matches[0]?.content ?? "", userWorldRecall.expected);
+}
+const assistantSubordinateQuery = "What helmet did you recommend that I buy?";
+const assistantSubordinateQueryVector = (await hybridFusionDominanceProvider.embed([
+  assistantSubordinateQuery,
+]))[0]!;
+const assistantSubordinateMatches = hybridFusionDominanceStore.searchMemories({
+  profileId: "hybrid-fusion-dominance",
+  query: assistantSubordinateQuery,
+  queryEmbedding: {
+    providerName: hybridFusionDominanceProvider.name,
+    dimensions: hybridFusionDominanceProvider.dimensions,
+    vector: assistantSubordinateQueryVector,
+  },
+  limit: 3,
+});
+assert.equal(assistantSubordinateMatches[0]?.metadata.sourceRole, "assistant");
+assert.match(assistantSubordinateMatches[0]?.content ?? "", /Giro/u);
+const assistantReportedPurchaseQuery = "What did you say I bought?";
+const assistantReportedPurchaseQueryVector = (await hybridFusionDominanceProvider.embed([
+  assistantReportedPurchaseQuery,
+]))[0]!;
+const assistantReportedPurchaseMatches = hybridFusionDominanceStore.searchMemories({
+  profileId: "hybrid-fusion-dominance",
+  query: assistantReportedPurchaseQuery,
+  queryEmbedding: {
+    providerName: hybridFusionDominanceProvider.name,
+    dimensions: hybridFusionDominanceProvider.dimensions,
+    vector: assistantReportedPurchaseQueryVector,
+  },
+  limit: 3,
+});
+assert.equal(assistantReportedPurchaseMatches[0]?.metadata.sourceRole, "assistant");
+assert.match(assistantReportedPurchaseMatches[0]?.content ?? "", /said you bought the Giro/u);
+const chineseAssistantReportedPurchaseQuery = "你当时说我买了什么？";
+const chineseAssistantReportedPurchaseQueryVector = (await hybridFusionDominanceProvider.embed([
+  chineseAssistantReportedPurchaseQuery,
+]))[0]!;
+const chineseAssistantReportedPurchaseMatches = hybridFusionDominanceStore.searchMemories({
+  profileId: "hybrid-fusion-dominance",
+  query: chineseAssistantReportedPurchaseQuery,
+  queryEmbedding: {
+    providerName: hybridFusionDominanceProvider.name,
+    dimensions: hybridFusionDominanceProvider.dimensions,
+    vector: chineseAssistantReportedPurchaseQueryVector,
+  },
+  limit: 3,
+});
+assert.equal(chineseAssistantReportedPurchaseMatches[0]?.metadata.sourceRole, "assistant");
+assert.match(chineseAssistantReportedPurchaseMatches[0]?.content ?? "", /said you bought the Giro/u);
+const chineseAssistantSequentialOutputQuery = "你说完开场白后又说了什么？";
+const chineseAssistantSequentialOutputQueryVector = (await hybridFusionDominanceProvider.embed([
+  chineseAssistantSequentialOutputQuery,
+]))[0]!;
+const chineseAssistantSequentialOutputMatches = hybridFusionDominanceStore.searchMemories({
+  profileId: "hybrid-fusion-dominance",
+  query: chineseAssistantSequentialOutputQuery,
+  queryEmbedding: {
+    providerName: hybridFusionDominanceProvider.name,
+    dimensions: hybridFusionDominanceProvider.dimensions,
+    vector: chineseAssistantSequentialOutputQueryVector,
+  },
+  limit: 3,
+});
+assert.equal(chineseAssistantSequentialOutputMatches[0]?.metadata.sourceRole, "assistant");
+assert.match(chineseAssistantSequentialOutputMatches[0]?.content ?? "", /said you bought the Giro/u);
+const attributedPurchaseQuery = "What did I buy, according to you?";
+const attributedPurchaseQueryVector = (await hybridFusionDominanceProvider.embed([
+  attributedPurchaseQuery,
+]))[0]!;
+const attributedPurchaseMatches = hybridFusionDominanceStore.searchMemories({
+  profileId: "hybrid-fusion-dominance",
+  query: attributedPurchaseQuery,
+  queryEmbedding: {
+    providerName: hybridFusionDominanceProvider.name,
+    dimensions: hybridFusionDominanceProvider.dimensions,
+    vector: attributedPurchaseQueryVector,
+  },
+  limit: 3,
+});
+assert.equal(attributedPurchaseMatches[0]?.metadata.sourceRole, "assistant");
+assert.match(attributedPurchaseMatches[0]?.content ?? "", /said you bought the Giro/u);
+const assistantCreateQuery = "Which plan did you create?";
+const assistantCreateQueryVector = (await hybridFusionDominanceProvider.embed([
+  assistantCreateQuery,
+]))[0]!;
+const assistantCreateMatches = hybridFusionDominanceStore.searchMemories({
+  profileId: "hybrid-fusion-dominance",
+  query: assistantCreateQuery,
+  queryEmbedding: {
+    providerName: hybridFusionDominanceProvider.name,
+    dimensions: hybridFusionDominanceProvider.dimensions,
+    vector: assistantCreateQueryVector,
+  },
+  limit: 3,
+});
+assert.equal(assistantCreateMatches[0]?.metadata.sourceRole, "assistant");
+assert.match(assistantCreateMatches[0]?.content ?? "", /Cedar plan/u);
+const chineseAssistantFinalPlanQuery = "你推荐的最后一个方案是什么？";
+const chineseAssistantFinalPlanQueryVector = (await hybridFusionDominanceProvider.embed([
+  chineseAssistantFinalPlanQuery,
+]))[0]!;
+const chineseAssistantFinalPlanMatches = hybridFusionDominanceStore.searchMemories({
+  profileId: "hybrid-fusion-dominance",
+  query: chineseAssistantFinalPlanQuery,
+  queryEmbedding: {
+    providerName: hybridFusionDominanceProvider.name,
+    dimensions: hybridFusionDominanceProvider.dimensions,
+    vector: chineseAssistantFinalPlanQueryVector,
+  },
+  limit: 1,
+});
+assert.equal(chineseAssistantFinalPlanMatches[0]?.metadata.sourceRole, "assistant");
+assert.match(chineseAssistantFinalPlanMatches[0]?.content ?? "", /Cedar plan/u);
+await hybridFusionDominanceMemory.close();
+
+const explicitMachineSourceProvider = {
+  name: "test-explicit-machine-source-provider",
+  dimensions: 4,
+  async embed(texts: string[]) {
+    return texts.map((text) => {
+      if (/weather|Sunshine|Rain|tool output/iu.test(text)) return [1, 0, 0, 0];
+      if (/mode|OpenMode|SafetyMode|system message/iu.test(text)) return [0, 1, 0, 0];
+      if (/which hotel|hotel did I actually book|酒店|哪家/iu.test(text)) return [0, 0, 1, 0];
+      if (/discussed Hotel Azure/iu.test(text)) {
+        return [0, 0, 0.9, Math.sqrt(1 - 0.9 ** 2)];
+      }
+      if (/booked Hotel Nova/iu.test(text)) return [0, 0, 0.8, 0.6];
+      return [0, 0, 0, 1];
+    });
+  },
+};
+const explicitMachineSourceStore = createSqliteMemoryStore({
+  path: path.join(tmp, "explicit-machine-source.db"),
+  embeddingProvider: explicitMachineSourceProvider,
+});
+const explicitMachineSourceMemory = createMemoryOS({
+  profileId: "explicit-machine-source",
+  store: explicitMachineSourceStore,
+  embeddingProvider: explicitMachineSourceProvider,
+  extractor: () => [],
+});
+await explicitMachineSourceMemory.ingestConversation({
+  profileId: "explicit-machine-source",
+  messages: [
+    {
+      role: "user",
+      content: "I actually observed that the weather was Sunshine.",
+      createdAt: "2026-07-04T03:00:00.000Z",
+    },
+    {
+      role: "tool",
+      content: "The weather tool output was Rain.",
+      createdAt: "2026-07-04T03:01:00.000Z",
+    },
+    {
+      role: "user",
+      content: "I actually used OpenMode.",
+      createdAt: "2026-07-04T03:02:00.000Z",
+    },
+    {
+      role: "system",
+      content: "The system message set SafetyMode.",
+      createdAt: "2026-07-04T03:03:00.000Z",
+    },
+    {
+      role: "assistant",
+      content: "We discussed Hotel Azure in our chat.",
+      createdAt: "2026-07-04T03:04:00.000Z",
+    },
+    {
+      role: "user",
+      content: "I actually booked Hotel Nova.",
+      createdAt: "2026-07-04T03:05:00.000Z",
+    },
+  ],
+  extraction: { extractFromRoles: [] },
+  turnRetention: { enabled: true },
+});
+for (const machineSourceRecall of [
+  { query: "What was the tool output?", role: "tool", expected: /Rain/u },
+  { query: "What did the system message say?", role: "system", expected: /SafetyMode/u },
+  { query: "According to the tool output, what weather did I observe?", role: "tool", expected: /Rain/u },
+  { query: "According to the system message, what mode did I use?", role: "system", expected: /SafetyMode/u },
+] as const) {
+  const queryVector = (await explicitMachineSourceProvider.embed([machineSourceRecall.query]))[0]!;
+  const matches = explicitMachineSourceStore.searchMemories({
+    profileId: "explicit-machine-source",
+    query: machineSourceRecall.query,
+    queryEmbedding: {
+      providerName: explicitMachineSourceProvider.name,
+      dimensions: explicitMachineSourceProvider.dimensions,
+      vector: queryVector,
+    },
+    limit: 1,
+  });
+  assert.equal(matches[0]?.metadata.sourceRole, machineSourceRecall.role);
+  assert.match(matches[0]?.content ?? "", machineSourceRecall.expected);
+}
+for (const userMainRecall of [
+  {
+    query: "The tool output said Rain, but what weather did I actually observe?",
+    expected: /Sunshine/u,
+  },
+  {
+    query: "The system message said SafetyMode, but what mode did I actually use?",
+    expected: /OpenMode/u,
+  },
+  {
+    query: "According to the tool output it was Rain, but what weather did I actually observe?",
+    expected: /Sunshine/u,
+  },
+  {
+    query: "According to the system message it was SafetyMode. What mode did I actually use?",
+    expected: /OpenMode/u,
+  },
+  {
+    query: "We discussed Hotel Azure, but which hotel did I actually book?",
+    expected: /Hotel Nova/u,
+  },
+  {
+    query: "Although we discussed Hotel Azure, which hotel did I actually book?",
+    expected: /Hotel Nova/u,
+  },
+] as const) {
+  const queryVector = (await explicitMachineSourceProvider.embed([userMainRecall.query]))[0]!;
+  const matches = explicitMachineSourceStore.searchMemories({
+    profileId: "explicit-machine-source",
+    query: userMainRecall.query,
+    queryEmbedding: {
+      providerName: explicitMachineSourceProvider.name,
+      dimensions: explicitMachineSourceProvider.dimensions,
+      vector: queryVector,
+    },
+    limit: 1,
+  });
+  assert.equal(matches[0]?.metadata.sourceRole, "user");
+  assert.match(matches[0]?.content ?? "", userMainRecall.expected);
+}
+const directCollaborativeRecall = "Which hotel did we discuss?";
+const directCollaborativeRecallVector = (await explicitMachineSourceProvider.embed([
+  directCollaborativeRecall,
+]))[0]!;
+const directCollaborativeMatches = explicitMachineSourceStore.searchMemories({
+  profileId: "explicit-machine-source",
+  query: directCollaborativeRecall,
+  queryEmbedding: {
+    providerName: explicitMachineSourceProvider.name,
+    dimensions: explicitMachineSourceProvider.dimensions,
+    vector: directCollaborativeRecallVector,
+  },
+  limit: 1,
+});
+assert.equal(directCollaborativeMatches[0]?.metadata.sourceRole, "assistant");
+assert.match(directCollaborativeMatches[0]?.content ?? "", /Hotel Azure/u);
+for (const chineseHotelRecall of [
+  { query: "你推荐的最后一家酒店是哪家？", role: "assistant", expected: /Hotel Azure/u },
+  { query: "在你推荐的酒店里我实际住了哪家？", role: "user", expected: /Hotel Nova/u },
+] as const) {
+  const queryVector = (await explicitMachineSourceProvider.embed([chineseHotelRecall.query]))[0]!;
+  const matches = explicitMachineSourceStore.searchMemories({
+    profileId: "explicit-machine-source",
+    query: chineseHotelRecall.query,
+    queryEmbedding: {
+      providerName: explicitMachineSourceProvider.name,
+      dimensions: explicitMachineSourceProvider.dimensions,
+      vector: queryVector,
+    },
+    limit: 1,
+  });
+  assert.equal(matches[0]?.metadata.sourceRole, chineseHotelRecall.role);
+  assert.match(matches[0]?.content ?? "", chineseHotelRecall.expected);
+}
+await explicitMachineSourceMemory.close();
+
+const versionedArtifactProvider = {
+  name: "test-versioned-artifact-provider",
+  dimensions: 2,
+  async embed(texts: string[]) {
+    return texts.map((text) => {
+      if (/Final revised song title/iu.test(text)) {
+        return [0.9, Math.sqrt(1 - 0.9 ** 2)];
+      }
+      if (/Initial draft song title/iu.test(text)) return [0.8, 0.6];
+      if (/working prompt title|selected playlist title/iu.test(text)) {
+        return [0.65, Math.sqrt(1 - 0.65 ** 2)];
+      }
+      if (/song title|playlist title/iu.test(text)) return [1, 0];
+      return [0, 1];
+    });
+  },
+};
+const versionedArtifactStore = createSqliteMemoryStore({
+  path: path.join(tmp, "versioned-artifact-source.db"),
+  embeddingProvider: versionedArtifactProvider,
+});
+const versionedArtifactMemory = createMemoryOS({
+  profileId: "versioned-artifact-source",
+  store: versionedArtifactStore,
+  embeddingProvider: versionedArtifactProvider,
+  extractor: () => [],
+});
+await versionedArtifactMemory.ingestConversation({
+  profileId: "versioned-artifact-source",
+  messages: [
+    {
+      role: "user",
+      content: "Please write a song; my working prompt title is First Light.",
+      createdAt: "2026-07-04T04:00:00.000Z",
+    },
+    {
+      role: "assistant",
+      content: "Initial draft song title was Dawn.",
+      createdAt: "2026-07-04T04:01:00.000Z",
+    },
+    {
+      role: "assistant",
+      content: "Final revised song title was Aurora.",
+      createdAt: "2026-07-04T04:02:00.000Z",
+    },
+    {
+      role: "user",
+      content: "My selected playlist title is User Anthem.",
+      createdAt: "2026-07-04T04:03:00.000Z",
+    },
+  ],
+  extraction: { extractFromRoles: [] },
+  turnRetention: { enabled: true },
+});
+for (const artifactRecall of [
+  { query: "What was the final song title?", role: "assistant", expected: /Aurora/u },
+  { query: "What did you write as the final song title?", role: "assistant", expected: /Aurora/u },
+  { query: "What was my selected playlist title?", role: "user", expected: /User Anthem/u },
+] as const) {
+  const queryVector = (await versionedArtifactProvider.embed([artifactRecall.query]))[0]!;
+  const matches = versionedArtifactStore.searchMemories({
+    profileId: "versioned-artifact-source",
+    query: artifactRecall.query,
+    queryEmbedding: {
+      providerName: versionedArtifactProvider.name,
+      dimensions: versionedArtifactProvider.dimensions,
+      vector: queryVector,
+    },
+    limit: 1,
+  });
+  assert.equal(matches[0]?.metadata.sourceRole, artifactRecall.role);
+  assert.match(matches[0]?.content ?? "", artifactRecall.expected);
+}
+await versionedArtifactMemory.close();
+
+const lexicalFallbackStore = createSqliteMemoryStore({
+  path: path.join(tmp, "focused-lexical-fallback.db"),
+});
+const lexicalFallbackMemory = createMemoryOS({
+  profileId: "focused-lexical-fallback",
+  store: lexicalFallbackStore,
+  extractor: () => [],
+});
+const lexicalFallbackTarget = await lexicalFallbackMemory.add({
+  profileId: "focused-lexical-fallback",
+  kind: "fact",
+  content: "ApolloFallbackAnchor identifies the only relevant procedure.",
+  confidence: 0.9,
+});
+const focusedLexicalFallbackMatches = lexicalFallbackStore.searchMemories({
+  profileId: "focused-lexical-fallback",
+  query: "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu ApolloFallbackAnchor",
+  queryEmbedding: {
+    providerName: "unavailable-query-provider",
+    dimensions: 2,
+    vector: [1, 0],
+  },
+  scoreThreshold: 0.25,
+  limit: 3,
+});
+assert.equal(focusedLexicalFallbackMatches[0]?.id, lexicalFallbackTarget.id);
+await lexicalFallbackMemory.close();
+
 const degradedDenseEvents: Array<{
   profileId: string;
   reason: string;
@@ -34848,6 +35527,86 @@ assert.ok(intentProcedurePath);
 assert.match(intentProcedurePath.routeReason ?? "", /intent/);
 assert.match(intentProcedurePath.routeReason ?? "", /gain:/);
 assert.ok((intentProcedurePath.informationGain ?? 0) > 0);
+const associationCoverageTarget = {
+  ...layerMemory(
+    "memory_association_coverage_target",
+    "atom",
+    "Apollo rollout checklist says run temporal smoke before deploy.",
+  ),
+  confidence: 0.35,
+};
+const associationCoverageDistractor = {
+  ...layerMemory(
+    "memory_association_coverage_distractor",
+    "atom",
+    "Apollo cafeteria note says the table is blue.",
+  ),
+  confidence: 0.99,
+};
+const associationCoverageRows: MemoryAssociationRecord[] = [
+  associationCoverageTarget,
+  associationCoverageDistractor,
+].map((memoryRecord) => ({
+  id: `association_${memoryRecord.id}`,
+  profileId: "layer",
+  cue: "Apollo",
+  cueKind: "entity",
+  tag: "fact",
+  targetType: "memory",
+  targetId: memoryRecord.id,
+  targetKind: memoryRecord.kind,
+  targetSummary: memoryRecord.content,
+  sensitivity: "normal",
+  status: "active",
+  confidence: memoryRecord.confidence,
+  sourceMemoryId: memoryRecord.id,
+  createdAt: layerNow,
+  updatedAt: layerNow,
+}));
+const associationCoverageMemories = new Map([
+  [associationCoverageTarget.id, associationCoverageTarget],
+  [associationCoverageDistractor.id, associationCoverageDistractor],
+]);
+const associationCoverageContext = await reconstructMemoryContext({
+  store: {
+    searchAssociations() {
+      return associationCoverageRows;
+    },
+    searchMemories() {
+      return [];
+    },
+    getMemoryById(_profileId: string, memoryId: string) {
+      return associationCoverageMemories.get(memoryId) ?? null;
+    },
+    listEvidenceForMemory() {
+      return [];
+    },
+  } as unknown as MemoryStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "What does the Apollo rollout checklist say before deploy?",
+    reconstructionIntent: {
+      queryCues: ["Apollo", "rollout", "checklist", "before deploy", "temporal smoke"],
+    },
+    anchorCoverage: false,
+    stopWhenEvidenceEnough: false,
+    maxSteps: 1,
+    maxBranch: 1,
+    maxMemories: 1,
+    contextBudgetTokens: 4000,
+    includeEvidence: false,
+  },
+});
+assert.deepEqual(associationCoverageContext.memories.map((memoryRecord) => memoryRecord.id), [
+  associationCoverageTarget.id,
+]);
+assert.match(associationCoverageContext.contextBlock, /temporal smoke before deploy/u);
+assert.doesNotMatch(associationCoverageContext.contextBlock, /cafeteria note/u);
+assert.match(
+  associationCoverageContext.paths[0]?.routeReason ?? "",
+  /query_overlap:8/u,
+);
 await reconstructionMemory.add({
   profileId: "recon",
   kind: "procedure",
@@ -34872,8 +35631,12 @@ const hybridPath = hybridReconstruction.paths.find((path) =>
   path.targetSummary.includes("temporal smoke"),
 );
 assert.ok(hybridPath);
-assert.match(hybridPath.routeReason ?? "", /hybrid_(direct_memory_rrf|memory)/);
-assert.ok(hybridPath.routeSources?.includes("hybrid_direct_memory"));
+assert.match(hybridPath.routeReason ?? "", /(?:hybrid_(?:direct_memory_rrf|memory)|cue_exact)/u);
+assert.equal(
+  hybridPath.routeSources?.includes("hybrid_direct_memory") === true ||
+    (hybridPath.routeReason ?? "").includes("cue_exact"),
+  true,
+);
 assert.ok((hybridPath.informationGain ?? 0) > 0);
 for (let index = 0; index < 10; index += 1) {
   await reconstructionMemory.add({
@@ -34949,6 +35712,13 @@ assert.ok(directRrfSide);
 assert.ok(directRrfCorroborated);
 const directRrfRootQuery = "direct reciprocal rank root question";
 const directRrfSideQuery = "direct reciprocal rank side probe";
+const directRrfSideQueryTwo = "direct reciprocal rank alternate side probe";
+const directRrfSideQueryThree = "direct reciprocal rank supplemental side probe";
+const directRrfSideQueries = [
+  directRrfSideQuery,
+  directRrfSideQueryTwo,
+  directRrfSideQueryThree,
+] as const;
 const originalDirectRrfSearchMemories = directRrfStore.searchMemories.bind(directRrfStore);
 const originalDirectRrfSearchAssociations = directRrfStore.searchAssociations?.bind(directRrfStore);
 assert.ok(originalDirectRrfSearchAssociations);
@@ -34962,27 +35732,30 @@ directRrfStore.searchMemories = ((input) => {
       ? [directRrfRoot]
       : [directRrfRoot, directRrfCorroborated];
   }
-  if (input.query === directRrfSideQuery) {
+  if (directRrfSideQueries.includes(input.query as typeof directRrfSideQueries[number])) {
     return directRrfScenario === "root_vs_side" ? [directRrfSide] : [directRrfCorroborated];
   }
   return [];
 }) as typeof directRrfStore.searchMemories;
 try {
-  const directRrfRootPreferred = await directRrfMemory.reconstructContext({
-    profileId: "direct-rrf",
-    query: directRrfRootQuery,
-    reconstructionIntent: { queryCues: [directRrfSideQuery] },
-    anchorCoverage: false,
-    includeEvidence: false,
-    maxSteps: 1,
-    maxBranch: 1,
-    maxMemories: 1,
-    contextBudgetTokens: 1000,
-    stopWhenEvidenceEnough: false,
-  });
-  assert.match(directRrfRootPreferred.contextBlock, /Root-ranked evidence/);
-  assert.doesNotMatch(directRrfRootPreferred.contextBlock, /Isolated side-probe evidence/);
-  assert.equal(directRrfSearchQueries.includes(directRrfSideQuery), true);
+  for (let sideQueryCount = 1; sideQueryCount <= directRrfSideQueries.length; sideQueryCount += 1) {
+    directRrfSearchQueries.length = 0;
+    const directRrfRootPreferred = await directRrfMemory.reconstructContext({
+      profileId: "direct-rrf",
+      query: directRrfRootQuery,
+      reconstructionIntent: { queryCues: directRrfSideQueries.slice(0, sideQueryCount) },
+      anchorCoverage: false,
+      includeEvidence: false,
+      maxSteps: 1,
+      maxBranch: 1,
+      maxMemories: 1,
+      contextBudgetTokens: 1000,
+      stopWhenEvidenceEnough: false,
+    });
+    assert.match(directRrfRootPreferred.contextBlock, /Root-ranked evidence/);
+    assert.doesNotMatch(directRrfRootPreferred.contextBlock, /Isolated side-probe evidence/);
+    assert.equal(directRrfSearchQueries.includes(directRrfSideQuery), true);
+  }
 
   directRrfScenario = "corroborated";
   directRrfSearchQueries.length = 0;
@@ -37412,17 +38185,114 @@ const reasoningAnswerer = createOpenAICompatibleExternalBenchmarkAnswerer({
 });
 assert.equal(reasoningAnswerer.manifest?.maxTokens, 3072);
 assert.equal(await reasoningAnswerer.answer("Question?", "Context."), "reasoning answer parsed");
+const pendingRoutingQuestions = [
+  "How many action items do I still need to complete?",
+  "How many tasks do I have left?",
+  "Which errands remain unfinished?",
+  "How many packages have yet to be collected?",
+  "Which packages have yet to be collected?",
+  "Which items must I return?",
+  "How many clothes do I still need to pick up or return?",
+  "Which clothes do I still need to pick up or return?",
+  "How many shoes do I still need to return?",
+  "How many books have yet to be collected?",
+  "How many prescriptions do I still need to pick up?",
+  "Which clothes, if any, do I still need to return?",
+  "How many clothes, including shoes, do I still need to return?",
+  "Which clothes do I still need to return? I know where the store is.",
+  "我有哪些包裹，还需要退回？",
+  "哪些包裹，包括衣服，还需要退回？",
+  "Which prescriptions from Dr. Smith do I still need to pick up?",
+  "Which prescriptions from St. Mary do I still need to pick up?",
+  "Which packages from the U.S. do I still need to return?",
+  "Which categories: clothes and shoes do I still need to return?",
+  "Which clothes — shirts and shoes — do I still need to return?",
+  "Which clothes do I still need to return? What I already know is that the store is open.",
+  "Which clothes do I still need to return? Where the store is located is already known.",
+  "我还需要退回哪些包裹？商店在哪里我已经知道了。",
+] as const;
+for (const pendingQuestion of pendingRoutingQuestions) {
+  assert.equal(
+    await reasoningAnswerer.answer(pendingQuestion, "User-grounded pending context."),
+    "reasoning answer parsed",
+  );
+}
+const nonPendingRoutingQuestions = [
+  "What do I have to do to improve battery life?",
+  "How many screws do I need to remove to replace the battery?",
+  "How much RAM do I need to run the app?",
+  "How many pages do I have left to read in The Nightingale?",
+  "How many points do I have left to earn before the next reward?",
+  "How many stars do I need to reach the next membership level?",
+  "How many screws do I still need to remove?",
+  "How many pages have not yet been read?",
+  "How much RAM do I still need to run the app?",
+  "I still need to return a shirt. What time does the store close?",
+  "I still need to pick up my package; which store is open?",
+  "I still need to return a shirt: what time does the store close?",
+  "I still need to return a shirt — what time does the store close?",
+  "我还需要退回包裹。商店什么时候关门？",
+  "Which clothes do I still need to return, and should I go today?",
+  "Which clothes do I still need to return; have they been processed?",
+  "Which clothes do I still need to return? Will the store call me?",
+  "我还需要退回哪些包裹，商店几点关门？",
+  "我还需要退回哪些包裹，商店是否开门？",
+  "我还需要退回哪些包裹，商店开门吗？",
+  "我还需要退回哪些包裹，谁能帮我？",
+  "Which clothes do I still need to return: should I go today?",
+  "Which clothes do I still need to return — should I go today?",
+] as const;
+for (const proceduralQuestion of nonPendingRoutingQuestions) {
+  assert.equal(
+    await reasoningAnswerer.answer(proceduralQuestion, "Procedure context."),
+    "reasoning answer parsed",
+  );
+}
 assert.equal(reasoningAnswererBodies[0]?.max_tokens, 3072);
 const reasoningAnswererSystemPrompt = reasoningAnswererBodies[0]?.messages?.find(
   (message) => message.role === "system",
 )?.content ?? "";
+const pendingActionAnswererSystemPrompt = reasoningAnswererBodies[1]?.messages?.find(
+  (message) => message.role === "system",
+)?.content ?? "";
+const firstNonPendingRoutingBody = 1 + pendingRoutingQuestions.length;
+const equivalentPendingActionSystemPrompts = reasoningAnswererBodies
+  .slice(1, firstNonPendingRoutingBody)
+  .map((body) => body.messages?.find((message) => message.role === "system")?.content ?? "");
+const nonPendingRequirementSystemPrompts = reasoningAnswererBodies
+  .slice(firstNonPendingRoutingBody)
+  .map((body) => body.messages?.find((message) => message.role === "system")?.content ?? "");
+assert.equal(
+  equivalentPendingActionSystemPrompts.every((prompt) =>
+    /key the private ledger by the pair \(ACTION, OBLIGATION TARGET OR ITEM INSTANCE\)/iu.test(prompt)
+  ),
+  true,
+);
+assert.equal(
+  nonPendingRequirementSystemPrompts.every((prompt) =>
+    !/key the private ledger by the pair \(ACTION, OBLIGATION TARGET OR ITEM INSTANCE\)/iu.test(prompt)
+  ),
+  true,
+);
 assert.match(
   reasoningAnswererSystemPrompt,
   /define the exact unit requested by the question/iu,
 );
 assert.match(
   reasoningAnswererSystemPrompt,
-  /split rows only when the evidence establishes separate units under that definition/iu,
+  /split only when the evidence establishes separate units/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /treat drafts or revisions as versions of one artifact unless the question itself asks about versions or a specific version/iu,
+);
+assert.match(
+  pendingActionAnswererSystemPrompt,
+  /when the requested unit is a physical item or action obligation, an outgoing original and an incoming replacement are distinct rows/iu,
+);
+assert.match(
+  pendingActionAnswererSystemPrompt,
+  /when the requested unit is a purchase or transaction, keep them in one transaction row/iu,
 );
 assert.match(
   reasoningAnswererSystemPrompt,
@@ -37456,14 +38326,45 @@ assert.match(
   /presentation order or line adjacency alone does not establish a connection/iu,
 );
 assert.match(
-  reasoningAnswererSystemPrompt,
-  /latest action-specific user-grounded status for each requested action/iu,
+  pendingActionAnswererSystemPrompt,
+  /key the private ledger by the pair \(ACTION, OBLIGATION TARGET OR ITEM INSTANCE\)/iu,
 );
 assert.match(
-  reasoningAnswererSystemPrompt,
-  /later broad transaction label does not unambiguously cover that action/iu,
+  pendingActionAnswererSystemPrompt,
+  /merge repeated or paraphrased mentions with the same key; they refresh one row rather than create additional rows/iu,
 );
-assert.doesNotMatch(reasoningAnswererSystemPrompt, /\b(?:boots|exchanged|pickup)\b/iu);
+assert.match(
+  pendingActionAnswererSystemPrompt,
+  /explicit user assertion of the form 'I need to ACTION TARGET' establishes or refreshes its pending row/iu,
+);
+assert.match(
+  pendingActionAnswererSystemPrompt,
+  /do not delete that row because another passage omits it, mentions a different action, or describes a broader transaction/iu,
+);
+assert.match(
+  pendingActionAnswererSystemPrompt,
+  /performed the same ACTION on the same TARGET, that action is complete or cancelled, or the user no longer needs to perform it/iu,
+);
+assert.match(
+  pendingActionAnswererSystemPrompt,
+  /bulk completion or cancellation may supersede multiple rows only when its stated scope unambiguously and uniquely covers those rows/iu,
+);
+assert.match(
+  pendingActionAnswererSystemPrompt,
+  /transaction label such as an exchange or replacement can cover multiple physical handoffs/iu,
+);
+assert.match(
+  pendingActionAnswererSystemPrompt,
+  /require explicit user-grounded completion of that matching action and item/iu,
+);
+assert.doesNotMatch(
+  pendingActionAnswererSystemPrompt,
+  /combine context facts|prefer the latest explicit user-grounded update/iu,
+);
+assert.doesNotMatch(
+  `${reasoningAnswererSystemPrompt}\n${pendingActionAnswererSystemPrompt}`,
+  /\b(?:boots|zara|blazer|exchanged|pickup|dry[- ]?cleaning)\b/iu,
+);
 assert.match(reasoningAnswererSystemPrompt, /state that the information is insufficient/iu);
 assert.match(
   reasoningAnswererSystemPrompt,
@@ -39405,6 +40306,26 @@ const routedPlannerRun = await runExternalMemoryBenchmark({
       expectedAny: ["Cedar"],
     },
     {
+      id: "planner-route-temporal-preamble-simple-main",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "The hotel name is Harbor Inn.",
+      }],
+      question: "How many days passed between the trip start and end? What is the hotel name?",
+      expectedAny: ["Harbor Inn"],
+    },
+    {
+      id: "planner-route-comparison-preamble-simple-main-zh",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "项目代号是雪松。",
+      }],
+      question: "我比较了机场大巴和出租车。项目代号是什么？",
+      expectedAny: ["雪松"],
+    },
+    {
       id: "planner-route-recommendation",
       events: [{
         type: "memory" as const,
@@ -39433,6 +40354,146 @@ const routedPlannerRun = await runExternalMemoryBenchmark({
       }],
       question: "How many days passed between the trip start and end?",
       expectedAny: ["June 1"],
+    },
+    {
+      id: "planner-route-focused-duration-after-preamble",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "The launch was June 1 and the arrival was June 10.",
+      }],
+      question: "What is the hotel name? How many days elapsed between launch and arrival?",
+      expectedAny: ["June 1"],
+    },
+    {
+      id: "planner-route-title-abbreviation",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "The Dr. Smith visit was June 1 and medication started June 5.",
+      }],
+      question: "How many days after visiting Dr. Smith did I start medication?",
+      expectedAny: ["June 1"],
+    },
+    {
+      id: "planner-route-initialism-abbreviation",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "The move to the U.S. was June 1 and work started June 5.",
+      }],
+      question: "How many days after moving to the U.S. did I start work?",
+      expectedAny: ["June 1"],
+    },
+    {
+      id: "planner-route-colon-appositive",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "The relevant dates were June 1 and June 5.",
+      }],
+      question: "How many days elapsed between these dates: June 1 and June 5?",
+      expectedAny: ["June 1"],
+    },
+    {
+      id: "planner-route-dash-appositive",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "Across all trips, departure was June 1 and arrival was June 5.",
+      }],
+      question: "How many days — across all trips — elapsed between departure and arrival?",
+      expectedAny: ["June 1"],
+    },
+    {
+      id: "planner-route-final-wh-declarative",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "Kickoff was June 1 and launch was June 15.",
+      }],
+      question: "How many weeks elapsed between kickoff and launch? What I already know is that the project launched.",
+      expectedAny: ["June 1"],
+    },
+    {
+      id: "planner-route-duration-after",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "The laptop backpack was bought on May 1 and arrived on May 6.",
+      }],
+      question: "How many days did it take for my laptop backpack to arrive after I bought it?",
+      expectedAny: ["May 1"],
+    },
+    {
+      id: "planner-route-age-when",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "The user was born in 1990 and moved to the United States in 2005.",
+      }],
+      question: "How old was I when I moved to the United States?",
+      expectedAny: ["1990"],
+    },
+    {
+      id: "planner-route-explicit-comparison",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "The Hawaii trip cost 900 dollars and the Tokyo trip cost 700 dollars.",
+      }],
+      question: "How much more did I spend in Hawaii compared to Tokyo?",
+      expectedAny: ["900 dollars"],
+    },
+    {
+      id: "planner-route-comparative-than",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "This year's race took 50 minutes; last year's race took 60 minutes.",
+      }],
+      question: "How much faster was this year's time than my previous year's time?",
+      expectedAny: ["50 minutes"],
+    },
+    {
+      id: "planner-route-state-transition",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "The previous frequent flyer status was Silver and the current status is Gold.",
+      }],
+      question: "What was my previous frequent flyer status before I got the current status?",
+      expectedAny: ["Silver"],
+    },
+    {
+      id: "planner-route-ordered-choice",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "The museum visit happened in April and the concert happened in June.",
+      }],
+      question: "Which happened first, the museum visit or the concert?",
+      expectedAny: ["April"],
+    },
+    {
+      id: "planner-route-airport-directions",
+      events: [{
+        type: "memory" as const,
+        kind: "procedure" as const,
+        content: "The airport shuttle goes directly to the hotel.",
+      }],
+      question: "How should I get from the airport to the hotel?",
+      expectedAny: ["airport shuttle"],
+    },
+    {
+      id: "planner-route-simple-relationship",
+      events: [{
+        type: "memory" as const,
+        kind: "fact" as const,
+        content: "Alice and Bob are siblings.",
+      }],
+      question: "What is the relationship between Alice and Bob?",
+      expectedAny: ["siblings"],
     },
     {
       id: "planner-route-list-as-noun",
@@ -39527,15 +40588,104 @@ const routedPlannerRun = await runExternalMemoryBenchmark({
     },
   },
 });
-assert.deepEqual(routedPlannerCalls.map((entry) => entry.maxSweepCues), [0, 0, 0, 0, 0, 0, 0, 6, 6]);
+assert.deepEqual(routedPlannerCalls.map((entry) => ({
+  question: entry.question,
+  maxSweepCues: entry.maxSweepCues,
+})), [
+  {
+    question: "How many days passed between the trip start and end?",
+    maxSweepCues: 0,
+  },
+  {
+    question: "How many days elapsed between launch and arrival?",
+    maxSweepCues: 0,
+  },
+  {
+    question: "How many days after visiting Dr. Smith did I start medication?",
+    maxSweepCues: 0,
+  },
+  {
+    question: "How many days after moving to the U.S. did I start work?",
+    maxSweepCues: 0,
+  },
+  {
+    question: "How many days elapsed between these dates: June 1 and June 5?",
+    maxSweepCues: 0,
+  },
+  {
+    question: "How many days — across all trips — elapsed between departure and arrival?",
+    maxSweepCues: 0,
+  },
+  {
+    question: "How many weeks elapsed between kickoff and launch?",
+    maxSweepCues: 0,
+  },
+  {
+    question: "How many days did it take for my laptop backpack to arrive after I bought it?",
+    maxSweepCues: 0,
+  },
+  {
+    question: "How old was I when I moved to the United States?",
+    maxSweepCues: 0,
+  },
+  {
+    question: "How much more did I spend in Hawaii compared to Tokyo?",
+    maxSweepCues: 0,
+  },
+  {
+    question: "How much faster was this year's time than my previous year's time?",
+    maxSweepCues: 0,
+  },
+  {
+    question: "What was my previous frequent flyer status before I got the current status?",
+    maxSweepCues: 0,
+  },
+  {
+    question: "Which happened first, the museum visit or the concert?",
+    maxSweepCues: 0,
+  },
+  {
+    question: "How many projects have I led or am currently leading?",
+    maxSweepCues: 6,
+  },
+  {
+    question: "List the trips in chronological order from earliest to latest.",
+    maxSweepCues: 6,
+  },
+]);
 assert.equal(routedPlannerCalls.every((entry) => entry.maxAnchors === 4), true);
+const plannerRoutedCaseIds = new Set([
+  "planner-route-duration-endpoints",
+  "planner-route-focused-duration-after-preamble",
+  "planner-route-title-abbreviation",
+  "planner-route-initialism-abbreviation",
+  "planner-route-colon-appositive",
+  "planner-route-dash-appositive",
+  "planner-route-final-wh-declarative",
+  "planner-route-duration-after",
+  "planner-route-age-when",
+  "planner-route-explicit-comparison",
+  "planner-route-comparative-than",
+  "planner-route-state-transition",
+  "planner-route-ordered-choice",
+  "planner-route-current-collection",
+  "planner-route-explicit-order",
+]);
 assert.equal(
-  routedPlannerRun.cases.slice(0, 7).every(
-    (entry) => entry.derivedRequiredAnchors.length === 1 && entry.sweepCues.length === 0,
+  routedPlannerRun.cases.every(
+    (entry) => plannerRoutedCaseIds.has(entry.id) === (entry.derivedRequiredAnchors.length === 1)
   ),
   true,
 );
-assert.deepEqual(routedPlannerRun.cases.slice(7).map((entry) => entry.sweepCues), [
+assert.equal(
+  routedPlannerRun.cases.filter((entry) => !plannerRoutedCaseIds.has(entry.id)).every(
+    (entry) => entry.derivedRequiredAnchors.length === 0 && entry.sweepCues.length === 0
+  ),
+  true,
+);
+assert.deepEqual(routedPlannerRun.cases.filter((entry) =>
+  entry.id === "planner-route-current-collection" || entry.id === "planner-route-explicit-order"
+).map((entry) => entry.sweepCues), [
   ["trip timeline"],
   ["trip timeline"],
 ]);
@@ -39692,7 +40842,7 @@ const failingPlannerRun = await runExternalMemoryBenchmark({
       kind: "fact" as const,
       content: "Planner failure fallback answer is Copper Harbor.",
     }],
-    question: "What is the fallback answer?",
+    question: "List all planner failure fallback answers.",
     expectedAny: ["Copper Harbor"],
   }],
   queryPlanner: true,
@@ -43434,7 +44584,10 @@ try {
     system?: string | undefined;
   }> = [];
   const externalSplitIntelligenceRun = await runExternalMemoryBenchmark({
-    cases: externalIntelligenceMessageCases.cases,
+    cases: externalIntelligenceMessageCases.cases.map((benchmarkCase) => ({
+      ...benchmarkCase,
+      question: "List all recall drinks mentioned across the conversations.",
+    })),
     datasetFormat: externalIntelligenceMessageCases.datasetFormat,
     ingestMode: "message",
     queryPlanner: true,

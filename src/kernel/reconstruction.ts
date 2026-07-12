@@ -3360,12 +3360,19 @@ function rankAssociation(
   const searchable = normalizedText(
     `${association.cue} ${association.tag} ${association.targetKind} ${association.targetSummary}`,
   );
+  const normalizedQueryCues = new Set(
+    [...intent.queryCues].map(normalizedText).filter((queryCue) => queryCue.length > 0),
+  );
   let overlapCount = 0;
-  for (const queryCue of intent.queryCues) {
-    if (searchable.includes(normalizedText(queryCue))) overlapCount += 1;
+  for (const queryCue of normalizedQueryCues) {
+    if (searchable.includes(queryCue)) overlapCount += 1;
   }
   if (overlapCount > 0) {
-    routeScore += overlapCount * 0.75;
+    // Bound lexical influence by the share of distinct query cues covered. This
+    // preserves strong multi-cue evidence without letting query expansion make
+    // the score grow without limit.
+    const coverage = overlapCount / normalizedQueryCues.size;
+    routeScore += coverage * 2;
     reasons.push(`query_overlap:${overlapCount}`);
   }
   if (association.cue === cue.cue) {
@@ -3394,6 +3401,8 @@ interface DirectMemoryCandidate {
   memory: MemoryRecord;
   matchedQuery?: string | undefined;
   reciprocalRankSum: number;
+  rootReciprocalRankSum: number;
+  sideReciprocalRankSum: number;
   matchedQueryCount: number;
 }
 
@@ -3847,6 +3856,7 @@ async function searchDirectMemoryCandidates(input: {
     input.inferTemporalCuesFromText,
   );
   const rootQueryKey = normalizedText(input.query);
+  const sideQueryContributionCap = reciprocalRankScore(1);
   const seenQueryKeys = new Set<string>();
   for (const searchQuery of searchQueries) {
     const searchQueryKey = normalizedText(searchQuery);
@@ -3873,7 +3883,10 @@ async function searchDirectMemoryCandidates(input: {
       const existing = candidates.get(memory.id);
       const reciprocalRank = reciprocalRankScore(memoryIndex + 1) * queryWeight;
       if (existing) {
-        existing.reciprocalRankSum += reciprocalRank;
+        if (isRootQuery) existing.rootReciprocalRankSum += reciprocalRank;
+        else existing.sideReciprocalRankSum += reciprocalRank;
+        existing.reciprocalRankSum = existing.rootReciprocalRankSum +
+          Math.min(existing.sideReciprocalRankSum, sideQueryContributionCap);
         existing.matchedQueryCount += 1;
         if (isRootQuery) existing.memory = memory;
         else existing.matchedQuery ??= searchQuery;
@@ -3882,7 +3895,11 @@ async function searchDirectMemoryCandidates(input: {
       candidates.set(memory.id, {
         memory,
         ...(!isRootQuery ? { matchedQuery: searchQuery } : {}),
-        reciprocalRankSum: reciprocalRank,
+        reciprocalRankSum: isRootQuery
+          ? reciprocalRank
+          : Math.min(reciprocalRank, sideQueryContributionCap),
+        rootReciprocalRankSum: isRootQuery ? reciprocalRank : 0,
+        sideReciprocalRankSum: isRootQuery ? 0 : reciprocalRank,
         matchedQueryCount: 1,
       });
     }
@@ -3917,7 +3934,7 @@ function rankDirectMemory(
     if (searchable.includes(normalizedText(queryCue))) overlapCount += 1;
   }
   if (overlapCount > 0) {
-    routeScore += overlapCount * 0.75;
+    routeScore += Math.min(0.25, overlapCount * 0.05);
     reasons.push(`query_overlap:${overlapCount}`);
   }
   return { memory, matchedQuery: candidate.matchedQuery, routeScore, routeReason: reasons.join(",") };
