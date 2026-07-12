@@ -162,6 +162,7 @@ function allocateLayeredMemories(input: {
   memories: MemoryRecord[];
   maxMemories: number;
   policy?: ReconstructionLayerStats["policy"] | undefined;
+  protectedMemoryIds?: ReadonlySet<string> | undefined;
 }): MemoryRecord[] {
   if (!input.policy) return input.memories;
   const ranked = input.memories.map((memory, index) => ({
@@ -172,6 +173,10 @@ function allocateLayeredMemories(input: {
   const selected = new Set<string>();
   const summaries = ranked.filter((candidate) => candidate.layer === "summary");
   const selectionCapacity = Math.min(input.maxMemories, ranked.length);
+  for (const candidate of ranked) {
+    if (selected.size >= input.maxMemories) break;
+    if (input.protectedMemoryIds?.has(candidate.memory.id)) selected.add(candidate.memory.id);
+  }
   const summaryMin = Math.min(
     summaries.length,
     Math.ceil(input.policy.summaryMinShare * selectionCapacity),
@@ -210,9 +215,7 @@ function uniqueMemoriesById(memories: MemoryRecord[]): MemoryRecord[] {
   return unique;
 }
 
-const EPISODE_ADJACENCY_RADIUS = 4;
 const EPISODE_SCAN_LIMIT = 500;
-const EPISODE_EXPANSION_TOP_RANKED_SEED_LIMIT = 4;
 const EPISODE_EXPANSION_CONTEXT_SHARE = 0.4;
 
 function episodeKey(memory: MemoryRecord): string | null {
@@ -230,24 +233,31 @@ async function completeEpisodeAdjacency(input: {
   profileId: string;
   memories: MemoryRecord[];
   maxMemories: number;
+  candidateMemoryLimit: number;
+  layerPolicy?: ReconstructionLayerStats["policy"] | undefined;
   contextBudgetTokens?: number | undefined;
   maxCharsPerMemory?: number | undefined;
   fullContentMaxChars?: number | undefined;
   includeSensitive?: boolean | undefined;
-}): Promise<MemoryRecord[]> {
-  if (!input.store.listMemories) return input.memories;
+}): Promise<{ memories: MemoryRecord[]; protectedMemoryIds: Set<string> }> {
+  const floor = allocateLayeredMemories({
+    memories: input.memories,
+    maxMemories: input.maxMemories,
+    policy: input.layerPolicy,
+  });
+  // Episode supply may replace an exact duplicate, but never outrank this standalone prefix.
+  const protectedMemoryIds = new Set(floor.map((memory) => memory.id));
+  if (!input.store.listMemories) return { memories: input.memories, protectedMemoryIds };
   const seedsByEpisode = new Map<string, number[]>();
-  for (const memory of input.memories
-    .filter((candidate) => candidate.metadata.turnMemory !== true)
-    .slice(0, EPISODE_EXPANSION_TOP_RANKED_SEED_LIMIT)) {
+  for (const memory of input.memories) {
     const key = episodeKey(memory);
     const ordinal = turnOrdinal(memory);
     if (!key || ordinal === null) continue;
     const ordinals = seedsByEpisode.get(key) ?? [];
-    ordinals.push(ordinal);
+    if (!ordinals.includes(ordinal)) ordinals.push(ordinal);
     seedsByEpisode.set(key, ordinals);
   }
-  if (seedsByEpisode.size === 0) return input.memories;
+  if (seedsByEpisode.size === 0) return { memories: input.memories, protectedMemoryIds };
   const episodeRanks = new Map(
     [...seedsByEpisode.keys()].map((key, index) => [key, index]),
   );
@@ -263,56 +273,81 @@ async function completeEpisodeAdjacency(input: {
   const episodeTurns = uniqueMemoriesById(episodeCandidates).filter((memory) => {
     const key = episodeKey(memory);
     const ordinal = turnOrdinal(memory);
-    if (!key || ordinal === null || memory.metadata.turnMemory !== true) return false;
-    return (seedsByEpisode.get(key) ?? []).some(
-      (seed) => Math.abs(seed - ordinal) <= EPISODE_ADJACENCY_RADIUS,
-    );
+    return Boolean(key && ordinal !== null && memory.metadata.turnMemory === true);
   }).sort((left, right) => {
     const keyOrder = (episodeRanks.get(episodeKey(left) ?? "") ?? Number.MAX_SAFE_INTEGER) -
       (episodeRanks.get(episodeKey(right) ?? "") ?? Number.MAX_SAFE_INTEGER);
     return keyOrder || (turnOrdinal(left) ?? 0) - (turnOrdinal(right) ?? 0);
   });
-  const selectedIds = new Set(input.memories.map((memory) => memory.id));
-  const expansionBudget = Math.floor(
-    (input.contextBudgetTokens ?? 1800) * EPISODE_EXPANSION_CONTEXT_SHARE,
-  );
   const expansionContentCap = Math.max(
     input.maxCharsPerMemory ?? 0,
     input.fullContentMaxChars ?? 0,
   ) || undefined;
-  const expandedTurnsByEpisode = new Map<string, MemoryRecord[]>();
-  let expansionTokens = 0;
+  const floorTokens = floor.reduce(
+    (sum, memory) =>
+      sum + estimateTokens(truncateMemoryContent(memory.content, expansionContentCap)) + 64,
+    0,
+  );
+  const contextBudget = input.contextBudgetTokens ?? 1800;
+  const expansionBudget = Math.max(0, Math.min(
+    Math.floor(contextBudget * EPISODE_EXPANSION_CONTEXT_SHARE),
+    contextBudget - floorTokens,
+  ));
+  const turnsByEpisode = new Map<string, Map<number, MemoryRecord>>();
   for (const memory of episodeTurns) {
-    if (selectedIds.has(memory.id)) continue;
+    const key = episodeKey(memory);
+    const ordinal = turnOrdinal(memory);
+    if (!key || ordinal === null) continue;
+    const turns = turnsByEpisode.get(key) ?? new Map<number, MemoryRecord>();
+    if (!turns.has(ordinal)) turns.set(ordinal, memory);
+    turnsByEpisode.set(key, turns);
+  }
+  const expandedTurnIds = new Set<string>();
+  const retrievedMemoryIds = new Set(input.memories.map((memory) => memory.id));
+  let expansionTokens = 0;
+  const addTurn = (memory: MemoryRecord | undefined): void => {
+    if (!memory || expandedTurnIds.has(memory.id)) return;
+    if (retrievedMemoryIds.has(memory.id)) {
+      expandedTurnIds.add(memory.id);
+      return;
+    }
     const cost = estimateTokens(truncateMemoryContent(memory.content, expansionContentCap)) + 64;
-    if (expansionTokens + cost > expansionBudget) break;
-    const key = episodeKey(memory);
-    if (!key) continue;
-    const turns = expandedTurnsByEpisode.get(key) ?? [];
-    turns.push(memory);
-    expandedTurnsByEpisode.set(key, turns);
+    if (expansionTokens + cost > expansionBudget) return;
+    expandedTurnIds.add(memory.id);
     expansionTokens += cost;
+  };
+  // Give every episode a seed-hit turn before any earlier episode can spend the rest of the budget.
+  for (const [key, ordinals] of seedsByEpisode) {
+    const turns = turnsByEpisode.get(key);
+    for (const ordinal of ordinals) addTurn(turns?.get(ordinal));
   }
-  const completed: MemoryRecord[] = [];
-  const emittedEpisodes = new Set<string>();
-  for (const memory of input.memories) {
-    completed.push(memory);
-    const key = episodeKey(memory);
-    if (!key || emittedEpisodes.has(key)) continue;
-    emittedEpisodes.add(key);
-    completed.push(...(expandedTurnsByEpisode.get(key) ?? []));
+  // Then grow each ranked episode outward, preferring causal follow-up at each distance.
+  for (const [key, ordinals] of seedsByEpisode) {
+    const turns = turnsByEpisode.get(key);
+    if (!turns || turns.size === 0) continue;
+    const maxOrdinal = Math.max(...turns.keys());
+    for (let distance = 1; distance <= maxOrdinal; distance += 1) {
+      for (const ordinal of ordinals) {
+        addTurn(turns.get(ordinal + distance));
+        addTurn(turns.get(ordinal - distance));
+      }
+    }
   }
-  const uniqueCompleted = uniqueMemoriesById(completed);
-  const episodeEvidenceIds = new Set(uniqueCompleted.flatMap((memory) => {
-    if (memory.metadata.turnMemory !== true || episodeKey(memory) === null) return [];
+  const expandedTurns = episodeTurns.filter((memory) => expandedTurnIds.has(memory.id));
+  const episodeTurnByEvidenceId = new Map(expandedTurns.flatMap((memory) => {
     const evidenceId = exactPrimaryEvidenceId(memory);
-    return evidenceId ? [evidenceId] : [];
+    return evidenceId ? [[evidenceId, memory] as const] : [];
   }));
-  return uniqueCompleted.filter((memory) => {
+  const completed = uniqueMemoriesById([...floor, ...expandedTurns, ...input.memories]);
+  const deduped = completed.filter((memory) => {
     if (memory.metadata.turnMemory === true) return true;
     const evidenceId = exactPrimaryEvidenceId(memory);
-    return !evidenceId || !episodeEvidenceIds.has(evidenceId);
-  }).slice(0, input.maxMemories);
+    const replacement = evidenceId ? episodeTurnByEvidenceId.get(evidenceId) : undefined;
+    if (!replacement) return true;
+    if (protectedMemoryIds.delete(memory.id)) protectedMemoryIds.add(replacement.id);
+    return false;
+  }).slice(0, input.candidateMemoryLimit);
+  return { memories: deduped, protectedMemoryIds };
 }
 
 function orderEpisodeTurns(memories: MemoryRecord[]): MemoryRecord[] {
@@ -374,23 +409,33 @@ function normalizedFullContentMaxChars(input: {
 function dropLowestRankMemoryByLayer(
   memories: MemoryRecord[],
   layer: ReconstructionMemoryLayer,
+  protectedMemoryIds?: ReadonlySet<string> | undefined,
 ): boolean {
   for (let index = memories.length - 1; index >= 0; index -= 1) {
     if (memoryLayer(memories[index]!) !== layer) continue;
+    if (protectedMemoryIds?.has(memories[index]!.id)) continue;
     memories.splice(index, 1);
     return true;
   }
   return false;
 }
 
-function dropLayerAwareMemory(memories: MemoryRecord[]): void {
+function dropLayerAwareMemory(
+  memories: MemoryRecord[],
+  protectedMemoryIds?: ReadonlySet<string> | undefined,
+): void {
+  if (
+    dropLowestRankMemoryByLayer(memories, "turn", protectedMemoryIds) ||
+    dropLowestRankMemoryByLayer(memories, "atom", protectedMemoryIds) ||
+    dropLowestRankMemoryByLayer(memories, "summary", protectedMemoryIds)
+  ) {
+    return;
+  }
   if (
     dropLowestRankMemoryByLayer(memories, "turn") ||
     dropLowestRankMemoryByLayer(memories, "atom") ||
     dropLowestRankMemoryByLayer(memories, "summary")
-  ) {
-    return;
-  }
+  ) return;
   memories.pop();
 }
 
@@ -4468,6 +4513,7 @@ function composeReconstructedContext(input: {
   inferTemporalCuesFromText?: boolean | undefined;
   privateRouteSignals?: string[] | undefined;
   sanitizeEvidenceForOutput?: EvidenceOutputSanitizer | undefined;
+  protectedMemoryIds?: ReadonlySet<string> | undefined;
 }): ReconstructedContext {
   const orderedMemories = uniqueMemoriesById(input.memories);
   const layerCandidates = input.layerPolicy ? [...orderedMemories] : [];
@@ -4475,6 +4521,7 @@ function composeReconstructedContext(input: {
     memories: orderedMemories,
     maxMemories: input.maxMemories,
     policy: input.layerPolicy,
+    protectedMemoryIds: input.protectedMemoryIds,
   });
   let paths = input.layerPolicy
     ? filterPathsForIncludedMemories(uniquePathsById(input.paths), memories)
@@ -4990,7 +5037,7 @@ function composeReconstructedContext(input: {
     contextBlock = render(false);
   }
   while (estimateTokens(contextBlock) > budget && memories.length > 0) {
-    if (input.layerPolicy) dropLayerAwareMemory(memories);
+    if (input.layerPolicy) dropLayerAwareMemory(memories, input.protectedMemoryIds);
     else memories = memories.slice(0, -1);
     contextBlock = render(false);
   }
@@ -5044,7 +5091,7 @@ function composeReconstructedContext(input: {
         if (!drop) break;
         sweepCandidates = sweepCandidates.filter((candidate) => candidate.memory.id !== drop.memory.id);
       } else if (memories.length > 0) {
-        if (input.layerPolicy) dropLayerAwareMemory(memories);
+        if (input.layerPolicy) dropLayerAwareMemory(memories, input.protectedMemoryIds);
         else memories = memories.slice(0, -1);
       } else {
         break;
@@ -5300,16 +5347,19 @@ async function fallbackReconstruction(input: {
     queryEmbedding: input.queryEmbedding,
     expandStructuredRoleSiblings: queryNeedsEntityAliasCandidates(input.displayQuery ?? input.query),
   });
-  const completedMemories = await completeEpisodeAdjacency({
+  const episodeCompletion = await completeEpisodeAdjacency({
     store: input.store,
     profileId: input.profileId,
     memories: safeMemories,
-    maxMemories: input.candidateMemoryLimit,
+    maxMemories: input.maxMemories,
+    candidateMemoryLimit: input.candidateMemoryLimit,
+    layerPolicy: input.layerPolicy,
     contextBudgetTokens: input.contextBudgetTokens,
     maxCharsPerMemory: input.maxCharsPerMemory,
     fullContentMaxChars: input.fullContentMaxChars,
     includeSensitive: input.includeSensitive,
   });
+  const completedMemories = episodeCompletion.memories;
   const readerEvidence = input.includeEvidence
     ? await evidenceForMemories(
         input.store,
@@ -5358,6 +5408,7 @@ async function fallbackReconstruction(input: {
     inferTemporalCuesFromText: input.inferTemporalCuesFromText,
     privateRouteSignals: input.privateRouteSignals,
     sanitizeEvidenceForOutput: input.sanitizeEvidenceForOutput,
+    protectedMemoryIds: episodeCompletion.protectedMemoryIds,
   });
 }
 
@@ -5920,16 +5971,19 @@ export async function reconstructMemoryContext(input: {
     queryEmbedding: input.queryEmbedding,
     expandStructuredRoleSiblings: queryNeedsEntityAliasCandidates(publicQuery),
   });
-  const completedMemories = await completeEpisodeAdjacency({
+  const episodeCompletion = await completeEpisodeAdjacency({
     store: input.store,
     profileId,
     memories,
-    maxMemories: candidateMemoryLimit,
+    maxMemories,
+    candidateMemoryLimit,
+    layerPolicy,
     contextBudgetTokens: input.request.contextBudgetTokens,
     maxCharsPerMemory,
     fullContentMaxChars,
     includeSensitive: input.request.includeSensitive,
   });
+  const completedMemories = episodeCompletion.memories;
   const readerEvidence = input.request.includeEvidence
     ? await evidenceForMemories(input.store, completedMemories, publicQuery)
     : (await establishReaderMemoryAuthority({ store: input.store, memories: completedMemories }), []);
@@ -5971,6 +6025,7 @@ export async function reconstructMemoryContext(input: {
     inferTemporalCuesFromText,
     privateRouteSignals: input.request.privateRouteSignals,
     sanitizeEvidenceForOutput: input.sanitizeEvidenceForOutput,
+    protectedMemoryIds: episodeCompletion.protectedMemoryIds,
     plannerTrace: {
       mode: "associative",
       intentReason: intent.reason,

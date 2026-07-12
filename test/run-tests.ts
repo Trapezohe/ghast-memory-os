@@ -4800,94 +4800,111 @@ assert.equal(JSON.stringify(rawEpisodeRows).includes("PrivateSessionBeta456"), f
 assert.equal(episodeReconstruction.contextBlock.includes("PrivateSession"), false);
 await episodeLineageMemory.close();
 
-const episodeCapSeeds: MemoryRecord[] = [];
-const episodeCapTurns = new Map<string, MemoryRecord[]>();
-for (let episodeIndex = 0; episodeIndex < 12; episodeIndex += 1) {
+const episodeSelectionSeeds: MemoryRecord[] = [{
+  id: "memory_episode_floor_preference",
+  profileId: "episode-selection",
+  kind: "preference",
+  scope: "global",
+  content: "EpisodeSelection protected preference: always keep the quiet hotel room.",
+  sensitivity: "normal",
+  status: "active",
+  confidence: 0.95,
+  metadata: {},
+  createdAt: "2026-07-01T00:00:00.000Z",
+  updatedAt: "2026-07-01T00:00:00.000Z",
+}];
+const episodeSelectionTurns = new Map<string, MemoryRecord[]>();
+for (let episodeIndex = 0; episodeIndex < 6; episodeIndex += 1) {
   const key = `episode_${episodeIndex.toString(16).padStart(24, "0")}`;
-  const evidenceId = `evidence_episode_cap_${episodeIndex}_4`;
-  episodeCapSeeds.push({
-    id: `memory_episode_cap_seed_${episodeIndex}`,
-    profileId: "episode-cap",
+  const evidenceId = `evidence_episode_selection_${episodeIndex}_0`;
+  episodeSelectionSeeds.push({
+    id: `memory_episode_selection_seed_${episodeIndex}`,
+    profileId: "episode-selection",
     kind: "fact",
     scope: "global",
-    content: `EpisodeCap unique fact ${episodeIndex}.`,
+    content: `EpisodeSelection unique fact ${episodeIndex}.`,
     sensitivity: "normal",
     status: "active",
     confidence: 0.9,
     sourceEventId: evidenceId,
     metadata: {
       episodeKey: key,
-      turnOrdinal: 4,
+      turnOrdinal: 0,
       sourceEvidenceId: evidenceId,
       [GMOS_METADATA_REFERENCE_MARKER]: [GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage],
     },
     createdAt: `2026-07-${String(episodeIndex + 1).padStart(2, "0")}T00:00:00.000Z`,
     updatedAt: `2026-07-${String(episodeIndex + 1).padStart(2, "0")}T00:00:00.000Z`,
   });
-  episodeCapTurns.set(key, Array.from({ length: 9 }, (_, turnOrdinal): MemoryRecord => ({
-    id: `memory_episode_cap_turn_${episodeIndex}_${turnOrdinal}`,
-    profileId: "episode-cap",
-    kind: "fact",
-    scope: "global",
-    content: turnOrdinal === 4
-      ? `EpisodeCap unique fact ${episodeIndex}.`
-      : `EpisodeCap neighbor ${episodeIndex}-${turnOrdinal} ${"context ".repeat(8)}`,
-    sensitivity: "normal",
-    status: "active",
-    confidence: 0.9,
-    sourceEventId: `evidence_episode_cap_${episodeIndex}_${turnOrdinal}`,
-    metadata: {
-      turnMemory: true,
-      episodeKey: key,
-      turnOrdinal,
-      sourceEvidenceId: `evidence_episode_cap_${episodeIndex}_${turnOrdinal}`,
-      sourceTrust: "user",
-      sourceRole: "user",
-      [GMOS_METADATA_REFERENCE_MARKER]: [GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage],
-    },
-    createdAt: `2026-07-${String(episodeIndex + 1).padStart(2, "0")}T00:00:00.000Z`,
-    updatedAt: `2026-07-${String(episodeIndex + 1).padStart(2, "0")}T00:00:00.000Z`,
-  })));
+  episodeSelectionTurns.set(key, Array.from(
+    { length: episodeIndex === 0 ? 7 : 3 },
+    (_, turnOrdinal): MemoryRecord => ({
+      id: `memory_episode_selection_turn_${episodeIndex}_${turnOrdinal}`,
+      profileId: "episode-selection",
+      kind: "fact",
+      scope: "global",
+      content: turnOrdinal === 0
+        ? `EpisodeSelection unique fact ${episodeIndex}.`
+        : episodeIndex === 0 && turnOrdinal === 6
+          ? "Target confirmation reached after the seed turn."
+          : `EpisodeSelection neighbor ${episodeIndex}-${turnOrdinal} ${"context ".repeat(8)}`,
+      sensitivity: "normal",
+      status: "active",
+      confidence: 0.9,
+      sourceEventId: `evidence_episode_selection_${episodeIndex}_${turnOrdinal}`,
+      metadata: {
+        turnMemory: true,
+        episodeKey: key,
+        turnOrdinal,
+        sourceEvidenceId: `evidence_episode_selection_${episodeIndex}_${turnOrdinal}`,
+        sourceTrust: "user",
+        sourceRole: "user",
+        [GMOS_METADATA_REFERENCE_MARKER]: [GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage],
+      },
+      createdAt: `2026-07-${String(episodeIndex + 1).padStart(2, "0")}T00:00:00.000Z`,
+      updatedAt: `2026-07-${String(episodeIndex + 1).padStart(2, "0")}T00:00:00.000Z`,
+    }),
+  ));
 }
-const episodeCapScans: string[] = [];
-const episodeCapContext = await reconstructMemoryContext({
+const episodeSelectionScans: string[] = [];
+const episodeSelectionContext = await reconstructMemoryContext({
   store: {
     searchMemories(input: { limit?: number }) {
-      return episodeCapSeeds.slice(0, input.limit ?? episodeCapSeeds.length);
+      return episodeSelectionSeeds.slice(0, input.limit ?? episodeSelectionSeeds.length);
     },
     listMemories(input: { metadataEquals?: { value?: string }; limit?: number }) {
       const key = input.metadataEquals?.value ?? "";
-      episodeCapScans.push(key);
-      return (episodeCapTurns.get(key) ?? []).slice(0, input.limit ?? 500);
+      episodeSelectionScans.push(key);
+      return (episodeSelectionTurns.get(key) ?? []).slice(0, input.limit ?? 500);
     },
     listEvidenceForMemory() {
       return [];
     },
   } as unknown as MemoryStore,
-  defaultProfileId: "episode-cap",
+  defaultProfileId: "episode-selection",
   request: {
-    profileId: "episode-cap",
-    query: "EpisodeCap",
-    maxMemories: 50,
-    contextBudgetTokens: 1000,
+    profileId: "episode-selection",
+    query: "EpisodeSelection",
+    maxMemories: 20,
+    contextBudgetTokens: 4000,
     maxCharsPerMemory: 120,
     fullContentTopRank: 8,
     fullContentMaxChars: 120,
     includeEvidence: false,
     stopWhenEvidenceEnough: false,
-    layerPolicy: { summaryMinShare: 0, turnMaxShare: 0.4 },
+    layerPolicy: { summaryMinShare: 0, turnMaxShare: 0.8 },
   },
 });
-assert.deepEqual(episodeCapScans, episodeCapSeeds.slice(0, 4).map(
+assert.deepEqual(episodeSelectionScans, episodeSelectionSeeds.slice(1).map(
   (memory) => String(memory.metadata.episodeKey),
 ));
-const episodeCapLines = episodeCapContext.contextBlock.split("\n").filter((line) =>
-  line.includes("EpisodeCap neighbor")
+assert.match(episodeSelectionContext.contextBlock, /Target confirmation reached after the seed turn/u);
+assert.match(
+  episodeSelectionContext.contextBlock,
+  /EpisodeSelection protected preference: always keep the quiet hotel room/u,
 );
-assert.ok(Math.ceil(episodeCapLines.join("\n").length / 4) <= 400);
-assert.match(episodeCapContext.contextBlock, /EpisodeCap unique fact 11/u);
 assert.equal(
-  episodeCapContext.contextBlock.match(/EpisodeCap unique fact 0\./gu)?.length,
+  episodeSelectionContext.contextBlock.match(/EpisodeSelection unique fact 0\./gu)?.length,
   1,
 );
 
