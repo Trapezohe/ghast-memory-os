@@ -584,6 +584,9 @@ export interface ExternalMemoryBenchmarkRuntimeAnswererManifest {
   disableThinking?: boolean | undefined;
   answererRetryCount?: number | undefined;
   answererRecoveredCount?: number | undefined;
+  semanticReviewEnabled?: boolean | undefined;
+  semanticReviewCount?: number | undefined;
+  semanticReviewCorrectionCount?: number | undefined;
   judgeRetryCount?: number | undefined;
   judgeRecoveredCount?: number | undefined;
 }
@@ -3416,6 +3419,7 @@ export interface ExternalMemoryBenchmarkOpenAICompatibleHookOptions {
   maxRetries?: number | undefined;
   fetchImpl?: OpenAICompatibleFetch | undefined;
   disableThinking?: boolean | undefined;
+  semanticReview?: boolean | undefined;
   checkpointIdentity?: string | undefined;
 }
 
@@ -3839,6 +3843,7 @@ function runtimeAnswererManifest(
       Math.min(Math.trunc(options.maxRetries ?? DEFAULT_OPENAI_COMPATIBLE_ANSWERER_JUDGE_RETRIES), 3),
     ),
     disableThinking: options.disableThinking === true,
+    semanticReviewEnabled: options.semanticReview !== false,
   };
 }
 
@@ -4024,6 +4029,67 @@ function questionNeedsPendingActionLedger(question: string): boolean {
   return namesObligationInventory && (ambiguousRemainderLanguage || weakObligationLanguage);
 }
 
+function answerNeedsDialogueRatificationReview(question: string, answer: string): boolean {
+  const focus = primaryBenchmarkQuestionClause(question).toLowerCase();
+  const asksForMissingAttribute =
+    /\b(?:where|who|which)\b/u.test(focus) ||
+    /(?:哪里|哪儿|何处|谁|哪个|哪家)/u.test(focus);
+  if (!asksForMissingAttribute) return false;
+  return (
+    /\b(?:context|evidence|information)\b.{0,64}\b(?:doesn't|does not|didn't|did not|isn't|is not|wasn't|was not|missing|insufficient|unclear|unknown)\b/iu.test(
+      answer,
+    ) ||
+    /\b(?:not enough|insufficient) (?:context|evidence|information)\b/iu.test(answer) ||
+    /(?:上下文|证据|信息).{0,32}(?:没有|未说明|不足|不清楚|未知)/u.test(answer)
+  );
+}
+
+interface PendingLedgerReviewAssertions {
+  pendingAssertions: string[];
+  completionAssertions: string[];
+}
+
+function pendingLedgerReviewAssertions(context: string): PendingLedgerReviewAssertions {
+  const pendingAssertions: string[] = [];
+  const completionAssertions: string[] = [];
+  const seenPending = new Set<string>();
+  const seenCompletion = new Set<string>();
+  const physicalAction =
+    /\b(?:bring back|collect|deliver|drop off|pick up|retrieve|return|send back|take back)\b|(?:领取|取回|归还|退回|送回|交付|投递)/iu;
+  const pendingState =
+    /\b(?:have yet to|has yet to|haven't|hasn't|have not|has not|need to|needs to|not yet|outstanding|pending|still need to|still needs to)\b|(?:还需要|仍需|待办|尚未|未完成|需要)/iu;
+  const completedPhysicalAction =
+    /\b(?:brought back|collected|delivered|dropped off|picked up|retrieved|returned|sent back|took back)\b|(?:已领取|已取回|已归还|已退回|已送回|已交付|已投递)/iu;
+  const explicitClosure =
+    /\b(?:action (?:is|was) (?:cancelled|canceled|complete|completed)|no longer need(?:s)? to|return (?:is|was) accepted|do not need to|does not need to|don't need to|doesn't need to)\b|(?:不再需要|已经取消|已取消|已经完成|已完成)/iu;
+  for (const rawLine of context.split(/\r?\n/u)) {
+    if (!/(?:source_role=user|source_trust=user|\buser:)/iu.test(rawLine)) continue;
+    if (/(?:source_role=assistant|source_trust=agent|\b0?assistant:)/iu.test(rawLine)) continue;
+    const contentMarker = rawLine.indexOf('content="');
+    const candidate = (contentMarker >= 0
+      ? rawLine.slice(contentMarker + 'content="'.length).replace(/"\s*$/u, "")
+      : rawLine).trim().slice(0, 1200);
+    if (!candidate) continue;
+    const key = candidate.normalize("NFC").replace(/\s+/gu, " ").toLowerCase();
+    if (physicalAction.test(candidate) && pendingState.test(candidate) && !seenPending.has(key)) {
+      seenPending.add(key);
+      pendingAssertions.push(candidate);
+    }
+    if (
+      (completedPhysicalAction.test(candidate) || explicitClosure.test(candidate)) &&
+      !seenCompletion.has(key)
+    ) {
+      seenCompletion.add(key);
+      completionAssertions.push(candidate);
+    }
+    if (pendingAssertions.length >= 24 && completionAssertions.length >= 24) break;
+  }
+  return {
+    pendingAssertions: pendingAssertions.slice(0, 24),
+    completionAssertions: completionAssertions.slice(0, 24),
+  };
+}
+
 function externalBenchmarkAnswererSystemPrompt(question: string): string {
   if (questionNeedsPendingActionLedger(question)) {
     // Pending ledgers need a narrow contract. Mixing generic event-completion,
@@ -4051,7 +4117,7 @@ function externalBenchmarkAnswererSystemPrompt(question: string): string {
     "When an event mentions a month and day without a year, use the attached observation or event date to resolve the year when both refer to the same event and no evidence contradicts it.",
     "For claims about the user's experiences, possessions, or preferences, prioritize the user's statements. Treat a direct user request or choice as a decision-specific constraint only when its wording and subject establish a positive stance. A neutral question, an avoidance question, or a request made for someone else does not establish the user's preference; do not generalize a decision-specific constraint into a permanent preference. Assistant-only suggestions are not proof that the user experienced, owns, or prefers something.",
     "For current-state or knowledge-update questions, prefer the latest explicit user-grounded update and do not let an older contradicted statement override it.",
-    "Combine context facts only when clear discourse continuity, coreference, a shared event, or a shared subject and date makes the inference unique, even if no single sentence repeats every attribute. Presentation order or line adjacency alone does not establish a connection. An assistant paraphrase or restatement may clarify an omitted detail only when its content clearly refers to the same user-grounded event and is consistent with the user's statements; unrelated generic assistant suggestions are not proof.",
+    "Combine context facts only when clear discourse continuity, coreference, a shared event, or a shared subject and date makes the inference unique, even if no single sentence repeats every attribute. Presentation order or line adjacency alone does not establish a connection. An assistant paraphrase or restatement may clarify an omitted detail only when its content clearly refers to the same user-grounded event and is consistent with the user's statements; unrelated generic assistant suggestions are not proof. Apply this bounded dialogue-ratification rule: when event E lacks attribute X, the assistant's direct response names exactly one candidate X, and the user's following turn continues that subject and explicitly confirms their relationship to or use of X, treat X as the ratified attribute of E. Do not apply the rule when the user does not confirm X, the subject changes, or a competing candidate exists.",
     "For factual recall, if the context does not contain the facts needed to answer, state that the information is insufficient rather than inventing an answer. Do not apply that refusal rule to a present advice or recommendation request merely because its exact situation is new: the current question supplies the present request, scenario, or problem.",
     "When the question asks for advice, a recommendation, decision support, or an explanation of a current problem, use applicable user-grounded possessions, capabilities, preferences, constraints, and prior choices to personalize the answer. Translate the highest-impact applicable remembered factor into selection criteria or a concrete next action, and give the direct useful answer before any optional follow-up question. Present causal explanations as possibilities or inferences unless the context establishes them; do not present them as remembered facts.",
     "If memory provides useful criteria but no supported named option for the current situation, recommend an option or category matching those criteria rather than refusing, inventing a remembered name, or appending a blanket insufficient-memory disclaimer. Qualify only the unsupported part.",
@@ -4069,19 +4135,16 @@ export function createOpenAICompatibleExternalBenchmarkAnswerer(
   const manifest = runtimeAnswererManifest({ ...options, name });
   manifest.answererRetryCount = 0;
   manifest.answererRecoveredCount = 0;
+  manifest.semanticReviewCount = 0;
+  manifest.semanticReviewCorrectionCount = 0;
   const answerer: ExternalMemoryBenchmarkAnswerer & BrandedOpenAICompatibleBenchmarkHook = {
     name,
     ...(options.checkpointIdentity ? { checkpointIdentity: options.checkpointIdentity } : {}),
     manifest,
     [OPENAI_COMPATIBLE_BENCHMARK_HOOK]: { customFetch: options.fetchImpl !== undefined },
     async answer(question, context) {
-      const parsed = parsedCompletionObject(await fetchOpenAICompatibleJson(options, [
-        {
-          role: "system",
-          content: externalBenchmarkAnswererSystemPrompt(question),
-        },
-        { role: "user", content: JSON.stringify({ question, context }) },
-      ], {
+      const systemPrompt = externalBenchmarkAnswererSystemPrompt(question);
+      const validator: OpenAICompatibleJsonValidator = {
         defaultMaxRetries: DEFAULT_OPENAI_COMPATIBLE_ANSWERER_JUDGE_RETRIES,
         errorMessage: "OpenAI-compatible benchmark answerer returned no answer",
         validate(payload) {
@@ -4094,12 +4157,60 @@ export function createOpenAICompatibleExternalBenchmarkAnswerer(
         onRecovered() {
           manifest.answererRecoveredCount = (manifest.answererRecoveredCount ?? 0) + 1;
         },
-      }, { stage: "answerer" }));
+      };
+      const parsed = parsedCompletionObject(await fetchOpenAICompatibleJson(options, [
+        {
+          role: "system",
+          content: systemPrompt,
+        },
+        { role: "user", content: JSON.stringify({ question, context }) },
+      ], validator, { stage: "answerer" }));
       const answer = parsed.answer;
       if (typeof answer !== "string" || answer.trim().length === 0) {
         throw new Error("OpenAI-compatible benchmark answerer returned no answer");
       }
-      return answer.trim();
+      const initialAnswer = answer.trim();
+      const pendingLedgerReview = questionNeedsPendingActionLedger(question);
+      const dialogueRatificationReview = answerNeedsDialogueRatificationReview(
+        question,
+        initialAnswer,
+      );
+      if (
+        options.semanticReview === false ||
+        (!pendingLedgerReview && !dialogueRatificationReview)
+      ) {
+        return initialAnswer;
+      }
+      manifest.semanticReviewCount = (manifest.semanticReviewCount ?? 0) + 1;
+      const reviewed = parsedCompletionObject(await fetchOpenAICompatibleJson(options, [
+        {
+          role: "system",
+          content: [
+            systemPrompt,
+            pendingLedgerReview
+              ? "Perform a ledger audit using the supplied structured assertions. Each pending assertion establishes a row. Remove a row only when a supplied independent completion assertion explicitly matches its action and target. Transaction status and omission are not completion assertions. Return JSON only: {\"answer\":\"final corrected answer\"}."
+              : "Audit a draft that claims the requested attribute is missing. Reconstruct the immediate dialogue chain and apply the bounded dialogue-ratification rule. If the user confirmed the sole candidate while continuing the subject, use that ratified attribute. If confirmation, subject continuity, or uniqueness is absent, keep the uncertainty. Return JSON only: {\"answer\":\"final corrected answer\"}.",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            question,
+            ...(pendingLedgerReview ? pendingLedgerReviewAssertions(context) : { context }),
+            draftAnswer: initialAnswer,
+          }),
+        },
+      ], validator, { stage: "answerer" }));
+      const reviewedAnswer = reviewed.answer;
+      if (typeof reviewedAnswer !== "string" || reviewedAnswer.trim().length === 0) {
+        throw new Error("OpenAI-compatible benchmark semantic review returned no answer");
+      }
+      const finalAnswer = reviewedAnswer.trim();
+      if (finalAnswer !== initialAnswer) {
+        manifest.semanticReviewCorrectionCount =
+          (manifest.semanticReviewCorrectionCount ?? 0) + 1;
+      }
+      return finalAnswer;
     },
   };
   return answerer;
@@ -4110,7 +4221,7 @@ export function createOpenAICompatibleExternalBenchmarkJudge(
 ): ExternalMemoryBenchmarkJudge {
   const name = options.name ?? `openai-compatible-judge:${options.model}`;
   const profile = normalizeJudgeProfile(options.profile);
-  const manifest = runtimeAnswererManifest({ ...options, name });
+  const manifest = runtimeAnswererManifest({ ...options, name, semanticReview: false });
   manifest.judgeRetryCount = 0;
   manifest.judgeRecoveredCount = 0;
   const judgeOpenAICompatible = async (input: {

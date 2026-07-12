@@ -38163,6 +38163,7 @@ const reasoningAnswerer = createOpenAICompatibleExternalBenchmarkAnswerer({
   baseUrl: "https://answerer.invalid/v1",
   model: "reasoning-answerer",
   maxTokens: 3072,
+  semanticReview: false,
   fetchImpl: async (_url, init) => {
     reasoningAnswererBodies.push(JSON.parse(String(init?.body ?? "{}")) as {
       max_tokens?: number;
@@ -38327,6 +38328,14 @@ assert.match(
   /presentation order or line adjacency alone does not establish a connection/iu,
 );
 assert.match(
+  reasoningAnswererSystemPrompt,
+  /when event E lacks attribute X, the assistant's direct response names exactly one candidate X, and the user's following turn continues that subject and explicitly confirms their relationship to or use of X, treat X as the ratified attribute of E/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /do not apply the rule when the user does not confirm X, the subject changes, or a competing candidate exists/iu,
+);
+assert.match(
   pendingActionAnswererSystemPrompt,
   /key the private ledger by the pair \(ACTION, OBLIGATION TARGET OR ITEM INSTANCE\)/iu,
 );
@@ -38484,6 +38493,102 @@ assert.match(
 );
 assert.equal(reasoningAnswerer.manifest?.answererRetryCount, 0);
 assert.equal(reasoningAnswerer.manifest?.answererRecoveredCount, 0);
+assert.equal(reasoningAnswerer.manifest?.semanticReviewEnabled, false);
+assert.equal(reasoningAnswerer.manifest?.semanticReviewCount, 0);
+assert.equal(reasoningAnswerer.manifest?.semanticReviewCorrectionCount, 0);
+const semanticReviewBodies: Array<{
+  messages?: Array<{ role?: string; content?: string }>;
+}> = [];
+const semanticReviewAnswerer = createOpenAICompatibleExternalBenchmarkAnswerer({
+  baseUrl: "https://answerer.invalid/v1",
+  model: "semantic-review-answerer",
+  fetchImpl: async (_url, init) => {
+    semanticReviewBodies.push(JSON.parse(String(init?.body ?? "{}")) as {
+      messages?: Array<{ role?: string; content?: string }>;
+    });
+    const answer = semanticReviewBodies.length === 1 ? "draft answer" : "corrected answer";
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ answer }) } }],
+      }),
+    };
+  },
+});
+assert.equal(
+  await semanticReviewAnswerer.answer(
+    "How many electronics do I need to pick up from or return to a store?",
+    [
+      '- [source_role=user; source_trust=user] content="I still need to collect the parcel."',
+      '- [source_role=user; source_trust=user] content="I returned the old device."',
+    ].join("\n"),
+  ),
+  "corrected answer",
+);
+assert.equal(semanticReviewBodies.length, 2);
+assert.match(
+  semanticReviewBodies[1]?.messages?.[0]?.content ?? "",
+  /perform a ledger audit using the supplied structured assertions/iu,
+);
+assert.match(
+  semanticReviewBodies[1]?.messages?.[0]?.content ?? "",
+  /transaction status and omission are not completion assertions/iu,
+);
+assert.match(
+  semanticReviewBodies[1]?.messages?.[1]?.content ?? "",
+  /"draftAnswer":"draft answer"/u,
+);
+assert.match(
+  semanticReviewBodies[1]?.messages?.[1]?.content ?? "",
+  /"pendingAssertions":\["I still need to collect the parcel\."\]/u,
+);
+assert.match(
+  semanticReviewBodies[1]?.messages?.[1]?.content ?? "",
+  /"completionAssertions":\["I returned the old device\."\]/u,
+);
+assert.equal(semanticReviewAnswerer.manifest?.semanticReviewEnabled, true);
+assert.equal(semanticReviewAnswerer.manifest?.semanticReviewCount, 1);
+assert.equal(semanticReviewAnswerer.manifest?.semanticReviewCorrectionCount, 1);
+const dialogueReviewBodies: Array<{
+  messages?: Array<{ role?: string; content?: string }>;
+}> = [];
+const dialogueReviewAnswerer = createOpenAICompatibleExternalBenchmarkAnswerer({
+  baseUrl: "https://answerer.invalid/v1",
+  model: "dialogue-review-answerer",
+  fetchImpl: async (_url, init) => {
+    dialogueReviewBodies.push(JSON.parse(String(init?.body ?? "{}")) as {
+      messages?: Array<{ role?: string; content?: string }>;
+    });
+    const answer = dialogueReviewBodies.length === 1
+      ? "The context does not say where it happened."
+      : "The ratified place.";
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ answer }) } }],
+      }),
+    };
+  },
+});
+assert.equal(
+  await dialogueReviewAnswerer.answer("Where did it happen?", "Dialogue evidence."),
+  "The ratified place.",
+);
+assert.equal(dialogueReviewBodies.length, 2);
+assert.match(
+  dialogueReviewBodies[1]?.messages?.[0]?.content ?? "",
+  /audit a draft that claims the requested attribute is missing/iu,
+);
+assert.match(
+  dialogueReviewBodies[1]?.messages?.[0]?.content ?? "",
+  /if confirmation, subject continuity, or uniqueness is absent, keep the uncertainty/iu,
+);
+assert.equal(dialogueReviewAnswerer.manifest?.semanticReviewCount, 1);
+assert.equal(dialogueReviewAnswerer.manifest?.semanticReviewCorrectionCount, 1);
 let reasoningContentOnlyAnswererCalls = 0;
 const reasoningContentOnlyAnswerer = createOpenAICompatibleExternalBenchmarkAnswerer({
   baseUrl: "https://answerer.invalid/v1",
