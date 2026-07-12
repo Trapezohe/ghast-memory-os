@@ -297,11 +297,64 @@ const publicExampleFindings = publicExampleFiles.flatMap((file) =>
     ),
 );
 
+function answererProtocolStructureFindings(source, file = "src/gym/external.ts") {
+  const promptStart = source.indexOf("function externalBenchmarkAnswererSystemPrompt");
+  const answererStart = source.indexOf(
+    "export function createOpenAICompatibleExternalBenchmarkAnswerer",
+  );
+  const judgeStart = source.indexOf(
+    "export function createOpenAICompatibleExternalBenchmarkJudge",
+  );
+  if (promptStart < 0 || answererStart < 0 || judgeStart <= answererStart) {
+    return [`${file}: benchmark answerer protocol boundaries are missing`];
+  }
+  const promptSection = source.slice(promptStart, answererStart);
+  const answererSection = source.slice(answererStart, judgeStart);
+  const findings = [];
+  if (!/^function externalBenchmarkAnswererSystemPrompt\(\): string \{/u.test(promptSection)) {
+    findings.push(`${file}: benchmark answerer system prompt must be question-independent`);
+  }
+  if (!answererSection.includes("externalBenchmarkAnswererSystemPrompt()")) {
+    findings.push(`${file}: benchmark answerer must use the question-independent system prompt`);
+  }
+  const answererStages = answererSection.match(/stage:\s*["']answerer["']/gu) ?? [];
+  if (answererStages.length !== 1) {
+    findings.push(`${file}: benchmark answerer must have exactly one answerer request path`);
+  }
+  const conditionalProtocolPattern =
+    /semanticReview|draftAnswer|final corrected answer|structured assertions|questionNeeds[A-Za-z]*(?:Ledger|Review)|answerNeeds[A-Za-z]*Review/iu;
+  const conditionalMatch = conditionalProtocolPattern.exec(`${promptSection}\n${answererSection}`);
+  if (conditionalMatch) {
+    findings.push(`${file}: conditional benchmark answer protocol token "${conditionalMatch[0]}"`);
+  }
+  return findings;
+}
+
+const structuralSelfCheck = answererProtocolStructureFindings(`
+function externalBenchmarkAnswererSystemPrompt(question: string): string {
+  return question.includes("count") ? "structured assertions" : "generic";
+}
+export function createOpenAICompatibleExternalBenchmarkAnswerer() {
+  externalBenchmarkAnswererSystemPrompt(question);
+  fetchJson({ stage: "answerer" });
+  fetchJson({ stage: "answerer" });
+}
+export function createOpenAICompatibleExternalBenchmarkJudge() {}
+`, "self-check");
+if (structuralSelfCheck.length < 3) {
+  throw new Error("benchmark answerer structural scanner self-check failed");
+}
+
+const benchmarkAnswererStructureFindings = answererProtocolStructureFindings(
+  readFileSync(path.join(root, "src/gym/external.ts"), "utf8"),
+);
+
 if (
   findings.length > 0 ||
   fixtureAnswerFindings.length > 0 ||
   benchmarkSurfaceFindings.length > 0 ||
-  publicExampleFindings.length > 0
+  publicExampleFindings.length > 0 ||
+  benchmarkAnswererStructureFindings.length > 0
 ) {
   process.stderr.write(
     `Benchmark special-casing terms are not allowed in runtime or public benchmark integration paths:\n${[
@@ -309,6 +362,7 @@ if (
       ...fixtureAnswerFindings,
       ...benchmarkSurfaceFindings,
       ...publicExampleFindings,
+      ...benchmarkAnswererStructureFindings,
     ].join("\n")}\n`,
   );
   process.exit(1);
