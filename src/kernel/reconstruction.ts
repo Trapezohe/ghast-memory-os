@@ -212,6 +212,8 @@ function uniqueMemoriesById(memories: MemoryRecord[]): MemoryRecord[] {
 
 const EPISODE_ADJACENCY_RADIUS = 4;
 const EPISODE_SCAN_LIMIT = 500;
+const EPISODE_EXPANSION_TOP_RANKED_SEED_LIMIT = 4;
+const EPISODE_EXPANSION_CONTEXT_SHARE = 0.4;
 
 function episodeKey(memory: MemoryRecord): string | null {
   const value = memory.metadata.episodeKey;
@@ -228,11 +230,16 @@ async function completeEpisodeAdjacency(input: {
   profileId: string;
   memories: MemoryRecord[];
   maxMemories: number;
+  contextBudgetTokens?: number | undefined;
+  maxCharsPerMemory?: number | undefined;
+  fullContentMaxChars?: number | undefined;
   includeSensitive?: boolean | undefined;
 }): Promise<MemoryRecord[]> {
   if (!input.store.listMemories) return input.memories;
   const seedsByEpisode = new Map<string, number[]>();
-  for (const memory of input.memories) {
+  for (const memory of input.memories
+    .filter((candidate) => candidate.metadata.turnMemory !== true)
+    .slice(0, EPISODE_EXPANSION_TOP_RANKED_SEED_LIMIT)) {
     const key = episodeKey(memory);
     const ordinal = turnOrdinal(memory);
     if (!key || ordinal === null) continue;
@@ -265,7 +272,47 @@ async function completeEpisodeAdjacency(input: {
       (episodeRanks.get(episodeKey(right) ?? "") ?? Number.MAX_SAFE_INTEGER);
     return keyOrder || (turnOrdinal(left) ?? 0) - (turnOrdinal(right) ?? 0);
   });
-  return uniqueMemoriesById([...episodeTurns, ...input.memories]).slice(0, input.maxMemories);
+  const selectedIds = new Set(input.memories.map((memory) => memory.id));
+  const expansionBudget = Math.floor(
+    (input.contextBudgetTokens ?? 1800) * EPISODE_EXPANSION_CONTEXT_SHARE,
+  );
+  const expansionContentCap = Math.max(
+    input.maxCharsPerMemory ?? 0,
+    input.fullContentMaxChars ?? 0,
+  ) || undefined;
+  const expandedTurnsByEpisode = new Map<string, MemoryRecord[]>();
+  let expansionTokens = 0;
+  for (const memory of episodeTurns) {
+    if (selectedIds.has(memory.id)) continue;
+    const cost = estimateTokens(truncateMemoryContent(memory.content, expansionContentCap)) + 64;
+    if (expansionTokens + cost > expansionBudget) break;
+    const key = episodeKey(memory);
+    if (!key) continue;
+    const turns = expandedTurnsByEpisode.get(key) ?? [];
+    turns.push(memory);
+    expandedTurnsByEpisode.set(key, turns);
+    expansionTokens += cost;
+  }
+  const completed: MemoryRecord[] = [];
+  const emittedEpisodes = new Set<string>();
+  for (const memory of input.memories) {
+    completed.push(memory);
+    const key = episodeKey(memory);
+    if (!key || emittedEpisodes.has(key)) continue;
+    emittedEpisodes.add(key);
+    completed.push(...(expandedTurnsByEpisode.get(key) ?? []));
+  }
+  const uniqueCompleted = uniqueMemoriesById(completed);
+  const episodeEvidenceIds = new Set(uniqueCompleted.flatMap((memory) => {
+    if (memory.metadata.turnMemory !== true || episodeKey(memory) === null) return [];
+    const evidenceId = exactPrimaryEvidenceId(memory);
+    return evidenceId ? [evidenceId] : [];
+  }));
+  return uniqueCompleted.filter((memory) => {
+    if (memory.metadata.turnMemory === true) return true;
+    const evidenceId = exactPrimaryEvidenceId(memory);
+    return !evidenceId || !episodeEvidenceIds.has(evidenceId);
+  }).slice(0, input.maxMemories);
 }
 
 function orderEpisodeTurns(memories: MemoryRecord[]): MemoryRecord[] {
@@ -3542,6 +3589,19 @@ function assistantGroundedMemory(memory: MemoryRecord): boolean {
     /^\s*assistant\s*:/iu.test(memory.content);
 }
 
+function completedEventFrameKey(memory: MemoryRecord): string | null {
+  if (memory.metadata.eventFrameState !== "completed") return null;
+  const sourceEvidenceId = typeof memory.metadata.sourceEvidenceId === "string"
+    ? memory.metadata.sourceEvidenceId.trim()
+    : "";
+  if (sourceEvidenceId) return `source:${sourceEvidenceId}`;
+  const subject = typeof memory.metadata.subject === "string" ? memory.metadata.subject.trim() : "";
+  const predicate = typeof memory.metadata.predicate === "string" ? memory.metadata.predicate.trim() : "";
+  const eventTime = typeof memory.metadata.eventTime === "string" ? memory.metadata.eventTime.trim() : "";
+  const key = normalizedText(`${subject} ${predicate} ${eventTime} ${memory.content}`);
+  return key ? `frame:${key}` : null;
+}
+
 function hypotheticalAssistantMemory(memory: MemoryRecord): boolean {
   return assistantGroundedMemory(memory) &&
     /\b(?:could|estimate|estimated|example|hypothetical|hypothetically|might|typically)\b/iu.test(
@@ -3607,6 +3667,14 @@ function queryEvidenceShortlistCandidates(input: {
       if (entry.signatures.some((signature) => !seenSignatures.has(signature))) add(entry);
     }
   }
+  const selectedEventFrames = new Set<string>();
+  for (const entry of pool) {
+    if (selected.length >= input.maxItems) break;
+    const frameKey = completedEventFrameKey(entry.candidate.memory);
+    if (!frameKey || selectedEventFrames.has(frameKey)) continue;
+    add(entry);
+    selectedEventFrames.add(frameKey);
+  }
   for (const entry of pool) {
     if (selected.length >= input.maxItems) break;
     add(entry);
@@ -3645,15 +3713,27 @@ function sweepCandidateToCull(
   candidates: ReconstructionSweepCandidate[],
 ): ReconstructionSweepCandidate | undefined {
   const perCue = new Map<string, number>();
+  const perEventFrame = new Map<string, number>();
   for (const candidate of candidates) {
     for (const cue of candidate.matchedCues) {
       perCue.set(cue, (perCue.get(cue) ?? 0) + 1);
     }
+    const frameKey = completedEventFrameKey(candidate.memory);
+    if (frameKey) perEventFrame.set(frameKey, (perEventFrame.get(frameKey) ?? 0) + 1);
   }
   const withoutLastCueRepresentatives = candidates.filter(
     (candidate) => candidate.matchedCues.every((cue) => (perCue.get(cue) ?? 0) > 1),
   );
-  return [...(withoutLastCueRepresentatives.length > 0 ? withoutLastCueRepresentatives : candidates)]
+  const cueSafePool = withoutLastCueRepresentatives.length > 0
+    ? withoutLastCueRepresentatives
+    : candidates;
+  const withoutLastEventFrameRepresentatives = cueSafePool.filter((candidate) => {
+    const frameKey = completedEventFrameKey(candidate.memory);
+    return !frameKey || (perEventFrame.get(frameKey) ?? 0) > 1;
+  });
+  return [...(withoutLastEventFrameRepresentatives.length > 0
+    ? withoutLastEventFrameRepresentatives
+    : cueSafePool)]
     .sort(compareSweepCullPriority)[0];
 }
 
@@ -5225,6 +5305,9 @@ async function fallbackReconstruction(input: {
     profileId: input.profileId,
     memories: safeMemories,
     maxMemories: input.candidateMemoryLimit,
+    contextBudgetTokens: input.contextBudgetTokens,
+    maxCharsPerMemory: input.maxCharsPerMemory,
+    fullContentMaxChars: input.fullContentMaxChars,
     includeSensitive: input.includeSensitive,
   });
   const readerEvidence = input.includeEvidence
@@ -5842,6 +5925,9 @@ export async function reconstructMemoryContext(input: {
     profileId,
     memories,
     maxMemories: candidateMemoryLimit,
+    contextBudgetTokens: input.request.contextBudgetTokens,
+    maxCharsPerMemory,
+    fullContentMaxChars,
     includeSensitive: input.request.includeSensitive,
   });
   const readerEvidence = input.request.includeEvidence

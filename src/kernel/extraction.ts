@@ -383,8 +383,16 @@ function obligationMetadata(
   const declaredState = typeof metadata.obligationState === "string"
     ? normalize(metadata.obligationState).toLowerCase()
     : state;
+  const declaredTargets = Array.isArray(metadata.targetInstances)
+    ? metadata.targetInstances.filter((value): value is string =>
+        typeof value === "string" && normalize(value).length > 0
+      )
+    : [];
+  const mergedTarget = declaredTargets.length > 1 ||
+    /(?:\s(?:and|or)\s|\s(?:and\/or)\s|[&;/]|(?:以及|或者|和|或|及))/iu.test(targetInstance);
   if (
     !action || !targetInstance || (state !== "pending" && state !== "completed") ||
+    mergedTarget ||
     declaredAction !== action.toLowerCase() ||
     declaredTarget !== targetInstance.toLowerCase() ||
     declaredState !== state ||
@@ -417,14 +425,19 @@ function eventIdentityMetadata(
   sourceContent: string,
 ): Record<string, unknown> {
   const metadata = candidate.metadata ?? {};
-  const completedEvent = Boolean(
+  const eventFrameState = metadata.eventFrameState === "completed" || metadata.eventState === "completed"
+    ? "completed"
+    : null;
+  const identityBearingEvent = Boolean(
     candidate.eventTime ||
     metadata.eventTime ||
-    metadata.obligationState === "completed",
+    metadata.obligationState === "completed" ||
+    eventFrameState,
   );
-  if (!completedEvent) return {};
+  if (!identityBearingEvent) return {};
+  const frameMetadata = eventFrameState ? { eventFrameState } : {};
   const identityTokens = properNounTokens(sourceContent);
-  if (identityTokens.length === 0) return {};
+  if (identityTokens.length === 0) return frameMetadata;
   const candidateSurface = [
     candidate.content,
     candidate.subject,
@@ -435,8 +448,9 @@ function eventIdentityMetadata(
     !candidateSurface.includes(token.toLowerCase())
   );
   return missing.length === 0
-    ? {}
+    ? frameMetadata
     : {
+        ...frameMetadata,
         eventIdentityCompleteness: "source_turn_required",
         missingEventIdentityTokenCount: missing.length,
       };
