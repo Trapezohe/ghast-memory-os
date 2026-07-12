@@ -38351,11 +38351,23 @@ assert.match(
 );
 assert.match(
   pendingActionAnswererSystemPrompt,
-  /transaction label such as an exchange or replacement can cover multiple physical handoffs/iu,
+  /transaction label such as an exchange, replacement, refund, or reorder may support completion when user-grounded context unambiguously states or entails the matching handoff/iu,
 );
 assert.match(
   pendingActionAnswererSystemPrompt,
-  /require explicit user-grounded completion of that matching action and item/iu,
+  /broad transaction label alone is not sufficient when it leaves the physical action unresolved/iu,
+);
+assert.match(
+  pendingActionAnswererSystemPrompt,
+  /explicit current pending-action statement conflicts only with an implication from an ambiguous transaction description, prefer the explicit action state/iu,
+);
+assert.match(
+  pendingActionAnswererSystemPrompt,
+  /retain the pending row unless matching completion, cancellation, or lack of further obligation is unambiguous/iu,
+);
+assert.doesNotMatch(
+  pendingActionAnswererSystemPrompt,
+  /transaction label never completes|exchange.*is not the same ACTION as return/iu,
 );
 assert.doesNotMatch(
   pendingActionAnswererSystemPrompt,
@@ -38365,18 +38377,61 @@ assert.doesNotMatch(
   `${reasoningAnswererSystemPrompt}\n${pendingActionAnswererSystemPrompt}`,
   /\b(?:boots|zara|blazer|exchanged|pickup|dry[- ]?cleaning)\b/iu,
 );
-assert.match(reasoningAnswererSystemPrompt, /state that the information is insufficient/iu);
 assert.match(
   reasoningAnswererSystemPrompt,
-  /converting the applicable evidence into a concrete recommendation or next action/iu,
+  /for factual recall, if the context does not contain the facts needed to answer, state that the information is insufficient/iu,
 );
 assert.match(
   reasoningAnswererSystemPrompt,
-  /owned tool directly mitigates the current problem.*concrete step for preparing or using it/iu,
+  /do not apply that refusal rule to a present advice or recommendation request merely because its exact situation is new/iu,
 );
 assert.match(
   reasoningAnswererSystemPrompt,
-  /may propose new options from general knowledge, but distinguish those suggestions from remembered facts/iu,
+  /when the question asks for advice, a recommendation, decision support, or an explanation of a current problem/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /translate the highest-impact applicable remembered factor into selection criteria or a concrete next action/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /present causal explanations as possibilities or inferences unless the context establishes them/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /memory provides useful criteria but no supported named option.*qualify only the unsupported part/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /remembered possession, capability, or prior choice directly helps and remains suitable/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /do not merely name it or reduce it to background rationale/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /safety and current-scenario constraints override ownership/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /prefer one direct grounded recommendation plus at most two or three supporting points unless the user explicitly asks for a broad list/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /if no applicable personal information exists for a present advice request, give concise general guidance without inventing a memory/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /medical, legal, financial, or other high-impact matters/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /do not make definitive diagnoses, prescribe or direct medication changes, assert legal entitlement, or give personalized investment directives/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /memory may only personalize bounded low-risk next steps and the questions, records, or professional help the user should verify/iu,
 );
 assert.equal(reasoningAnswerer.manifest?.answererRetryCount, 0);
 assert.equal(reasoningAnswerer.manifest?.answererRecoveredCount, 0);
