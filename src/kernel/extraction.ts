@@ -343,6 +343,116 @@ function structuredTemporalMetadata(candidate: MemoryExtractionCandidate): Recor
   return metadata;
 }
 
+function wordTokens(value: string): string[] {
+  return [...value.toLowerCase().matchAll(/[\p{L}\p{N}]+/gu)].map((match) => match[0]);
+}
+
+function sourceGroundsTerms(source: string, value: string): boolean {
+  const sourceTokens = wordTokens(source);
+  const required = wordTokens(value).filter((token) => token.length >= 3);
+  return required.length > 0 && required.every((token) =>
+    sourceTokens.some((sourceToken) =>
+      sourceToken === token ||
+      (token.length >= 4 && sourceToken.startsWith(token.slice(0, 4)))
+    )
+  );
+}
+
+function obligationMetadata(
+  candidate: MemoryExtractionCandidate,
+  sourceContent: string,
+): Record<string, unknown> | null {
+  const metadata = candidate.metadata ?? {};
+  const predicate = typeof candidate.predicate === "string" ? normalize(candidate.predicate) : "";
+  const match = /^obligation[.:]([\p{L}\p{N}_.-]+)$/iu.exec(predicate);
+  const declared = match !== null || [
+    "obligationAction",
+    "targetInstance",
+    "obligationState",
+  ].some((key) => Object.hasOwn(metadata, key));
+  if (!declared) return {};
+  const action = match?.[1]?.replace(/[_.-]+/gu, " ").trim() ?? "";
+  const targetInstance = typeof candidate.subject === "string" ? normalize(candidate.subject) : "";
+  const state = typeof candidate.object === "string" ? normalize(candidate.object).toLowerCase() : "";
+  const declaredAction = typeof metadata.obligationAction === "string"
+    ? normalize(metadata.obligationAction).replace(/[_.-]+/gu, " ").toLowerCase()
+    : action.toLowerCase();
+  const declaredTarget = typeof metadata.targetInstance === "string"
+    ? normalize(metadata.targetInstance).toLowerCase()
+    : targetInstance.toLowerCase();
+  const declaredState = typeof metadata.obligationState === "string"
+    ? normalize(metadata.obligationState).toLowerCase()
+    : state;
+  if (
+    !action || !targetInstance || (state !== "pending" && state !== "completed") ||
+    declaredAction !== action.toLowerCase() ||
+    declaredTarget !== targetInstance.toLowerCase() ||
+    declaredState !== state ||
+    !sourceGroundsTerms(sourceContent, action) ||
+    !sourceGroundsTerms(sourceContent, targetInstance)
+  ) {
+    return null;
+  }
+  return {
+    obligationAction: action,
+    targetInstance,
+    obligationState: state,
+  };
+}
+
+function properNounTokens(source: string): string[] {
+  const tokens: string[] = [];
+  for (const match of source.matchAll(/\p{Lu}[\p{L}\p{N}-]*/gu)) {
+    const token = match[0];
+    if (token.length < 2) continue;
+    const before = source.slice(0, match.index).match(/[^\s]$/u)?.[0];
+    if (match.index === 0 || before === "." || before === "!" || before === "?") continue;
+    tokens.push(token);
+  }
+  return uniqueStrings(tokens);
+}
+
+function eventIdentityMetadata(
+  candidate: MemoryExtractionCandidate,
+  sourceContent: string,
+): Record<string, unknown> {
+  const metadata = candidate.metadata ?? {};
+  const completedEvent = Boolean(
+    candidate.eventTime ||
+    metadata.eventTime ||
+    metadata.obligationState === "completed",
+  );
+  if (!completedEvent) return {};
+  const identityTokens = properNounTokens(sourceContent);
+  if (identityTokens.length === 0) return {};
+  const candidateSurface = [
+    candidate.content,
+    candidate.subject,
+    candidate.object,
+    candidate.source,
+  ].filter((value): value is string => typeof value === "string").join(" ").toLowerCase();
+  const missing = identityTokens.filter((token) =>
+    !candidateSurface.includes(token.toLowerCase())
+  );
+  return missing.length === 0
+    ? {}
+    : {
+        eventIdentityCompleteness: "source_turn_required",
+        missingEventIdentityTokenCount: missing.length,
+      };
+}
+
+function candidateSourceContent(
+  input: MemoryExtractionInput,
+  sourceIndex: number | undefined,
+): string {
+  if (sourceIndex !== undefined) {
+    const source = input.window?.messages[sourceIndex];
+    if (source) return source.content;
+  }
+  return input.event.content;
+}
+
 function normalizedTemporalMetadata(metadata: MemoryTemporalMetadata | null | undefined): Record<string, string> {
   const entries = [
     ["eventTime", metadata?.eventTime],
@@ -414,6 +524,7 @@ function normalizeCandidate(
     createdAt?: string | undefined;
     parserTemporalMetadata?: Record<string, string> | undefined;
     inferTemporalFromText: boolean;
+    sourceContent: string;
   },
 ):
   | { candidate: MemoryExtractionCandidate }
@@ -433,6 +544,8 @@ function normalizeCandidate(
   const source = typeof candidate.source === "string" ? normalize(candidate.source) : undefined;
   const speaker = typeof candidate.speaker === "string" ? normalize(candidate.speaker) : undefined;
   const subjectAliases = normalizedSubjectAliases(candidate);
+  const normalizedObligation = obligationMetadata(candidate, options.sourceContent);
+  if (normalizedObligation === null) return { reason: "invalid_kind" };
   const candidateWithoutAliases = { ...candidate };
   delete (candidateWithoutAliases as { subjectAliases?: unknown }).subjectAliases;
   delete (candidateWithoutAliases as { object?: unknown }).object;
@@ -450,6 +563,8 @@ function normalizeCandidate(
     }),
     ...(options.parserTemporalMetadata ?? {}),
     ...structuredTemporalMetadata(candidate),
+    ...normalizedObligation,
+    ...eventIdentityMetadata(candidate, options.sourceContent),
   };
   return {
     candidate: {
@@ -599,6 +714,7 @@ export async function extractMemoryCandidatePlan(input: {
         createdAt: input.extractionInput.event.createdAt,
         parserTemporalMetadata,
         inferTemporalFromText,
+        sourceContent: candidateSourceContent(input.extractionInput, rawCandidate.sourceIndex),
       });
       if ("reason" in result) {
         rejected.push(rejectDecision(rawCandidate, result.reason));

@@ -5588,6 +5588,13 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       clauses.push("scope = ?");
       params.push(input.scope);
     }
+    if (input.metadataEquals) {
+      if (!/^[A-Za-z][A-Za-z0-9_]*$/u.test(input.metadataEquals.key)) {
+        throw new Error("memory list metadataEquals key must be a plain metadata field");
+      }
+      clauses.push("json_extract(metadata_json, ?) = ?");
+      params.push(`$.${input.metadataEquals.key}`, input.metadataEquals.value);
+    }
     const query = input.query?.trim() ?? "";
     if (!query) {
       return db

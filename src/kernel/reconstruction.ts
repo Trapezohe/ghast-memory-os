@@ -210,6 +210,93 @@ function uniqueMemoriesById(memories: MemoryRecord[]): MemoryRecord[] {
   return unique;
 }
 
+const EPISODE_ADJACENCY_RADIUS = 4;
+const EPISODE_SCAN_LIMIT = 500;
+
+function episodeKey(memory: MemoryRecord): string | null {
+  const value = memory.metadata.episodeKey;
+  return typeof value === "string" && /^episode_[a-f0-9]{24}$/u.test(value) ? value : null;
+}
+
+function turnOrdinal(memory: MemoryRecord): number | null {
+  const value = memory.metadata.turnOrdinal;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+async function completeEpisodeAdjacency(input: {
+  store: MemoryStore;
+  profileId: string;
+  memories: MemoryRecord[];
+  maxMemories: number;
+  includeSensitive?: boolean | undefined;
+}): Promise<MemoryRecord[]> {
+  if (!input.store.listMemories) return input.memories;
+  const seedsByEpisode = new Map<string, number[]>();
+  for (const memory of input.memories) {
+    const key = episodeKey(memory);
+    const ordinal = turnOrdinal(memory);
+    if (!key || ordinal === null) continue;
+    const ordinals = seedsByEpisode.get(key) ?? [];
+    ordinals.push(ordinal);
+    seedsByEpisode.set(key, ordinals);
+  }
+  if (seedsByEpisode.size === 0) return input.memories;
+  const episodeRanks = new Map(
+    [...seedsByEpisode.keys()].map((key, index) => [key, index]),
+  );
+  const episodeCandidates = (await Promise.all([...seedsByEpisode.keys()].map((key) =>
+    input.store.listMemories?.({
+      profileId: input.profileId,
+      status: "active",
+      metadataEquals: { key: "episodeKey", value: key },
+      includeSensitive: input.includeSensitive,
+      limit: EPISODE_SCAN_LIMIT,
+    }) ?? []
+  ))).flat();
+  const episodeTurns = uniqueMemoriesById(episodeCandidates).filter((memory) => {
+    const key = episodeKey(memory);
+    const ordinal = turnOrdinal(memory);
+    if (!key || ordinal === null || memory.metadata.turnMemory !== true) return false;
+    return (seedsByEpisode.get(key) ?? []).some(
+      (seed) => Math.abs(seed - ordinal) <= EPISODE_ADJACENCY_RADIUS,
+    );
+  }).sort((left, right) => {
+    const keyOrder = (episodeRanks.get(episodeKey(left) ?? "") ?? Number.MAX_SAFE_INTEGER) -
+      (episodeRanks.get(episodeKey(right) ?? "") ?? Number.MAX_SAFE_INTEGER);
+    return keyOrder || (turnOrdinal(left) ?? 0) - (turnOrdinal(right) ?? 0);
+  });
+  return uniqueMemoriesById([...episodeTurns, ...input.memories]).slice(0, input.maxMemories);
+}
+
+function orderEpisodeTurns(memories: MemoryRecord[]): MemoryRecord[] {
+  const groups = new Map<string, MemoryRecord[]>();
+  for (const memory of memories) {
+    const key = episodeKey(memory);
+    if (!key || turnOrdinal(memory) === null || memory.metadata.turnMemory !== true) continue;
+    const group = groups.get(key) ?? [];
+    group.push(memory);
+    groups.set(key, group);
+  }
+  const emitted = new Set<string>();
+  const output: MemoryRecord[] = [];
+  for (const memory of memories) {
+    const key = episodeKey(memory);
+    if (!key || !groups.has(key)) {
+      output.push(memory);
+      continue;
+    }
+    if (emitted.has(key)) continue;
+    emitted.add(key);
+    const group = groups.get(key);
+    if (group) {
+      output.push(...group.sort(
+        (left, right) => (turnOrdinal(left) ?? 0) - (turnOrdinal(right) ?? 0),
+      ));
+    }
+  }
+  return output;
+}
+
 function uniquePathsById(paths: ReconstructedEvidencePath[]): ReconstructedEvidencePath[] {
   const seen = new Set<string>();
   const unique: ReconstructedEvidencePath[] = [];
@@ -4512,8 +4599,11 @@ function composeReconstructedContext(input: {
       evidenceConvergence,
     });
     const output = outputState();
+    const displayMemories = orderEpisodeTurns(memories);
     const memoryById = new Map(memories.map((memory) => [memory.id, memory]));
-    const printedMemoryIndexes = new Map(memories.map((memory, index) => [memory.id, index + 1]));
+    const printedMemoryIndexes = new Map(
+      displayMemories.map((memory, index) => [memory.id, index + 1]),
+    );
     const fullIds = fullContentMemoryIds();
     const asOf = temporalReferenceDateLabel(input.asOf);
     const candidateMemories = uniqueMemoriesById([
@@ -4548,9 +4638,22 @@ function composeReconstructedContext(input: {
       const printedIndex = printedMemoryIndexForPath(path, rawPath);
       return printedIndex === undefined ? undefined : `see Memory content item ${printedIndex}`;
     };
-    const publicMemories = memories.map((memory) =>
+    const publicMemories = displayMemories.map((memory) =>
       publicMemory(memory, hideInternalRouteSignals, privateOutputSignalKeySet)
     );
+    const episodeNumbers = new Map<string, number>();
+    for (const memory of publicMemories) {
+      const key = episodeKey(memory);
+      if (key && !episodeNumbers.has(key)) episodeNumbers.set(key, episodeNumbers.size + 1);
+    }
+    const episodeSegment = (memory: MemoryRecord): string => {
+      const key = episodeKey(memory);
+      const ordinal = turnOrdinal(memory);
+      const number = key ? episodeNumbers.get(key) : undefined;
+      return number !== undefined && ordinal !== null
+        ? `Episode ${number}; turn=${ordinal}`
+        : "";
+    };
     const candidateMemoryById = new Map(candidateMemories.map((memory) => [memory.id, memory]));
     const evidenceById = new Map(evidence.map((event) => [event.id, event]));
     const authoritySurfaceForPath = (
@@ -4584,10 +4687,12 @@ function composeReconstructedContext(input: {
     const memorySurfaceEntries = publicMemories.map((memory) => {
       const content = truncateMemoryContent(memory.content, capForMemoryId(memory.id, fullIds));
       const surface = readerMemorySurfaceText(memory, { bindings: sourceBindings, content });
+      const episode = episodeSegment(memory);
+      const groupedSurface = episode ? `[${episode}] ${surface}` : surface;
       return {
-        plain: surface,
+        plain: groupedSurface,
         temporal: surfaceLine(
-          surface,
+          groupedSurface,
           includeTemporalContext ? temporalContextSegment(memory.createdAt, memory.metadata, asOf) : "",
         ),
       };
@@ -4736,7 +4841,8 @@ function composeReconstructedContext(input: {
       ...publicMemories.map(
         (memory) => {
           const content = truncateMemoryContent(memory.content, capForMemoryId(memory.id, fullIds));
-          return `- [${safePublicLabel(memory.kind)}${includeTemporalContext ? temporalContextSegment(memory.createdAt, memory.metadata, asOf) : ""}; confidence=${memory.confidence.toFixed(2)}] ${readerMemorySurfaceText(memory, { bindings: sourceBindings, content })}`;
+          const episode = episodeSegment(memory);
+          return `- [${episode ? `${episode}; ` : ""}${safePublicLabel(memory.kind)}${includeTemporalContext ? temporalContextSegment(memory.createdAt, memory.metadata, asOf) : ""}; confidence=${memory.confidence.toFixed(2)}] ${readerMemorySurfaceText(memory, { bindings: sourceBindings, content })}`;
         },
       ),
       "Reconstructed evidence paths:",
@@ -5114,14 +5220,21 @@ async function fallbackReconstruction(input: {
     queryEmbedding: input.queryEmbedding,
     expandStructuredRoleSiblings: queryNeedsEntityAliasCandidates(input.displayQuery ?? input.query),
   });
+  const completedMemories = await completeEpisodeAdjacency({
+    store: input.store,
+    profileId: input.profileId,
+    memories: safeMemories,
+    maxMemories: input.candidateMemoryLimit,
+    includeSensitive: input.includeSensitive,
+  });
   const readerEvidence = input.includeEvidence
     ? await evidenceForMemories(
         input.store,
-        safeMemories,
+        completedMemories,
         input.displayQuery ?? input.query,
       )
-    : (await establishReaderMemoryAuthority({ store: input.store, memories: safeMemories }), []);
-  const primaryMemoryIds = new Set(safeMemories.map((memory) => memory.id));
+    : (await establishReaderMemoryAuthority({ store: input.store, memories: completedMemories }), []);
+  const primaryMemoryIds = new Set(completedMemories.map((memory) => memory.id));
   const supplementalMemories = (sweepDraft?.candidates ?? [])
     .map((candidate) => candidate.memory)
     .filter((memory) => !primaryMemoryIds.has(memory.id));
@@ -5132,7 +5245,7 @@ async function fallbackReconstruction(input: {
     profileId: input.profileId,
     query: input.query,
     displayQuery: input.displayQuery,
-    memories: safeMemories,
+    memories: completedMemories,
     evidence: input.includeEvidence ? readerEvidence : [],
     paths: safePaths,
     intent: input.intent,
@@ -5724,10 +5837,17 @@ export async function reconstructMemoryContext(input: {
     queryEmbedding: input.queryEmbedding,
     expandStructuredRoleSiblings: queryNeedsEntityAliasCandidates(publicQuery),
   });
+  const completedMemories = await completeEpisodeAdjacency({
+    store: input.store,
+    profileId,
+    memories,
+    maxMemories: candidateMemoryLimit,
+    includeSensitive: input.request.includeSensitive,
+  });
   const readerEvidence = input.request.includeEvidence
-    ? await evidenceForMemories(input.store, memories, publicQuery)
-    : (await establishReaderMemoryAuthority({ store: input.store, memories }), []);
-  const primaryMemoryIds = new Set(memories.map((memory) => memory.id));
+    ? await evidenceForMemories(input.store, completedMemories, publicQuery)
+    : (await establishReaderMemoryAuthority({ store: input.store, memories: completedMemories }), []);
+  const primaryMemoryIds = new Set(completedMemories.map((memory) => memory.id));
   const supplementalMemories = (sweepDraft?.candidates ?? [])
     .map((candidate) => candidate.memory)
     .filter((memory) => !primaryMemoryIds.has(memory.id));
@@ -5738,7 +5858,7 @@ export async function reconstructMemoryContext(input: {
     profileId,
     query,
     displayQuery: publicQuery,
-    memories,
+    memories: completedMemories,
     evidence: input.request.includeEvidence ? readerEvidence : [],
     paths,
     intent,

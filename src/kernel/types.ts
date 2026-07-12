@@ -1562,6 +1562,10 @@ export interface MemoryListInput {
   status?: MemoryStatus | "any" | undefined;
   kind?: MemoryKind | undefined;
   scope?: string | undefined;
+  metadataEquals?: {
+    key: string;
+    value: string;
+  } | undefined;
   includeSensitive?: boolean | undefined;
   includePerson?: boolean | undefined;
 }

@@ -255,6 +255,14 @@ Memory and reconstruction content lines also carry compact temporal labels from
 existing metadata, so reader models can reason about dates without schema
 changes or extra retrieval passes.
 
+Conversation ingest hashes the profile plus raw session route into an opaque
+`episodeKey`; raw session and conversation identifiers remain scrubbed. Retained
+turns carry their zero-based `turnOrdinal`, and facts grounded to that episode
+inherit the same lineage. When a selected memory has this lineage,
+reconstruction performs a bounded read-only lookup for nearby retained turns and
+renders each episode in ordinal order. This restores dialogue and revision
+continuity without a write during reconstruction or a separate artifact graph.
+
 For aggregation queries, hosts can declare `reconstructionIntent.sweepCues`.
 Those cues do not seed or rerank ordinary retrieval. After the ordinary memory
 and path sections are complete, gmOS runs bounded per-cue searches through the

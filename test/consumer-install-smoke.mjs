@@ -892,6 +892,7 @@ try {
         type ExplainTurnInput,
         type LowLevelAddManyResult,
         type MemoryExtractor,
+        type MemoryListInput,
         type MemoryOS,
         type MemoryReadRetrievalOptions,
         type MemoryRecord,
@@ -1001,6 +1002,11 @@ try {
       const sqliteStore: SqliteMemoryStore = createSqliteMemoryStore({ path: ":memory:" });
       const genericStore: MemoryStore = sqliteStore;
       const schemaVersion: number = sqliteStore.schemaVersion();
+      const episodeListInput: MemoryListInput = {
+        profileId: "consumer-types",
+        metadataEquals: { key: "episodeKey", value: "episode_0123456789abcdef01234567" },
+      };
+      await genericStore.listMemories?.(episodeListInput);
       const memory = createMemoryOS({ profileId: "consumer-types", store: genericStore });
       const observeOnlyHost: Pick<MemoryOS, "observe"> = {
         async observe() {},

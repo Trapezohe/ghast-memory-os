@@ -1090,6 +1090,19 @@ function conversationRouteKey(
   return JSON.stringify([profileId, route.kind, route.value]);
 }
 
+function episodeKeyForConversation(
+  profileId: string,
+  event: Extract<HostEvent, { type: "conversation.message" }>,
+): string | null {
+  const route = conversationRoute(event);
+  if (route.value === null) return null;
+  const digest = createHash("sha256")
+    .update(JSON.stringify([profileId, route.kind, route.value]), "utf8")
+    .digest("hex")
+    .slice(0, 24);
+  return `episode_${digest}`;
+}
+
 const DEFAULT_SESSION_DISTILLATION_MAX_CHARS = 24_000;
 const SESSION_EVIDENCE_SAMPLE_LIMIT = 64;
 
@@ -2433,6 +2446,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     allowLowerTrustPolicyWrites: boolean;
     kind: MemoryKind;
     confidence: number;
+    episodeKey?: string | undefined;
+    turnOrdinal?: number | undefined;
   }): Promise<TurnMemoryWrite | null> {
     if (input.kind === "person" || isPersonRoutedMemory(input.event.content)) return null;
     if (
@@ -2514,6 +2529,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           ...annealingMetadata,
           sourceRole: input.event.role,
           eventTime,
+          ...(input.episodeKey ? { episodeKey: input.episodeKey } : {}),
+          ...(input.turnOrdinal !== undefined ? { turnOrdinal: input.turnOrdinal } : {}),
           ...(Object.keys(input.eventMetadata).length > 0
             ? { sourceMetadata: input.eventMetadata }
             : {}),
@@ -2709,6 +2726,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
 
   interface WindowMember extends ConversationEvidenceWrite {
     result: ObserveResult;
+    episodeKey?: string | undefined;
+    turnOrdinal?: number | undefined;
   }
 
   interface SessionDistillationGroup {
@@ -3590,6 +3609,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     const turnMemoryWrites: TurnMemoryWrite[] = [];
     const extractedFactMemories: MemoryRecord[] = [];
     let entityConsolidationStats: EntityConsolidationStats | undefined;
+    const turnOrdinalsByEpisode = new Map<string, number>();
 
     function windowChars(members: WindowMember[]): number {
       return members.reduce((sum, member) => sum + member.event.content.length, 0);
@@ -3782,6 +3802,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         (sourceTrust, member) => lowerTrust(sourceTrust, member.sourceTrust),
         "user",
       );
+      const episodeKeys = [...new Set(members.flatMap((member) =>
+        member.episodeKey ? [member.episodeKey] : []
+      ))];
+      const windowEpisodeKey = episodeKeys.length === 1 ? episodeKeys[0] : undefined;
       let profileDedupeKeys = dedupeKeysByProfile.get(windowProfileId);
       if (!profileDedupeKeys) {
         profileDedupeKeys = new Set<string>();
@@ -3818,6 +3842,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
             sourceEventId: source.evidence.id,
             metadata: {
               windowEvidenceIds,
+              ...(windowEpisodeKey ? { episodeKey: windowEpisodeKey } : {}),
+              ...(source.turnOrdinal !== undefined ? { turnOrdinal: source.turnOrdinal } : {}),
               ...(validSourceIndex !== undefined
                 ? {
                     sourceIndex: validSourceIndex,
@@ -3838,7 +3864,19 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       });
       results.push(recorded.result);
       if (!recorded.write) continue;
-      const member: WindowMember = { ...recorded.write, result: recorded.result };
+      const episodeKey = episodeKeyForConversation(recorded.result.profileId, recorded.write.event);
+      const turnOrdinal = episodeKey === null
+        ? undefined
+        : turnOrdinalsByEpisode.get(episodeKey) ?? 0;
+      if (episodeKey !== null && turnOrdinal !== undefined) {
+        turnOrdinalsByEpisode.set(episodeKey, turnOrdinal + 1);
+      }
+      const member: WindowMember = {
+        ...recorded.write,
+        result: recorded.result,
+        ...(episodeKey ? { episodeKey } : {}),
+        ...(turnOrdinal !== undefined ? { turnOrdinal } : {}),
+      };
       sessionMembers.push(member);
       const recordedEvent = recorded.write.event;
       if (turnRetention && !isPersonRoutedMemory(recordedEvent.content)) {
@@ -3853,6 +3891,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           allowLowerTrustPolicyWrites: recorded.write.allowLowerTrustPolicyWrites,
           kind: turnRetention.kind,
           confidence: turnRetention.confidence,
+          episodeKey: member.episodeKey,
+          turnOrdinal: member.turnOrdinal,
         });
         if (turnMemory) turnMemoryWrites.push(turnMemory);
       }
