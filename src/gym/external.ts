@@ -4074,6 +4074,7 @@ interface CompletedEventReviewAssertion {
   evidence: string;
   observationDate?: string | undefined;
   occurrenceDateHints: string[];
+  occurrenceDateSource: "explicit" | "observation" | "none";
   hasProspectiveLanguage: boolean;
 }
 
@@ -4121,6 +4122,8 @@ function completedEventReviewAssertions(context: string): CompletedEventReviewAs
   const seenDerived = new Set<string>();
   const prospectiveLanguage =
     /\b(?:am|are|is|was|were)?\s*(?:considering|hoping|intending|planning|scheduled)\b|\b(?:going|need|needs|plan|plans|planned|want|wants|wanted|will|would like) to\b|\b(?:future|next|upcoming)\s+(?:appointment|booking|flight|trip|visit)\b|\b(?:haven't|hasn't|have not|has not)\s+(?:booked|completed|done|visited)\b|(?:计划|打算|准备|将要|尚未|还没)/iu;
+  const completedEventLanguage =
+    /\b(?:attended|bought|completed|delivered|diagnosed|experienced|finished|flew|flown|got back|had|received|recorded|saw|seen|taking|took|used|visited|went|worked)\b|\b(?:was|were) prescribed\b|(?:已经|曾经|去过|完成|购买|收到|诊断|处方|参加过)/iu;
   for (const rawLine of context.split(/\r?\n/u)) {
     const evidence = userGroundedContextContent(rawLine);
     if (!evidence) continue;
@@ -4130,11 +4133,20 @@ function completedEventReviewAssertions(context: string): CompletedEventReviewAs
     if (seen.has(key)) continue;
     seen.add(key);
     const observationDate = completedEventObservationDate(rawLine);
+    const hasProspectiveLanguage = prospectiveLanguage.test(evidence);
+    if (!derived && hasProspectiveLanguage && !completedEventLanguage.test(evidence)) continue;
+    const occurrenceDateHints = completedEventOccurrenceDateHints(evidence, observationDate);
+    const occurrenceDateSource = dateAnswerMatches(evidence).length > 0
+      ? "explicit"
+      : observationDate
+        ? "observation"
+        : "none";
     const assertion: CompletedEventReviewAssertion = {
       evidence,
       ...(observationDate ? { observationDate } : {}),
-      occurrenceDateHints: completedEventOccurrenceDateHints(evidence, observationDate),
-      hasProspectiveLanguage: prospectiveLanguage.test(evidence),
+      occurrenceDateHints,
+      occurrenceDateSource,
+      hasProspectiveLanguage,
     };
     if (derived) derivedAssertions.push(assertion);
     else directAssertions.push(assertion);
@@ -4142,7 +4154,7 @@ function completedEventReviewAssertions(context: string): CompletedEventReviewAs
   }
   return {
     directAssertions: directAssertions.slice(0, 40),
-    derivedAssertions: derivedAssertions.slice(0, 16),
+    derivedAssertions: directAssertions.length === 0 ? derivedAssertions.slice(0, 16) : [],
   };
 }
 
@@ -4293,7 +4305,7 @@ export function createOpenAICompatibleExternalBenchmarkAnswerer(
             pendingLedgerReview
               ? "Perform a ledger audit using the supplied structured assertions. Each pending assertion establishes a row. Remove a row only when a supplied independent completion assertion explicitly matches its action and target. Transaction status and omission are not completion assertions. Return JSON only: {\"answer\":\"final corrected answer\"}."
               : completedEventLedgerReview
-                ? "Independently reconstruct a completed-event aggregation from the supplied user-grounded assertions. Build a private ledger of distinct entities the user actually experienced. A diagnosis, prescription, biopsy or recorded result, delivered service, completed purchase, or attended follow-up is concrete completion evidence even when the word completed is absent. Exclude plans, intentions, future or unbooked actions, hypothetical options, loyalty relationships, and assistant suggestions. An assertion may mix completed and prospective clauses; classify each clause separately. Prefer directAssertions over derivedAssertions when they conflict or paraphrases lose temporal detail. Deduplicate repeated mentions of the same entity. For chronological order, an explicit event date represented in occurrenceDateHints overrides observationDate; observationDate is only the fallback when the assertion contains no event date. Return exactly one canonical final result. Do not echo a draft, provisional or discarded ordering, duplicate entity, private ledger, chronology explanation, or alternate second list. Return JSON only: {\"answer\":\"final corrected answer\"}."
+                ? "Independently reconstruct a completed-event aggregation from the supplied user-grounded assertions. Build a private ledger of distinct entities the user actually experienced. A diagnosis, prescription, biopsy or recorded result, delivered service, completed purchase, or attended follow-up is concrete completion evidence even when the word completed is absent. Exclude plans, intentions, future or unbooked actions, hypothetical options, loyalty relationships, and assistant suggestions. An assertion may mix completed and prospective clauses; classify each clause separately. Prefer directAssertions over derivedAssertions when they conflict or paraphrases lose temporal detail. Deduplicate repeated mentions of the same entity. For chronological order, occurrenceDateSource=explicit overrides observationDate. When repeated assertions describe the same event, an explicit occurrence date overrides every observation-date fallback for that event across the assertions; observationDate is only a fallback when no mention of that event supplies an explicit date. Return exactly one canonical final result. For an enumeration or ordering question, the answer field must contain only one comma-separated final list in the requested order. For a count question, it must contain only one short final count statement. Do not include explanation, dates, bullets, numbering, a draft, provisional or discarded ordering, duplicate entity, private ledger, or alternate second answer. Return JSON only: {\"answer\":\"final corrected answer\"}."
               : "Audit a draft that claims the requested attribute is missing. Reconstruct the immediate dialogue chain and apply the bounded dialogue-ratification rule. If the user confirmed the sole candidate while continuing the subject, use that ratified attribute. If confirmation, subject continuity, or uniqueness is absent, keep the uncertainty. Return JSON only: {\"answer\":\"final corrected answer\"}.",
           ].join("\n"),
         },

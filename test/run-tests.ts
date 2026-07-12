@@ -38578,7 +38578,7 @@ assert.equal(
   await completedEventReviewAnswerer.answer(
     "How many different service providers did I visit?",
     [
-      '- observed=2023-01-15; source_role=user; source_trust=user content="I received a diagnosis and prescription from specialist Dr. Rowan on February 10th."',
+      '- observed=2023-01-15; source_role=user; source_trust=user content="I am planning a future check, but I received a diagnosis and prescription from specialist Dr. Rowan on February 10th."',
       '- observed=2023-01-28; source_role=user; source_trust=user content="I attended a follow-up with Dr. Vale today."',
       '- observed=2023-01-28; source_role=user; source_trust=user content="I plan to visit Dr. Moss next month."',
       '- observed 2023-01-15; source_role=user; source_trust=user content="user had recent experience with specialist Dr. Rowan"',
@@ -38602,12 +38602,15 @@ assert.match(
 );
 assert.match(
   completedEventReviewBodies[1]?.messages?.[0]?.content ?? "",
-  /return exactly one canonical final result.*do not echo a draft, provisional or discarded ordering, duplicate entity/iu,
+  /when repeated assertions describe the same event, an explicit occurrence date overrides every observation-date fallback.*answer field must contain only one comma-separated final list in the requested order/iu,
 );
 const completedEventReviewPayload = completedEventReviewBodies[1]?.messages?.[1]?.content ?? "";
 assert.match(completedEventReviewPayload, /"occurrenceDateHints":\["2023-02-10"\]/u);
+assert.match(completedEventReviewPayload, /"occurrenceDateSource":"explicit"/u);
 assert.match(completedEventReviewPayload, /"hasProspectiveLanguage":true/u);
-assert.match(completedEventReviewPayload, /"derivedAssertions":\[/u);
+assert.match(completedEventReviewPayload, /"derivedAssertions":\[\]/u);
+assert.doesNotMatch(completedEventReviewPayload, /Dr\. Moss/u);
+assert.doesNotMatch(completedEventReviewPayload, /recent experience with specialist/u);
 assert.doesNotMatch(completedEventReviewPayload, /Dr\. Reed/u);
 assert.doesNotMatch(completedEventReviewPayload, /draftAnswer/u);
 assert.equal(completedEventReviewAnswerer.manifest?.semanticReviewCount, 1);
