@@ -9,6 +9,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -5093,6 +5094,55 @@ assert.equal(
   episodeSelectionContext.contextBlock.match(/EpisodeSelection unique fact 0\./gu)?.length,
   1,
 );
+const singleEpisodeScans: string[] = [];
+const singleEpisodeStore = {
+  searchMemories() {
+    return episodeSelectionSeeds.slice(0, 2);
+  },
+  listMemories(input: { metadataEquals?: { value?: string } }) {
+    const key = input.metadataEquals?.value ?? "";
+    singleEpisodeScans.push(key);
+    return episodeSelectionTurns.get(key) ?? [];
+  },
+  listEvidenceForMemory() {
+    return [];
+  },
+} as unknown as MemoryStore;
+const episodeExpansionOff = await reconstructMemoryContext({
+  store: singleEpisodeStore,
+  defaultProfileId: "episode-selection",
+  request: {
+    profileId: "episode-selection",
+    query: "EpisodeSelection",
+    maxMemories: 20,
+    contextBudgetTokens: 4000,
+    maxCharsPerMemory: 120,
+    includeEvidence: false,
+    stopWhenEvidenceEnough: false,
+    episodeExpansion: "off",
+  },
+});
+assert.deepEqual(singleEpisodeScans, []);
+assert.match(episodeExpansionOff.contextBlock, /EpisodeSelection unique fact 0/u);
+assert.doesNotMatch(episodeExpansionOff.contextBlock, /EpisodeSelection neighbor/u);
+const episodeExpansionAdjacent = await reconstructMemoryContext({
+  store: singleEpisodeStore,
+  defaultProfileId: "episode-selection",
+  request: {
+    profileId: "episode-selection",
+    query: "EpisodeSelection",
+    maxMemories: 20,
+    contextBudgetTokens: 4000,
+    maxCharsPerMemory: 120,
+    includeEvidence: false,
+    stopWhenEvidenceEnough: false,
+    episodeExpansion: "adjacent",
+  },
+});
+assert.deepEqual(singleEpisodeScans, [String(episodeSelectionSeeds[1]?.metadata.episodeKey)]);
+assert.match(episodeExpansionAdjacent.contextBlock, /Episode 1; turn=0/u);
+assert.match(episodeExpansionAdjacent.contextBlock, /Episode 1; turn=1/u);
+assert.doesNotMatch(episodeExpansionAdjacent.contextBlock, /Episode 1; turn=2/u);
 
 const sessionDistillationStore = createSqliteMemoryStore({
   path: path.join(tmp, "session-distillation.db"),
@@ -31970,6 +32020,7 @@ const denseSummaryContext = await reconstructMemoryContext({
     contextBudgetTokens: 6000,
     maxCharsPerMemory: 400,
     stopWhenEvidenceEnough: false,
+    episodeExpansion: "adjacent",
     layerPolicy: { summaryMinShare: 0.3, turnMaxShare: 0.4 },
   },
 });
@@ -31981,6 +32032,32 @@ assert.deepEqual(
 );
 for (const summary of denseSummaryRows) {
   assert.equal(denseSummaryContext.contextBlock.includes(summary.content), true);
+}
+const denseSummaryOffContext = await reconstructMemoryContext({
+  store: {
+    searchMemories(input: { limit?: number }) {
+      return [...denseSummarySeeds, ...denseSummaryRows, ...denseSummaryAtoms]
+        .slice(0, input.limit ?? 306);
+    },
+    listEvidenceForMemory() {
+      return [];
+    },
+  } as unknown as MemoryStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "DenseSummaryKey",
+    maxMemories: 20,
+    contextBudgetTokens: 6000,
+    maxCharsPerMemory: 400,
+    stopWhenEvidenceEnough: false,
+    episodeExpansion: "off",
+    layerPolicy: { summaryMinShare: 0.3, turnMaxShare: 0.4 },
+  },
+});
+for (const context of [denseSummaryContext, denseSummaryOffContext]) {
+  assert.equal((context.stats.layers?.included.summary ?? 0) > 0, true);
+  assert.match(context.contextBlock, /DenseSummaryKey guaranteed session summary/u);
 }
 
 const denseEpisodeKey = "episode_0000000000000000000000ff";
@@ -32039,6 +32116,7 @@ const denseEpisodeContext = await reconstructMemoryContext({
     contextBudgetTokens: 4000,
     maxCharsPerMemory: 400,
     stopWhenEvidenceEnough: false,
+    episodeExpansion: "adjacent",
     layerPolicy: { summaryMinShare: 0.3, turnMaxShare: 0.4 },
   },
 });
@@ -32048,7 +32126,7 @@ const denseEpisodeContribution = denseEpisodeContext.memories
     const chars = [...memory.content].length;
     return tokens + Math.ceil((chars <= 400 ? chars : 403) / 4) + 64;
   }, 0);
-assert.equal(denseEpisodeContribution <= Math.floor(4000 * 0.4), true);
+assert.equal(denseEpisodeContribution <= Math.floor(4000 * 0.1), true);
 assert.match(denseEpisodeContext.contextBlock, /hotel preference gold line/u);
 assert.match(denseEpisodeContext.contextBlock, /preference summary preserves the hotel preference/u);
 assert.match(denseEpisodeContext.contextBlock, /standalone preference fact remains available/u);
@@ -39662,6 +39740,7 @@ const checkpointCustomManifestRun = await runExternalMemoryBenchmark({
   },
 });
 assert.equal(checkpointCustomManifestRun.pass, true);
+assert.equal(checkpointCustomManifest?.contract.run.episodeExpansion, "adjacent");
 assert.equal(
   JSON.stringify({
     checkpoint: checkpointCustomManifest,
@@ -41846,6 +41925,7 @@ const externalBenchmarkWithManifest = await runExternalMemoryBenchmark({
 });
 assert.equal(externalBenchmarkWithManifest.runManifest.dataset.hash, externalHash);
 assert.equal(externalBenchmarkWithManifest.runManifest.dataset.id, "unit-fixture");
+assert.equal(externalBenchmarkWithManifest.runManifest.options.episodeExpansion, "adjacent");
 const externalReaderProfileBenchmark = await runExternalMemoryBenchmark({
   cases: externalCases.slice(0, 1),
   readerProfile: "expansive",
@@ -43412,6 +43492,28 @@ if (process.platform !== "win32") {
     assert.equal(statSync(path.join(externalIngestCacheDir, entry)).mode & 0o777, 0o600);
   }
 }
+const artifactLegacyMetaName = readdirSync(externalIngestCacheDir)
+  .filter((entry) => entry.endsWith(".meta.json"))
+  .sort()[0]!;
+const artifactLegacyKey = artifactLegacyMetaName.replace(/\.meta\.json$/u, "");
+const artifactLegacyMetaPath = path.join(externalIngestCacheDir, artifactLegacyMetaName);
+const artifactLegacyMeta = JSON.parse(readFileSync(artifactLegacyMetaPath, "utf8")) as {
+  key: string;
+  keyFields: Record<string, unknown>;
+};
+artifactLegacyMeta.keyFields.checkpointArtifactDigest = `sha256:${"f".repeat(64)}`;
+const artifactLegacyReplacementKey = checkpointFixtureHash(artifactLegacyMeta.keyFields).slice(7);
+artifactLegacyMeta.key = artifactLegacyReplacementKey;
+renameSync(
+  path.join(externalIngestCacheDir, `${artifactLegacyKey}.db`),
+  path.join(externalIngestCacheDir, `${artifactLegacyReplacementKey}.db`),
+);
+writeFileSync(
+  path.join(externalIngestCacheDir, `${artifactLegacyReplacementKey}.meta.json`),
+  `${JSON.stringify(artifactLegacyMeta, null, 2)}\n`,
+  { mode: 0o600 },
+);
+unlinkSync(artifactLegacyMetaPath);
 externalIngestCacheExtractorCalls = 0;
 const externalIngestCacheSecond = await runExternalMemoryBenchmark({
   cases: externalIngestCacheCases,
@@ -47517,6 +47619,7 @@ const cliExternalJson = JSON.parse(cliExternal.stdout) as {
       maxBranch?: number | null;
       maxMemories?: number | null;
       contextBudgetTokens?: number | null;
+      episodeExpansion?: string;
       failureSampleLimit?: number;
       diagnosticsLevel?: string;
       judgeProfile?: string;
@@ -47548,6 +47651,7 @@ assert.equal(cliExternalJson.runManifest?.options?.maxSteps, 8);
 assert.equal(cliExternalJson.runManifest?.options?.maxBranch, 10);
 assert.equal(cliExternalJson.runManifest?.options?.maxMemories, 24);
 assert.equal(cliExternalJson.runManifest?.options?.contextBudgetTokens, 4000);
+assert.equal(cliExternalJson.runManifest?.options?.episodeExpansion, "adjacent");
 assert.equal(cliExternalJson.runManifest?.options?.failureSampleLimit, 3);
 assert.equal(cliExternalJson.runManifest?.options?.diagnosticsLevel, "basic");
 assert.equal(cliExternalJson.runManifest?.protocol, "deterministic_local");
@@ -47589,6 +47693,8 @@ const cliExternalWide = spawnSync(
     "1",
     "--reader-profile",
     "wide",
+    "--episode-expansion",
+    "off",
   ],
   { cwd: process.cwd(), encoding: "utf8" },
 );
@@ -47602,6 +47708,7 @@ const cliExternalWideJson = JSON.parse(cliExternalWide.stdout) as {
       maxCharsPerMemory?: number | null;
       fullContentTopRank?: number | null;
       fullContentMaxChars?: number | null;
+      episodeExpansion?: string;
       layerPolicy?: { summaryMinShare?: number; turnMaxShare?: number } | null;
     };
   };
@@ -47613,11 +47720,29 @@ assert.equal(cliExternalWideJson.runManifest?.options?.contextBudgetTokens, 1600
 assert.equal(cliExternalWideJson.runManifest?.options?.maxCharsPerMemory, 400);
 assert.equal(cliExternalWideJson.runManifest?.options?.fullContentTopRank, 16);
 assert.equal(cliExternalWideJson.runManifest?.options?.fullContentMaxChars, 1600);
+assert.equal(cliExternalWideJson.runManifest?.options?.episodeExpansion, "off");
 assert.deepEqual(cliExternalWideJson.runManifest?.options?.layerPolicy, {
   summaryMinShare: 0.3,
   turnMaxShare: 0.4,
 });
 assert.equal((cliExternalWideJson.cases?.[0]?.reconstructedLayerIncludedCounts?.atom ?? 0) > 0, true);
+const cliExternalInvalidEpisodeExpansion = spawnSync(
+  process.execPath,
+  [
+    "--import",
+    "tsx",
+    "src/cli/gmos.ts",
+    "gym",
+    "external",
+    "--input-file",
+    externalBenchmarkFile,
+    "--episode-expansion",
+    "sideways",
+  ],
+  { cwd: process.cwd(), encoding: "utf8" },
+);
+assert.notEqual(cliExternalInvalidEpisodeExpansion.status, 0);
+assert.match(cliExternalInvalidEpisodeExpansion.stderr, /--episode-expansion must be off, adjacent, or full/u);
 const cliExternalWideOverride = spawnSync(
   process.execPath,
   [

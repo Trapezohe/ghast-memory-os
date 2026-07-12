@@ -1093,6 +1093,7 @@ export interface ReconstructContextInput {
   maxCharsPerMemory?: number | undefined;
   fullContentTopRank?: number | undefined;
   fullContentMaxChars?: number | undefined;
+  episodeExpansion?: "off" | "adjacent" | "full" | undefined;
   layerPolicy?: ReconstructionLayerPolicy | undefined;
   retrieval?: MemoryReadRetrievalOptions | undefined;
 }

@@ -202,7 +202,7 @@ Usage:
   gmos gym run --db :memory: --generated-seeds 3 --format markdown --report-file ./memory-gym.md
   gmos gym scale --sizes 100,1000 --threshold-p95-ms 250 --ingest-threshold-p95-ms 25 --ingest-last-to-first-factor 3
   gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format markdown --protocol deterministic-local --require-convergence --include-sensitive --temporal-metadata
-  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --reader-profile expansive --source-evidence on --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --reader-profile expansive --episode-expansion adjacent --source-evidence on --format json --json-file ./longmemeval.json --markdown-file ./longmemeval.md --concurrency 4 --diagnostics-level full --progress
   gmos gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --max-cases 5 --results-jsonl ./paid-smoke.results.jsonl
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --resume-results-jsonl /outside/repo/longmemeval.results.jsonl
@@ -1127,6 +1127,12 @@ function readerProfileOption(): "default" | "expansive" | "wide" {
   const raw = value("--reader-profile", "default");
   if (raw === "default" || raw === "expansive" || raw === "wide") return raw;
   throw new Error("--reader-profile must be default, expansive, or wide");
+}
+
+function episodeExpansionOption(): "off" | "adjacent" | "full" {
+  const raw = value("--episode-expansion", "adjacent");
+  if (raw === "off" || raw === "adjacent" || raw === "full") return raw;
+  throw new Error("--episode-expansion must be off, adjacent, or full");
 }
 
 function externalProtocolOption(): "deterministic_local" | "official_protocol" {
@@ -2731,6 +2737,7 @@ async function main(): Promise<void> {
     const caseOffset = nonNegativeIntegerOptionValue("--case-offset");
     const caseIds = commaSeparatedStringOption("--case-ids");
     const readerProfile = readerProfileOption();
+    const episodeExpansion = episodeExpansionOption();
     const maxSteps = positiveIntegerOptionValue("--max-steps");
     const maxBranch = positiveIntegerOptionValue("--max-branch");
     const maxMemories = positiveIntegerOptionValue("--max-memories");
@@ -2883,6 +2890,7 @@ async function main(): Promise<void> {
       ...(fullContentMaxChars !== undefined ? { fullContentMaxChars } : {}),
       ...(has("--no-anchor-coverage") ? { anchorCoverage: false } : {}),
       readerProfile,
+      episodeExpansion,
       ...(benchmarkDebugDir ? { debugDir: benchmarkDebugDir } : {}),
       ...(readerContextCharLimit !== undefined ? { readerContextCharLimit } : {}),
       ...(debugContextFailureLimit !== undefined ? { debugContextFailureLimit } : {}),

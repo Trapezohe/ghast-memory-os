@@ -901,6 +901,7 @@ try {
         type OpenAICompatibleExtractorOptions,
         type QueryEmbeddingFailureReason,
         type ReadAuditSnapshot,
+        type ReconstructContextInput,
         type RepairSearchIndexResult,
         type SearchIndexStatus,
         type TurnExplanationReport,
@@ -1136,6 +1137,12 @@ try {
         kind: "preference",
         content: "Typed consumer low-level API fixture.",
       });
+      const typedReconstructInput: ReconstructContextInput = {
+        profileId: "consumer-types",
+        query: "typed consumer fixture",
+        episodeExpansion: "adjacent",
+      };
+      await memory.reconstructContext(typedReconstructInput);
       const typedBatch: LowLevelAddManyResult = await memory.addMany([{
         profileId: "consumer-types",
         kind: "fact",

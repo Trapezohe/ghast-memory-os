@@ -222,7 +222,16 @@ function uniqueMemoriesById(memories: MemoryRecord[]): MemoryRecord[] {
 }
 
 const EPISODE_SCAN_LIMIT = 500;
-const EPISODE_EXPANSION_CONTEXT_SHARE = 0.4;
+const EPISODE_ADJACENT_CONTEXT_SHARE = 0.1;
+const EPISODE_FULL_CONTEXT_SHARE = 0.4;
+
+function normalizedEpisodeExpansion(
+  input: ReconstructContextInput["episodeExpansion"],
+): NonNullable<ReconstructContextInput["episodeExpansion"]> {
+  if (input === undefined) return "full";
+  if (input === "off" || input === "adjacent" || input === "full") return input;
+  throw new Error("gmOS reconstructContext episodeExpansion must be off, adjacent, or full");
+}
 
 function episodeKey(memory: MemoryRecord): string | null {
   const value = memory.metadata.episodeKey;
@@ -245,13 +254,14 @@ async function completeEpisodeAdjacency(input: {
   maxCharsPerMemory?: number | undefined;
   fullContentMaxChars?: number | undefined;
   includeSensitive?: boolean | undefined;
+  episodeExpansion: NonNullable<ReconstructContextInput["episodeExpansion"]>;
 }): Promise<{ memories: MemoryRecord[]; protectedMemoryIds: Set<string> }> {
   const initialFloor = allocateLayeredMemories({
     memories: input.memories,
     maxMemories: input.maxMemories,
     policy: input.layerPolicy,
   });
-  if (!input.store.listMemories) {
+  if (input.episodeExpansion === "off" || !input.store.listMemories) {
     return {
       memories: input.memories,
       protectedMemoryIds: new Set(initialFloor.map((memory) => memory.id)),
@@ -326,7 +336,11 @@ async function completeEpisodeAdjacency(input: {
   );
   const contextBudget = input.contextBudgetTokens ?? 1800;
   const expansionBudget = Math.max(0, Math.min(
-    Math.floor(contextBudget * EPISODE_EXPANSION_CONTEXT_SHARE),
+    Math.floor(contextBudget * (
+      input.episodeExpansion === "adjacent"
+        ? EPISODE_ADJACENT_CONTEXT_SHARE
+        : EPISODE_FULL_CONTEXT_SHARE
+    )),
     contextBudget - floorTokens,
   ));
   const turnsByEpisode = new Map<string, Map<number, MemoryRecord>>();
@@ -357,7 +371,8 @@ async function completeEpisodeAdjacency(input: {
     const turns = turnsByEpisode.get(key);
     if (!turns || turns.size === 0) continue;
     const maxOrdinal = Math.max(...turns.keys());
-    for (let distance = 1; distance <= maxOrdinal; distance += 1) {
+    const maxDistance = input.episodeExpansion === "adjacent" ? 1 : maxOrdinal;
+    for (let distance = 1; distance <= maxDistance; distance += 1) {
       for (const ordinal of ordinals) {
         addTurn(turns.get(ordinal + distance));
         addTurn(turns.get(ordinal - distance));
@@ -5212,6 +5227,7 @@ async function fallbackReconstruction(input: {
   recallPurpose: ReconstructionRecallPurpose;
   includeEvidence?: boolean | undefined;
   includeSensitive?: boolean | undefined;
+  episodeExpansion: NonNullable<ReconstructContextInput["episodeExpansion"]>;
   contextBudgetTokens?: number | undefined;
   maxMemories: number;
   candidateMemoryLimit: number;
@@ -5398,6 +5414,7 @@ async function fallbackReconstruction(input: {
     maxCharsPerMemory: input.maxCharsPerMemory,
     fullContentMaxChars: input.fullContentMaxChars,
     includeSensitive: input.includeSensitive,
+    episodeExpansion: input.episodeExpansion,
   });
   const completedMemories = episodeCompletion.memories;
   const readerEvidence = input.includeEvidence
@@ -5478,6 +5495,7 @@ export async function reconstructMemoryContext(input: {
     fullContentMaxChars: input.request.fullContentMaxChars,
   });
   const layerPolicy = normalizedLayerPolicy(input.request.layerPolicy);
+  const episodeExpansion = normalizedEpisodeExpansion(input.request.episodeExpansion);
   const candidateMemoryLimit = layerCandidateMemoryLimit(maxMemories, layerPolicy);
   const anchorCoverageEnabled = input.request.anchorCoverage !== false;
   const stopWhenEvidenceEnough = input.request.stopWhenEvidenceEnough !== false;
@@ -5516,6 +5534,7 @@ export async function reconstructMemoryContext(input: {
       recallPurpose,
       includeEvidence: input.request.includeEvidence,
       includeSensitive: input.request.includeSensitive,
+      episodeExpansion,
       contextBudgetTokens: input.request.contextBudgetTokens,
       maxMemories,
       candidateMemoryLimit,
@@ -6022,6 +6041,7 @@ export async function reconstructMemoryContext(input: {
     maxCharsPerMemory,
     fullContentMaxChars,
     includeSensitive: input.request.includeSensitive,
+    episodeExpansion,
   });
   const completedMemories = episodeCompletion.memories;
   const readerEvidence = input.request.includeEvidence

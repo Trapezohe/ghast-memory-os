@@ -42,6 +42,7 @@ import type {
   QueryEmbeddingFailureReason,
   PrivacyMode,
   PreparedTurn,
+  ReconstructContextInput,
   ReconstructedContext,
   ReconstructedEvidencePath,
   ReconstructionIntentHint,
@@ -828,6 +829,7 @@ export interface ExternalMemoryBenchmarkRunManifest {
     maxCharsPerMemory?: number | null | undefined;
     fullContentTopRank?: number | null | undefined;
     fullContentMaxChars?: number | null | undefined;
+    episodeExpansion: NonNullable<ReconstructContextInput["episodeExpansion"]>;
     layerPolicy?: ReconstructionLayerPolicy | null | undefined;
     readerProfile: ExternalMemoryBenchmarkReaderProfile;
     temporalMode: ExternalMemoryBenchmarkTemporalMode | null;
@@ -975,6 +977,7 @@ export interface RunExternalMemoryBenchmarkOptions {
   maxCharsPerMemory?: number | undefined;
   fullContentTopRank?: number | undefined;
   fullContentMaxChars?: number | undefined;
+  episodeExpansion?: ReconstructContextInput["episodeExpansion"];
   layerPolicy?: ReconstructionLayerPolicy | undefined;
   temporalMode?: ExternalMemoryBenchmarkTemporalMode | undefined;
   includeSensitive?: boolean | undefined;
@@ -1988,24 +1991,28 @@ function sqliteCacheFileIsComplete(
   }
 }
 
-function cacheMetaIsComplete(plan: IngestCachePlan): boolean {
+function completeIngestCacheMeta(
+  metaFile: string,
+): { key: string; fields: IngestCacheKeyFields } | null {
   try {
-    const parsed = JSON.parse(readFileSync(plan.metaFile, "utf8")) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    const parsed = JSON.parse(readFileSync(metaFile, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
     const meta = parsed as Record<string, unknown>;
+    const fields = meta.keyFields;
     if (
       meta.schema !== "gmos.external_ingest_cache.meta.v2" ||
-      meta.key !== plan.key ||
       meta.complete !== true ||
-      canonicalJson(meta.keyFields) !== canonicalJson(plan.fields)
+      typeof meta.key !== "string" ||
+      !fields || typeof fields !== "object" || Array.isArray(fields) ||
+      sha256Hex(canonicalJson(fields)) !== meta.key
     ) {
-      return false;
+      return null;
     }
     const integrity = meta.integrity;
-    if (!integrity || typeof integrity !== "object" || Array.isArray(integrity)) return false;
+    if (!integrity || typeof integrity !== "object" || Array.isArray(integrity)) return null;
     const counts = integrity as Record<string, unknown>;
-    if (counts.searchIndexComplete !== true) return false;
-    return [
+    if (counts.searchIndexComplete !== true) return null;
+    const complete = [
       counts.unresolvedExtractionWindowCount,
       counts.embeddingFailureCount,
       counts.pendingVectorCount,
@@ -2013,6 +2020,47 @@ function cacheMetaIsComplete(plan: IngestCachePlan): boolean {
       counts.entityConsolidationFailureCount,
       counts.entityConsolidationIncompleteClusterCount,
     ].every((count) => count === 0);
+    return complete
+      ? { key: meta.key, fields: fields as IngestCacheKeyFields }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function cacheMetaIsComplete(plan: IngestCachePlan): boolean {
+  const meta = completeIngestCacheMeta(plan.metaFile);
+  return meta?.key === plan.key && canonicalJson(meta.fields) === canonicalJson(plan.fields);
+}
+
+function artifactCompatibleIngestCachePlan(plan: IngestCachePlan): IngestCachePlan | null {
+  const { checkpointArtifactDigest: _currentArtifact, ...currentFields } = plan.fields;
+  // ponytail: linear legacy scan; index metadata if cache directories grow beyond benchmark-sized sets.
+  for (const name of readdirSync(path.dirname(plan.metaFile)).sort()) {
+    if (!name.endsWith(".meta.json")) continue;
+    const metaFile = path.join(path.dirname(plan.metaFile), name);
+    const meta = completeIngestCacheMeta(metaFile);
+    if (!meta || name !== `${meta.key}.meta.json`) continue;
+    const { checkpointArtifactDigest: _cachedArtifact, ...cachedFields } = meta.fields;
+    if (canonicalJson(cachedFields) !== canonicalJson(currentFields)) continue;
+    const dbFile = path.join(path.dirname(plan.dbFile), `${meta.key}.db`);
+    if (!privateRegularCacheFile(dbFile) || !privateRegularCacheFile(metaFile)) continue;
+    return {
+      key: meta.key,
+      fields: meta.fields,
+      dbFile,
+      metaFile,
+    };
+  }
+  return null;
+}
+
+function privateRegularCacheFile(filePath: string): boolean {
+  try {
+    const stat = lstatSync(filePath);
+    return stat.isFile() &&
+      !stat.isSymbolicLink() &&
+      (process.platform === "win32" || (stat.nlink === 1 && (stat.mode & 0o077) === 0));
   } catch {
     return false;
   }
@@ -2023,27 +2071,17 @@ function copyCacheEntryToGroupDb(
   groupDbPath: string,
   embeddingProvider: EmbeddingProvider | undefined,
 ): boolean {
-  const privateRegularCacheFile = (filePath: string): boolean => {
-    try {
-      const stat = lstatSync(filePath);
-      return stat.isFile() &&
-        !stat.isSymbolicLink() &&
-        (process.platform === "win32" || (stat.nlink === 1 && (stat.mode & 0o077) === 0));
-    } catch {
-      return false;
-    }
-  };
+  const candidate = cacheMetaIsComplete(plan) ? plan : artifactCompatibleIngestCachePlan(plan);
   if (
-    !existsSync(plan.dbFile) ||
-    !existsSync(plan.metaFile) ||
-    !privateRegularCacheFile(plan.dbFile) ||
-    !privateRegularCacheFile(plan.metaFile) ||
-    !cacheMetaIsComplete(plan)
+    !candidate ||
+    !existsSync(candidate.dbFile) ||
+    !privateRegularCacheFile(candidate.dbFile) ||
+    !privateRegularCacheFile(candidate.metaFile)
   ) {
     return false;
   }
   try {
-    copyFileSync(plan.dbFile, groupDbPath);
+    copyFileSync(candidate.dbFile, groupDbPath);
     if (!sqliteCacheFileIsComplete(groupDbPath, embeddingProvider)) {
       rmSync(groupDbPath, { force: true });
       return false;
@@ -4516,6 +4554,7 @@ function createRunManifest(input: {
       ...(input.options.fullContentMaxChars !== undefined
         ? { fullContentMaxChars: input.options.fullContentMaxChars }
         : {}),
+      episodeExpansion: input.options.episodeExpansion ?? "adjacent",
       ...(input.options.layerPolicy !== undefined
         ? { layerPolicy: input.options.layerPolicy }
         : {}),
@@ -4644,6 +4683,14 @@ function normalizedReaderProfile(
   if (value === undefined) return "default";
   if (value === "default" || value === "expansive" || value === "wide") return value;
   throw new Error("External benchmark readerProfile must be default, expansive, or wide");
+}
+
+function normalizedEpisodeExpansion(
+  value: ReconstructContextInput["episodeExpansion"],
+): NonNullable<ReconstructContextInput["episodeExpansion"]> {
+  if (value === undefined) return "adjacent";
+  if (value === "off" || value === "adjacent" || value === "full") return value;
+  throw new Error("External benchmark episodeExpansion must be off, adjacent, or full");
 }
 
 function readerProfileMaxMemories(
@@ -6564,6 +6611,7 @@ function checkpointContractForRun(input: {
       maxCharsPerMemory: input.options.maxCharsPerMemory ?? null,
       fullContentTopRank: input.options.fullContentTopRank ?? null,
       fullContentMaxChars: input.options.fullContentMaxChars ?? null,
+      episodeExpansion: input.options.episodeExpansion ?? "adjacent",
       layerPolicy: input.options.layerPolicy ?? null,
       temporalMode: input.options.temporalMode ?? null,
       includeSensitive: input.options.includeSensitive === true,
@@ -7296,6 +7344,7 @@ async function scoreCase(input: {
           maxCharsPerMemory: input.options.maxCharsPerMemory,
           fullContentTopRank: input.options.fullContentTopRank,
           fullContentMaxChars: input.options.fullContentMaxChars,
+          episodeExpansion: input.options.episodeExpansion,
           layerPolicy: input.options.layerPolicy,
           ...(input.options.anchorCoverage !== undefined ? { anchorCoverage: input.options.anchorCoverage } : {}),
           ...(temporalMode !== null ? { temporalMode } : {}),
@@ -8085,6 +8134,7 @@ async function runExternalMemoryBenchmarkWithCircuit(
   const failureSampleLimit = normalizedFailureSampleLimit(options.failureSampleLimit);
   const diagnosticsLevel = normalizedDiagnosticsLevel(options.diagnosticsLevel);
   const readerProfile = normalizedReaderProfile(options.readerProfile);
+  const episodeExpansion = normalizedEpisodeExpansion(options.episodeExpansion);
   const ingestMode = normalizedIngestMode(options.ingestMode);
   const turnRetention = normalizedTurnRetention(options.turnRetention, ingestMode);
   const sessionDistillation = normalizedSessionDistillation(options.sessionDistillation);
@@ -8175,6 +8225,7 @@ async function runExternalMemoryBenchmarkWithCircuit(
     ...(defaultMode ? { mode: defaultMode } : {}),
     concurrency,
     readerProfile,
+    episodeExpansion,
     maxSteps: readerProfileMaxSteps(readerProfile, options.maxSteps),
     maxBranch: readerProfileMaxBranch(readerProfile, options.maxBranch),
     maxMemories: readerProfileMaxMemories(readerProfile, options.maxMemories),

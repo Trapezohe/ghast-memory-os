@@ -48,7 +48,12 @@ function rowMetadata(index: number, sourceScoped: boolean): Record<string, unkno
   };
 }
 
-async function runScenario(input: { profileId: string; withEmbedding: boolean; sourceScoped: boolean }): Promise<{
+async function runScenario(input: {
+  profileId: string;
+  withEmbedding: boolean;
+  sourceScoped: boolean;
+  episodeExpansion: "off" | "adjacent";
+}): Promise<{
   context: ReconstructedContext;
   directCount: number;
   broadCount: number;
@@ -58,6 +63,9 @@ async function runScenario(input: { profileId: string; withEmbedding: boolean; s
     profileId: input.profileId,
     store,
     extractor: () => [],
+    sessionDistiller: (distillation) => [{
+      content: `NeedleMarker distilled session summary at ${distillation.eventTime}.`,
+    }],
     ...(input.withEmbedding ? { embeddingProvider: fixtureProvider() } : {}),
   });
   await memory.addMany(
@@ -70,6 +78,19 @@ async function runScenario(input: { profileId: string; withEmbedding: boolean; s
       metadata: rowMetadata(index, input.sourceScoped),
     })),
   );
+  for (let index = 0; index < 3; index += 1) {
+    await memory.ingestConversation({
+      profileId: input.profileId,
+      messages: [{
+        role: "user",
+        content: `NeedleMarker dense session ${index}.`,
+        createdAt: `2026-07-07T0${index}:00:00.000Z`,
+        metadata: { sessionId: `dense-session-${index}` },
+      }],
+      extraction: { extractFromRoles: [] },
+      sessionDistillation: true,
+    });
+  }
   await store.rebuildAssociations({ profileId: input.profileId });
   const context = await memory.reconstructContext({
     profileId: input.profileId,
@@ -79,6 +100,7 @@ async function runScenario(input: { profileId: string; withEmbedding: boolean; s
     maxBranch: 10,
     contextBudgetTokens: 16000,
     maxCharsPerMemory: 80,
+    episodeExpansion: input.episodeExpansion,
     layerPolicy: { summaryMinShare: 0.3, turnMaxShare: 0.4 },
     stopWhenEvidenceEnough: false,
     retrieval: { embedQuery: input.withEmbedding },
@@ -97,16 +119,19 @@ const lexicalBaseline = await runScenario({
   profileId: "wide-saturation-lexical-baseline-real-shape",
   withEmbedding: false,
   sourceScoped: false,
+  episodeExpansion: "off",
 });
 const sourceLexical = await runScenario({
   profileId: "wide-saturation-source-lexical-real-shape",
   withEmbedding: false,
   sourceScoped: true,
+  episodeExpansion: "adjacent",
 });
 const embedding = await runScenario({
   profileId: "wide-saturation-embedding-real-shape",
   withEmbedding: true,
   sourceScoped: true,
+  episodeExpansion: "adjacent",
 });
 
 const result = {
@@ -149,5 +174,10 @@ for (const context of [lexicalBaseline.context, sourceLexical.context, embedding
   const pathIndex = context.contextBlock.indexOf("Reconstructed evidence paths:");
   assert.equal(memoryIndex >= 0 && memoryIndex < pathIndex, true);
   assert.equal(context.contextBlock.slice(0, 4000).includes("Memory content:"), true);
+  assert.equal((context.stats.layers?.included.summary ?? 0) > 0, true);
+  assert.equal(
+    context.contextBlock.slice(0, 100_000).includes("NeedleMarker distilled session summary"),
+    true,
+  );
 }
 rmSync(tmp, { recursive: true, force: true });

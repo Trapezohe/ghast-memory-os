@@ -4,6 +4,8 @@ This page tracks every public export from `package.json` subpaths. `stable-candi
 
 `MemoryListInput.metadataEquals` is an additive stable-candidate store filter for
 exact metadata lookup; runtimes use it for bounded episode-adjacency reads.
+`ReconstructContextInput.episodeExpansion` is an additive stable-candidate read
+policy (`off | adjacent | full`); the kernel default remains `full`.
 
 | Subpath | Stability | Public exports |
 | --- | --- | --- |
