@@ -24,6 +24,7 @@ import {
   createReaderSourceBindings,
   establishReaderMemoryAuthority,
   exactPrimaryEvidenceId,
+  exactPrimaryEvidenceIds,
   readerEvidenceSurfaceText,
   readerMemoryHasUserAuthority,
   readerMemorySurfaceText,
@@ -4793,6 +4794,23 @@ function composeReconstructedContext(input: {
       ...(includeSweeps ? sweepCandidates.map((candidate) => candidate.memory) : []),
     ]);
     const sourceBindings = createReaderSourceBindings(candidateMemories);
+    const memoryIdByEvidenceId = new Map<string, string>();
+    for (const memory of candidateMemories) {
+      for (const evidenceId of exactPrimaryEvidenceIds(memory)) {
+        if (!memoryIdByEvidenceId.has(evidenceId)) memoryIdByEvidenceId.set(evidenceId, memory.id);
+      }
+    }
+    // Memory, episode/summary, path, evidence, shortlist, and sweep lanes must all
+    // use this graduated cap; evidence bypassed it twice and starved the reader budget.
+    const cappedEvidenceSurface = (event: EvidenceEvent): string =>
+      readerEvidenceSurfaceText(
+        event,
+        sourceBindings,
+        truncateMemoryContent(
+          event.content,
+          capForMemoryId(memoryIdByEvidenceId.get(event.id), fullIds),
+        ),
+      );
     const temporalSegmentForPath = (path: ReconstructedEvidencePath): string => {
       const memory = memoryById.get(path.targetId) ?? memoryById.get(path.sourceMemoryId ?? "");
       return memory
@@ -4892,9 +4910,9 @@ function composeReconstructedContext(input: {
       }];
     });
     const evidenceSurfaceEntries = evidence.map((event) => ({
-      plain: readerEvidenceSurfaceText(event, sourceBindings),
+      plain: cappedEvidenceSurface(event),
       temporal: surfaceLine(
-        readerEvidenceSurfaceText(event, sourceBindings),
+        cappedEvidenceSurface(event),
         input.includeTemporalMetadata ? observedAtSegment(event.createdAt) : "",
       ),
     }));
@@ -5047,7 +5065,7 @@ function composeReconstructedContext(input: {
       lines.push(
         ...evidence.map(
           (event) =>
-            `- [${safePublicLabel(event.sourceType)}; ${event.sensitivity}; eligible=${event.eligibleForLongTermMemory}${input.includeTemporalMetadata ? observedAtSegment(event.createdAt) : ""}] ${readerEvidenceSurfaceText(event, sourceBindings)}`,
+            `- [${safePublicLabel(event.sourceType)}; ${event.sensitivity}; eligible=${event.eligibleForLongTermMemory}${input.includeTemporalMetadata ? observedAtSegment(event.createdAt) : ""}] ${cappedEvidenceSurface(event)}`,
         ),
       );
     }

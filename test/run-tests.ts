@@ -35477,6 +35477,79 @@ assert.match(graduatedMemorySection, /TOP_ONE_AFTER_400/u);
 assert.match(graduatedMemorySection, /TOP_TWO_AFTER_400/u);
 assert.doesNotMatch(graduatedMemorySection, /TOP_ONE_AFTER_900/u);
 assert.doesNotMatch(graduatedMemorySection, /TAIL_THREE_AFTER_400/u);
+const renderLaneGiantContent = (label: string): string =>
+  `RenderLaneCap ${label} ${label.slice(0, 1).repeat(10_500)}`;
+const renderLaneEpisodeKey = "episode_000000000000000000000021";
+const renderLaneMemory = (
+  id: string,
+  layer: "summary" | "atom" | "turn",
+  label: string,
+  ordinal?: number,
+): MemoryRecord => {
+  const sourceEvidenceId = `evidence_${id}`;
+  const memory = layerMemory(id, layer, renderLaneGiantContent(label));
+  return {
+    ...memory,
+    sourceEventId: sourceEvidenceId,
+    metadata: {
+      ...memory.metadata,
+      sourceEvidenceId,
+      ...(ordinal === undefined ? {} : { episodeKey: renderLaneEpisodeKey, turnOrdinal: ordinal }),
+    },
+  };
+};
+const renderLaneTurn = renderLaneMemory("render_lane_turn", "turn", "turn", 0);
+const renderLaneAdjacent = renderLaneMemory("render_lane_adjacent", "turn", "adjacent", 1);
+const renderLaneSummary = renderLaneMemory("render_lane_summary", "summary", "summary");
+const renderLaneSweep = renderLaneMemory("render_lane_sweep", "atom", "sweep");
+const renderLaneRows = [renderLaneTurn, renderLaneAdjacent, renderLaneSummary, renderLaneSweep];
+const renderLaneBaseStore = layerStoreFor(renderLaneRows);
+const renderLaneContext = await reconstructMemoryContext({
+  store: {
+    ...renderLaneBaseStore,
+    searchMemories(input: { query?: string; limit?: number }) {
+      const rows = input.query?.toLowerCase() === "sweeplanecap"
+        ? [renderLaneSweep]
+        : [renderLaneTurn, renderLaneSummary];
+      return rows.slice(0, input.limit ?? rows.length);
+    },
+    listMemories() {
+      return [renderLaneTurn, renderLaneAdjacent];
+    },
+  } as MemoryStore,
+  defaultProfileId: "layer",
+  request: {
+    profileId: "layer",
+    query: "RenderLaneCap",
+    maxMemories: 8,
+    contextBudgetTokens: 100_000,
+    maxCharsPerMemory: 100,
+    fullContentTopRank: 2,
+    fullContentMaxChars: 220,
+    includeEvidence: true,
+    includeTemporalMetadata: true,
+    episodeExpansion: "adjacent",
+    reconstructionIntent: { sweepCues: ["SweepLaneCap"] },
+    layerPolicy: { summaryMinShare: 0.25, turnMaxShare: 0.75 },
+    stopWhenEvidenceEnough: false,
+  },
+});
+for (const marker of [
+  "RenderLaneCap turn",
+  "RenderLaneCap adjacent",
+  "RenderLaneCap summary",
+  "RenderLaneCap sweep",
+  "Episode 1; turn=1",
+  "Evidence:",
+  "Additional dated mentions:",
+]) {
+  assert.match(renderLaneContext.contextBlock, new RegExp(marker, "u"));
+}
+const renderLaneHardCeiling = 220 + 512;
+assert.equal(
+  renderLaneContext.contextBlock.split("\n").every((line) => [...line].length <= renderLaneHardCeiling),
+  true,
+);
 const graduatedCullBudget = 430;
 const graduatedCullContext = await reconstructMemoryContext({
   store: layerStoreFor(graduatedRows),
