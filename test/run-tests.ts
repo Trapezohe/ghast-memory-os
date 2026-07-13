@@ -34483,20 +34483,6 @@ await wideSupplyMemory.add({
   content: "WideSupplyForgotten archived row.",
   confidence: 0.9,
 });
-await wideSupplyMemory.addMany([
-  {
-    profileId: "wide-supply",
-    kind: "fact",
-    content: "SparseAggregateKey relevant value alpha.",
-    confidence: 0.9,
-  },
-  {
-    profileId: "wide-supply",
-    kind: "fact",
-    content: "SparseAggregateKey relevant value beta.",
-    confidence: 0.9,
-  },
-]);
 const wideSupplyForget = await wideSupplyMemory.forget({
   profileId: "wide-supply",
   query: "WideSupplyForgotten",
@@ -34525,58 +34511,13 @@ const convergedWideSupplyContext = await wideSupplyMemory.reconstructContext({
   stopWhenEvidenceEnough: true,
 });
 assert.equal(convergedWideSupplyContext.stats.evidenceConvergence.reached, true);
-assert.equal(convergedWideSupplyContext.memories.length < 50, true);
-const aggregateWideSupplyContext = await wideSupplyMemory.reconstructContext({
-  ...wideSupplyRequest,
-  query: "How many WideSupplyKey entries are there in total?",
-  stopWhenEvidenceEnough: true,
-});
-assert.equal(aggregateWideSupplyContext.memories.length >= 48, true);
-assert.equal(aggregateWideSupplyContext.memories.length < 80, true);
+assert.equal(convergedWideSupplyContext.memories.length >= 100, true);
+assert.equal(convergedWideSupplyContext.stats.exploredCueCount < wideSupplyRequest.maxSteps, true);
+assert.equal(convergedWideSupplyContext.contextBlock.length > 10_000, true);
 assert.equal(
-  aggregateWideSupplyContext.memories.length > convergedWideSupplyContext.memories.length,
+  convergedWideSupplyContext.stats.promptTokenEstimate <= wideSupplyRequest.contextBudgetTokens,
   true,
 );
-const explicitMultiWideSupplyContext = await wideSupplyMemory.reconstructContext({
-  ...wideSupplyRequest,
-  query: "What were the values for both WideSupplyKey groups?",
-  stopWhenEvidenceEnough: true,
-});
-assert.equal(explicitMultiWideSupplyContext.memories.length >= 4, true);
-assert.equal(explicitMultiWideSupplyContext.memories.length < 48, true);
-for (const boundedQuantityQuery of [
-  "What happened to WideSupplyKey two weeks ago?",
-  "Did WideSupplyKey require two-factor authentication?",
-  "Which WideSupplyKey item involved purchasing three cows?",
-  "What were the two WideSupplyKey songs?",
-]) {
-  const boundedQuantityContext = await wideSupplyMemory.reconstructContext({
-    ...wideSupplyRequest,
-    query: boundedQuantityQuery,
-    stopWhenEvidenceEnough: true,
-  });
-  assert.equal(boundedQuantityContext.memories.length < 48, true);
-}
-const sparseAggregateContext = await wideSupplyMemory.reconstructContext({
-  ...wideSupplyRequest,
-  query: "How many SparseAggregateKey entries are there in total?",
-  stopWhenEvidenceEnough: true,
-});
-assert.equal(sparseAggregateContext.memories.length, 2);
-assert.equal(
-  sparseAggregateContext.memories.filter((memoryRecord) =>
-    memoryRecord.content.includes("SparseAggregateKey")
-  ).length,
-  2,
-);
-assert.equal(sparseAggregateContext.stats.evidenceConvergence.reached, false);
-const finiteEnumerationContext = await wideSupplyMemory.reconstructContext({
-  ...wideSupplyRequest,
-  query: "What is the order of the six WideSupplyKey museums?",
-  stopWhenEvidenceEnough: true,
-});
-assert.equal(finiteEnumerationContext.memories.length >= 6, true);
-assert.equal(finiteEnumerationContext.memories.length < 48, true);
 
 async function recallIntentProbe(
   query: string,
@@ -44997,8 +44938,11 @@ assert.equal(nativeTimestampWideBenchmark.pass, true);
 assert.equal(nativeTimestampWideBenchmark.runManifest.options.contextBudgetTokens, 16000);
 const nativeTimestampWideRetrieved =
   nativeTimestampWideBenchmark.cases[0]?.retrievedMemoryCount ?? 0;
-assert.equal(nativeTimestampWideRetrieved >= 16, true);
-assert.equal(nativeTimestampWideRetrieved < 50, true);
+assert.equal(nativeTimestampWideRetrieved >= 100, true);
+assert.equal(
+  (nativeTimestampWideBenchmark.cases[0]?.promptTokenEstimate ?? Infinity) <= 16000,
+  true,
+);
 assert.equal(
   nativeTimestampWideLines.filter((line) => /\d{4}-\d{2}-\d{2}/u.test(line)).length >=
     nativeTimestampWideRetrieved,

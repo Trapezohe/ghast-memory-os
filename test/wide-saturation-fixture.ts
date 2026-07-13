@@ -32,6 +32,9 @@ function fixtureProvider(): EmbeddingProvider {
 }
 
 function rowContent(index: number): string {
+  if (index < 10) {
+    return `NeedleMarker EnumerationSupplyKey dated instance ${index} occurred on 2026-06-${String(index + 1).padStart(2, "0")}.`;
+  }
   return index < directRows
     ? `NeedleMarker vector-only direct memory ${index}.`
     : `launch recall broad eligible benchmark-shaped memory ${index}.`;
@@ -55,6 +58,7 @@ async function runScenario(input: {
   episodeExpansion: "off" | "adjacent";
 }): Promise<{
   context: ReconstructedContext;
+  enumerationContext: ReconstructedContext;
   directCount: number;
   broadCount: number;
 }> {
@@ -92,7 +96,7 @@ async function runScenario(input: {
     });
   }
   await store.rebuildAssociations({ profileId: input.profileId });
-  const context = await memory.reconstructContext({
+  const request = {
     profileId: input.profileId,
     query: "What did Avery say about the launch recall NeedleMarker?",
     maxMemories: 200,
@@ -102,13 +106,18 @@ async function runScenario(input: {
     maxCharsPerMemory: 80,
     episodeExpansion: input.episodeExpansion,
     layerPolicy: { summaryMinShare: 0.3, turnMaxShare: 0.4 },
-    stopWhenEvidenceEnough: false,
+    stopWhenEvidenceEnough: true,
     retrieval: { embedQuery: input.withEmbedding },
+  } as const;
+  const context = await memory.reconstructContext(request);
+  const enumerationContext = await memory.reconstructContext({
+    ...request,
+    query: "List all EnumerationSupplyKey dated instances.",
   });
   await memory.close();
   const directCount = countMemories(context.memories, /NeedleMarker/u);
   const broadCount = countMemories(context.memories, /broad eligible/iu);
-  return { context, directCount, broadCount };
+  return { context, enumerationContext, directCount, broadCount };
 }
 
 function countMemories(memories: MemoryRecord[], pattern: RegExp): number {
@@ -175,9 +184,22 @@ for (const context of [lexicalBaseline.context, sourceLexical.context, embedding
   assert.equal(memoryIndex >= 0 && memoryIndex < pathIndex, true);
   assert.equal(context.contextBlock.slice(0, 4000).includes("Memory content:"), true);
   assert.equal((context.stats.layers?.included.summary ?? 0) > 0, true);
+  assert.equal(context.stats.evidenceConvergence.reached, true);
+  assert.equal(context.stats.exploredCueCount < 8, true);
+  assert.equal(context.contextBlock.length > 10_000, true);
+  assert.equal(context.stats.promptTokenEstimate <= 16000, true);
   assert.equal(
     context.contextBlock.slice(0, 100_000).includes("NeedleMarker distilled session summary"),
     true,
   );
+}
+for (const { enumerationContext } of [lexicalBaseline, sourceLexical, embedding]) {
+  assert.equal(enumerationContext.memories.length >= 100, true);
+  for (let index = 0; index < 10; index += 1) {
+    assert.match(
+      enumerationContext.contextBlock,
+      new RegExp(`EnumerationSupplyKey dated instance ${index} `, "u"),
+    );
+  }
 }
 rmSync(tmp, { recursive: true, force: true });

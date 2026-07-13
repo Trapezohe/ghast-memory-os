@@ -4379,7 +4379,7 @@ async function fuseDirectMemorySearch(input: {
   );
   for (const candidate of rankedCandidates) {
     if (input.memories.length >= input.maxMemories) break;
-    if (input.maxNewPaths !== undefined && selectedNewPaths.length >= input.maxNewPaths) break;
+    if (input.supplyFill !== true && input.maxNewPaths !== undefined && selectedNewPaths.length >= input.maxNewPaths) break;
     if (input.seenMemoryIds.has(candidate.memory.id)) continue;
     if (!memoryMatchesTemporalConstraint(candidate.memory, temporalConstraints)) continue;
     if (input.supplyFill !== true) {
@@ -5980,47 +5980,6 @@ export async function reconstructMemoryContext(input: {
       fallbackStep: stepCountForTrace(paths),
     });
     if (hybridStep) plannerSteps.push(hybridStep);
-    if (
-      wideSupplyRequested &&
-      memories.length < candidateMemoryLimit &&
-      !stopWhenEvidenceEnough
-    ) {
-      const saturationTrace = await fuseDirectMemorySearch({
-        store: input.store,
-        profileId,
-        ...(asOf ? { asOf } : {}),
-        query,
-        // Saturation is supply fill, not semantic retrieval; null blocks runtime query embedding injection.
-        queryEmbedding: null,
-        intent,
-        recallPurpose,
-        includeSensitive: input.request.includeSensitive,
-        maxMemories: candidateMemoryLimit,
-        memories,
-        paths,
-        seenMemoryIds,
-        selectedSourceCues,
-        searchQueries: [""],
-        reinforceExisting: false,
-        ...(stopWhenEvidenceEnough
-          ? { maxNewPaths: Math.max(4, targetMemoryCount - memories.length) }
-          : {}),
-        // Saturation is supply fill, not exploration: candidateMemoryLimit and
-        // the output token budget bound it, so branch/source narrowing should not.
-        supplyFill: true,
-        cueExtractor: input.cueExtractor,
-        inferTemporalCuesFromText,
-      });
-      const saturationStep = directMemoryTraceStep({
-        trace: saturationTrace,
-        selectedCue: query,
-        selectedReason: "wide_supply_saturation",
-        reinforcedReason: "wide_supply_saturation_reinforced",
-        noNewPathReason: "wide_supply_saturation_no_new_path",
-        fallbackStep: stepCountForTrace(paths),
-      });
-      if (saturationStep) plannerSteps.push(saturationStep);
-    }
     const convergence = evidenceConvergenceForPaths({
       coverage: evidenceCoverageForPaths(query, paths, input.cueExtractor, inferTemporalCuesFromText),
       memories,
@@ -6035,6 +5994,43 @@ export async function reconstructMemoryContext(input: {
     if (stopWhenEvidenceEnough && convergence.reached) {
       stopReason = "evidence_sufficient";
     }
+  }
+  if (wideSupplyRequested && memories.length < candidateMemoryLimit) {
+    const saturationTrace = await fuseDirectMemorySearch({
+      store: input.store,
+      profileId,
+      ...(asOf ? { asOf } : {}),
+      query,
+      // Saturation is supply fill, not semantic retrieval; null blocks runtime query embedding injection.
+      queryEmbedding: null,
+      intent,
+      recallPurpose,
+      includeSensitive: input.request.includeSensitive,
+      maxMemories: candidateMemoryLimit,
+      memories,
+      paths,
+      seenMemoryIds,
+      selectedSourceCues,
+      searchQueries: [""],
+      reinforceExisting: false,
+      ...(stopWhenEvidenceEnough
+        ? { maxNewPaths: Math.max(4, targetMemoryCount - memories.length) }
+        : {}),
+      // Saturation is supply fill, not exploration: candidateMemoryLimit and
+      // the output token budget bound it, so branch/source narrowing should not.
+      supplyFill: true,
+      cueExtractor: input.cueExtractor,
+      inferTemporalCuesFromText,
+    });
+    const saturationStep = directMemoryTraceStep({
+      trace: saturationTrace,
+      selectedCue: query,
+      selectedReason: "wide_supply_saturation",
+      reinforcedReason: "wide_supply_saturation_reinforced",
+      noNewPathReason: "wide_supply_saturation_no_new_path",
+      fallbackStep: stepCountForTrace(paths),
+    });
+    if (saturationStep) plannerSteps.push(saturationStep);
   }
 
   const finalAnchorCoverage = anchorCoverageReport(anchorPlan, paths);
