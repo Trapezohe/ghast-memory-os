@@ -4582,7 +4582,6 @@ function composeReconstructedContext(input: {
     ? filterPathsForIncludedMemories(uniquePathsById(input.paths), memories)
     : uniquePathsById(input.paths);
   let sweepCandidates = [...(input.sweepDraft?.candidates ?? [])];
-  let primarySweepCandidates: ReconstructionSweepCandidate[] = [];
   let stopReason = input.stopReason;
   const includeTemporalContext = input.includeTemporalContext !== false;
   const publicQuery = input.displayQuery ?? input.query;
@@ -4921,7 +4920,7 @@ function composeReconstructedContext(input: {
     const shortlistEntries = (includeSweeps
       ? queryEvidenceShortlistCandidates({
           query: publicQuery,
-          candidates: [...primarySweepCandidates, ...sweepCandidates],
+          candidates: sweepCandidates,
           maxItems: shortlistItemLimit,
         })
       : []).map((candidate) => {
@@ -5099,11 +5098,6 @@ function composeReconstructedContext(input: {
   }
   if (input.sweepDraft) {
     const ordinaryMemoryIds = new Set(memories.map((memory) => memory.id));
-    // De-duplicate primary memories only from the dated appendix; aggregate
-    // shortlists still need the complete same-kind instance supply.
-    primarySweepCandidates = sweepCandidates.filter((candidate) =>
-      ordinaryMemoryIds.has(candidate.memory.id)
-    );
     sweepCandidates = sweepCandidates.filter((candidate) => !ordinaryMemoryIds.has(candidate.memory.id));
     const sweepBudget = Math.ceil(budget * 0.35);
     while (
