@@ -43514,8 +43514,10 @@ const artifactLegacyMetaPath = path.join(externalIngestCacheDir, artifactLegacyM
 const artifactLegacyMeta = JSON.parse(readFileSync(artifactLegacyMetaPath, "utf8")) as {
   key: string;
   keyFields: Record<string, unknown>;
+  integrity?: { embeddedEligibleMemoryCount?: number };
 };
 artifactLegacyMeta.keyFields.checkpointArtifactDigest = `sha256:${"f".repeat(64)}`;
+delete artifactLegacyMeta.integrity?.embeddedEligibleMemoryCount;
 const artifactLegacyReplacementKey = checkpointFixtureHash(artifactLegacyMeta.keyFields).slice(7);
 artifactLegacyMeta.key = artifactLegacyReplacementKey;
 renameSync(
@@ -43863,26 +43865,128 @@ assert.equal(customProviderExtractorRun.partial, true);
 assert.equal(customProviderExtractorRun.runManifest.execution.stopReason, "provider_outage");
 assert.equal(customProviderExtractorRun.runManifest.execution.stopStage, "extractor");
 assert.equal(customProviderExtractorRun.runManifest.execution.stopHttpStatus, 503);
-const embeddingFailureCacheRun = await runExternalMemoryBenchmark({
-  cases: externalIngestCacheCases.slice(0, 1),
+const partialVectorCacheMemories = Array.from({ length: 20 }, (_entry, index) => ({
+  kind: "fact" as const,
+  content: index === 19
+    ? "Partial vector cache memory 19 contains the saffron lexical marker."
+    : `Partial vector cache memory ${index} contains marker ${index}.`,
+  confidence: 0.9,
+}));
+let partialVectorCacheExtractorCalls = 0;
+const partialVectorCacheExtractor = {
+  name: "external-partial-vector-cache-extractor",
+  extract() {
+    partialVectorCacheExtractorCalls += 1;
+    return partialVectorCacheMemories;
+  },
+};
+const partialVectorCacheCase = [{
+  id: "external-partial-vector-cache",
+  events: [{
+    type: "message" as const,
+    role: "user" as const,
+    content: partialVectorCacheMemories.map((memoryRecord) => memoryRecord.content).join("\n"),
+  }],
+  question: "Which partial vector cache memory contains the saffron lexical marker?",
+  expectedAny: ["saffron"],
+}];
+const fivePercentEmbeddingProvider = createBatchEmbeddingProvider(
+  "external-cache-five-percent-embedding",
+  1,
+  [19],
+);
+const fivePercentEmbeddingCacheDir = path.join(
+  tmp,
+  "external-ingest-cache-five-percent-embedding-failure",
+);
+const fivePercentEmbeddingCacheOptions = {
+  cases: partialVectorCacheCase,
   ingestMode: "message",
   turnRetention: false,
   embedQuery: false,
-  ingestCacheDir: path.join(tmp, "external-ingest-cache-embedding-failure"),
+  ingestCacheDir: fivePercentEmbeddingCacheDir,
   intelligence: {
-    extractor: externalIngestCacheExtractor,
-    embeddingProvider: {
-      name: "external-cache-failing-embedding",
-      dimensions: 3,
-      embed() {
-        throw new Error("planned cache embedding failure");
-      },
-    },
+    extractor: partialVectorCacheExtractor,
+    embeddingProvider: fivePercentEmbeddingProvider,
+  },
+} as const;
+const fivePercentEmbeddingCacheRun = await runExternalMemoryBenchmark(
+  fivePercentEmbeddingCacheOptions,
+);
+assert.equal(fivePercentEmbeddingCacheRun.pass, true);
+assert.equal(fivePercentEmbeddingCacheRun.runManifest.ingestCache.writes, 1);
+assert.equal(fivePercentEmbeddingCacheRun.runManifest.ingestCache.writeSkips, 0);
+assert.equal(fivePercentEmbeddingCacheRun.runManifest.runtimeIntelligence.embeddingFailureCount, 1);
+assert.equal(fivePercentEmbeddingCacheRun.runManifest.runtimeIntelligence.pendingVectorCount, 1);
+assert.equal(
+  fivePercentEmbeddingCacheRun.runManifest.runtimeIntelligence.ingestCaseGroups[0]
+    ?.pendingVectorCount,
+  1,
+);
+const fivePercentEmbeddingCacheMeta = JSON.parse(
+  readFileSync(
+    path.join(
+      fivePercentEmbeddingCacheDir,
+      readdirSync(fivePercentEmbeddingCacheDir).find((entry) => entry.endsWith(".meta.json"))!,
+    ),
+    "utf8",
+  ),
+) as {
+  integrity?: {
+    embeddingFailureCount?: number;
+    pendingVectorCount?: number;
+    embeddedEligibleMemoryCount?: number;
+    searchIndexComplete?: boolean;
+  };
+};
+assert.deepEqual(fivePercentEmbeddingCacheMeta.integrity, {
+  unresolvedExtractionWindowCount: 0,
+  embeddingFailureCount: 1,
+  pendingVectorCount: 1,
+  embeddedEligibleMemoryCount: 20,
+  searchIndexComplete: true,
+  distillationFailureCount: 0,
+  entityConsolidationFailureCount: 0,
+  entityConsolidationIncompleteClusterCount: 0,
+});
+const fivePercentEmbeddingCacheReplay = await runExternalMemoryBenchmark(
+  fivePercentEmbeddingCacheOptions,
+);
+assert.equal(fivePercentEmbeddingCacheReplay.pass, true);
+assert.equal(fivePercentEmbeddingCacheReplay.runManifest.ingestCache.hits, 1);
+assert.equal(fivePercentEmbeddingCacheReplay.cases[0]?.cacheHit, true);
+assert.deepEqual(fivePercentEmbeddingCacheReplay.cases[0]?.expectedAnyMatched, ["saffron"]);
+assert.equal(partialVectorCacheExtractorCalls, 1);
+assert.equal(fivePercentEmbeddingProvider.calls.length, 20);
+assert.equal(fivePercentEmbeddingCacheReplay.runManifest.runtimeIntelligence.embeddingFailureCount, 1);
+assert.equal(fivePercentEmbeddingCacheReplay.runManifest.runtimeIntelligence.pendingVectorCount, 1);
+assert.equal(
+  fivePercentEmbeddingCacheReplay.runManifest.runtimeIntelligence.ingestCaseGroups[0]
+    ?.pendingVectorCount,
+  1,
+);
+const fiftyPercentEmbeddingProvider = createBatchEmbeddingProvider(
+  "external-cache-fifty-percent-embedding",
+  1,
+  Array.from({ length: 10 }, (_entry, index) => index * 2 + 1),
+);
+const fiftyPercentEmbeddingCacheRun = await runExternalMemoryBenchmark({
+  cases: partialVectorCacheCase,
+  ingestMode: "message",
+  turnRetention: false,
+  embedQuery: false,
+  ingestCacheDir: path.join(tmp, "external-ingest-cache-fifty-percent-embedding-failure"),
+  intelligence: {
+    extractor: partialVectorCacheExtractor,
+    embeddingProvider: fiftyPercentEmbeddingProvider,
   },
 });
-assert.equal(embeddingFailureCacheRun.runManifest.ingestCache.writes, 0);
-assert.equal(embeddingFailureCacheRun.runManifest.ingestCache.writeSkips, 1);
-assert.deepEqual(embeddingFailureCacheRun.runManifest.ingestCache.writeSkipReasons, [{
+assert.equal(fiftyPercentEmbeddingCacheRun.pass, true);
+assert.equal(fiftyPercentEmbeddingCacheRun.runManifest.runtimeIntelligence.embeddingFailureCount, 10);
+assert.equal(fiftyPercentEmbeddingCacheRun.runManifest.runtimeIntelligence.pendingVectorCount, 10);
+assert.equal(fiftyPercentEmbeddingCacheRun.runManifest.ingestCache.writes, 0);
+assert.equal(fiftyPercentEmbeddingCacheRun.runManifest.ingestCache.writeSkips, 1);
+assert.deepEqual(fiftyPercentEmbeddingCacheRun.runManifest.ingestCache.writeSkipReasons, [{
   name: "embedding_failures",
   count: 1,
 }]);
@@ -44072,6 +44176,7 @@ const externalOpenAICacheMeta = JSON.parse(
     unresolvedExtractionWindowCount?: number;
     embeddingFailureCount?: number;
     pendingVectorCount?: number;
+    embeddedEligibleMemoryCount?: number;
     searchIndexComplete?: boolean;
     distillationFailureCount?: number;
     entityConsolidationFailureCount?: number;
@@ -44094,6 +44199,7 @@ assert.deepEqual(externalOpenAICacheMeta.integrity, {
   unresolvedExtractionWindowCount: 0,
   embeddingFailureCount: 0,
   pendingVectorCount: 0,
+  embeddedEligibleMemoryCount: 1,
   searchIndexComplete: true,
   distillationFailureCount: 0,
   entityConsolidationFailureCount: 0,

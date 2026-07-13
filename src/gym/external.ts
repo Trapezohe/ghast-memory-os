@@ -84,7 +84,11 @@ import {
   sanitizePublicPayload,
 } from "../kernel/safety.js";
 import { filterTemporalAnnotationSegments, temporalContextLabel } from "../kernel/temporal-format.js";
-import { currentEmbeddingProviderCallPriority } from "../kernel/embeddings.js";
+import {
+  currentEmbeddingProviderCallPriority,
+  memoryEligibleForEmbeddingProvider,
+  resolveEmbeddingProviderConfig,
+} from "../kernel/embeddings.js";
 import {
   createReaderSourceBindings,
   readerEvidenceSurfaceText,
@@ -635,6 +639,7 @@ export interface ExternalMemoryBenchmarkRuntimeIngestGroupManifest {
   embeddingCallCount: number;
   embeddedMemoryCount: number;
   embeddingFailureCount: number;
+  pendingVectorCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
   extractionRetryCount: number;
@@ -714,6 +719,7 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   embeddingCallCount: number;
   embeddedMemoryCount: number;
   embeddingFailureCount: number;
+  pendingVectorCount: number;
   ingestCaseGroups: ExternalMemoryBenchmarkRuntimeIngestGroupManifest[];
   sessionDistillation: ExternalMemoryBenchmarkRuntimeSessionDistillationManifest;
   answerer: ExternalMemoryBenchmarkRuntimeAnswererManifest;
@@ -733,6 +739,7 @@ export interface ExternalMemoryBenchmarkCaseGroupProgress {
   embeddingCallCount: number;
   embeddedMemoryCount: number;
   embeddingFailureCount: number;
+  pendingVectorCount: number;
   extractionWindowCount: number;
   extractionCallCount: number;
   extractionRetryCount: number;
@@ -1331,6 +1338,7 @@ const MESSAGE_EXTRACTION_CONTRACT_VERSION = 4;
 const SESSION_DISTILLATION_CONTRACT_VERSION = 1;
 const ENTITY_CONSOLIDATION_CONTRACT_VERSION = 2;
 const INGEST_CACHE_IMPLEMENTATION_VERSION = 4;
+const MAX_INGEST_CACHE_PENDING_VECTOR_FRACTION = 0.1;
 
 interface IngestCachePlan {
   key: string;
@@ -1343,6 +1351,7 @@ interface IngestCacheIntegrity {
   unresolvedExtractionWindowCount: number;
   embeddingFailureCount: number;
   pendingVectorCount: number;
+  embeddedEligibleMemoryCount: number;
   searchIndexComplete: boolean;
   distillationFailureCount: number;
   entityConsolidationFailureCount: number;
@@ -1971,6 +1980,7 @@ function ingestCachePlan(input: {
 function sqliteCacheFileIsComplete(
   dbPath: string,
   embeddingProvider: EmbeddingProvider | undefined,
+  integrity: IngestCacheIntegrity,
 ): boolean {
   let store: ReturnType<typeof createSqliteMemoryStore> | null = null;
   try {
@@ -1983,7 +1993,8 @@ function sqliteCacheFileIsComplete(
     const searchIndex = store.searchIndexStatus();
     return store.schemaVersion() === GMOS_SQLITE_SCHEMA_VERSION &&
       searchIndexCompleteForCache(searchIndex, embeddingProvider) &&
-      (!embeddingProvider || searchIndex.vectorIndex?.pendingEntryCount === 0);
+      (!embeddingProvider ||
+        searchIndex.vectorIndex?.pendingEntryCount === integrity.pendingVectorCount);
   } catch {
     return false;
   } finally {
@@ -1993,7 +2004,7 @@ function sqliteCacheFileIsComplete(
 
 function completeIngestCacheMeta(
   metaFile: string,
-): { key: string; fields: IngestCacheKeyFields } | null {
+): { key: string; fields: IngestCacheKeyFields; integrity: IngestCacheIntegrity } | null {
   try {
     const parsed = JSON.parse(readFileSync(metaFile, "utf8")) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
@@ -2011,29 +2022,49 @@ function completeIngestCacheMeta(
     const integrity = meta.integrity;
     if (!integrity || typeof integrity !== "object" || Array.isArray(integrity)) return null;
     const counts = integrity as Record<string, unknown>;
-    if (counts.searchIndexComplete !== true) return null;
-    const complete = [
-      counts.unresolvedExtractionWindowCount,
-      counts.embeddingFailureCount,
-      counts.pendingVectorCount,
-      counts.distillationFailureCount,
-      counts.entityConsolidationFailureCount,
-      counts.entityConsolidationIncompleteClusterCount,
-    ].every((count) => count === 0);
-    return complete
-      ? { key: meta.key, fields: fields as IngestCacheKeyFields }
+    const numericCounts = {
+      unresolvedExtractionWindowCount: counts.unresolvedExtractionWindowCount,
+      embeddingFailureCount: counts.embeddingFailureCount,
+      pendingVectorCount: counts.pendingVectorCount,
+      embeddedEligibleMemoryCount:
+        counts.embeddedEligibleMemoryCount === undefined &&
+          counts.embeddingFailureCount === 0 && counts.pendingVectorCount === 0
+          ? 0
+          : counts.embeddedEligibleMemoryCount,
+      distillationFailureCount: counts.distillationFailureCount,
+      entityConsolidationFailureCount: counts.entityConsolidationFailureCount,
+      entityConsolidationIncompleteClusterCount: counts.entityConsolidationIncompleteClusterCount,
+    };
+    if (
+      counts.searchIndexComplete !== true ||
+      !Object.values(numericCounts).every((count) =>
+        typeof count === "number" && Number.isSafeInteger(count) && count >= 0
+      )
+    ) {
+      return null;
+    }
+    const parsedIntegrity = {
+      ...numericCounts,
+      searchIndexComplete: true,
+    } as IngestCacheIntegrity;
+    return incompleteIngestCacheReasons(parsedIntegrity).length === 0
+      ? { key: meta.key, fields: fields as IngestCacheKeyFields, integrity: parsedIntegrity }
       : null;
   } catch {
     return null;
   }
 }
 
-function cacheMetaIsComplete(plan: IngestCachePlan): boolean {
+function cacheMetaIsComplete(plan: IngestCachePlan): IngestCacheIntegrity | null {
   const meta = completeIngestCacheMeta(plan.metaFile);
-  return meta?.key === plan.key && canonicalJson(meta.fields) === canonicalJson(plan.fields);
+  return meta?.key === plan.key && canonicalJson(meta.fields) === canonicalJson(plan.fields)
+    ? meta.integrity
+    : null;
 }
 
-function artifactCompatibleIngestCachePlan(plan: IngestCachePlan): IngestCachePlan | null {
+function artifactCompatibleIngestCachePlan(
+  plan: IngestCachePlan,
+): { plan: IngestCachePlan; integrity: IngestCacheIntegrity } | null {
   const { checkpointArtifactDigest: _currentArtifact, ...currentFields } = plan.fields;
   // ponytail: linear legacy scan; index metadata if cache directories grow beyond benchmark-sized sets.
   for (const name of readdirSync(path.dirname(plan.metaFile)).sort()) {
@@ -2046,10 +2077,13 @@ function artifactCompatibleIngestCachePlan(plan: IngestCachePlan): IngestCachePl
     const dbFile = path.join(path.dirname(plan.dbFile), `${meta.key}.db`);
     if (!privateRegularCacheFile(dbFile) || !privateRegularCacheFile(metaFile)) continue;
     return {
-      key: meta.key,
-      fields: meta.fields,
-      dbFile,
-      metaFile,
+      plan: {
+        key: meta.key,
+        fields: meta.fields,
+        dbFile,
+        metaFile,
+      },
+      integrity: meta.integrity,
     };
   }
   return null;
@@ -2070,26 +2104,29 @@ function copyCacheEntryToGroupDb(
   plan: IngestCachePlan,
   groupDbPath: string,
   embeddingProvider: EmbeddingProvider | undefined,
-): boolean {
-  const candidate = cacheMetaIsComplete(plan) ? plan : artifactCompatibleIngestCachePlan(plan);
+): IngestCacheIntegrity | null {
+  const exactIntegrity = cacheMetaIsComplete(plan);
+  const candidate = exactIntegrity
+    ? { plan, integrity: exactIntegrity }
+    : artifactCompatibleIngestCachePlan(plan);
   if (
     !candidate ||
-    !existsSync(candidate.dbFile) ||
-    !privateRegularCacheFile(candidate.dbFile) ||
-    !privateRegularCacheFile(candidate.metaFile)
+    !existsSync(candidate.plan.dbFile) ||
+    !privateRegularCacheFile(candidate.plan.dbFile) ||
+    !privateRegularCacheFile(candidate.plan.metaFile)
   ) {
-    return false;
+    return null;
   }
   try {
-    copyFileSync(candidate.dbFile, groupDbPath);
-    if (!sqliteCacheFileIsComplete(groupDbPath, embeddingProvider)) {
+    copyFileSync(candidate.plan.dbFile, groupDbPath);
+    if (!sqliteCacheFileIsComplete(groupDbPath, embeddingProvider, candidate.integrity)) {
       rmSync(groupDbPath, { force: true });
-      return false;
+      return null;
     }
-    return true;
+    return candidate.integrity;
   } catch {
     rmSync(groupDbPath, { force: true });
-    return false;
+    return null;
   }
 }
 
@@ -2170,10 +2207,17 @@ function ingestCacheIntegrity(
   embeddingProvider: EmbeddingProvider | undefined,
   requireEntityConsolidation: boolean,
 ): IngestCacheIntegrity {
+  const pendingVectorCount = embeddingProvider
+    ? searchIndex.vectorIndex?.pendingEntryCount ?? 0
+    : 0;
   return {
     unresolvedExtractionWindowCount: applied.unresolvedExtractionWindowCount,
     embeddingFailureCount: applied.embeddingFailureCount,
-    pendingVectorCount: embeddingProvider ? searchIndex.vectorIndex?.pendingEntryCount ?? 0 : 0,
+    pendingVectorCount,
+    embeddedEligibleMemoryCount: Math.max(
+      applied.directMemoryEmbeddingEligibleCount,
+      applied.embeddedMemoryCount + pendingVectorCount,
+    ),
     searchIndexComplete: searchIndexCompleteForCache(searchIndex, embeddingProvider),
     distillationFailureCount: applied.distillationFailureCount,
     entityConsolidationFailureCount: applied.entityConsolidationConsolidatorFailureCount,
@@ -2198,21 +2242,31 @@ function searchIndexCompleteForCache(
     searchIndex.staleEntryCount === 0 &&
     searchIndex.orphanEntryCount === 0 &&
     searchIndex.duplicateEntryCount === 0;
-  return lexicalIndexComplete &&
-    (!embeddingProvider || searchIndex.vectorIndex?.status === "ok");
+  const vectorIndex = searchIndex.vectorIndex;
+  const vectorIndexConsistent = !embeddingProvider || (
+    vectorIndex !== undefined &&
+    vectorIndex.status !== "missing" &&
+    vectorIndex.status !== "unsupported" &&
+    vectorIndex.indexedMemoryCount === searchIndex.totalMemoryCount &&
+    vectorIndex.missingEntryCount === 0 &&
+    vectorIndex.staleEntryCount === vectorIndex.pendingEntryCount &&
+    vectorIndex.orphanEntryCount === 0 &&
+    vectorIndex.duplicateEntryCount === 0 &&
+    vectorIndex.staleProviderEntryCount === 0
+  );
+  return lexicalIndexComplete && vectorIndexConsistent;
 }
 
 function incompleteIngestCacheReasons(integrity: IngestCacheIntegrity): string[] {
+  const embeddingDegradationTooHigh = integrity.pendingVectorCount > 0 && (
+    integrity.embeddedEligibleMemoryCount === 0 ||
+    integrity.pendingVectorCount / integrity.embeddedEligibleMemoryCount >
+      MAX_INGEST_CACHE_PENDING_VECTOR_FRACTION
+  );
   return [
     integrity.unresolvedExtractionWindowCount > 0 ? "unresolved_extraction_windows" : null,
-    integrity.embeddingFailureCount > 0 || integrity.pendingVectorCount > 0
-      ? "embedding_failures"
-      : null,
-    !integrity.searchIndexComplete &&
-      integrity.embeddingFailureCount === 0 &&
-      integrity.pendingVectorCount === 0
-      ? "search_index_incomplete"
-      : null,
+    embeddingDegradationTooHigh ? "embedding_failures" : null,
+    !integrity.searchIndexComplete ? "search_index_incomplete" : null,
     integrity.distillationFailureCount > 0 ? "distillation_failures" : null,
     integrity.entityConsolidationFailureCount > 0 ||
       integrity.entityConsolidationIncompleteClusterCount > 0
@@ -4618,6 +4672,7 @@ function createRunManifest(input: {
       embeddingCallCount: input.runtimeIntelligence.embeddingCallCount,
       embeddedMemoryCount: input.runtimeIntelligence.embeddedMemoryCount,
       embeddingFailureCount: input.runtimeIntelligence.embeddingFailureCount,
+      pendingVectorCount: input.runtimeIntelligence.pendingVectorCount,
       queryEmbeddingFailureCount: input.runtimeIntelligence.queryEmbeddingFailureCount,
       queryEmbeddingRetryCount: input.runtimeIntelligence.queryEmbeddingRetryCount,
       queryEmbeddingRecoveredCount: input.runtimeIntelligence.queryEmbeddingRecoveredCount,
@@ -5660,6 +5715,7 @@ interface RuntimeIntelligenceState {
   embeddingCallCount: number;
   embeddedMemoryCount: number;
   embeddingFailureCount: number;
+  pendingVectorCount: number;
   distillationCallCount: number;
   distilledMemoryCount: number;
   distillationOkWithCandidatesCount: number;
@@ -5743,6 +5799,7 @@ function disabledRuntimeIntelligence(
       embeddingCallCount: 0,
       embeddedMemoryCount: 0,
       embeddingFailureCount: 0,
+      pendingVectorCount: 0,
       ingestCaseGroups: [],
       sessionDistillation: disabledRuntimeSessionDistillation(),
       answerer: disabledRuntimeAnswerer(),
@@ -5770,6 +5827,7 @@ function disabledRuntimeIntelligence(
     embeddingCallCount: 0,
     embeddedMemoryCount: 0,
     embeddingFailureCount: 0,
+    pendingVectorCount: 0,
     distillationCallCount: 0,
     distilledMemoryCount: 0,
     distillationOkWithCandidatesCount: 0,
@@ -6075,6 +6133,7 @@ function resolveRuntimeIntelligence(input: {
       embeddingCallCount: 0,
       embeddedMemoryCount: 0,
       embeddingFailureCount: 0,
+      pendingVectorCount: 0,
       ingestCaseGroups: [],
       sessionDistillation: sessionDistillationManifest,
       answerer: disabledRuntimeAnswerer(),
@@ -6115,6 +6174,7 @@ function resolveRuntimeIntelligence(input: {
     embeddingCallCount: 0,
     embeddedMemoryCount: 0,
     embeddingFailureCount: 0,
+    pendingVectorCount: 0,
     distillationCallCount: 0,
     distilledMemoryCount: 0,
     distillationOkWithCandidatesCount: 0,
@@ -6813,6 +6873,7 @@ interface AppliedBenchmarkEvents {
   embeddingCallCount: number;
   embeddedMemoryCount: number;
   embeddingFailureCount: number;
+  directMemoryEmbeddingEligibleCount: number;
   distillationCallCount: number;
   distillationOkWithCandidatesCount: number;
   distillationEmptyCount: number;
@@ -7036,8 +7097,10 @@ async function applyBenchmarkEvents(input: {
   ingestReplayAttempts: number | undefined;
   windowConcurrency?: number | undefined;
   countExtractionFailures?: boolean | undefined;
+  embeddingProvider?: EmbeddingProvider | undefined;
   onWindowProgress?: ((progress: IngestConversationProgress) => void) | undefined;
 }): Promise<AppliedBenchmarkEvents> {
+  const embeddingProvider = resolveEmbeddingProviderConfig(input.embeddingProvider);
   const output: AppliedBenchmarkEvents = {
     warnings: [],
     extractionRetryCount: 0,
@@ -7063,6 +7126,7 @@ async function applyBenchmarkEvents(input: {
     embeddingCallCount: 0,
     embeddedMemoryCount: 0,
     embeddingFailureCount: 0,
+    directMemoryEmbeddingEligibleCount: 0,
     distillationCallCount: 0,
     distillationOkWithCandidatesCount: 0,
     distillationEmptyCount: 0,
@@ -7084,6 +7148,17 @@ async function applyBenchmarkEvents(input: {
         continue;
       }
       distillationEvents.push(event);
+      const detectedSensitivity = classifySensitivity(event.content);
+      if (memoryEligibleForEmbeddingProvider({
+        provider: embeddingProvider,
+        kind: event.kind,
+        sensitivity: detectedSensitivity === "sensitive"
+          ? detectedSensitivity
+          : event.sensitivity ?? detectedSensitivity,
+        content: event.content,
+      })) {
+        output.directMemoryEmbeddingEligibleCount += 1;
+      }
       inputs.push({
         profileId: input.profileId,
         kind: event.kind,
@@ -7650,9 +7725,10 @@ async function runCaseGroup(input: {
       "External benchmark checkpoint shared groups require an ingest cache directory",
     );
   }
-  const cacheHit = cachePlan
+  const cacheIntegrity = cachePlan
     ? copyCacheEntryToGroupDb(cachePlan, groupDbPath, hooks?.embeddingProvider)
-    : false;
+    : null;
+  const cacheHit = cacheIntegrity !== null;
   if (cachePlan) {
     if (cacheHit) input.ingestCache.hits += 1;
     else input.ingestCache.misses += 1;
@@ -7700,8 +7776,13 @@ async function runCaseGroup(input: {
   let distilledMemoryCount = 0;
   let embeddingCallCount = 0;
   let embeddedMemoryCount = 0;
-  let embeddingFailureCount = 0;
+  let embeddingFailureCount = cacheIntegrity?.embeddingFailureCount ?? 0;
+  let pendingVectorCount = cacheIntegrity?.pendingVectorCount ?? 0;
   let caseGroupMemories: MemoryRecord[] = [];
+  if (cacheIntegrity) {
+    input.runtimeIntelligence.embeddingFailureCount += cacheIntegrity.embeddingFailureCount;
+    input.runtimeIntelligence.pendingVectorCount += cacheIntegrity.pendingVectorCount;
+  }
   try {
     await runtime.store.initialize();
     if (!cacheHit) {
@@ -7719,6 +7800,7 @@ async function runCaseGroup(input: {
         ingestReplayAttempts: input.options.ingestReplayAttempts,
         windowConcurrency: input.runtimeIntelligence.manifest.concurrency ?? undefined,
         countExtractionFailures: input.runtimeIntelligence.hooks?.extractor !== undefined,
+        embeddingProvider: hooks?.embeddingProvider,
         ...(input.options.onCaseGroupIngestProgress
           ? {
               onWindowProgress: (progress) =>
@@ -7786,10 +7868,15 @@ async function runCaseGroup(input: {
       embeddingFailureCount = applied.embeddingFailureCount;
       input.runtimeIntelligence.extractionWindowCount += extractionWindowCount;
       input.runtimeIntelligence.extractionCallCount += extractionCallCount;
+      const searchIndex = runtime.store.searchIndexStatus();
+      pendingVectorCount = hooks?.embeddingProvider
+        ? searchIndex.vectorIndex?.pendingEntryCount ?? 0
+        : 0;
+      input.runtimeIntelligence.pendingVectorCount += pendingVectorCount;
       if (cachePlan) {
         const integrity = ingestCacheIntegrity(
           applied,
-          runtime.store.searchIndexStatus(),
+          searchIndex,
           input.runtimeIntelligence.hooks?.embeddingProvider,
           input.runtimeIntelligence.manifest.consolidateEntities,
         );
@@ -7843,6 +7930,7 @@ async function runCaseGroup(input: {
       embeddingCallCount,
       embeddedMemoryCount,
       embeddingFailureCount,
+      pendingVectorCount,
       extractionWindowCount,
       extractionCallCount,
       extractionRetryCount,
