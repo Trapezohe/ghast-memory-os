@@ -67,9 +67,12 @@ async function runScenario(input: {
     profileId: input.profileId,
     store,
     extractor: () => [],
-    sessionDistiller: (distillation) => [{
-      content: `NeedleMarker distilled session summary at ${distillation.eventTime}.`,
-    }],
+    sessionDistiller: (distillation) => ({
+      narrative: {
+        content: `NeedleMarker distilled session summary at ${distillation.eventTime}.`,
+      },
+      events: [],
+    }),
     ...(input.withEmbedding ? { embeddingProvider: fixtureProvider() } : {}),
   });
   await memory.addMany(

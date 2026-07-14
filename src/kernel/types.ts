@@ -230,30 +230,53 @@ export interface MemorySessionDistillationCandidate {
   confidence?: number | undefined;
 }
 
+export interface MemoryCanonicalEventCandidate {
+  eventType: string;
+  content: string;
+  participants?: string[] | undefined;
+  target?: string | undefined;
+  eventTime: string;
+  state?: "pending" | "completed" | undefined;
+  action?: string | undefined;
+  quantity?: string | undefined;
+  amount?: string | undefined;
+  sourceEvidenceIds: string[];
+  episodeKey: string;
+  turnOrdinals: number[];
+  confidence?: number | undefined;
+}
+
 export interface MemorySessionDistillationInput {
   profileId: string;
   eventTime: string;
   context: {
     eventKey: string;
     evidenceIds: string[];
+    knownEventTypes?: string[] | undefined;
     conversationId?: never;
     sessionId?: never;
     sourceUri?: never;
   };
+  replay?: {
+    reason: "event_verb_density";
+  } | undefined;
   messages: Array<{
     role: MemoryRole;
     content: string;
     createdAt?: string | undefined;
     evidenceId?: string | undefined;
+    episodeKey?: string | undefined;
+    turnOrdinal?: number | undefined;
     metadata?: ConversationSourceMetadata | undefined;
   }>;
 }
 
-export type MemorySessionDistillationResult =
-  | MemorySessionDistillationCandidate
-  | MemorySessionDistillationCandidate[]
-  | null
-  | undefined;
+export interface MemorySessionDistillationOutput {
+  narrative: MemorySessionDistillationCandidate;
+  events: MemoryCanonicalEventCandidate[];
+}
+
+export type MemorySessionDistillationResult = MemorySessionDistillationOutput | null | undefined;
 
 export type MemorySessionDistiller =
   | ((

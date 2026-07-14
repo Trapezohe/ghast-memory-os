@@ -62,6 +62,11 @@ const GMOS_OWNED_METADATA_KEYS = [
   "entityMentions",
   "episodeKey",
   "entityResolution",
+  "eventAction",
+  "eventRecord",
+  "eventRecordKey",
+  "eventState",
+  "eventType",
   "hostContentHash",
   "hostImportKey",
   "hostImportSourceType",
@@ -79,11 +84,13 @@ const GMOS_OWNED_METADATA_KEYS = [
   "restore",
   "sessionDistillation",
   "sessionDistillationEvidenceId",
+  "sessionDistillationEvidenceIds",
   "sessionDistillationKey",
   "sessionEvidenceCount",
   "sessionEvidenceIds",
   "sourceBeliefIds",
   "sourceEvidenceId",
+  "sourceEvidenceIds",
   "sourceFileHash",
   "sourceIndex",
   "sourceMemoryIds",
@@ -96,6 +103,8 @@ const GMOS_OWNED_METADATA_KEYS = [
   "turnEvidenceId",
   "turnMemory",
   "turnOrdinal",
+  "turnOrdinals",
+  "episodeKeys",
   "usedMemoryIds",
   "windowEvidenceIds",
   "worldBeliefObject",
@@ -775,7 +784,9 @@ function classifyMemoryLikeSensitivity(
       windowEvidenceIds,
       sessionDistillationKey,
       sessionDistillationEvidenceId,
+      sessionDistillationEvidenceIds,
       sessionEvidenceIds,
+      sourceEvidenceIds,
       ...metadataWithoutEvidenceReferences
     } = metadata;
     addReferenceValue("sourceEvidenceId", sourceEvidenceId);
@@ -783,7 +794,9 @@ function classifyMemoryLikeSensitivity(
     addReferenceValue("windowEvidenceIds", windowEvidenceIds);
     addReferenceValue("sessionDistillationKey", sessionDistillationKey);
     addReferenceValue("sessionDistillationEvidenceId", sessionDistillationEvidenceId);
+    addReferenceValue("sessionDistillationEvidenceIds", sessionDistillationEvidenceIds);
     addReferenceValue("sessionEvidenceIds", sessionEvidenceIds);
+    addReferenceValue("sourceEvidenceIds", sourceEvidenceIds);
     metadata = metadataWithoutEvidenceReferences;
     if (
       metadata.annealing && typeof metadata.annealing === "object" &&

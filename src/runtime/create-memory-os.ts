@@ -50,6 +50,12 @@ import {
   selectProcedureDistillationClusters,
 } from "../kernel/distillation.js";
 import {
+  normalizeSessionDistillationResult,
+  shouldReplaySessionDistillation,
+  type AcceptedCanonicalEvent,
+  type AcceptedSessionDistillation,
+} from "../kernel/session-distillation.js";
+import {
   dossierInputKey,
   normalizeDossierCandidate,
   resolveMemoryDossierConfig,
@@ -151,9 +157,7 @@ import type {
   MemoryOS,
   MemoryOSOptions,
   ResolvedMemoryConsolidationConfig,
-  MemorySessionDistillationCandidate,
   MemorySessionDistillationInput,
-  MemorySessionDistillationResult,
   ObserveResult,
   PrepareTurnInput,
   PreparedTurn,
@@ -651,13 +655,6 @@ function asConsolidationCandidateArray(
 function asProcedureDistillationCandidateArray(
   result: MemoryProcedureDistillationResult,
 ): MemoryProcedureDistillationCandidate[] | null {
-  if (result === null || result === undefined) return null;
-  return Array.isArray(result) ? result : [result];
-}
-
-function asSessionDistillationCandidateArray(
-  result: MemorySessionDistillationResult,
-): MemorySessionDistillationCandidate[] | null {
   if (result === null || result === undefined) return null;
   return Array.isArray(result) ? result : [result];
 }
@@ -2767,8 +2764,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
 
   interface SessionDistillationCallResult {
     plan: SessionDistillationPlan;
-    outcome: "ok_with_candidates" | "ok_empty" | "parse_failure" | "transport_failure";
-    candidates: MemoryExtractionCandidate[];
+    outcomes: Array<"ok_with_candidates" | "ok_empty" | "parse_failure" | "transport_failure">;
+    accepted: AcceptedSessionDistillation;
   }
 
   function emptySessionDistillationStats(): SessionDistillationStats {
@@ -2819,20 +2816,6 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         return `[${createdAt}] ${turnMemoryContent(member.event, member.eventMetadata)}`;
       })
       .join("\n");
-  }
-
-  function normalizeSessionDistillationCandidate(
-    candidate: MemorySessionDistillationCandidate,
-  ): MemoryExtractionCandidate | null {
-    const content = typeof candidate.content === "string" ? candidate.content.trim() : "";
-    if (!content) return null;
-    const kind = isLowLevelMemoryKind(candidate.kind) ? candidate.kind : "fact";
-    return {
-      kind,
-      content,
-      confidence: clamp01(candidate.confidence ?? 0.6, 0.6),
-      metadata: {},
-    };
   }
 
   function redactSessionRouteIdentity(
@@ -2976,8 +2959,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       context: {
         eventKey: "[current_session]",
         evidenceIds: sessionEvidenceIds.map((_, index) => `evidence_${index + 1}`),
+        knownEventTypes: [],
       },
       messages: messages.map((message, index) => {
+        const member = members[index];
         const metadata = producerSourceMetadata(
           message.metadata && typeof message.metadata === "object"
             ? message.metadata as Record<string, unknown>
@@ -2988,6 +2973,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           content: message.content,
           ...(message.createdAt ? { createdAt: message.createdAt } : {}),
           evidenceId: `evidence_${index + 1}`,
+          ...(member?.episodeKey ? { episodeKey: member.episodeKey } : {}),
+          ...(member?.turnOrdinal !== undefined ? { turnOrdinal: member.turnOrdinal } : {}),
           ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
         };
       }),
@@ -3001,28 +2988,336 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     };
   }
 
-  async function callSessionDistillationPlan(
+  async function invokeSessionDistillationPlan(
     plan: SessionDistillationPlan,
     distiller: NonNullable<MemoryOSOptions["sessionDistiller"]>,
-  ): Promise<SessionDistillationCallResult> {
-    let rawCandidates: MemorySessionDistillationCandidate[] | null;
+  ): Promise<{
+    outcome: "ok_with_candidates" | "ok_empty" | "parse_failure" | "transport_failure";
+    accepted: AcceptedSessionDistillation;
+  }> {
+    let accepted: AcceptedSessionDistillation;
     try {
       const result = typeof distiller === "function"
         ? await distiller(plan.distillerInput)
         : await distiller.distill(plan.distillerInput);
-      rawCandidates = asSessionDistillationCandidateArray(result);
+      accepted = normalizeSessionDistillationResult(
+        result,
+        plan.group.members.slice(0, plan.distillerInput.messages.length).map((member, index) => ({
+          evidenceId: `evidence_${index + 1}`,
+          sourceEvidenceId: member.evidence.id,
+          episodeKey: member.episodeKey,
+          turnOrdinal: member.turnOrdinal,
+          role: member.event.role,
+          content: plan.distillerInput.messages[index]?.content ?? "",
+          createdAt: member.event.createdAt ?? member.evidence.createdAt,
+        })),
+        plan.distillerInput.context.knownEventTypes,
+      );
     } catch (error) {
       const outcome = openAICompatibleOutcomeForError(error);
-      return { plan, outcome, candidates: [] };
+      return { outcome, accepted: { narrative: null, events: [] } };
     }
-    const candidates = (rawCandidates ?? [])
-      .map(normalizeSessionDistillationCandidate)
-      .filter((candidate): candidate is MemoryExtractionCandidate => candidate !== null);
+    const candidateCount = (accepted.narrative ? 1 : 0) + accepted.events.length;
     return {
-      plan,
-      outcome: candidates.length > 0 ? "ok_with_candidates" : "ok_empty",
-      candidates,
+      outcome: candidateCount > 0 ? "ok_with_candidates" : "ok_empty",
+      accepted,
     };
+  }
+
+  async function callSessionDistillationPlan(
+    plan: SessionDistillationPlan,
+    distiller: NonNullable<MemoryOSOptions["sessionDistiller"]>,
+    knownEventTypes: ReadonlySet<string>,
+  ): Promise<SessionDistillationCallResult> {
+    const currentPlan = {
+      ...plan,
+      distillerInput: {
+        ...plan.distillerInput,
+        context: {
+          ...plan.distillerInput.context,
+          knownEventTypes: [...knownEventTypes].sort(),
+        },
+      },
+    };
+    const first = await invokeSessionDistillationPlan(currentPlan, distiller);
+    const outcomes = [first.outcome];
+    if (
+      (first.outcome === "ok_empty" || first.outcome === "ok_with_candidates") &&
+      shouldReplaySessionDistillation(currentPlan.distillerInput.messages, first.accepted.events.length)
+    ) {
+      const replay = await invokeSessionDistillationPlan({
+        ...currentPlan,
+        distillerInput: {
+          ...currentPlan.distillerInput,
+          replay: { reason: "event_verb_density" },
+        },
+      }, distiller);
+      outcomes.push(replay.outcome);
+      return {
+        plan: currentPlan,
+        outcomes,
+        accepted: {
+          narrative: first.accepted.narrative ?? replay.accepted.narrative,
+          events: replay.accepted.events,
+        },
+      };
+    }
+    return { plan: currentPlan, outcomes, accepted: first.accepted };
+  }
+
+  async function storedSessionEventTypes(profileId: string): Promise<string[]> {
+    if (!store.listMemories) return [];
+    const memories = await store.listMemories({
+      profileId,
+      status: "active",
+      kind: "fact",
+      includeSensitive: true,
+      limit: 500,
+    });
+    return [...new Set(memories.flatMap((memory) =>
+      memory.metadata.eventRecord === true && typeof memory.metadata.eventType === "string"
+        ? [memory.metadata.eventType]
+        : []
+    ))].sort();
+  }
+
+  function sessionDistillationWriteContext(plan: SessionDistillationPlan) {
+    const members = plan.group.members;
+    const sourceTrust = members.reduce<SourceTrust>(
+      (current, member) => lowerTrust(current, member.sourceTrust),
+      "user",
+    );
+    const sensitivity = members.reduce<Sensitivity>(
+      (current, member) => maxSensitivity(current, member.sensitivity),
+      runtimeValueSensitivity(
+        [plan.context.conversationId ?? null, plan.context.sessionId ?? null, plan.sourceUri],
+        classifyRuntimeSensitivity,
+      ),
+    );
+    return {
+      sourceTrust,
+      sensitivity,
+      allowLowerTrustPolicyWrites: members.some((member) => member.allowLowerTrustPolicyWrites),
+    };
+  }
+
+  async function recordSessionDistillationEvidence(
+    plan: SessionDistillationPlan,
+    sensitivity: Sensitivity,
+  ): Promise<EvidenceEvent> {
+    return store.recordEvidence({
+      profileId: plan.group.profileId,
+      eventKey: plan.context.eventKey,
+      sourceType: "conversation.session_distillation",
+      sourceUri: plan.sourceUri,
+      content: sessionDistillationEvidenceContent(plan.group.members),
+      sensitivity,
+      eligibleForLongTermMemory: true,
+      payload: markedGmosEvidencePayload(GMOS_EVIDENCE_PAYLOAD_SCHEMAS.sessionDistillation, {
+        purpose: "session_distillation",
+        eventTime: plan.eventTime,
+        evidenceIds: plan.context.evidenceIds,
+        conversationId: plan.context.conversationId,
+        sessionId: plan.context.sessionId,
+      }),
+      createdAt: plan.eventTime,
+    });
+  }
+
+  async function writeSessionNarrative(input: {
+    plan: SessionDistillationPlan;
+    candidate: MemoryExtractionCandidate;
+    evidence: EvidenceEvent;
+    result: ObserveResult;
+    embeddingStats: RuntimeEmbeddingStats;
+  }): Promise<number> {
+    const candidate = {
+      ...input.candidate,
+      content: redactSessionRouteIdentity(input.candidate.content, input.plan.context),
+    };
+    const key = `${input.evidence.id}:${candidateDedupeKey(candidate)}`;
+    const existing = store.findActiveMemoryByMetadata
+      ? await store.findActiveMemoryByMetadata(input.plan.group.profileId, "sessionDistillationKey", key)
+      : null;
+    if (existing && hasGmosMetadataReferenceSchema(existing.metadata, GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage)) {
+      input.result.memoryIds.push(existing.id);
+      return 0;
+    }
+    const writeContext = sessionDistillationWriteContext(input.plan);
+    const eventDate = temporalContextCalendarDate(input.plan.eventTime);
+    const episodeKey = input.plan.group.members[0]?.episodeKey;
+    const event: ConversationEvent = {
+      type: "conversation.message",
+      profileId: input.plan.group.profileId,
+      role: "user",
+      content: input.evidence.content,
+      createdAt: input.plan.eventTime,
+    };
+    return (await applyExtractionCandidates({
+      result: input.result,
+      profileId: input.plan.group.profileId,
+      candidates: [candidate],
+      event,
+      evidence: input.evidence,
+      eventMetadata: {},
+      sensitivity: writeContext.sensitivity,
+      sourceTrust: writeContext.sourceTrust,
+      allowLowerTrustPolicyWrites: writeContext.allowLowerTrustPolicyWrites,
+      sourceEventId: input.evidence.id,
+      embeddingStats: input.embeddingStats,
+      metadata: {
+        sessionDistillation: true,
+        sessionDistillationKey: key,
+        sessionDistillationEvidenceId: input.evidence.id,
+        sourceEvidenceId: input.evidence.id,
+        sessionEvidenceIds: input.plan.context.evidenceIds.slice(0, SESSION_EVIDENCE_SAMPLE_LIMIT),
+        sessionEvidenceCount: input.plan.context.evidenceIds.length,
+        eventTime: input.plan.eventTime,
+        ...(eventDate ? { eventDate } : {}),
+        ...(episodeKey ? { episodeKey } : {}),
+      },
+    })).length;
+  }
+
+  async function mergeExistingEventRecord(input: {
+    profileId: string;
+    event: AcceptedCanonicalEvent;
+    sessionEvidence: EvidenceEvent;
+    sessionEvidenceIds: string[];
+    result: ObserveResult;
+  }): Promise<boolean> {
+    const metadataStrings = (value: unknown): string[] =>
+      Array.isArray(value)
+        ? value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+        : [];
+    const existing = store.findActiveMemoryByMetadata
+      ? await store.findActiveMemoryByMetadata(input.profileId, "eventRecordKey", input.event.eventRecordKey)
+      : null;
+    if (!existing || existing.metadata.eventRecord !== true ||
+      !hasGmosMetadataReferenceSchema(existing.metadata, GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage)) {
+      return false;
+    }
+    input.result.memoryIds.push(existing.id);
+    if (!store.updateMemory || existing.status !== "active") return true;
+    const citations = input.event.citations;
+    await store.updateMemory({
+      profileId: input.profileId,
+      id: existing.id,
+      sourceEventId: existing.sourceEventId,
+      metadata: {
+        ...existing.metadata,
+        sourceEvidenceIds: [...new Set([
+          ...metadataStrings(existing.metadata.sourceEvidenceIds),
+          ...citations.map((citation) => citation.sourceEvidenceId),
+        ])],
+        episodeKeys: [...new Set([
+          ...metadataStrings(existing.metadata.episodeKeys),
+          ...citations.map((citation) => citation.episodeKey),
+        ])],
+        turnOrdinals: [...new Set([
+          ...(Array.isArray(existing.metadata.turnOrdinals)
+            ? existing.metadata.turnOrdinals.filter((value): value is number => Number.isSafeInteger(value))
+            : []),
+          ...citations.map((citation) => citation.turnOrdinal),
+        ])].sort((left, right) => left - right),
+        sessionEvidenceIds: [...new Set([
+          ...metadataStrings(existing.metadata.sessionEvidenceIds),
+          ...input.sessionEvidenceIds,
+        ])].slice(0, SESSION_EVIDENCE_SAMPLE_LIMIT),
+        sessionDistillationEvidenceIds: [...new Set([
+          ...metadataStrings(existing.metadata.sessionDistillationEvidenceIds),
+          input.sessionEvidence.id,
+        ])],
+      },
+      updatedAt: input.sessionEvidence.createdAt,
+    });
+    return true;
+  }
+
+  async function writeCanonicalEventRecords(input: {
+    plan: SessionDistillationPlan;
+    events: AcceptedCanonicalEvent[];
+    sessionEvidence: EvidenceEvent;
+    result: ObserveResult;
+    embeddingStats: RuntimeEmbeddingStats;
+  }): Promise<number> {
+    const fallbackMember = input.plan.group.members[0];
+    if (!fallbackMember) return 0;
+    const candidates: MemoryExtractionCandidate[] = [];
+    const contexts = new Map<MemoryExtractionCandidate, ExtractionCandidateContext>();
+    for (const canonical of input.events) {
+      if (await mergeExistingEventRecord({
+        profileId: input.plan.group.profileId,
+        event: canonical,
+        sessionEvidence: input.sessionEvidence,
+        sessionEvidenceIds: input.plan.context.evidenceIds,
+        result: input.result,
+      })) continue;
+      const candidate = {
+        ...canonical.candidate,
+        content: redactSessionRouteIdentity(canonical.candidate.content, input.plan.context),
+      };
+      const citedIds = new Set(canonical.citations.map((citation) => citation.sourceEvidenceId));
+      const citedMembers = input.plan.group.members.filter((member) => citedIds.has(member.evidence.id));
+      const primary = citedMembers[0];
+      if (!primary) continue;
+      const sourceEvidenceIds = canonical.citations.map((citation) => citation.sourceEvidenceId);
+      const episodeKeys = canonical.citations.map((citation) => citation.episodeKey);
+      const turnOrdinals = canonical.citations.map((citation) => citation.turnOrdinal);
+      candidates.push(candidate);
+      contexts.set(candidate, {
+        result: input.result,
+        event: primary.event,
+        evidence: primary.evidence,
+        eventMetadata: primary.eventMetadata,
+        sensitivity: citedMembers.reduce((current, member) => maxSensitivity(current, member.sensitivity), primary.sensitivity),
+        sourceTrust: citedMembers.reduce((current, member) => lowerTrust(current, member.sourceTrust), primary.sourceTrust),
+        allowLowerTrustPolicyWrites: citedMembers.some((member) => member.allowLowerTrustPolicyWrites),
+        sourceEventId: primary.evidence.id,
+        metadata: {
+          sessionDistillation: true,
+          eventRecord: true,
+          eventRecordKey: canonical.eventRecordKey,
+          ...canonical.metadata,
+          sessionDistillationKey: `${input.sessionEvidence.id}:${canonical.eventRecordKey}`,
+          sessionDistillationEvidenceId: input.sessionEvidence.id,
+          sessionDistillationEvidenceIds: [input.sessionEvidence.id],
+          sourceEvidenceId: primary.evidence.id,
+          sourceEvidenceIds,
+          sessionEvidenceIds: input.plan.context.evidenceIds.slice(0, SESSION_EVIDENCE_SAMPLE_LIMIT),
+          sessionEvidenceCount: input.plan.context.evidenceIds.length,
+          episodeKey: primary.episodeKey,
+          episodeKeys,
+          turnOrdinal: primary.turnOrdinal,
+          turnOrdinals,
+          eventTime: canonical.eventTime,
+          eventDate: canonical.eventTime.slice(0, 10),
+        },
+      });
+    }
+    return (await applyExtractionCandidates({
+      result: input.result,
+      profileId: input.plan.group.profileId,
+      candidates,
+      event: fallbackMember.event,
+      evidence: input.sessionEvidence,
+      eventMetadata: {},
+      sensitivity: input.sessionEvidence.sensitivity,
+      sourceTrust: "user",
+      allowLowerTrustPolicyWrites: false,
+      sourceEventId: input.sessionEvidence.id,
+      embeddingStats: input.embeddingStats,
+      contextForCandidate: (candidate) => contexts.get(candidate) ?? {
+        result: input.result,
+        event: fallbackMember.event,
+        evidence: input.sessionEvidence,
+        eventMetadata: {},
+        sensitivity: input.sessionEvidence.sensitivity,
+        sourceTrust: "user",
+        allowLowerTrustPolicyWrites: false,
+        sourceEventId: input.sessionEvidence.id,
+      },
+    })).length;
   }
 
   async function applySessionDistillationCall(input: {
@@ -3030,135 +3325,36 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     stats: SessionDistillationStats;
     embeddingStats: RuntimeEmbeddingStats;
   }): Promise<void> {
-    const { plan, outcome, candidates } = input.result;
-    const { context, eventTime } = plan;
-    const profileId = plan.group.profileId;
-    input.stats.distillationCallCount += 1;
-    if (outcome === "parse_failure") {
-      input.stats.distillationParseFailureCount += 1;
-      return;
+    const { plan, outcomes, accepted } = input.result;
+    for (const outcome of outcomes) {
+      input.stats.distillationCallCount += 1;
+      if (outcome === "parse_failure") input.stats.distillationParseFailureCount += 1;
+      else if (outcome === "transport_failure") input.stats.distillationTransportFailureCount += 1;
+      else if (outcome === "ok_empty") input.stats.distillationEmptyCount += 1;
+      else input.stats.distillationOkWithCandidatesCount += 1;
     }
-    if (outcome === "transport_failure") {
-      input.stats.distillationTransportFailureCount += 1;
-      return;
-    }
-    if (outcome === "ok_empty") {
-      input.stats.distillationEmptyCount += 1;
-      return;
-    }
-    input.stats.distillationOkWithCandidatesCount += 1;
-    const members = plan.group.members;
-    const sessionSourceTrust = members.reduce<SourceTrust>(
-      (sourceTrust, member) => lowerTrust(sourceTrust, member.sourceTrust),
-      "user",
-    );
-    const sessionSensitivity = members.reduce<Sensitivity>(
-      (sensitivity, member) => maxSensitivity(sensitivity, member.sensitivity),
-      runtimeValueSensitivity(
-        [context.conversationId ?? null, context.sessionId ?? null, plan.sourceUri],
-        classifyRuntimeSensitivity,
-      ),
-    );
-    const sessionAllowLowerTrustPolicyWrites = members.some(
-      (member) => member.allowLowerTrustPolicyWrites,
-    );
-    const sessionEvidence = await store.recordEvidence({
-      profileId,
-      eventKey: context.eventKey,
-      sourceType: "conversation.session_distillation",
-      sourceUri: plan.sourceUri,
-      content: sessionDistillationEvidenceContent(members),
-      sensitivity: sessionSensitivity,
-      eligibleForLongTermMemory: true,
-      payload: markedGmosEvidencePayload(
-        GMOS_EVIDENCE_PAYLOAD_SCHEMAS.sessionDistillation,
-        {
-        purpose: "session_distillation",
-        eventTime,
-        evidenceIds: context.evidenceIds,
-        conversationId: context.conversationId,
-        sessionId: context.sessionId,
-        },
-      ),
-      createdAt: eventTime,
-    });
-    const sessionResult = members[members.length - 1]!.result;
-    const episodeKeys = [...new Set(members.flatMap((member) =>
-      member.episodeKey ? [member.episodeKey] : []
-    ))];
-    const episodeKey = episodeKeys.length === 1 ? episodeKeys[0] : undefined;
-    const eventDate = temporalContextCalendarDate(eventTime);
-    const sessionEvent: ConversationEvent = {
-      type: "conversation.message",
-      profileId,
-      role: "user",
-      content: sessionEvidence.content,
-      createdAt: eventTime,
-    };
-    const freshCandidates: MemoryExtractionCandidate[] = [];
-    const metadataByDedupeKey = new Map<string, Record<string, unknown>>();
-    for (const rawCandidate of candidates) {
-      const candidate = {
-        ...rawCandidate,
-        content: redactSessionRouteIdentity(rawCandidate.content, context),
-      };
-      const dedupeKey = candidateDedupeKey(candidate);
-      const key = `${sessionEvidence.id}:${dedupeKey}`;
-      const existingCandidate = store.findActiveMemoryByMetadata
-        ? await store.findActiveMemoryByMetadata(profileId, "sessionDistillationKey", key)
-        : null;
-      const existing =
-        existingCandidate &&
-        hasGmosMetadataReferenceSchema(
-          existingCandidate.metadata,
-          GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
-        )
-          ? existingCandidate
-          : null;
-      if (existing) {
-        sessionResult.memoryIds.push(existing.id);
-        continue;
-      }
-      freshCandidates.push(candidate);
-      metadataByDedupeKey.set(dedupeKey, {
-        sessionDistillation: true,
-        sessionDistillationKey: key,
-        sessionDistillationEvidenceId: sessionEvidence.id,
-        sourceEvidenceId: sessionEvidence.id,
-        sessionEvidenceIds: context.evidenceIds.slice(0, SESSION_EVIDENCE_SAMPLE_LIMIT),
-        sessionEvidenceCount: context.evidenceIds.length,
-        eventTime,
-        ...(eventDate ? { eventDate } : {}),
-        ...(episodeKey ? { episodeKey } : {}),
+    if (!accepted.narrative && accepted.events.length === 0) return;
+    const lastMember = plan.group.members[plan.group.members.length - 1];
+    if (!lastMember) return;
+    const sessionResult = lastMember.result;
+    const writeContext = sessionDistillationWriteContext(plan);
+    const sessionEvidence = await recordSessionDistillationEvidence(plan, writeContext.sensitivity);
+    if (accepted.narrative) {
+      input.stats.distilledMemoryCount += await writeSessionNarrative({
+        plan,
+        candidate: accepted.narrative,
+        evidence: sessionEvidence,
+        result: sessionResult,
+        embeddingStats: input.embeddingStats,
       });
     }
-    const before = sessionResult.memoryIds.length;
-    await applyExtractionCandidates({
+    input.stats.distilledMemoryCount += await writeCanonicalEventRecords({
+      plan,
+      events: accepted.events,
+      sessionEvidence,
       result: sessionResult,
-      profileId,
-      candidates: freshCandidates,
-      event: sessionEvent,
-      evidence: sessionEvidence,
-      eventMetadata: {},
-      sensitivity: sessionSensitivity,
-      sourceTrust: sessionSourceTrust,
-      allowLowerTrustPolicyWrites: sessionAllowLowerTrustPolicyWrites,
-      sourceEventId: sessionEvidence.id,
-      dedupeKeys: new Set<string>(),
       embeddingStats: input.embeddingStats,
-      contextForCandidate: (candidate) => ({
-        result: sessionResult,
-        event: sessionEvent,
-        evidence: sessionEvidence,
-        eventMetadata: {},
-        sensitivity: sessionSensitivity,
-        sourceTrust: sessionSourceTrust,
-        allowLowerTrustPolicyWrites: sessionAllowLowerTrustPolicyWrites,
-        sourceEventId: sessionEvidence.id,
-        metadata: metadataByDedupeKey.get(candidateDedupeKey(candidate)) ?? {},
-      }),
     });
-    input.stats.distilledMemoryCount += Math.max(0, sessionResult.memoryIds.length - before);
   }
 
   async function applySessionDistillation(input: {
@@ -3180,26 +3376,32 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       });
       if (plan) plans.push(plan);
     }
-    const callResults: Array<SessionDistillationCallResult | undefined> = new Array(plans.length);
+    const plansByProfile = new Map<string, SessionDistillationPlan[]>();
+    for (const plan of plans) {
+      const queue = plansByProfile.get(plan.group.profileId) ?? [];
+      queue.push(plan);
+      plansByProfile.set(plan.group.profileId, queue);
+    }
+    const queues = [...plansByProfile.values()];
     let next = 0;
-    const workerCount = Math.min(input.concurrency, plans.length);
+    const workerCount = Math.min(input.concurrency, queues.length);
     await Promise.all(Array.from({ length: workerCount }, async () => {
-      while (next < plans.length) {
+      while (next < queues.length) {
         const index = next;
         next += 1;
-        callResults[index] = await callSessionDistillationPlan(plans[index]!, distiller);
+        const queue = queues[index]!;
+        const knownEventTypes = new Set(await storedSessionEventTypes(queue[0]!.group.profileId));
+        for (const plan of queue) {
+          const result = await callSessionDistillationPlan(plan, distiller, knownEventTypes);
+          await applySessionDistillationCall({
+            result,
+            stats: input.stats,
+            embeddingStats: input.embeddingStats,
+          });
+          for (const event of result.accepted.events) knownEventTypes.add(event.eventType);
+        }
       }
     }));
-    for (const [index, result] of callResults.entries()) {
-      if (!result) {
-        throw new Error(`gmOS session distillation worker did not produce result ${index}`);
-      }
-      await applySessionDistillationCall({
-        result,
-        stats: input.stats,
-        embeddingStats: input.embeddingStats,
-      });
-    }
   }
 
   interface ExtractionCandidateContext {

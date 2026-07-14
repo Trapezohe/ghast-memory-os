@@ -73,6 +73,10 @@ import {
   resolveEmbeddingProviderConfig,
 } from "../src/kernel/embeddings.js";
 import { resolveWorldEntitySubject } from "../src/kernel/entities.js";
+
+function sessionNarrative(content: string, confidence = 0.6) {
+  return { narrative: { content, confidence }, events: [] };
+}
 import { GMOS_EVIDENCE_PAYLOAD_SCHEMAS } from "../src/kernel/evidence-schema.js";
 import {
   GMOS_METADATA_REFERENCE_MARKER,
@@ -5161,16 +5165,9 @@ const sessionDistillationMemory = createMemoryOS({
         eventTime: input.eventTime,
         messageCount: input.messages.length,
       });
-      return [
-        {
-          content:
-            "2026-07-04: The user spent 2 hours testing quartz in session:1 for conversation-session.",
-        },
-        {
-          content: "api key sk-sessiondistillsecret1234567890",
-          confidence: 0.99,
-        },
-      ];
+      return sessionNarrative(
+        "2026-07-04: The user spent 2 hours testing quartz in session:1 for conversation-session.",
+      );
     },
   },
 });
@@ -5179,7 +5176,7 @@ const sessionDistillationMessages = [
     conversationId: "conversation-session",
     messageId: "session-distillation-user",
     role: "user" as const,
-    content: "On 2026-07-04 I spent 2 hours testing quartz.",
+    content: "On 2026-07-04 the quartz testing duration was 2 hours.",
     createdAt: "2026-07-04T10:00:00.000Z",
     metadata: { sessionId: "session:1" },
   },
@@ -5429,6 +5426,426 @@ assert.equal(sessionDistillationIncognito.distillationCallCount, 0);
 assert.equal(sessionDistillationIncognito.distilledMemoryCount, 0);
 await sessionDistillationMemory.close();
 
+const canonicalEventStore = createSqliteMemoryStore({
+  path: path.join(tmp, "canonical-event-distillation.db"),
+});
+let canonicalEventCall = 0;
+const canonicalEventKnownTypes: string[][] = [];
+const canonicalEventMemory = createMemoryOS({
+  profileId: "canonical-event-distillation",
+  store: canonicalEventStore,
+  extractor: () => [],
+  sessionDistiller: {
+    name: "canonical-event-stub-distiller",
+    distill(input) {
+      canonicalEventCall += 1;
+      canonicalEventKnownTypes.push(input.context.knownEventTypes ?? []);
+      const citation = (index: number) => {
+        const message = input.messages[index];
+        if (!message?.evidenceId || !message.episodeKey || message.turnOrdinal === undefined) {
+          throw new Error("canonical event fixture source lacks provenance");
+        }
+        return {
+          sourceEvidenceIds: [message.evidenceId],
+          episodeKey: message.episodeKey,
+          turnOrdinals: [message.turnOrdinal],
+        };
+      };
+      if (canonicalEventCall === 1) {
+        return {
+          narrative: { content: "The session covered a wedding, two game sessions, and open errands." },
+          events: [
+            {
+              eventType: "attended_event",
+              content: "The user attended Rachel and Emily's wedding on 2026-07-01.",
+              participants: ["Rachel", "Emily"],
+              target: "Rachel and Emily's wedding",
+              eventTime: "2026-07-01",
+              ...citation(0),
+            },
+            {
+              eventType: "attended_event",
+              content: "Rachel and Emily's 2026-07-01 wedding was attended by the user.",
+              participants: ["Rachel", "Emily"],
+              target: "Rachel and Emily's wedding",
+              eventTime: "2026-07-01",
+              ...citation(1),
+            },
+            {
+              eventType: "completed_activities",
+              content: "The user played The Last Horizon for 5 hours on 2026-07-02.",
+              participants: ["user"],
+              target: "The Last Horizon",
+              eventTime: "2026-07-02",
+              quantity: "5 hours",
+              ...citation(2),
+            },
+            {
+              eventType: "completed_activity",
+              content: "The user played The Last Horizon for 10 hours on 2026-07-03.",
+              participants: ["user"],
+              target: "The Last Horizon",
+              eventTime: "2026-07-03",
+              quantity: "10 hours",
+              ...citation(3),
+            },
+            {
+              eventType: "obligation_pending",
+              content: "Returning the original hiking boots is pending.",
+              participants: ["user"],
+              target: "original hiking boots",
+              eventTime: "2026-07-04",
+              state: "pending",
+              action: "return",
+              ...citation(4),
+            },
+            {
+              eventType: "obligation_pending",
+              content: "Picking up the replacement hiking boots is pending.",
+              participants: ["user"],
+              target: "replacement hiking boots",
+              eventTime: "2026-07-04",
+              state: "pending",
+              action: "pick up",
+              ...citation(5),
+            },
+            {
+              eventType: "value_update",
+              content: "The original hiking boots transaction status became exchanged.",
+              participants: ["user"],
+              target: "original hiking boots",
+              eventTime: "2026-07-04",
+              ...citation(6),
+            },
+            {
+              eventType: "completed_activity",
+              content: "The user visited Moon Base on 2026-07-02.",
+              participants: ["user"],
+              target: "Moon Base",
+              eventTime: "2026-07-02",
+              ...citation(2),
+            },
+            {
+              eventType: "completed_activity",
+              content: "The user played The Last Horizon for 50 hours on 2026-07-02.",
+              participants: ["user"],
+              target: "The Last Horizon",
+              eventTime: "2026-07-02",
+              quantity: "50 hours",
+              ...citation(2),
+            },
+            {
+              eventType: "completed_activity",
+              content: "The user played The Last Horizon for 5 hours on 2026-07-02.",
+              participants: ["user"],
+              target: "The Last Horizon",
+              eventTime: "2026-07-02",
+              quantity: "5 hours",
+              sourceEvidenceIds: ["evidence_999"],
+              episodeKey: input.messages[2]?.episodeKey ?? "missing",
+              turnOrdinals: [2],
+            },
+            {
+              eventType: "value_update",
+              content: "The original hiking boots api key is sk-canonicaleventsecret1234567890.",
+              participants: ["user"],
+              target: "original hiking boots",
+              eventTime: "2026-07-04",
+              ...citation(6),
+            },
+            {
+              eventType: "discussion_topics",
+              content: "User discussed Rachel and Emily's wedding.",
+              target: "Rachel and Emily's wedding",
+              eventTime: "2026-07-01",
+              ...citation(0),
+            },
+          ],
+        };
+      }
+      if (canonicalEventCall === 2) {
+        return {
+          narrative: { content: "The original hiking boots were returned." },
+          events: [
+            {
+              eventType: "obligation_completed",
+              content: "Returning the original hiking boots is completed.",
+              participants: ["user"],
+              target: "original hiking boots",
+              eventTime: "2026-07-05",
+              state: "completed",
+              action: "return",
+              ...citation(0),
+            },
+            {
+              eventType: "obligation_pending",
+              content: "Picking up the replacement hiking boots remains pending.",
+              participants: ["user"],
+              target: "replacement hiking boots",
+              eventTime: "2026-07-05",
+              state: "pending",
+              action: "pick up",
+              ...citation(1),
+            },
+          ],
+        };
+      }
+      return {
+        narrative: { content: "The earlier wedding was mentioned again." },
+        events: [{
+          eventType: "attended_event",
+          content: "The user attended Rachel and Emily's wedding on 2026-07-01.",
+          participants: ["Rachel", "Emily"],
+          target: "Rachel and Emily's wedding",
+          eventTime: "2026-07-01",
+          ...citation(0),
+        }],
+      };
+    },
+  },
+});
+const canonicalEventFirst = await canonicalEventMemory.ingestConversation({
+  messages: [
+    "On 2026-07-01 I attended Rachel and Emily's wedding.",
+    "Rachel and Emily's wedding on 2026-07-01 was beautiful.",
+    "On 2026-07-02 I played The Last Horizon for 5 hours.",
+    "On 2026-07-03 I played The Last Horizon for 10 hours.",
+    "On 2026-07-04 I still need to return the original hiking boots.",
+    "On 2026-07-04 I still need to pick up the replacement hiking boots.",
+    "On 2026-07-04 the original hiking boots transaction status became exchanged.",
+  ].map((content, index) => ({
+    role: "user" as const,
+    content,
+    messageId: `canonical-event-${index}`,
+    createdAt: `2026-07-0${Math.min(index + 1, 4)}T09:00:00.000Z`,
+    metadata: { sessionId: "canonical-event-session-1" },
+  })),
+  sessionDistillation: true,
+});
+assert.equal(canonicalEventFirst.distilledMemoryCount, 7);
+let canonicalEventRows = canonicalEventStore.listMemories({
+  profileId: "canonical-event-distillation",
+  status: "any",
+  includeSensitive: true,
+  limit: 30,
+}).filter((memory) => memory.metadata.eventRecord === true);
+assert.equal(canonicalEventRows.length, 6);
+const canonicalWedding = canonicalEventRows.find((memory) => memory.metadata.eventType === "attended_event");
+assert.deepEqual(canonicalWedding?.metadata.turnOrdinals, [0, 1]);
+assert.equal(Array.isArray(canonicalWedding?.metadata.sourceEvidenceIds), true);
+assert.equal((canonicalWedding?.metadata.sourceEvidenceIds as string[]).length, 2);
+assert.deepEqual(
+  canonicalEventRows
+    .filter((memory) => memory.metadata.eventType === "completed_activity")
+    .map((memory) => memory.metadata.quantity)
+    .sort(),
+  ["10 hours", "5 hours"],
+);
+assert.equal(canonicalEventRows.some((memory) => memory.content.includes("Moon Base")), false);
+assert.equal(canonicalEventRows.some((memory) => memory.metadata.quantity === "50 hours"), false);
+assert.equal(JSON.stringify(canonicalEventRows).includes("canonicaleventsecret"), false);
+assert.equal(canonicalEventRows.every((memory) =>
+  typeof memory.metadata.sourceEvidenceId === "string" &&
+  typeof memory.metadata.episodeKey === "string" &&
+  typeof memory.metadata.turnOrdinal === "number" &&
+  typeof memory.metadata.eventTime === "string" &&
+  memory.sourceEventId === memory.metadata.sourceEvidenceId
+), true);
+const canonicalWeddingEvidenceIds = new Set(
+  (await canonicalEventStore.listEvidenceForMemory(canonicalWedding!.id)).map((event) => event.id),
+);
+assert.equal([
+  ...(canonicalWedding!.metadata.sourceEvidenceIds as string[]),
+  canonicalWedding!.metadata.sessionDistillationEvidenceId as string,
+].every((id) => canonicalWeddingEvidenceIds.has(id)), true);
+const pendingCanonicalBeliefs = canonicalEventStore.listWorldBeliefs({
+  profileId: "canonical-event-distillation",
+  status: "active",
+  limit: 30,
+}).filter((belief) => belief.predicate.startsWith("obligation.") && belief.object === "pending");
+assert.equal(pendingCanonicalBeliefs.length, 2);
+await canonicalEventMemory.ingestConversation({
+  messages: [
+    {
+      role: "user",
+      content: "On 2026-07-05 I returned the original hiking boots.",
+      messageId: "canonical-event-completed-return",
+      createdAt: "2026-07-05T09:00:00.000Z",
+      metadata: { sessionId: "canonical-event-session-1" },
+    },
+    {
+      role: "user",
+      content: "On 2026-07-05 I still need to pick up the replacement hiking boots.",
+      messageId: "canonical-event-pending-pickup-repeat",
+      createdAt: "2026-07-05T09:01:00.000Z",
+      metadata: { sessionId: "canonical-event-session-1" },
+    },
+  ],
+  sessionDistillation: true,
+});
+assert.equal(canonicalEventStore.listMemories({
+  profileId: "canonical-event-distillation",
+  status: "any",
+  includeSensitive: true,
+  limit: 30,
+}).filter((memory) =>
+  memory.metadata.eventType === "obligation_pending" &&
+  memory.metadata.target === "replacement hiking boots"
+).length, 1);
+const currentCanonicalObligations = canonicalEventStore.listWorldBeliefs({
+  profileId: "canonical-event-distillation",
+  status: "active",
+  limit: 30,
+}).filter((belief) => belief.predicate.startsWith("obligation."));
+assert.equal(currentCanonicalObligations.some((belief) =>
+  belief.subject === "original hiking boots" &&
+  belief.predicate === "obligation.return" &&
+  belief.object === "completed"
+), true);
+assert.equal(currentCanonicalObligations.some((belief) =>
+  belief.subject === "replacement hiking boots" &&
+  belief.predicate === "obligation.pick_up" &&
+  belief.object === "pending"
+), true);
+await canonicalEventMemory.ingestConversation({
+  messages: [{
+    role: "user",
+    content: "On 2026-07-01 I attended Rachel and Emily's wedding.",
+    messageId: "canonical-event-repeat-wedding",
+    createdAt: "2026-07-06T09:00:00.000Z",
+    metadata: { sessionId: "canonical-event-session-2" },
+  }],
+  sessionDistillation: true,
+});
+canonicalEventRows = canonicalEventStore.listMemories({
+  profileId: "canonical-event-distillation",
+  status: "any",
+  includeSensitive: true,
+  limit: 30,
+}).filter((memory) => memory.metadata.eventRecord === true);
+assert.equal(canonicalEventRows.filter((memory) => memory.metadata.eventType === "attended_event").length, 1);
+const repeatedWedding = canonicalEventRows.find((memory) => memory.metadata.eventType === "attended_event");
+assert.equal((repeatedWedding?.metadata.sourceEvidenceIds as string[]).length, 3);
+assert.equal((repeatedWedding?.metadata.episodeKeys as string[]).length, 2);
+assert.deepEqual(canonicalEventKnownTypes[0], []);
+assert.equal(canonicalEventKnownTypes[1]?.includes("attended_event"), true);
+assert.equal(canonicalEventKnownTypes[2]?.includes("attended_event"), true);
+const canonicalEventContext = await canonicalEventMemory.reconstructContext({
+  query: "Rachel and Emily wedding",
+  maxMemories: 6,
+  contextBudgetTokens: 3000,
+  episodeExpansion: "adjacent",
+  layerPolicy: { summaryMinShare: 1, turnMaxShare: 0 },
+});
+assert.equal(canonicalEventContext.memories.some((memory) => memory.metadata.eventRecord === true), true);
+assert.equal((canonicalEventContext.stats.layers?.included.summary ?? 0) > 0, true);
+await canonicalEventMemory.close();
+
+const qualityDistillationStore = createSqliteMemoryStore({
+  path: path.join(tmp, "session-distillation-quality-v3.db"),
+});
+const qualityDistillationInputs: Array<{ knownEventTypes: string[]; replay: boolean }> = [];
+const qualityDistillationMemory = createMemoryOS({
+  profileId: "session-distillation-quality-v3",
+  store: qualityDistillationStore,
+  extractor: () => [],
+  sessionDistiller: {
+    name: "quality-v3-session-distiller",
+    distill(input) {
+      qualityDistillationInputs.push({
+        knownEventTypes: input.context.knownEventTypes ?? [],
+        replay: input.replay?.reason === "event_verb_density",
+      });
+      const message = input.messages[0];
+      if (!message?.evidenceId || !message.episodeKey || message.turnOrdinal === undefined) {
+        throw new Error("quality v3 fixture source lacks provenance");
+      }
+      const citation = {
+        sourceEvidenceIds: [message.evidenceId],
+        episodeKey: message.episodeKey,
+        turnOrdinals: [message.turnOrdinal],
+      };
+      if (message.content.includes("archive handoff") && !input.replay) {
+        return sessionNarrative("The archive handoff session was summarized.");
+      }
+      if (message.content.includes("archive handoff")) {
+        return {
+          narrative: { content: "The archive handoff was completed." },
+          events: [{
+            eventType: "completed_activities",
+            content: "The user completed the archive handoff.",
+            participants: ["user"],
+            target: "archive handoff",
+            eventTime: "2026-07-12",
+            ...citation,
+          }],
+        };
+      }
+      const north = message.content.includes("north gallery");
+      const target = north ? "north gallery" : "south gallery";
+      return {
+        narrative: { content: `The user visited ${target}.` },
+        events: [
+          {
+            eventType: north ? "visited_locations" : "visited_location",
+            content: `The user visited ${target}.`,
+            participants: ["user"],
+            target,
+            eventTime: north ? "2026-07-10" : "2026-07-11",
+            ...citation,
+          },
+          ...(north ? [{
+            eventType: "discussion_topics",
+            content: "User discussed north gallery.",
+            target: "north gallery",
+            eventTime: "2026-07-10",
+            ...citation,
+          }] : []),
+        ],
+      };
+    },
+  },
+});
+const qualityDistillationIngest = await qualityDistillationMemory.ingestConversation({
+  messages: [
+    ["On 2026-07-10 I visited north gallery.", "quality-v3-session-1", "2026-07-10T09:00:00.000Z"],
+    ["On 2026-07-11 I visited south gallery.", "quality-v3-session-2", "2026-07-11T09:00:00.000Z"],
+    ["On 2026-07-12 I completed the archive handoff.", "quality-v3-session-3", "2026-07-12T09:00:00.000Z"],
+  ].map(([content, sessionId, createdAt], index) => ({
+    role: "user" as const,
+    content: content!,
+    messageId: `quality-v3-message-${index}`,
+    createdAt: createdAt!,
+    metadata: { sessionId: sessionId! },
+  })),
+  window: { concurrency: 3 },
+  sessionDistillation: true,
+});
+assert.equal(qualityDistillationIngest.distillationCallCount, 4);
+assert.equal(qualityDistillationIngest.distillationOkWithCandidatesCount, 4);
+assert.equal(qualityDistillationIngest.distilledMemoryCount, 6);
+assert.deepEqual(
+  qualityDistillationInputs.map((input) => [input.knownEventTypes, input.replay]),
+  [
+    [[], false],
+    [["visited_location"], false],
+    [["visited_location"], false],
+    [["visited_location"], true],
+  ],
+);
+const qualityEventRows = qualityDistillationStore.listMemories({
+  profileId: "session-distillation-quality-v3",
+  status: "any",
+  includeSensitive: true,
+  limit: 20,
+}).filter((memory) => memory.metadata.eventRecord === true);
+assert.deepEqual(
+  qualityEventRows.map((memory) => memory.metadata.eventType).sort(),
+  ["completed_activity", "visited_location", "visited_location"],
+);
+assert.equal(qualityEventRows.some((memory) => memory.content.includes("discussed")), false);
+await qualityDistillationMemory.close();
+
 const perSessionDistillationStore = createSqliteMemoryStore({
   path: path.join(tmp, "session-distillation-per-session.db"),
 });
@@ -5455,9 +5872,7 @@ const perSessionDistillationMemory = createMemoryOS({
         evidenceIdCount: input.context.evidenceIds.length,
         messages: input.messages.map((message) => message.content),
       });
-      return [{
-        content: `${input.eventTime}: Distilled current session.`,
-      }];
+      return sessionNarrative(`${input.eventTime}: Distilled current session.`);
     },
   },
 });
@@ -5651,7 +6066,7 @@ const sessionRouteMemory = createMemoryOS({
         sessionId: input.context.sessionId,
         messages: input.messages.map((message) => message.content),
       });
-      return [{ content: `Route summary ${sessionRouteInputs.length}.` }];
+      return sessionNarrative(`Route summary ${sessionRouteInputs.length}.`);
     },
   },
 });
@@ -5728,16 +6143,11 @@ const sessionIdentityTaintMemory = createMemoryOS({
       assert.equal(input.context.conversationId, undefined);
       const short = input.messages[0]?.content.includes("short") === true;
       const sourceId = input.messages[0]?.metadata?.sourceId;
-      return [
-        {
-          content: short
-            ? "The private route is s1."
-            : "The private route is privatesessionabc123 and privateconversationxyz789.",
-        },
-        {
-          content: typeof sourceId === "string" ? sourceId : "route metadata redacted",
-        },
-      ];
+      return sessionNarrative(short
+        ? "The private route is s1."
+        : `The private route is privatesessionabc123 and privateconversationxyz789; ${
+            typeof sourceId === "string" ? sourceId : "route metadata redacted"
+          }.`);
     },
   },
 });
@@ -5776,7 +6186,6 @@ assert.equal(sessionIdentityTaintJson.includes("privateconversationxyz789"), fal
 assert.equal(sessionIdentityTaintJson.includes("privatesourceidentityabc123"), false);
 assert.equal(sessionIdentityTaintRows.some((row) => /\bs1\b/iu.test(row.content)), false);
 assert.equal(sessionIdentityTaintRows.some((row) => row.content.includes("[redacted_identity]")), true);
-assert.equal(sessionIdentityTaintRows.some((row) => row.content === "route metadata redacted"), true);
 await sessionIdentityTaintMemory.close();
 
 async function runSessionDistillationConcurrencyFixture(concurrency: number) {
@@ -5821,10 +6230,7 @@ async function runSessionDistillationConcurrencyFixture(concurrency: number) {
           active -= 1;
         }
         completionOrder.push(sessionId);
-        return [
-          { content: `${input.eventTime}: Summary for ${sessionId}.` },
-          { content: "Shared concurrency summary winner." },
-        ];
+        return sessionNarrative(`${input.eventTime}: Summary for ${sessionId}.`);
       },
     },
   });
@@ -5884,16 +6290,16 @@ async function runSessionDistillationConcurrencyFixture(concurrency: number) {
 const serialSessionDistillation = await runSessionDistillationConcurrencyFixture(1);
 const parallelSessionDistillation = await runSessionDistillationConcurrencyFixture(2);
 assert.equal(serialSessionDistillation.maxActive, 1);
-assert.equal(parallelSessionDistillation.maxActive, 2);
+assert.equal(parallelSessionDistillation.maxActive, 1);
 assert.deepEqual(serialSessionDistillation.completionOrder, [
   "concurrency-session-1",
   "concurrency-session-2",
   "concurrency-session-3",
 ]);
 assert.deepEqual(parallelSessionDistillation.completionOrder, [
+  "concurrency-session-1",
   "concurrency-session-2",
   "concurrency-session-3",
-  "concurrency-session-1",
 ]);
 assert.deepEqual(parallelSessionDistillation.appliedSessionIds, [
   "concurrency-session-1",
@@ -5923,20 +6329,6 @@ assert.deepEqual(parallelSessionDistillation.replay, {
   newCompletionCount: 0,
   rowCountsUnchanged: true,
 });
-const sharedParallelSummary = parallelSessionDistillation.summaries.filter((entry) =>
-  entry.content === "Shared concurrency summary winner."
-);
-assert.equal(sharedParallelSummary.length, 3);
-assert.deepEqual(
-  sharedParallelSummary.map((entry) => entry.createdAt).sort(),
-  [
-    "2026-07-01T09:00:00.000Z",
-    "2026-07-02T09:00:00.000Z",
-    "2026-07-03T09:00:00.000Z",
-  ],
-);
-assert.equal(sharedParallelSummary.every((entry) => entry.evidenceCount === 1), true);
-
 const distillAndAddStore = createSqliteMemoryStore({
   path: path.join(tmp, "session-distillation-distill-and-add.db"),
 });
@@ -5951,7 +6343,7 @@ const distillAndAddMemory = createMemoryOS({
       assert.equal(input.context.sessionId, undefined);
       assert.equal(input.context.conversationId, undefined);
       assert.equal(input.context.sourceUri, undefined);
-      return [{ content: "DistillAndAdd summary marker is cobalt." }];
+      return sessionNarrative("DistillAndAdd summary marker is cobalt.");
     },
   },
 });
@@ -6008,7 +6400,7 @@ const failingSessionDistillationMemory = createMemoryOS({
       if (index === "2") {
         throw new Error("planned session 2 failure");
       }
-      return [{ content: `Distilled failure-session-${index}.` }];
+      return sessionNarrative(`Distilled failure-session-${index}.`);
     },
   },
 });
@@ -6059,7 +6451,7 @@ const truncationSessionDistillationMemory = createMemoryOS({
         (sum, message) => sum + message.content.length,
         0,
       );
-      return [{ content: "Truncated session distilled." }];
+      return sessionNarrative("Truncated session distilled.");
     },
   },
 });
@@ -6115,7 +6507,7 @@ const emptySessionDistillerMemory = createMemoryOS({
   sessionDistiller: {
     name: "empty-session-distiller",
     distill() {
-      return [];
+      return null;
     },
   },
 });
@@ -6188,10 +6580,8 @@ const aggregationWithDistillMemory = createMemoryOS({
     distill(input) {
       const user = input.messages.find((message) => message.role === "user")?.content ?? "";
       const match = /2026-07-(\d{2}).*?(\d+) hours/u.exec(user);
-      if (!match) return [];
-      return [{
-        content: `2026-07-${match[1]}: The user hiked for ${match[2]} hours.`,
-      }];
+      if (!match) return null;
+      return sessionNarrative(`2026-07-${match[1]}: The user hiked for ${match[2]} hours.`);
     },
   },
 });
@@ -11624,10 +12014,11 @@ const intelligenceFetch = async (url: string | URL | Request, init?: RequestInit
   } else if (system.includes("session distillation hook")) {
     intelligenceSessionDistillationSystemPrompt = system;
     content = JSON.stringify({
-      candidates: [{
+      narrative: {
         content: "2026-07-04: Atlas session distillation captured 3 review hours.",
         confidence: 0.61,
-      }],
+      },
+      events: [],
     });
   } else if (system.includes("retrieval reranker")) {
     intelligenceRerankerSystemPrompt = system;
@@ -11690,13 +12081,22 @@ const defaultSessionDistillationCandidates =
         context: { eventKey: "default-intelligence-session", evidenceIds: [] },
         messages: [{ role: "user", content: "I spent 3 hours reviewing Atlas.", createdAt: "2026-07-04T10:00:00.000Z" }],
       });
-assert.deepEqual(defaultSessionDistillationCandidates, [{
-  content: "2026-07-04: Atlas session distillation captured 3 review hours.",
-  confidence: 0.61,
-}]);
-assert.match(intelligenceSessionDistillationSystemPrompt, /ordered factual narrative/u);
-assert.match(intelligenceSessionDistillationSystemPrompt, /assistant artifacts/u);
-assert.match(intelligenceSessionDistillationSystemPrompt, /old to new values/u);
+assert.deepEqual(defaultSessionDistillationCandidates, {
+  narrative: {
+    content: "2026-07-04: Atlas session distillation captured 3 review hours.",
+    confidence: 0.61,
+  },
+  events: [],
+});
+assert.match(intelligenceSessionDistillationSystemPrompt, /canonical event records/u);
+assert.match(intelligenceSessionDistillationSystemPrompt, /real-world occurrence or state change/u);
+assert.match(intelligenceSessionDistillationSystemPrompt, /Questions, discussions, interests/u);
+assert.match(intelligenceSessionDistillationSystemPrompt, /Scan every user turn independently/u);
+assert.match(intelligenceSessionDistillationSystemPrompt, /distinct instances separate/u);
+assert.match(intelligenceSessionDistillationSystemPrompt, /context\.knownEventTypes/u);
+assert.match(intelligenceSessionDistillationSystemPrompt, /event_verb_density/u);
+assert.match(intelligenceSessionDistillationSystemPrompt, /never from the current wall clock/u);
+assert.match(intelligenceSessionDistillationSystemPrompt, /sourceEvidenceIds/u);
 assert.doesNotMatch(intelligenceSessionDistillationSystemPrompt, /Exclude assistant suggestions/u);
 assert.equal(typeof createOpenAICompatibleSessionDistiller, "function");
 const defaultIntelligenceEmbed = typeof defaultIntelligence.embeddingProvider === "function"
@@ -12734,11 +13134,10 @@ const ingestEntityMemory = createMemoryOS({
   extractor: ingestEntityExtractor,
   sessionDistiller: {
     distill() {
-      return [{
-        kind: "fact" as const,
-        content: "Session summary mentions B-29 but is outside entity ingest scope.",
-        confidence: 0.7,
-      }];
+      return sessionNarrative(
+        "Session summary mentions B-29 but is outside entity ingest scope.",
+        0.7,
+      );
     },
   },
   consolidator: {
@@ -24590,11 +24989,10 @@ const forgetClosureMemory = createMemoryOS({
   profileId: "forget_closure",
   store: forgetClosureStore,
   extractor: () => [],
-  sessionDistiller: async () => [{
-    kind: "fact",
-    content: "The emergency fallback phrase is BLUEFIRE.",
-    confidence: 0.9,
-  }],
+  sessionDistiller: async () => sessionNarrative(
+    "The emergency fallback phrase is BLUEFIRE.",
+    0.9,
+  ),
 });
 await forgetClosureMemory.ingestConversation({
   profileId: "forget_closure",
@@ -44205,7 +44603,7 @@ assert.deepEqual(externalOpenAICacheMeta.integrity, {
   entityConsolidationFailureCount: 0,
   entityConsolidationIncompleteClusterCount: 0,
 });
-assert.equal(externalOpenAICacheMeta.keyFields?.sessionDistillation?.contractVersion, 1);
+assert.equal(externalOpenAICacheMeta.keyFields?.sessionDistillation?.contractVersion, 3);
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.contractVersion, 4);
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.window, 40);
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.maxChars, 30000);
@@ -45702,9 +46100,7 @@ const externalSessionDistillationRun = await runExternalMemoryBenchmark({
         assert.equal(input.messages.length, 1);
         assert.equal(input.context.sessionId, undefined);
         const marker = /marker (\d+)/u.exec(input.messages[0]?.content ?? "")?.[1] ?? "unknown";
-        return [{
-          content: `2026-07-05: The marker is distilled amber marker for ${marker}.`,
-        }];
+        return sessionNarrative(`2026-07-05: The marker is distilled amber marker for ${marker}.`);
       },
     },
   },
@@ -45741,7 +46137,7 @@ const externalSlowRawHookRun = await runExternalMemoryBenchmark({
       name: "slow-raw-session-distiller",
       async distill() {
         await new Promise((resolve) => setTimeout(resolve, 50));
-        return [{ content: "2026-07-06: The raw hook timeout marker is jade marker." }];
+        return sessionNarrative("2026-07-06: The raw hook timeout marker is jade marker.");
       },
     },
   },
@@ -45769,7 +46165,7 @@ const externalTimedOutRawHookRun = await runExternalMemoryBenchmark({
       name: "timed-out-raw-session-distiller",
       async distill() {
         await new Promise((resolve) => setTimeout(resolve, 80));
-        return [{ content: "2026-07-06: The timeout failure marker is sapphire marker." }];
+        return sessionNarrative("2026-07-06: The timeout failure marker is sapphire marker.");
       },
     },
   },
@@ -45910,14 +46306,14 @@ const externalMemoryModeDistillationRun = await runExternalMemoryBenchmark({
           externalMemoryModeDistillerActive -= 1;
         }
         externalMemoryModeDistillerCompletionOrder.push(label);
-        return [{ content: `${input.eventTime}: Memory-mode prism summary ${label}.` }];
+        return sessionNarrative(`${input.eventTime}: Memory-mode prism summary ${label}.`);
       },
     },
   },
 });
 assert.equal(externalMemoryModeDistillationRun.pass, true);
-assert.equal(externalMemoryModeDistillerMaxActive, 2);
-assert.deepEqual(externalMemoryModeDistillerCompletionOrder, ["beta", "gamma", "alpha", "delta"]);
+assert.equal(externalMemoryModeDistillerMaxActive, 1);
+assert.deepEqual(externalMemoryModeDistillerCompletionOrder, ["alpha", "beta", "gamma", "delta"]);
 assert.deepEqual(externalMemoryModeDistillerInputs, [
   {
     eventTime: "2026-07-01T09:00:00.000Z",
@@ -45990,9 +46386,7 @@ const externalMemoryModeFailureRun = await runExternalMemoryBenchmark({
         if (index === "2") {
           throw new Error("planned memory-mode distiller failure");
         }
-        return [{
-          content: `The surviving memory-mode failure marker is ${index}.`,
-        }];
+        return sessionNarrative(`The surviving memory-mode failure marker is ${index}.`);
       },
     },
   },
@@ -46070,7 +46464,7 @@ const externalMemoryModeOutageRun = await runExternalMemoryBenchmark({
 });
 clearTimeout(externalMemoryModeOutageBarrierTimeout);
 assert.equal(externalMemoryModeOutageFetchCalls, 8);
-assert.equal(externalMemoryModeOutageMaxActive, 2);
+assert.equal(externalMemoryModeOutageMaxActive, 1);
 assert.equal(externalMemoryModeOutageRun.caseCount, 0);
 assert.equal(externalMemoryModeOutageRun.partial, true);
 assert.equal(externalMemoryModeOutageRun.runManifest.execution.stopReason, "provider_outage");
@@ -46088,7 +46482,7 @@ const externalMemoryModeCacheDistiller: MemorySessionDistiller = {
   name: "external-memory-mode-cache-distiller",
   distill() {
     externalMemoryModeCacheDistillerCalls += 1;
-    return [{ content: "Memory-mode cached summary answer is garnet." }];
+    return sessionNarrative("Memory-mode cached summary answer is garnet.");
   },
 };
 const externalMemoryModeCacheCases = [{
@@ -46184,7 +46578,8 @@ const externalDistillerOverrideRun = await runExternalMemoryBenchmark({
           choices: [{
             message: {
               content: JSON.stringify({
-                candidates: [{ content: "2026-07-06: Override distiller answer is violet." }],
+                narrative: { content: "2026-07-06: Override distiller answer is violet." },
+                events: [],
               }),
             },
           }],
@@ -49250,9 +49645,10 @@ writeFileSync(
           })
         : system.includes("session distillation hook")
           ? JSON.stringify({
-              candidates: [{
+              narrative: {
                 content: "2026-07-02: CLI session distillation anchor is Cedar.",
-              }],
+              },
+              events: [],
             })
         : system.includes("retrieval reranker")
           ? JSON.stringify({ ids: [] })

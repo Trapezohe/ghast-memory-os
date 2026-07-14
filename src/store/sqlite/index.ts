@@ -2977,12 +2977,15 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
       )
       .all(memory.id) as Record<string, unknown>[];
     if (rows.length === 0) return;
+    const projectedObject = typeof memory.metadata.worldBeliefObject === "string"
+      ? memory.metadata.worldBeliefObject
+      : memory.content;
     for (const row of rows) {
       db.prepare(
         `UPDATE gmos_world_beliefs
          SET object = ?, confidence = ?, updated_at = ?
          WHERE id = ?`,
-      ).run(memory.content, memory.confidence, memory.updatedAt, String(row.id));
+      ).run(projectedObject, memory.confidence, memory.updatedAt, String(row.id));
       deleteAssociationsForBelief(String(row.id));
       const updatedBelief = db
         .prepare("SELECT * FROM gmos_world_beliefs WHERE id = ?")
@@ -3366,24 +3369,15 @@ export function createSqliteMemoryStore(options: SqliteMemoryStoreOptions): Sqli
   }
 
   function producerEvidenceIdsForMemory(memory: MemoryRecord): string[] {
-    const ids = memory.sourceEventId ? [memory.sourceEventId] : [];
     if (
       !hasGmosMetadataReferenceSchema(
         memory.metadata,
         GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage,
       )
     ) {
-      return ids;
+      return memory.sourceEventId ? [memory.sourceEventId] : [];
     }
-    for (const key of [
-      "sourceEvidenceId",
-      "turnEvidenceId",
-      "sessionDistillationEvidenceId",
-    ] as const) {
-      const value = memory.metadata[key];
-      if (typeof value === "string" && value.length > 0) ids.push(value);
-    }
-    return [...new Set(ids)];
+    return memoryEvidenceReferenceIds(memory);
   }
 
   function forgetEvidenceReferenceIds(

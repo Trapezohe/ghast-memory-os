@@ -347,7 +347,7 @@ function wordTokens(value: string): string[] {
   return [...value.toLowerCase().matchAll(/[\p{L}\p{N}]+/gu)].map((match) => match[0]);
 }
 
-function sourceGroundsTerms(source: string, value: string): boolean {
+export function sourceGroundsTerms(source: string, value: string): boolean {
   const sourceTokens = wordTokens(source);
   const required = wordTokens(value).filter((token) => token.length >= 3 || /\d/u.test(token));
   return required.length > 0 && required.every((token) =>
@@ -428,7 +428,7 @@ function obligationMetadata(
   };
 }
 
-function properNounTokens(source: string): string[] {
+export function properNounTokens(source: string): string[] {
   const tokens: string[] = [];
   for (const match of source.matchAll(/\p{Lu}[\p{L}\p{N}-]*/gu)) {
     const token = match[0];

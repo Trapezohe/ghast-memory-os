@@ -40,7 +40,12 @@ export const GMOS_METADATA_REFERENCE_SHAPES: Readonly<
       "turnEvidenceId",
       "sessionDistillationEvidenceId",
     ],
-    evidenceIdArrays: ["windowEvidenceIds", "sessionEvidenceIds"],
+    evidenceIdArrays: [
+      "windowEvidenceIds",
+      "sessionEvidenceIds",
+      "sourceEvidenceIds",
+      "sessionDistillationEvidenceIds",
+    ],
     annealingSourceEventId: true,
     sourceIndexEvidenceField: "sourceEvidenceId",
     sessionKeyEvidenceField: "sessionDistillationEvidenceId",
