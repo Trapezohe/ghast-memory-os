@@ -687,8 +687,10 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   queryEmbeddingParseFailureCount: number;
   answererRetryCount: number;
   answererRecoveredCount: number;
+  answererExhaustedCount: number;
   judgeRetryCount: number;
   judgeRecoveredCount: number;
+  judgeExhaustedCount: number;
   hookNames: {
     extractor: string | null;
     sessionDistiller: string | null;
@@ -3586,11 +3588,10 @@ const DEFAULT_PROVIDER_CIRCUIT_FAILURE_BURST = 8;
 const MIN_OPENAI_COMPATIBLE_MAX_TOKENS = 64;
 const MAX_OPENAI_COMPATIBLE_MAX_TOKENS = 8192;
 const MAX_RECORDED_GENERATED_ANSWER_CHARS = 2000;
-const MAX_RECORDED_ERROR_CHARS = 300;
 
 interface ExternalBenchmarkProviderOutage {
   stage: OpenAICompatibleRequestStage;
-  status: 429 | 503;
+  status: number | null;
   retryAfterMs: number | null;
   retryCount: number;
 }
@@ -3616,7 +3617,8 @@ function createExternalBenchmarkProviderCircuit(): ExternalBenchmarkProviderCirc
     consecutiveTerminalFailures = 0;
   };
   const recordTerminalFailure = (failure: OpenAICompatibleTerminalFailure): void => {
-    if (outage || (failure.status !== 429 && failure.status !== 503)) return;
+    const exhaustedScoringHook = failure.stage === "answerer" || failure.stage === "judge";
+    if (outage || (!exhaustedScoringHook && failure.status !== 429 && failure.status !== 503)) return;
     recentOutcomes.push(false);
     if (recentOutcomes.length > DEFAULT_PROVIDER_CIRCUIT_WINDOW_SIZE) {
       recentOutcomes.shift();
@@ -3634,7 +3636,7 @@ function createExternalBenchmarkProviderCircuit(): ExternalBenchmarkProviderCirc
     }
     outage = {
       stage: failure.stage,
-      status: failure.status,
+      status: failure.status ?? null,
       retryAfterMs: failure.retryAfterMs ?? null,
       retryCount: failure.retryCount,
     };
@@ -3642,10 +3644,10 @@ function createExternalBenchmarkProviderCircuit(): ExternalBenchmarkProviderCirc
   const throwIfOpen = (): void => {
     if (!outage) return;
     throw new OpenAICompatibleResponseError(
-      `OpenAI-compatible provider circuit is open after ${outage.status} at ${outage.stage}`,
+      `OpenAI-compatible provider circuit is open after ${outage.status ?? "exhaustion"} at ${outage.stage}`,
       "transport_failure",
       {
-        status: outage.status,
+        ...(outage.status !== null ? { status: outage.status } : {}),
         retryable: false,
         ...(outage.retryAfterMs !== null ? { retryAfterMs: outage.retryAfterMs } : {}),
       },
@@ -3670,7 +3672,15 @@ function createExternalBenchmarkProviderCircuit(): ExternalBenchmarkProviderCirc
     observer,
     throwIfOpen,
     reportHookFailure(stage, error) {
-      if (!(error instanceof ExternalMemoryBenchmarkProviderError)) return;
+      if (!(error instanceof ExternalMemoryBenchmarkProviderError)) {
+        if (stage !== "answerer" && stage !== "judge") return;
+        recordTerminalFailure({
+          stage,
+          failureKind: "transport_failure",
+          retryCount: openAICompatibleRetryCount(error),
+        });
+        return;
+      }
       recordTerminalFailure({
         stage,
         failureKind: "transport_failure",
@@ -4326,15 +4336,9 @@ function writeDebugMemoryDump(input: {
   );
 }
 
-function errorForReport(error: unknown): string {
-  return boundedReportString(error instanceof Error ? error.message : String(error), MAX_RECORDED_ERROR_CHARS);
-}
-
 interface OfficialScoringResult {
   judgeResult: ExternalMemoryBenchmarkJudgeResult | null;
   generatedAnswer?: string | undefined;
-  answererError?: string | undefined;
-  judgeError?: string | undefined;
 }
 
 async function officialScoringResult(input: {
@@ -4344,7 +4348,7 @@ async function officialScoringResult(input: {
   readerContext: string;
   onProviderFailure: (stage: "answerer" | "judge", error: unknown) => void;
   onProviderSuccess: (stage: "answerer" | "judge") => void;
-}): Promise<OfficialScoringResult> {
+}): Promise<OfficialScoringResult | null> {
   if (!input.judge) return { judgeResult: null };
   let actualAnswer = input.readerContext;
   let generatedAnswer: string | undefined;
@@ -4365,7 +4369,7 @@ async function officialScoringResult(input: {
       generatedAnswer = boundedReportString(generated, MAX_RECORDED_GENERATED_ANSWER_CHARS);
     } catch (error) {
       input.onProviderFailure("answerer", error);
-      return { judgeResult: null, answererError: errorForReport(error) };
+      return null;
     }
   }
   try {
@@ -4383,11 +4387,7 @@ async function officialScoringResult(input: {
     };
   } catch (error) {
     input.onProviderFailure("judge", error);
-    return {
-      judgeResult: null,
-      ...(generatedAnswer !== undefined ? { generatedAnswer } : {}),
-      judgeError: errorForReport(error),
-    };
+    return null;
   }
 }
 
@@ -5791,8 +5791,10 @@ function disabledRuntimeIntelligence(
       queryEmbeddingParseFailureCount: 0,
       answererRetryCount: 0,
       answererRecoveredCount: 0,
+      answererExhaustedCount: 0,
       judgeRetryCount: 0,
       judgeRecoveredCount: 0,
+      judgeExhaustedCount: 0,
       hookNames: {
         extractor: null,
         sessionDistiller: null,
@@ -6134,8 +6136,10 @@ function resolveRuntimeIntelligence(input: {
       queryEmbeddingParseFailureCount: 0,
       answererRetryCount: 0,
       answererRecoveredCount: 0,
+      answererExhaustedCount: 0,
       judgeRetryCount: 0,
       judgeRecoveredCount: 0,
+      judgeExhaustedCount: 0,
       hookNames: hookNamesFor(hooks),
       extractionEmptyCount: 0,
       extractionParseFailureCount: 0,
@@ -7532,12 +7536,7 @@ async function scoreCase(input: {
     onProviderFailure: input.onProviderFailure,
     onProviderSuccess: input.onProviderSuccess,
   });
-  if (
-    input.shouldStop() &&
-    (officialResult.answererError !== undefined || officialResult.judgeError !== undefined)
-  ) {
-    return null;
-  }
+  if (officialResult === null) return null;
   const judgeResult = officialResult.judgeResult;
   const scoringRuntimeMs = Math.max(0, Date.now() - coreScoringStartedMs);
   const taxonomyResult = failureReasons.length
@@ -7578,13 +7577,9 @@ async function scoreCase(input: {
   const primaryFailureReasons = protocol === "official_protocol"
     ? officialPass === true
       ? []
-      : officialResult.answererError
-        ? ["official_answerer_failed"]
-        : officialResult.judgeError
-          ? ["official_judge_failed"]
-          : failureReasons.length === 0
-            ? ["official_judge_incorrect"]
-            : failureReasons
+      : failureReasons.length === 0
+        ? ["official_judge_incorrect"]
+        : failureReasons
     : failureReasons;
   const primaryFailureTaxonomy =
     protocol === "official_protocol" && officialPass === true ? [] : taxonomyResult.entries;
@@ -7600,9 +7595,7 @@ async function scoreCase(input: {
     protocol,
     judgeName: judge?.name ?? null,
     ...(judgeResult?.rationale ? { judgeRationale: judgeResult.rationale } : {}),
-    ...(officialResult.judgeError ? { judgeError: officialResult.judgeError } : {}),
     answererName: answerer?.name ?? null,
-    ...(officialResult.answererError ? { answererError: officialResult.answererError } : {}),
     ...(officialResult.generatedAnswer ? { generatedAnswer: officialResult.generatedAnswer } : {}),
     ...(readerContext !== undefined ? { readerContext } : {}),
     officialFailureAttribution,
@@ -8045,7 +8038,12 @@ async function runCaseGroup(input: {
             input.runtimeIntelligence.plannerFailureCount;
         },
         onProviderFailure: (stage, error) => {
-          input.providerCircuit.reportHookFailure(stage, error);
+          if (stage === "answerer") input.runtimeIntelligence.manifest.answererExhaustedCount += 1;
+          else input.runtimeIntelligence.manifest.judgeExhaustedCount += 1;
+          const hook = stage === "answerer" ? input.options.answerer : input.options.judge;
+          if (!hook || !openAICompatibleBenchmarkHookBrand(hook)) {
+            input.providerCircuit.reportHookFailure(stage, error);
+          }
         },
         onProviderSuccess: (stage) => {
           input.providerCircuit.reportHookSuccess(stage);
@@ -8053,7 +8051,10 @@ async function runCaseGroup(input: {
         shouldStop: input.shouldStop,
         writeDebugReaderContext: input.writeDebugReaderContext,
       });
-      if (result === null) break;
+      if (result === null) {
+        if (input.shouldStop()) break;
+        continue;
+      }
       results.push(result);
       await input.recordResult(
         item.index,
