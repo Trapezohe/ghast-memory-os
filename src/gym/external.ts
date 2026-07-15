@@ -1305,7 +1305,6 @@ interface IngestCacheKeyFields {
     contractVersion: number;
     enabled: boolean;
     nameHash: string | null;
-    endpointIdentity: string | null;
     model: string | null;
     disableThinking: boolean;
   };
@@ -1319,7 +1318,6 @@ interface IngestCacheKeyFields {
     windowConcurrency: number | null;
     extractorNameHash: string | null;
     model: string | null;
-    endpointIdentity: string | null;
     timeoutMs: number | null;
     retries: number | null;
     backoffMs: number | null;
@@ -1328,7 +1326,6 @@ interface IngestCacheKeyFields {
   embedding: {
     providerNameHash: string | null;
     model: string | null;
-    endpointIdentity: string | null;
     dimensions: number | null;
   };
   customProviderIdentityHash: string | null;
@@ -1337,12 +1334,19 @@ interface IngestCacheKeyFields {
 const MESSAGE_EXTRACTION_CONTRACT_VERSION = 4;
 const SESSION_DISTILLATION_CONTRACT_VERSION = 3;
 const ENTITY_CONSOLIDATION_CONTRACT_VERSION = 2;
-const INGEST_CACHE_IMPLEMENTATION_VERSION = 4;
+const INGEST_CACHE_IMPLEMENTATION_VERSION = 5;
 const MAX_INGEST_CACHE_PENDING_VECTOR_FRACTION = 0.1;
 
 interface IngestCachePlan {
   key: string;
   fields: IngestCacheKeyFields;
+  provenance: {
+    endpoints: {
+      extraction: string | null;
+      sessionDistillation: string | null;
+      embedding: string | null;
+    };
+  };
   dbFile: string;
   metaFile: string;
 }
@@ -1425,6 +1429,11 @@ const CHECKPOINT_PROVIDER_EXECUTION_FIELDS = new Set([
   "retries",
   "timeoutMs",
 ]);
+const CHECKPOINT_PROVIDER_FINGERPRINT_IGNORED_FIELDS = new Set([
+  ...CHECKPOINT_PROVIDER_EXECUTION_FIELDS,
+  "endpointIdentity",
+  "endpoints",
+]);
 
 function checkpointRecordWithoutFields(
   value: unknown,
@@ -1439,6 +1448,7 @@ function checkpointRecordWithoutFields(
 
 function checkpointContractFingerprint(
   contract: ExternalMemoryBenchmarkCheckpointContract,
+  ignoredProviderFields: ReadonlySet<string> = CHECKPOINT_PROVIDER_FINGERPRINT_IGNORED_FIELDS,
 ): string {
   const providers = { ...contract.providers };
   return checkpointHash({
@@ -1456,7 +1466,7 @@ function checkpointContractFingerprint(
             key,
             checkpointRecordWithoutFields(
               providers[key],
-              CHECKPOINT_PROVIDER_EXECUTION_FIELDS,
+              ignoredProviderFields,
             ),
           ]),
       ),
@@ -1468,7 +1478,11 @@ function checkpointManifestFingerprintIsValid(
   manifest: ExternalMemoryBenchmarkCheckpointManifest,
 ): boolean {
   return checkpointHash(manifest.contract) === manifest.fingerprint ||
-    checkpointContractFingerprint(manifest.contract) === manifest.fingerprint;
+    checkpointContractFingerprint(manifest.contract) === manifest.fingerprint ||
+    checkpointContractFingerprint(
+      manifest.contract,
+      CHECKPOINT_PROVIDER_EXECUTION_FIELDS,
+    ) === manifest.fingerprint;
 }
 
 function checkpointIdentityHash(value: string | null | undefined): string | null {
@@ -1895,8 +1909,6 @@ function ingestCacheKeyFields(input: {
       isIntelligenceConfig(input.options.intelligence)
     ? input.options.intelligence
     : null;
-  const endpoint = (value: string | undefined): string | null =>
-    value ? sanitizedEndpointIdentity(value) : null;
   return {
     implementationVersion: INGEST_CACHE_IMPLEMENTATION_VERSION,
     checkpointArtifactDigest:
@@ -1925,9 +1937,6 @@ function ingestCacheKeyFields(input: {
       contractVersion: SESSION_DISTILLATION_CONTRACT_VERSION,
       enabled: runtime.sessionDistillation.enabled,
       nameHash: checkpointIdentityHash(runtime.sessionDistillation.name),
-      endpointIdentity: endpoint(
-        intelligenceConfig?.distillerBaseUrl ?? intelligenceConfig?.baseUrl,
-      ),
       model: runtime.sessionDistillation.model,
       disableThinking: intelligenceConfig?.disableThinking === true,
     },
@@ -1943,7 +1952,6 @@ function ingestCacheKeyFields(input: {
       windowConcurrency: runtime.concurrency,
       extractorNameHash: checkpointIdentityHash(runtime.hookNames.extractor),
       model: runtime.model,
-      endpointIdentity: endpoint(intelligenceConfig?.baseUrl),
       timeoutMs: runtime.timeoutMs,
       retries: runtime.retries,
       backoffMs: runtime.backoffMs,
@@ -1952,9 +1960,6 @@ function ingestCacheKeyFields(input: {
     embedding: {
       providerNameHash: checkpointIdentityHash(runtime.hookNames.embeddingProvider),
       model: runtime.embedModel,
-      endpointIdentity: input.runtimeIntelligence.hooks?.embeddingProvider
-        ? endpoint(intelligenceConfig?.embedBaseUrl ?? intelligenceConfig?.baseUrl)
-        : null,
       dimensions: embeddingDimensionsForCache(input.runtimeIntelligence.hooks),
     },
     customProviderIdentityHash: checkpointIdentityHash(input.options.checkpoint?.providerIdentity),
@@ -1969,9 +1974,26 @@ function ingestCachePlan(input: {
 }): IngestCachePlan {
   const fields = ingestCacheKeyFields(input);
   const key = sha256Hex(canonicalJson(fields));
+  const intelligenceConfig = input.options.intelligence &&
+      isIntelligenceConfig(input.options.intelligence)
+    ? input.options.intelligence
+    : null;
+  const endpoint = (value: string | undefined): string | null =>
+    value ? sanitizedEndpointIdentity(value) : null;
   return {
     key,
     fields,
+    provenance: {
+      endpoints: {
+        extraction: endpoint(intelligenceConfig?.baseUrl),
+        sessionDistillation: endpoint(
+          intelligenceConfig?.distillerBaseUrl ?? intelligenceConfig?.baseUrl,
+        ),
+        embedding: input.runtimeIntelligence.hooks?.embeddingProvider
+          ? endpoint(intelligenceConfig?.embedBaseUrl ?? intelligenceConfig?.baseUrl)
+          : null,
+      },
+    },
     dbFile: path.join(input.dir, `${key}.db`),
     metaFile: path.join(input.dir, `${key}.meta.json`),
   };
@@ -2080,6 +2102,7 @@ function artifactCompatibleIngestCachePlan(
       plan: {
         key: meta.key,
         fields: meta.fields,
+        provenance: plan.provenance,
         dbFile,
         metaFile,
       },
@@ -2177,6 +2200,7 @@ function writeIngestCacheEntry(
         schema: "gmos.external_ingest_cache.meta.v2",
         key: plan.key,
         keyFields: plan.fields,
+        provenance: plan.provenance,
         complete: true,
         integrity,
         createdAt: new Date().toISOString(),

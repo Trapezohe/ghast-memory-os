@@ -355,21 +355,24 @@ report, and exits 75.
 
 Resume compatibility fingerprints the code/dependency artifact, normalized
 dataset and slice, group plan, semantic ingest/retrieval/scoring options,
-provider endpoint and model identities, sampling/token limits, hook identities,
-and protocol. Pure execution and diagnostic knobs are excluded: benchmark and
-intelligence concurrency, request timeouts, retry counts and backoff, ingest
-replay attempts, failure-sample and diagnostics levels, and reader-context
-output limits. Progress, cache/debug/report paths, and output destinations are
-also not fingerprinted. These fields may change how quickly or robustly the
-same semantic run completes, but not which run the checkpoint represents.
+provider model and custom identities, sampling/token limits, hook identities,
+and protocol. Provider endpoint identities remain in the checkpoint contract
+for provenance but are excluded from the fingerprint, so an answerer, judge, or
+intelligence gateway swap remains resumable when the model identity and semantic
+settings are unchanged. Pure execution and diagnostic knobs are excluded:
+benchmark and intelligence concurrency, request timeouts, retry counts and
+backoff, ingest replay attempts, failure-sample and diagnostics levels, and
+reader-context output limits. Progress, cache/debug/report paths, and output
+destinations are also not fingerprinted. These fields may change how quickly or
+robustly the same semantic run completes, but not which run the checkpoint represents.
 API-key rotation is allowed because secret values are never stored.
 
-Legacy sidecars that stored execution knobs remain resumable. Their original
-full-contract fingerprint is first checked for integrity, then both the stored
-and current contracts are normalized by removing the execution fields before
-compatibility is compared. A compatible resume keeps using the immutable
-legacy manifest and fingerprint for its existing journal. Code, endpoint route,
-model, dataset, protocol, or other semantic changes still reject with the
+Legacy sidecars that fingerprinted provider endpoints or stored execution knobs
+remain resumable. Their original fingerprint is first checked for integrity,
+then both the stored and current contracts are normalized by removing execution
+and transport fields before compatibility is compared. A compatible resume keeps
+using the immutable legacy manifest and fingerprint for its existing journal. Code, model, dataset,
+protocol, or other semantic changes still reject with the
 checkpoint fingerprint mismatch rather than combining incomparable results.
 
 SIGINT/SIGTERM on `gmos gym external` stops dispatching new work, lets the
@@ -665,10 +668,18 @@ The key is `sha256` over:
   canonical JSON for the group's case ids, event times, and event payloads;
 - ingest mode, turn retention, entity-consolidation setting, extraction
   window, extraction character cap, extractor output token cap, ingest replay
-  attempts, extraction concurrency, extractor name/model/host, and hook
+  attempts, extraction concurrency, extractor name/model and contract, and hook
   timeout/retry settings;
-- session-distillation enabled/name/model/host;
-- embedding provider name, embed model, host, and dimensions.
+- session-distillation enabled/name/model and contract;
+- embedding provider name, embed model, and dimensions.
+
+Endpoint identities remain in the cache sidecar provenance but are not key
+fields. Gateways serving the same model identity are therefore cache-compatible;
+the operator accepts the risk that a proxy may route one model name to different
+weights. Model names, extraction/distillation contract versions, ingest settings,
+dataset inputs, package/runtime artifacts, and schema versions still invalidate.
+This key-format change invalidates every existing ingest-cache entry once; gmOS
+does not migrate old entries, and the next run re-ingests and writes the new key.
 
 Embedding-off and embedding-on runs have different cache fingerprints and
 cannot replay each other's ingest stores. With embeddings off, cache integrity

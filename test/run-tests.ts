@@ -40058,13 +40058,26 @@ const checkpointCases = [
     expectedAny: ["cobalt"],
   },
 ];
-const checkpointJudge = {
-  name: "checkpoint-judge",
+const checkpointJudgeFetch = async () => ({
+  ok: true,
+  status: 200,
+  statusText: "OK",
+  text: async () => JSON.stringify({
+    choices: [{ message: { content: JSON.stringify({ correct: true }) } }],
+  }),
+});
+const checkpointJudge = createOpenAICompatibleExternalBenchmarkJudge({
+  baseUrl: "https://judge-primary.invalid/v1",
+  model: "checkpoint-judge",
   checkpointIdentity: "checkpoint-judge-v1",
-  judge(_question: string, expectedAnswer: string, actualAnswer: string) {
-    return { correct: actualAnswer.includes(expectedAnswer) };
-  },
-};
+  fetchImpl: checkpointJudgeFetch,
+});
+const checkpointBackupJudge = createOpenAICompatibleExternalBenchmarkJudge({
+  baseUrl: "https://judge-backup.invalid/v1",
+  model: "checkpoint-judge",
+  checkpointIdentity: "checkpoint-judge-v1",
+  fetchImpl: checkpointJudgeFetch,
+});
 let checkpointMissingCacheProviderCalls = 0;
 let checkpointMissingCachePreparedCalls = 0;
 await assert.rejects(
@@ -40389,7 +40402,7 @@ const checkpointResumeRun = await runExternalMemoryBenchmark({
   concurrency: 2,
   protocol: "official_protocol",
   answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
-    baseUrl: "https://answerer.invalid:8443/custom/v1",
+    baseUrl: "https://answerer-backup.invalid/v1",
     apiKey: "sk-checkpoint-rotated-secret-value",
     model: "checkpoint-answerer",
     checkpointIdentity: "checkpoint-answerer-fixture-v1",
@@ -40406,7 +40419,7 @@ const checkpointResumeRun = await runExternalMemoryBenchmark({
       };
     },
   }),
-  judge: checkpointJudge,
+  judge: checkpointBackupJudge,
   checkpoint: {
     resume: { manifest: checkpointManifest, entries: checkpointResumeEntries },
     onPrepared(manifest) {
@@ -40547,7 +40560,25 @@ for (const providerName of ["answerer", "judge"]) {
     maxRetries: 4,
   };
 }
-const oldCheckpointFingerprint = checkpointFixtureHash(oldCheckpointContract);
+const oldCheckpointFingerprintContract = structuredClone(oldCheckpointContract);
+for (const field of [
+  "concurrency",
+  "diagnosticsLevel",
+  "failureSampleLimit",
+  "ingestReplayAttempts",
+  "intelligenceConcurrency",
+  "readerContextCharLimit",
+]) {
+  delete oldCheckpointFingerprintContract.run[field];
+}
+for (const providerName of ["intelligence", "answerer", "judge"]) {
+  const provider = oldCheckpointFingerprintContract.providers[providerName] as Record<string, unknown>;
+  for (const field of ["backoffMs", "concurrency", "maxRetries", "retries", "timeoutMs"]) {
+    delete provider[field];
+  }
+}
+const oldCheckpointFingerprint = checkpointFixtureHash(oldCheckpointFingerprintContract);
+assert.notEqual(oldCheckpointFingerprint, checkpointManifest!.fingerprint);
 const oldCheckpointManifest: ExternalMemoryBenchmarkCheckpointManifest = {
   schema: "gmos.external_benchmark_checkpoint.v1",
   fingerprint: oldCheckpointFingerprint,
@@ -40569,7 +40600,7 @@ const oldCheckpointResumeRun = await runExternalMemoryBenchmark({
   concurrency: 2,
   protocol: "official_protocol",
   answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
-    baseUrl: "https://answerer.invalid:8443/custom/v1",
+    baseUrl: "https://answerer-legacy-backup.invalid/v1",
     model: "checkpoint-answerer",
     checkpointIdentity: "checkpoint-answerer-fixture-v1",
     timeoutMs: 30_000,
@@ -40579,7 +40610,7 @@ const oldCheckpointResumeRun = await runExternalMemoryBenchmark({
       throw new Error("old checkpoint resume must skip completed cases");
     },
   }),
-  judge: checkpointJudge,
+  judge: checkpointBackupJudge,
   checkpoint: {
     resume: { manifest: oldCheckpointManifest, entries: oldCheckpointEntries },
     onPrepared(manifest) {
@@ -44551,8 +44582,18 @@ const externalOpenAICacheChangedEndpoint = await runExternalMemoryBenchmark({
     baseUrl: "https://cache-intelligence.invalid:8443/tenant/path-secret/v1?api-version=secret",
   },
 });
-assert.equal(externalOpenAICacheChangedEndpoint.runManifest.ingestCache.hits, 0);
-assert.equal(externalOpenAICacheChangedEndpoint.runManifest.ingestCache.misses, 1);
+assert.equal(externalOpenAICacheChangedEndpoint.runManifest.ingestCache.hits, 1);
+assert.equal(externalOpenAICacheChangedEndpoint.runManifest.ingestCache.misses, 0);
+assert.equal(externalOpenAICacheExtractorCalls, 0);
+const externalOpenAICacheChangedModel = await runExternalMemoryBenchmark({
+  ...externalOpenAICacheBase,
+  intelligence: {
+    ...externalOpenAICacheIntelligence,
+    model: "cache-chat-v2",
+  },
+});
+assert.equal(externalOpenAICacheChangedModel.runManifest.ingestCache.hits, 0);
+assert.equal(externalOpenAICacheChangedModel.runManifest.ingestCache.misses, 1);
 assert.equal(externalOpenAICacheExtractorCalls > 0, true);
 const externalOpenAICacheMetaFiles = readdirSync(externalOpenAICacheDir)
   .filter((entry) => entry.endsWith(".meta.json"));
@@ -44581,13 +44622,22 @@ const externalOpenAICacheMeta = JSON.parse(
     entityConsolidationIncompleteClusterCount?: number;
   };
   keyFields?: {
-    sessionDistillation?: { contractVersion?: number };
+    sessionDistillation?: { contractVersion?: number; endpointIdentity?: string | null };
     extraction?: {
       contractVersion?: number | null;
       window?: number;
       maxChars?: number;
       extractorMaxCandidates?: number | null;
       extractorMaxTokens?: number | null;
+      endpointIdentity?: string | null;
+    };
+    embedding?: { endpointIdentity?: string | null };
+  };
+  provenance?: {
+    endpoints?: {
+      extraction?: string | null;
+      sessionDistillation?: string | null;
+      embedding?: string | null;
     };
   };
 };
@@ -44609,6 +44659,15 @@ assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.window, 40);
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.maxChars, 30000);
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.extractorMaxCandidates, 48);
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.extractorMaxTokens, 6000);
+assert.equal("endpointIdentity" in (externalOpenAICacheMeta.keyFields?.sessionDistillation ?? {}), false);
+assert.equal("endpointIdentity" in (externalOpenAICacheMeta.keyFields?.extraction ?? {}), false);
+assert.equal("endpointIdentity" in (externalOpenAICacheMeta.keyFields?.embedding ?? {}), false);
+assert.equal(
+  externalOpenAICacheMeta.provenance?.endpoints?.extraction?.startsWith(
+    "https://cache-intelligence.invalid/[route-sha256:",
+  ),
+  true,
+);
 assert.equal(externalOpenAICache.runManifest.options.extractorMaxCandidates, 48);
 assert.equal(externalOpenAICache.runManifest.runtimeIntelligence.extractorMaxCandidates, 48);
 const externalEmbeddingOffCacheDir = path.join(tmp, "external-embedding-off-cache");
@@ -44739,6 +44798,7 @@ const externalEmbeddingCacheMeta = readdirSync(externalEmbeddingOffCacheDir)
         dimensions?: number | null;
       };
     };
+    provenance?: { endpoints?: { embedding?: string | null } };
   });
 assert.equal(externalEmbeddingCacheMeta.length, 2);
 assert.equal(new Set(externalEmbeddingCacheMeta.map((entry) => entry.key)).size, 2);
@@ -44746,7 +44806,8 @@ assert.equal(
   externalEmbeddingCacheMeta.some((entry) =>
     entry.keyFields?.embedding?.providerNameHash === null &&
     entry.keyFields.embedding.model === null &&
-    entry.keyFields.embedding.endpointIdentity === null &&
+    !("endpointIdentity" in entry.keyFields.embedding) &&
+    entry.provenance?.endpoints?.embedding === null &&
     entry.keyFields.embedding.dimensions === null
   ),
   true,
@@ -44755,7 +44816,8 @@ assert.equal(
   externalEmbeddingCacheMeta.some((entry) =>
     typeof entry.keyFields?.embedding?.providerNameHash === "string" &&
     entry.keyFields.embedding.model === null &&
-    entry.keyFields.embedding.endpointIdentity !== null &&
+    !("endpointIdentity" in entry.keyFields.embedding) &&
+    typeof entry.provenance?.endpoints?.embedding === "string" &&
     entry.keyFields.embedding.dimensions === 3
   ),
   true,
