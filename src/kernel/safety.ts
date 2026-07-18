@@ -79,6 +79,15 @@ const GMOS_OWNED_METADATA_KEYS = [
   "importSourceOriginalId",
   "lowLevelApi",
   "lowLevelUpdatedAt",
+  "instanceRecord",
+  "instance_id",
+  "instance_kind",
+  "state",
+  "canonical_attributes",
+  "aliases",
+  "citations",
+  "observedAt",
+  "occurredAt",
   "procedureDistillation",
   "relatedMemoryIds",
   "restore",
@@ -340,7 +349,7 @@ export function sessionDistillationEvidenceEventKey(input: {
   sessionId?: string | null | undefined;
   conversationId?: string | null | undefined;
 }): string {
-  return `conversation.session_distillation:v2:${evidenceIdentityHash(
+  return `conversation.session_distillation:v3:${evidenceIdentityHash(
     "conversation.session_distillation",
     [
       input.profileId,

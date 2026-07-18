@@ -32,6 +32,7 @@ import type {
   MemoryConsolidator,
   MemoryDossierSynthesizer,
   MemoryExtractor,
+  MemoryInstanceResolver,
   MemoryKind,
   MemoryQueryPlanner,
   MemoryRecord,
@@ -58,6 +59,7 @@ import type {
 } from "../kernel/types.js";
 import {
   createDefaultIntelligence,
+  createOpenAICompatibleInstanceResolver,
   createOpenAICompatibleQueryPlanner,
   createOpenAICompatibleSessionDistiller,
   type DefaultIntelligence,
@@ -626,6 +628,8 @@ export interface ExternalMemoryBenchmarkRuntimeSessionDistillationManifest {
   parseFailureCount: number;
   transportFailureCount: number;
   failureCount: number;
+  unresolvedMentionCount: number;
+  unresolvedMentionReasons: Record<string, number>;
 }
 
 export interface ExternalMemoryBenchmarkRuntimeIngestGroupManifest {
@@ -694,6 +698,7 @@ export interface ExternalMemoryBenchmarkRuntimeIntelligenceManifest {
   hookNames: {
     extractor: string | null;
     sessionDistiller: string | null;
+    instanceResolver: string | null;
     consolidator: string | null;
     procedureDistiller: string | null;
     dossierSynthesizer: string | null;
@@ -1307,6 +1312,7 @@ interface IngestCacheKeyFields {
     contractVersion: number;
     enabled: boolean;
     nameHash: string | null;
+    resolverNameHash: string | null;
     model: string | null;
     disableThinking: boolean;
   };
@@ -1334,9 +1340,9 @@ interface IngestCacheKeyFields {
 }
 
 const MESSAGE_EXTRACTION_CONTRACT_VERSION = 4;
-const SESSION_DISTILLATION_CONTRACT_VERSION = 3;
+const SESSION_DISTILLATION_CONTRACT_VERSION = 4;
 const ENTITY_CONSOLIDATION_CONTRACT_VERSION = 2;
-const INGEST_CACHE_IMPLEMENTATION_VERSION = 5;
+const INGEST_CACHE_IMPLEMENTATION_VERSION = 6;
 const MAX_INGEST_CACHE_PENDING_VECTOR_FRACTION = 0.1;
 
 interface IngestCachePlan {
@@ -1355,6 +1361,7 @@ interface IngestCachePlan {
 
 interface IngestCacheIntegrity {
   unresolvedExtractionWindowCount: number;
+  unresolvedMentionCount: number;
   embeddingFailureCount: number;
   pendingVectorCount: number;
   embeddedEligibleMemoryCount: number;
@@ -1939,6 +1946,7 @@ function ingestCacheKeyFields(input: {
       contractVersion: SESSION_DISTILLATION_CONTRACT_VERSION,
       enabled: runtime.sessionDistillation.enabled,
       nameHash: checkpointIdentityHash(runtime.sessionDistillation.name),
+      resolverNameHash: checkpointIdentityHash(runtime.hookNames.instanceResolver),
       model: runtime.sessionDistillation.model,
       disableThinking: intelligenceConfig?.disableThinking === true,
     },
@@ -2048,6 +2056,7 @@ function completeIngestCacheMeta(
     const counts = integrity as Record<string, unknown>;
     const numericCounts = {
       unresolvedExtractionWindowCount: counts.unresolvedExtractionWindowCount,
+      unresolvedMentionCount: counts.unresolvedMentionCount,
       embeddingFailureCount: counts.embeddingFailureCount,
       pendingVectorCount: counts.pendingVectorCount,
       embeddedEligibleMemoryCount:
@@ -2238,6 +2247,7 @@ function ingestCacheIntegrity(
     : 0;
   return {
     unresolvedExtractionWindowCount: applied.unresolvedExtractionWindowCount,
+    unresolvedMentionCount: applied.unresolvedMentionCount,
     embeddingFailureCount: applied.embeddingFailureCount,
     pendingVectorCount,
     embeddedEligibleMemoryCount: Math.max(
@@ -2291,6 +2301,7 @@ function incompleteIngestCacheReasons(integrity: IngestCacheIntegrity): string[]
   );
   return [
     integrity.unresolvedExtractionWindowCount > 0 ? "unresolved_extraction_windows" : null,
+    integrity.unresolvedMentionCount > 0 ? "unresolved_mentions" : null,
     embeddingDegradationTooHigh ? "embedding_failures" : null,
     !integrity.searchIndexComplete ? "search_index_incomplete" : null,
     integrity.distillationFailureCount > 0 ? "distillation_failures" : null,
@@ -3814,6 +3825,14 @@ async function fetchOpenAICompatibleJson(
   const maxTokens = hookMaxTokens(options.maxTokens);
   const maxRetries = Math.max(0, Math.min(Math.trunc(options.maxRetries ?? validator?.defaultMaxRetries ?? 0), 3));
   const responseFormat = request?.responseFormat ?? "json";
+  // OpenAI-compatible backends reject response_format json_object unless the
+  // user content mentions "json"; system-only mentions do not satisfy the check.
+  if (
+    responseFormat === "json" &&
+    !messages.some((message) => message.role === "user" && /json/iu.test(message.content))
+  ) {
+    messages = [...messages, { role: "user", content: "Return a JSON object." }];
+  }
   try {
     const result = await runOpenAICompatibleRetry(async (signal) => {
       const response = await fetchImpl(openAICompatibleEndpoint(options.baseUrl), {
@@ -4501,6 +4520,8 @@ function disabledRuntimeSessionDistillation(): ExternalMemoryBenchmarkRuntimeSes
     parseFailureCount: 0,
     transportFailureCount: 0,
     failureCount: 0,
+    unresolvedMentionCount: 0,
+    unresolvedMentionReasons: {},
   };
 }
 
@@ -4717,6 +4738,8 @@ function createRunManifest(input: {
         parseFailureCount: input.runtimeIntelligence.distillationParseFailureCount,
         transportFailureCount: input.runtimeIntelligence.distillationTransportFailureCount,
         failureCount: input.runtimeIntelligence.distillationFailureCount,
+        unresolvedMentionCount: input.runtimeIntelligence.unresolvedMentionCount,
+        unresolvedMentionReasons: input.runtimeIntelligence.unresolvedMentionReasons,
       },
       queryPlanner: {
         ...input.runtimeIntelligence.manifest.queryPlanner,
@@ -5562,6 +5585,24 @@ function wrapSessionDistiller(
   };
 }
 
+function wrapInstanceResolver(
+  instanceResolver: MemoryInstanceResolver | undefined,
+  run: <T>(label: string, task: () => Promise<T>) => Promise<T>,
+): MemoryInstanceResolver | undefined {
+  if (!instanceResolver) return undefined;
+  const name = hookName(instanceResolver) ?? "anonymous";
+  return {
+    name,
+    resolve(input) {
+      return run("instanceResolver", async () =>
+        typeof instanceResolver === "function"
+          ? instanceResolver(input)
+          : instanceResolver.resolve(input)
+      );
+    },
+  };
+}
+
 function wrapConsolidator(
   consolidator: MemoryConsolidator | undefined,
   run: <T>(label: string, task: () => Promise<T>) => Promise<T>,
@@ -5684,6 +5725,7 @@ function intelligenceHookStage(
     case "extractor":
       return "extractor";
     case "sessionDistiller":
+    case "instanceResolver":
       return "session_distiller";
     case "consolidator":
       return "consolidator";
@@ -5706,6 +5748,7 @@ function hookNamesFor(hooks: DefaultIntelligence): ExternalMemoryBenchmarkRuntim
   return {
     extractor: hookName(hooks.extractor),
     sessionDistiller: hookName(hooks.sessionDistiller),
+    instanceResolver: hookName(hooks.instanceResolver),
     consolidator: hookName(hooks.consolidator),
     procedureDistiller: hookName(hooks.procedureDistiller),
     dossierSynthesizer: hookName(hooks.dossierSynthesizer),
@@ -5747,6 +5790,8 @@ interface RuntimeIntelligenceState {
   distillationParseFailureCount: number;
   distillationTransportFailureCount: number;
   distillationFailureCount: number;
+  unresolvedMentionCount: number;
+  unresolvedMentionReasons: Record<string, number>;
   queryEmbeddingFailureCount: number;
   queryEmbeddingRetryCount: number;
   queryEmbeddingRecoveredCount: number;
@@ -5798,6 +5843,7 @@ function disabledRuntimeIntelligence(
       hookNames: {
         extractor: null,
         sessionDistiller: null,
+        instanceResolver: null,
         consolidator: null,
         procedureDistiller: null,
         dossierSynthesizer: null,
@@ -5861,6 +5907,8 @@ function disabledRuntimeIntelligence(
     distillationParseFailureCount: 0,
     distillationTransportFailureCount: 0,
     distillationFailureCount: 0,
+    unresolvedMentionCount: 0,
+    unresolvedMentionReasons: {},
     queryEmbeddingFailureCount: 0,
     queryEmbeddingRetryCount: 0,
     queryEmbeddingRecoveredCount: 0,
@@ -6031,6 +6079,16 @@ function resolveRuntimeIntelligence(input: {
               ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
               ...(apiKey ? { apiKey } : {}),
             }),
+            instanceResolver: createOpenAICompatibleInstanceResolver({
+              baseUrl: distillerBaseUrl,
+              model: distillerModel,
+              timeoutMs,
+              retries,
+              backoffMs,
+              ...(config.disableThinking ? { disableThinking: true } : {}),
+              ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
+              ...(apiKey ? { apiKey } : {}),
+            }),
           }
         : {}),
     };
@@ -6041,6 +6099,7 @@ function resolveRuntimeIntelligence(input: {
   for (const [label, hook] of [
     ["extractor", rawHooks.extractor],
     ["sessionDistiller", rawHooks.sessionDistiller],
+    ["instanceResolver", rawHooks.instanceResolver],
     ["consolidator", rawHooks.consolidator],
     ["procedureDistiller", rawHooks.procedureDistiller],
     ["dossierSynthesizer", rawHooks.dossierSynthesizer],
@@ -6073,6 +6132,7 @@ function resolveRuntimeIntelligence(input: {
   };
   const extractor = wrapExtractor(rawHooks.extractor, run);
   const sessionDistiller = wrapSessionDistiller(rawHooks.sessionDistiller, run);
+  const instanceResolver = wrapInstanceResolver(rawHooks.instanceResolver, run);
   if (input.sessionDistillation && !sessionDistiller) {
     throw new Error("External benchmark sessionDistillation requires a sessionDistiller hook");
   }
@@ -6085,6 +6145,7 @@ function resolveRuntimeIntelligence(input: {
   const hooks: DefaultIntelligence = {
     ...(extractor ? { extractor } : {}),
     ...(sessionDistiller ? { sessionDistiller } : {}),
+    ...(instanceResolver ? { instanceResolver } : {}),
     ...(consolidator ? { consolidator } : {}),
     ...(procedureDistiller ? { procedureDistiller } : {}),
     ...(dossierSynthesizer ? { dossierSynthesizer } : {}),
@@ -6210,6 +6271,8 @@ function resolveRuntimeIntelligence(input: {
     distillationParseFailureCount: 0,
     distillationTransportFailureCount: 0,
     distillationFailureCount: 0,
+    unresolvedMentionCount: 0,
+    unresolvedMentionReasons: {},
     queryEmbeddingFailureCount: 0,
     queryEmbeddingRetryCount: 0,
     queryEmbeddingRecoveredCount: 0,
@@ -6892,6 +6955,8 @@ interface AppliedBenchmarkEvents {
   replayedWindowCount: number;
   replayRecoveredCount: number;
   unresolvedExtractionWindowCount: number;
+  unresolvedMentionCount: number;
+  unresolvedMentionReasons: Record<string, number>;
   entityConsolidationClustersFound: number;
   entityConsolidationClustersMerged: number;
   entityConsolidationConsolidatorCallCount: number;
@@ -7145,6 +7210,8 @@ async function applyBenchmarkEvents(input: {
     replayedWindowCount: 0,
     replayRecoveredCount: 0,
     unresolvedExtractionWindowCount: 0,
+    unresolvedMentionCount: 0,
+    unresolvedMentionReasons: {},
     entityConsolidationClustersFound: 0,
     entityConsolidationClustersMerged: 0,
     entityConsolidationConsolidatorCallCount: 0,
@@ -7228,6 +7295,10 @@ async function applyBenchmarkEvents(input: {
         output.distillationParseFailureCount += distilled.distillationParseFailureCount;
         output.distillationTransportFailureCount += distilled.distillationTransportFailureCount;
         output.distillationFailureCount += distilled.distillationFailureCount;
+        output.unresolvedMentionCount += distilled.unresolvedMentionCount;
+        for (const [reason, count] of Object.entries(distilled.unresolvedMentionReasons ?? {})) {
+          output.unresolvedMentionReasons[reason] = (output.unresolvedMentionReasons[reason] ?? 0) + count;
+        }
       };
       let batch: MemorySessionGroup[] = [];
       let sessionIds = new Set<string>();
@@ -7305,6 +7376,10 @@ async function applyBenchmarkEvents(input: {
     output.distillationParseFailureCount += ingested.distillationParseFailureCount;
     output.distillationTransportFailureCount += ingested.distillationTransportFailureCount;
     output.distillationFailureCount += ingested.distillationFailureCount;
+    output.unresolvedMentionCount += ingested.unresolvedMentionCount;
+    for (const [reason, count] of Object.entries(ingested.unresolvedMentionReasons ?? {})) {
+      output.unresolvedMentionReasons[reason] = (output.unresolvedMentionReasons[reason] ?? 0) + count;
+    }
   }
 
   for (const event of input.events) {
@@ -7709,6 +7784,7 @@ async function runCaseGroup(input: {
       store,
       ...(hooks?.extractor ? { extractor: hooks.extractor } : {}),
       ...(hooks?.sessionDistiller ? { sessionDistiller: hooks.sessionDistiller } : {}),
+      ...(hooks?.instanceResolver ? { instanceResolver: hooks.instanceResolver } : {}),
       ...(hooks?.consolidator ? { consolidator: hooks.consolidator } : {}),
       ...(hooks?.procedureDistiller ? { procedureDistiller: hooks.procedureDistiller } : {}),
       ...(hooks?.dossierSynthesizer ? { dossierSynthesizer: hooks.dossierSynthesizer } : {}),
@@ -7859,6 +7935,11 @@ async function runCaseGroup(input: {
       input.runtimeIntelligence.distillationParseFailureCount += applied.distillationParseFailureCount;
       input.runtimeIntelligence.distillationTransportFailureCount += applied.distillationTransportFailureCount;
       input.runtimeIntelligence.distillationFailureCount += applied.distillationFailureCount;
+      input.runtimeIntelligence.unresolvedMentionCount += applied.unresolvedMentionCount;
+      for (const [reason, count] of Object.entries(applied.unresolvedMentionReasons ?? {})) {
+        input.runtimeIntelligence.unresolvedMentionReasons[reason] =
+          (input.runtimeIntelligence.unresolvedMentionReasons[reason] ?? 0) + count;
+      }
       extractionWindowCount = applied.extractionWindowCount;
       extractionCallCount = applied.extractionCallCount;
       extractionRetryCount = applied.extractionRetryCount;

@@ -122,7 +122,10 @@ try {
       import { createMemoryOS, getGmosRuntimeInfo, isSecretLikeMemoryContent } from "@ghast/memory";
       import { createMemoryStatusReport } from "@ghast/memory/diagnostics";
       import { createEvolutionControlPlane } from "@ghast/memory/evolution";
-      import { createDefaultIntelligence } from "@ghast/memory/intelligence";
+      import {
+        createDefaultIntelligence,
+        createOpenAICompatibleInstanceResolver,
+      } from "@ghast/memory/intelligence";
       import {
         createPresetHostAdapter,
         exportMemorySnapshots,
@@ -199,6 +202,7 @@ try {
         },
       });
       assert.deepEqual(await intelligence.embeddingProvider.embed(["consumer vector"]), [[0.1, 0.2, 0.3]]);
+      assert.equal(typeof createOpenAICompatibleInstanceResolver, "function");
       assert.equal(isSecretLikeMemoryContent("api key: sk-consumersmokesecret1234567890"), true);
       assert.equal(isSecretLikeMemoryContent("User prefers concise answers."), false);
       const initialReadAudit = store.readAuditSnapshot();
@@ -892,6 +896,9 @@ try {
         type ExplainTurnInput,
         type LowLevelAddManyResult,
         type MemoryExtractor,
+        type MemoryInstanceMentionCandidate,
+        type MemoryInstanceResolver,
+        type MemoryInstanceResolverDecision,
         type MemoryListInput,
         type MemoryOS,
         type MemoryReadRetrievalOptions,
@@ -913,6 +920,7 @@ try {
       import { createEvolutionControlPlane } from "@ghast/memory/evolution";
       import {
         createDefaultIntelligence,
+        createOpenAICompatibleInstanceResolver,
         type DefaultIntelligenceOptions,
       } from "@ghast/memory/intelligence";
       import {
@@ -1113,6 +1121,35 @@ try {
         }),
       };
       const typedIntelligence = createDefaultIntelligence(defaultIntelligenceOptions);
+      const typedMention: MemoryInstanceMentionCandidate = {
+        claim: "The user bought one typed tank.",
+        instanceKind: "object",
+        state: "active",
+        entity: "typed tank",
+        action: "bought",
+        quantity: "one",
+        sourceEvidenceId: "evidence_1",
+        episodeKey: "episode_0123456789abcdef01234567",
+        turnOrdinal: 0,
+      };
+      const typedResolver: MemoryInstanceResolver = (input) => {
+        const decision: MemoryInstanceResolverDecision = input.existingInstances.length === 0
+          ? { decision: "NEW_INSTANCE" }
+          : { decision: "SAME_AS", instanceId: input.existingInstances[0]!.instanceId };
+        return decision;
+      };
+      const typedResolverFactory: MemoryInstanceResolver = createOpenAICompatibleInstanceResolver({
+        model: "consumer-types-chat",
+        fetchImpl: async () => ({
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          text: async () => JSON.stringify({ choices: [{ message: { content: "{\\"decision\\":\\"NEW_INSTANCE\\"}" } }] }),
+        }),
+      });
+      void typedMention;
+      void typedResolver;
+      void typedResolverFactory;
       if (!typedIntelligence.embeddingProvider) {
         throw new Error("typed intelligence provider missing");
       }

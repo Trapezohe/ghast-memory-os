@@ -170,7 +170,9 @@ export async function runOpenAICompatibleRetry<T>(
   const backoffMs = boundedInteger(options?.backoffMs, 250, 0, 30_000);
   const stage = options?.stage;
   const observer = stage ? REQUEST_OBSERVER.getStore() : undefined;
-  const maxRetryDelayMs = options?.maxRetryDelayMs ?? observer?.maxRetryDelayMs;
+  // Uncapped server retry-after values have stalled ingest for over an hour;
+  // beyond the cap the failure is terminal so circuit/replay handling stays honest.
+  const maxRetryDelayMs = options?.maxRetryDelayMs ?? observer?.maxRetryDelayMs ?? 60_000;
   let retryCount = 0;
   let lastError: unknown;
   for (let attempt = 0; attempt <= retries; attempt += 1) {

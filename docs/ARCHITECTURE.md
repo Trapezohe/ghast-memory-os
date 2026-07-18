@@ -16,7 +16,8 @@ host event
 -> evidence event
 -> memory / world belief / task trajectory
 -> optional turn-retention memory for eligible raw conversation turns
--> optional host session distillation memory for compact dated session facts
+-> optional host distiller emits source-anchored atomic mentions
+-> deterministic profile-wide instance resolution and canonical instance memory
 -> association projection
 -> prepareTurn(), explainTurn(), or reconstructContext()
 -> context, evidence, action policy
@@ -58,12 +59,15 @@ Windowed conversation ingest is layered. With `turnRetention`, eligible raw
 turns are stored as low-confidence ordinary memories with
 `metadata.turnMemory = true` and default confidence `0.35`. Extracted atoms
 remain the structured semantic layer: higher-confidence memories and world
-beliefs supplied by the host extractor. With `sessionDistillation`, a host hook
-can add compact dated session-summary memories with default confidence `0.6`.
-All three layers point back to evidence events and use existing memory kinds.
-Raw turns preserve episodic wording, atoms carry durable structure, and session
-summaries give aggregation questions a small set of per-session enumerations.
-This does not add schema or a new memory kind.
+beliefs supplied by the host extractor. With `sessionDistillation`, the host
+distiller emits atomic mentions, never canonical rows. After grounding, the
+kernel processes them in source order against existing profile instances. A
+semantic resolver hook may propose same-as or transition decisions; the kernel
+validates the decision, assigns stable ids, reconciles attributes, and writes
+one ordinary `fact` memory per instance. Object, occurrence, obligation, and
+value kinds have distinct state/counting semantics. Mention ledgers live in
+session evidence payloads, and instance structure lives in memory metadata, so
+this does not add a table, schema version, or memory kind.
 
 ## Read And Write Boundaries
 

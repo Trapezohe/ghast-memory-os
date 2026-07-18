@@ -57,12 +57,11 @@ Key write methods:
   are skipped instead of failing the batch; the result is
   `{ memories, skipped }`, where `skipped` reports each input index and reason.
 - `distillAndAdd({ profileId?, messages, concurrency? })`: records evidence for
-  message-shaped inputs and runs only the configured `sessionDistiller` summary
-  write path. It does not run extraction or turn retention. Use it when a host
-  already imported low-level memories but wants the same session-summary layer
-  and idempotence as `ingestConversation()`. `concurrency` defaults to `1` and
-  bounds provider calls while summary writes remain in deterministic session
-  order.
+  message-shaped inputs and runs only the configured session distiller plus the
+  profile-wide instance resolver. It does not run extraction or turn retention.
+  The distiller returns source-anchored mentions; the resolver is the sole path
+  that creates or updates canonical instance memories. `concurrency` defaults
+  to `1`, and writes remain in deterministic session and mention order.
 - `ingestConversation({ profileId?, messages, window?, extraction?, turnRetention?, sessionDistillation?, consolidateEntities? })`:
   records each message as its own evidence event, then calls the extractor once
   per eligible message window. `window.maxMessages` defaults to `12`;
@@ -86,9 +85,13 @@ Key write methods:
   session key group by `conversationId`; only messages without either identity
   use the current ingest call. Each distiller input
   is capped at 24,000 source content characters by default; over-cap messages
-  are truncated from the tail of that session input. Returned candidates are
-  stored as ordinary evidence-linked memories with default `kind: "fact"`,
-  default confidence `0.6`, and `metadata.sessionDistillation = true`.
+  are truncated from the tail of that session input. The optional narrative is
+  stored as an ordinary evidence-linked memory. Atomic mentions are grounded
+  against their cited turn, then resolved against existing profile instances as
+  `NEW_INSTANCE`, `SAME_AS`, `STATE_TRANSITION`, or `REJECTED`. Canonical
+  instances are ordinary `fact` memories whose metadata includes
+  `instance_id`, `instance_kind`, `state`, `canonical_attributes`, `aliases`,
+  `citations`, `observedAt`, and optional `occurredAt`.
   `consolidateEntities` defaults to off. Pass `true` or
   `{ minClusterSize?, maxClustersPerRun?, maxMembersPerCluster? }` to run
   deterministic entity clustering after extraction, turn retention, and session
@@ -117,6 +120,9 @@ Session distillation adds `distilledMemoryCount`, `distillationCallCount`,
 `distillationParseFailureCount`, `distillationTransportFailureCount`, and
 `distillationFailureCount`; `distillationTruncatedMessageCount` counts messages
 whose content was shortened or omitted by the per-session distiller input cap.
+`unresolvedMentionCount` counts mentions for which a configured resolver did
+not return a valid decision; any such session is left unwritten and remains
+eligible for retry.
 When entity consolidation actually runs, the result also includes
 `entityConsolidation: { clustersFound, clustersMerged, consolidatorCallCount,
 consolidatorFailureCount }`. A throwing consolidator hook or empty hook result
@@ -124,9 +130,10 @@ does not fail ingest; it increments `consolidatorFailureCount`.
 Turn-retention writes use the same secret-like, incognito, person-routing,
 trust-cap, and lower-trust policy gates as extracted memories. Re-running the
 same event-keyed ingest writes no new turn memories.
-Session distillation writes use the same gates and dedupe by deterministic
-session event key plus candidate content, so replaying the same session does not
-duplicate session summary memories or evidence.
+Session distillation writes use the same gates and a deterministic session key.
+Replaying a complete session does not duplicate evidence or instances; a prior
+incomplete resolver pass is retried. The evidence payload stores the normalized
+mention ledger and `unresolved_mentions: 0` only after every mention resolves.
 
 Extractor and session-distiller hooks receive content and timing, but not raw
 conversation routing identities. For extractor calls, gmOS omits
@@ -627,6 +634,7 @@ Primary methods:
   `createOpenAICompatibleExtractor`, `createOpenAICompatibleConsolidator`,
   `createOpenAICompatibleProcedureDistiller`,
   `createOpenAICompatibleSessionDistiller`,
+  `createOpenAICompatibleInstanceResolver`,
   `createOpenAICompatibleDossierSynthesizer`,
   `createOpenAICompatibleEmbeddingProvider`,
   `createOpenAICompatibleReranker`, `createOpenAICompatibleQueryPlanner`, and
@@ -644,12 +652,11 @@ Primary methods:
   use; benchmark intelligence wiring raises the extractor default to `4000` so
   large transcript windows can emit all atomic facts. Scale `maxTokens` with
   the ingest window character cap to avoid provider truncation.
-  `createOpenAICompatibleSessionDistiller()` returns the optional write-side
-  session hook. Its prompt is dataset-agnostic and asks the host model for
-  compact, dated, user-centric factual notes, one fact per line, excluding
-  assistant questions, suggestions, and advice. `createDefaultIntelligence()`
-  does not include this hook unless the host passes `sessionDistillation: true`
-  or a distiller option object.
+  `createOpenAICompatibleSessionDistiller()` returns the optional mention
+  extraction hook; `createOpenAICompatibleInstanceResolver()` returns the
+  cross-session identity-decision hook. Their prompts are dataset-agnostic.
+  `createDefaultIntelligence()` includes both only when the host passes
+  `sessionDistillation: true` or a distiller option object.
   `createOpenAICompatibleQueryPlanner({ maxAnchors })` returns
   `{ requiredAnchors: [{ cue, hint? }] }` for host-side read planning; empty
   output means ordinary retrieval.
@@ -1450,7 +1457,10 @@ results record `sweepCues` and `sweepIncludedCount`; manifests record
 
 External benchmark runners can enable write-side session distillation with
 `sessionDistillation: true` or CLI `--session-distill on`. It requires either
-hooks with `sessionDistiller` or an intelligence config that can build one.
+hooks with `sessionDistiller` (and optionally `instanceResolver`) or an
+intelligence config that builds both. Without a semantic resolver hook, the
+kernel still handles exact identity and creates otherwise-new instances
+deterministically.
 Message ingest distills once per profile-bound route: explicit session identity,
 then `conversationId`, then the current ingest call. Memory ingest first
 direct-imports eligible memory events, then distills consecutive memory batches

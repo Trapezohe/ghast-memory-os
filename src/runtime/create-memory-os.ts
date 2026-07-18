@@ -52,9 +52,14 @@ import {
 import {
   normalizeSessionDistillationResult,
   shouldReplaySessionDistillation,
-  type AcceptedCanonicalEvent,
   type AcceptedSessionDistillation,
 } from "../kernel/session-distillation.js";
+import {
+  deterministicInstanceDecision,
+  reconcileCanonicalInstance,
+  stableInstanceId,
+  validatedInstanceDecision,
+} from "../kernel/instance-resolution.js";
 import {
   dossierInputKey,
   normalizeDossierCandidate,
@@ -135,6 +140,12 @@ import type {
   MemoryExtractionInput,
   MemoryExtractionReport,
   MemoryKind,
+  MemoryCanonicalInstanceSnapshot,
+  MemoryInstanceAttributes,
+  MemoryInstanceKind,
+  MemoryInstanceMention,
+  MemoryInstanceResolverDecision,
+  MemoryInstanceState,
   MemoryReadRetrievalOptions,
   MemorySearchInput,
   MemorySearchTraceCollector,
@@ -2574,7 +2585,11 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     event: ConversationEvent,
     result: ObserveResult,
     legacyEvidencePresent?: boolean | undefined,
-  ): Promise<{ result: ObserveResult; write?: ConversationEvidenceWrite | undefined }> {
+  ): Promise<{
+    result: ObserveResult;
+    write?: ConversationEvidenceWrite | undefined;
+    sessionWrite?: ConversationEvidenceWrite | undefined;
+  }> {
     const recordedEvent: ConversationEvent = {
       ...event,
       profileId: result.profileId,
@@ -2636,6 +2651,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           eligibleForLongTermMemory: legacyEvidence.eligibleForLongTermMemory,
           skippedReason: "deduplicated_event",
         },
+        sessionWrite: {
+          event: recordedEvent,
+          evidence: legacyEvidence,
+          eventMetadata,
+          sensitivity: legacyEvidence.sensitivity,
+          sourceTrust,
+          allowLowerTrustPolicyWrites,
+        },
       };
     }
     const claimed = await store.claimEvidence({
@@ -2669,6 +2692,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           evidenceId: evidence.id,
           eligibleForLongTermMemory: evidence.eligibleForLongTermMemory,
           skippedReason: "deduplicated_event",
+        },
+        sessionWrite: {
+          event: recordedEvent,
+          evidence,
+          eventMetadata,
+          sensitivity: evidence.sensitivity,
+          sourceTrust,
+          allowLowerTrustPolicyWrites,
         },
       };
     }
@@ -2744,6 +2775,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     distillationParseFailureCount: number;
     distillationTransportFailureCount: number;
     distillationTruncatedMessageCount: number;
+    unresolvedMentionCount: number;
+    unresolvedMentionReasons: Record<string, number>;
   }
 
   interface DurableSessionProvenance {
@@ -2777,6 +2810,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       distillationParseFailureCount: 0,
       distillationTransportFailureCount: 0,
       distillationTruncatedMessageCount: 0,
+      unresolvedMentionCount: 0,
+      unresolvedMentionReasons: {},
     };
   }
 
@@ -2909,7 +2944,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     observedAt: string;
     stats: SessionDistillationStats;
   }): Promise<SessionDistillationPlan | null> {
-    const members = input.group.members;
+    let members = input.group.members;
     if (members.length === 0) return null;
     const events = members.map((member) => member.event);
     const eventTime = sessionEventTime(members, input.observedAt);
@@ -2944,6 +2979,15 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         }))
       : null;
     if (existingLegacySessionEvidence?.profileId === input.group.profileId) return null;
+    const fallbackEpisodeKey = `episode_${createHash("sha256")
+      .update(distillationEventKey, "utf8")
+      .digest("hex")
+      .slice(0, 24)}`;
+    members = members.map((member, index) => ({
+      ...member,
+      episodeKey: member.episodeKey ?? fallbackEpisodeKey,
+      turnOrdinal: member.turnOrdinal ?? index,
+    }));
     const { messages, truncatedMessageCount } = sessionDistillationMessages(members);
     input.stats.distillationTruncatedMessageCount += truncatedMessageCount;
     const context: DurableSessionProvenance = {
@@ -2959,7 +3003,6 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       context: {
         eventKey: "[current_session]",
         evidenceIds: sessionEvidenceIds.map((_, index) => `evidence_${index + 1}`),
-        knownEventTypes: [],
       },
       messages: messages.map((message, index) => {
         const member = members[index];
@@ -2980,7 +3023,7 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       }),
     };
     return {
-      group: input.group,
+      group: { ...input.group, members },
       sourceUri,
       context,
       eventTime,
@@ -3011,13 +3054,12 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
           content: plan.distillerInput.messages[index]?.content ?? "",
           createdAt: member.event.createdAt ?? member.evidence.createdAt,
         })),
-        plan.distillerInput.context.knownEventTypes,
       );
     } catch (error) {
       const outcome = openAICompatibleOutcomeForError(error);
-      return { outcome, accepted: { narrative: null, events: [] } };
+      return { outcome, accepted: { narrative: null, mentions: [] } };
     }
-    const candidateCount = (accepted.narrative ? 1 : 0) + accepted.events.length;
+    const candidateCount = (accepted.narrative ? 1 : 0) + accepted.mentions.length;
     return {
       outcome: candidateCount > 0 ? "ok_with_candidates" : "ok_empty",
       accepted,
@@ -3027,23 +3069,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   async function callSessionDistillationPlan(
     plan: SessionDistillationPlan,
     distiller: NonNullable<MemoryOSOptions["sessionDistiller"]>,
-    knownEventTypes: ReadonlySet<string>,
   ): Promise<SessionDistillationCallResult> {
-    const currentPlan = {
-      ...plan,
-      distillerInput: {
-        ...plan.distillerInput,
-        context: {
-          ...plan.distillerInput.context,
-          knownEventTypes: [...knownEventTypes].sort(),
-        },
-      },
-    };
+    const currentPlan = plan;
     const first = await invokeSessionDistillationPlan(currentPlan, distiller);
     const outcomes = [first.outcome];
     if (
       (first.outcome === "ok_empty" || first.outcome === "ok_with_candidates") &&
-      shouldReplaySessionDistillation(currentPlan.distillerInput.messages, first.accepted.events.length)
+      shouldReplaySessionDistillation(currentPlan.distillerInput.messages, first.accepted.mentions)
     ) {
       const replay = await invokeSessionDistillationPlan({
         ...currentPlan,
@@ -3058,27 +3090,14 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         outcomes,
         accepted: {
           narrative: first.accepted.narrative ?? replay.accepted.narrative,
-          events: replay.accepted.events,
+          mentions: [...new Map(
+            [...first.accepted.mentions, ...replay.accepted.mentions]
+              .map((mention) => [mention.mentionId, mention]),
+          ).values()],
         },
       };
     }
     return { plan: currentPlan, outcomes, accepted: first.accepted };
-  }
-
-  async function storedSessionEventTypes(profileId: string): Promise<string[]> {
-    if (!store.listMemories) return [];
-    const memories = await store.listMemories({
-      profileId,
-      status: "active",
-      kind: "fact",
-      includeSensitive: true,
-      limit: 500,
-    });
-    return [...new Set(memories.flatMap((memory) =>
-      memory.metadata.eventRecord === true && typeof memory.metadata.eventType === "string"
-        ? [memory.metadata.eventType]
-        : []
-    ))].sort();
   }
 
   function sessionDistillationWriteContext(plan: SessionDistillationPlan) {
@@ -3104,7 +3123,10 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
   async function recordSessionDistillationEvidence(
     plan: SessionDistillationPlan,
     sensitivity: Sensitivity,
+    mentions: MemoryInstanceMention[],
+    resolutions: InstanceResolutionLedger[],
   ): Promise<EvidenceEvent> {
+    const decisions = new Map(resolutions.map((resolution) => [resolution.mentionId, resolution]));
     return store.recordEvidence({
       profileId: plan.group.profileId,
       eventKey: plan.context.eventKey,
@@ -3117,6 +3139,27 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         purpose: "session_distillation",
         eventTime: plan.eventTime,
         evidenceIds: plan.context.evidenceIds,
+        mentionIds: resolutions.map((resolution) => resolution.mentionId),
+        mentionDecisions: resolutions.map((resolution) => resolution.decision),
+        mentionInstanceIds: resolutions.map((resolution) => resolution.instanceId ?? ""),
+        mentions: mentions.map((mention) => {
+          const resolution = decisions.get(mention.mentionId);
+          return {
+            mention_id: mention.mentionId,
+            claim: mention.claim,
+            instance_kind: mention.instanceKind,
+            ...(mention.state ? { state: mention.state } : {}),
+            attributes: mention.attributes,
+            sourceEvidenceId: mention.sourceEvidenceId,
+            episodeKey: mention.episodeKey,
+            turnOrdinal: mention.turnOrdinal,
+            observedAt: mention.observedAt,
+            ...(mention.occurredAt ? { occurredAt: mention.occurredAt } : {}),
+            decision: resolution?.decision,
+            ...(resolution?.instanceId ? { instance_id: resolution.instanceId } : {}),
+          };
+        }),
+        unresolved_mentions: 0,
         conversationId: plan.context.conversationId,
         sessionId: plan.context.sessionId,
       }),
@@ -3179,91 +3222,282 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
     })).length;
   }
 
-  async function mergeExistingEventRecord(input: {
-    profileId: string;
-    event: AcceptedCanonicalEvent;
-    sessionEvidence: EvidenceEvent;
-    sessionEvidenceIds: string[];
-    result: ObserveResult;
-  }): Promise<boolean> {
-    const metadataStrings = (value: unknown): string[] =>
-      Array.isArray(value)
-        ? value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
-        : [];
-    const existing = store.findActiveMemoryByMetadata
-      ? await store.findActiveMemoryByMetadata(input.profileId, "eventRecordKey", input.event.eventRecordKey)
-      : null;
-    if (!existing || existing.metadata.eventRecord !== true ||
-      !hasGmosMetadataReferenceSchema(existing.metadata, GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage)) {
-      return false;
-    }
-    input.result.memoryIds.push(existing.id);
-    if (!store.updateMemory || existing.status !== "active") return true;
-    const citations = input.event.citations;
-    await store.updateMemory({
-      profileId: input.profileId,
-      id: existing.id,
-      sourceEventId: existing.sourceEventId,
-      metadata: {
-        ...existing.metadata,
-        sourceEvidenceIds: [...new Set([
-          ...metadataStrings(existing.metadata.sourceEvidenceIds),
-          ...citations.map((citation) => citation.sourceEvidenceId),
-        ])],
-        episodeKeys: [...new Set([
-          ...metadataStrings(existing.metadata.episodeKeys),
-          ...citations.map((citation) => citation.episodeKey),
-        ])],
-        turnOrdinals: [...new Set([
-          ...(Array.isArray(existing.metadata.turnOrdinals)
-            ? existing.metadata.turnOrdinals.filter((value): value is number => Number.isSafeInteger(value))
-            : []),
-          ...citations.map((citation) => citation.turnOrdinal),
-        ])].sort((left, right) => left - right),
-        sessionEvidenceIds: [...new Set([
-          ...metadataStrings(existing.metadata.sessionEvidenceIds),
-          ...input.sessionEvidenceIds,
-        ])].slice(0, SESSION_EVIDENCE_SAMPLE_LIMIT),
-        sessionDistillationEvidenceIds: [...new Set([
-          ...metadataStrings(existing.metadata.sessionDistillationEvidenceIds),
-          input.sessionEvidence.id,
-        ])],
-      },
-      updatedAt: input.sessionEvidence.createdAt,
-    });
-    return true;
+  interface StoredCanonicalInstance {
+    memory: MemoryRecord;
+    snapshot: MemoryCanonicalInstanceSnapshot;
   }
 
-  async function writeCanonicalEventRecords(input: {
+  interface InstanceResolutionLedger {
+    mentionId: string;
+    decision: MemoryInstanceResolverDecision["decision"];
+    instanceId?: string | undefined;
+  }
+
+  interface ResolvedInstanceBatch {
+    stored: Map<string, StoredCanonicalInstance>;
+    snapshots: Map<string, MemoryCanonicalInstanceSnapshot>;
+    assignments: Map<string, MemoryInstanceMention[]>;
+    touchedIds: Set<string>;
+    ledger: InstanceResolutionLedger[];
+    unresolved: number;
+    unresolvedReasons: Record<string, number>;
+  }
+
+  const instanceKinds = new Set<MemoryInstanceKind>(["object", "occurrence", "obligation", "value"]);
+  const instanceStates = new Set<MemoryInstanceState>([
+    "active", "planned", "not_current", "occurred", "pending", "completed", "current", "inactive",
+  ]);
+
+  function metadataStrings(value: unknown): string[] {
+    return Array.isArray(value)
+      ? value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+      : [];
+  }
+
+  function canonicalAttributes(value: unknown): MemoryInstanceAttributes | null {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    if (Object.values(record).some((entry) => typeof entry !== "string")) return null;
+    return record as MemoryInstanceAttributes;
+  }
+
+  function canonicalInstanceFromMemory(memory: MemoryRecord): MemoryCanonicalInstanceSnapshot | null {
+    const metadata = memory.metadata;
+    const instanceId = typeof metadata.instance_id === "string" ? metadata.instance_id : null;
+    const instanceKind = instanceKinds.has(metadata.instance_kind as MemoryInstanceKind)
+      ? metadata.instance_kind as MemoryInstanceKind
+      : null;
+    const state = instanceStates.has(metadata.state as MemoryInstanceState)
+      ? metadata.state as MemoryInstanceState
+      : null;
+    const attributes = canonicalAttributes(metadata.canonical_attributes);
+    const observedAt = typeof metadata.observedAt === "string" ? metadata.observedAt : null;
+    if (!instanceId || !instanceKind || !state || !attributes || !observedAt) return null;
+    return {
+      instanceId,
+      instanceKind,
+      state,
+      claim: memory.content,
+      attributes,
+      aliases: metadataStrings(metadata.aliases),
+      citations: metadataStrings(metadata.citations),
+      observedAt,
+      ...(typeof metadata.occurredAt === "string" ? { occurredAt: metadata.occurredAt } : {}),
+    };
+  }
+
+  async function storedCanonicalInstances(profileId: string): Promise<Map<string, StoredCanonicalInstance>> {
+    if (!store.listMemories) throw new Error("gmOS instance resolution requires listMemories");
+    const output = new Map<string, StoredCanonicalInstance>();
+    for (const instanceKind of [...instanceKinds].sort()) {
+      const memories = await store.listMemories({
+        profileId,
+        status: "active",
+        kind: "fact",
+        metadataEquals: { key: "instance_kind", value: instanceKind },
+        includeSensitive: true,
+        includePerson: true,
+        limit: 500,
+      });
+      if (memories.length === 500) throw new Error("gmOS profile has too many canonical instances for safe resolution");
+      for (const memory of memories) {
+        if (memory.metadata.instanceRecord !== true) continue;
+        const snapshot = canonicalInstanceFromMemory(memory);
+        if (!snapshot) throw new Error("gmOS canonical instance metadata is invalid");
+        if (output.has(snapshot.instanceId)) throw new Error("gmOS canonical instance_id is not unique");
+        output.set(snapshot.instanceId, { memory, snapshot });
+      }
+    }
+    return output;
+  }
+
+  async function proposedInstanceDecision(
+    profileId: string,
+    mention: MemoryInstanceMention,
+    existing: MemoryCanonicalInstanceSnapshot[],
+  ): Promise<MemoryInstanceResolverDecision | { unresolvedReason: string }> {
+    const deterministic = deterministicInstanceDecision(mention, existing);
+    if (deterministic) return deterministic;
+    const resolver = options.instanceResolver;
+    if (!resolver) return { decision: "NEW_INSTANCE" };
+    // A proposal that parses but fails validation (stale id, kind mismatch,
+    // inconsistent state) is a stochastic sample, not a settled judgment;
+    // re-ask before declaring the mention unresolved.
+    let reason = "resolver_null_output";
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const resolverInput = structuredClone({ profileId, mention, existingInstances: existing });
+      const proposed = typeof resolver === "function"
+        ? await resolver(resolverInput)
+        : await resolver.resolve(resolverInput);
+      const validated = proposed ? validatedInstanceDecision({ mention, existing, proposed }) : null;
+      if (validated) return validated;
+      reason = !proposed
+        ? "resolver_null_output"
+        : proposed.decision === "REJECTED"
+          ? "rejected_empty_reason"
+          : "target_instance_not_found";
+    }
+    return { unresolvedReason: reason };
+  }
+
+  async function resolveInstanceMentions(
+    profileId: string,
+    mentions: MemoryInstanceMention[],
+  ): Promise<ResolvedInstanceBatch> {
+    if (mentions.length === 0) {
+      return {
+        stored: new Map(),
+        snapshots: new Map(),
+        assignments: new Map(),
+        touchedIds: new Set(),
+        ledger: [],
+        unresolved: 0,
+        unresolvedReasons: {},
+      };
+    }
+    const stored = await storedCanonicalInstances(profileId);
+    const snapshots = new Map([...stored].map(([id, entry]) => [id, entry.snapshot]));
+    const output: ResolvedInstanceBatch = {
+      stored, snapshots, assignments: new Map(), touchedIds: new Set(), ledger: [], unresolved: 0,
+      unresolvedReasons: {},
+    };
+    const unresolvedMention = (reason: string) => {
+      output.unresolved += 1;
+      output.unresolvedReasons[reason] = (output.unresolvedReasons[reason] ?? 0) + 1;
+    };
+    for (const mention of mentions) {
+      const existing = [...snapshots.values()].sort((left, right) => left.instanceId.localeCompare(right.instanceId));
+      let decision: MemoryInstanceResolverDecision | { unresolvedReason: string };
+      try {
+        decision = await proposedInstanceDecision(profileId, mention, existing);
+      } catch {
+        decision = { unresolvedReason: "resolver_error" };
+      }
+      if ("unresolvedReason" in decision) {
+        unresolvedMention(decision.unresolvedReason);
+        continue;
+      }
+      const targetId = decision.decision === "NEW_INSTANCE"
+        ? stableInstanceId(profileId, mention.mentionId)
+        : decision.decision === "REJECTED" ? undefined : decision.instanceId;
+      if (decision.decision === "NEW_INSTANCE" && targetId && snapshots.has(targetId)) {
+        unresolvedMention("new_instance_id_collision");
+        continue;
+      }
+      const previous = targetId ? snapshots.get(targetId) : undefined;
+      const snapshot = targetId
+        ? reconcileCanonicalInstance({ mention, decision, existing: previous, instanceId: targetId })
+        : null;
+      output.ledger.push({ mentionId: mention.mentionId, decision: decision.decision, ...(targetId ? { instanceId: targetId } : {}) });
+      if (!snapshot || !targetId) continue;
+      snapshots.set(targetId, snapshot);
+      output.touchedIds.add(targetId);
+      output.assignments.set(targetId, [...(output.assignments.get(targetId) ?? []), mention]);
+    }
+    if (!store.updateMemory && [...output.touchedIds].some((id) => stored.has(id))) {
+      unresolvedMention("store_update_unsupported");
+    }
+    return output;
+  }
+
+  function canonicalInstanceMetadata(input: {
+    snapshot: MemoryCanonicalInstanceSnapshot;
+    mentions: MemoryInstanceMention[];
+    existing?: MemoryRecord | undefined;
     plan: SessionDistillationPlan;
-    events: AcceptedCanonicalEvent[];
+    sessionEvidence: EvidenceEvent;
+  }): Record<string, unknown> {
+    const primary = input.mentions[0];
+    const eventTime = input.snapshot.occurredAt ?? input.snapshot.observedAt;
+    return markedGmosMetadata({
+      ...(input.existing?.metadata ?? {}),
+      sessionDistillation: true,
+      instanceRecord: true,
+      instance_id: input.snapshot.instanceId,
+      instance_kind: input.snapshot.instanceKind,
+      state: input.snapshot.state,
+      canonical_attributes: input.snapshot.attributes,
+      aliases: input.snapshot.aliases,
+      citations: input.snapshot.citations,
+      observedAt: input.snapshot.observedAt,
+      ...(input.snapshot.occurredAt ? { occurredAt: input.snapshot.occurredAt } : {}),
+      sessionDistillationKey: `instance:${input.snapshot.instanceId}`,
+      sessionDistillationEvidenceId: input.sessionEvidence.id,
+      sessionDistillationEvidenceIds: [...new Set([
+        ...metadataStrings(input.existing?.metadata.sessionDistillationEvidenceIds),
+        input.sessionEvidence.id,
+      ])],
+      sourceEvidenceId: input.existing?.metadata.sourceEvidenceId ?? primary?.sourceEvidenceId,
+      sourceEvidenceIds: [...new Set([
+        ...metadataStrings(input.existing?.metadata.sourceEvidenceIds),
+        ...input.mentions.map((mention) => mention.sourceEvidenceId),
+      ])],
+      sessionEvidenceIds: [...new Set([
+        ...metadataStrings(input.existing?.metadata.sessionEvidenceIds),
+        ...input.plan.context.evidenceIds,
+      ])].slice(0, SESSION_EVIDENCE_SAMPLE_LIMIT),
+      sessionEvidenceCount: input.plan.context.evidenceIds.length,
+      episodeKey: primary?.episodeKey ?? input.existing?.metadata.episodeKey,
+      episodeKeys: [...new Set([
+        ...metadataStrings(input.existing?.metadata.episodeKeys),
+        ...input.mentions.map((mention) => mention.episodeKey),
+      ])],
+      turnOrdinal: primary?.turnOrdinal ?? input.existing?.metadata.turnOrdinal,
+      turnOrdinals: [...new Set([
+        ...(Array.isArray(input.existing?.metadata.turnOrdinals)
+          ? input.existing.metadata.turnOrdinals.filter((value): value is number => Number.isSafeInteger(value))
+          : []),
+        ...input.mentions.map((mention) => mention.turnOrdinal),
+      ])].sort((left, right) => left - right),
+      eventTime,
+      eventDate: eventTime.slice(0, 10),
+    }, GMOS_METADATA_REFERENCE_SCHEMAS.runtimeLineage);
+  }
+
+  function instanceCandidate(snapshot: MemoryCanonicalInstanceSnapshot, mentions: MemoryInstanceMention[]) {
+    return {
+      kind: "fact" as const,
+      content: snapshot.claim,
+      confidence: Math.max(...mentions.map((mention) => mention.confidence)),
+      ...(snapshot.occurredAt ? { eventTime: snapshot.occurredAt } : {}),
+      metadata: {},
+    };
+  }
+
+  async function writeCanonicalInstances(input: {
+    plan: SessionDistillationPlan;
+    batch: ResolvedInstanceBatch;
     sessionEvidence: EvidenceEvent;
     result: ObserveResult;
     embeddingStats: RuntimeEmbeddingStats;
   }): Promise<number> {
-    const fallbackMember = input.plan.group.members[0];
-    if (!fallbackMember) return 0;
     const candidates: MemoryExtractionCandidate[] = [];
     const contexts = new Map<MemoryExtractionCandidate, ExtractionCandidateContext>();
-    for (const canonical of input.events) {
-      if (await mergeExistingEventRecord({
-        profileId: input.plan.group.profileId,
-        event: canonical,
-        sessionEvidence: input.sessionEvidence,
-        sessionEvidenceIds: input.plan.context.evidenceIds,
-        result: input.result,
-      })) continue;
-      const candidate = {
-        ...canonical.candidate,
-        content: redactSessionRouteIdentity(canonical.candidate.content, input.plan.context),
-      };
-      const citedIds = new Set(canonical.citations.map((citation) => citation.sourceEvidenceId));
+    for (const instanceId of [...input.batch.touchedIds].sort()) {
+      const snapshot = input.batch.snapshots.get(instanceId);
+      const mentions = input.batch.assignments.get(instanceId) ?? [];
+      const primary = input.plan.group.members.find((member) => member.evidence.id === mentions[0]?.sourceEvidenceId);
+      if (!snapshot || mentions.length === 0 || !primary) continue;
+      const citedIds = new Set(mentions.map((mention) => mention.sourceEvidenceId));
       const citedMembers = input.plan.group.members.filter((member) => citedIds.has(member.evidence.id));
-      const primary = citedMembers[0];
-      if (!primary) continue;
-      const sourceEvidenceIds = canonical.citations.map((citation) => citation.sourceEvidenceId);
-      const episodeKeys = canonical.citations.map((citation) => citation.episodeKey);
-      const turnOrdinals = canonical.citations.map((citation) => citation.turnOrdinal);
+      const existing = input.batch.stored.get(instanceId)?.memory;
+      const metadata = canonicalInstanceMetadata({ snapshot, mentions, existing, plan: input.plan, sessionEvidence: input.sessionEvidence });
+      if (existing && store.updateMemory) {
+        const sensitivity = citedMembers.reduce((current, member) => maxSensitivity(current, member.sensitivity), existing.sensitivity);
+        const updated = await store.updateMemory({
+          profileId: input.plan.group.profileId,
+          id: existing.id,
+          content: redactSessionRouteIdentity(snapshot.claim, input.plan.context),
+          sensitivity,
+          sourceEventId: existing.sourceEventId,
+          metadata,
+          updatedAt: input.sessionEvidence.createdAt,
+        });
+        if (!updated) throw new Error("gmOS canonical instance update failed");
+        input.result.memoryIds.push(existing.id);
+        continue;
+      }
+      const candidate = instanceCandidate(snapshot, mentions);
       candidates.push(candidate);
       contexts.set(candidate, {
         result: input.result,
@@ -3274,32 +3508,16 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         sourceTrust: citedMembers.reduce((current, member) => lowerTrust(current, member.sourceTrust), primary.sourceTrust),
         allowLowerTrustPolicyWrites: citedMembers.some((member) => member.allowLowerTrustPolicyWrites),
         sourceEventId: primary.evidence.id,
-        metadata: {
-          sessionDistillation: true,
-          eventRecord: true,
-          eventRecordKey: canonical.eventRecordKey,
-          ...canonical.metadata,
-          sessionDistillationKey: `${input.sessionEvidence.id}:${canonical.eventRecordKey}`,
-          sessionDistillationEvidenceId: input.sessionEvidence.id,
-          sessionDistillationEvidenceIds: [input.sessionEvidence.id],
-          sourceEvidenceId: primary.evidence.id,
-          sourceEvidenceIds,
-          sessionEvidenceIds: input.plan.context.evidenceIds.slice(0, SESSION_EVIDENCE_SAMPLE_LIMIT),
-          sessionEvidenceCount: input.plan.context.evidenceIds.length,
-          episodeKey: primary.episodeKey,
-          episodeKeys,
-          turnOrdinal: primary.turnOrdinal,
-          turnOrdinals,
-          eventTime: canonical.eventTime,
-          eventDate: canonical.eventTime.slice(0, 10),
-        },
+        metadata,
       });
     }
+    const fallback = input.plan.group.members[0];
+    if (!fallback || candidates.length === 0) return 0;
     return (await applyExtractionCandidates({
       result: input.result,
       profileId: input.plan.group.profileId,
       candidates,
-      event: fallbackMember.event,
+      event: fallback.event,
       evidence: input.sessionEvidence,
       eventMetadata: {},
       sensitivity: input.sessionEvidence.sensitivity,
@@ -3309,13 +3527,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       embeddingStats: input.embeddingStats,
       contextForCandidate: (candidate) => contexts.get(candidate) ?? {
         result: input.result,
-        event: fallbackMember.event,
-        evidence: input.sessionEvidence,
-        eventMetadata: {},
-        sensitivity: input.sessionEvidence.sensitivity,
-        sourceTrust: "user",
-        allowLowerTrustPolicyWrites: false,
-        sourceEventId: input.sessionEvidence.id,
+        event: fallback.event,
+        evidence: fallback.evidence,
+        eventMetadata: fallback.eventMetadata,
+        sensitivity: fallback.sensitivity,
+        sourceTrust: fallback.sourceTrust,
+        allowLowerTrustPolicyWrites: fallback.allowLowerTrustPolicyWrites,
+        sourceEventId: fallback.evidence.id,
       },
     })).length;
   }
@@ -3333,12 +3551,26 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       else if (outcome === "ok_empty") input.stats.distillationEmptyCount += 1;
       else input.stats.distillationOkWithCandidatesCount += 1;
     }
-    if (!accepted.narrative && accepted.events.length === 0) return;
+    if (!accepted.narrative && accepted.mentions.length === 0) return;
     const lastMember = plan.group.members[plan.group.members.length - 1];
     if (!lastMember) return;
     const sessionResult = lastMember.result;
     const writeContext = sessionDistillationWriteContext(plan);
-    const sessionEvidence = await recordSessionDistillationEvidence(plan, writeContext.sensitivity);
+    const batch = await resolveInstanceMentions(plan.group.profileId, accepted.mentions);
+    if (batch.unresolved > 0) {
+      input.stats.unresolvedMentionCount += batch.unresolved;
+      for (const [reason, count] of Object.entries(batch.unresolvedReasons)) {
+        input.stats.unresolvedMentionReasons[reason] =
+          (input.stats.unresolvedMentionReasons[reason] ?? 0) + count;
+      }
+      return;
+    }
+    const sessionEvidence = await recordSessionDistillationEvidence(
+      plan,
+      writeContext.sensitivity,
+      accepted.mentions,
+      batch.ledger,
+    );
     if (accepted.narrative) {
       input.stats.distilledMemoryCount += await writeSessionNarrative({
         plan,
@@ -3348,9 +3580,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         embeddingStats: input.embeddingStats,
       });
     }
-    input.stats.distilledMemoryCount += await writeCanonicalEventRecords({
+    input.stats.distilledMemoryCount += await writeCanonicalInstances({
       plan,
-      events: accepted.events,
+      batch,
       sessionEvidence,
       result: sessionResult,
       embeddingStats: input.embeddingStats,
@@ -3389,16 +3621,15 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       while (next < queues.length) {
         const index = next;
         next += 1;
-        const queue = queues[index]!;
-        const knownEventTypes = new Set(await storedSessionEventTypes(queue[0]!.group.profileId));
+        const queue = queues[index];
+        if (!queue) continue;
         for (const plan of queue) {
-          const result = await callSessionDistillationPlan(plan, distiller, knownEventTypes);
+          const result = await callSessionDistillationPlan(plan, distiller);
           await applySessionDistillationCall({
             result,
             stats: input.stats,
             embeddingStats: input.embeddingStats,
           });
-          for (const event of result.accepted.events) knownEventTypes.add(event.eventType);
         }
       }
     }));
@@ -4072,8 +4303,9 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         defaultProfileId: profileId,
       });
       results.push(recorded.result);
-      if (!recorded.write) continue;
-      const episodeKey = episodeKeyForConversation(recorded.result.profileId, recorded.write.event);
+      const sessionWrite = recorded.write ?? recorded.sessionWrite;
+      if (!sessionWrite) continue;
+      const episodeKey = episodeKeyForConversation(recorded.result.profileId, sessionWrite.event);
       const turnOrdinal = episodeKey === null
         ? undefined
         : turnOrdinalsByEpisode.get(episodeKey) ?? 0;
@@ -4081,12 +4313,13 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
         turnOrdinalsByEpisode.set(episodeKey, turnOrdinal + 1);
       }
       const member: WindowMember = {
-        ...recorded.write,
+        ...sessionWrite,
         result: recorded.result,
         ...(episodeKey ? { episodeKey } : {}),
         ...(turnOrdinal !== undefined ? { turnOrdinal } : {}),
       };
       sessionMembers.push(member);
+      if (!recorded.write) continue;
       const recordedEvent = recorded.write.event;
       if (turnRetention && !isPersonRoutedMemory(recordedEvent.content)) {
         const turnMemory = await prepareTurnMemoryWrite({
@@ -4213,6 +4446,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       distillationTransportFailureCount: sessionDistillationStats.distillationTransportFailureCount,
       distillationFailureCount: sessionDistillationFailureCount(sessionDistillationStats),
       distillationTruncatedMessageCount: sessionDistillationStats.distillationTruncatedMessageCount,
+      unresolvedMentionCount: sessionDistillationStats.unresolvedMentionCount,
+      unresolvedMentionReasons: sessionDistillationStats.unresolvedMentionReasons,
       ...(entityConsolidationStats ? { entityConsolidation: entityConsolidationStats } : {}),
       extractionMinConfidence,
       extractionReports,
@@ -4261,6 +4496,8 @@ export function createMemoryOS(options: MemoryOSOptions): MemoryOS {
       distillationTransportFailureCount: sessionDistillationStats.distillationTransportFailureCount,
       distillationFailureCount: sessionDistillationFailureCount(sessionDistillationStats),
       distillationTruncatedMessageCount: sessionDistillationStats.distillationTruncatedMessageCount,
+      unresolvedMentionCount: sessionDistillationStats.unresolvedMentionCount,
+      unresolvedMentionReasons: sessionDistillationStats.unresolvedMentionReasons,
     };
   }
 

@@ -349,9 +349,15 @@ export function createOpenAICompatibleExtractor(
     name,
     async extract(input) {
       const maxCandidates = input.window ? windowMaxCandidates : singleMessageMaxCandidates;
+      const userContent = userPrompt(input, options);
       const messages = [
         { role: "system" as const, content: systemPrompt(maxCandidates) },
-        { role: "user" as const, content: userPrompt(input, options) },
+        { role: "user" as const, content: userContent },
+        // OpenAI-compatible backends reject response_format json_object unless
+        // the user content mentions "json"; transcript payloads often do not.
+        ...(options.responseFormat === false || /json/iu.test(userContent)
+          ? []
+          : [{ role: "user" as const, content: "Return a JSON object." }]),
       ];
       const requestPrompt = messages.map((message) => `${message.role}: ${message.content}`).join("\n\n");
       let responseText = "";

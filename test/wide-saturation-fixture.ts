@@ -71,7 +71,7 @@ async function runScenario(input: {
       narrative: {
         content: `NeedleMarker distilled session summary at ${distillation.eventTime}.`,
       },
-      events: [],
+      mentions: [],
     }),
     ...(input.withEmbedding ? { embeddingProvider: fixtureProvider() } : {}),
   });

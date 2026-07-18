@@ -230,21 +230,85 @@ export interface MemorySessionDistillationCandidate {
   confidence?: number | undefined;
 }
 
-export interface MemoryCanonicalEventCandidate {
-  eventType: string;
-  content: string;
-  participants?: string[] | undefined;
+export type MemoryInstanceKind = "object" | "occurrence" | "obligation" | "value";
+
+export type MemoryInstanceState =
+  | "active"
+  | "planned"
+  | "not_current"
+  | "occurred"
+  | "pending"
+  | "completed"
+  | "current"
+  | "inactive";
+
+export interface MemoryInstanceAttributes {
+  entity?: string | undefined;
   target?: string | undefined;
-  eventTime: string;
-  state?: "pending" | "completed" | undefined;
   action?: string | undefined;
   quantity?: string | undefined;
   amount?: string | undefined;
-  sourceEvidenceIds: string[];
+  date?: string | undefined;
+}
+
+export interface MemoryInstanceMentionCandidate extends MemoryInstanceAttributes {
+  claim: string;
+  instanceKind: MemoryInstanceKind;
+  state?: MemoryInstanceState | undefined;
+  sourceEvidenceId: string;
   episodeKey: string;
-  turnOrdinals: number[];
+  turnOrdinal: number;
   confidence?: number | undefined;
 }
+
+export interface MemoryInstanceMention {
+  mentionId: string;
+  claim: string;
+  instanceKind: MemoryInstanceKind;
+  state?: MemoryInstanceState | undefined;
+  attributes: MemoryInstanceAttributes;
+  sourceEvidenceId: string;
+  episodeKey: string;
+  turnOrdinal: number;
+  observedAt: string;
+  occurredAt?: string | undefined;
+  confidence: number;
+}
+
+export interface MemoryCanonicalInstanceSnapshot {
+  instanceId: string;
+  instanceKind: MemoryInstanceKind;
+  state: MemoryInstanceState;
+  claim: string;
+  attributes: MemoryInstanceAttributes;
+  aliases: string[];
+  citations: string[];
+  observedAt: string;
+  occurredAt?: string | undefined;
+}
+
+export type MemoryInstanceResolverDecision =
+  | { decision: "NEW_INSTANCE" }
+  | { decision: "SAME_AS"; instanceId: string }
+  | { decision: "STATE_TRANSITION"; instanceId: string; state: MemoryInstanceState }
+  | { decision: "REJECTED"; reason: string };
+
+export interface MemoryInstanceResolverInput {
+  profileId: string;
+  mention: MemoryInstanceMention;
+  existingInstances: MemoryCanonicalInstanceSnapshot[];
+}
+
+export type MemoryInstanceResolverResult = MemoryInstanceResolverDecision | null | undefined;
+
+export type MemoryInstanceResolver =
+  | ((input: MemoryInstanceResolverInput) => Promise<MemoryInstanceResolverResult> | MemoryInstanceResolverResult)
+  | {
+      name?: string | undefined;
+      resolve(
+        input: MemoryInstanceResolverInput,
+      ): Promise<MemoryInstanceResolverResult> | MemoryInstanceResolverResult;
+    };
 
 export interface MemorySessionDistillationInput {
   profileId: string;
@@ -252,7 +316,6 @@ export interface MemorySessionDistillationInput {
   context: {
     eventKey: string;
     evidenceIds: string[];
-    knownEventTypes?: string[] | undefined;
     conversationId?: never;
     sessionId?: never;
     sourceUri?: never;
@@ -273,7 +336,7 @@ export interface MemorySessionDistillationInput {
 
 export interface MemorySessionDistillationOutput {
   narrative: MemorySessionDistillationCandidate;
-  events: MemoryCanonicalEventCandidate[];
+  mentions: MemoryInstanceMentionCandidate[];
 }
 
 export type MemorySessionDistillationResult = MemorySessionDistillationOutput | null | undefined;
@@ -659,6 +722,8 @@ export interface IngestConversationResult {
   distillationTransportFailureCount: number;
   distillationFailureCount: number;
   distillationTruncatedMessageCount: number;
+  unresolvedMentionCount: number;
+  unresolvedMentionReasons: Record<string, number>;
   entityConsolidation?: {
     clustersFound: number;
     clustersMerged: number;
@@ -697,6 +762,8 @@ export interface DistillAndAddResult {
   distillationTransportFailureCount: number;
   distillationFailureCount: number;
   distillationTruncatedMessageCount: number;
+  unresolvedMentionCount: number;
+  unresolvedMentionReasons: Record<string, number>;
 }
 
 export interface MemoryRecord {
@@ -2431,6 +2498,7 @@ export interface MemoryOSOptions {
   disposition?: string | undefined;
   extractor?: MemoryExtractor | undefined;
   sessionDistiller?: MemorySessionDistiller | undefined;
+  instanceResolver?: MemoryInstanceResolver | undefined;
   consolidator?: MemoryConsolidator | undefined;
   procedureDistiller?: MemoryProcedureDistiller | undefined;
   dossierSynthesizer?: MemoryDossierSynthesizer | undefined;

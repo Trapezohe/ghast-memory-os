@@ -34,7 +34,11 @@ import type {
   MemoryRetrievalReranker,
   MemoryRetrievalRerankerCandidate,
   MemorySessionDistillationCandidate,
-  MemoryCanonicalEventCandidate,
+  MemoryInstanceMentionCandidate,
+  MemoryInstanceResolver,
+  MemoryInstanceResolverDecision,
+  MemoryInstanceResolverInput,
+  MemoryInstanceState,
   MemorySessionDistiller,
   MemorySessionDistillationInput,
   MemorySessionDistillationOutput,
@@ -101,6 +105,7 @@ export interface DefaultIntelligenceOptions extends OpenAICompatibleBaseOptions 
 export interface DefaultIntelligence {
   extractor?: MemoryExtractor | undefined;
   sessionDistiller?: MemorySessionDistiller | undefined;
+  instanceResolver?: MemoryInstanceResolver | undefined;
   consolidator?: MemoryConsolidator | undefined;
   procedureDistiller?: MemoryProcedureDistiller | undefined;
   dossierSynthesizer?: MemoryDossierSynthesizer | undefined;
@@ -219,6 +224,20 @@ function safeContent(value: unknown, maxLength: number): string | null {
   return content;
 }
 
+// OpenAI-compatible backends reject response_format json_object unless the
+// word "json" appears in the request's user content; system-only mentions do
+// not satisfy the check on all providers.
+function withJsonWordInUserContent<T extends { role: string; content: string }>(
+  messages: T[],
+): T[] {
+  if (messages.some((message) => message.role === "user" && /json/iu.test(message.content))) {
+    return messages;
+  }
+  const last = messages[messages.length - 1];
+  if (!last) return messages;
+  return [...messages, { ...last, content: "Return a JSON object." }];
+}
+
 async function callChatJson(
   options: OpenAICompatibleBaseOptions,
   messages: Array<{ role: "system" | "user"; content: string }>,
@@ -227,6 +246,7 @@ async function callChatJson(
     throwOnFailure?: boolean | undefined;
   },
 ): Promise<unknown | null> {
+  messages = withJsonWordInUserContent(messages);
   const payload = await fetchJsonWithRetry(
     endpoint(options.baseUrl, "/chat/completions"),
     {
@@ -332,51 +352,40 @@ function normalizeSessionDistillationCandidate(value: unknown): MemorySessionDis
   };
 }
 
-function sessionStringArray(value: unknown): string[] | null {
-  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) return null;
-  return value;
-}
-
-function sessionOrdinalArray(value: unknown): number[] | null {
-  if (!Array.isArray(value) || !value.every((entry) =>
-    typeof entry === "number" && Number.isSafeInteger(entry) && entry >= 0
-  )) return null;
-  return value;
-}
-
-function normalizeCanonicalEventOutput(value: unknown): MemoryCanonicalEventCandidate | null {
+function normalizeInstanceMentionOutput(value: unknown): MemoryInstanceMentionCandidate | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  const eventType = safeContent(record.eventType, 80);
-  const content = safeContent(record.content, 2000);
-  const eventTime = safeContent(record.eventTime, 64);
-  const sourceEvidenceIds = sessionStringArray(record.sourceEvidenceIds);
+  const claim = safeContent(record.claim, 2000);
+  const instanceKind = record.instanceKind;
+  const sourceEvidenceId = safeContent(record.sourceEvidenceId, 160);
   const episodeKey = safeContent(record.episodeKey, 80);
-  const turnOrdinals = sessionOrdinalArray(record.turnOrdinals);
-  if (!eventType || !content || !eventTime || !sourceEvidenceIds?.length || !episodeKey || !turnOrdinals?.length) {
+  const turnOrdinal = record.turnOrdinal;
+  if (!claim || !["object", "occurrence", "obligation", "value"].includes(String(instanceKind)) ||
+    !sourceEvidenceId || !episodeKey || !Number.isSafeInteger(turnOrdinal) || Number(turnOrdinal) < 0) {
     return null;
   }
   const optional = (key: string, maxLength = 240): string | undefined => safeContent(record[key], maxLength) ?? undefined;
-  const participants = record.participants === undefined ? undefined : sessionStringArray(record.participants);
-  if (record.participants !== undefined && !participants) return null;
-  const state = record.state === "pending" || record.state === "completed" ? record.state : undefined;
+  const state = ["active", "planned", "not_current", "occurred", "pending", "completed", "current", "inactive"]
+    .includes(String(record.state)) ? record.state as MemoryInstanceState : undefined;
   const target = optional("target");
+  const entity = optional("entity");
   const action = optional("action", 120);
   const quantity = optional("quantity", 120);
   const amount = optional("amount", 120);
+  const date = optional("date", 64);
   return {
-    eventType,
-    content,
-    ...(participants?.length ? { participants } : {}),
+    claim,
+    instanceKind: instanceKind as MemoryInstanceMentionCandidate["instanceKind"],
+    ...(entity ? { entity } : {}),
     ...(target ? { target } : {}),
-    eventTime,
     ...(state ? { state } : {}),
     ...(action ? { action } : {}),
     ...(quantity ? { quantity } : {}),
     ...(amount ? { amount } : {}),
-    sourceEvidenceIds,
+    ...(date ? { date } : {}),
+    sourceEvidenceId,
     episodeKey,
-    turnOrdinals,
+    turnOrdinal: Number(turnOrdinal),
     confidence: boundedNumber(Number(record.confidence), 0.7, 0, 1),
   };
 }
@@ -385,11 +394,30 @@ function normalizeSessionDistillationOutput(value: unknown): MemorySessionDistil
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   const narrative = normalizeSessionDistillationCandidate(record.narrative);
-  if (!narrative || !Array.isArray(record.events)) return null;
+  if (!narrative || !Array.isArray(record.mentions)) return null;
   return {
     narrative,
-    events: record.events.map(normalizeCanonicalEventOutput).filter((event): event is MemoryCanonicalEventCandidate => event !== null),
+    mentions: record.mentions.map(normalizeInstanceMentionOutput).filter((mention): mention is MemoryInstanceMentionCandidate => mention !== null),
   };
+}
+
+function normalizeInstanceResolverDecision(value: unknown): MemoryInstanceResolverDecision | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.decision === "NEW_INSTANCE") return { decision: "NEW_INSTANCE" };
+  if (record.decision === "REJECTED") {
+    const reason = safeContent(record.reason, 160);
+    return reason ? { decision: "REJECTED", reason } : null;
+  }
+  const instanceId = safeContent(record.instanceId ?? record.instance_id, 160);
+  if (!instanceId) return null;
+  if (record.decision === "SAME_AS") return { decision: "SAME_AS", instanceId };
+  if (record.decision !== "STATE_TRANSITION") return null;
+  const state = record.state;
+  return ["active", "planned", "not_current", "occurred", "pending", "completed", "current", "inactive"]
+    .includes(String(state))
+    ? { decision: "STATE_TRANSITION", instanceId, state: state as MemoryInstanceState }
+    : null;
 }
 
 function normalizeQueryPlannerAnchor(value: unknown): ReconstructionRequiredAnchorHint | null {
@@ -594,24 +622,23 @@ export function createOpenAICompatibleSessionDistiller(
           content: commonSystemPrompt(
             "a session distillation hook",
             [
-              "Return one brief ordered narrative plus canonical event records; events are the primary artifacts. An event is a real-world occurrence or state change that happened, is pending, or was completed.",
-              "Questions, discussions, interests, advice, recommendations, preferences, and considerations are not events. Preserve them only in the narrative; never emit event records for them.",
-              "Scan every user turn independently before writing the narrative. Do not summarize away event-bearing statements, especially first-person past or perfect actions, pending obligations, value changes, purchases, visits, attendance, returns, pickups, and completed activities.",
-              "A stated participant role at a real-world occurrence implies attendance at that occurrence. Emit the attendance event, not a role-statement event.",
-              "Emit one event per real-world instance. Merge repeated or paraphrased mentions of the same instance, but keep distinct instances separate even when they share a type or target.",
-              "eventType uses an open generic vocabulary, not a fixed taxonomy. Reuse the exact spelling of a matching type from context.knownEventTypes, and reuse the first chosen type for the same class throughout this response. Create a concise lowercase singular type only when no existing type matches.",
-              "When replay.reason is event_verb_density, the prior pass emitted no accepted events despite event-bearing language; rescan every turn for omitted occurrences and pending state changes.",
-              "Keep content to one compact factual line and put every key participant or target entity in participants or target.",
-              "Copy quantities and amounts from cited source text; never calculate them. Use state pending or completed only when applicable. For obligation events, use eventType obligation_pending or obligation_completed and include the source action and fully qualified target instance. A transaction status does not complete a different physical action.",
-              "Set eventTime only from cited turn timestamps or explicit dates in cited text, never from the current wall clock.",
-              "Every event must cite sourceEvidenceIds, episodeKey, and turnOrdinals exactly as supplied on the transcript turns that ground it. Every key entity, quantity, amount, action, and date must have textual basis in those cited turns.",
-              "Return {\"narrative\":{\"content\":\"...\",\"kind\":\"fact\",\"confidence\":0.6},\"events\":[{\"eventType\":\"completed_activity\",\"content\":\"...\",\"participants\":[\"user\"],\"target\":\"...\",\"eventTime\":\"2026-01-02\",\"quantity\":\"2 hours\",\"sourceEvidenceIds\":[\"evidence_1\"],\"episodeKey\":\"episode_...\",\"turnOrdinals\":[0],\"confidence\":0.7}]}",
+              "Return one brief ordered narrative plus atomic source-anchored mentions. Mentions are claims only; never assign canonical instance ids or decide whether two mentions are the same instance.",
+              "Scan every source turn independently. Do not summarize away purchases, owned objects, replacements, fixes, occurrences, pending or completed obligations, or value changes.",
+              "Emit one mention per distinct item or happening stated in a source turn. Split lists into separate mentions even when several items share one verb or sentence. Repeated wording may produce repeated mentions; the instance resolver handles identity.",
+              "Questions, discussions, interests, advice, recommendations, preferences, and considerations are not countable mentions. Preserve them only in the narrative.",
+              "instanceKind is object for a persistent physical or conceptual item, occurrence for one happening, obligation for an action target with pending/completed state, and value for a latest-wins attribute.",
+              "For object state use active when currently owned/present, planned when only intended, not_current when explicitly excluded, or inactive when no longer current. For occurrence use occurred or planned. For obligation use pending or completed. For value use current or inactive.",
+              "When replay.reason is event_verb_density, prior mention density was below the source's event-verb/entity density; rescan every turn and split any omitted items.",
+              "Copy entity, target, action, state, quantity, amount, and date from or directly grounded by the cited source. Never calculate values or use the current wall clock.",
+              "Every mention cites exactly one sourceEvidenceId, episodeKey, and turnOrdinal exactly as supplied. Every key entity and raw attribute must have textual basis in that source.",
+              "Return {\"narrative\":{\"content\":\"...\",\"kind\":\"fact\",\"confidence\":0.6},\"mentions\":[{\"claim\":\"The user bought the large glass tank.\",\"instanceKind\":\"object\",\"state\":\"active\",\"entity\":\"large glass tank\",\"action\":\"bought\",\"date\":\"2026-01-02\",\"sourceEvidenceId\":\"evidence_1\",\"episodeKey\":\"episode_...\",\"turnOrdinal\":0,\"confidence\":0.7}]}",
             ].join(" "),
           ),
         },
         { role: "user" as const, content: sessionDistillationPrompt(input) },
       ];
-      const requestPrompt = messages.map((message) => `${message.role}: ${message.content}`).join("\n\n");
+      const normalizedMessages = withJsonWordInUserContent(messages);
+      const requestPrompt = normalizedMessages.map((message) => `${message.role}: ${message.content}`).join("\n\n");
       let responseText = "";
       let completionText: string | undefined;
       try {
@@ -632,7 +659,7 @@ export function createOpenAICompatibleSessionDistiller(
               max_tokens: maxTokens,
               ...(options.disableThinking ? { enable_thinking: false } : {}),
               response_format: { type: "json_object" },
-              messages,
+              messages: normalizedMessages,
             }),
           });
           responseText = await response.text();
@@ -691,6 +718,45 @@ export function createOpenAICompatibleSessionDistiller(
           error: error instanceof Error ? error.message : String(error),
         });
         throw error;
+      }
+    },
+  });
+}
+
+export function createOpenAICompatibleInstanceResolver(
+  options: OpenAICompatibleBaseOptions,
+): MemoryInstanceResolver {
+  const name = options.name ?? `openai-compatible-instance-resolver:${options.model}`;
+  const decisionAttempts = 3;
+  return markOpenAICompatibleRequestLifecycleOwner({
+    name,
+    async resolve(input: MemoryInstanceResolverInput) {
+      // A syntactically valid completion can still fail decision normalization;
+      // those content-level failures are stochastic, so retry them like transport
+      // failures instead of poisoning the session as unresolved on one bad sample.
+      for (let attempt = 1; ; attempt += 1) {
+        const parsed = await callChatJson(
+          { ...options, maxTokens: options.maxTokens ?? 320 },
+          [
+            {
+              role: "system",
+              content: commonSystemPrompt(
+                "an instance identity resolver",
+                [
+                  "Compare the one grounded mention with all existing profile instances and return exactly one decision.",
+                  "Object instances persist across later mentions and aliases. Occurrence instances are one per happening. Obligation instances are keyed by the physical action and target and may transition state. Value instances are latest-wins for the same attribute target.",
+                  "Use NEW_INSTANCE only for a genuinely distinct real instance. Use SAME_AS with an existing instanceId for an alias, paraphrase, or repeated mention. Use STATE_TRANSITION with an existing instanceId and the mention's stated state when the same instance changes state. Use REJECTED for an ungrounded duplicate or non-countable claim.",
+                  "Never create or modify an instance id. Do not merge merely because two instances share a category. Keep replacement and original objects distinct unless the source says they are the same object.",
+                  "Return {\"decision\":\"NEW_INSTANCE\"}, {\"decision\":\"SAME_AS\",\"instanceId\":\"...\"}, {\"decision\":\"STATE_TRANSITION\",\"instanceId\":\"...\",\"state\":\"pending|completed|active|planned|not_current|occurred|current|inactive\"}, or {\"decision\":\"REJECTED\",\"reason\":\"...\"}.",
+                ].join(" "),
+              ),
+            },
+            { role: "user", content: JSON.stringify(input) },
+          ],
+          { stage: "session_distiller", throwOnFailure: true },
+        );
+        const decision = normalizeInstanceResolverDecision(parsed);
+        if (decision || attempt >= decisionAttempts) return decision;
       }
     },
   });
@@ -881,9 +947,9 @@ export function createDefaultIntelligence(options: DefaultIntelligenceOptions): 
   }
   if (options.sessionDistillation) {
     const override = sessionDistillationOverride(options.sessionDistillation);
-    output.sessionDistiller = createOpenAICompatibleSessionDistiller(
-      withDefaults(options, override, override?.model ?? options.model),
-    );
+    const resolved = withDefaults(options, override, override?.model ?? options.model);
+    output.sessionDistiller = createOpenAICompatibleSessionDistiller(resolved);
+    output.instanceResolver = createOpenAICompatibleInstanceResolver(resolved);
   }
   if (options.consolidator !== false) {
     output.consolidator = createOpenAICompatibleConsolidator(

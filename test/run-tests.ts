@@ -59,6 +59,8 @@ import {
   extractAssociationCues,
 } from "../src/kernel/associations.js";
 import { reconstructMemoryContext } from "../src/kernel/reconstruction.js";
+import { instanceCountsAsCurrent } from "../src/kernel/instance-resolution.js";
+import { shouldReplaySessionDistillation } from "../src/kernel/session-distillation.js";
 import {
   collectReaderEvidenceForMemories,
   readerEvidenceSurfaceText,
@@ -75,7 +77,7 @@ import {
 import { resolveWorldEntitySubject } from "../src/kernel/entities.js";
 
 function sessionNarrative(content: string, confidence = 0.6) {
-  return { narrative: { content, confidence }, events: [] };
+  return { narrative: { content, confidence }, mentions: [] };
 }
 import { GMOS_EVIDENCE_PAYLOAD_SCHEMAS } from "../src/kernel/evidence-schema.js";
 import {
@@ -5430,174 +5432,185 @@ const canonicalEventStore = createSqliteMemoryStore({
   path: path.join(tmp, "canonical-event-distillation.db"),
 });
 let canonicalEventCall = 0;
-const canonicalEventKnownTypes: string[][] = [];
 const canonicalEventMemory = createMemoryOS({
   profileId: "canonical-event-distillation",
   store: canonicalEventStore,
   extractor: () => [],
+  instanceResolver: {
+    name: "canonical-instance-stub-resolver",
+    resolve(input) {
+      if (input.mention.attributes.target?.includes("ceremony")) {
+        const wedding = input.existingInstances.find((instance) =>
+          instance.attributes.target === "Rachel and Emily's wedding"
+        );
+        return wedding ? { decision: "SAME_AS" as const, instanceId: wedding.instanceId } : null;
+      }
+      return { decision: "NEW_INSTANCE" as const };
+    },
+  },
   sessionDistiller: {
     name: "canonical-event-stub-distiller",
     distill(input) {
       canonicalEventCall += 1;
-      canonicalEventKnownTypes.push(input.context.knownEventTypes ?? []);
       const citation = (index: number) => {
         const message = input.messages[index];
         if (!message?.evidenceId || !message.episodeKey || message.turnOrdinal === undefined) {
           throw new Error("canonical event fixture source lacks provenance");
         }
         return {
-          sourceEvidenceIds: [message.evidenceId],
+          sourceEvidenceId: message.evidenceId,
           episodeKey: message.episodeKey,
-          turnOrdinals: [message.turnOrdinal],
+          turnOrdinal: message.turnOrdinal,
         };
       };
-      if (canonicalEventCall === 1) {
+      if (input.messages.length > 2) {
         return {
           narrative: { content: "The session covered a wedding, two game sessions, and open errands." },
-          events: [
+          mentions: [
             {
-              eventType: "attended_event",
-              content: "The user attended Rachel and Emily's wedding on 2026-07-01.",
-              participants: ["Rachel", "Emily"],
+              claim: "The user attended Rachel and Emily's wedding on 2026-07-01.",
+              instanceKind: "occurrence" as const,
+              state: "occurred" as const,
               target: "Rachel and Emily's wedding",
-              eventTime: "2026-07-01",
+              date: "2026-07-01",
               ...citation(0),
             },
             {
-              eventType: "attended_event",
-              content: "Rachel and Emily's 2026-07-01 wedding was attended by the user.",
-              participants: ["Rachel", "Emily"],
+              claim: "Rachel and Emily's 2026-07-01 wedding was attended by the user.",
+              instanceKind: "occurrence" as const,
+              state: "occurred" as const,
               target: "Rachel and Emily's wedding",
-              eventTime: "2026-07-01",
+              date: "2026-07-01",
               ...citation(1),
             },
             {
-              eventType: "completed_activities",
-              content: "The user played The Last Horizon for 5 hours on 2026-07-02.",
-              participants: ["user"],
+              claim: "The user played The Last Horizon for 5 hours on 2026-07-02.",
+              instanceKind: "occurrence" as const,
+              state: "occurred" as const,
               target: "The Last Horizon",
-              eventTime: "2026-07-02",
+              action: "played",
+              date: "2026-07-02",
               quantity: "5 hours",
               ...citation(2),
             },
             {
-              eventType: "completed_activity",
-              content: "The user played The Last Horizon for 10 hours on 2026-07-03.",
-              participants: ["user"],
+              claim: "The user played The Last Horizon for 10 hours on 2026-07-03.",
+              instanceKind: "occurrence" as const,
+              state: "occurred" as const,
               target: "The Last Horizon",
-              eventTime: "2026-07-03",
+              action: "played",
+              date: "2026-07-03",
               quantity: "10 hours",
               ...citation(3),
             },
             {
-              eventType: "obligation_pending",
-              content: "Returning the original hiking boots is pending.",
-              participants: ["user"],
+              claim: "Returning the original hiking boots is pending.",
+              instanceKind: "obligation" as const,
               target: "original hiking boots",
-              eventTime: "2026-07-04",
-              state: "pending",
+              date: "2026-07-04",
+              state: "pending" as const,
               action: "return",
               ...citation(4),
             },
             {
-              eventType: "obligation_pending",
-              content: "Picking up the replacement hiking boots is pending.",
-              participants: ["user"],
+              claim: "Picking up the replacement hiking boots is pending.",
+              instanceKind: "obligation" as const,
               target: "replacement hiking boots",
-              eventTime: "2026-07-04",
-              state: "pending",
+              date: "2026-07-04",
+              state: "pending" as const,
               action: "pick up",
               ...citation(5),
             },
             {
-              eventType: "value_update",
-              content: "The original hiking boots transaction status became exchanged.",
-              participants: ["user"],
+              claim: "The original hiking boots transaction status became exchanged.",
+              instanceKind: "value" as const,
+              state: "current" as const,
               target: "original hiking boots",
-              eventTime: "2026-07-04",
+              action: "became exchanged",
+              date: "2026-07-04",
               ...citation(6),
             },
             {
-              eventType: "completed_activity",
-              content: "The user visited Moon Base on 2026-07-02.",
-              participants: ["user"],
+              claim: "The user visited Moon Base on 2026-07-02.",
+              instanceKind: "occurrence" as const,
               target: "Moon Base",
-              eventTime: "2026-07-02",
+              date: "2026-07-02",
               ...citation(2),
             },
             {
-              eventType: "completed_activity",
-              content: "The user played The Last Horizon for 50 hours on 2026-07-02.",
-              participants: ["user"],
+              claim: "The user played The Last Horizon for 50 hours on 2026-07-02.",
+              instanceKind: "occurrence" as const,
               target: "The Last Horizon",
-              eventTime: "2026-07-02",
+              action: "played",
+              date: "2026-07-02",
               quantity: "50 hours",
               ...citation(2),
             },
             {
-              eventType: "completed_activity",
-              content: "The user played The Last Horizon for 5 hours on 2026-07-02.",
-              participants: ["user"],
+              claim: "The user played The Last Horizon for 5 hours on 2026-07-02.",
+              instanceKind: "occurrence" as const,
               target: "The Last Horizon",
-              eventTime: "2026-07-02",
+              action: "played",
+              date: "2026-07-02",
               quantity: "5 hours",
-              sourceEvidenceIds: ["evidence_999"],
+              sourceEvidenceId: "evidence_999",
               episodeKey: input.messages[2]?.episodeKey ?? "missing",
-              turnOrdinals: [2],
+              turnOrdinal: 2,
             },
             {
-              eventType: "value_update",
-              content: "The original hiking boots api key is sk-canonicaleventsecret1234567890.",
-              participants: ["user"],
+              claim: "The original hiking boots api key is sk-canonicaleventsecret1234567890.",
+              instanceKind: "value" as const,
               target: "original hiking boots",
-              eventTime: "2026-07-04",
+              action: "api key",
+              date: "2026-07-04",
               ...citation(6),
             },
             {
-              eventType: "discussion_topics",
-              content: "User discussed Rachel and Emily's wedding.",
+              claim: "User discussed Rachel and Emily's wedding.",
+              instanceKind: "obligation" as const,
               target: "Rachel and Emily's wedding",
-              eventTime: "2026-07-01",
+              date: "2026-07-01",
               ...citation(0),
             },
           ],
         };
       }
-      if (canonicalEventCall === 2) {
+      if (input.messages.some((message) => message.content.includes("returned the original hiking boots"))) {
         return {
           narrative: { content: "The original hiking boots were returned." },
-          events: [
+          mentions: [
             {
-              eventType: "obligation_completed",
-              content: "Returning the original hiking boots is completed.",
-              participants: ["user"],
+              claim: "Returning the original hiking boots is completed.",
+              instanceKind: "obligation" as const,
               target: "original hiking boots",
-              eventTime: "2026-07-05",
-              state: "completed",
+              date: "2026-07-05",
+              state: "completed" as const,
               action: "return",
               ...citation(0),
             },
             {
-              eventType: "obligation_pending",
-              content: "Picking up the replacement hiking boots remains pending.",
-              participants: ["user"],
+              claim: "Picking up the replacement hiking boots remains pending.",
+              instanceKind: "obligation" as const,
               target: "replacement hiking boots",
-              eventTime: "2026-07-05",
-              state: "pending",
+              date: "2026-07-05",
+              state: "pending" as const,
               action: "pick up",
               ...citation(1),
             },
           ],
         };
       }
+      const ceremony = input.messages[0]?.content.includes("ceremony") === true;
       return {
         narrative: { content: "The earlier wedding was mentioned again." },
-        events: [{
-          eventType: "attended_event",
-          content: "The user attended Rachel and Emily's wedding on 2026-07-01.",
-          participants: ["Rachel", "Emily"],
-          target: "Rachel and Emily's wedding",
-          eventTime: "2026-07-01",
+        mentions: [{
+          claim: ceremony
+            ? "The user attended Rachel and Emily's ceremony on 2026-07-01."
+            : "The user attended Rachel and Emily's wedding on 2026-07-01.",
+          instanceKind: "occurrence" as const,
+          state: "occurred" as const,
+          target: ceremony ? "Rachel and Emily's ceremony" : "Rachel and Emily's wedding",
+          date: "2026-07-01",
           ...citation(0),
         }],
       };
@@ -5628,42 +5641,59 @@ let canonicalEventRows = canonicalEventStore.listMemories({
   status: "any",
   includeSensitive: true,
   limit: 30,
-}).filter((memory) => memory.metadata.eventRecord === true);
+}).filter((memory) => memory.metadata.instanceRecord === true);
 assert.equal(canonicalEventRows.length, 6);
-const canonicalWedding = canonicalEventRows.find((memory) => memory.metadata.eventType === "attended_event");
+const canonicalWedding = canonicalEventRows.find((memory) =>
+  memory.metadata.instance_kind === "occurrence" &&
+  (memory.metadata.canonical_attributes as { target?: string }).target === "Rachel and Emily's wedding"
+);
 assert.deepEqual(canonicalWedding?.metadata.turnOrdinals, [0, 1]);
 assert.equal(Array.isArray(canonicalWedding?.metadata.sourceEvidenceIds), true);
 assert.equal((canonicalWedding?.metadata.sourceEvidenceIds as string[]).length, 2);
+const canonicalSessionEvidence = canonicalEventStore.listEvidence({
+  profileId: "canonical-event-distillation",
+  sourceType: "conversation.session_distillation",
+  includeSensitive: true,
+  limit: 10,
+})[0];
+assert.equal(canonicalSessionEvidence?.payload.unresolved_mentions, 0);
+assert.equal(Array.isArray(canonicalSessionEvidence?.payload.mentions), true);
+assert.equal(
+  (canonicalSessionEvidence?.payload.mentions as unknown[]).length,
+  (canonicalSessionEvidence?.payload.mentionIds as unknown[]).length,
+);
 assert.deepEqual(
   canonicalEventRows
-    .filter((memory) => memory.metadata.eventType === "completed_activity")
-    .map((memory) => memory.metadata.quantity)
+    .filter((memory) => memory.metadata.instance_kind === "occurrence")
+    .map((memory) => (memory.metadata.canonical_attributes as { quantity?: string }).quantity)
+    .filter(Boolean)
     .sort(),
   ["10 hours", "5 hours"],
 );
 assert.equal(canonicalEventRows.some((memory) => memory.content.includes("Moon Base")), false);
-assert.equal(canonicalEventRows.some((memory) => memory.metadata.quantity === "50 hours"), false);
+assert.equal(canonicalEventRows.some((memory) =>
+  (memory.metadata.canonical_attributes as { quantity?: string }).quantity === "50 hours"
+), false);
 assert.equal(JSON.stringify(canonicalEventRows).includes("canonicaleventsecret"), false);
 assert.equal(canonicalEventRows.every((memory) =>
   typeof memory.metadata.sourceEvidenceId === "string" &&
   typeof memory.metadata.episodeKey === "string" &&
   typeof memory.metadata.turnOrdinal === "number" &&
   typeof memory.metadata.eventTime === "string" &&
+  typeof memory.metadata.instance_id === "string" &&
   memory.sourceEventId === memory.metadata.sourceEvidenceId
 ), true);
+if (!canonicalWedding) throw new Error("canonical wedding instance missing");
 const canonicalWeddingEvidenceIds = new Set(
-  (await canonicalEventStore.listEvidenceForMemory(canonicalWedding!.id)).map((event) => event.id),
+  (await canonicalEventStore.listEvidenceForMemory(canonicalWedding.id)).map((event) => event.id),
 );
 assert.equal([
-  ...(canonicalWedding!.metadata.sourceEvidenceIds as string[]),
-  canonicalWedding!.metadata.sessionDistillationEvidenceId as string,
+  ...(canonicalWedding.metadata.sourceEvidenceIds as string[]),
+  canonicalWedding.metadata.sessionDistillationEvidenceId as string,
 ].every((id) => canonicalWeddingEvidenceIds.has(id)), true);
-const pendingCanonicalBeliefs = canonicalEventStore.listWorldBeliefs({
-  profileId: "canonical-event-distillation",
-  status: "active",
-  limit: 30,
-}).filter((belief) => belief.predicate.startsWith("obligation.") && belief.object === "pending");
-assert.equal(pendingCanonicalBeliefs.length, 2);
+assert.equal(canonicalEventRows.filter((memory) =>
+  memory.metadata.instance_kind === "obligation" && memory.metadata.state === "pending"
+).length, 2);
 await canonicalEventMemory.ingestConversation({
   messages: [
     {
@@ -5689,28 +5719,29 @@ assert.equal(canonicalEventStore.listMemories({
   includeSensitive: true,
   limit: 30,
 }).filter((memory) =>
-  memory.metadata.eventType === "obligation_pending" &&
-  memory.metadata.target === "replacement hiking boots"
+  memory.metadata.instance_kind === "obligation" &&
+  (memory.metadata.canonical_attributes as { target?: string }).target === "replacement hiking boots"
 ).length, 1);
-const currentCanonicalObligations = canonicalEventStore.listWorldBeliefs({
+const currentCanonicalObligations = canonicalEventStore.listMemories({
   profileId: "canonical-event-distillation",
-  status: "active",
+  status: "any",
+  includeSensitive: true,
   limit: 30,
-}).filter((belief) => belief.predicate.startsWith("obligation."));
-assert.equal(currentCanonicalObligations.some((belief) =>
-  belief.subject === "original hiking boots" &&
-  belief.predicate === "obligation.return" &&
-  belief.object === "completed"
+}).filter((memory) => memory.metadata.instance_kind === "obligation");
+assert.equal(currentCanonicalObligations.some((memory) =>
+  (memory.metadata.canonical_attributes as { target?: string; action?: string }).target === "original hiking boots" &&
+  (memory.metadata.canonical_attributes as { action?: string }).action === "return" &&
+  memory.metadata.state === "completed"
 ), true);
-assert.equal(currentCanonicalObligations.some((belief) =>
-  belief.subject === "replacement hiking boots" &&
-  belief.predicate === "obligation.pick_up" &&
-  belief.object === "pending"
+assert.equal(currentCanonicalObligations.some((memory) =>
+  (memory.metadata.canonical_attributes as { target?: string; action?: string }).target === "replacement hiking boots" &&
+  (memory.metadata.canonical_attributes as { action?: string }).action === "pick up" &&
+  memory.metadata.state === "pending"
 ), true);
 await canonicalEventMemory.ingestConversation({
   messages: [{
     role: "user",
-    content: "On 2026-07-01 I attended Rachel and Emily's wedding.",
+    content: "On 2026-07-01 I attended Rachel and Emily's ceremony.",
     messageId: "canonical-event-repeat-wedding",
     createdAt: "2026-07-06T09:00:00.000Z",
     metadata: { sessionId: "canonical-event-session-2" },
@@ -5722,14 +5753,84 @@ canonicalEventRows = canonicalEventStore.listMemories({
   status: "any",
   includeSensitive: true,
   limit: 30,
-}).filter((memory) => memory.metadata.eventRecord === true);
-assert.equal(canonicalEventRows.filter((memory) => memory.metadata.eventType === "attended_event").length, 1);
-const repeatedWedding = canonicalEventRows.find((memory) => memory.metadata.eventType === "attended_event");
+}).filter((memory) => memory.metadata.instanceRecord === true);
+assert.equal(canonicalEventRows.filter((memory) =>
+  (memory.metadata.canonical_attributes as { target?: string }).target === "Rachel and Emily's wedding"
+).length, 1);
+const repeatedWedding = canonicalEventRows.find((memory) =>
+  (memory.metadata.canonical_attributes as { target?: string }).target === "Rachel and Emily's wedding"
+);
 assert.equal((repeatedWedding?.metadata.sourceEvidenceIds as string[]).length, 3);
 assert.equal((repeatedWedding?.metadata.episodeKeys as string[]).length, 2);
-assert.deepEqual(canonicalEventKnownTypes[0], []);
-assert.equal(canonicalEventKnownTypes[1]?.includes("attended_event"), true);
-assert.equal(canonicalEventKnownTypes[2]?.includes("attended_event"), true);
+assert.equal(canonicalEventRows.every((memory) =>
+  memory.sourceEventId === memory.metadata.sourceEvidenceId
+), true);
+assert.equal(new Set(canonicalEventRows.map((memory) => memory.metadata.instance_id)).size, canonicalEventRows.length);
+assert.deepEqual(new Set(canonicalEventStore.listEvidence({
+  profileId: "canonical-event-distillation",
+  sourceType: "conversation.session_distillation",
+  includeSensitive: true,
+  limit: 20,
+}).flatMap((event) => event.payload.mentionDecisions as string[])), new Set([
+  "NEW_INSTANCE",
+  "SAME_AS",
+  "STATE_TRANSITION",
+  "REJECTED",
+]));
+const canonicalIdsBeforeReplay = canonicalEventRows
+  .map((memory) => [memory.metadata.instance_id, memory.metadata.instance_kind, memory.metadata.state])
+  .sort((left, right) => String(left[0]).localeCompare(String(right[0])));
+await canonicalEventMemory.ingestConversation({
+  messages: [{
+    role: "user",
+    content: "On 2026-07-01 I attended Rachel and Emily's ceremony.",
+    messageId: "canonical-event-repeat-wedding",
+    createdAt: "2026-07-06T09:00:00.000Z",
+    metadata: { sessionId: "canonical-event-session-2" },
+  }],
+  sessionDistillation: true,
+});
+assert.deepEqual(canonicalEventStore.listMemories({
+  profileId: "canonical-event-distillation",
+  status: "any",
+  includeSensitive: true,
+  limit: 30,
+}).filter((memory) => memory.metadata.instanceRecord === true)
+  .map((memory) => [memory.metadata.instance_id, memory.metadata.instance_kind, memory.metadata.state])
+  .sort((left, right) => String(left[0]).localeCompare(String(right[0]))), canonicalIdsBeforeReplay);
+const countFixture = {
+  instanceId: "count-fixture",
+  claim: "fixture",
+  attributes: { target: "fixture" },
+  aliases: [],
+  citations: [],
+  observedAt: "2026-07-01T00:00:00.000Z",
+};
+assert.equal([
+  ["object", "active"],
+  ["occurrence", "occurred"],
+  ["obligation", "pending"],
+  ["value", "current"],
+].every(([instanceKind, state]) => instanceCountsAsCurrent({
+  ...countFixture,
+  instanceKind: instanceKind as "object" | "occurrence" | "obligation" | "value",
+  state: state as "active" | "occurred" | "pending" | "current",
+})), true);
+assert.equal(instanceCountsAsCurrent({
+  ...countFixture,
+  instanceKind: "obligation",
+  state: "completed",
+}), false);
+assert.equal(shouldReplaySessionDistillation([{
+  role: "user",
+  content: "I replaced the latch, hinge, faucet, and shelf.",
+  turnOrdinal: 0,
+}], [{ turnOrdinal: 0 }]), true);
+assert.equal(shouldReplaySessionDistillation([{
+  role: "user",
+  content: "I replaced the latch, hinge, faucet, and shelf.",
+  turnOrdinal: 0,
+}], Array.from({ length: 4 }, () => ({ turnOrdinal: 0 }))), false);
 const canonicalEventContext = await canonicalEventMemory.reconstructContext({
   query: "Rachel and Emily wedding",
   maxMemories: 6,
@@ -5737,14 +5838,85 @@ const canonicalEventContext = await canonicalEventMemory.reconstructContext({
   episodeExpansion: "adjacent",
   layerPolicy: { summaryMinShare: 1, turnMaxShare: 0 },
 });
-assert.equal(canonicalEventContext.memories.some((memory) => memory.metadata.eventRecord === true), true);
+assert.equal(canonicalEventContext.memories.some((memory) => memory.metadata.instanceRecord === true), true);
 assert.equal((canonicalEventContext.stats.layers?.included.summary ?? 0) > 0, true);
 await canonicalEventMemory.close();
+
+const unresolvedInstanceStore = createSqliteMemoryStore({
+  path: path.join(tmp, "unresolved-instance-resolution.db"),
+});
+let unresolvedDistillerCalls = 0;
+let unresolvedResolverCalls = 0;
+const unresolvedInstanceMemory = createMemoryOS({
+  profileId: "unresolved-instance-resolution",
+  store: unresolvedInstanceStore,
+  extractor: () => [],
+  sessionDistiller: {
+    distill(input) {
+      unresolvedDistillerCalls += 1;
+      const source = input.messages[0];
+      if (!source?.evidenceId || !source.episodeKey || source.turnOrdinal === undefined) return null;
+      return {
+        narrative: { content: "The cedar tank purchase was mentioned." },
+        mentions: [{
+          claim: "The user bought one cedar tank on 2026-07-08.",
+          instanceKind: "object",
+          state: "active",
+          entity: "cedar tank",
+          action: "bought",
+          quantity: "one",
+          date: "2026-07-08",
+          sourceEvidenceId: source.evidenceId,
+          episodeKey: source.episodeKey,
+          turnOrdinal: source.turnOrdinal,
+        }],
+      };
+    },
+  },
+  instanceResolver: () => {
+    unresolvedResolverCalls += 1;
+    return null;
+  },
+});
+const unresolvedMessage = [{
+  role: "user" as const,
+  content: "On 2026-07-08 I bought one cedar tank.",
+  messageId: "unresolved-instance-message",
+  createdAt: "2026-07-08T09:00:00.000Z",
+}];
+for (let attempt = 0; attempt < 2; attempt += 1) {
+  const unresolved = await unresolvedInstanceMemory.ingestConversation({
+    messages: unresolvedMessage,
+    sessionDistillation: true,
+  });
+  assert.equal(unresolved.unresolvedMentionCount, 1, JSON.stringify({
+    unresolvedDistillerCalls,
+    unresolvedResolverCalls,
+    unresolved,
+  }));
+  assert.equal(unresolved.distilledMemoryCount, 0);
+}
+assert.equal(unresolvedDistillerCalls, 2);
+assert.equal(unresolvedResolverCalls >= 2, true, `resolver called at least once per ingest: ${unresolvedResolverCalls}`);
+assert.equal(unresolvedResolverCalls <= 4, true, `resolver retries bounded to two per mention: ${unresolvedResolverCalls}`);
+assert.equal(unresolvedInstanceStore.listMemories({
+  profileId: "unresolved-instance-resolution",
+  status: "any",
+  includeSensitive: true,
+  limit: 20,
+}).some((memory) => memory.metadata.instanceRecord === true), false);
+assert.equal(unresolvedInstanceStore.listEvidence({
+  profileId: "unresolved-instance-resolution",
+  sourceType: "conversation.session_distillation",
+  includeSensitive: true,
+  limit: 20,
+}).length, 0);
+await unresolvedInstanceMemory.close();
 
 const qualityDistillationStore = createSqliteMemoryStore({
   path: path.join(tmp, "session-distillation-quality-v3.db"),
 });
-const qualityDistillationInputs: Array<{ knownEventTypes: string[]; replay: boolean }> = [];
+const qualityDistillationInputs: Array<{ replay: boolean }> = [];
 const qualityDistillationMemory = createMemoryOS({
   profileId: "session-distillation-quality-v3",
   store: qualityDistillationStore,
@@ -5753,7 +5925,6 @@ const qualityDistillationMemory = createMemoryOS({
     name: "quality-v3-session-distiller",
     distill(input) {
       qualityDistillationInputs.push({
-        knownEventTypes: input.context.knownEventTypes ?? [],
         replay: input.replay?.reason === "event_verb_density",
       });
       const message = input.messages[0];
@@ -5761,9 +5932,9 @@ const qualityDistillationMemory = createMemoryOS({
         throw new Error("quality v3 fixture source lacks provenance");
       }
       const citation = {
-        sourceEvidenceIds: [message.evidenceId],
+        sourceEvidenceId: message.evidenceId,
         episodeKey: message.episodeKey,
-        turnOrdinals: [message.turnOrdinal],
+        turnOrdinal: message.turnOrdinal,
       };
       if (message.content.includes("archive handoff") && !input.replay) {
         return sessionNarrative("The archive handoff session was summarized.");
@@ -5771,12 +5942,13 @@ const qualityDistillationMemory = createMemoryOS({
       if (message.content.includes("archive handoff")) {
         return {
           narrative: { content: "The archive handoff was completed." },
-          events: [{
-            eventType: "completed_activities",
-            content: "The user completed the archive handoff.",
-            participants: ["user"],
+          mentions: [{
+            claim: "The user completed the archive handoff.",
+            instanceKind: "occurrence" as const,
+            state: "occurred" as const,
             target: "archive handoff",
-            eventTime: "2026-07-12",
+            action: "completed",
+            date: "2026-07-12",
             ...citation,
           }],
         };
@@ -5785,22 +5957,16 @@ const qualityDistillationMemory = createMemoryOS({
       const target = north ? "north gallery" : "south gallery";
       return {
         narrative: { content: `The user visited ${target}.` },
-        events: [
+        mentions: [
           {
-            eventType: north ? "visited_locations" : "visited_location",
-            content: `The user visited ${target}.`,
-            participants: ["user"],
+            claim: `The user visited ${target}.`,
+            instanceKind: "occurrence" as const,
+            state: "occurred" as const,
             target,
-            eventTime: north ? "2026-07-10" : "2026-07-11",
+            action: "visited",
+            date: north ? "2026-07-10" : "2026-07-11",
             ...citation,
           },
-          ...(north ? [{
-            eventType: "discussion_topics",
-            content: "User discussed north gallery.",
-            target: "north gallery",
-            eventTime: "2026-07-10",
-            ...citation,
-          }] : []),
         ],
       };
     },
@@ -5825,25 +5991,21 @@ assert.equal(qualityDistillationIngest.distillationCallCount, 4);
 assert.equal(qualityDistillationIngest.distillationOkWithCandidatesCount, 4);
 assert.equal(qualityDistillationIngest.distilledMemoryCount, 6);
 assert.deepEqual(
-  qualityDistillationInputs.map((input) => [input.knownEventTypes, input.replay]),
-  [
-    [[], false],
-    [["visited_location"], false],
-    [["visited_location"], false],
-    [["visited_location"], true],
-  ],
+  qualityDistillationInputs.map((input) => input.replay),
+  [false, false, false, true],
 );
 const qualityEventRows = qualityDistillationStore.listMemories({
   profileId: "session-distillation-quality-v3",
   status: "any",
   includeSensitive: true,
   limit: 20,
-}).filter((memory) => memory.metadata.eventRecord === true);
+}).filter((memory) => memory.metadata.instanceRecord === true);
 assert.deepEqual(
-  qualityEventRows.map((memory) => memory.metadata.eventType).sort(),
-  ["completed_activity", "visited_location", "visited_location"],
+  qualityEventRows.map((memory) =>
+    (memory.metadata.canonical_attributes as { target?: string }).target
+  ).sort(),
+  ["archive handoff", "north gallery", "south gallery"],
 );
-assert.equal(qualityEventRows.some((memory) => memory.content.includes("discussed")), false);
 await qualityDistillationMemory.close();
 
 const perSessionDistillationStore = createSqliteMemoryStore({
@@ -12018,7 +12180,7 @@ const intelligenceFetch = async (url: string | URL | Request, init?: RequestInit
         content: "2026-07-04: Atlas session distillation captured 3 review hours.",
         confidence: 0.61,
       },
-      events: [],
+      mentions: [],
     });
   } else if (system.includes("retrieval reranker")) {
     intelligenceRerankerSystemPrompt = system;
@@ -12067,6 +12229,7 @@ const defaultSessionDistillationIntelligence = createDefaultIntelligence({
   sessionDistillation: true,
 });
 assert.equal(defaultSessionDistillationIntelligence.sessionDistiller?.name, "openai-compatible-session-distiller:fixture-chat-model");
+assert.equal(defaultSessionDistillationIntelligence.instanceResolver?.name, "openai-compatible-instance-resolver:fixture-chat-model");
 const defaultSessionDistillationCandidates =
   typeof defaultSessionDistillationIntelligence.sessionDistiller === "function"
     ? await defaultSessionDistillationIntelligence.sessionDistiller({
@@ -12086,17 +12249,15 @@ assert.deepEqual(defaultSessionDistillationCandidates, {
     content: "2026-07-04: Atlas session distillation captured 3 review hours.",
     confidence: 0.61,
   },
-  events: [],
+  mentions: [],
 });
-assert.match(intelligenceSessionDistillationSystemPrompt, /canonical event records/u);
-assert.match(intelligenceSessionDistillationSystemPrompt, /real-world occurrence or state change/u);
+assert.match(intelligenceSessionDistillationSystemPrompt, /atomic source-anchored mentions/u);
 assert.match(intelligenceSessionDistillationSystemPrompt, /Questions, discussions, interests/u);
-assert.match(intelligenceSessionDistillationSystemPrompt, /Scan every user turn independently/u);
-assert.match(intelligenceSessionDistillationSystemPrompt, /distinct instances separate/u);
-assert.match(intelligenceSessionDistillationSystemPrompt, /context\.knownEventTypes/u);
+assert.match(intelligenceSessionDistillationSystemPrompt, /Scan every source turn independently/u);
+assert.match(intelligenceSessionDistillationSystemPrompt, /Split lists into separate mentions/u);
 assert.match(intelligenceSessionDistillationSystemPrompt, /event_verb_density/u);
-assert.match(intelligenceSessionDistillationSystemPrompt, /never from the current wall clock/u);
-assert.match(intelligenceSessionDistillationSystemPrompt, /sourceEvidenceIds/u);
+assert.match(intelligenceSessionDistillationSystemPrompt, /current wall clock/u);
+assert.match(intelligenceSessionDistillationSystemPrompt, /sourceEvidenceId/u);
 assert.doesNotMatch(intelligenceSessionDistillationSystemPrompt, /Exclude assistant suggestions/u);
 assert.equal(typeof createOpenAICompatibleSessionDistiller, "function");
 const defaultIntelligenceEmbed = typeof defaultIntelligence.embeddingProvider === "function"
@@ -44491,6 +44652,7 @@ const fivePercentEmbeddingCacheMeta = JSON.parse(
 };
 assert.deepEqual(fivePercentEmbeddingCacheMeta.integrity, {
   unresolvedExtractionWindowCount: 0,
+  unresolvedMentionCount: 0,
   embeddingFailureCount: 1,
   pendingVectorCount: 1,
   embeddedEligibleMemoryCount: 20,
@@ -44766,6 +44928,7 @@ assert.equal(externalOpenAICacheMeta.schema, "gmos.external_ingest_cache.meta.v2
 assert.equal(externalOpenAICacheMeta.complete, true);
 assert.deepEqual(externalOpenAICacheMeta.integrity, {
   unresolvedExtractionWindowCount: 0,
+  unresolvedMentionCount: 0,
   embeddingFailureCount: 0,
   pendingVectorCount: 0,
   embeddedEligibleMemoryCount: 1,
@@ -44774,7 +44937,7 @@ assert.deepEqual(externalOpenAICacheMeta.integrity, {
   entityConsolidationFailureCount: 0,
   entityConsolidationIncompleteClusterCount: 0,
 });
-assert.equal(externalOpenAICacheMeta.keyFields?.sessionDistillation?.contractVersion, 3);
+assert.equal(externalOpenAICacheMeta.keyFields?.sessionDistillation?.contractVersion, 4);
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.contractVersion, 4);
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.window, 40);
 assert.equal(externalOpenAICacheMeta.keyFields?.extraction?.maxChars, 30000);
@@ -46586,6 +46749,49 @@ assert.deepEqual(externalMemoryModeFailureRun.runManifest.ingestCache.writeSkipR
   name: "distillation_failures",
   count: 1,
 }]);
+const unresolvedMentionCacheRun = await runExternalMemoryBenchmark({
+  cases: [{
+    id: "unresolved-mention-cache-guard",
+    events: [{
+      content: "On 2026-07-08 I bought one cedar tank.",
+      createdAt: "2026-07-08T09:00:00.000Z",
+    }],
+    question: "Which tank was bought?",
+    expectedAny: ["cedar tank"],
+  }],
+  ingestMode: "message",
+  sessionDistillation: true,
+  ingestCacheDir: path.join(tmp, "unresolved-mention-cache"),
+  intelligence: {
+    sessionDistiller: {
+      distill(input) {
+        const source = input.messages[0];
+        if (!source?.evidenceId || !source.episodeKey || source.turnOrdinal === undefined) return null;
+        return {
+          narrative: { content: "The cedar tank purchase was mentioned." },
+          mentions: [{
+            claim: "The user bought one cedar tank on 2026-07-08.",
+            instanceKind: "object",
+            state: "active",
+            entity: "cedar tank",
+            action: "bought",
+            quantity: "one",
+            date: "2026-07-08",
+            sourceEvidenceId: source.evidenceId,
+            episodeKey: source.episodeKey,
+            turnOrdinal: source.turnOrdinal,
+          }],
+        };
+      },
+    },
+    instanceResolver: () => null,
+  },
+});
+assert.equal(unresolvedMentionCacheRun.runManifest.ingestCache.writes, 0);
+assert.deepEqual(unresolvedMentionCacheRun.runManifest.ingestCache.writeSkipReasons, [{
+  name: "unresolved_mentions",
+  count: 1,
+}]);
 const externalMemoryModeOutageCacheDir = path.join(
   tmp,
   "external-memory-mode-distillation-provider-outage-cache",
@@ -46762,7 +46968,7 @@ const externalDistillerOverrideRun = await runExternalMemoryBenchmark({
             message: {
               content: JSON.stringify({
                 narrative: { content: "2026-07-06: Override distiller answer is violet." },
-                events: [],
+                mentions: [],
               }),
             },
           }],
@@ -49831,7 +50037,7 @@ writeFileSync(
               narrative: {
                 content: "2026-07-02: CLI session distillation anchor is Cedar.",
               },
-              events: [],
+              mentions: [],
             })
         : system.includes("retrieval reranker")
           ? JSON.stringify({ ids: [] })
