@@ -1,34 +1,48 @@
-# Ghast Memory OS
+# Ghast Memory OS (gmOS)
 
-Ghast Memory OS, or gmOS, is an open-source, local-first Memory OS for
-personal agents. It is built to help agents learn user experience over time,
-maintain a user-world model, reconstruct relevant context from evidence, respect
-privacy and forgetting, and gradually become a user's second brain and digital
-twin infrastructure.
+**A local-first Memory OS for personal agents** — not a vector-store wrapper.
+gmOS gives an agent a durable, evidence-backed model of its user: what happened,
+what the user owns and prefers, what changed, what must be forgotten — and it
+can explain every byte of context it ever injects into a prompt.
 
-The current package is the late-alpha runtime kernel for that vision. It
-provides the SDK, CLI, MCP, HTTP, SQLite storage, evidence ledger,
-world beliefs, reconstructive recall, action policies, opt-in
-batteries-included intelligence hooks, safety gates, release evidence, and
-benchmark harness needed for stable integration. It is not a finished digital
-twin product and it is not a vector-memory CRUD wrapper.
-
-Project docs: [API reference](./docs/API_REFERENCE.md),
-[integration guide](./docs/INTEGRATION_GUIDE.md),
-[structured extraction](./docs/STRUCTURED_EXTRACTION.md),
-[architecture](./docs/ARCHITECTURE.md), [benchmarking](./docs/BENCHMARKING.md),
-[benchmark claims](./docs/BENCHMARK_CLAIMS.md),
-[benchmark runs](./docs/BENCHMARK_RUNS.md),
-[API stability](./docs/API_STABILITY.md), [migration](./docs/MIGRATION.md),
-[compatibility](./docs/COMPATIBILITY.md), [release policy](./docs/RELEASE_POLICY.md),
-[contributing](./CONTRIBUTING.md), [security and privacy](./SECURITY.md),
-[code of conduct](./CODE_OF_CONDUCT.md), [release checklist](./RELEASE_CHECKLIST.md).
-
-## Install And Quickstart
-
-```bash
+```
 npm install @ghast/memory
 ```
+
+## Why gmOS
+
+Most "agent memory" is top-k retrieval over embedded chat chunks. That breaks
+down exactly where long-horizon memory matters: counting ("how many tanks do I
+have *now*?"), state ("is that errand still pending?"), time ("what did I
+believe before last week?"), and trust ("why is this in my prompt?").
+
+gmOS is built as an operating system for memory instead:
+
+- **Evidence-first writes.** Every durable mutation records an evidence event
+  and is reversible — archive, never silent delete. `explain()` walks any
+  memory back to its sources.
+- **One real-world instance = one record.** Session distillation emits
+  source-anchored *mentions*; a deterministic instance resolver reconciles them
+  into canonical instances with stable ids, aliases, and state transitions
+  (`pending → completed`, `active → not_current`). Counting and enumeration
+  read the instance set — they do not re-guess from text.
+- **Deterministic kernel, LLMs at the edges.** Extraction, distillation, and
+  identity judgment are host-pluggable hooks. The kernel validates, grounds,
+  deduplicates, and writes deterministically; it never synthesizes user facts
+  on its own, and every hook failure degrades safely instead of corrupting the
+  store.
+- **Read-path purity.** `prepareTurn`, `reconstructContext`, and every explain
+  call are audited against table-state hashes: read paths must not write.
+- **Local-first privacy.** SQLite on the user's disk. Secret-like content is
+  rejected before persistence, incognito events are never promoted,
+  person-routed memory is isolated, and `forget()` removes residue from future
+  context. No cloud custody, no required network calls in the kernel.
+- **Honest benchmarking.** Deterministic scores and official-protocol LLM
+  judging are never mixed. Reports carry protocol labels, judge provenance,
+  and reproduction manifests; infrastructure failures are never scored as
+  quality failures.
+
+## Quickstart
 
 ```ts
 import { createMemoryOS } from "@ghast/memory";
@@ -50,623 +64,187 @@ const prepared = await memory.prepareTurn({
   messages: [{ role: "user", content: "这个项目现在怎么办？" }],
 });
 
-console.log(prepared.contextBlock);
+console.log(prepared.contextBlock); // evidence-backed context, ready to inject
 await memory.close();
 ```
 
-Run the packaged quickstart smoke after cloning the repository:
+From a clone:
 
 ```bash
-npm install
-npm run build
+npm install && npm run build
 npm run examples:quickstart
 ```
 
-## Docker Quickstart
+## How It Works
 
-The image runs `gmos serve` with a persistent SQLite DB at `/data/gmos.db`.
-Inside the container it binds `0.0.0.0`; publish ports deliberately and keep key
-custody outside the image.
-
-```bash
-docker compose up --build
-docker compose exec gmos gmos keys create --db /data/gmos.db --label agent --scope readwrite --profiles default
-curl http://127.0.0.1:4787/healthz
+```mermaid
+flowchart LR
+    A[Agent / Host] -- observe --> B[Evidence Ledger]
+    B --> C[Extraction + Session Distillation<br/><i>host LLM hooks</i>]
+    C -- source-anchored mentions --> D[Instance Resolver<br/><i>deterministic kernel</i>]
+    D --> E[(SQLite Store<br/>memories · beliefs · instances<br/>trajectories · failures)]
+    E --> F[Reconstruction + Hybrid Recall<br/>FTS · vectors · associations]
+    F -- prepareTurn --> A
+    A -- commitOutcome / recordFeedback --> B
 ```
 
-Manual smoke test:
+The core loop:
+
+1. **`observe()`** — the host streams conversation and tool events. gmOS
+   records evidence, applies safety gates, and (with intelligence hooks
+   attached) extracts durable candidates and distills sessions into mentions.
+2. **Instance resolution** — each mention is reconciled against the profile's
+   existing canonical instances: `NEW_INSTANCE`, `SAME_AS` (merge aliases and
+   citations), `STATE_TRANSITION`, or `REJECTED`. Identity judgment may use an
+   LLM hook; id assignment and writes are deterministic kernel code.
+3. **`prepareTurn()`** — reconstructive recall assembles a bounded,
+   privacy-gated context block from evidence, beliefs, instances, and
+   memories, with deterministic fusion across FTS, vector, and association
+   signals.
+4. **`commitOutcome()` / `recordFeedback()`** — outcomes reinforce the
+   memories that helped; wrong recalls lower confidence without hiding the
+   evidence path.
+5. **`maintain()`** — explicit, evidence-backed lifecycle: decay to dormant,
+   consolidate duplicates, distill repeated trajectories into procedures,
+   rebuild exploration indexes. Nothing runs in the background.
+
+## Surfaces
+
+One kernel, four ways in:
+
+| Surface | Entry | For |
+| --- | --- | --- |
+| **SDK** | `createMemoryOS()` | In-process TypeScript/Node hosts |
+| **CLI** | `gmos`, `gmos-inspect` | Init, search, prepare, maintain, doctor, benchmarks |
+| **MCP** | `gmos mcp serve` + in-process router | Tool-based agent runtimes (Claude Code, etc.) |
+| **HTTP** | `gmos serve` / `gmos http serve` | Any language; scoped API keys, audit log, OpenAPI 3.1, local Memory Console |
 
 ```bash
-scripts/docker-smoke.sh
-```
-
-This Docker smoke is manual and is not part of `gate:pr`.
-
-## Current Scope
-
-- Plaintext local SQLite store by default, with opt-in encryption at rest when
-  the host supplies a BetterSqlite3-compatible cipher driver and key.
-- SQLite FTS-backed recall for query search, with LIKE fallback for tokenizer
-  edge cases.
-- Provider-aware vector recall. A host can pass an embedding provider for
-  write-path embeddings; gmOS keeps the deterministic `local-hash-v1` vector as
-  the zero-dependency fallback and records provider name/dimensions in the
-  vector index.
-- Hybrid retrieval fusion across FTS rank, vector similarity, and association
-  overlap, with deterministic tie-breaks. Optional rerankers can only reorder or
-  drop already gated candidates.
-- Search index health reporting and explicit repair for SQLite FTS/vector drift,
-  including pending/stale provider vectors.
-- Opt-in `@ghast/memory/intelligence` factories for OpenAI-compatible
-  extraction, consolidation, procedure distillation, dossier synthesis,
-  embeddings, reranking, and `createDefaultIntelligence()`. These hooks are not
-  loaded unless the host imports the subpath and may target hosted or local
-  OpenAI-compatible endpoints.
-- External benchmark runs can explicitly attach that intelligence layer and use
-  message ingest for adapter turns; reports keep deterministic-local score
-  semantics separate from official-protocol judging.
-- SQLite read-audit snapshots for read-path purity checks. The runtime uses
-  trigger-backed table revisions for durable tables and content digests for FTS
-  indexes, not only row counts, to catch accidental writes during `prepareTurn`,
-  `explainTurn`, `reconstructContext`, and `explainEvidencePath`.
-- SQLite association projection for active reconstruction. It derives
-  cue-tag-content edges from existing memory, world belief, and task trajectory
-  rows; those associations are an index, not a second source of truth.
-- Deterministic world-entity normalization for current-state beliefs. Structured
-  subjects such as `project:<project-id>`, `project/<project-id>`, or subject
-  `<project-id>` with predicate `project.state` converge before
-  single-cardinality invalidation runs.
-- Optional host-provided `entityResolver` support for product-specific entities.
-  Hosts can canonicalize workspaces, accounts, repositories, or other domain
-  objects without adding product-specific entity templates to gmOS core.
-- Entity mention metadata for accepted memories and world beliefs. gmOS records
-  explicit subjects and aliases, and only treats source speaker metadata as a
-  person cue when the host or extractor marks it with `speakerKind: "person"` or
-  `speakerKind: "human"`.
-- Historical recall mode for temporal/current-state questions. Ordinary context
-  still suppresses superseded or out-of-window memories, while explicit
-  `history` recall can retrieve those past facts without using manage/delete
-  search or opening sensitive/person memory.
-- First-class memory lifecycle maintenance. `maintain()` can explicitly demote
-  stale active memories to `dormant` and later archive long-dormant memories,
-  with evidence events, dry-run reporting, and no background writes. Ordinary
-  context excludes dormant memories; history recall and status-filtered list can
-  still reach them.
-- Explicit consolidation maintenance. `maintain({ phases: ["consolidate"] })`
-  can archive deterministic duplicate memories and, when a host provides a
-  `consolidator`, persist evidence-backed semantic summaries while demoting the
-  source episodes to dormant.
-- Procedure distillation maintenance. `maintain({ phases: ["distill"] })`
-  clusters repeated completed task trajectories and, when a host provides a
-  `procedureDistiller`, persists evidence-backed `procedure` memories without
-  changing the source trajectories.
-- Proactive exploration maintenance. `maintain({ phases: ["explore"] })`
-  rebuilds a derived gap-candidate index and lets `prepareTurn()` emit bounded,
-  privacy-gated `curiosity` action policies from that precomputed index only.
-- Safe continuous-learning autopilot. `runAutopilot()` and
-  `gmos autopilot run` compose transcript ingestion, embedding backfill, and
-  maintenance on a host-configured schedule, with dry-run preview and
-  content-free run history. Autopilot never applies evolution proposals.
-- Deterministic transcript ingestion for JSONL, Claude Code transcript JSONL,
-  and OpenAI-style thread exports. Imports flow through `observe()` with stable
-  event keys, normal safety gates, source file hashes, and no absolute path
-  persistence.
-- Recall disposition presets (`focused`, `balanced`, `expansive`) for
-  prepare/reconstruct/explain calls and scoped HTTP API keys. Presets tune
-  existing budgets and score thresholds without weakening sensitivity, person,
-  lifecycle, or forgetting gates.
-- Outcome reinforcement. `commitOutcome({ usedMemoryIds })` updates recall
-  counters and bounded reinforcement. Credit also propagates through derived
-  memory provenance with bounded decay, while `wrong_recall` feedback can lower
-  confidence for related memories without hiding the evidence path.
-- Deep explainability for turn context decisions. `explainTurn()` shares the
-  `prepareTurn()` retrieval path and reports included memories, notable excluded
-  candidates, score components, lifecycle-sensitive reasons, and budget stops
-  without returning a prompt injection block.
-- Lifecycle provenance on `explain()`. The runtime derives a content-safe memory
-  timeline from evidence and feedback events, including creation/import,
-  direct and propagated reinforcement, dormancy/reactivation, archive,
-  consolidation, distillation, evolution, forget, and restore entries when
-  present.
-- Runtime facade: `observe`, `prepareTurn`, `commitOutcome`, `recordFeedback`,
-  `explainTurn`, `reconstructContext`, `explainEvidencePath`, `maintain`,
-  `memoryRollback`, `forget`, `explain`.
-- Pluggable extraction pipeline for host-provided structured extractors. gmOS
-  keeps write-path authority for evidence, PERSON, secret-like, incognito, and
-  forgetting gates, but it does not synthesize durable memory from built-in
-  lexical/date cue parsing.
-- Durable facts, preferences, boundaries, project state, people, and procedures
-  should come from a host-provided structured extractor or an explicit low-level
-  import.
-- Low-level compatibility APIs: `add` and `search` for import, admin, and
-  compatibility use cases that cannot emit full host events.
-- Safety gates for secret-like content, incognito events, PERSON isolation,
-  forgetting, and do-not-push action policies.
-- Built-in deterministic Memory Gym smoke benchmark, including the
-  `experience_horizon` group for multi-week preference adherence, forgetting
-  compliance, contradiction resolution, procedure reuse, rollback, trust-tiered
-  provenance, provenance-weighted credit, annealing, scoped history access, and
-  poisoning-lifecycle diagnostics.
-- Built-in release gate runner that combines Memory Gym, host compatibility,
-  scale, and diagnostics checks for CI/release candidates.
-- External benchmark reports label their protocol explicitly:
-  `deterministic_local` for offline adapter baselines, or `official_protocol`
-  when a host supplies an SDK judge callback. The CLI refuses
-  `official_protocol` because it cannot provide a callback.
-- Host compatibility reports for Ghast, MCP, search-only, and mock L3 adapters.
-- Host memory snapshot import for adapters that need to project an existing
-  memory store into gmOS.
-- Host memory snapshot sync for adapters that need stale imported memories
-  archived when the host source changes.
-- SQLite profile backup/restore for portable QA reproduction, migration, and
-  rollback. Safe backups exclude archived, sensitive, and person memories by
-  default, but include dormant memories because they remain user memory; full
-  backups are explicit. `gmos snapshot create/list` is a thin naming layer over
-  full bundle export plus content-free snapshot evidence.
-- In-process MCP-style tool router and real MCP stdio server for host/agent
-  runtime adapters.
-- Local HTTP adapter for hosts that need a small service boundary instead of
-  in-process imports or MCP stdio.
-- Turnkey adapter recipes for Claude Code MCP/hooks, OpenAI-compatible function
-  tool hosts, and graph-style runtimes. These are wiring examples over public
-  MCP/HTTP/SDK surfaces, not certified third-party integrations.
-- Read-only diagnostics/status report for schema, row counts, failure summary,
-  package version, and host compatibility.
-- Approval-gated evolution failure review for clustering failure logs into
-  hypotheses and patch candidates. SDK/CLI admin apply/revert is evidence-backed
-  and reversible; MCP and HTTP surfaces remain read/agent operations only.
-- CLI binaries: `gmos`, `ghast-memory`, and `gmos-inspect`.
-
-## Known Limitations
-
-- gmOS is still a late-alpha SDK/runtime, not a stable 1.0 Agent Memory OS.
-- Local SQLite is plaintext by default. Encryption at rest is opt-in and uses a
-  host-supplied cipher driver; gmOS does not provide key custody, vault
-  integration, cloud custody, or hosted synchronization.
-- gmOS does not ship production-grade content understanding. Hosts should
-  provide a structured extractor, or explicitly import known memories with
-  `add()`, for durable facts, preferences, boundaries, procedures, people, and
-  project state.
-- External LongMemEval and LoCoMo numbers are `deterministic_local` adapter
-  baselines for engineering comparison unless the report says
-  `protocol=official_protocol` and names a host-provided judge. Official
-  benchmark claims require the upstream protocol, fixed model/judge settings,
-  and public reproduction data.
-- STATE-Bench, Mem2ActBench, BEAM, and similar action-memory claims require
-  their unchanged official runners before they should be presented as comparable
-  benchmark results.
-
-## Structured Extraction
-
-`createMemoryOS({ extractor })` lets a host provide durable memory candidates
-while keeping gmOS as the write-path authority:
-
-```ts
-const memory = createMemoryOS({
-  profileId: "local-user",
-  store,
-  extractor: {
-    name: "host-structured-extractor",
-    async extract(input) {
-      return [
-        {
-          kind: "project",
-          subject: "project:<project-id>",
-          predicate: "project.state",
-          object: "blocked on integration dry run",
-          content: "project:<project-id> is blocked on the integration dry run.",
-          confidence: 0.86,
-          cardinality: "single",
-        },
-      ];
-    },
-  },
-});
-```
-
-The extractor is intentionally not a raw database hook. `observe()` still rejects
-incognito and secret-like writes before evidence persistence, skips PERSON-routed
-candidates, bounds confidence, deduplicates candidates, and writes world beliefs
-only from accepted candidates that carry a structured predicate. Returning `[]`
-means "extract nothing". Returning `null` or throwing does not cause gmOS to
-synthesize user facts, preferences, boundaries, people, or project state on its
-own.
-
-`createMemoryOS({ consolidator })` is the second host meaning hook. It runs only
-from explicit `maintain({ phases: ["consolidate"] })`; gmOS selects bounded
-clusters, enforces the same safety gates, records source memory ids in
-consolidation evidence, and never synthesizes summary prose without the hook.
-
-`createMemoryOS({ procedureDistiller })` follows the same host-owned wording
-boundary for repeated successful task trajectories. It runs only from explicit
-`maintain({ phases: ["distill"] })`; gmOS selects bounded completed-trajectory
-clusters and persists accepted hook output as `procedure` memory with
-`sourceType: "distillation"` evidence.
-
-For a runnable end-to-end example of host-owned candidate generation and
-reconstruction cues:
-
-```bash
-npm run examples:structured-extractor
-```
-
-See [structured extraction](./docs/STRUCTURED_EXTRACTION.md) for the full
-candidate contract.
-
-## Entity, Time, And Reconstruction Hooks
-
-Hosts that already own entity resolution can pass the same `entityResolver` to
-both `createSqliteMemoryStore()` and `createMemoryOS()`. The resolver receives a
-structured subject/predicate/alias input and returns a raw canonical subject,
-entity kind, entity key, and aliases. gmOS sanitizes those values, applies
-sensitivity filters, and falls back to the built-in resolver when the custom
-resolver returns `null` or an unsafe result.
-
-Hosts with local calendar context can pass `temporal.parser` and return
-structured `eventTime`, `eventDate`, `validFrom`, or `validTo` values. Built-in
-language/date text inference is disabled by default. Set
-`temporal.inferFromText: true` only when the integration explicitly wants gmOS to
-parse explicit date text during memory writes. Reconstruction query date text is
-also disabled by default; set `reconstruction.inferTemporalCuesFromText: true`
-only when the integration explicitly wants the conservative date parser for query
-cues. Relative calendar phrases should be resolved by the host parser with
-trusted calendar context.
-
-Hosts that already own entity aliases, calendar cues, or route parsing can pass
-`createMemoryOS({ reconstruction: { cueExtractor } })`. A cue extractor receives
-bounded query/evidence text and returns sanitized `{ cue, cueKind }` values for
-the reconstruction planner. gmOS merges those cues with built-in lexical/date
-cues, filters secret-like values, and keeps the same evidence, privacy, and
-read-path purity gates.
-
-## CLI
-
-```bash
-npm install -g @ghast/memory
-# For a project-local dependency, use `npm exec -- gmos ...`
-# or `npm exec -- gmos-inspect ...` instead.
-
 gmos init --db ./gmos.db
-gmos doctor --db ./gmos.db --host ghast --format markdown
-gmos status --db ./gmos.db --profile local --host ghast --format markdown
-gmos maintain --db ./gmos.db --profile local --dry-run --phases decay,consolidate,distill,dossier,explore --format markdown
 gmos add --db ./gmos.db --profile local --kind preference --text "回答风格：简洁，先给结论"
-gmos add --db ./gmos.db --profile local --kind boundary --text "不要再提醒我这个项目延期了。"
-gmos search --db ./gmos.db --profile local --query "结论 方案"
-gmos history --db ./gmos.db --profile local --query "之前的状态"
 gmos prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
-gmos reconstruct --db ./gmos.db --profile local --text "这个项目之前是什么状态？" --temporal-mode history
-gmos-inspect --db ./gmos.db --profile local --query "这个项目现在是什么状态？" --temporal-mode current --format markdown
 gmos-inspect turn --db ./gmos.db --profile local --query "这个项目现在是什么状态？" --format markdown
-gmos-inspect timeline <memory-id> --db ./gmos.db --profile local --format markdown
-gmos explain-path --db ./gmos.db --profile local --text "我之前说的项目下一步是什么？" --include-trace
-gmos mcp serve --db ./gmos.db --profile local
-gmos http serve --db ./gmos.db --profile local --port 4787 --host ghast --auth-token local-dev-token
-gmos evolution report --db ./gmos.db --profile local --format markdown
-gmos evolution apply --db ./gmos.db --profile local --proposal proposal_xxx --approved-by "Song Su" --yes
-gmos evolution revert --db ./gmos.db --application evidence_xxx --yes
-gmos gate --generated-seeds 3 --scale-sizes 100,1000 --format markdown
-```
-
-## QA Gates
-
-```bash
-npm run gate:pr
-npm run release:evidence -- --output-dir ./release-evidence/alpha-local
-gmos gym external --input-file ./long-memory-qa.jsonl --dataset-format gmos --format json --require-convergence --progress
-gmos repair --db ./gmos.db --search-index --dry-run --vector-batch-size 32
-gmos repair --db ./gmos.db --associations
-```
-
-`gate:pr` is the local and CI PR gate. It runs build/test, published examples,
-benchmark-integrity checks, extraction boundary checks, consumer install smoke,
-deterministic Memory Gym smoke, external fixtures, the SDK release gate, scale
-smoke, and a pack dry run.
-
-`release:evidence` is the release-candidate evidence bundler. It requires a
-clean worktree by default, runs `gate:pr`, packs the SDK tarball, installs that
-tarball into a fresh temporary consumer project, runs minimal SDK, agent adapter,
-host adapter, local HTTP, MCP router, installed public CLI smoke checks for
-`gmos`, `ghast-memory`, and `gmos-inspect`, plus backup/restore, evolution
-review, doctor, status, and inspector checks from the installed package,
-validates content-safe reporting plus numeric inspector forget-residue, health,
-failure-summary, evidence eligibility, and reconstruction counters, and writes
-`manifest.json`, `SUMMARY.md`, and command logs under `release-evidence/`.
-The manifest and summary include the packed tarball path, filename, size,
-sha512, and npm-style SRI integrity so hosts can verify the artifact before
-upgrading. The directory is git-ignored. Use `--skip-gate`,
-`--skip-fresh-install`, and `--allow-dirty` only for local diagnostics; do not
-use those flags for public release evidence.
-
-The public GitHub Actions gate is opt-in through `workflow_dispatch` and runs
-Linux/macOS across Node 20, 22, and 24. Branch pushes and release tag pushes do
-not run CI by default. The benchmark jobs are deterministic SDK gates; they do
-not call an external LLM.
-
-## Benchmarking
-
-`gym run` is the deterministic SDK benchmark. It reports hard gates, coverage
-layers, a generalization view, the `experience_horizon` multi-week learning
-group, diagnostic suggestions, and a run manifest. It does not run an LLM judge
-and should not be treated as proof of mature digital-twin capability.
-
-`gym external` runs a local long-memory QA adapter over a user-provided file.
-gmOS supports its native deterministic JSONL format plus direct local adapters
-for LongMemEval original/cleaned JSON/JSONL and LoCoMo JSON/JSONL through
-`--dataset-format gmos|longmemeval|locomo`. gmOS does not download or vendor
-those datasets.
-
-External reports include strict deterministic scores, normalized evidence scores,
-protocol labels, judge provenance, timing, manifests, and failure-stage taxonomy
-for debugging extraction, grounding, reconstruction, context budget, temporal
-policy, and safety behavior. `deterministic_local` is the default and stays
-fully offline unless the user explicitly attaches an intelligence endpoint for
-the benchmark run. `official_protocol` is available through the SDK only when
-the host provides an async judge callback; gmOS does not silently downgrade
-official runs to lexical scoring.
-See [benchmarking](./docs/BENCHMARKING.md),
-[benchmark claims](./docs/BENCHMARK_CLAIMS.md), and
-[benchmark runs](./docs/BENCHMARK_RUNS.md) for scoring semantics, baseline
-snapshots, and claim rules.
-
-## Examples
-
-Run the examples after installing dependencies:
-
-```bash
-npm run examples:quickstart
-npm run examples:structured-extractor
-npm run examples:agent-adapter
-npm run examples:host-adapter
-npm run examples:http-adapter
-npm run examples:mcp-router
-npm run examples:claude-code
-npm run examples:openai-agent-memory
-npm run examples:graph-runtime-memory
-npm run examples:external-mini
-```
-
-`examples/structured-extractor.mjs` demonstrates the preferred host boundary:
-the host supplies structured candidates and reconstruction cues, while gmOS
-handles evidence, validation, action-policy projection, reconstruction, and
-read-path safety.
-
-`examples/agent-adapter.mjs` uses the framework-agnostic
-`createAgentMemoryAdapter()` helper from `@ghast/memory/host`. It observes
-conversation events, prepares memory-injected model messages, exposes action
-policies and evidence counts, commits an outcome, records feedback, and runs a
-forget cleanup without depending on a specific agent framework.
-
-`examples/host-adapter.mjs` shows the host migration path: project an existing
-host memory snapshot into gmOS, skip secret-like and person-routed memories,
-prepare evidence-aware context, and archive stale imported memories on the next
-sync.
-
-`examples/http-adapter.mjs` starts a local ephemeral HTTP server with bearer
-auth, verifies unauthenticated non-health requests are rejected, records an
-ordinary observation through `/observe`, imports an explicit preference memory,
-prepares evidence-backed context through `/prepare`, reads a content-free
-`/status` report, and removes its temporary plaintext SQLite database.
-
-`examples/mcp-router.mjs` exercises the in-process MCP tool router through the
-public package exports. It checks `memory.runtime_info`, records an ordinary
-observation through `memory.observe`, imports an explicit preference memory,
-prepares evidence-backed context, verifies public MCP rejects sensitive override
-switches, explains the turn and evidence path without returning a prompt block, and
-prints only sanitized integration metadata.
-
-`examples/claude-code-adapter/` contains a `.mcp.json` template and a hook
-observe bridge. The smoke starts a local HTTP adapter, feeds sample hook events
-through stdin, and verifies `/observe` plus `/commit-outcome` forwarding.
-
-`examples/openai-agent-memory.mjs` maps the MCP memory tool contract into
-OpenAI-style function tools and drives a scripted model loop through the
-in-process MCP router.
-
-`examples/graph-runtime-memory.mjs` hand-rolls a small graph runtime where
-pre-model, model, and post-model nodes call the HTTP adapter and advance memory
-recall/reinforcement across two runs.
-
-`examples/external-mini-benchmark.mjs` runs the native deterministic external
-mini fixture in `examples/external-mini-fixture.jsonl`. It is a reproducibility
-smoke for the external adapter report path, not a comparable external benchmark
-report.
-
-## Low-Level Compatibility APIs
-
-The primary gmOS integration path is `observe()` plus `prepareTurn()`. Low-level
-`add()`, `update()`, `archive()`, `clear()`, `search()`, `list()`, and `get()`
-exist for lower-level compatibility cases: importing a known memory from another
-host, admin/debug tools, migration scripts, or simple agent runtimes that do not
-yet expose full event hooks. They are intentionally not raw database access:
-
-- `add()` records a `sdk.low_level_add` evidence event before creating memory;
-- `update()` records a `sdk.low_level_update` evidence event before changing memory;
-- `archive()` and `clear()` archive active memories instead of physically deleting rows;
-- secret-like content is rejected before it reaches long-term memory;
-- `person` memory and `PERSON:`-routed content require `allowPerson: true` on add/update;
-- `clear()` requires an explicit filter: `all`, `scope`, or `metadataEquals`;
-- `search()` defaults to `purpose: "context"`, which hides sensitive memory
-  unless `includeSensitive` is explicitly set and hides person memory unless
-  `includePerson` is explicitly set.
-- `search({ retrieval: { embedQuery: true } })` is the explicit query-time
-  embedding escape hatch. Secret-like queries are never sent to the provider,
-  provider failures fall back to lexical vectors, and ordinary `prepareTurn`,
-  `reconstructContext`, and `search` calls do not call the provider.
-
-The CLI supports canonical profile bundles. `export/import` and `backup/restore`
-delegate to the same profile machinery:
-
-```bash
-gmos export --db ./gmos.db --profile local --mode safe --output-file ./gmos-profile-bundle.json
-gmos import --db ./new-gmos.db --profile local-restored --input-file ./gmos-profile-bundle.json
-gmos backup --db ./gmos.db --profile local --mode full --passphrase-env GMOS_BUNDLE_PASSPHRASE --output-file ./gmos-profile-bundle.encrypted.json
-gmos restore --db ./new-gmos.db --profile local-restored --passphrase-env GMOS_BUNDLE_PASSPHRASE --input-file ./gmos-profile-bundle.encrypted.json
-```
-
-Value-taking CLI options use the next space-separated token as the value. If
-that token is missing or starts with `--`, gmOS reports `<option> requires a
-value`. For path option values whose filename starts with `--`, pass
-`./--export.json` or an absolute path.
-
-Safe bundles exclude archived, sensitive, and person memories by default but
-include dormant memories because they remain user memory. Use `--mode full` for
-lossless device moves. `--passphrase-env` encrypts the portable bundle with
-AES-256-GCM; it takes an environment variable name, never the passphrase value.
-Profile import/restore reads and writes through the already opened store.
-
-## MCP Tools
-
-The alpha SDK exposes both a protocol-neutral in-process router and a real MCP
-stdio server through `@ghast/memory/mcp`. Hosts can mount the same tools behind
-MCP stdio, HTTP, Electron IPC, or another agent runtime without changing the
-memory core.
-
-Current tools are `memory.add`, `memory.search`, `memory.observe`,
-`memory.prepare_context`, `memory.explain_turn`, `memory.reconstruct_context`,
-`memory.explain_evidence_path`, `memory.commit_outcome`,
-`memory.record_feedback`, `memory.maintain`, `memory.forget`,
-`memory.explain_belief`, and `memory.runtime_info`.
-
-`memory.add` and `memory.search` are public-safe tools for simple agent
-integrations. They do not expose `allowPerson`, `includeSensitive`,
-`includePerson`, or raw metadata fields. Secret-like content is rejected before
-write, person-routed content is rejected, and search returns only context-safe
-memory records.
-
-## HTTP Adapter
-
-Hosts that cannot embed the Node SDK directly can run gmOS as a local HTTP
-service. This adapter reuses the MCP tool router for memory operations, so it
-does not bypass the public safety boundary. It defaults to `127.0.0.1` and does
-not add TLS, cloud sync, or hosted key custody.
-
-For existing local adapters, pass `authToken`, `--auth-token`, or
-`GMOS_HTTP_AUTH_TOKEN`; all non-health endpoints then require
-`Authorization: Bearer <token>`. For self-hosted service mode, create scoped
-keys and start with `--keys`:
-
-```bash
-gmos keys create --db ./gmos.db --label agent-a --scope readwrite --profiles local
 gmos serve --db ./gmos.db --profile local --keys --port 4787 --console
 ```
 
-Scoped keys support `read`, `readwrite`, and `admin`. Secrets are shown once,
-stored only as sha256 hashes, and can be listed/revoked with `gmos keys`.
-`gmos audit list` reads the content-free HTTP audit log. `gmos http openapi`
-emits the generated OpenAPI 3.1 contract.
-
-Open `http://127.0.0.1:4787/console/` for the local Memory Console. The static
-shell is unauthenticated, but it contains no data; paste a scoped API key in the
-browser to browse memories, explain a turn, preview forget/maintain operations,
-and review evolution proposals. Keys stay in memory plus `sessionStorage`.
-
-Screenshot placeholder: Memory Console overview with status cards, memory counts,
-vector-index health, and profile scope badge.
-
-Endpoints include `GET /health`, `GET /healthz`, `GET /runtime-info`, `GET
-/status`, `GET /tools`, `GET /openapi.json`, `GET /profiles`, `POST
-/profiles`, `GET /keys`, `GET /evolution/review`, `POST /add`, `POST
-/search`, `POST /observe`, `POST /prepare`, `POST /explain-turn`, `POST
-/reconstruct`, `POST /explain-path`, `POST /commit-outcome`, `POST /feedback`,
-`POST /maintain`, `POST /rollback`, `POST /forget`, `POST /explain`, and
-`POST /mcp/call`.
-
-JS/TS callers can use the zero-dependency fetch client:
+JS/TS and Python clients for the HTTP surface:
 
 ```ts
 import { GmosClient } from "@ghast/memory/client";
-
-const memory = new GmosClient({
-  baseUrl: "http://127.0.0.1:4787",
-  apiKey: process.env.GMOS_API_KEY!,
-});
-await memory.observe({ profileId: "local", role: "user", content: "User opened the release planning thread." });
+const memory = new GmosClient({ baseUrl: "http://127.0.0.1:4787", apiKey: process.env.GMOS_API_KEY! });
 ```
-
-The Python client under `python/` is stdlib-only and is not shipped in the npm
-tarball:
 
 ```python
-from gmos_client import GmosClient
-
-memory = GmosClient("http://127.0.0.1:4787", api_key)
-memory.prepare_turn({"profileId": "local", "text": "What should I remember?"})
+from gmos_client import GmosClient  # python/, stdlib-only
 ```
 
-Profile backup/restore is intentionally not exposed as an MCP tool or HTTP route.
-It remains an in-process SQLite store API and CLI operation for trusted
-engineering workflows.
+Docker: `docker compose up --build` runs `gmos serve` with a persistent SQLite
+DB at `/data/gmos.db` (see `scripts/docker-smoke.sh` for the manual smoke).
 
-## Evolution Review
+## Intelligence Hooks (Opt-In)
 
-The alpha SDK includes an approval-gated self-evolution control plane. Review is
-read-only: it reads the failure log, clusters failures by kind, proposes repair
-hypotheses, emits policy patch candidates, and may recommend host-owned
-parameter changes with copyable config snippets. SDK/CLI apply requires explicit
-approval, writes evolution evidence with previous values, and can be reverted
-once; parameter proposals are rejected by apply because only the host can change
-`createMemoryOS()` config. Nothing auto-applies or rolls out.
+The kernel never calls a network by itself. Attach LLM capability explicitly
+via `@ghast/memory/intelligence` — factories for OpenAI-compatible extraction,
+session distillation, instance resolution, consolidation, procedure
+distillation, dossier synthesis, embeddings, reranking, and query planning:
+
+```ts
+import { createDefaultIntelligence } from "@ghast/memory/intelligence";
+
+const memory = createMemoryOS({
+  profileId: "local-user",
+  store,
+  ...createDefaultIntelligence({
+    baseUrl: process.env.LLM_BASE_URL,
+    apiKey: process.env.LLM_API_KEY,
+    model: "your-model",
+    sessionDistillation: true,
+  }),
+});
+```
+
+Hosts that already own extraction, entity resolution, calendar parsing, or
+reconstruction cues can plug in their own hooks instead — gmOS keeps write-path
+authority (grounding, dedupe, safety gates, bounded confidence) regardless of
+who generates candidates. See the
+[integration guide](./docs/INTEGRATION_GUIDE.md) and
+[structured extraction](./docs/STRUCTURED_EXTRACTION.md).
+
+## Safety Contract
+
+- Secret-like content never reaches long-term memory.
+- Incognito events are never promoted; person-routed memory requires explicit
+  opt-in to surface.
+- `forget()` archives matching memory and scrubs it from future context;
+  residue is measurable via the inspector.
+- Read paths are write-audited; reordering hooks (rerankers) can only reorder
+  or drop already-gated candidates, never add.
+- Encryption at rest is available when the host supplies a
+  BetterSqlite3-compatible cipher driver and key; key custody stays with the
+  host.
+
+## Benchmarking
+
+Two strictly separated modes:
+
+- **`gmos gym run`** — the deterministic SDK gate: hard safety gates, recall
+  contracts, the `experience_horizon` multi-week learning group, scale smoke.
+  No LLM involved; runs in CI.
+- **`gmos gym external`** — long-memory QA (LongMemEval, LoCoMo, or native
+  JSONL) through local adapters. `deterministic_local` scoring is the offline
+  default; `official_protocol` requires an explicit host-provided answerer and
+  judge and is labeled as such, with judge provenance and reproduction
+  manifests in every report.
+
+Official-protocol results are published only with pinned commits, fixed
+model/judge settings, and reproduction bundles — see
+[benchmarking](./docs/BENCHMARKING.md),
+[benchmark claims](./docs/BENCHMARK_CLAIMS.md), and
+[benchmark runs](./docs/BENCHMARK_RUNS.md).
 
 ```bash
-gmos evolution report --db ./gmos.db --profile local --format markdown
-gmos evolution apply --db ./gmos.db --profile local --proposal proposal_xxx --approved-by "Song Su" --yes
-gmos evolution revert --db ./gmos.db --application evidence_xxx --yes
+npm run gate:pr        # full local/CI PR gate
+npm run release:evidence -- --output-dir ./release-evidence/alpha-local
 ```
 
-HTTP exposes only the admin-scoped read review route, `GET /evolution/review`.
-Apply and revert remain CLI/SDK-only.
+## Documentation
 
-## Diagnostics
+| Doc | What's in it |
+| --- | --- |
+| [API reference](./docs/API_REFERENCE.md) | Every public SDK/CLI/MCP/HTTP surface |
+| [Architecture](./docs/ARCHITECTURE.md) | Kernel design, stores, indexes, read-path audits |
+| [Integration guide](./docs/INTEGRATION_GUIDE.md) | Wiring gmOS into agents and hosts |
+| [Structured extraction](./docs/STRUCTURED_EXTRACTION.md) | Host extractor candidate contract |
+| [Benchmarking](./docs/BENCHMARKING.md) | Score semantics, protocols, claim rules |
+| [Roadmap](./docs/ROADMAP.md) | Where this is going, and the invariants that never move |
+| [API stability](./docs/API_STABILITY.md) · [Migration](./docs/MIGRATION.md) · [Compatibility](./docs/COMPATIBILITY.md) · [Release policy](./docs/RELEASE_POLICY.md) | Contracts for consumers |
 
-Hosts can generate a read-only status report for integration checks and support
-bundles. The report includes package version, public SDK/CLI/MCP/HTTP runtime
-surface, SQLite schema version, row counts, read-audit coverage, failure counts
-by kind, per-status memory counts, last maintenance timestamp, consolidation
-evidence counters, and optional host compatibility. It does not include memory
-content, failure samples, real SQLite paths, or table state hashes.
-
-```bash
-gmos doctor --db ./gmos.db --host ghast --format markdown
-gmos status --db ./gmos.db --profile local --host ghast --format markdown
-```
-
-## Trust Contract
-
-gmOS defaults to a plaintext SQLite database. Encryption at rest is available
-only when the host supplies the cipher driver and key. Security still comes from
-memory policy, key custody, filesystem controls, and host boundaries:
-
-- secret-like content is not persisted as long-term memory;
-- incognito/private events are not promoted to long-term memory;
-- ordinary context does not include sensitive memory unless explicitly allowed;
-- forget operations archive matching memory and remove it from future context;
-- read paths must not write;
-- SQLite read paths are audited with table state hashes so same-row updates or
-  same-row-count FTS rewrites are treated as side effects.
-
-## Host Compatibility
-
-gmOS reports host capability as L0-L4. The SDK can maintain memory state, but a
-host must expose the right hooks to preserve full behavior:
-
-- `ghast`: L4, managed memory runtime.
-- `mock_l3`: L3, useful for adapter smoke tests.
-- `mcp`: L2, useful for tool-based integrations but cannot guarantee full
-  directive enforcement.
-- `search_only`: L1, recall-only and not a full Memory OS integration.
-
-Run `gmos doctor --db ./gmos.db --host ghast --format markdown` to inspect runtime surface,
-SQLite health, capability gaps, and hard-gate coverage.
-
-Host adapters can import existing memory snapshots through
-`loadHostMemorySnapshotsIntoStore()` from `@ghast/memory/host`, or use
-`syncHostMemorySnapshotsIntoStore()` when the snapshot list represents the host's
-complete active memory set for that `profileId` and `sourceType`.
+Runnable examples for every surface live in `examples/` —
+`npm run examples:quickstart`, `examples:structured-extractor`,
+`examples:agent-adapter`, `examples:http-adapter`, `examples:mcp-router`,
+`examples:claude-code`, `examples:openai-agent-memory`,
+`examples:graph-runtime-memory`, and more.
 
 ## Status
 
-This is an alpha TypeScript/Node SDK and local runtime for host applications that
-need user-owned, evidence-backed memory. It is ready for public beta preparation
-with release evidence, but the complete second-brain and digital-twin product
-layer is still under active development.
+Late-alpha runtime kernel, under active development toward a 1.0 Agent Memory
+OS. The public surfaces are release-gated (`gate:pr`, release evidence
+bundles, deterministic benchmark gates on Node 20/22/24), but expect breaking
+changes between alpha versions — see [API stability](./docs/API_STABILITY.md).
+
+Known limitations, honestly stated:
+
+- Plaintext SQLite by default; encryption at rest is opt-in, key custody is
+  the host's job. No cloud sync, no hosted product.
+- Durable content understanding requires attached intelligence hooks or a
+  host extractor — the kernel does not parse language on its own.
+- External benchmark numbers are engineering baselines unless a report
+  explicitly says `official_protocol` with a named judge and a reproduction
+  bundle.
+
+## Contributing & License
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md),
+[SECURITY.md](./SECURITY.md), and
+[CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md).
+Licensed under [Apache-2.0](./LICENSE).
