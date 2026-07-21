@@ -1287,6 +1287,7 @@ try {
       });
       if (!releaseGateResult.pass) throw new Error("typed release gate failed");
       const externalResult: ExternalMemoryBenchmarkResult = await runExternalMemoryBenchmark({
+        llmResponseCacheDir: undefined,
         cases: [{
           id: "typed-external",
           slices: ["consumer:typed"],

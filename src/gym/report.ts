@@ -394,6 +394,20 @@ export function renderExternalMemoryBenchmarkMarkdown(
     maxCues: 3,
     failureCount: 0,
   };
+  const ingestCache = report.runManifest.ingestCache ?? {
+    enabled: false,
+    hits: 0,
+    misses: 0,
+    writes: 0,
+    writeSkips: 0,
+  };
+  const llmResponseCache = report.runManifest.llmResponseCache ?? {
+    enabled: false,
+    hits: 0,
+    misses: 0,
+    writes: 0,
+    bypasses: 0,
+  };
   const totalDatasetCases = report.runManifest.dataset.totalDatasetCases ?? report.runManifest.dataset.caseCount;
   const executedCases = report.runManifest.dataset.executedCases ?? report.caseCount;
   const scopeLabel = report.partial ? `SLICE ${executedCases}/${totalDatasetCases}` : `FULL ${executedCases}/${totalDatasetCases}`;
@@ -445,6 +459,8 @@ export function renderExternalMemoryBenchmarkMarkdown(
     `Runtime judge: enabled=${runtimeIntelligence.judge?.enabled ?? false} name=${runtimeIntelligence.judge?.name ?? "none"} model=${runtimeIntelligence.judge?.model ?? "none"} host=${runtimeIntelligence.judge?.baseUrlHost ?? "none"} apiKeyEnv=${runtimeIntelligence.judge?.apiKeyEnv ?? "none"} timeoutMs=${runtimeIntelligence.judge?.timeoutMs ?? "none"} retries=${runtimeIntelligence.judgeRetryCount ?? 0} recovered=${runtimeIntelligence.judgeRecoveredCount ?? 0} exhausted=${runtimeIntelligence.judgeExhaustedCount ?? 0}`,
     `Runtime query planner: enabled=${runtimeQueryPlanner.enabled} name=${runtimeQueryPlanner.name ?? "none"} model=${runtimeQueryPlanner.model ?? "none"} host=${runtimeQueryPlanner.baseUrlHost ?? "none"} apiKeyEnv=${runtimeQueryPlanner.apiKeyEnv ?? "none"} maxAnchors=${runtimeQueryPlanner.maxAnchors ?? "none"} failures=${runtimeQueryPlanner.failureCount ?? 0}`,
     `Runtime sweep cues: enabled=${runtimeSweepCues.enabled} name=${runtimeSweepCues.name ?? "none"} model=${runtimeSweepCues.model ?? "none"} host=${runtimeSweepCues.baseUrlHost ?? "none"} apiKeyEnv=${runtimeSweepCues.apiKeyEnv ?? "none"} maxCues=${runtimeSweepCues.maxCues} failures=${runtimeSweepCues.failureCount ?? 0}`,
+    `Ingest cache: enabled=${ingestCache.enabled} hits=${ingestCache.hits} misses=${ingestCache.misses} writes=${ingestCache.writes} writeSkips=${ingestCache.writeSkips}`,
+    `LLM response cache: enabled=${llmResponseCache.enabled} hits=${llmResponseCache.hits} misses=${llmResponseCache.misses} writes=${llmResponseCache.writes} bypasses=${llmResponseCache.bypasses}`,
     `Manifest lexical ceiling: ${ceilingMetricLine(report.runManifest.ceilingMetrics)}`,
     `Manifest reachable score: ${reachableScoreLine(report.runManifest.ceilingMetrics)}`,
     `Deterministic only: ${report.runManifest.deterministicOnly ? "yes" : "no"}`,

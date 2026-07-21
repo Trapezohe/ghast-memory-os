@@ -139,6 +139,7 @@ import {
   writeExternalMemoryBenchmarkReproductionBundle,
 } from "../src/gym/index.js";
 import { normalizeAdapterTimestamp } from "../src/gym/external-adapters.js";
+import { createExternalBenchmarkLlmResponseCache } from "../src/gym/llm-response-cache.js";
 import { summarizeMemoryScaleLatenciesForTest } from "../src/gym/scale.js";
 import {
   createSqliteMemoryStore,
@@ -44145,6 +44146,41 @@ assert.equal(externalTurnRetentionOn.runManifest.options.turnRetention, true);
 assert.equal(externalTurnRetentionOn.runManifest.runtimeIntelligence.ingestCaseGroups[0]?.turnMemoryCount, 1);
 assert.deepEqual(externalTurnRetentionOn.cases[0]?.expectedAnyMatched, ["marigold"]);
 assert.equal(externalMissedExtractorCalls, 2);
+const externalSource = readFileSync(path.join(process.cwd(), "src/gym/external.ts"), "utf8");
+const ingestBehaviorModuleBlock = /const INGEST_BEHAVIOR_MODULES = \[([\s\S]*?)\] as const;/u.exec(
+  externalSource,
+)?.[1] ?? "";
+for (const moduleName of [
+  "intelligence/index",
+  "kernel/associations",
+  "kernel/consolidation",
+  "kernel/embeddings",
+  "kernel/entities",
+  "kernel/evidence-schema",
+  "kernel/extraction",
+  "kernel/instance-resolution",
+  "kernel/local-vector",
+  "kernel/metadata-schema",
+  "kernel/openai-compatible-extractor",
+  "kernel/openai-compatible-response",
+  "kernel/person-identity",
+  "kernel/retention",
+  "kernel/safety",
+  "kernel/session-distillation",
+  "kernel/temporal-format",
+  "kernel/temporal-validity",
+  "runtime/create-memory-os",
+  "runtime/runtime-outcomes",
+  "runtime/runtime-safety",
+  "store/sqlite/index",
+  "store/sqlite/schema",
+]) {
+  assert.equal(
+    ingestBehaviorModuleBlock.includes(JSON.stringify(moduleName)),
+    true,
+    `ingest behavior digest must cover ${moduleName}`,
+  );
+}
 const externalIngestCacheCases = [
   {
     id: "external-ingest-cache-alpha",
@@ -44227,6 +44263,10 @@ const artifactLegacyMeta = JSON.parse(readFileSync(artifactLegacyMetaPath, "utf8
   keyFields: Record<string, unknown>;
   integrity?: { embeddedEligibleMemoryCount?: number };
 };
+assert.equal(artifactLegacyMeta.keyFields.implementationVersion, 7);
+assert.match(String(artifactLegacyMeta.keyFields.ingestBehaviorDigest), /^sha256:[a-f0-9]{64}$/u);
+// A read-path-only build change alters the coarse artifact digest but retains
+// the ingest behavior digest, so the semantic fallback must still reuse.
 artifactLegacyMeta.keyFields.checkpointArtifactDigest = `sha256:${"f".repeat(64)}`;
 delete artifactLegacyMeta.integrity?.embeddedEligibleMemoryCount;
 const artifactLegacyReplacementKey = checkpointFixtureHash(artifactLegacyMeta.keyFields).slice(7);
@@ -44287,6 +44327,300 @@ assert.equal(
   ),
   true,
 );
+// An ingest-write source change alters both the coarse artifact and the retained
+// ingest behavior digest, so the fallback must reject the old store.
+artifactLegacyMeta.keyFields.ingestBehaviorDigest = `sha256:${"e".repeat(64)}`;
+const artifactBehaviorReplacementKey = checkpointFixtureHash(artifactLegacyMeta.keyFields).slice(7);
+artifactLegacyMeta.key = artifactBehaviorReplacementKey;
+renameSync(
+  path.join(externalIngestCacheDir, `${artifactLegacyReplacementKey}.db`),
+  path.join(externalIngestCacheDir, `${artifactBehaviorReplacementKey}.db`),
+);
+writeFileSync(
+  path.join(externalIngestCacheDir, `${artifactBehaviorReplacementKey}.meta.json`),
+  `${JSON.stringify(artifactLegacyMeta, null, 2)}\n`,
+  { mode: 0o600 },
+);
+unlinkSync(path.join(externalIngestCacheDir, `${artifactLegacyReplacementKey}.meta.json`));
+externalIngestCacheExtractorCalls = 0;
+const externalIngestCacheBehaviorChange = await runExternalMemoryBenchmark({
+  cases: externalIngestCacheCases,
+  ingestMode: "message",
+  turnRetention: false,
+  concurrency: 1,
+  ingestCacheDir: externalIngestCacheDir,
+  intelligence: { extractor: externalIngestCacheExtractor },
+});
+assert.equal(externalIngestCacheBehaviorChange.pass, true);
+assert.equal(externalIngestCacheExtractorCalls, 1);
+assert.equal(externalIngestCacheBehaviorChange.runManifest.ingestCache.hits, 1);
+assert.equal(externalIngestCacheBehaviorChange.runManifest.ingestCache.misses, 1);
+assert.equal(externalIngestCacheBehaviorChange.runManifest.ingestCache.writes, 1);
+
+const responseCacheBody = (
+  model: string,
+  extra: Record<string, unknown> = {},
+): string => JSON.stringify({
+  model,
+  temperature: 0,
+  messages: [{ role: "user", content: "response cache fixture" }],
+  ...extra,
+});
+const responseCacheRaw = (content: string): string => JSON.stringify({
+  choices: [{ message: { content } }],
+});
+const responseCacheOk = (raw: string) => ({
+  ok: true,
+  status: 200,
+  statusText: "OK",
+  text: async () => raw,
+});
+const directResponseCacheDir = path.join(tmp, "external-llm-response-cache-direct");
+let directResponseProviderCalls = 0;
+const directResponseBody = responseCacheBody("direct-cache-model");
+const directResponseRaw = responseCacheRaw("direct-cache-response");
+const directResponseCold = createExternalBenchmarkLlmResponseCache(directResponseCacheDir);
+const directResponseColdFetch = directResponseCold.wrap(async () => {
+  directResponseProviderCalls += 1;
+  return new Response(directResponseRaw, { status: 200 });
+});
+assert.equal(
+  await (await directResponseColdFetch("https://first.invalid/v1/chat/completions", {
+    method: "POST",
+    headers: { authorization: "Bearer first" },
+    body: directResponseBody,
+  })).text(),
+  directResponseRaw,
+);
+assert.deepEqual(directResponseCold.counters, { hits: 0, misses: 1, writes: 1, bypasses: 0 });
+const directResponseVersionDir = path.join(directResponseCacheDir, "v1");
+const directResponseShard = readdirSync(directResponseVersionDir)[0]!;
+const directResponseEntry = readdirSync(path.join(directResponseVersionDir, directResponseShard))[0]!;
+assert.match(directResponseShard, /^[a-f0-9]{2}$/u);
+assert.match(directResponseEntry, /^[a-f0-9]{64}\.json$/u);
+if (process.platform !== "win32") {
+  assert.equal(statSync(directResponseCacheDir).mode & 0o777, 0o700);
+  assert.equal(statSync(directResponseVersionDir).mode & 0o777, 0o700);
+  assert.equal(statSync(path.join(directResponseVersionDir, directResponseShard)).mode & 0o777, 0o700);
+  assert.equal(
+    statSync(path.join(directResponseVersionDir, directResponseShard, directResponseEntry)).mode & 0o777,
+    0o600,
+  );
+}
+const directResponseWarm = createExternalBenchmarkLlmResponseCache(directResponseCacheDir);
+const directResponseWarmFetch = directResponseWarm.wrap(async () => {
+  directResponseProviderCalls += 1;
+  return responseCacheOk(responseCacheRaw("unexpected-live-response"));
+});
+const differentSignal = new AbortController().signal;
+assert.equal(
+  await (await directResponseWarmFetch("https://second.invalid/other", {
+    method: "POST",
+    headers: { authorization: "Bearer second", "x-route": "different" },
+    signal: differentSignal,
+    body: directResponseBody,
+  })).text(),
+  directResponseRaw,
+);
+assert.deepEqual(directResponseWarm.counters, { hits: 1, misses: 0, writes: 0, bypasses: 0 });
+
+const directResponseChanged = createExternalBenchmarkLlmResponseCache(directResponseCacheDir);
+const directResponseChangedFetch = directResponseChanged.wrap(async () => {
+  directResponseProviderCalls += 1;
+  return responseCacheOk(responseCacheRaw("changed-response"));
+});
+const callsBeforeChangedRequests = directResponseProviderCalls;
+await (await directResponseChangedFetch("https://first.invalid/v1/chat/completions", {
+  method: "POST",
+  body: responseCacheBody("changed-model"),
+})).text();
+await (await directResponseChangedFetch("https://first.invalid/v1/chat/completions", {
+  method: "POST",
+  body: responseCacheBody("direct-cache-model", { max_tokens: 321 }),
+})).text();
+assert.equal(directResponseProviderCalls > callsBeforeChangedRequests, true);
+assert.deepEqual(directResponseChanged.counters, { hits: 0, misses: 2, writes: 2, bypasses: 0 });
+
+const bypassResponseCache = createExternalBenchmarkLlmResponseCache(
+  path.join(tmp, "external-llm-response-cache-bypass"),
+);
+let bypassResponseProviderCalls = 0;
+const bypassResponseFetch = bypassResponseCache.wrap(async () => {
+  bypassResponseProviderCalls += 1;
+  return responseCacheOk(responseCacheRaw("bypass-response"));
+});
+for (const body of [
+  responseCacheBody("bypass-model", { temperature: 0.5 }),
+  responseCacheBody("bypass-model", { stream: true }),
+  JSON.stringify({ model: "embedding-model", input: ["embedding input"] }),
+]) {
+  await (await bypassResponseFetch("https://bypass.invalid/v1", { method: "POST", body })).text();
+}
+assert.equal(bypassResponseProviderCalls >= 3, true);
+assert.deepEqual(bypassResponseCache.counters, { hits: 0, misses: 0, writes: 0, bypasses: 3 });
+
+const invalidResponseCacheDir = path.join(tmp, "external-llm-response-cache-invalid");
+const invalidResponseBody = responseCacheBody("invalid-response-model");
+const non200ResponseCache = createExternalBenchmarkLlmResponseCache(invalidResponseCacheDir);
+await (await non200ResponseCache.wrap(async () => ({
+  ok: false,
+  status: 503,
+  statusText: "Unavailable",
+  text: async () => "unavailable",
+}))("https://invalid.invalid/v1", { method: "POST", body: invalidResponseBody })).text();
+assert.deepEqual(non200ResponseCache.counters, { hits: 0, misses: 1, writes: 0, bypasses: 0 });
+let invalidResponseProviderCalls = 0;
+const unparseableResponseCache = createExternalBenchmarkLlmResponseCache(invalidResponseCacheDir);
+await (await unparseableResponseCache.wrap(async () => {
+  invalidResponseProviderCalls += 1;
+  return responseCacheOk("not-json");
+})("https://invalid.invalid/v1", { method: "POST", body: invalidResponseBody })).text();
+assert.equal(invalidResponseProviderCalls > 0, true);
+assert.deepEqual(unparseableResponseCache.counters, { hits: 0, misses: 1, writes: 0, bypasses: 0 });
+
+const repairResponseCacheDir = path.join(tmp, "external-llm-response-cache-repair");
+const repairResponseBody = responseCacheBody("repair-response-model");
+const repairSeedCache = createExternalBenchmarkLlmResponseCache(repairResponseCacheDir);
+await (await repairSeedCache.wrap(async () => responseCacheOk(responseCacheRaw("seed")))(
+  "https://repair.invalid/v1",
+  { method: "POST", body: repairResponseBody },
+)).text();
+const repairVersionDir = path.join(repairResponseCacheDir, "v1");
+const repairShard = readdirSync(repairVersionDir)[0]!;
+const repairFile = path.join(repairVersionDir, repairShard, readdirSync(path.join(repairVersionDir, repairShard))[0]!);
+writeFileSync(repairFile, "corrupt", { mode: 0o600 });
+let repairResponseProviderCalls = 0;
+const corruptRepairCache = createExternalBenchmarkLlmResponseCache(repairResponseCacheDir);
+await (await corruptRepairCache.wrap(async () => {
+  repairResponseProviderCalls += 1;
+  return responseCacheOk(responseCacheRaw("corruption-repaired"));
+})("https://repair.invalid/v1", { method: "POST", body: repairResponseBody })).text();
+assert.equal(repairResponseProviderCalls > 0, true);
+assert.deepEqual(corruptRepairCache.counters, { hits: 0, misses: 1, writes: 1, bypasses: 0 });
+assert.doesNotThrow(() => JSON.parse(readFileSync(repairFile, "utf8")));
+if (process.platform !== "win32") {
+  chmodSync(repairFile, 0o000);
+  const callsBeforePermissionRepair = repairResponseProviderCalls;
+  const permissionRepairCache = createExternalBenchmarkLlmResponseCache(repairResponseCacheDir);
+  await (await permissionRepairCache.wrap(async () => {
+    repairResponseProviderCalls += 1;
+    return responseCacheOk(responseCacheRaw("permission-repaired"));
+  })("https://repair.invalid/v1", { method: "POST", body: repairResponseBody })).text();
+  assert.equal(repairResponseProviderCalls > callsBeforePermissionRepair, true);
+  assert.deepEqual(permissionRepairCache.counters, { hits: 0, misses: 1, writes: 1, bypasses: 0 });
+  assert.equal(statSync(repairFile).mode & 0o777, 0o600);
+}
+
+writeFileSync(repairFile, responseCacheRaw("bad-first-sample"), { mode: 0o600 });
+const seenKeyResponseCache = createExternalBenchmarkLlmResponseCache(repairResponseCacheDir);
+let seenKeyLiveCalls = 0;
+const seenKeyFetch = seenKeyResponseCache.wrap(async () => {
+  seenKeyLiveCalls += 1;
+  return responseCacheOk(responseCacheRaw("retry-live-sample"));
+});
+assert.equal(
+  await (await seenKeyFetch("https://repair.invalid/v1", {
+    method: "POST",
+    body: repairResponseBody,
+  })).text(),
+  responseCacheRaw("bad-first-sample"),
+);
+assert.equal(
+  await (await seenKeyFetch("https://repair.invalid/v1", {
+    method: "POST",
+    body: repairResponseBody,
+  })).text(),
+  responseCacheRaw("retry-live-sample"),
+);
+assert.equal(seenKeyLiveCalls > 0, true);
+assert.deepEqual(seenKeyResponseCache.counters, { hits: 1, misses: 1, writes: 1, bypasses: 0 });
+
+const responseCacheBenchmarkCases = [{
+  id: "external-llm-response-cache",
+  profileId: "external_llm_response_cache",
+  events: [{
+    type: "message" as const,
+    role: "user" as const,
+    createdAt: "2026-07-21T00:00:00.000Z",
+    content: "External response cache answer is sapphire.",
+  }],
+  question: "What is the external response cache answer?",
+  expectedAny: ["sapphire"],
+}];
+let responseCacheBenchmarkProviderCalls = 0;
+const responseCacheBenchmarkFetch = async () => {
+  responseCacheBenchmarkProviderCalls += 1;
+  return responseCacheOk(JSON.stringify(openAICompletionResponse([{
+    kind: "fact",
+    content: "External response cache answer is sapphire.",
+    confidence: 0.9,
+    sourceIndex: 0,
+  }])));
+};
+const responseCacheBenchmarkOptions = {
+  cases: responseCacheBenchmarkCases,
+  ingestMode: "message" as const,
+  turnRetention: false,
+  ingestReplayAttempts: 0,
+  intelligence: {
+    baseUrl: "https://response-cache.invalid/v1",
+    model: "response-cache-model",
+    embeddingProvider: false as const,
+    retries: 0,
+    fetchImpl: responseCacheBenchmarkFetch,
+  },
+};
+const responseCacheOffFirst = await runExternalMemoryBenchmark(responseCacheBenchmarkOptions);
+const callsAfterResponseCacheOffFirst = responseCacheBenchmarkProviderCalls;
+const responseCacheOffSecond = await runExternalMemoryBenchmark(responseCacheBenchmarkOptions);
+assert.equal(responseCacheOffFirst.pass, true);
+assert.equal(responseCacheOffSecond.pass, true);
+assert.equal(responseCacheBenchmarkProviderCalls > callsAfterResponseCacheOffFirst, true);
+assert.deepEqual(responseCacheOffSecond.runManifest.llmResponseCache, {
+  enabled: false,
+  hits: 0,
+  misses: 0,
+  writes: 0,
+  bypasses: 0,
+});
+
+const layeredResponseCacheDir = path.join(tmp, "external-llm-response-cache-layered");
+const layeredStoreCacheDir = path.join(tmp, "external-ingest-cache-layered");
+const layeredFirst = await runExternalMemoryBenchmark({
+  ...responseCacheBenchmarkOptions,
+  ingestCacheDir: layeredStoreCacheDir,
+  llmResponseCacheDir: layeredResponseCacheDir,
+});
+assert.equal(layeredFirst.runManifest.ingestCache.misses, 1);
+assert.equal(layeredFirst.runManifest.llmResponseCache.misses >= 1, true);
+assert.equal(layeredFirst.runManifest.llmResponseCache.writes >= 1, true);
+assert.match(
+  renderExternalMemoryBenchmarkMarkdown(layeredFirst),
+  /LLM response cache: enabled=true hits=\d+ misses=\d+ writes=\d+ bypasses=\d+/u,
+);
+const layeredStoreHit = await runExternalMemoryBenchmark({
+  ...responseCacheBenchmarkOptions,
+  ingestCacheDir: layeredStoreCacheDir,
+  llmResponseCacheDir: layeredResponseCacheDir,
+});
+assert.equal(layeredStoreHit.runManifest.ingestCache.hits, 1);
+assert.deepEqual(layeredStoreHit.runManifest.llmResponseCache, {
+  enabled: true,
+  dir: path.resolve(process.cwd(), layeredResponseCacheDir),
+  hits: 0,
+  misses: 0,
+  writes: 0,
+  bypasses: 0,
+});
+const layeredStoreMissResponseHit = await runExternalMemoryBenchmark({
+  ...responseCacheBenchmarkOptions,
+  ingestCacheDir: path.join(tmp, "external-ingest-cache-layered-fresh"),
+  llmResponseCacheDir: layeredResponseCacheDir,
+});
+assert.equal(layeredStoreMissResponseHit.runManifest.ingestCache.misses, 1);
+assert.equal(layeredStoreMissResponseHit.runManifest.llmResponseCache.hits >= 1, true);
+assert.equal(layeredStoreMissResponseHit.pass, true);
+
 const unresolvedIngestCacheDir = path.join(tmp, "external-ingest-cache-unresolved");
 let unresolvedIngestExtractorCalls = 0;
 const unresolvedIngestOptions = {

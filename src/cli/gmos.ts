@@ -206,7 +206,7 @@ Usage:
   gmos gym external --input-file ./multi-session-memory.json --dataset-format locomo --format json --json-file ./locomo.json --markdown-file ./locomo.md --failure-sample-limit 20 --concurrency 2 --diagnostics-level basic --progress
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --max-cases 5 --results-jsonl ./paid-smoke.results.jsonl
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --resume-results-jsonl /outside/repo/longmemeval.results.jsonl
-  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --turn-retention on --session-distill on --consolidate-entities on --extraction-window 1000 --extraction-max-chars 30000 --extractor-max-candidates 32 --extractor-max-tokens 4000 --ingest-replay-attempts 1 --embed-query on --intelligence-base-url https://api.deepseek.com/v1 --intelligence-model deepseek-chat --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-embed-base-url http://127.0.0.1:11434/v1 --intelligence-embed-model nomic-embed-text --intelligence-embed-dimensions 768 --intelligence-disable-thinking
+  gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --turn-retention on --session-distill on --consolidate-entities on --extraction-window 1000 --extraction-max-chars 30000 --extractor-max-candidates 32 --extractor-max-tokens 4000 --ingest-replay-attempts 1 --embed-query on --intelligence-base-url https://api.deepseek.com/v1 --intelligence-model deepseek-chat --intelligence-api-key-env GMOS_BENCH_API_KEY --intelligence-embed-base-url http://127.0.0.1:11434/v1 --intelligence-embed-model nomic-embed-text --intelligence-embed-dimensions 768 --intelligence-disable-thinking --llm-response-cache-dir ./.gmos-llm-response-cache
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --intelligence-base-url https://provider.example/v1 --intelligence-model provider-chat-model --intelligence-embed-model off --format json
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode message --session-distill on --distiller-base-url http://127.0.0.1:11434/v1 --distiller-model llama3.1 --intelligence-api-key-env GMOS_BENCH_API_KEY
   gmos gym external --input-file ./long-memory-cleaned.json --dataset-format longmemeval --ingest-mode memory --query-planner on --sweep-cues on --planner-max-sweep-cues 6 --planner-base-url http://127.0.0.1:11434/v1 --planner-model llama3.1 --intelligence-api-key-env GMOS_BENCH_API_KEY
@@ -2692,6 +2692,7 @@ async function main(): Promise<void> {
     const debugDir = value("--intelligence-debug-dir");
     const resolvedDebugDir = debugDir ? path.resolve(process.cwd(), debugDir) : undefined;
     const configuredIngestCacheDir = strictOptionValue("--ingest-cache-dir");
+    const configuredLlmResponseCacheDir = strictOptionValue("--llm-response-cache-dir");
     const intelligence = externalIntelligenceOption(resolvedDebugDir);
     const maintainPhases = externalMaintainPhasesOption();
     const parsedDataset =
@@ -2784,6 +2785,9 @@ async function main(): Promise<void> {
     const benchmarkIngestCachePath = effectiveIngestCacheDir
       ? path.resolve(process.cwd(), effectiveIngestCacheDir)
       : undefined;
+    const benchmarkLlmResponseCachePath = configuredLlmResponseCacheDir
+      ? path.resolve(process.cwd(), configuredLlmResponseCacheDir)
+      : undefined;
     const benchmarkReproductionBundlePath = reproductionBundle
       ? path.resolve(process.cwd(), reproductionBundle)
       : undefined;
@@ -2791,6 +2795,9 @@ async function main(): Promise<void> {
       { label: "--input-file", filePath: inputPath },
       ...(benchmarkIngestCachePath
         ? [{ label: "--ingest-cache-dir", filePath: benchmarkIngestCachePath }]
+        : []),
+      ...(benchmarkLlmResponseCachePath
+        ? [{ label: "--llm-response-cache-dir", filePath: benchmarkLlmResponseCachePath }]
         : []),
       ...(resolvedDebugDir
         ? [{ label: "--intelligence-debug-dir", filePath: resolvedDebugDir }]
@@ -2848,6 +2855,12 @@ async function main(): Promise<void> {
     const benchmarkIngestCacheDir = resumeResultsJsonl && benchmarkIngestCachePath
       ? preparePrivateBenchmarkDirectory(benchmarkIngestCachePath, "--ingest-cache-dir")
       : benchmarkIngestCachePath;
+    const benchmarkLlmResponseCacheDir = resumeResultsJsonl && benchmarkLlmResponseCachePath
+      ? preparePrivateBenchmarkDirectory(
+          benchmarkLlmResponseCachePath,
+          "--llm-response-cache-dir",
+        )
+      : benchmarkLlmResponseCachePath;
     const benchmarkDebugDir = resumeResultsJsonl && resolvedDebugDir
       ? preparePrivateBenchmarkDirectory(resolvedDebugDir, "--intelligence-debug-dir")
       : resolvedDebugDir;
@@ -2904,6 +2917,9 @@ async function main(): Promise<void> {
       extractionMaxChars,
       ingestReplayAttempts,
       ...(benchmarkIngestCacheDir ? { ingestCacheDir: benchmarkIngestCacheDir } : {}),
+      ...(benchmarkLlmResponseCacheDir
+        ? { llmResponseCacheDir: benchmarkLlmResponseCacheDir }
+        : {}),
       reuseProfiles: !has("--no-reuse-profiles"),
       failureSampleLimit,
       diagnosticsLevel,

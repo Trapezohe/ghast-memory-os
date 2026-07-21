@@ -698,9 +698,11 @@ zero; `cacheHit=true` records that those diagnostics were skipped, while scores,
 failure attribution, lexical ceiling, and context checks still come from the
 copied store.
 
-The key is `sha256` over:
+The exact key is `sha256` over:
 
-- package version and SQLite schema version;
+- ingest-cache implementation version, package version, SQLite schema version,
+  the whole checkpoint artifact digest, dependency-artifact digest, and the
+  ingest-behavior digest described below;
 - dataset format, group profile id, case count, event count, and a hash of the
   canonical JSON for the group's case ids, event times, and event payloads;
 - ingest mode, turn retention, entity-consolidation setting, extraction
@@ -710,11 +712,36 @@ The key is `sha256` over:
 - session-distillation enabled/name/model and contract;
 - embedding provider name, embed model, and dimensions.
 
+On an exact miss, gmOS scans complete sidecars and compares the same semantic
+fields after removing only `checkpointArtifactDigest`. This fallback preserves
+instant reuse when an unrelated read, scoring, answerer, judge, planner, report,
+or documentation module outside the list below alters the whole artifact. The
+retained `ingestBehaviorDigest` is a SHA-256 over these build modules, so a
+write-path change still forces re-ingest without a manual contract bump:
+
+- `intelligence/index`;
+- `kernel/associations`, `kernel/consolidation`, `kernel/embeddings`,
+  `kernel/entities`, `kernel/evidence-schema`, `kernel/extraction`,
+  `kernel/instance-resolution`, `kernel/local-vector`, `kernel/metadata-schema`,
+  `kernel/openai-compatible-extractor`, `kernel/openai-compatible-response`,
+  `kernel/person-identity`, `kernel/retention`, `kernel/safety`,
+  `kernel/session-distillation`, `kernel/temporal-format`, and
+  `kernel/temporal-validity`;
+- `runtime/create-memory-os`, `runtime/runtime-outcomes`, and
+  `runtime/runtime-safety`;
+- `store/sqlite/index` and `store/sqlite/schema`.
+
+`intelligence/index`, `runtime/create-memory-os`, and `store/sqlite/index`
+contain both write and read behavior and are included deliberately: a read-only
+edit inside one of these mixed modules over-invalidates, which is safer than
+reusing a store whose write semantics may have changed.
+
 Endpoint identities remain in the cache sidecar provenance but are not key
 fields. Gateways serving the same model identity are therefore cache-compatible;
 the operator accepts the risk that a proxy may route one model name to different
 weights. Model names, extraction/distillation contract versions, ingest settings,
-dataset inputs, package/runtime artifacts, and schema versions still invalidate.
+dataset inputs, dependency artifacts, ingest-behavior modules, and schema
+versions still invalidate.
 This key-format change invalidates every existing ingest-cache entry once; gmOS
 does not migrate old entries, and the next run re-ingests and writes the new key.
 
@@ -728,6 +755,35 @@ and package info. Event content is recorded only as hashes. Entries invalidate
 when any key field changes. Reader-only settings are not part of the key because
 they run after the cached ingest copy is loaded. Corrupt cache files or schema
 mismatches are treated as misses and overwritten after a fresh ingest.
+
+## LLM Response Cache
+
+`--llm-response-cache-dir <dir>` enables a separate, opt-in cache for raw HTTP
+200 OpenAI-compatible chat-completion responses used by benchmark intelligence
+hooks. It is off by default and is not available through the production
+MemoryOS runtime. A store-cache hit skips ingest and therefore never reads this
+response cache; a store-cache miss runs normal ingest and attempts replay for
+each eligible prompt.
+
+The response key is SHA-256 over canonical JSON containing cache version `1`,
+operation `chat.completions`, the exact model string, and the byte-identical raw
+request-body string. URL, endpoint, headers, authorization, abort signal,
+timeouts, retry/backoff, and concurrency are excluded. Only non-streaming POST
+requests with `model`, `messages`, and `temperature: 0` are eligible. Embeddings,
+nonzero-temperature or streaming requests, non-200 responses, and invalid outer
+completion JSON bypass or miss without being stored. Answerer and judge requests
+use their existing separate path and are not cached.
+
+Entries are raw response JSON at
+`<dir>/v1/<first-two-key-hex>/<64-hex-key>.json`; prompts are never copied into
+the cache. Directories are mode `0700`, files are mode `0600`, and writes use a
+fsynced temporary file plus atomic rename. Corrupt or unsafe entries are misses
+and a valid live response repairs them. Each key is read from disk at most once
+per benchmark run: identical retries after a replay or fresh write go live
+and atomically replace the entry with the last valid HTTP 200 response. There is
+no TTL; rotate the directory or bump the cache version for deliberate
+invalidation. `runManifest.llmResponseCache` reports hits, misses, writes, and
+bypasses.
 
 Local Ollama-style OpenAI-compatible endpoint:
 

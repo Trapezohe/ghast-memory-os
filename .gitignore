@@ -10,6 +10,7 @@ coverage/
 *.sqlite-wal
 .DS_Store
 .env
+.gmos-llm-response-cache/
 release-evidence/
 __pycache__/
 package-lock.json

@@ -100,6 +100,7 @@ import {
 import { createMemoryOS } from "../runtime/create-memory-os.js";
 import { createSqliteMemoryStore } from "../store/sqlite/index.js";
 import { GMOS_SQLITE_SCHEMA_VERSION } from "../store/sqlite/schema.js";
+import { createExternalBenchmarkLlmResponseCache } from "./llm-response-cache.js";
 import { renderExternalMemoryBenchmarkMarkdown } from "./report.js";
 
 export type ExternalMemoryBenchmarkMode = "prepare" | "reconstruct";
@@ -883,6 +884,14 @@ export interface ExternalMemoryBenchmarkRunManifest {
     writeSkips: number;
     writeSkipReasons: ExternalMemoryBenchmarkCounter[];
   };
+  llmResponseCache: {
+    enabled: boolean;
+    dir?: string | undefined;
+    hits: number;
+    misses: number;
+    writes: number;
+    bypasses: number;
+  };
   ceilingMetrics: ExternalMemoryBenchmarkCeilingMetrics | null;
   deterministicOnly: boolean;
 }
@@ -1015,6 +1024,7 @@ export interface RunExternalMemoryBenchmarkOptions {
   extractionMaxChars?: number | undefined;
   ingestReplayAttempts?: number | undefined;
   ingestCacheDir?: string | undefined;
+  llmResponseCacheDir?: string | undefined;
   embedQuery?: boolean | undefined;
   queryPlanner?: boolean | undefined;
   sweepCues?: boolean | undefined;
@@ -1293,6 +1303,7 @@ interface IngestCacheCounters {
 interface IngestCacheKeyFields {
   implementationVersion: number;
   checkpointArtifactDigest: string | null;
+  ingestBehaviorDigest: string;
   checkpointDependencyArtifactDigest: string | null;
   schemaVersion: number;
   packageVersion: string | null;
@@ -1342,8 +1353,36 @@ interface IngestCacheKeyFields {
 const MESSAGE_EXTRACTION_CONTRACT_VERSION = 4;
 const SESSION_DISTILLATION_CONTRACT_VERSION = 4;
 const ENTITY_CONSOLIDATION_CONTRACT_VERSION = 2;
-const INGEST_CACHE_IMPLEMENTATION_VERSION = 6;
+const INGEST_CACHE_IMPLEMENTATION_VERSION = 7;
 const MAX_INGEST_CACHE_PENDING_VECTOR_FRACTION = 0.1;
+
+// Conservative source closure for deterministic ingest writes. Mixed modules
+// remain included because over-invalidation is safer than replaying stale stores.
+const INGEST_BEHAVIOR_MODULES = [
+  "intelligence/index",
+  "kernel/associations",
+  "kernel/consolidation",
+  "kernel/embeddings",
+  "kernel/entities",
+  "kernel/evidence-schema",
+  "kernel/extraction",
+  "kernel/instance-resolution",
+  "kernel/local-vector",
+  "kernel/metadata-schema",
+  "kernel/openai-compatible-extractor",
+  "kernel/openai-compatible-response",
+  "kernel/person-identity",
+  "kernel/retention",
+  "kernel/safety",
+  "kernel/session-distillation",
+  "kernel/temporal-format",
+  "kernel/temporal-validity",
+  "runtime/create-memory-os",
+  "runtime/runtime-outcomes",
+  "runtime/runtime-safety",
+  "store/sqlite/index",
+  "store/sqlite/schema",
+] as const;
 
 interface IngestCachePlan {
   key: string;
@@ -1836,6 +1875,23 @@ interface RuntimeArtifactIdentity {
 }
 
 let cachedRuntimeArtifactIdentity: RuntimeArtifactIdentity | undefined;
+let cachedIngestBehaviorDigest: string | undefined;
+
+function ingestBehaviorDigest(): string {
+  if (cachedIngestBehaviorDigest) return cachedIngestBehaviorDigest;
+  const artifactRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const extension = path.basename(artifactRoot) === "dist" ? ".js" : ".ts";
+  const digest = createHash("sha256");
+  for (const moduleName of INGEST_BEHAVIOR_MODULES) {
+    const file = path.join(artifactRoot, `${moduleName}${extension}`);
+    digest.update(moduleName);
+    digest.update("\0");
+    digest.update(readFileSync(file));
+    digest.update("\0");
+  }
+  cachedIngestBehaviorDigest = `sha256:${digest.digest("hex")}`;
+  return cachedIngestBehaviorDigest;
+}
 
 function runtimeArtifactIdentity(): RuntimeArtifactIdentity {
   if (cachedRuntimeArtifactIdentity) return cachedRuntimeArtifactIdentity;
@@ -1922,6 +1978,7 @@ function ingestCacheKeyFields(input: {
     implementationVersion: INGEST_CACHE_IMPLEMENTATION_VERSION,
     checkpointArtifactDigest:
       input.runtimeIntelligence.checkpointArtifactIdentity?.artifactDigest ?? null,
+    ingestBehaviorDigest: ingestBehaviorDigest(),
     checkpointDependencyArtifactDigest:
       input.runtimeIntelligence.checkpointArtifactIdentity?.dependencyArtifactDigest ?? null,
     schemaVersion: GMOS_SQLITE_SCHEMA_VERSION,
@@ -4569,6 +4626,7 @@ function createRunManifest(input: {
   officialScore: number | null;
   ceilingMetrics: ExternalMemoryBenchmarkCeilingMetrics | null;
   ingestCache: IngestCacheCounters;
+  llmResponseCache: ReturnType<typeof createExternalBenchmarkLlmResponseCache> | null;
   sliceSpec: ExternalMemoryBenchmarkSliceSpec;
   partial: boolean;
   interrupted: boolean;
@@ -4766,6 +4824,19 @@ function createRunManifest(input: {
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([name, count]) => ({ name, count })),
     },
+    llmResponseCache: input.llmResponseCache
+      ? {
+          enabled: true,
+          dir: input.llmResponseCache.dir,
+          ...input.llmResponseCache.counters,
+        }
+      : {
+          enabled: false,
+          hits: 0,
+          misses: 0,
+          writes: 0,
+          bypasses: 0,
+        },
     ceilingMetrics: input.ceilingMetrics,
     deterministicOnly: protocol === "deterministic_local",
   };
@@ -5952,6 +6023,7 @@ function resolveRuntimeIntelligence(input: {
   intelligenceTimeoutMs?: number | undefined;
   intelligenceConcurrency?: number | undefined;
   providerCircuit: ExternalBenchmarkProviderCircuit;
+  llmResponseCache: ReturnType<typeof createExternalBenchmarkLlmResponseCache> | null;
 }): RuntimeIntelligenceState {
   if (!input.intelligence) {
     if (input.sessionDistillation) {
@@ -5965,6 +6037,9 @@ function resolveRuntimeIntelligence(input: {
     );
   }
   const config = isIntelligenceConfig(input.intelligence) ? input.intelligence : null;
+  const configFetchImpl = config && input.llmResponseCache
+    ? input.llmResponseCache.wrap(config.fetchImpl ?? globalThis.fetch)
+    : config?.fetchImpl;
   const concurrency = normalizedIntelligenceConcurrency(
     input.intelligenceConcurrency ?? config?.concurrency,
   );
@@ -6036,7 +6111,7 @@ function resolveRuntimeIntelligence(input: {
       },
       ...(config.disableThinking ? { disableThinking: true } : {}),
       ...(config.debugDir ? { debugDir: config.debugDir } : {}),
-      ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
+      ...(configFetchImpl ? { fetchImpl: configFetchImpl } : {}),
       ...(apiKey ? { apiKey } : {}),
     });
   } else if (config) {
@@ -6061,7 +6136,7 @@ function resolveRuntimeIntelligence(input: {
               backoffMs,
               ...(config.disableThinking ? { disableThinking: true } : {}),
               ...(config.debugDir ? { debugDir: config.debugDir } : {}),
-              ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
+              ...(configFetchImpl ? { fetchImpl: configFetchImpl } : {}),
               ...(apiKey ? { apiKey } : {}),
             }),
           }
@@ -6076,7 +6151,7 @@ function resolveRuntimeIntelligence(input: {
               backoffMs,
               ...(config.disableThinking ? { disableThinking: true } : {}),
               ...(config.debugDir ? { debugDir: config.debugDir } : {}),
-              ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
+              ...(configFetchImpl ? { fetchImpl: configFetchImpl } : {}),
               ...(apiKey ? { apiKey } : {}),
             }),
             instanceResolver: createOpenAICompatibleInstanceResolver({
@@ -6086,7 +6161,7 @@ function resolveRuntimeIntelligence(input: {
               retries,
               backoffMs,
               ...(config.disableThinking ? { disableThinking: true } : {}),
-              ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
+              ...(configFetchImpl ? { fetchImpl: configFetchImpl } : {}),
               ...(apiKey ? { apiKey } : {}),
             }),
           }
@@ -7754,6 +7829,7 @@ async function runCaseGroup(input: {
   runtimeIntelligence: RuntimeIntelligenceState;
   providerCircuit: ExternalBenchmarkProviderCircuit;
   ingestCache: IngestCacheCounters;
+  llmResponseCache: ReturnType<typeof createExternalBenchmarkLlmResponseCache> | null;
   recordResult: (
     index: number,
     result: ExternalMemoryBenchmarkCaseResult,
@@ -7876,200 +7952,295 @@ async function runCaseGroup(input: {
     input.runtimeIntelligence.embeddingFailureCount += cacheIntegrity.embeddingFailureCount;
     input.runtimeIntelligence.pendingVectorCount += cacheIntegrity.pendingVectorCount;
   }
-  try {
-    await runtime.store.initialize();
-    if (!cacheHit) {
-      const ingestStartedMs = Date.now();
-      const applied = await applyBenchmarkEvents({
-        memory: runtime.memory,
-        profileId: input.group.profileId,
-        events: input.group.events,
-        ingestMode: input.options.ingestMode ?? "memory",
-        turnRetention: input.runtimeIntelligence.manifest.turnRetention,
-        consolidateEntities: input.runtimeIntelligence.manifest.consolidateEntities,
-        sessionDistillation: input.runtimeIntelligence.manifest.sessionDistillation.enabled,
-        extractionWindow: input.options.extractionWindow,
-        extractionMaxChars: input.options.extractionMaxChars,
-        ingestReplayAttempts: input.options.ingestReplayAttempts,
-        windowConcurrency: input.runtimeIntelligence.manifest.concurrency ?? undefined,
-        countExtractionFailures: input.runtimeIntelligence.hooks?.extractor !== undefined,
-        embeddingProvider: hooks?.embeddingProvider,
-        ...(input.options.onCaseGroupIngestProgress
-          ? {
-              onWindowProgress: (progress) =>
-                input.options.onCaseGroupIngestProgress?.({
-                  ...progress,
-                  groupKey: input.group.key,
-                }),
+  const execute = async (): Promise<ExternalMemoryBenchmarkGroupTiming> => {
+    try {
+      await runtime.store.initialize();
+      if (!cacheHit) {
+        const ingestStartedMs = Date.now();
+        const applied = await applyBenchmarkEvents({
+          memory: runtime.memory,
+          profileId: input.group.profileId,
+          events: input.group.events,
+          ingestMode: input.options.ingestMode ?? "memory",
+          turnRetention: input.runtimeIntelligence.manifest.turnRetention,
+          consolidateEntities: input.runtimeIntelligence.manifest.consolidateEntities,
+          sessionDistillation: input.runtimeIntelligence.manifest.sessionDistillation.enabled,
+          extractionWindow: input.options.extractionWindow,
+          extractionMaxChars: input.options.extractionMaxChars,
+          ingestReplayAttempts: input.options.ingestReplayAttempts,
+          windowConcurrency: input.runtimeIntelligence.manifest.concurrency ?? undefined,
+          countExtractionFailures: input.runtimeIntelligence.hooks?.extractor !== undefined,
+          embeddingProvider: hooks?.embeddingProvider,
+          ...(input.options.onCaseGroupIngestProgress
+            ? {
+                onWindowProgress: (progress) =>
+                  input.options.onCaseGroupIngestProgress?.({
+                    ...progress,
+                    groupKey: input.group.key,
+                  }),
+              }
+            : {}),
+        });
+        ingestDurationMs = Math.max(0, Date.now() - ingestStartedMs);
+        setupWarnings.push(...applied.warnings);
+        input.runtimeIntelligence.extractionRetryCount += applied.extractionRetryCount;
+        input.runtimeIntelligence.extractionEmptyCount += applied.extractionEmptyCount;
+        input.runtimeIntelligence.extractionParseFailureCount += applied.extractionParseFailureCount;
+        input.runtimeIntelligence.extractionTransportFailureCount += applied.extractionTransportFailureCount;
+        input.runtimeIntelligence.extractionFailureCount += applied.extractionFailureCount;
+        input.runtimeIntelligence.extractionOkWithCandidatesCharCount += applied.extractionOkWithCandidatesCharCount;
+        input.runtimeIntelligence.extractionEmptyCharCount += applied.extractionEmptyCharCount;
+        input.runtimeIntelligence.extractionParseFailureCharCount += applied.extractionParseFailureCharCount;
+        input.runtimeIntelligence.extractionTransportFailureCharCount += applied.extractionTransportFailureCharCount;
+        input.runtimeIntelligence.replayedWindowCount += applied.replayedWindowCount;
+        input.runtimeIntelligence.replayRecoveredCount += applied.replayRecoveredCount;
+        input.runtimeIntelligence.entityConsolidationClustersFound +=
+          applied.entityConsolidationClustersFound;
+        input.runtimeIntelligence.entityConsolidationClustersMerged +=
+          applied.entityConsolidationClustersMerged;
+        input.runtimeIntelligence.entityConsolidationConsolidatorCallCount +=
+          applied.entityConsolidationConsolidatorCallCount;
+        input.runtimeIntelligence.entityConsolidationConsolidatorFailureCount +=
+          applied.entityConsolidationConsolidatorFailureCount;
+        input.runtimeIntelligence.embeddingCallCount += applied.embeddingCallCount;
+        input.runtimeIntelligence.embeddedMemoryCount += applied.embeddedMemoryCount;
+        input.runtimeIntelligence.embeddingFailureCount += applied.embeddingFailureCount;
+        input.runtimeIntelligence.distillationCallCount += applied.distillationCallCount;
+        input.runtimeIntelligence.distilledMemoryCount += applied.distilledMemoryCount;
+        input.runtimeIntelligence.distillationOkWithCandidatesCount += applied.distillationOkWithCandidatesCount;
+        input.runtimeIntelligence.distillationEmptyCount += applied.distillationEmptyCount;
+        input.runtimeIntelligence.distillationParseFailureCount += applied.distillationParseFailureCount;
+        input.runtimeIntelligence.distillationTransportFailureCount += applied.distillationTransportFailureCount;
+        input.runtimeIntelligence.distillationFailureCount += applied.distillationFailureCount;
+        input.runtimeIntelligence.unresolvedMentionCount += applied.unresolvedMentionCount;
+        for (const [reason, count] of Object.entries(applied.unresolvedMentionReasons ?? {})) {
+          input.runtimeIntelligence.unresolvedMentionReasons[reason] =
+            (input.runtimeIntelligence.unresolvedMentionReasons[reason] ?? 0) + count;
+        }
+        extractionWindowCount = applied.extractionWindowCount;
+        extractionCallCount = applied.extractionCallCount;
+        extractionRetryCount = applied.extractionRetryCount;
+        extractionEmptyCount = applied.extractionEmptyCount;
+        extractionParseFailureCount = applied.extractionParseFailureCount;
+        extractionTransportFailureCount = applied.extractionTransportFailureCount;
+        extractionFailureCount = applied.extractionFailureCount;
+        extractionOkWithCandidatesCharCount = applied.extractionOkWithCandidatesCharCount;
+        extractionEmptyCharCount = applied.extractionEmptyCharCount;
+        extractionParseFailureCharCount = applied.extractionParseFailureCharCount;
+        extractionTransportFailureCharCount = applied.extractionTransportFailureCharCount;
+        replayedWindowCount = applied.replayedWindowCount;
+        replayRecoveredCount = applied.replayRecoveredCount;
+        entityConsolidationClustersFound = applied.entityConsolidationClustersFound;
+        entityConsolidationClustersMerged = applied.entityConsolidationClustersMerged;
+        entityConsolidationConsolidatorCallCount =
+          applied.entityConsolidationConsolidatorCallCount;
+        entityConsolidationConsolidatorFailureCount =
+          applied.entityConsolidationConsolidatorFailureCount;
+        turnMemoryCount = applied.turnMemoryCount;
+        distilledMemoryCount = applied.distilledMemoryCount;
+        embeddingCallCount = applied.embeddingCallCount;
+        embeddedMemoryCount = applied.embeddedMemoryCount;
+        embeddingFailureCount = applied.embeddingFailureCount;
+        input.runtimeIntelligence.extractionWindowCount += extractionWindowCount;
+        input.runtimeIntelligence.extractionCallCount += extractionCallCount;
+        const searchIndex = runtime.store.searchIndexStatus();
+        pendingVectorCount = hooks?.embeddingProvider
+          ? searchIndex.vectorIndex?.pendingEntryCount ?? 0
+          : 0;
+        input.runtimeIntelligence.pendingVectorCount += pendingVectorCount;
+        if (cachePlan) {
+          const integrity = ingestCacheIntegrity(
+            applied,
+            searchIndex,
+            input.runtimeIntelligence.hooks?.embeddingProvider,
+            input.runtimeIntelligence.manifest.consolidateEntities,
+          );
+          const incompleteReasons = incompleteIngestCacheReasons(integrity);
+          if (incompleteReasons.length > 0) {
+            recordIngestCacheWriteSkip(input.ingestCache, incompleteReasons);
+          } else {
+            await runtime.memory.close();
+            runtimeClosed = true;
+            writeIngestCacheEntry(cachePlan, groupDbPath, integrity);
+            input.ingestCache.writes += 1;
+            if (input.checkpointCacheMode !== "none") {
+              ingestStateHash = fileSha256(cachePlan.dbFile);
             }
-          : {}),
-      });
-      ingestDurationMs = Math.max(0, Date.now() - ingestStartedMs);
-      setupWarnings.push(...applied.warnings);
-      input.runtimeIntelligence.extractionRetryCount += applied.extractionRetryCount;
-      input.runtimeIntelligence.extractionEmptyCount += applied.extractionEmptyCount;
-      input.runtimeIntelligence.extractionParseFailureCount += applied.extractionParseFailureCount;
-      input.runtimeIntelligence.extractionTransportFailureCount += applied.extractionTransportFailureCount;
-      input.runtimeIntelligence.extractionFailureCount += applied.extractionFailureCount;
-      input.runtimeIntelligence.extractionOkWithCandidatesCharCount += applied.extractionOkWithCandidatesCharCount;
-      input.runtimeIntelligence.extractionEmptyCharCount += applied.extractionEmptyCharCount;
-      input.runtimeIntelligence.extractionParseFailureCharCount += applied.extractionParseFailureCharCount;
-      input.runtimeIntelligence.extractionTransportFailureCharCount += applied.extractionTransportFailureCharCount;
-      input.runtimeIntelligence.replayedWindowCount += applied.replayedWindowCount;
-      input.runtimeIntelligence.replayRecoveredCount += applied.replayRecoveredCount;
-      input.runtimeIntelligence.entityConsolidationClustersFound +=
-        applied.entityConsolidationClustersFound;
-      input.runtimeIntelligence.entityConsolidationClustersMerged +=
-        applied.entityConsolidationClustersMerged;
-      input.runtimeIntelligence.entityConsolidationConsolidatorCallCount +=
-        applied.entityConsolidationConsolidatorCallCount;
-      input.runtimeIntelligence.entityConsolidationConsolidatorFailureCount +=
-        applied.entityConsolidationConsolidatorFailureCount;
-      input.runtimeIntelligence.embeddingCallCount += applied.embeddingCallCount;
-      input.runtimeIntelligence.embeddedMemoryCount += applied.embeddedMemoryCount;
-      input.runtimeIntelligence.embeddingFailureCount += applied.embeddingFailureCount;
-      input.runtimeIntelligence.distillationCallCount += applied.distillationCallCount;
-      input.runtimeIntelligence.distilledMemoryCount += applied.distilledMemoryCount;
-      input.runtimeIntelligence.distillationOkWithCandidatesCount += applied.distillationOkWithCandidatesCount;
-      input.runtimeIntelligence.distillationEmptyCount += applied.distillationEmptyCount;
-      input.runtimeIntelligence.distillationParseFailureCount += applied.distillationParseFailureCount;
-      input.runtimeIntelligence.distillationTransportFailureCount += applied.distillationTransportFailureCount;
-      input.runtimeIntelligence.distillationFailureCount += applied.distillationFailureCount;
-      input.runtimeIntelligence.unresolvedMentionCount += applied.unresolvedMentionCount;
-      for (const [reason, count] of Object.entries(applied.unresolvedMentionReasons ?? {})) {
-        input.runtimeIntelligence.unresolvedMentionReasons[reason] =
-          (input.runtimeIntelligence.unresolvedMentionReasons[reason] ?? 0) + count;
-      }
-      extractionWindowCount = applied.extractionWindowCount;
-      extractionCallCount = applied.extractionCallCount;
-      extractionRetryCount = applied.extractionRetryCount;
-      extractionEmptyCount = applied.extractionEmptyCount;
-      extractionParseFailureCount = applied.extractionParseFailureCount;
-      extractionTransportFailureCount = applied.extractionTransportFailureCount;
-      extractionFailureCount = applied.extractionFailureCount;
-      extractionOkWithCandidatesCharCount = applied.extractionOkWithCandidatesCharCount;
-      extractionEmptyCharCount = applied.extractionEmptyCharCount;
-      extractionParseFailureCharCount = applied.extractionParseFailureCharCount;
-      extractionTransportFailureCharCount = applied.extractionTransportFailureCharCount;
-      replayedWindowCount = applied.replayedWindowCount;
-      replayRecoveredCount = applied.replayRecoveredCount;
-      entityConsolidationClustersFound = applied.entityConsolidationClustersFound;
-      entityConsolidationClustersMerged = applied.entityConsolidationClustersMerged;
-      entityConsolidationConsolidatorCallCount =
-        applied.entityConsolidationConsolidatorCallCount;
-      entityConsolidationConsolidatorFailureCount =
-        applied.entityConsolidationConsolidatorFailureCount;
-      turnMemoryCount = applied.turnMemoryCount;
-      distilledMemoryCount = applied.distilledMemoryCount;
-      embeddingCallCount = applied.embeddingCallCount;
-      embeddedMemoryCount = applied.embeddedMemoryCount;
-      embeddingFailureCount = applied.embeddingFailureCount;
-      input.runtimeIntelligence.extractionWindowCount += extractionWindowCount;
-      input.runtimeIntelligence.extractionCallCount += extractionCallCount;
-      const searchIndex = runtime.store.searchIndexStatus();
-      pendingVectorCount = hooks?.embeddingProvider
-        ? searchIndex.vectorIndex?.pendingEntryCount ?? 0
-        : 0;
-      input.runtimeIntelligence.pendingVectorCount += pendingVectorCount;
-      if (cachePlan) {
-        const integrity = ingestCacheIntegrity(
-          applied,
-          searchIndex,
-          input.runtimeIntelligence.hooks?.embeddingProvider,
-          input.runtimeIntelligence.manifest.consolidateEntities,
-        );
-        const incompleteReasons = incompleteIngestCacheReasons(integrity);
-        if (incompleteReasons.length > 0) {
-          recordIngestCacheWriteSkip(input.ingestCache, incompleteReasons);
-        } else {
-          await runtime.memory.close();
-          runtimeClosed = true;
-          writeIngestCacheEntry(cachePlan, groupDbPath, integrity);
-          input.ingestCache.writes += 1;
-          if (input.checkpointCacheMode !== "none") {
-            ingestStateHash = fileSha256(cachePlan.dbFile);
+            runtime = openRuntime();
+            runtimeClosed = false;
+            await runtime.store.initialize();
           }
-          runtime = openRuntime();
-          runtimeClosed = false;
-          await runtime.store.initialize();
         }
       }
-    }
-    if (
-      input.checkpointCacheMode === "write_before_scoring" &&
-      !ingestStateHash &&
-      !input.shouldStop()
-    ) {
-      throw new Error(
-        `External benchmark checkpoint shared group could not persist a complete ingest cache: ${input.group.key}`,
-      );
-    }
-    caseGroupMemories = await runtime.memory.list({
-      profileId: input.group.profileId,
-      status: "any",
-      limit: 10_000,
-      includeSensitive: true,
-    });
-    writeDebugMemoryDump({
-      debugDir: input.options.debugDir,
-      groupKey: input.group.key,
-      memories: caseGroupMemories,
-      limit: input.options.debugDumpMemories,
-    });
-    extractedMemoryCount = caseGroupMemories.length;
-    const ingestCaseGroup = {
-      groupKey: input.group.key,
-      cacheHit,
-      caseCount: input.group.items.length,
-      eventCount: input.group.events.length,
-      extractedMemoryCount,
-      turnMemoryCount,
-      distilledMemoryCount,
-      embeddingCallCount,
-      embeddedMemoryCount,
-      embeddingFailureCount,
-      pendingVectorCount,
-      extractionWindowCount,
-      extractionCallCount,
-      extractionRetryCount,
-      extractionEmptyCount,
-      extractionParseFailureCount,
-      extractionTransportFailureCount,
-      extractionFailureCount,
-      extractionOkWithCandidatesCharCount,
-      extractionEmptyCharCount,
-      extractionParseFailureCharCount,
-      extractionTransportFailureCharCount,
-      replayedWindowCount,
-      replayRecoveredCount,
-      entityConsolidationClustersFound,
-      entityConsolidationClustersMerged,
-      entityConsolidationConsolidatorCallCount,
-      entityConsolidationConsolidatorFailureCount,
-      ingestDurationMs,
-    };
-    input.runtimeIntelligence.ingestCaseGroups.push(ingestCaseGroup);
-    input.options.onCaseGroupSetup?.(ingestCaseGroup);
-    if (
-      !input.shouldStop() &&
-      input.options.maintainPhases &&
-      input.options.maintainPhases.length > 0
-    ) {
-      await runtime.memory.maintain({
+      if (
+        input.checkpointCacheMode === "write_before_scoring" &&
+        !ingestStateHash &&
+        !input.shouldStop()
+      ) {
+        throw new Error(
+          `External benchmark checkpoint shared group could not persist a complete ingest cache: ${input.group.key}`,
+        );
+      }
+      caseGroupMemories = await runtime.memory.list({
         profileId: input.group.profileId,
-        phases: input.options.maintainPhases,
-        now: latestEventTimestamp(input.group.events),
+        status: "any",
+        limit: 10_000,
+        includeSensitive: true,
       });
-    }
-    setupDurationMs = Math.max(0, Date.now() - groupStartedMs);
-    for (const item of input.itemsToScore) {
-      if (input.shouldStop()) break;
-      const result = await scoreCase({
-        memory: runtime.memory,
-        profileId: input.group.profileId,
-        caseGroupKey: input.group.key,
+      writeDebugMemoryDump({
+        debugDir: input.options.debugDir,
+        groupKey: input.group.key,
+        memories: caseGroupMemories,
+        limit: input.options.debugDumpMemories,
+      });
+      extractedMemoryCount = caseGroupMemories.length;
+      const ingestCaseGroup = {
+        groupKey: input.group.key,
         cacheHit,
-        caseGroupMemories,
+        caseCount: input.group.items.length,
+        eventCount: input.group.events.length,
+        extractedMemoryCount,
+        turnMemoryCount,
+        distilledMemoryCount,
+        embeddingCallCount,
+        embeddedMemoryCount,
+        embeddingFailureCount,
+        pendingVectorCount,
+        extractionWindowCount,
+        extractionCallCount,
+        extractionRetryCount,
+        extractionEmptyCount,
+        extractionParseFailureCount,
+        extractionTransportFailureCount,
+        extractionFailureCount,
+        extractionOkWithCandidatesCharCount,
+        extractionEmptyCharCount,
+        extractionParseFailureCharCount,
+        extractionTransportFailureCharCount,
+        replayedWindowCount,
+        replayRecoveredCount,
+        entityConsolidationClustersFound,
+        entityConsolidationClustersMerged,
+        entityConsolidationConsolidatorCallCount,
+        entityConsolidationConsolidatorFailureCount,
+        ingestDurationMs,
+      };
+      input.runtimeIntelligence.ingestCaseGroups.push(ingestCaseGroup);
+      input.options.onCaseGroupSetup?.(ingestCaseGroup);
+      if (
+        !input.shouldStop() &&
+        input.options.maintainPhases &&
+        input.options.maintainPhases.length > 0
+      ) {
+        await runtime.memory.maintain({
+          profileId: input.group.profileId,
+          phases: input.options.maintainPhases,
+          now: latestEventTimestamp(input.group.events),
+        });
+      }
+      setupDurationMs = Math.max(0, Date.now() - groupStartedMs);
+      for (const item of input.itemsToScore) {
+        if (input.shouldStop()) break;
+        const result = await scoreCase({
+          memory: runtime.memory,
+          profileId: input.group.profileId,
+          caseGroupKey: input.group.key,
+          cacheHit,
+          caseGroupMemories,
+          extractedMemoryCount,
+          distilledMemoryCount,
+          embeddingCallCount,
+          embeddedMemoryCount,
+          embeddingFailureCount,
+          extractionWindowCount,
+          extractionCallCount,
+          extractionRetryCount,
+          extractionEmptyCount,
+          extractionParseFailureCount,
+          extractionTransportFailureCount,
+          extractionFailureCount,
+          extractionOkWithCandidatesCharCount,
+          extractionEmptyCharCount,
+          extractionParseFailureCharCount,
+          extractionTransportFailureCharCount,
+          replayedWindowCount,
+          replayRecoveredCount,
+          benchmarkCase: item.benchmarkCase,
+          index: item.index,
+          options: input.options,
+          setupWarnings,
+          readRetrieval: input.runtimeIntelligence.manifest.embedQuery
+            ? {
+                embedQuery: true,
+                onQueryEmbeddingRetry: () => {
+                  input.runtimeIntelligence.queryEmbeddingRetryCount += 1;
+                },
+                onQueryEmbeddingRecovered: () => {
+                  input.runtimeIntelligence.queryEmbeddingRecoveredCount += 1;
+                },
+                onQueryEmbeddingFailure: (reason) => {
+                  recordQueryEmbeddingFailure(input.runtimeIntelligence, reason);
+                },
+              }
+            : { embedQuery: false },
+          queryPlanner: input.runtimeIntelligence.manifest.queryPlanner.enabled
+            || input.runtimeIntelligence.manifest.sweepCues.enabled
+            ? input.runtimeIntelligence.hooks?.queryPlanner
+            : undefined,
+          sweepCues: input.runtimeIntelligence.manifest.sweepCues.enabled,
+          plannerMaxAnchors: input.runtimeIntelligence.manifest.queryPlanner.maxAnchors ?? 4,
+          plannerMaxSweepCues: input.runtimeIntelligence.manifest.sweepCues.maxCues,
+          onPlannerFailure: () => {
+            input.runtimeIntelligence.plannerFailureCount += 1;
+            input.runtimeIntelligence.manifest.queryPlanner.failureCount =
+              input.runtimeIntelligence.plannerFailureCount;
+          },
+          onProviderFailure: (stage, error) => {
+            if (stage === "answerer") input.runtimeIntelligence.manifest.answererExhaustedCount += 1;
+            else input.runtimeIntelligence.manifest.judgeExhaustedCount += 1;
+            const hook = stage === "answerer" ? input.options.answerer : input.options.judge;
+            if (!hook || !openAICompatibleBenchmarkHookBrand(hook)) {
+              input.providerCircuit.reportHookFailure(stage, error);
+            }
+          },
+          onProviderSuccess: (stage) => {
+            input.providerCircuit.reportHookSuccess(stage);
+          },
+          shouldStop: input.shouldStop,
+          writeDebugReaderContext: input.writeDebugReaderContext,
+        });
+        if (result === null) {
+          if (input.shouldStop()) break;
+          continue;
+        }
+        results.push(result);
+        await input.recordResult(
+          item.index,
+          result,
+          input.checkpointCacheMode === "none" ? null : ingestStateHash,
+        );
+      }
+      const durationMs = Math.max(0, Date.now() - groupStartedMs);
+      const scoringRuntimeMs = results.reduce((sum, result) => sum + result.scoringRuntimeMs, 0);
+      const taxonomyRuntimeMs = results.reduce((sum, result) => sum + result.taxonomyRuntimeMs, 0);
+      const wideBudgetDiagnosticRuntimeMs = results.reduce(
+        (sum, result) => sum + result.wideBudgetDiagnosticRuntimeMs,
+        0,
+      );
+      return {
+        groupKey: input.group.key,
+        cacheHit,
+        caseCount: results.length,
+        eventCount: input.group.events.length,
+        caseIds: results.slice(0, 5).map((result) => result.id),
+        durationMs,
+        setupDurationMs,
+        ingestDurationMs,
+        scoringDurationMs: Math.max(0, durationMs - setupDurationMs),
+        setupRuntimeMs: setupDurationMs,
+        scoringRuntimeMs,
+        taxonomyRuntimeMs,
+        wideBudgetDiagnosticRuntimeMs,
         extractedMemoryCount,
         distilledMemoryCount,
         embeddingCallCount,
@@ -8088,112 +8259,22 @@ async function runCaseGroup(input: {
         extractionTransportFailureCharCount,
         replayedWindowCount,
         replayRecoveredCount,
-        benchmarkCase: item.benchmarkCase,
-        index: item.index,
-        options: input.options,
-        setupWarnings,
-        readRetrieval: input.runtimeIntelligence.manifest.embedQuery
-          ? {
-              embedQuery: true,
-              onQueryEmbeddingRetry: () => {
-                input.runtimeIntelligence.queryEmbeddingRetryCount += 1;
-              },
-              onQueryEmbeddingRecovered: () => {
-                input.runtimeIntelligence.queryEmbeddingRecoveredCount += 1;
-              },
-              onQueryEmbeddingFailure: (reason) => {
-                recordQueryEmbeddingFailure(input.runtimeIntelligence, reason);
-              },
-            }
-          : { embedQuery: false },
-        queryPlanner: input.runtimeIntelligence.manifest.queryPlanner.enabled
-          || input.runtimeIntelligence.manifest.sweepCues.enabled
-          ? input.runtimeIntelligence.hooks?.queryPlanner
-          : undefined,
-        sweepCues: input.runtimeIntelligence.manifest.sweepCues.enabled,
-        plannerMaxAnchors: input.runtimeIntelligence.manifest.queryPlanner.maxAnchors ?? 4,
-        plannerMaxSweepCues: input.runtimeIntelligence.manifest.sweepCues.maxCues,
-        onPlannerFailure: () => {
-          input.runtimeIntelligence.plannerFailureCount += 1;
-          input.runtimeIntelligence.manifest.queryPlanner.failureCount =
-            input.runtimeIntelligence.plannerFailureCount;
-        },
-        onProviderFailure: (stage, error) => {
-          if (stage === "answerer") input.runtimeIntelligence.manifest.answererExhaustedCount += 1;
-          else input.runtimeIntelligence.manifest.judgeExhaustedCount += 1;
-          const hook = stage === "answerer" ? input.options.answerer : input.options.judge;
-          if (!hook || !openAICompatibleBenchmarkHookBrand(hook)) {
-            input.providerCircuit.reportHookFailure(stage, error);
-          }
-        },
-        onProviderSuccess: (stage) => {
-          input.providerCircuit.reportHookSuccess(stage);
-        },
-        shouldStop: input.shouldStop,
-        writeDebugReaderContext: input.writeDebugReaderContext,
-      });
-      if (result === null) {
-        if (input.shouldStop()) break;
-        continue;
-      }
-      results.push(result);
-      await input.recordResult(
-        item.index,
-        result,
-        input.checkpointCacheMode === "none" ? null : ingestStateHash,
-      );
+        entityConsolidationClustersFound,
+        entityConsolidationClustersMerged,
+        entityConsolidationConsolidatorCallCount,
+        entityConsolidationConsolidatorFailureCount,
+        turnMemoryCount,
+        passedCount: results.filter((result) => result.pass).length,
+        failedCount: results.filter((result) => !result.pass).length,
+      };
+    } finally {
+      if (!runtimeClosed) await runtime.memory.close();
+      rmSync(tmp, { recursive: true, force: true });
     }
-    const durationMs = Math.max(0, Date.now() - groupStartedMs);
-    const scoringRuntimeMs = results.reduce((sum, result) => sum + result.scoringRuntimeMs, 0);
-    const taxonomyRuntimeMs = results.reduce((sum, result) => sum + result.taxonomyRuntimeMs, 0);
-    const wideBudgetDiagnosticRuntimeMs = results.reduce(
-      (sum, result) => sum + result.wideBudgetDiagnosticRuntimeMs,
-      0,
-    );
-    return {
-      groupKey: input.group.key,
-      cacheHit,
-      caseCount: results.length,
-      eventCount: input.group.events.length,
-      caseIds: results.slice(0, 5).map((result) => result.id),
-      durationMs,
-      setupDurationMs,
-      ingestDurationMs,
-      scoringDurationMs: Math.max(0, durationMs - setupDurationMs),
-      setupRuntimeMs: setupDurationMs,
-      scoringRuntimeMs,
-      taxonomyRuntimeMs,
-      wideBudgetDiagnosticRuntimeMs,
-      extractedMemoryCount,
-      distilledMemoryCount,
-      embeddingCallCount,
-      embeddedMemoryCount,
-      embeddingFailureCount,
-      extractionWindowCount,
-      extractionCallCount,
-      extractionRetryCount,
-      extractionEmptyCount,
-      extractionParseFailureCount,
-      extractionTransportFailureCount,
-      extractionFailureCount,
-      extractionOkWithCandidatesCharCount,
-      extractionEmptyCharCount,
-      extractionParseFailureCharCount,
-      extractionTransportFailureCharCount,
-      replayedWindowCount,
-      replayRecoveredCount,
-      entityConsolidationClustersFound,
-      entityConsolidationClustersMerged,
-      entityConsolidationConsolidatorCallCount,
-      entityConsolidationConsolidatorFailureCount,
-      turnMemoryCount,
-      passedCount: results.filter((result) => result.pass).length,
-      failedCount: results.filter((result) => !result.pass).length,
-    };
-  } finally {
-    if (!runtimeClosed) await runtime.memory.close();
-    rmSync(tmp, { recursive: true, force: true });
-  }
+  };
+  return input.llmResponseCache
+    ? input.llmResponseCache.run(!cacheHit, execute)
+    : execute();
 }
 
 async function runGroupsWithConcurrency(
@@ -8369,6 +8450,19 @@ async function runExternalMemoryBenchmarkWithCircuit(
         writeSkipReasons: new Map(),
       };
   if (ingestCache.dir) ensurePrivateIngestCacheDirectory(ingestCache.dir);
+  if (
+    options.llmResponseCacheDir && options.intelligence &&
+    !isIntelligenceConfig(options.intelligence)
+  ) {
+    throw new Error(
+      "External benchmark LLM response cache requires an intelligence config, not preconstructed hooks",
+    );
+  }
+  const llmResponseCache = options.llmResponseCacheDir
+    ? createExternalBenchmarkLlmResponseCache(
+        path.resolve(process.cwd(), options.llmResponseCacheDir),
+      )
+    : null;
   const runtimeIntelligence = resolveRuntimeIntelligence({
     intelligence: options.intelligence,
     ingestMode,
@@ -8379,6 +8473,7 @@ async function runExternalMemoryBenchmarkWithCircuit(
     intelligenceTimeoutMs: options.intelligenceTimeoutMs,
     intelligenceConcurrency: options.intelligenceConcurrency,
     providerCircuit,
+    llmResponseCache,
   });
   if (ingestCache.dir && !options.checkpoint) {
     runtimeIntelligence.checkpointArtifactIdentity = runtimeArtifactIdentity();
@@ -8600,6 +8695,7 @@ async function runExternalMemoryBenchmarkWithCircuit(
       runtimeIntelligence,
       providerCircuit,
       ingestCache,
+      llmResponseCache,
       recordResult,
       shouldStop: groupShouldStop,
       writeDebugReaderContext,
@@ -8673,6 +8769,7 @@ async function runExternalMemoryBenchmarkWithCircuit(
       options: normalizedOptions,
       runtimeIntelligence,
       ingestCache,
+      llmResponseCache,
       officialScore,
       ceilingMetrics,
       sliceSpec,
