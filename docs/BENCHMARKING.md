@@ -291,6 +291,43 @@ assistant turns remain visible, while the remaining wide supply stays at the
 Use the default profile for scale smoke gates unless a run is intentionally
 measuring wide-reader latency.
 
+### Sizing The Reader Budget Offline (Free)
+
+Reader-window flags (`--context-budget-tokens`, `--full-content-max-chars`,
+`--full-content-top-rank`) drive the per-case answerer/judge token cost, which
+you re-pay on every scoring run. They can be sized to zero evidence loss for
+free, before spending on any official run, because `deterministic_local`
+scoring exercises the same read path and reports per-case gold-evidence
+reachability (`lexicallyReachable`, `unreachableExpectedTerms`).
+
+The method: ingest a case sample once into a shared `--ingest-cache-dir`, then
+re-score across candidate budgets. A read-window flag is a read-path parameter,
+so changing it reuses the ingest cache — every sweep point after the first is a
+cache-hit re-score, not a re-ingest.
+
+```bash
+for B in 48000 24000 12000 8000; do
+  gmos gym external --input-file ./long-memory-cleaned.json \
+    --dataset-format longmemeval --protocol deterministic-local --max-cases 100 \
+    --reader-profile wide --context-budget-tokens $B \
+    --ingest-cache-dir ./sweep-cache --json-file ./sweep-$B.json --format json
+done
+# compare normalizedEvidenceScore / count of lexicallyReachable cases per budget
+```
+
+On a 100-case LongMemEval S sample the count of fully reachable cases is flat
+from 48000 down to 6000 tokens: beyond roughly the `wide` profile's own
+16000-token default, a larger budget adds latency and recurring answerer/judge
+cost with no additional gold-evidence reachability. Prefer the profile's
+built-in budget (or a measured floor) over inflating it with explicit
+overrides. Evidence that stays unreachable at every budget is a store-content
+gap (cross-session identity, counting, state), addressed by ingest quality —
+session distillation and instance resolution — not by a wider read window.
+
+Reachability is necessary but not sufficient for a correct answer: it confirms
+the gold evidence is in the reader context, not that the answerer used a smaller
+context correctly. Confirm the chosen budget with one official-protocol run.
+
 Paid smoke workflow:
 
 ```bash
