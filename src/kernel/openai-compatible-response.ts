@@ -227,6 +227,26 @@ export function textFromOpenAICompatibleContent(value: unknown): string {
   return "";
 }
 
+export function openAICompatibleTruncatedFinishReasons(payload: unknown): string[] {
+  if (!payload || typeof payload !== "object") return [];
+  const record = payload as Record<string, unknown>;
+  const reasons = Array.isArray(record.choices)
+    ? record.choices.flatMap((choice) => {
+        if (!choice || typeof choice !== "object") return [];
+        const reason = (choice as Record<string, unknown>).finish_reason;
+        return typeof reason === "string" ? [reason] : [];
+      })
+    : [];
+  if (record.status === "incomplete" && record.incomplete_details &&
+      typeof record.incomplete_details === "object") {
+    const reason = (record.incomplete_details as Record<string, unknown>).reason;
+    if (typeof reason === "string") reasons.push(reason);
+  }
+  return reasons.filter((reason) =>
+    reason === "length" || reason === "max_tokens" || reason === "max_output_tokens"
+  );
+}
+
 function reasoningTextFromRecord(record: Record<string, unknown>): string {
   return [
     record.reasoning_content,

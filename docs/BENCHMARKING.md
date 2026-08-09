@@ -765,17 +765,17 @@ MemoryOS runtime. A store-cache hit skips ingest and therefore never reads this
 response cache; a store-cache miss runs normal ingest and attempts replay for
 each eligible prompt.
 
-The response key is SHA-256 over canonical JSON containing cache version `1`,
+The response key is SHA-256 over canonical JSON containing cache version `2`,
 operation `chat.completions`, the exact model string, and the byte-identical raw
 request-body string. URL, endpoint, headers, authorization, abort signal,
 timeouts, retry/backoff, and concurrency are excluded. Only non-streaming POST
 requests with `model`, `messages`, and `temperature: 0` are eligible. Embeddings,
-nonzero-temperature or streaming requests, non-200 responses, and invalid outer
-completion JSON bypass or miss without being stored. Answerer and judge requests
+nonzero-temperature or streaming requests, non-200 responses, invalid outer
+completion JSON, and truncated completions bypass or miss without being stored. Answerer and judge requests
 use their existing separate path and are not cached.
 
 Entries are raw response JSON at
-`<dir>/v1/<first-two-key-hex>/<64-hex-key>.json`; prompts are never copied into
+`<dir>/v2/<first-two-key-hex>/<64-hex-key>.json`; prompts are never copied into
 the cache. Directories are mode `0700`, files are mode `0600`, and writes use a
 fsynced temporary file plus atomic rename. Corrupt or unsafe entries are misses
 and a valid live response repairs them. Each key is read from disk at most once

@@ -16,6 +16,9 @@ import {
 import path from "node:path";
 
 import type { OpenAICompatibleFetch } from "../intelligence/index.js";
+import { openAICompatibleTruncatedFinishReasons } from "../kernel/openai-compatible-response.js";
+
+const LLM_RESPONSE_CACHE_VERSION = 2;
 
 interface ExternalBenchmarkLlmResponseCacheCounters {
   hits: number;
@@ -125,7 +128,7 @@ export function createExternalBenchmarkLlmResponseCache(directoryPath: string): 
   wrap(fetchImpl: OpenAICompatibleFetch): OpenAICompatibleFetch;
 } {
   const dir = path.resolve(directoryPath);
-  const versionDir = path.join(dir, "v1");
+  const versionDir = path.join(dir, `v${LLM_RESPONSE_CACHE_VERSION}`);
   ensurePrivateDirectory(dir);
   ensurePrivateDirectory(versionDir);
   const counters: ExternalBenchmarkLlmResponseCacheCounters = {
@@ -151,7 +154,7 @@ export function createExternalBenchmarkLlmResponseCache(directoryPath: string): 
           return fetchImpl(input, init);
         }
         const key = createHash("sha256").update(canonicalJson({
-          version: 1,
+          version: LLM_RESPONSE_CACHE_VERSION,
           operation: "chat.completions",
           model: request.model,
           body: request.body,
@@ -174,8 +177,11 @@ export function createExternalBenchmarkLlmResponseCache(directoryPath: string): 
         if (!response.ok || response.status !== 200) return response;
         const raw = await response.text();
         try {
-          JSON.parse(raw);
-          if (writeEntry(filePath, raw)) counters.writes += 1;
+          const completion = JSON.parse(raw) as unknown;
+          if (
+            openAICompatibleTruncatedFinishReasons(completion).length === 0 &&
+            writeEntry(filePath, raw)
+          ) counters.writes += 1;
         } catch {
           // A syntactically invalid outer completion remains a live response only.
         }

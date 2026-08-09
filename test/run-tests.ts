@@ -44393,7 +44393,7 @@ assert.equal(
   directResponseRaw,
 );
 assert.deepEqual(directResponseCold.counters, { hits: 0, misses: 1, writes: 1, bypasses: 0 });
-const directResponseVersionDir = path.join(directResponseCacheDir, "v1");
+const directResponseVersionDir = path.join(directResponseCacheDir, "v2");
 const directResponseShard = readdirSync(directResponseVersionDir)[0]!;
 const directResponseEntry = readdirSync(path.join(directResponseVersionDir, directResponseShard))[0]!;
 assert.match(directResponseShard, /^[a-f0-9]{2}$/u);
@@ -44477,6 +44477,15 @@ await (await unparseableResponseCache.wrap(async () => {
 })("https://invalid.invalid/v1", { method: "POST", body: invalidResponseBody })).text();
 assert.equal(invalidResponseProviderCalls > 0, true);
 assert.deepEqual(unparseableResponseCache.counters, { hits: 0, misses: 1, writes: 0, bypasses: 0 });
+const truncatedResponseCache = createExternalBenchmarkLlmResponseCache(invalidResponseCacheDir);
+await (await truncatedResponseCache.wrap(async () => responseCacheOk(JSON.stringify({
+  choices: [{ finish_reason: "length", message: { content: "{\"partial\":" } }],
+})))
+  ("https://invalid.invalid/v1", {
+    method: "POST",
+    body: responseCacheBody("truncated-response-model"),
+  })).text();
+assert.deepEqual(truncatedResponseCache.counters, { hits: 0, misses: 1, writes: 0, bypasses: 0 });
 
 const repairResponseCacheDir = path.join(tmp, "external-llm-response-cache-repair");
 const repairResponseBody = responseCacheBody("repair-response-model");
@@ -44485,7 +44494,7 @@ await (await repairSeedCache.wrap(async () => responseCacheOk(responseCacheRaw("
   "https://repair.invalid/v1",
   { method: "POST", body: repairResponseBody },
 )).text();
-const repairVersionDir = path.join(repairResponseCacheDir, "v1");
+const repairVersionDir = path.join(repairResponseCacheDir, "v2");
 const repairShard = readdirSync(repairVersionDir)[0]!;
 const repairFile = path.join(repairVersionDir, repairShard, readdirSync(path.join(repairVersionDir, repairShard))[0]!);
 writeFileSync(repairFile, "corrupt", { mode: 0o600 });

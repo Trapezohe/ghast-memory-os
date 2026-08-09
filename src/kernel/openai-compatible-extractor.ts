@@ -12,6 +12,7 @@ import {
   openAICompatibleOutcomeForError,
   openAICompatibleRetryAfterMs,
   openAICompatibleRetryCount,
+  openAICompatibleTruncatedFinishReasons,
   parseOpenAICompatibleCompletionJson,
   runOpenAICompatibleRetry,
 } from "./openai-compatible-response.js";
@@ -296,31 +297,6 @@ function retryableStatus(status: number): boolean {
   return status === 429 || status >= 500;
 }
 
-function completionFinishReasons(payload: unknown): string[] {
-  if (!payload || typeof payload !== "object") return [];
-  const record = payload as Record<string, unknown>;
-  const output: string[] = [];
-  if (Array.isArray(record.choices)) {
-    for (const choice of record.choices) {
-      if (!choice || typeof choice !== "object") continue;
-      const reason = (choice as Record<string, unknown>).finish_reason;
-      if (typeof reason === "string" && reason) output.push(reason);
-    }
-  }
-  if (record.status === "incomplete") {
-    const details = record.incomplete_details;
-    if (details && typeof details === "object") {
-      const reason = (details as Record<string, unknown>).reason;
-      if (typeof reason === "string" && reason) output.push(reason);
-    }
-  }
-  return output;
-}
-
-function isTruncatedFinishReason(reason: string): boolean {
-  return reason === "length" || reason === "max_tokens" || reason === "max_output_tokens";
-}
-
 export function createOpenAICompatibleExtractor(
   options: OpenAICompatibleExtractorOptions,
 ): MemoryExtractor {
@@ -407,8 +383,8 @@ export function createOpenAICompatibleExtractor(
               "parse_failure",
             );
           }
-          const finishReasons = completionFinishReasons(completion);
-          if (finishReasons.some(isTruncatedFinishReason)) {
+          const finishReasons = openAICompatibleTruncatedFinishReasons(completion);
+          if (finishReasons.length > 0) {
             throw new OpenAICompatibleResponseError(
               `OpenAI-compatible extractor response was truncated: finish_reason=${finishReasons.join(",")}`,
               "parse_failure",
