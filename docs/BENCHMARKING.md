@@ -551,7 +551,9 @@ Recommended provider setup flow:
    `reasoning_content`, but if they return reasoning without JSON the run will
    count `extractionParseFailureCount` instead of silently producing zero
    candidates. Prefer `--intelligence-disable-thinking` for providers that
-   support it. Markdown fences and prose around JSON are tolerated.
+   support it; gmOS sends both `enable_thinking: false` and the OpenAI-style
+   `reasoning_effort: "none"` compatibility fields. Markdown fences and prose
+   around JSON are tolerated.
 4. Scale only after the one-case probe shows nonzero candidates or an expected
    `extractionEmptyCount`.
 

@@ -669,6 +669,8 @@ Primary methods:
   `queryPlanner`/`sweepCues`. Session distillation in message mode may reuse the
   base intelligence endpoint; callers may override only the distiller with
   paired `distillerBaseUrl` and `distillerModel`.
+  `disableThinking` sends both `enable_thinking: false` and
+  `reasoning_effort: "none"` for common OpenAI-compatible providers.
 - `prepareTurn(input)`: retrieve ordinary context and action policy for the next
   agent turn. This is a read path and must not write. When the exploration index
   has relevant candidates, gmOS may emit deterministic `kind: "curiosity"`

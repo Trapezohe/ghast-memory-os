@@ -9,6 +9,7 @@ import {
   attachOpenAICompatibleRetryCount,
   createOpenAICompatibleDebugCapture,
   markOpenAICompatibleRequestLifecycleOwner,
+  openAICompatibleDisableThinkingFields,
   openAICompatibleOutcomeForError,
   openAICompatibleRetryAfterMs,
   openAICompatibleRetryCount,
@@ -346,7 +347,7 @@ export function createOpenAICompatibleExtractor(
             model: options.model,
             temperature: boundedNumber(options.temperature, 0, 0, 2),
             max_tokens: maxTokens,
-            ...(options.disableThinking ? { enable_thinking: false } : {}),
+            ...openAICompatibleDisableThinkingFields(options.disableThinking),
             ...(options.responseFormat === false
               ? {}
               : { response_format: { type: "json_object" } }),

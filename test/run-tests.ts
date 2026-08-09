@@ -42291,6 +42291,7 @@ const plannerOnlyFetchCalls: Array<{
   authorization?: string | undefined;
   model?: string | undefined;
   enableThinking?: unknown;
+  reasoningEffort?: unknown;
   system?: string | undefined;
 }> = [];
 try {
@@ -42314,6 +42315,7 @@ try {
         const body = JSON.parse(String(init?.body ?? "{}")) as {
           model?: string;
           enable_thinking?: unknown;
+          reasoning_effort?: unknown;
           messages?: Array<{ role?: string; content?: string }>;
         };
         const system = body.messages?.[0]?.content ?? "";
@@ -42322,6 +42324,7 @@ try {
           authorization: headers?.authorization,
           model: body.model,
           enableThinking: body.enable_thinking,
+          reasoningEffort: body.reasoning_effort,
           system,
         });
         if (String(url).endsWith("/embeddings") || !system.includes("a query planner")) {
@@ -42358,6 +42361,7 @@ try {
   assert.equal(plannerOnlyFetchCalls[0]?.authorization, "Bearer planner-only-secret-1234567890");
   assert.equal(plannerOnlyFetchCalls[0]?.model, "planner-only-chat");
   assert.equal(plannerOnlyFetchCalls[0]?.enableThinking, false);
+  assert.equal(plannerOnlyFetchCalls[0]?.reasoningEffort, "none");
   assert.deepEqual(plannerOnlySweepRun.cases[0]?.sweepCues, ["market sale"]);
   assert.equal(plannerOnlySweepRun.cases[0]?.sweepIncludedCount, 5);
   assert.equal(plannerOnlySweepRun.runManifest.runtimeIntelligence.enabled, true);
@@ -50348,6 +50352,7 @@ writeFileSync(
         model: body.model,
         max_tokens: body.max_tokens,
         enableThinking: body.enable_thinking,
+        reasoningEffort: body.reasoning_effort,
         system: body.messages?.[0]?.content,
       }) + "\\n");
       if (String(url).endsWith("/embeddings")) {
@@ -50543,6 +50548,7 @@ const cliExternalIntelligenceFetchLog = readFileSync(cliExternalIntelligenceFetc
 assert.match(cliExternalIntelligenceFetchLog, new RegExp(`Bearer ${cliExternalIntelligenceSecret}`));
 assert.match(cliExternalIntelligenceFetchLog, new RegExp(`Bearer ${cliExternalEmbedSecret}`));
 assert.match(cliExternalIntelligenceFetchLog, /"enableThinking":false/u);
+assert.match(cliExternalIntelligenceFetchLog, /"reasoningEffort":"none"/u);
 assert.match(cliExternalIntelligenceFetchLog, /Return at most 48 memory candidates/u);
 const cliExternalIntelligenceFetchEntries = cliExternalIntelligenceFetchLog
   .trim()

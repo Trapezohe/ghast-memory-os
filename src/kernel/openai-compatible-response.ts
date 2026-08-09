@@ -247,6 +247,14 @@ export function openAICompatibleTruncatedFinishReasons(payload: unknown): string
   );
 }
 
+export function openAICompatibleDisableThinkingFields(
+  disableThinking: boolean | undefined,
+): Record<string, unknown> {
+  return disableThinking
+    ? { enable_thinking: false, reasoning_effort: "none" }
+    : {};
+}
+
 function reasoningTextFromRecord(record: Record<string, unknown>): string {
   return [
     record.reasoning_content,
