@@ -35,6 +35,7 @@ export interface OpenAICompatibleRequestObserver {
 }
 
 const REQUEST_OBSERVER = new AsyncLocalStorage<OpenAICompatibleRequestObserver>();
+export const OPENAI_COMPATIBLE_CACHE_REFRESH = Symbol("openai-compatible-cache-refresh");
 const REQUEST_LIFECYCLE_OWNERS = new WeakSet<object>();
 
 export function markOpenAICompatibleRequestLifecycleOwner<T extends object>(value: T): T {
@@ -162,7 +163,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 export async function runOpenAICompatibleRetry<T>(
-  operation: (signal: AbortSignal) => Promise<T>,
+  operation: (signal: AbortSignal, attempt: number) => Promise<T>,
   options: OpenAICompatibleRetryOptions | undefined,
 ): Promise<OpenAICompatibleRetryResult<T>> {
   const timeoutMs = boundedInteger(options?.timeoutMs, 20_000, 1000, 120_000);
@@ -180,7 +181,7 @@ export async function runOpenAICompatibleRetry<T>(
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       if (stage) observer?.beforeAttempt(stage);
-      const value = await operation(controller.signal);
+      const value = await operation(controller.signal, attempt);
       if (stage) observer?.succeeded(stage);
       return { value, retryCount };
     } catch (error) {

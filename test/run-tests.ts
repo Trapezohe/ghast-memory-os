@@ -223,6 +223,7 @@ import {
   temporalCueValuesFromText,
 } from "../src/kernel/temporal-validity.js";
 import {
+  OPENAI_COMPATIBLE_CACHE_REFRESH,
   OpenAICompatibleResponseError,
   runOpenAICompatibleRetry,
   withOpenAICompatibleRequestObserver,
@@ -44559,10 +44560,25 @@ assert.equal(
     method: "POST",
     body: repairResponseBody,
   })).text(),
+  responseCacheRaw("bad-first-sample"),
+);
+assert.equal(
+  await (await seenKeyFetch("https://repair.invalid/v1", {
+    method: "POST",
+    body: repairResponseBody,
+    [OPENAI_COMPATIBLE_CACHE_REFRESH]: true,
+  })).text(),
+  responseCacheRaw("retry-live-sample"),
+);
+assert.equal(
+  await (await seenKeyFetch("https://repair.invalid/v1", {
+    method: "POST",
+    body: repairResponseBody,
+  })).text(),
   responseCacheRaw("retry-live-sample"),
 );
 assert.equal(seenKeyLiveCalls > 0, true);
-assert.deepEqual(seenKeyResponseCache.counters, { hits: 1, misses: 1, writes: 1, bypasses: 0 });
+assert.deepEqual(seenKeyResponseCache.counters, { hits: 3, misses: 1, writes: 1, bypasses: 0 });
 
 const responseCacheBenchmarkCases = [{
   id: "external-llm-response-cache",
@@ -44633,14 +44649,8 @@ const layeredStoreHit = await runExternalMemoryBenchmark({
   llmResponseCacheDir: layeredResponseCacheDir,
 });
 assert.equal(layeredStoreHit.runManifest.ingestCache.hits, 1);
-assert.deepEqual(layeredStoreHit.runManifest.llmResponseCache, {
-  enabled: true,
-  dir: path.resolve(process.cwd(), layeredResponseCacheDir),
-  hits: 0,
-  misses: 0,
-  writes: 0,
-  bypasses: 0,
-});
+assert.equal(layeredStoreHit.runManifest.llmResponseCache.enabled, true);
+assert.equal(layeredStoreHit.runManifest.llmResponseCache.hits >= 1, true);
 const layeredStoreMissResponseHit = await runExternalMemoryBenchmark({
   ...responseCacheBenchmarkOptions,
   ingestCacheDir: path.join(tmp, "external-ingest-cache-layered-fresh"),
@@ -44649,6 +44659,57 @@ const layeredStoreMissResponseHit = await runExternalMemoryBenchmark({
 assert.equal(layeredStoreMissResponseHit.runManifest.ingestCache.misses, 1);
 assert.equal(layeredStoreMissResponseHit.runManifest.llmResponseCache.hits >= 1, true);
 assert.equal(layeredStoreMissResponseHit.pass, true);
+
+const scoringResponseCacheDir = path.join(tmp, "external-llm-response-cache-scoring");
+const scoringStoreCacheDir = path.join(tmp, "external-ingest-cache-scoring");
+let scoringResponseProviderCalls = 0;
+const scoringResponseFetch = async (_url: string | URL | Request, init?: RequestInit) => {
+  scoringResponseProviderCalls += 1;
+  const body = JSON.parse(String(init?.body ?? "{}")) as { response_format?: unknown };
+  return responseCacheOk(responseCacheRaw(
+    body.response_format ? JSON.stringify({ answer: "sapphire" }) : "yes",
+  ));
+};
+const runScoringResponseCacheBenchmark = () => runExternalMemoryBenchmark({
+  cases: [{
+    id: "external-llm-scoring-cache",
+    profileId: "external_llm_scoring_cache",
+    events: [{
+      type: "memory" as const,
+      kind: "fact" as const,
+      createdAt: "2026-07-21T00:00:00.000Z",
+      content: "The scoring cache answer is sapphire.",
+    }],
+    question: "What is the scoring cache answer?",
+    expectedAny: ["sapphire"],
+  }],
+  protocol: "official_protocol" as const,
+  ingestMode: "memory" as const,
+  ingestCacheDir: scoringStoreCacheDir,
+  llmResponseCacheDir: scoringResponseCacheDir,
+  answerer: createOpenAICompatibleExternalBenchmarkAnswerer({
+    baseUrl: "https://scoring-cache.invalid/v1",
+    model: "scoring-cache-model",
+    fetchImpl: scoringResponseFetch,
+  }),
+  judge: createOpenAICompatibleExternalBenchmarkJudge({
+    baseUrl: "https://scoring-cache.invalid/v1",
+    model: "scoring-cache-model",
+    profile: "longmemeval_official",
+    fetchImpl: scoringResponseFetch,
+  }),
+});
+const scoringCacheFirst = await runScoringResponseCacheBenchmark();
+const scoringProviderCallsAfterFirst = scoringResponseProviderCalls;
+assert.equal(scoringCacheFirst.officialScore, 1);
+assert.equal(scoringCacheFirst.runManifest.llmResponseCache.misses, 2);
+assert.equal(scoringCacheFirst.runManifest.llmResponseCache.writes, 2);
+const scoringCacheSecond = await runScoringResponseCacheBenchmark();
+assert.equal(scoringCacheSecond.runManifest.ingestCache.hits, 1);
+assert.equal(scoringCacheSecond.officialScore, 1);
+assert.equal(scoringResponseProviderCalls, scoringProviderCallsAfterFirst);
+assert.equal(scoringCacheSecond.runManifest.llmResponseCache.hits, 2);
+assert.equal(scoringCacheSecond.runManifest.llmResponseCache.misses, 0);
 
 const unresolvedIngestCacheDir = path.join(tmp, "external-ingest-cache-unresolved");
 let unresolvedIngestExtractorCalls = 0;

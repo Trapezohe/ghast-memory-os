@@ -68,6 +68,7 @@ import {
 import { readGmosPackageInfo, readGmosPackageRoot } from "../kernel/package-info.js";
 import {
   OpenAICompatibleResponseError,
+  OPENAI_COMPATIBLE_CACHE_REFRESH,
   type OpenAICompatibleRequestObserver,
   type OpenAICompatibleRequestStage,
   type OpenAICompatibleTerminalFailure,
@@ -3619,6 +3620,7 @@ const OPENAI_COMPATIBLE_BENCHMARK_HOOK = Symbol("openai-compatible-external-benc
 
 interface OpenAICompatibleBenchmarkHookBrand {
   customFetch: boolean;
+  installFetchWrapper(wrapper: (fetchImpl: OpenAICompatibleFetch) => OpenAICompatibleFetch): void;
 }
 
 interface BrandedOpenAICompatibleBenchmarkHook {
@@ -3892,8 +3894,8 @@ async function fetchOpenAICompatibleJson(
     messages = [...messages, { role: "user", content: "Return a JSON object." }];
   }
   try {
-    const result = await runOpenAICompatibleRetry(async (signal) => {
-      const response = await fetchImpl(openAICompatibleEndpoint(options.baseUrl), {
+    const result = await runOpenAICompatibleRetry(async (signal, attempt) => {
+      const requestInit: RequestInit & { [OPENAI_COMPATIBLE_CACHE_REFRESH]?: boolean } = {
         method: "POST",
         signal,
         headers: {
@@ -3908,7 +3910,9 @@ async function fetchOpenAICompatibleJson(
           ...(responseFormat === "json" ? { response_format: { type: "json_object" } } : {}),
           messages,
         }),
-      });
+      };
+      if (attempt > 0) requestInit[OPENAI_COMPATIBLE_CACHE_REFRESH] = true;
+      const response = await fetchImpl(openAICompatibleEndpoint(options.baseUrl), requestInit);
       const text = await response.text();
       if (!response.ok) {
         throw new OpenAICompatibleResponseError(
@@ -4203,13 +4207,19 @@ export function createOpenAICompatibleExternalBenchmarkAnswerer(
 ): ExternalMemoryBenchmarkAnswerer {
   const name = options.name ?? `openai-compatible-answerer:${options.model}`;
   const manifest = runtimeAnswererManifest({ ...options, name });
+  let fetchImpl = openAICompatibleFetch(options);
   manifest.answererRetryCount = 0;
   manifest.answererRecoveredCount = 0;
   const answerer: ExternalMemoryBenchmarkAnswerer & BrandedOpenAICompatibleBenchmarkHook = {
     name,
     ...(options.checkpointIdentity ? { checkpointIdentity: options.checkpointIdentity } : {}),
     manifest,
-    [OPENAI_COMPATIBLE_BENCHMARK_HOOK]: { customFetch: options.fetchImpl !== undefined },
+    [OPENAI_COMPATIBLE_BENCHMARK_HOOK]: {
+      customFetch: options.fetchImpl !== undefined,
+      installFetchWrapper(wrapper) {
+        fetchImpl = wrapper(fetchImpl);
+      },
+    },
     async answer(question, context) {
       const systemPrompt = externalBenchmarkAnswererSystemPrompt();
       const validator: OpenAICompatibleJsonValidator = {
@@ -4226,7 +4236,7 @@ export function createOpenAICompatibleExternalBenchmarkAnswerer(
           manifest.answererRecoveredCount = (manifest.answererRecoveredCount ?? 0) + 1;
         },
       };
-      const parsed = parsedCompletionObject(await fetchOpenAICompatibleJson(options, [
+      const parsed = parsedCompletionObject(await fetchOpenAICompatibleJson({ ...options, fetchImpl }, [
         {
           role: "system",
           content: systemPrompt,
@@ -4249,6 +4259,7 @@ export function createOpenAICompatibleExternalBenchmarkJudge(
   const name = options.name ?? `openai-compatible-judge:${options.model}`;
   const profile = normalizeJudgeProfile(options.profile);
   const manifest = runtimeAnswererManifest({ ...options, name });
+  let fetchImpl = openAICompatibleFetch(options);
   manifest.judgeRetryCount = 0;
   manifest.judgeRecoveredCount = 0;
   const judgeOpenAICompatible = async (input: {
@@ -4259,7 +4270,7 @@ export function createOpenAICompatibleExternalBenchmarkJudge(
     caseId?: string | undefined;
   }): Promise<ExternalMemoryBenchmarkJudgeResult> => {
     if (profile === "longmemeval_official") {
-      const payload = await fetchOpenAICompatibleJson(options, [
+      const payload = await fetchOpenAICompatibleJson({ ...options, fetchImpl }, [
         {
           role: "user",
           content: upstreamLongMemEvalJudgePrompt(input),
@@ -4286,7 +4297,7 @@ export function createOpenAICompatibleExternalBenchmarkJudge(
         rationale: `upstream longmemeval yes/no: ${decision}`,
       };
     }
-    const parsed = parsedCompletionObject(await fetchOpenAICompatibleJson(options, [
+    const parsed = parsedCompletionObject(await fetchOpenAICompatibleJson({ ...options, fetchImpl }, [
       {
         role: "system",
         content: judgeSystemPrompt(profile),
@@ -4328,7 +4339,12 @@ export function createOpenAICompatibleExternalBenchmarkJudge(
     ...(options.checkpointIdentity ? { checkpointIdentity: options.checkpointIdentity } : {}),
     manifest,
     profile,
-    [OPENAI_COMPATIBLE_BENCHMARK_HOOK]: { customFetch: options.fetchImpl !== undefined },
+    [OPENAI_COMPATIBLE_BENCHMARK_HOOK]: {
+      customFetch: options.fetchImpl !== undefined,
+      installFetchWrapper(wrapper) {
+        fetchImpl = wrapper(fetchImpl);
+      },
+    },
     async judge(question, expectedAnswer, actualAnswer) {
       return judgeOpenAICompatible({ question, expectedAnswer, actualAnswer });
     },
@@ -8275,7 +8291,7 @@ async function runCaseGroup(input: {
     }
   };
   return input.llmResponseCache
-    ? input.llmResponseCache.run(!cacheHit, execute)
+    ? input.llmResponseCache.run(true, execute)
     : execute();
 }
 
@@ -8465,6 +8481,14 @@ async function runExternalMemoryBenchmarkWithCircuit(
         path.resolve(process.cwd(), options.llmResponseCacheDir),
       )
     : null;
+  if (llmResponseCache) {
+    if (answerer) {
+      openAICompatibleBenchmarkHookBrand(answerer)?.installFetchWrapper(llmResponseCache.wrap);
+    }
+    if (judge) {
+      openAICompatibleBenchmarkHookBrand(judge)?.installFetchWrapper(llmResponseCache.wrap);
+    }
+  }
   const runtimeIntelligence = resolveRuntimeIntelligence({
     intelligence: options.intelligence,
     ingestMode,

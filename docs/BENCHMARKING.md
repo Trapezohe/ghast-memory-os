@@ -762,11 +762,11 @@ mismatches are treated as misses and overwritten after a fresh ingest.
 ## LLM Response Cache
 
 `--llm-response-cache-dir <dir>` enables a separate, opt-in cache for raw HTTP
-200 OpenAI-compatible chat-completion responses used by benchmark intelligence
-hooks. It is off by default and is not available through the production
-MemoryOS runtime. A store-cache hit skips ingest and therefore never reads this
-response cache; a store-cache miss runs normal ingest and attempts replay for
-each eligible prompt.
+200 OpenAI-compatible chat-completion responses used by benchmark intelligence,
+answerer, and judge hooks. It is off by default and is not available through
+the production MemoryOS runtime. A store-cache hit skips ingest but still uses
+this cache for eligible read-side planner, reranker, answerer, and judge calls.
+A store-cache miss also attempts replay for eligible ingest prompts.
 
 The response key is SHA-256 over canonical JSON containing cache version `2`,
 operation `chat.completions`, the exact model string, and the byte-identical raw
@@ -774,16 +774,19 @@ request-body string. URL, endpoint, headers, authorization, abort signal,
 timeouts, retry/backoff, and concurrency are excluded. Only non-streaming POST
 requests with `model`, `messages`, and `temperature: 0` are eligible. Embeddings,
 nonzero-temperature or streaming requests, non-200 responses, invalid outer
-completion JSON, and truncated completions bypass or miss without being stored. Answerer and judge requests
-use their existing separate path and are not cached.
+completion JSON, and truncated completions bypass or miss without being stored.
+Changing a reader context, system prompt, question, model, token limit, or any
+other request-body field produces a different key rather than reusing an
+incomparable answer.
 
 Entries are raw response JSON at
 `<dir>/v2/<first-two-key-hex>/<64-hex-key>.json`; prompts are never copied into
 the cache. Directories are mode `0700`, files are mode `0600`, and writes use a
 fsynced temporary file plus atomic rename. Corrupt or unsafe entries are misses
-and a valid live response repairs them. Each key is read from disk at most once
-per benchmark run: identical retries after a replay or fresh write go live
-and atomically replace the entry with the last valid HTTP 200 response. There is
+and a valid live response repairs them. Identical requests may replay the same
+entry repeatedly. Semantic validation retries explicitly bypass the entry once,
+so an invalid completion can be repaired live without making ordinary repeated
+planner or reranker calls expensive. There is
 no TTL; rotate the directory or bump the cache version for deliberate
 invalidation. `runManifest.llmResponseCache` reports hits, misses, writes, and
 bypasses.

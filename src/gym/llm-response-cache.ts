@@ -16,7 +16,10 @@ import {
 import path from "node:path";
 
 import type { OpenAICompatibleFetch } from "../intelligence/index.js";
-import { openAICompatibleTruncatedFinishReasons } from "../kernel/openai-compatible-response.js";
+import {
+  OPENAI_COMPATIBLE_CACHE_REFRESH,
+  openAICompatibleTruncatedFinishReasons,
+} from "../kernel/openai-compatible-response.js";
 
 const LLM_RESPONSE_CACHE_VERSION = 2;
 
@@ -137,7 +140,6 @@ export function createExternalBenchmarkLlmResponseCache(directoryPath: string): 
     writes: 0,
     bypasses: 0,
   };
-  const seenKeys = new Set<string>();
   const enabledForGroup = new AsyncLocalStorage<boolean>();
   return {
     dir,
@@ -164,8 +166,10 @@ export function createExternalBenchmarkLlmResponseCache(directoryPath: string): 
         // string + byte-identical request body returns the raw HTTP 200 completion
         // previously observed for that tuple; it does not claim the provider would
         // produce the same result today.
-        if (!seenKeys.has(key)) {
-          seenKeys.add(key);
+        const refresh = (init as RequestInit & {
+          [OPENAI_COMPATIBLE_CACHE_REFRESH]?: boolean;
+        } | undefined)?.[OPENAI_COMPATIBLE_CACHE_REFRESH] === true;
+        if (!refresh) {
           const cached = readEntry(filePath);
           if (cached !== null) {
             counters.hits += 1;
