@@ -2743,6 +2743,7 @@ async function main(): Promise<void> {
     const maxBranch = positiveIntegerOptionValue("--max-branch");
     const maxMemories = positiveIntegerOptionValue("--max-memories");
     const contextBudgetTokens = positiveIntegerOptionValue("--context-budget-tokens");
+    const maxCharsPerMemory = boundedIntegerOptionValue("--max-chars-per-memory", 1, 8000);
     const fullContentTopRank = fullContentTopRankOption();
     const fullContentMaxChars = fullContentMaxCharsOption();
     const readerContextCharLimit = nonNegativeIntegerOptionValue("--reader-context-char-limit");
@@ -2899,6 +2900,7 @@ async function main(): Promise<void> {
       ...(maxBranch !== undefined ? { maxBranch } : {}),
       ...(maxMemories !== undefined ? { maxMemories } : {}),
       ...(contextBudgetTokens !== undefined ? { contextBudgetTokens } : {}),
+      ...(maxCharsPerMemory !== undefined ? { maxCharsPerMemory } : {}),
       ...(fullContentTopRank !== undefined ? { fullContentTopRank } : {}),
       ...(fullContentMaxChars !== undefined ? { fullContentMaxChars } : {}),
       ...(has("--no-anchor-coverage") ? { anchorCoverage: false } : {}),

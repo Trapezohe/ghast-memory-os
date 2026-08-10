@@ -133,13 +133,15 @@ export function extractAssociationCues(text: string, max = 32): AssociationCue[]
     ...unique(entities).map((cue) => ({ cue, cueKind: "entity" as const })),
     ...unique(lexical).map((cue) => ({ cue, cueKind: "lexical" as const })),
   ];
-  return uniqueAssociationCues(
-    cues.sort((a, b) => {
-      const information = cueInformationScore(b) - cueInformationScore(a);
+  return uniqueAssociationCues(cues)
+    .map((cue) => ({ cue, information: cueInformationScore(cue) }))
+    .sort((a, b) => {
+      const information = b.information - a.information;
       if (information !== 0) return information;
-      return b.cue.length - a.cue.length;
-    }),
-  ).slice(0, max);
+      return b.cue.cue.length - a.cue.cue.length;
+    })
+    .slice(0, max)
+    .map(({ cue }) => cue);
 }
 
 function normalizedMetadataValue(metadata: Record<string, unknown>, key: string): string | null {

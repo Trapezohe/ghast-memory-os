@@ -39783,6 +39783,22 @@ assert.match(
   reasoningAnswererSystemPrompt,
   /combine context facts only when clear discourse continuity, coreference, a shared event, or a shared subject and date makes the inference unique/iu,
 );
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /do not refuse merely because the context cannot prove that no unmentioned facts exist/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /assistant-authored context is direct evidence of what the assistant previously wrote, generated, or assigned/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /a user revision followed by an assistant response is a newer version of the same requested artifact/iu,
+);
+assert.match(
+  reasoningAnswererSystemPrompt,
+  /apply a stable preference to a new instance of the same category/iu,
+);
 assert.doesNotMatch(
   reasoningAnswererSystemPrompt,
   /benchmark ledger rule|ledger audit|structured assertions|ACTION, OBLIGATION TARGET|final corrected answer/iu,
@@ -49013,6 +49029,8 @@ const cliExternalWideOverride = spawnSync(
     "1",
     "--reader-profile",
     "wide",
+    "--max-chars-per-memory",
+    "800",
     "--full-content-top-rank",
     "3",
     "--full-content-max-chars",
@@ -49024,11 +49042,13 @@ assert.equal(cliExternalWideOverride.status, 0, cliExternalWideOverride.stderr);
 const cliExternalWideOverrideJson = JSON.parse(cliExternalWideOverride.stdout) as {
   runManifest?: {
     options?: {
+      maxCharsPerMemory?: number | null;
       fullContentTopRank?: number | null;
       fullContentMaxChars?: number | null;
     };
   };
 };
+assert.equal(cliExternalWideOverrideJson.runManifest?.options?.maxCharsPerMemory, 800);
 assert.equal(cliExternalWideOverrideJson.runManifest?.options?.fullContentTopRank, 3);
 assert.equal(cliExternalWideOverrideJson.runManifest?.options?.fullContentMaxChars, 1200);
 assert.equal(existsSync(cliExternalJsonFile), true);

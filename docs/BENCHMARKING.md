@@ -282,12 +282,13 @@ extraction atoms, and raw turn memories competing for the same read. It sets
 `contextBudgetTokens=16000`, `maxCharsPerMemory=400`,
 `fullContentTopRank=16`, `fullContentMaxChars=1600`, and
 `layerPolicy={ summaryMinShare: 0.3, turnMaxShare: 0.4 }`. Explicit
-`--max-memories`, `--context-budget-tokens`, `--full-content-top-rank`, and
-`--full-content-max-chars` override those effective values.
+`--max-memories`, `--context-budget-tokens`, `--max-chars-per-memory`,
+`--full-content-top-rank`, and `--full-content-max-chars` override those
+effective values.
 The wider token budget is sized for direct-import LongMemEval-style turns:
 the top 16 ranked memories render up to 1600 chars so details late in long
 assistant turns remain visible, while the remaining wide supply stays at the
-400-char tail cap.
+400-char per-memory cap.
 Use the default profile for scale smoke gates unless a run is intentionally
 measuring wide-reader latency.
 
