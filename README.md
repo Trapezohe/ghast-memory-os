@@ -11,9 +11,17 @@ npm install @ghast/memory
 
 ## Links
 
-- [Ghast Memory OS](https://ghast.trapezohe.ai/)
+- [Ghast AI](https://ghast.trapezohe.ai/)
 - [Ghast Workbench](https://ghast.trapezohe.ai/workbench)
 - [Ghast docs](https://doc.trapezohe.ai/)
+
+## Part of Ghast
+
+Ghast Memory OS is part of Ghast.
+
+Ghast AI — private expertise, callable by agents. We're building the protocol that lets experts and teams offer their know-how as services AI agents can find, trust and pay for, starting with Ghast Workbench, our desktop AI agent workspace.
+
+Ghast AI 让私有的专业能力可以被 AI agent 调用。我们在搭建一套协议，让专家和团队把自己的经验变成 AI agent 能发现、能信任、能付费调用的服务。第一步是我们的桌面 AI agent 工作台 Ghast Workbench。
 
 ## Why gmOS
 
