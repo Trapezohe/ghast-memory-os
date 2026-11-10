@@ -1,3 +1,5 @@
+<p align="center"><img src="./docs/assets/ghast-logo.png" alt="Ghast AI" width="120" /></p>
+
 # Ghast Memory OS (gmOS)
 
 **A local-first Memory OS for personal agents** — not a vector-store wrapper.
