@@ -23,8 +23,6 @@ Ghast Memory OS is part of Ghast.
 
 Ghast AI — private expertise, callable by agents. We're building the protocol that lets experts and teams offer their know-how as services AI agents can find, trust and pay for, starting with Ghast Workbench, our desktop AI agent workspace.
 
-Ghast AI 让私有的专业能力可以被 AI agent 调用。我们在搭建一套协议，让专家和团队把自己的经验变成 AI agent 能发现、能信任、能付费调用的服务。第一步是我们的桌面 AI agent 工作台 Ghast Workbench。
-
 ## Why gmOS
 
 Most "agent memory" is top-k retrieval over embedded chat chunks. That breaks
@@ -72,12 +70,12 @@ const memory = createMemoryOS({
 await memory.add({
   profileId: "local-user",
   kind: "boundary",
-  content: "以后不要再提醒我这个项目延期了。",
+  content: "Stop reminding me that this project is delayed.",
 });
 
 const prepared = await memory.prepareTurn({
   profileId: "local-user",
-  messages: [{ role: "user", content: "这个项目现在怎么办？" }],
+  messages: [{ role: "user", content: "What should we do about this project now?" }],
 });
 
 console.log(prepared.contextBlock); // evidence-backed context, ready to inject
@@ -137,9 +135,9 @@ One kernel, four ways in:
 
 ```bash
 gmos init --db ./gmos.db
-gmos add --db ./gmos.db --profile local --kind preference --text "回答风格：简洁，先给结论"
-gmos prepare --db ./gmos.db --profile local --text "你之后怎么回答我？"
-gmos-inspect turn --db ./gmos.db --profile local --query "这个项目现在是什么状态？" --format markdown
+gmos add --db ./gmos.db --profile local --kind preference --text "Answer style: concise, conclusion first"
+gmos prepare --db ./gmos.db --profile local --text "How will you answer me from now on?"
+gmos-inspect turn --db ./gmos.db --profile local --query "What is the status of this project now?" --format markdown
 gmos serve --db ./gmos.db --profile local --keys --port 4787 --console
 ```
 
