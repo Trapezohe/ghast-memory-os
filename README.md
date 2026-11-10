@@ -9,6 +9,12 @@ can explain every byte of context it ever injects into a prompt.
 npm install @ghast/memory
 ```
 
+## Links
+
+- [Ghast Memory OS](https://ghast.trapezohe.ai/)
+- [Ghast Workbench](https://ghast.trapezohe.ai/workbench)
+- [Ghast docs](https://doc.trapezohe.ai/)
+
 ## Why gmOS
 
 Most "agent memory" is top-k retrieval over embedded chat chunks. That breaks
